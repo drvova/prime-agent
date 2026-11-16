@@ -2,6 +2,7 @@
 //! `/speed` toggles the dim footer row over the session's completed
 //! responses — the readout appears after the first completed response
 //! with positive usage and span; off clears both the stats and the row.
+//! Every run also ends with its summary row (time, tool calls, tokens).
 #![cfg(unix)]
 #![warn(clippy::allow_attributes_without_reason)]
 
@@ -67,6 +68,19 @@ fn stream_turn(writer: &mut UnixStream) {
         .map_or(0, |d| d.as_millis() as i64)
         - 1500;
     write_json(writer, &event(json!({ "type": "turn_start" })));
+    write_json(
+        writer,
+        &event(
+            json!({ "type": "tool_execution_start", "toolCallId": "c1", "toolName": "bash", "args": {} }),
+        ),
+    );
+    let result = json!({ "content": [{ "type": "text", "text": "ok" }] });
+    write_json(
+        writer,
+        &event(
+            json!({ "type": "tool_execution_end", "toolCallId": "c1", "result": result, "isError": false }),
+        ),
+    );
     write_json(
         writer,
         &event(json!({
@@ -148,6 +162,11 @@ fn speed_command_toggles_the_footer_readout() {
     let frames = run_plan(steps);
     assert!(!frames.is_empty(), "frames were captured");
     let all = frames.join("\n");
+    // Every run ends with its summary row.
+    assert!(
+        all.contains("Worked for 0s \u{b7} 1 tool call \u{b7} 400 tokens"),
+        "{all}"
+    );
     assert!(
         all.contains(
             "Speed display on — footer shows output tok/s per model response and a session average"
