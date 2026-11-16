@@ -55,10 +55,7 @@ enum Mode {
 const SUMMARIZE_OPTIONS: [&str; 3] = ["No summary", "Summarize", "Summarize with custom prompt"];
 
 /// Row zero restores the code too.
-const RESTORE_OPTIONS: [&str; 2] = [
-    "Rewind conversation + code changes",
-    "Rewind conversation only",
-];
+const RESTORE_OPTIONS: [&str; 2] = ["Restore code and conversation", "Restore conversation only"];
 
 /// The `/tree` selector.
 pub struct TreeSelector {
@@ -379,25 +376,15 @@ impl TreeSelector {
             | Mode::CustomPrompt { .. } => {
                 lines.extend(self.list.render(theme, width));
                 match &self.mode {
-                    Mode::RestoreFiles { selected, .. } => {
+                    Mode::RestoreFiles { selected, .. } | Mode::Summarize { selected, .. } => {
+                        let choice: (&str, &[&str]) =
+                            if matches!(self.mode, Mode::RestoreFiles { .. }) {
+                                ("Restore code?", &RESTORE_OPTIONS)
+                            } else {
+                                ("Summarize branch?", &SUMMARIZE_OPTIONS)
+                            };
                         lines.push(Vec::new());
-                        lines.extend(render_choice(
-                            theme,
-                            width,
-                            kb,
-                            ("Restore code?", &RESTORE_OPTIONS),
-                            *selected,
-                        ));
-                    }
-                    Mode::Summarize { selected, .. } => {
-                        lines.push(Vec::new());
-                        lines.extend(render_choice(
-                            theme,
-                            width,
-                            kb,
-                            ("Summarize branch?", &SUMMARIZE_OPTIONS),
-                            *selected,
-                        ));
+                        lines.extend(render_choice(theme, width, kb, choice, *selected));
                     }
                     Mode::CustomPrompt { input, .. } => {
                         lines.push(Vec::new());

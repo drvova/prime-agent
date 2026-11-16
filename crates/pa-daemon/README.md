@@ -243,14 +243,13 @@ broadcast owns its surface here too (the worker's cron-store
 to every client, so any heartbeat mutation anywhere in the daemon reaches
 attached UIs daemon-wide).
 
-Workspace checkpoints (`workspace_checkpoints.rs`): the turn runner captures
-the workspace before `run_prompt` (keyed `Before` the turn's first entry) and
-after it, ahead of the idle flip (keyed `At` the new leaf); `get_session_tree`
-lists `checkpointEntryIds`; `navigate_tree` with `restoreFiles` restores the
-target's tree after the leaf move and answers `files: {restored, conflicts}`
-or `files: {error}` (omitted when the target has no checkpoint), recording the
-abandoned state at the old leaf for redo. In-memory sessions and RLM children
-never checkpoint.
+Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
+workspace (own git dir, one index per session, user git config shut out)
+snapshots the files before and after every turn, on the turn's blocking thread;
+`get_session_tree` lists `checkpointEntryIds`, and `navigate_tree` with
+`restoreFiles` restores the target's tree after the leaf move, leaving paths
+changed outside the session, and answers `files: {restored, conflicts}` or
+`files: {error}`. In-memory sessions and RLM children never checkpoint.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.

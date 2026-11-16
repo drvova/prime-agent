@@ -261,7 +261,7 @@ impl TreeNavigation {
 
         // Move the leaf and persist the summary entry, then rebuild the engine context.
         let summarized = summary.is_some();
-        let (branch_entries, summary_entry, landed_leaf) = {
+        let (branch_entries, summary_entry) = {
             let mut core = self.core.lock().unwrap();
             let Some(store) = core.store.as_mut() else {
                 return response_failure(
@@ -311,11 +311,7 @@ impl TreeNavigation {
                     }
                 }
             }
-            (
-                store.branch_file_entries(),
-                summary_entry,
-                store.leaf_id().map(str::to_string),
-            )
+            (store.branch_file_entries(), summary_entry)
         };
         // TS `Boolean(summaryText)`: a created summary entry means the navigation rebuilt
         // the context across a compaction-style cut; a plain move reloads faithfully.
@@ -334,17 +330,8 @@ impl TreeNavigation {
         if restore_files {
             let checkpoints = Arc::clone(&self.checkpoints);
             let core = Arc::clone(&self.core);
-            let files = tokio::task::spawn_blocking(move || {
-                checkpoints.rewind_files(
-                    &core,
-                    &target,
-                    old_leaf.as_deref(),
-                    landed_leaf.as_deref(),
-                )
-            })
-            .await
-            .unwrap_or_else(|join_error| Some(json!({ "error": join_error.to_string() })));
-            if let Some(files) = files {
+            let rewind = move || checkpoints.rewind_files(&core, &target, old_leaf.as_deref());
+            if let Ok(Some(files)) = tokio::task::spawn_blocking(rewind).await {
                 data["files"] = files;
             }
         }
