@@ -43,6 +43,7 @@ pub(super) fn thinking_style(md: &MarkdownStyle, theme: &Theme) -> MarkdownStyle
     md.syntax = None;
     md.body = dim;
     md.heading = dim;
+    md.heading_band = None;
     md.link = dim;
     md.link_url = dim;
     md.code = dim;
@@ -78,7 +79,7 @@ pub(crate) fn assistant_row_count(
 ) -> usize {
     let blocks = visible_blocks(message, detail);
     let mut count = usize::from(!blocks.is_empty());
-    let mut md = MarkdownStyle::from_theme(theme);
+    let mut md = MarkdownStyle::from_theme(theme).with_heading_bands(theme);
     code_block_indent.clone_into(&mut md.code_block_indent);
     let content_width = width.saturating_sub(2).max(1);
     for (index, block) in blocks.iter().enumerate() {

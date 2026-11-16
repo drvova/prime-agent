@@ -22,6 +22,9 @@ use ratatui::text as rt;
 pub struct MarkdownStyle {
     pub body: Style,
     pub heading: Style,
+    /// The band behind H1/H2 text (with a `▌` edge): assistant replies set it through
+    /// [`MarkdownStyle::with_heading_bands`]; `None` keeps every heading text-only.
+    pub heading_band: Option<Style>,
     pub link: Style,
     pub link_url: Style,
     pub code: Style,
@@ -53,12 +56,20 @@ impl Default for MarkdownStyle {
 }
 
 impl MarkdownStyle {
+    /// The assistant-reply style: H1/H2 headings on the theme's selection band.
+    #[must_use]
+    pub(crate) fn with_heading_bands(mut self, theme: &crate::theme::Theme) -> Self {
+        self.heading_band = Some(theme.bg_style(crate::theme::ThemeBg::SelectedBg));
+        self
+    }
+
     #[must_use]
     pub fn from_theme(theme: &crate::theme::Theme) -> Self {
         use crate::theme::ThemeColor as C;
         Self {
             body: theme.fg_style(C::MdBody),
             heading: theme.fg_style(C::MdHeading),
+            heading_band: None,
             link: theme.fg_style(C::MdLink),
             link_url: theme.fg_style(C::MdLinkUrl),
             code: theme.fg_style(C::MdCode),
@@ -728,6 +739,17 @@ fn heading_spans(text: &str, depth: usize, style: &MarkdownStyle) -> Vec<Span> {
         if underlined {
             s.style = s.style.add_modifier(Modifier::UNDERLINED);
         }
+    }
+    // H1/H2 sit on a band behind a `▌` edge, padded past the words, so long answers scan
+    // by their sections. Kept inside the shared builder, the row count wraps the same cells.
+    let has_text = spans.iter().any(|span| !span.content.trim().is_empty());
+    if let Some(band) = style.heading_band.filter(|_| depth <= 2 && has_text) {
+        for span in &mut spans {
+            span.style = span.style.patch(band);
+        }
+        spans.insert(0, Span::styled("\u{258c}".to_string(), style.heading));
+        spans.insert(1, Span::styled(" ".to_string(), band));
+        spans.push(Span::styled("   ".to_string(), band));
     }
     spans
 }
