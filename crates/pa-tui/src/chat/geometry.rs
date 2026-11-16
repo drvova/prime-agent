@@ -79,7 +79,7 @@ pub(crate) fn assistant_row_count(
 ) -> usize {
     let blocks = visible_blocks(message, detail);
     let mut count = usize::from(!blocks.is_empty());
-    let mut md = MarkdownStyle::from_theme(theme).with_heading_bands(theme);
+    let mut md = MarkdownStyle::from_theme(theme).for_replies(theme);
     code_block_indent.clone_into(&mut md.code_block_indent);
     let content_width = width.saturating_sub(2).max(1);
     for (index, block) in blocks.iter().enumerate() {

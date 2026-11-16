@@ -23,8 +23,11 @@ pub struct MarkdownStyle {
     pub body: Style,
     pub heading: Style,
     /// The band behind H1/H2 text (with a `▌` edge): assistant replies set it through
-    /// [`MarkdownStyle::with_heading_bands`]; `None` keeps every heading text-only.
+    /// [`MarkdownStyle::for_replies`]; `None` keeps every heading text-only.
     pub heading_band: Option<Style>,
+    /// The slab behind fenced code (with a `▌` edge and the language label): assistant
+    /// replies set it through [`MarkdownStyle::for_replies`]; `None` keeps the plain indent.
+    pub code_slab: Option<Style>,
     pub link: Style,
     pub link_url: Style,
     pub code: Style,
@@ -56,10 +59,12 @@ impl Default for MarkdownStyle {
 }
 
 impl MarkdownStyle {
-    /// The assistant-reply style: H1/H2 headings on the theme's selection band.
+    /// The assistant-reply style: H1/H2 headings on the theme's selection band, fenced code
+    /// on the tool-panel slab.
     #[must_use]
-    pub(crate) fn with_heading_bands(mut self, theme: &crate::theme::Theme) -> Self {
+    pub(crate) fn for_replies(mut self, theme: &crate::theme::Theme) -> Self {
         self.heading_band = Some(theme.bg_style(crate::theme::ThemeBg::SelectedBg));
+        self.code_slab = Some(theme.bg_style(crate::theme::ThemeBg::ToolPanelBg));
         self
     }
 
@@ -70,6 +75,7 @@ impl MarkdownStyle {
             body: theme.fg_style(C::MdBody),
             heading: theme.fg_style(C::MdHeading),
             heading_band: None,
+            code_slab: None,
             link: theme.fg_style(C::MdLink),
             link_url: theme.fg_style(C::MdLinkUrl),
             code: theme.fg_style(C::MdCode),
@@ -688,6 +694,9 @@ fn code_rows(block: &Block, lang: Option<&str>, style: &MarkdownStyle) -> Vec<Li
             .map(|line| vec![Span::styled(line.clone(), style.code_block)])
             .collect()
     });
+    if let Some(slab) = style.code_slab {
+        return slab_rows(lines, lang, slab, style, indent);
+    }
     if lines.is_empty() {
         return vec![vec![Span::raw(indent)]];
     }
@@ -697,6 +706,47 @@ fn code_rows(block: &Block, lang: Option<&str>, style: &MarkdownStyle) -> Vec<Li
             let mut row: Line = vec![Span::raw(indent)];
             row.extend(line);
             row
+        })
+        .collect()
+}
+
+/// Fenced code on a slab: the indent, a `▌` edge, the language label as the first row, every line on
+/// the slab background padded to the widest line (one rectangle, two cells of margin).
+fn slab_rows(
+    lines: Vec<Line>,
+    lang: Option<&str>,
+    slab: Style,
+    style: &MarkdownStyle,
+    indent: &str,
+) -> Vec<Line> {
+    let mut rows: Vec<Line> = Vec::new();
+    if let Some(lang) = lang.filter(|lang| !lang.is_empty()) {
+        rows.push(vec![Span::styled(lang.to_string(), style.link_url)]);
+    }
+    rows.extend(lines);
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    let widest = rows
+        .iter()
+        .map(|row| crate::width::line_width(row))
+        .max()
+        .unwrap_or(0);
+    rows.into_iter()
+        .map(|row| {
+            let pad = widest - crate::width::line_width(&row) + 2;
+            // The `markdown.codeBlockIndent` setting still leads the block.
+            let mut out: Line = vec![
+                Span::raw(indent.to_string()),
+                Span::styled("\u{258c}".to_string(), style.code_block_border),
+                Span::styled(" ".to_string(), slab),
+            ];
+            out.extend(
+                row.into_iter()
+                    .map(|span| Span::styled(span.content, span.style.patch(slab))),
+            );
+            out.push(Span::styled(" ".repeat(pad), slab));
+            out
         })
         .collect()
 }
