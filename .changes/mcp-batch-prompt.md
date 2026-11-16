@@ -1,0 +1,1 @@
+- The agent now batches MCP work: once it knows a tool's schema, it makes all the MCP calls it can already write (parallel ones together, dependent ones chained) in a single Python cell instead of one call per step, which cuts tool calls, turns, and tokens.
