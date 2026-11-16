@@ -539,6 +539,16 @@ pub fn render_tray_with_hint(
         }
     }
     let mut right: Line = Vec::new();
+    // The context label leads the right lane so it sits against its gauge.
+    if let Some(context) = &state.context {
+        let window = format_token_count(context.context_window);
+        let label = format!(
+            "{}/{window} {:.0}%",
+            format_token_count(context.tokens),
+            context.percent()
+        );
+        right.push(Span::styled(label, dim));
+    }
     if let Some(model) = &state.model_id {
         let mut label = model.clone();
         if let Some(suffix) = &state.thinking_suffix {
@@ -561,25 +571,31 @@ pub fn render_tray_with_hint(
         }
         right.push(Span::styled(badge.to_string(), dim));
     }
-    if let Some(context) = &state.context {
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(
-            format!(
-                "{} ({:.0}%)",
-                format_token_count(context.tokens),
-                context.percent()
-            ),
-            dim,
-        ));
-    }
     let left_width: usize = left.iter().map(|s| str_width(&s.content)).sum();
     let right_width: usize = right.iter().map(|s| str_width(&s.content)).sum();
     let gap = width.saturating_sub(left_width + right_width);
     let mut line: Line = Vec::new();
     line.extend(left);
-    line.push(Span::styled(" ".repeat(gap), Style::default()));
+    // The gap between the lanes is the context gauge: `━` for the used share, `─` for the
+    // rest, amber from 70% and red from 90% (a space pads each end).
+    if let Some(context) = state.context.as_ref().filter(|_| gap >= 6) {
+        let (cells, percent) = (gap - 2, context.percent());
+        let used = ((cells as f64 * percent / 100.0).round() as usize).min(cells);
+        let tone = if percent >= 90.0 {
+            ThemeColor::Error
+        } else if percent >= 70.0 {
+            ThemeColor::Warning
+        } else {
+            ThemeColor::Accent
+        };
+        line.push(Span::styled(" ".to_string(), Style::default()));
+        line.push(Span::styled("\u{2501}".repeat(used), theme.fg_style(tone)));
+        let free = "\u{2500}".repeat(cells - used);
+        line.push(Span::styled(free, theme.fg_style(ThemeColor::BorderMuted)));
+        line.push(Span::styled(" ".to_string(), Style::default()));
+    } else {
+        line.push(Span::styled(" ".repeat(gap), Style::default()));
+    }
     line.extend(right);
     (line, hint)
 }

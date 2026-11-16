@@ -869,7 +869,7 @@ fn tray_left_and_right_labels() {
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(text.starts_with("\u{2190} manage"));
-    assert!(text.contains("faux-1 \u{00b7} 6.1k (5%)"));
+    assert!(text.contains("6.1k/128k 5% \u{00b7} faux-1"));
     assert_eq!(str_width(&text), 120);
 }
 
@@ -982,12 +982,45 @@ fn tray_never_repeats_the_heartbeat_counts() {
     };
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
-    assert!(text.contains("mock-1 \u{b7} 190 (0%)"));
+    assert!(text.contains("190/128k 0% \u{b7} mock-1"));
     assert!(!text.contains("Pursuing goal"));
     assert!(!text.contains("goal"));
     assert!(!text.contains("heartbeat"));
     assert!(!text.contains("Ctrl+R"));
     assert_eq!(str_width(&text), 120);
+}
+
+/// The gap between the lanes is the context gauge: the used share in `━` (accent, amber from
+/// 70%, red from 90%), the rest in `─`, a space at each end.
+#[test]
+fn tray_gap_is_the_context_gauge() {
+    let gauge = |tokens: u64| {
+        let state = ChromeState {
+            show_manage: true,
+            context: Some(ContextUsage {
+                tokens,
+                context_window: 200_000,
+            }),
+            ..Default::default()
+        };
+        let line = render_tray(&state, &theme(), 60);
+        assert_eq!(
+            str_width(&line.iter().map(|s| s.content.as_str()).collect::<String>()),
+            60
+        );
+        let span = |glyph: char| line.iter().find(|s| s.content.starts_with(glyph)).cloned();
+        let used = span('\u{2501}').map_or(0, |s| s.content.chars().count());
+        let free = span('\u{2500}').map_or(0, |s| s.content.chars().count());
+        (used, free, span('\u{2501}').map(|s| s.style))
+    };
+    let t = theme();
+    // `← manage` (8) + `100k/200k 50%` (13) leave 39 cells: 37 gauge cells, half used.
+    assert_eq!(
+        gauge(100_000),
+        (19, 18, Some(t.fg_style(ThemeColor::Accent)))
+    );
+    assert_eq!(gauge(150_000).2, Some(t.fg_style(ThemeColor::Warning)));
+    assert_eq!(gauge(190_000).2, Some(t.fg_style(ThemeColor::Error)));
 }
 
 #[test]
