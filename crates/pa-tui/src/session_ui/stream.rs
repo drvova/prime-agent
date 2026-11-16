@@ -14,12 +14,15 @@ pub(super) struct LoaderTokenTracker {
     streaming_usage: u64,
     /// The streaming message's content size in chars.
     streaming_chars: u64,
+    /// The run's tool calls and total tokens (each message's `usage.totalTokens`,
+    /// context re-reads included), for the summary row at its end.
+    pub(super) run: (u64, u64),
 }
 
 impl LoaderTokenTracker {
     /// A fresh run counts from zero.
     fn reset(&mut self) {
-        self.completed_tokens = 0;
+        (self.completed_tokens, self.run) = (0, (0, 0));
         self.start_message();
     }
 
@@ -97,7 +100,6 @@ impl SessionUi {
         });
         view.working_since = Some(since);
         self.working_tokens.reset();
-        (self.run_tool_calls, self.run_total_tokens) = (0, 0);
     }
 
     /// Update the loader's activity label from one provider stream event (thinking/text/toolcall
