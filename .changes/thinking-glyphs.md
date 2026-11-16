@@ -1,0 +1,1 @@
+- The model label under the prompt now starts with a glyph for the thinking level that fills as effort rises (`○` off, `◔` minimal, `◑` low, `◕` medium, `●` high, `◉` xhigh and max), in that level's theme color.

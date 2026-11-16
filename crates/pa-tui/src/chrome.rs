@@ -558,6 +558,23 @@ pub fn render_tray_with_hint(
         if !right.is_empty() {
             right.push(Span::styled(" \u{00b7} ".to_string(), dim));
         }
+        // The thinking level as a circle that fills with effort, in the level's theme color.
+        let level = state
+            .thinking_suffix
+            .as_deref()
+            .and_then(pa_types::ai::thinking_level_from_str);
+        if let Some(level) = level {
+            use pa_types::ai::ModelThinkingLevel as L;
+            let (glyph, color) = match level {
+                L::Off => ("\u{25cb}", ThemeColor::ThinkingOff),
+                L::Minimal => ("\u{25d4}", ThemeColor::ThinkingMinimal),
+                L::Low => ("\u{25d1}", ThemeColor::ThinkingLow),
+                L::Medium => ("\u{25d5}", ThemeColor::ThinkingMedium),
+                L::High => ("\u{25cf}", ThemeColor::ThinkingHigh),
+                L::Xhigh | L::Max => ("\u{25c9}", ThemeColor::ThinkingXhigh),
+            };
+            right.push(Span::styled(format!("{glyph} "), theme.fg_style(color)));
+        }
         right.push(Span::styled(label, dim));
     }
     let tier_badge = match state.service_tier.as_deref() {
