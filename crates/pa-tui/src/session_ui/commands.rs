@@ -254,22 +254,6 @@ impl SessionUi {
                     self.note("Usage: /tree", view);
                 }
             }
-            "undo" => {
-                if resolved.args.is_empty() {
-                    self.track_feature_outcome("undo", "initiated", None);
-                    self.undo_last_turn(view).await?;
-                } else {
-                    self.note("Usage: /undo", view);
-                }
-            }
-            "redo" => {
-                if resolved.args.is_empty() {
-                    self.track_feature_outcome("redo", "initiated", None);
-                    self.redo_last_undo(view).await?;
-                } else {
-                    self.note("Usage: /redo", view);
-                }
-            }
             "fork" => {
                 if resolved.args.is_empty() {
                     self.track_feature_outcome("fork", "initiated", None);

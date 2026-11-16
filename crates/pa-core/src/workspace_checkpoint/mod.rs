@@ -132,13 +132,6 @@ impl CheckpointStore {
         let info = store.git_dir.join("info");
         std::fs::create_dir_all(&info)?;
         std::fs::write(info.join("attributes"), STORE_ATTRIBUTES)?;
-        // A rewind must never roll back the session log that recorded it.
-        let exclude = std::fs::canonicalize(agent_dir)
-            .ok()
-            .and_then(|dir| Some(dir.strip_prefix(&store.workspace).ok()?.to_path_buf()))
-            .filter(|relative| !relative.as_os_str().is_empty())
-            .map(|relative| format!("/{}/\n", relative.to_string_lossy().replace('\\', "/")));
-        std::fs::write(info.join("exclude"), exclude.unwrap_or_default())?;
         Ok(store)
     }
 

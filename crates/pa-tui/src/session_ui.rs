@@ -375,8 +375,6 @@ pub(crate) struct SessionUi {
     /// Whether the double-Escape tree shortcut already fired for this input chain (operator ruling
     /// 2026-09-29: the repeat-opened tree's dismissal must not re-enter the open cycle).
     escape_tree_shortcut_spent: bool,
-    /// Where `/redo` returns: the session and the leaf the last `/undo` left.
-    redo_point: Option<(String, String)>,
     /// The `!`/`!!` user-bash lane's client-side running flag (optimistic on
     /// submit, patched by `bash_start`/`bash_end`).
     user_bash_running: bool,

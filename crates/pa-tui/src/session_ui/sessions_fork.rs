@@ -18,7 +18,16 @@ impl SessionUi {
         view: &mut AgentView,
         initial_selected: Option<&str>,
     ) -> Result<()> {
-        let data = self.session_tree().await?;
+        let data = self
+            .bounded_request(
+                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                DaemonCommand::GetSessionTree {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    rest: Map::default(),
+                },
+            )
+            .await?;
         if data
             .get("flatNodes")
             .and_then(Value::as_array)
@@ -101,7 +110,7 @@ impl SessionUi {
                     return Ok(());
                 }
                 if restore_files {
-                    self.track_feature_outcome("rewind_files", "initiated", None);
+                    self.track_feature_outcome("rewind", "initiated", None);
                 }
                 self.navigate_tree(
                     &target_id,
@@ -117,8 +126,6 @@ impl SessionUi {
         Ok(())
     }
 
-    /// Move the session leaf to `target_id` (and, with `restore_files`, the
-    /// workspace files to its checkpoint). Answers whether the leaf moved.
     async fn navigate_tree(
         &mut self,
         target_id: &str,
@@ -126,7 +133,7 @@ impl SessionUi {
         custom_instructions: Option<String>,
         restore_files: bool,
         view: &mut AgentView,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let result = self
             .bounded_request(
                 Duration::from_millis(UI_REQUEST_TIMEOUT_MS * 3),
@@ -147,18 +154,17 @@ impl SessionUi {
             Ok(data) => data,
             Err(error) => {
                 self.note(&format!("{error:#}"), view);
-                return Ok(false);
+                return Ok(());
             }
         };
         if data.get("aborted").and_then(Value::as_bool) == Some(true) {
             // The branch summary was cancelled: re-open with the same selection.
             self.note("Branch summarization cancelled", view);
-            self.open_tree_selector(view, Some(target_id)).await?;
-            return Ok(false);
+            return self.open_tree_selector(view, Some(target_id)).await;
         }
         if data.get("cancelled").and_then(Value::as_bool) == Some(true) {
             self.note("Navigation cancelled", view);
-            return Ok(false);
+            return Ok(());
         }
         self.rebuild_transcript(view).await;
         // A user-message target re-enters its text in the editor when it is empty.
@@ -169,77 +175,31 @@ impl SessionUi {
         }
         self.note("Navigated to selected point", view);
         if let Some(files) = data.get("files") {
-            let (note, outcome) = file_rewind_note(files);
+            let kept: Vec<&str> = files["conflicts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect();
+            let note = match files["error"].as_str() {
+                Some(error) => format!("Files not restored: {error}"),
+                None if kept.is_empty() => format!("Files restored: {}", files["restored"]),
+                None => format!(
+                    "Files restored: {}; kept changes made outside this session: {}",
+                    files["restored"],
+                    kept.join(", ")
+                ),
+            };
             self.note(&note, view);
-            self.track_feature_outcome("rewind_files", outcome, None);
+            let outcome = if files["error"].is_null() {
+                "completed"
+            } else {
+                "failed"
+            };
+            self.track_feature_outcome("rewind", outcome, None);
         }
         self.dirty = true;
-        Ok(true)
-    }
-
-    /// `/undo`: rewind to before the newest prompt on the current branch, its
-    /// files included; the prompt returns to the editor and `/redo` returns to
-    /// the leaf it left.
-    pub(super) async fn undo_last_turn(&mut self, view: &mut AgentView) -> Result<()> {
-        let data = self.session_tree().await?;
-        let leaf = data["leafId"].as_str().map(str::to_string);
-        let target = leaf
-            .as_deref()
-            .and_then(|leaf| last_user_message(&data, leaf));
-        let (Some(leaf), Some(target)) = (leaf, target) else {
-            self.note("Nothing to undo", view);
-            self.track_feature_outcome("undo", "unavailable", None);
-            return Ok(());
-        };
-        if self.undo_redo_step("undo", &target, view).await? {
-            self.redo_point = Some((self.active_session_id.clone(), leaf));
-        }
         Ok(())
-    }
-
-    /// `/redo`: navigate back to the leaf the last `/undo` left, its files included.
-    pub(super) async fn redo_last_undo(&mut self, view: &mut AgentView) -> Result<()> {
-        let point = self.redo_point.take();
-        let Some((_, leaf)) = point.filter(|(session, _)| *session == self.active_session_id)
-        else {
-            self.note("Nothing to redo", view);
-            self.track_feature_outcome("redo", "unavailable", None);
-            return Ok(());
-        };
-        if self.undo_redo_step("redo", &leaf, view).await? {
-            // The undone prompt the editor still holds was sent on this branch.
-            view.editor.set_text("");
-        }
-        Ok(())
-    }
-
-    /// Navigate with the files (the daemon skips them when no checkpoint
-    /// exists) and count the outcome; answers whether the leaf moved.
-    async fn undo_redo_step(
-        &mut self,
-        feature: &'static str,
-        target: &str,
-        view: &mut AgentView,
-    ) -> Result<bool> {
-        let moved = self
-            .navigate_tree(
-                target, /*summarize*/ false, None, /*restore_files*/ true, view,
-            )
-            .await?;
-        self.track_feature_outcome(feature, if moved { "completed" } else { "failed" }, None);
-        Ok(moved)
-    }
-
-    async fn session_tree(&mut self) -> Result<Value> {
-        self.bounded_request(
-            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-            DaemonCommand::GetSessionTree {
-                id: None,
-                active_session_id: self.active_session_id.clone(),
-                rest: Map::default(),
-            },
-        )
-        .await
     }
 
     /// Open the `/fork` selector over the session's user messages.
@@ -688,47 +648,4 @@ async fn describe_session_open_failure(
         // never reaches this decorator: `owner_from_refusal` passes it through).
         error_info,
     })
-}
-
-/// The status row for a navigation's `files` outcome, with its adoption outcome.
-fn file_rewind_note(files: &Value) -> (String, &'static str) {
-    if let Some(error) = files["error"].as_str() {
-        return (format!("Files not restored: {error}"), "failed");
-    }
-    let noun = |count: u64| if count == 1 { "file" } else { "files" };
-    let restored = files["restored"].as_u64().unwrap_or(0);
-    let mut note = format!("Restored {restored} {}", noun(restored));
-    let conflicts: Vec<&str> = files["conflicts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect();
-    if let Ok(kept @ 1..) = u64::try_from(conflicts.len()) {
-        note = format!(
-            "{note}; kept {kept} {} changed outside this session: {}",
-            noun(kept),
-            conflicts.join(", ")
-        );
-    }
-    (note, "completed")
-}
-
-/// The newest user message on the branch ending at `leaf`.
-fn last_user_message(data: &Value, leaf: &str) -> Option<String> {
-    let entries: std::collections::HashMap<&str, &Value> = data["flatNodes"]
-        .as_array()?
-        .iter()
-        .filter_map(|node| Some((node["entry"]["id"].as_str()?, &node["entry"])))
-        .collect();
-    let mut id = leaf;
-    // Bounded by the entry count: a malformed cycle cannot spin forever.
-    for _ in 0..entries.len() {
-        let entry = entries.get(id)?;
-        if entry["type"] == "message" && entry["message"]["role"] == "user" {
-            return Some(id.to_string());
-        }
-        id = entry["parentId"].as_str()?;
-    }
-    None
 }
