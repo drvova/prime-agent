@@ -124,6 +124,7 @@ pub(crate) mod user_bash;
 pub mod util;
 pub mod worker;
 pub(crate) mod worker_stderr;
+pub(crate) mod workspace_checkpoints;
 
 #[cfg(test)]
 pub(crate) mod test_support;

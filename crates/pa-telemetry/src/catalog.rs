@@ -261,7 +261,7 @@ pub const AUTH_CATEGORIES: &[&str] = &[
 
 pub const FEATURE_NAMES: &[&str] = &[
     "model", "login", "logout", "effort", "goal", "new", "resume", "fork", "clone", "tree",
-    "feedback", "summary",
+    "feedback", "rewind", "summary",
 ];
 
 pub const FEATURE_OUTCOMES: &[&str] = &[
@@ -749,6 +749,11 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("feature_feedback_failed_count", optional(count())),
         ("feature_feedback_canceled_count", optional(count())),
         ("feature_feedback_unavailable_count", optional(count())),
+        ("feature_rewind_initiated_count", optional(count())),
+        ("feature_rewind_completed_count", optional(count())),
+        ("feature_rewind_failed_count", optional(count())),
+        ("feature_rewind_canceled_count", optional(count())),
+        ("feature_rewind_unavailable_count", optional(count())),
         ("feature_summary_initiated_count", optional(count())),
         ("feature_summary_completed_count", optional(count())),
         ("feature_summary_failed_count", optional(count())),
@@ -1091,6 +1096,11 @@ const TUI_EXIT: EventRule = EventRule {
         ("feature_feedback_failed_count", optional(count())),
         ("feature_feedback_canceled_count", optional(count())),
         ("feature_feedback_unavailable_count", optional(count())),
+        ("feature_rewind_initiated_count", optional(count())),
+        ("feature_rewind_completed_count", optional(count())),
+        ("feature_rewind_failed_count", optional(count())),
+        ("feature_rewind_canceled_count", optional(count())),
+        ("feature_rewind_unavailable_count", optional(count())),
         ("feature_summary_initiated_count", optional(count())),
         ("feature_summary_completed_count", optional(count())),
         ("feature_summary_failed_count", optional(count())),

@@ -135,6 +135,8 @@ impl SessionUi {
                     custom_instructions,
                     replace_instructions: None,
                     label: None,
+                    // The daemon restores the files only where a checkpoint exists.
+                    restore_files: Some(true),
                     rest: Map::default(),
                 },
             )
@@ -163,6 +165,27 @@ impl SessionUi {
             }
         }
         self.note("Navigated to selected point", view);
+        // A rewind that touched and kept no file stays quiet.
+        let files = data.get("files");
+        let kept = files
+            .and_then(|files| files["conflicts"].as_array())
+            .map_or(0, Vec::len);
+        if let Some(files) = files.filter(|files| files["restored"] != 0 || kept > 0) {
+            let note = match files["error"].as_str() {
+                Some(error) => format!("Files not restored: {error}"),
+                None => format!(
+                    "Files restored: {}; kept {kept} changed outside this session",
+                    files["restored"]
+                ),
+            };
+            self.note(&note, view);
+            let outcome = if files["error"].is_null() {
+                "completed"
+            } else {
+                "failed"
+            };
+            self.track_feature_outcome("rewind", outcome, None);
+        }
         self.dirty = true;
         Ok(())
     }
