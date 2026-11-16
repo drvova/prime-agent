@@ -319,9 +319,9 @@ impl ModelPicker {
             Some(self.viewport_rows),
             8,
             self.filtered.len(),
-            // The frame's fixed rows plus the scope row when the session has
-            // scoped models.
-            4 + usize::from(self.has_scoped_models()) + detail_rows,
+            // The frame's fixed rows (the title, the search field, the footer, the trailing
+            // blank) plus the scope row when the session has scoped models.
+            5 + usize::from(self.has_scoped_models()) + detail_rows,
             1,
         )
     }

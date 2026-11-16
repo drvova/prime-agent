@@ -68,7 +68,11 @@ impl ChoicePicker {
                 path: String::new(),
             })
             .collect();
-        let selector = ConfigSelector::with_kind(rows, kind);
+        let mut selector = ConfigSelector::with_kind(rows, kind);
+        // The picker opens on the current level, so Enter straight away keeps it.
+        if let Some(position) = keys.iter().position(|key| current == Some(key.as_str())) {
+            selector.select_position(position);
+        }
         ChoicePicker {
             selector,
             purpose,
@@ -173,10 +177,23 @@ mod tests {
         );
     }
 
+    /// The picker opens on the current level: Enter straight away re-applies it.
+    #[test]
+    fn the_picker_opens_on_the_current_level() {
+        let mut picker = ChoicePicker::effort(&levels(), Some("medium"));
+        assert_eq!(
+            picker.handle_key("enter", &kb()),
+            ChoicePickerAction::Apply {
+                purpose: ChoicePurpose::Effort,
+                key: "medium".to_string()
+            }
+        );
+    }
+
     #[test]
     fn the_effort_frame_lists_levels_and_their_descriptions() {
         let text = frame_text(&ChoicePicker::effort(&levels(), None));
-        assert!(text.iter().any(|row| row.contains("Thinking Level")));
+        assert!(text.iter().any(|row| row.contains("Effort")));
         assert!(text.iter().any(|row| row.contains("Moderate reasoning")));
     }
 }

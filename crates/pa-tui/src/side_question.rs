@@ -145,13 +145,13 @@ impl SideQuestionPane {
         theme: &Theme,
         frame: usize,
         expanded: bool,
-        cancel_hint: &str,
+        kb: &crate::keybindings::KeybindingsManager,
         width: usize,
     ) -> Vec<crate::Line> {
+        let cancel_hint = kb.key_text("tui.select.cancel");
         let bg = theme.bg_style(ThemeBg::ToolPanelBg);
         let user_text = theme.fg_style(ThemeColor::UserMessageText);
         let accent = theme.fg_style(ThemeColor::Accent);
-        let dim = theme.fg_style(ThemeColor::Dim);
         let error = theme.fg_style(ThemeColor::Error);
         let blank = || vec![crate::Span::styled(" ".repeat(width.max(1)), bg)];
         let surface = |line: crate::Line| -> crate::Line {
@@ -226,7 +226,7 @@ impl SideQuestionPane {
                 &card,
                 frame,
                 expanded,
-                cancel_hint,
+                &cancel_hint,
                 theme,
                 width,
             ) {
@@ -234,15 +234,24 @@ impl SideQuestionPane {
             }
             rows.push(blank());
         }
-        let hint = if self.running() {
-            "esc to cancel and return to session"
-        } else {
-            "reply to follow up · esc to return to session"
-        };
-        rows.push(surface(vec![
-            crate::Span::styled(" ".repeat(PADDING_X), bg),
-            crate::Span::styled(hint.to_string(), dim),
-        ]));
+        // The editor stays live under the pane: Enter sends a follow-up while no turn runs, and
+        // the editor's clear key cancels a running turn and returns to the session.
+        let mut footer = crate::menu_chrome::Footer::new();
+        if !self.running() {
+            footer = footer.bound(
+                kb,
+                &["tui.input.submit"],
+                "follow up",
+                crate::menu_chrome::HintRank::Useful,
+            );
+        }
+        let footer = footer.bound(
+            kb,
+            &["app.input.clear"],
+            "close",
+            crate::menu_chrome::HintRank::Core,
+        );
+        rows.push(surface(footer.line(theme, width)));
         rows.push(blank());
         rows
     }
@@ -375,7 +384,13 @@ mod tests {
         let mut bash = PaneBash::new_running("echo hi", true);
         bash.output = "hi\n".to_string();
         pane.bash = Some(bash);
-        let rows = pane.render(&theme, 0, false, "Esc/Ctrl+C", 80);
+        let rows = pane.render(
+            &theme,
+            0,
+            false,
+            &crate::keybindings::KeybindingsManager::new(),
+            80,
+        );
         let text =
             |line: &crate::Line| -> String { line.iter().map(|s| s.content.as_str()).collect() };
         let joined: Vec<String> = rows.iter().map(&text).collect();
@@ -397,7 +412,13 @@ mod tests {
         pane.bash.as_mut().unwrap().running = false;
         pane.bash.as_mut().unwrap().exit_code = Some(3);
         let joined: Vec<String> = pane
-            .render(&theme, 0, false, "Esc/Ctrl+C", 80)
+            .render(
+                &theme,
+                0,
+                false,
+                &crate::keybindings::KeybindingsManager::new(),
+                80,
+            )
             .iter()
             .map(&text)
             .collect();
@@ -422,7 +443,13 @@ mod tests {
         let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::Color256);
         let mut pane = SideQuestionPane::default();
         pane.upsert(turn("a", "complete", "the answer"));
-        let rows = pane.render(&theme, 0, false, "Esc/Ctrl+C", 80);
+        let rows = pane.render(
+            &theme,
+            0,
+            false,
+            &crate::keybindings::KeybindingsManager::new(),
+            80,
+        );
         let text =
             |line: &crate::Line| -> String { line.iter().map(|s| s.content.as_str()).collect() };
         let joined: Vec<String> = rows.iter().map(&text).collect();
@@ -434,21 +461,31 @@ mod tests {
         assert!(joined.iter().any(|row| row.contains("the answer")));
         assert!(joined
             .iter()
-            .any(|row| row.contains("reply to follow up · esc to return to session")));
+            .any(|row| row.contains("Enter follow up · Esc close")));
         // A running turn swaps the hint.
         pane.upsert(turn("b", "running", ""));
-        let rows = pane.render(&theme, 0, false, "Esc/Ctrl+C", 80);
+        let rows = pane.render(
+            &theme,
+            0,
+            false,
+            &crate::keybindings::KeybindingsManager::new(),
+            80,
+        );
         let joined: Vec<String> = rows.iter().map(&text).collect();
-        assert!(joined
-            .iter()
-            .any(|row| row.contains("esc to cancel and return to session")));
+        assert!(joined.iter().any(|row| row.trim_end() == "  Esc close"));
         // The cancelled placeholder shows when no answer streamed.
         pane.upsert(SideQuestionTurn {
             status: "cancelled".to_string(),
             answer: String::new(),
             ..turn("b", "cancelled", "")
         });
-        let rows = pane.render(&theme, 0, false, "Esc/Ctrl+C", 80);
+        let rows = pane.render(
+            &theme,
+            0,
+            false,
+            &crate::keybindings::KeybindingsManager::new(),
+            80,
+        );
         let joined: Vec<String> = rows.iter().map(&text).collect();
         assert!(joined.iter().any(|row| row.contains("Cancelled")));
     }

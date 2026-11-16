@@ -1,6 +1,7 @@
 //! The inline menu panel: the ONE menu component every picker and completion surface renders
 //! through — the bordered search field, the `›`-marker menu rows with right-aligned trailing
-//! segments, the shared truncate/pad budgeting, and the status rows every menu frame shares.
+//! segments, the shared truncate/pad budgeting, and the status rows every menu frame shares. The
+//! title row and the footer live beside it in `menu_chrome`.
 
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{str_width, truncate_line};
@@ -132,8 +133,9 @@ pub(crate) fn menu_row(
 }
 
 /// The shared row finish: truncate to the width, pad so the selection band spans the row, and patch
-/// the soft selection background.
-fn finish_menu_row(theme: &Theme, row: &Line, width: usize, selected: bool) -> Line {
+/// the soft selection background. Surfaces that compose their own row cells (the session tree)
+/// finish through here so every list shares the menus' selection.
+pub(crate) fn finish_menu_row(theme: &Theme, row: &Line, width: usize, selected: bool) -> Line {
     let mut row = truncate_line(row, width, "");
     let used = crate::width::spans_width(&row);
     if used < width {
@@ -471,34 +473,6 @@ pub(crate) fn no_match_row(theme: &Theme, width: usize, message: &str) -> Line {
     truncate_line(&line, width, "")
 }
 
-/// The key-hint status row: ` {hint}` dim, truncated to the frame width; each surface composes its
-/// own hint text.
-pub(crate) fn hint_row(theme: &Theme, width: usize, hint: &str) -> Line {
-    let line = vec![
-        Span::raw(" "),
-        theme.fg_span(ThemeColor::Dim, hint.to_string()),
-    ];
-    truncate_line(&line, width, "")
-}
-
-/// One hint segment: the resolved bindings' labels joined with `/` plus the action; an unconfigured
-/// binding omits the action.
-pub(crate) fn key_hint(
-    kb: &crate::keybindings::KeybindingsManager,
-    bindings: &[&str],
-    action: &str,
-) -> Option<String> {
-    let labels: Vec<String> = bindings
-        .iter()
-        .filter_map(|binding| kb.first_key(binding))
-        .map(|key| crate::keybindings::format_key_text(&key))
-        .collect();
-    if labels.is_empty() {
-        return None;
-    }
-    Some(format!("{} {action}", labels.join("/")))
-}
-
 /// One detail-block row: the selected item's metadata under the list,
 /// truncated to the frame width and padded to the full row.
 pub(crate) fn detail_row(theme: &Theme, width: usize, content: &Line) -> Line {
@@ -514,7 +488,6 @@ pub(crate) fn detail_row(theme: &Theme, width: usize, content: &Line) -> Line {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keybindings::KeybindingsManager;
     use crate::theme::{ColorMode, Theme};
 
     fn theme() -> Theme {
@@ -523,25 +496,6 @@ mod tests {
 
     fn row_text(line: &Line) -> String {
         line.iter().map(|span| span.content.as_str()).collect()
-    }
-
-    /// The hint segment resolves the bound keys and omits an unbound action
-    /// entirely (an empty user binding disables the action).
-    #[test]
-    fn key_hint_omits_unbound_actions() {
-        let kb = KeybindingsManager::new();
-        assert_eq!(
-            key_hint(&kb, &["tui.select.confirm"], "select").as_deref(),
-            Some("Enter select")
-        );
-        let mut bindings = crate::keybindings::KeybindingsConfig::new();
-        bindings.insert("tui.select.cancel".to_string(), Vec::new());
-        let unbound = KeybindingsManager::with_user_bindings(bindings);
-        assert_eq!(key_hint(&unbound, &["tui.select.cancel"], "close"), None);
-        assert_eq!(
-            key_hint(&unbound, &["tui.select.up", "tui.select.down"], "navigate").as_deref(),
-            Some("\u{2191}/\u{2193} navigate")
-        );
     }
 
     /// The table cell pads by GRAPHEME width: a multi-codepoint cluster (the family emoji renders
@@ -682,8 +636,6 @@ mod tests {
             row_text(&no_match_row(&theme, 40, "No matching models")),
             "  No matching models"
         );
-        let hint = hint_row(&theme, 60, "Enter select · Esc close");
-        assert!(row_text(&hint).starts_with(" Enter select"));
     }
 
     /// Every status row truncates to the frame width: a narrow menu never emits a row wider than

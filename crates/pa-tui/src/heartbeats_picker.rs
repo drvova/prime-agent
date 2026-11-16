@@ -5,7 +5,8 @@
 
 use serde_json::Value;
 
-use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
 use crate::menu_panel::{fill_row, hug_row, menu_list_layout, plain_cell, status_dot};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{str_width, truncate_line, wrap_text};
@@ -26,7 +27,7 @@ pub use schedule::human_schedule;
 mod render;
 
 use render::{
-    action_row, detail_block_lines, detail_pairs, error_line, hint_line, pane_header_lines, Columns,
+    action_row, detail_block_lines, detail_pairs, error_line, pane_header_lines, Columns,
 };
 
 const PREFERRED_VISIBLE: usize = 8;
@@ -408,7 +409,7 @@ impl HeartbeatsPicker {
                 ]);
             }
         }
-        lines.extend(self.pane_footer(theme, width, &Self::list_hint(kb)));
+        lines.extend(self.pane_footer(theme, width, &Self::list_footer(kb)));
         // The budget math keeps every normal viewport exact; a terminal shorter
         // than the frame itself degrades by truncation — the pane never renders
         // past its allocated rows.
@@ -451,7 +452,7 @@ impl HeartbeatsPicker {
                 Span::raw("  "),
                 theme.fg_span(ThemeColor::Muted, "This heartbeat is no longer available."),
             ]);
-            lines.extend(self.pane_footer(theme, width, &Self::detail_hint(kb)));
+            lines.extend(self.pane_footer(theme, width, &Self::detail_footer(kb)));
             return lines;
         };
         let name = entry
@@ -547,55 +548,53 @@ impl HeartbeatsPicker {
                 index == action_index,
             ));
         }
-        lines.extend(self.pane_footer(theme, width, &Self::detail_hint(kb)));
+        lines.extend(self.pane_footer(theme, width, &Self::detail_footer(kb)));
         lines.truncate(self.viewport_rows.max(1));
         lines
     }
 
-    /// The list's bottom hint line: every shortcut in one line. An override
-    /// that empties one of the open/close key pairs drops that key — the
-    /// hint never advertises a key the handler does not take.
-    fn list_hint(kb: &KeybindingsManager) -> String {
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        let bound = |binding: &str| kb.first_key(binding).map(|key| format_key_text(&key));
-        let open = match bound("app.modal.open") {
-            Some(detail) => format!("{}/{}", key("tui.select.confirm", "Enter"), detail),
-            None => key("tui.select.confirm", "Enter"),
-        };
-        let close = match bound("app.modal.back") {
-            Some(back) => format!("{}/{}", back, key("tui.select.cancel", "Esc")),
-            None => key("tui.select.cancel", "Esc"),
-        };
-        format!(
-            "{}/{} move \u{b7} {open} open \u{b7} {close} close",
-            key("tui.select.up", "\u{2191}"),
-            key("tui.select.down", "\u{2193}"),
-        )
+    /// The list's footer: an override that empties one of the open/close key pairs drops that
+    /// key — the footer never advertises a key the handler does not take.
+    fn list_footer(kb: &KeybindingsManager) -> Footer {
+        Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "move",
+                HintRank::Useful,
+            )
+            .bound(
+                kb,
+                &["tui.select.confirm", "app.modal.open"],
+                "open",
+                HintRank::Core,
+            )
+            .bound(
+                kb,
+                &["app.modal.back", "tui.select.cancel"],
+                "close",
+                HintRank::Core,
+            )
     }
 
-    /// The detail pane's bottom hint line.
-    fn detail_hint(kb: &KeybindingsManager) -> String {
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        format!(
-            "{}/{} move \u{b7} {} run \u{b7} {} back \u{b7} {} close",
-            key("tui.select.up", "\u{2191}"),
-            key("tui.select.down", "\u{2193}"),
-            key("tui.select.confirm", "Enter"),
-            key("app.modal.back", "\u{2190}"),
-            key("tui.select.cancel", "Esc"),
-        )
+    /// The detail pane's footer.
+    fn detail_footer(kb: &KeybindingsManager) -> Footer {
+        Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "move",
+                HintRank::Useful,
+            )
+            .bound(kb, &["tui.select.confirm"], "run", HintRank::Core)
+            .bound(kb, &["app.modal.back"], "back", HintRank::Useful)
+            .esc(kb, EscVerb::Close)
     }
 
     /// The pane footer: the fetch and action errors, a blank, the hint line,
     /// and one blank below (no rule under the hint — the /model geometry, per
     /// the operator's 2026-09-24 ruling).
-    fn pane_footer(&self, theme: &Theme, width: usize, hint: &str) -> Vec<Line> {
+    fn pane_footer(&self, theme: &Theme, width: usize, footer: &Footer) -> Vec<Line> {
         let mut lines = Vec::new();
         if let Some(fetch_error) = &self.fetch_error {
             lines.push(Vec::new());
@@ -613,7 +612,7 @@ impl HeartbeatsPicker {
             lines.push(error_line(theme, width, error));
         }
         lines.push(Vec::new());
-        lines.push(hint_line(theme, width, hint));
+        lines.push(footer.line(theme, width));
         lines.push(Vec::new());
         lines
     }

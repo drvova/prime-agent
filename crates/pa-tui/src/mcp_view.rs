@@ -11,8 +11,9 @@
 //! overflow the terminal (the detail line drops when the viewport is too
 //! short, never the search field).
 
-use crate::keybindings::{format_key_text, KeybindingsManager};
-use crate::menu_panel::{menu_list_layout, search_field_lines};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_list_layout, menu_row, search_field_lines, MenuSegment};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
@@ -29,6 +30,8 @@ const SEARCH_PLACEHOLDER: &str = "Search MCP connections";
 
 const PREFERRED_VISIBLE_SERVICES: usize = 8;
 
+const TITLE_ROWS: usize = 1;
+
 const SEARCH_FIELD_ROWS: usize = 3;
 
 const HINT_ROWS: usize = 1;
@@ -41,8 +44,13 @@ const DETAIL_SPACER_ROWS: usize = 1;
 
 /// Viewports below this height cannot fit the search field, one result row, the counter, the
 /// spacer, the detail line, and the hint; the detail line drops instead (TS `MIN_ROWS_FOR_DETAIL`).
-const MIN_ROWS_FOR_DETAIL: usize =
-    SEARCH_FIELD_ROWS + HINT_ROWS + SCROLL_INDICATOR_ROWS + DETAIL_ROWS + DETAIL_SPACER_ROWS + 2;
+const MIN_ROWS_FOR_DETAIL: usize = TITLE_ROWS
+    + SEARCH_FIELD_ROWS
+    + HINT_ROWS
+    + SCROLL_INDICATOR_ROWS
+    + DETAIL_ROWS
+    + DETAIL_SPACER_ROWS
+    + 2;
 
 /// The empty state's window rows (the message plus its blank row before the hint): the layout must
 /// budget them before the message renders.
@@ -392,14 +400,15 @@ impl McpView {
     pub fn render(&mut self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
         self.visible_items = self.list_layout();
 
-        let mut lines = search_field_lines(
+        let mut lines = vec![title_row(theme, width, "MCP")];
+        lines.extend(search_field_lines(
             theme,
             width,
             self.search.value(),
             self.search.cursor(),
             true,
             SEARCH_PLACEHOLDER,
-        );
+        ));
 
         let (start, end) = self.window();
         for index in start..end {
@@ -414,9 +423,12 @@ impl McpView {
             // Rows carry their status flush right (TS `MenuRow` trailing meta).
             let (color, status) = row.status_text();
             let status = status.as_str();
-            let trailing = vec![(color, status)];
-            lines.push(trailing_menu_row(
-                theme, width, primary, &trailing, selected,
+            lines.push(menu_row(
+                theme,
+                width,
+                primary,
+                &[MenuSegment::themed(color, status)],
+                selected,
             ));
         }
 
@@ -470,7 +482,17 @@ impl McpView {
             .get(self.selected)
             .and_then(|index| self.rows.get(*index))
             .map(McpRow::action_text);
-        lines.push(hint_line(theme, width, kb, action));
+        let mut footer = Footer::new().bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "navigate",
+            HintRank::Useful,
+        );
+        // The action hint appears only when a row is selected (no `Enter select` filler).
+        if let Some(action) = action {
+            footer = footer.bound(kb, &["tui.select.confirm"], action, HintRank::Core);
+        }
+        lines.push(footer.esc(kb, EscVerb::Close).line(theme, width));
         lines
     }
 
@@ -480,7 +502,7 @@ impl McpView {
         // The shared layout floors at one row so a picker never reads empty; this view must
         // never render past its viewport, so a frame too short for any row renders none
         // (the scroll indicator follows: nothing to scroll).
-        let reserved = SEARCH_FIELD_ROWS + HINT_ROWS + self.detail_rows();
+        let reserved = TITLE_ROWS + SEARCH_FIELD_ROWS + HINT_ROWS + self.detail_rows();
         if self.viewport_rows <= reserved {
             return 0;
         }
@@ -548,118 +570,5 @@ impl McpView {
     }
 }
 
-/// One inline menu row with a THEMED trailing cell (the `menu_row` layout with the TS `statusText`
-/// colors).
-fn trailing_menu_row(
-    theme: &Theme,
-    width: usize,
-    primary: Line,
-    trailing: &[(ThemeColor, &str)],
-    selected: bool,
-) -> Line {
-    let inner_width = width.saturating_sub(2).max(1);
-    // TS `getInlineTrailing`: the trailing cluster lives on a budget of the inner width minus five
-    // — segments reduce from the front until the cluster fits, then the joined text truncates with
-    // the ellipsis, so a narrow row keeps a SHORTENED status instead of losing it.
-    let budget = inner_width.saturating_sub(5).max(1);
-    let mut reduced: Vec<&(ThemeColor, &str)> = trailing
-        .iter()
-        .filter(|(_, text)| !text.is_empty())
-        .collect();
-    let cluster = |segments: &[&(ThemeColor, &str)]| -> String {
-        segments
-            .iter()
-            .map(|(_, text)| *text)
-            .collect::<Vec<_>>()
-            .join(" \u{b7} ")
-    };
-    while reduced.len() > 1 && crate::width::str_width(&cluster(&reduced)) > budget {
-        reduced.remove(0);
-    }
-    let mut trailing_spans: Line = if reduced.is_empty() {
-        Vec::new()
-    } else {
-        let mut spans: Vec<Span> = Vec::with_capacity(reduced.len() * 2);
-        for (index, (color, text)) in reduced.iter().enumerate() {
-            if index > 0 {
-                spans.push(Span::raw(" \u{b7} "));
-            }
-            spans.push(theme.fg_span(*color, *text));
-        }
-        spans
-    };
-    if !trailing_spans.is_empty() {
-        trailing_spans = crate::width::truncate_line(&trailing_spans, budget, "\u{2026}");
-    }
-    let trailing_width = crate::width::spans_width(&trailing_spans);
-    let gap = if trailing_width > 0 { 2 } else { 0 };
-    let primary_width = inner_width.saturating_sub(trailing_width + gap).max(1);
-    let mut primary = primary;
-    if selected {
-        primary = primary
-            .into_iter()
-            .map(|mut span| {
-                span.style = span.style.add_modifier(ratatui::style::Modifier::BOLD);
-                span
-            })
-            .collect();
-    }
-    let primary = crate::width::truncate_line(&primary, primary_width, "\u{2026}");
-    let filler_width = inner_width
-        .saturating_sub(crate::width::spans_width(&primary))
-        .saturating_sub(trailing_width);
-    let mut row: Line = Vec::with_capacity(primary.len() + trailing_spans.len() + 4);
-    row.push(Span::raw(if selected { "\u{203a}" } else { " " }));
-    row.push(Span::raw(" "));
-    row.extend(primary);
-    if filler_width > 0 {
-        row.push(Span::raw(" ".repeat(filler_width)));
-    }
-    row.extend(trailing_spans);
-    let mut row = crate::width::truncate_line(&row, width, "");
-    let used = crate::width::spans_width(&row);
-    if used < width {
-        row.push(Span::raw(" ".repeat(width - used)));
-    }
-    if selected {
-        let style = theme.soft_selection_style();
-        row = row
-            .into_iter()
-            .map(|mut span| {
-                span.style = span.style.patch(style);
-                span
-            })
-            .collect();
-    }
-    row
-}
-
-/// The trailing key hint (TS the shortcuts row): navigate · Enter <action> · close — the action
-/// segment appears only when a row is selected (TS renders no `Enter select` filler).
-fn hint_line(theme: &Theme, width: usize, kb: &KeybindingsManager, action: Option<&str>) -> Line {
-    let select_key = kb
-        .first_key("tui.select.confirm")
-        .map_or_else(|| "Enter".to_string(), |key| format_key_text(&key));
-    let close_key = kb
-        .first_key("tui.select.cancel")
-        .map_or_else(|| "Esc".to_string(), |key| format_key_text(&key));
-    let action_segment = action
-        .map(|action| format!("{select_key} {action} \u{b7} "))
-        .unwrap_or_default();
-    let hint = if width >= 70 {
-        let navigation = format!(
-            "{}/{} navigate \u{b7} ",
-            kb.first_key("tui.select.up")
-                .map_or_else(|| "\u{2191}".to_string(), |key| format_key_text(&key)),
-            kb.first_key("tui.select.down")
-                .map_or_else(|| "\u{2193}".to_string(), |key| format_key_text(&key))
-        );
-        format!("{navigation}{action_segment}{close_key} close")
-    } else {
-        format!("{action_segment}{close_key} close")
-    };
-    let line = vec![theme.fg_span(ThemeColor::Dim, format!(" {hint}"))];
-    crate::width::truncate_line(&line, width, "")
-}
 #[cfg(test)]
 mod tests;

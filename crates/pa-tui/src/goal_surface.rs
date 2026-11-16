@@ -215,14 +215,7 @@ pub fn render_goal_panel(
     lines.push(vec![
         theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width.max(1)))
     ]);
-    lines.push(crate::width::truncate_line(
-        &vec![
-            Span::raw("  "),
-            theme.fg_span(ThemeColor::Text, "Goal".to_string()),
-        ],
-        width,
-        "",
-    ));
+    lines.push(crate::menu_chrome::title_row(theme, width, "Goal"));
     lines.push(Vec::new());
     let objective = goal
         .objective
@@ -293,16 +286,12 @@ pub fn render_goal_panel(
             "",
         ));
     }
-    let close = kb.first_key("tui.select.cancel").map_or_else(
-        || "Esc".to_string(),
-        |key| crate::keybindings::format_key_text(&key),
-    );
     lines.push(Vec::new());
-    lines.push(crate::menu_panel::hint_row(
-        theme,
-        width,
-        &format!("{close} close"),
-    ));
+    lines.push(
+        crate::menu_chrome::Footer::new()
+            .esc(kb, crate::menu_chrome::EscVerb::Close)
+            .line(theme, width),
+    );
     lines.push(Vec::new());
     // The frame never renders past its budget; a terminal shorter than
     // the pane degrades by truncation, same as the docked pickers.

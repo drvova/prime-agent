@@ -246,6 +246,8 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
 fn renders_the_ts_inline_panel_shape() {
     let mut picker = ModelPicker::new(picker_options(battery_catalog()));
     let rows = frame_text(&mut picker);
+    assert_eq!(rows[0], "  Model", "the shared title row opens the frame");
+    let rows = rows[1..].to_vec();
     let border = "\u{2500}".repeat(120);
     assert_eq!(rows[0], border, "top rule");
     assert_eq!(rows[2], border, "bottom rule");
@@ -309,7 +311,7 @@ fn renders_the_ts_inline_panel_shape() {
     assert_eq!(rows[15], "");
     assert_eq!(
         rows[16],
-        " \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
     );
 
     assert_eq!(rows.len(), 18, "the frame ends on the blank: {rows:?}");
@@ -585,7 +587,7 @@ fn an_empty_catalog_opens_the_empty_panel() {
     // renders the bordered field and the no-match row.
     let ModelCommandOutcome::Open(mut picker) = ModelPicker::open(picker_options(Vec::new()), "");
     let rows = frame_text(&mut picker);
-    assert_eq!(rows[1], " >  Search models");
+    assert_eq!(rows[2], " >  Search models");
     assert!(rows.iter().any(|row| row == "  No matching models"));
 }
 

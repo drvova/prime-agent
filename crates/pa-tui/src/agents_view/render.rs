@@ -1,6 +1,8 @@
 //! The render surface: the frame composer (splash, search prompt, sectioned list, hints), the
 //! row builders, the notice/list/row renderers, the cell/truncate helpers, and the terminal/
 //! headless renderer.
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
+
 use super::{
     build_layout, mpsc, pad_line, section_title, str_width, truncate_text, AgentsStep,
     AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, Duration, Line, Result, RowKind,
@@ -772,31 +774,25 @@ impl AgentsViewMode {
             } else {
                 "resume & send"
             };
-            let mut hints = vec![format!(
-                "{} {word}",
-                self.keybindings.key_text("tui.select.confirm")
-            )];
+            let kb = &self.keybindings;
+            let mut footer =
+                Footer::new().keys(kb.get_keys("tui.select.confirm"), word, HintRank::Core);
             if !reply.editor.get_text().trim().is_empty() {
-                hints.push(format!(
-                    "{} queue",
-                    self.keybindings.key_text("app.message.followUp")
-                ));
+                footer = footer.keys(
+                    kb.get_keys("app.message.followUp"),
+                    "queue",
+                    HintRank::Useful,
+                );
             }
-            hints.push(format!(
-                "{} cancel",
-                self.keybindings.key_text("tui.select.cancel")
-            ));
-            let hint = hints.join("   ");
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            return footer.esc(kb, EscVerb::Back).line(theme, width);
         }
-        // The rename composer's hint: save/cancel over the confirm/cancel bindings' every key.
+        // The rename composer's footer: save over the confirm binding's every key.
         if let Composer::Rename(_) = &self.composer {
-            let hint = format!(
-                "{} save   {} cancel",
-                self.keybindings.key_text("tui.select.confirm"),
-                self.keybindings.key_text("tui.select.cancel")
-            );
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            let kb = &self.keybindings;
+            return Footer::new()
+                .keys(kb.get_keys("tui.select.confirm"), "save", HintRank::Core)
+                .esc(kb, EscVerb::Back)
+                .line(theme, width);
         }
         // Every hint slot renders the effective binding, so a user override moves the hint with
         // the handler.
@@ -813,65 +809,62 @@ impl AgentsViewMode {
         // The bar lists every effective action key, so a merged binding can never ship without
         // its slot (the operator's completeness directive); a two-key segment keeps whichever
         // is bound.
-        let pair = |a: &str, b: &str| match (first(a), first(b)) {
-            (Some(a), Some(b)) => Some(format!("{a}/{b}")),
-            (Some(only), None) | (None, Some(only)) => Some(only),
-            (None, None) => None,
-        };
-        let mut segments = Vec::new();
-        if let Some(keys) = pair("tui.select.up", "tui.select.down") {
-            segments.push(format!("{keys} navigate"));
-        }
+        let kb = &self.keybindings;
         // The jump slot shows the first effective key of each edge binding (the full key sets
-        // would overflow the hint).
-        if let (Some(top), Some(bottom)) = (first("tui.select.top"), first("tui.select.bottom")) {
-            segments.push(format!("{top}/{bottom} first/last"));
-        }
-        if let Some(keys) = pair("tui.select.confirm", "app.agents.open") {
-            segments.push(format!("{keys} {right_action}"));
-        }
+        // would overflow the hint); both edges must be bound.
+        let jump: &[&str] =
+            if first("tui.select.top").is_some() && first("tui.select.bottom").is_some() {
+                &["tui.select.top", "tui.select.bottom"]
+            } else {
+                &[]
+            };
+        let mut footer = Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "navigate",
+                HintRank::Useful,
+            )
+            .bound(kb, jump, "first/last", HintRank::Extra)
+            .bound(
+                kb,
+                &["tui.select.confirm", "app.agents.open"],
+                right_action,
+                HintRank::Core,
+            );
         // The rename, stop-or-delete, program, and parent hints only show with an empty search
-        // and a target.
+        // and a target; the multi-key slots render every configured key (dispatch takes the
+        // whole set).
         if self.query.is_empty() {
-            // The multi-key slots render every configured key (dispatch
-            // takes the whole set).
-            let all =
-                |id: &str| Some(self.keybindings.key_text(id)).filter(|keys| !keys.is_empty());
-            if let Some(keys) = all("app.agents.rename").filter(|_| self.rename_target().is_some())
-            {
-                segments.push(format!("{keys} rename"));
+            if self.rename_target().is_some() {
+                footer = footer.keys(kb.get_keys("app.agents.rename"), "rename", HintRank::Useful);
             }
-            // The reply slot (the operator's completeness directive: TS shows none,
-            // so the space arm would be undiscoverable): only while the selected row
-            // is replyable.
-            if let Some(keys) = all("app.agents.reply").filter(|_| self.reply_target().is_some()) {
-                segments.push(format!("{keys} reply"));
+            // The reply slot (the operator's completeness directive: TS shows none, so the
+            // space arm would be undiscoverable): only while the selected row is replyable.
+            if self.reply_target().is_some() {
+                footer = footer.keys(kb.get_keys("app.agents.reply"), "reply", HintRank::Useful);
             }
             if let Some(pending) = self.delete_arm_target() {
-                if let Some(keys) = all("app.agents.delete") {
-                    let word = if pending.stop { "stop" } else { "delete" };
-                    segments.push(format!("{keys} {word}"));
-                }
+                let word = if pending.stop { "stop" } else { "delete" };
+                footer = footer.keys(kb.get_keys("app.agents.delete"), word, HintRank::Useful);
             }
             if self
                 .program_target()
                 .is_some_and(|summary| summary.has_spawn_code)
             {
-                if let Some(keys) = all("app.agents.program") {
-                    segments.push(format!("{keys} program"));
-                }
+                footer = footer.keys(
+                    kb.get_keys("app.agents.program"),
+                    "program",
+                    HintRank::Extra,
+                );
             }
             if self.scope_active {
-                if let Some(back) = first("app.agents.back") {
-                    segments.push(format!("{back} parent"));
-                }
+                footer = footer.bound(kb, &["app.agents.back"], "parent", HintRank::Useful);
             }
         }
-        if let Some(new) = first("app.agents.new") {
-            segments.push(format!("{new} new"));
-        }
-        let hints = segments.join("   ");
-        truncate_line(&vec![theme.fg(ThemeColor::Muted, hints)], width)
+        footer
+            .bound(kb, &["app.agents.new"], "new", HintRank::Useful)
+            .line(theme, width)
     }
 }
 

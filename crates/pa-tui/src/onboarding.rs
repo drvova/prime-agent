@@ -781,7 +781,7 @@ mod tests {
             "the paste field remains visible: {text:?}"
         );
         assert!(
-            joined.contains("copy") && joined.contains("cancel"),
+            joined.contains("copy") && joined.contains("Esc close"),
             "the URL actions remain visible: {text:?}"
         );
     }

@@ -333,7 +333,7 @@ fn open_settings() -> Vec<HeadlessStep> {
 #[test]
 fn the_settings_page_renders_the_spacing_and_the_new_keys() {
     let (frames, _) = run_plan(open_settings());
-    let rows = frame_with(&frames, "Type to search");
+    let rows = frame_with(&frames, "Tab/1-5 tabs");
     let strip_index = rows
         .iter()
         .position(|row| row.starts_with("  1 General"))
@@ -359,7 +359,7 @@ fn the_settings_page_renders_the_spacing_and_the_new_keys() {
     // hint row's own two-space padding.
     let hint_index = rows
         .iter()
-        .position(|row| row.starts_with("  Type to search"))
+        .position(|row| row.contains("Tab/1-5 tabs"))
         .expect("the hint row renders");
     assert_eq!(
         rows[hint_index - 1],
@@ -372,7 +372,7 @@ fn the_settings_page_renders_the_spacing_and_the_new_keys() {
     );
     assert!(
         rows[hint_index].starts_with(
-            "  Type to search · Tab/1-5 tabs · \u{2190}/\u{2192}/Enter/Space change · Esc close"
+            "  \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
         ),
         "the hint names the Tab/number tab keys and the arrow value keys: {:?}",
         rows[hint_index]
@@ -488,7 +488,7 @@ fn opening_into_a_setting_keeps_the_bar_and_the_padding() {
     let rows = frame_with(&frames, "Thinking Level");
     let title_index = rows
         .iter()
-        .position(|row| row == "  Thinking Level")
+        .position(|row| row == "  Settings \u{203a} Thinking Level")
         .expect("the submenu title renders with its padding");
     assert_eq!(
         rows[title_index - 1],
@@ -505,7 +505,7 @@ fn opening_into_a_setting_keeps_the_bar_and_the_padding() {
     assert!(rows.iter().any(|row| row.contains("high")));
     assert!(rows
         .iter()
-        .any(|row| row.starts_with("  Enter select · Esc back")));
+        .any(|row| row.ends_with("Enter select · Esc back")));
 }
 
 /// A toggle for an unsupported mode is worse than none.

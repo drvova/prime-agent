@@ -106,9 +106,7 @@ fn an_empty_row_set_keeps_the_empty_state_and_closes() {
     assert_eq!(menu.handle_key("2", &kb()), SettingsMenuAction::None);
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("No settings available")));
-    assert!(text
-        .iter()
-        .any(|row| { row.contains("Type to search · ←/→/Enter/Space change · Esc close") }));
+    assert!(text.iter().any(|row| row == "  Esc close"));
     assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::Cancel);
 }
 
@@ -152,7 +150,7 @@ fn enter_opens_the_thinking_submenu_and_selection_applies() {
     );
     let text = render_text(&menu);
     assert!(text.iter().any(|row| {
-        row.contains("Type to search · Tab/1-5 tabs · ←/→/Enter/Space change · Esc close")
+        row == "  \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
     }));
 }
 
@@ -222,7 +220,7 @@ fn enter_opens_the_service_tier_submenu_preselected_and_selection_applies() {
     let text = render_text(&menu);
     assert!(text
         .iter()
-        .any(|row| row.contains("Enter/Space change · Esc close")));
+        .any(|row| row.ends_with("Enter select · Esc close")));
 }
 
 #[test]
@@ -475,18 +473,18 @@ fn the_strip_lists_the_tabs_and_marks_the_active_one() {
     let lines = menu().render(&theme, 100, &KeybindingsManager::new());
     // The strip rides under the search field with a blank row on
     // either side (the operator's 2026-09-28 spacing pass).
-    let strip_blank_above: String = lines[3].iter().map(|span| span.content.as_str()).collect();
+    let strip_blank_above: String = lines[4].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(strip_blank_above, "");
-    let text: String = lines[4].iter().map(|span| span.content.as_str()).collect();
+    let text: String = lines[5].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(
         text,
         "  1 General    2 Models    3 Display    4 Editor    5 Agents"
     );
-    let strip_blank_below: String = lines[5].iter().map(|span| span.content.as_str()).collect();
+    let strip_blank_below: String = lines[6].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(strip_blank_below, "");
     // The active tab renders white bold (the operator's 2026-09-28 selection ruling — the theme's
     // text color, not the dock's background band).
-    let active = lines[4]
+    let active = lines[5]
         .iter()
         .find(|span| span.content == "General")
         .expect("the active tab renders");
@@ -496,7 +494,7 @@ fn the_strip_lists_the_tabs_and_marks_the_active_one() {
             .fg_style(ThemeColor::Text)
             .add_modifier(ratatui::style::Modifier::BOLD)
     );
-    let inactive = lines[4]
+    let inactive = lines[5]
         .iter()
         .find(|span| span.content == "Models")
         .expect("an inactive tab renders");
@@ -509,16 +507,17 @@ fn the_header_and_the_settings_list_breathe_apart() {
     // The search field: [rule, field, rule]; then the spacing pass's blank row under the field, the
     // strip, and the blank row below the tabs before the settings list begins (the operator's
     // 2026-09-28 spacing directives 1 + 2).
-    assert_eq!(text[0], "\u{2500}".repeat(100));
-    assert!(text[1].starts_with(" >  Search settings"));
-    assert_eq!(text[2], "\u{2500}".repeat(100));
-    assert_eq!(text[3], "");
+    assert_eq!(text[0], "  Settings");
+    assert_eq!(text[1], "\u{2500}".repeat(100));
+    assert!(text[2].starts_with(" >  Search settings"));
+    assert_eq!(text[3], "\u{2500}".repeat(100));
+    assert_eq!(text[4], "");
     assert_eq!(
-        text[4],
+        text[5],
         "  1 General    2 Models    3 Display    4 Editor    5 Agents"
     );
-    assert_eq!(text[5], "");
-    assert!(text[6].starts_with("\u{203a} Auto-compact"));
+    assert_eq!(text[6], "");
+    assert!(text[7].starts_with("\u{203a} Auto-compact"));
 }
 
 #[test]
@@ -529,7 +528,7 @@ fn render_shows_value_and_selected_description() {
         .iter()
         .any(|row| row.contains("Automatically compact context when it gets too large")));
     assert!(text.iter().any(|row| {
-        row.contains("Type to search · Tab/1-5 tabs · ←/→/Enter/Space change · Esc close")
+        row == "  \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
     }));
     let selected = text
         .iter()
@@ -541,7 +540,7 @@ fn render_shows_value_and_selected_description() {
     // directive), and the hint row carries the description's two-space padding-x.
     let hint_index = text
         .iter()
-        .position(|row| row.starts_with("  Type to search"))
+        .position(|row| row.starts_with("  \u{2191}/\u{2193} navigate"))
         .expect("the hint row renders with its padding");
     assert_eq!(text[hint_index - 1], "\u{2500}".repeat(100));
     let description_index = text
@@ -562,11 +561,11 @@ fn opening_into_a_setting_keeps_the_top_bar_and_the_padding() {
     // pin a).
     assert_eq!(text[0], "\u{2500}".repeat(100));
     // The name and description keep the list rows' padding-x (regression pin b).
-    assert_eq!(text[1], "  Thinking Level");
+    assert_eq!(text[1], "  Settings \u{203a} Thinking Level");
     assert!(text[3].starts_with("  Select reasoning depth"));
     assert!(text
         .iter()
-        .any(|row| row.starts_with("  Enter select · Esc back")));
+        .any(|row| row == "  \u{2191}/\u{2193} navigate · Enter select · Esc back"));
 }
 
 /// The search field takes the WHOLE key id (TS `Input.handleInput`, the

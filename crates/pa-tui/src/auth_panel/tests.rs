@@ -160,7 +160,7 @@ fn the_paste_prompt_submits_the_typed_value() {
     // shown URL block (pinned by the URL block's tests below).
     assert!(rows
         .iter()
-        .any(|row| row.contains("Enter submit  Esc cancel")));
+        .any(|row| row.contains("Enter submit · Esc close")));
     for character in "  sk-live  ".chars() {
         panel.handle_key(character.to_string().as_str(), &kb(), &mut sink());
     }
@@ -502,8 +502,8 @@ fn the_session_chrome_is_the_ts_inline_panel() {
         "the rule opens the panel: {rows:?}"
     );
     assert_eq!(
-        rows[1], " Login to Prime Inference",
-        "the muted 1-space title"
+        rows[1], "  Login to Prime Inference",
+        "the shared title row"
     );
     panel.push_progress("Opening the browser challenge...");
     let rows = frame_text(&mut panel);
@@ -547,7 +547,7 @@ fn the_onboarding_panel_is_chrome_less() {
     assert_eq!(rows[2], "");
     assert_eq!(rows[3], " Complete the sign-in in your browser.");
     assert_eq!(
-        rows[4], " C copy  Esc/Ctrl+C cancel",
+        rows[4], "  C copy · Esc close",
         "the TS auth-actions row: {rows:?}"
     );
 }
@@ -621,7 +621,7 @@ fn the_waiting_line_joins_the_url_block_in_the_accent_colour() {
         .expect("the waiting row");
     let actions = rows
         .iter()
-        .position(|row| row.contains("cancel"))
+        .position(|row| row.contains("Esc close"))
         .expect("the actions row");
     assert!(waiting > url, "the waiting line rides below the URL block");
     assert!(
@@ -716,7 +716,7 @@ fn long_auth_url_wraps_without_losing_bytes_or_controls() {
             .all(|line| crate::width::line_width(line) <= width));
         if width >= 40 {
             assert!(rows.iter().any(|row| row.contains("Redirect URL:")));
-            assert!(rows.iter().any(|row| row.contains("cancel")));
+            assert!(rows.iter().any(|row| row.contains("Esc close")));
         }
         let mut clipboard = sink();
         panel.handle_key("alt+c", &kb(), &mut clipboard);
@@ -825,7 +825,7 @@ fn wrapped_session_auth_url_keeps_the_link_and_controls_visible() {
     let joined = text.iter().map(|row| row.trim()).collect::<String>();
     assert!(joined.contains(&url), "complete URL: {text:?}");
     assert!(
-        joined.contains("Redirect URL:") && joined.contains("cancel"),
+        joined.contains("Redirect URL:") && joined.contains("Esc close"),
         "controls: {text:?}"
     );
 }

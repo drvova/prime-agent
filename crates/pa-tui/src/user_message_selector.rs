@@ -2,7 +2,8 @@
 //! grammar.
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{hint_row, key_hint, menu_row, no_match_row, scroll_row};
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::{menu_row, no_match_row, scroll_row};
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 
@@ -70,19 +71,19 @@ impl UserMessageSelector {
     /// list (one row per message, the scroll row, the key hint).
     #[must_use]
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
-        // TS mounts the title/description with a one-space margin
-        // (`new Text(..., 1, 0)`).
         let mut lines: Vec<Line> = vec![
-            Vec::new(),
-            vec![Span::raw(" Fork from Message")],
-            vec![
-                Span::raw(" "),
-                theme.fg_span(
-                    ThemeColor::Muted,
-                    "Select a user message to copy the active path up to that point into a new session"
-                        .to_string(),
-                ),
-            ],
+            title_row(theme, width, "Fork"),
+            crate::width::truncate_line(
+                &vec![
+                    Span::raw(CHROME_INDENT),
+                    theme.fg_span(
+                        ThemeColor::Muted,
+                        "Copy the active path up to a message into a new session",
+                    ),
+                ],
+                width,
+                "",
+            ),
             Vec::new(),
         ];
         if self.messages.is_empty() {
@@ -117,23 +118,20 @@ impl UserMessageSelector {
             }
         }
         lines.push(Vec::new());
-        lines.push(hint_row(theme, width, &hint(kb)));
+        lines.push(
+            Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "fork", HintRank::Core)
+                .esc(kb, EscVerb::Close)
+                .line(theme, width),
+        );
         lines
     }
-}
-
-/// The selector's key hint: the shared hint-row grammar (an unbound
-/// action is omitted).
-fn hint(kb: &KeybindingsManager) -> String {
-    [
-        key_hint(kb, &["tui.select.up", "tui.select.down"], "navigate"),
-        key_hint(kb, &["tui.select.confirm"], "select"),
-        key_hint(kb, &["tui.select.cancel"], "close"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<String>>()
-    .join(" · ")
 }
 
 #[cfg(test)]
@@ -209,7 +207,7 @@ mod tests {
         assert!(!rendered.iter().any(|row| row.contains("Message 1 of")));
         assert!(rendered
             .iter()
-            .any(|row| row.contains("\u{2191}/\u{2193} navigate · Enter select · Esc close")));
+            .any(|row| row.contains("\u{2191}/\u{2193} navigate · Enter fork · Esc close")));
     }
 
     #[test]
@@ -225,7 +223,7 @@ mod tests {
             .find(|row| row.contains("navigate"))
             .expect("the hint row renders");
         assert!(
-            hint.contains("Enter select"),
+            hint.contains("Enter fork"),
             "the bound action stays: {hint}"
         );
         assert!(!hint.contains("close"), "the unbound action drops: {hint}");
