@@ -13,7 +13,7 @@ use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::session_store::{SessionEntry, SessionFile};
 use crate::session_tree;
 use crate::worker::{SessionCore, Worker};
-use crate::workspace_checkpoints::{FileRewind, WorkspaceCheckpoints};
+use crate::workspace_checkpoints::WorkspaceCheckpoints;
 use pa_agent::abort::AbortController;
 
 /// One completed abandoned-branch summary to persist: the text, its usage block, its
@@ -334,7 +334,7 @@ impl TreeNavigation {
         if restore_files {
             let checkpoints = Arc::clone(&self.checkpoints);
             let core = Arc::clone(&self.core);
-            let rewind = tokio::task::spawn_blocking(move || {
+            let files = tokio::task::spawn_blocking(move || {
                 checkpoints.rewind_files(
                     &core,
                     &target,
@@ -343,13 +343,10 @@ impl TreeNavigation {
                 )
             })
             .await
-            .unwrap_or_else(|join_error| FileRewind::Unavailable(join_error.to_string()));
-            data["files"] = match rewind {
-                FileRewind::Restored { files, conflicts } => {
-                    json!({ "restored": files, "conflicts": conflicts })
-                }
-                FileRewind::Unavailable(reason) => json!({ "error": reason }),
-            };
+            .unwrap_or_else(|join_error| Some(json!({ "error": join_error.to_string() })));
+            if let Some(files) = files {
+                data["files"] = files;
+            }
         }
         if let Some(editor_text) = editor_text {
             data["editorText"] = json!(editor_text);

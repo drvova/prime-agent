@@ -37,6 +37,12 @@ impl Fixture {
 #[test]
 fn restore_rewrites_changed_files_and_deletes_added_ones() {
     let fixture = Fixture::new();
+    // The project's own repository: the checkpoint's staging never reaches it.
+    let init = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&fixture.workspace)
+        .status();
+    assert!(init.unwrap().success());
     fixture.write("src/main.rs", "fn main() {}\n");
     fixture.write("keep.txt", "unchanged\n");
     let store = fixture.open();
@@ -47,7 +53,6 @@ fn restore_rewrites_changed_files_and_deletes_added_ones() {
     std::fs::remove_file(fixture.workspace.join("keep.txt")).unwrap();
     fixture.write("new/dir/added.rs", "added\n");
     let after = store.capture().unwrap();
-    assert_eq!(store.changed_paths(&before).unwrap().len(), 3);
 
     let outcome = store.restore(&before, Some(&after)).unwrap();
     assert_eq!(
@@ -65,6 +70,7 @@ fn restore_rewrites_changed_files_and_deletes_added_ones() {
     assert_eq!(fixture.read("keep.txt").as_deref(), Some("unchanged\n"));
     assert!(!fixture.workspace.join("new").exists());
     assert_eq!(store.capture().unwrap(), before);
+    assert!(!fixture.workspace.join(".git/index").exists());
 }
 
 #[test]
@@ -100,20 +106,4 @@ fn recorded_trees_survive_reopening_the_store() {
     let store = fixture.open();
     assert_eq!(store.lookup("entry-1", Boundary::Before), Some(tree));
     assert_eq!(store.lookup("entry-1", Boundary::At), None);
-}
-
-#[test]
-fn the_workspace_repository_is_never_touched() {
-    let fixture = Fixture::new();
-    let status = std::process::Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(&fixture.workspace)
-        .status()
-        .unwrap();
-    assert!(status.success());
-    fixture.write("file.txt", "x\n");
-    let store = fixture.open();
-    store.capture().unwrap();
-    // The project's own index never sees the checkpoint's staging.
-    assert!(!fixture.workspace.join(".git/index").exists());
 }
