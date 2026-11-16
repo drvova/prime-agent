@@ -14,12 +14,15 @@ pub(super) struct LoaderTokenTracker {
     streaming_usage: u64,
     /// The streaming message's content size in chars.
     streaming_chars: u64,
+    /// The run's tool calls and total tokens (each message's `usage.totalTokens`,
+    /// context re-reads included), for the summary row at its end.
+    pub(super) run: (u64, u64),
 }
 
 impl LoaderTokenTracker {
     /// A fresh run counts from zero.
     fn reset(&mut self) {
-        self.completed_tokens = 0;
+        (self.completed_tokens, self.run) = (0, (0, 0));
         self.start_message();
     }
 

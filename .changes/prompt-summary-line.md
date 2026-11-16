@@ -1,0 +1,1 @@
+- Every finished prompt now ends with a summary line, for example `Worked for 1m 05s · 4 tool calls · 12k tokens`, so you can see how long a request took and what it cost (the token count includes the context re-sent on every model call).
