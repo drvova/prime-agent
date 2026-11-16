@@ -31,6 +31,8 @@ pub(super) struct TurnRunner {
     /// runner reads it at every boundary so a create-time rebind is always
     /// current.
     pub(super) herdr: std::sync::Arc<std::sync::Mutex<crate::herdr::HerdrReporter>>,
+    /// The workspace checkpoints each turn's boundaries record.
+    pub(super) checkpoints: Arc<crate::workspace_checkpoints::WorkspaceCheckpoints>,
 }
 
 /// The idle-passivation context on the turn runner: the worker token
@@ -420,6 +422,7 @@ impl TurnRunner {
         // The accepted prefix must survive an engine panic after persistence.
         let accepted_prefix = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let accepted_prefix_seen = Arc::clone(&accepted_prefix);
+        let turn_checkpoints = Arc::clone(&self.checkpoints);
         let turn = tokio::task::spawn_blocking(move || {
             // The engine's own terminal `turn_end` frame keeps the
             // trailing `Done` fallback silent.
@@ -1051,7 +1054,14 @@ impl TurnRunner {
             if file_backed {
                 engine.set_prompt_context_boundary(prompt_context_leaf);
             }
+            // The workspace checkpoint brackets the run on this blocking thread:
+            // the opening capture lands before any tool can write, and the
+            // settle capture before the idle flip admits the next turn.
+            let checkpoint = turn_checkpoints.begin_turn(&core);
             engine.run_prompt(prompt_index, request, &aborted_probe, &mut emit);
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.settle(&core);
+            }
         });
         let _ = turn.await;
         let accepted_rows = accepted_prefix.load(std::sync::atomic::Ordering::SeqCst);

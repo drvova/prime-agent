@@ -1082,6 +1082,9 @@ pub enum DaemonCommand {
         replace_instructions: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         label: Option<String>,
+        /// Also put the workspace files back to the target's checkpoint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        restore_files: Option<bool>,
         #[serde(flatten)]
         rest: JsonMap,
     },

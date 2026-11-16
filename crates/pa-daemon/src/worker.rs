@@ -383,6 +383,9 @@ impl Worker {
             Arc::clone(&events),
             Arc::clone(&recovery),
         ));
+        let checkpoints = Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
+            config.agent_dir.clone(),
+        ));
         let (engine, agent_engine, roster_pushes): (
             std::sync::Arc<dyn SessionEngine>,
             Option<std::sync::Arc<crate::agent_engine::AgentSessionEngine>>,
@@ -718,6 +721,7 @@ impl Worker {
                     worker_token,
                 },
                 herdr: std::sync::Arc::clone(&herdr_slot),
+                checkpoints: Arc::clone(&checkpoints),
             };
             tokio::spawn(async move {
                 runner.run().await;
@@ -740,6 +744,7 @@ impl Worker {
             std::sync::Arc::clone(&engine),
             Arc::clone(&core),
             idle_notify.clone(),
+            Arc::clone(&checkpoints),
         );
         let exports = crate::session_export::ExportCommands::new(
             std::sync::Arc::clone(&engine),

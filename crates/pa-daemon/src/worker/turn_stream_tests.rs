@@ -77,6 +77,9 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> TurnRunner {
             worker_token: String::new(),
         },
         herdr: std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default())),
+        checkpoints: Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
+            std::env::temp_dir(),
+        )),
     }
 }
 
