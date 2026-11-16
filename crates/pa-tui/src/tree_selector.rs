@@ -21,6 +21,8 @@ pub enum TreeSelectorAction {
         target_id: String,
         summarize: bool,
         custom_instructions: Option<String>,
+        /// Also put the workspace files back (the daemon `restoreFiles`).
+        restore_files: bool,
     },
     Cancel,
     /// A label was saved: persist it (`set_session_entry_label`).
@@ -41,16 +43,30 @@ enum Mode {
         entry_id: String,
         input: SearchInput,
     },
+    /// "Restore code?": the target has a workspace checkpoint, so the rewind
+    /// can put the files back too.
+    RestoreFiles { target_id: String, selected: usize },
     /// "Summarize branch?" (the TS three-option selector).
-    Summarize { target_id: String, selected: usize },
+    Summarize {
+        target_id: String,
+        selected: usize,
+        restore_files: bool,
+    },
     /// Custom summarization instructions (the TS inline editor).
     CustomPrompt {
         target_id: String,
         input: SearchInput,
+        restore_files: bool,
     },
 }
 
 const SUMMARIZE_OPTIONS: [&str; 3] = ["No summary", "Summarize", "Summarize with custom prompt"];
+
+/// The restore choice, files first: row zero restores the code too.
+const RESTORE_OPTIONS: [&str; 2] = [
+    "Rewind conversation + code changes",
+    "Rewind conversation only",
+];
 
 /// The `/tree` selector.
 pub struct TreeSelector {
@@ -59,6 +75,8 @@ pub struct TreeSelector {
     /// The `branchSummary.skipPrompt` setting: select navigates
     /// directly with no summary instead of asking.
     skip_summarize_prompt: bool,
+    /// The entries with a workspace checkpoint (`checkpointEntryIds`).
+    restorable: std::collections::HashSet<String>,
 }
 
 impl TreeSelector {
@@ -83,10 +101,21 @@ impl TreeSelector {
             .map(str::to_string);
         let max_visible_lines = (terminal_rows as usize / 2).max(5);
         let list = TreeList::new(&tree, leaf_id, max_visible_lines, None, initial_filter_mode);
+        let restorable = data
+            .get("checkpointEntryIds")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
         Some(TreeSelector {
             list,
             mode: Mode::Tree,
             skip_summarize_prompt,
+            restorable,
         })
     }
 
@@ -115,7 +144,28 @@ impl TreeSelector {
         match &mut self.mode {
             Mode::Tree => self.list.paste(text),
             Mode::LabelInput { input, .. } | Mode::CustomPrompt { input, .. } => input.paste(text),
-            Mode::Summarize { .. } => {}
+            Mode::Summarize { .. } | Mode::RestoreFiles { .. } => {}
+        }
+    }
+
+    /// The step after the restore choice: the summarize prompt, or the
+    /// navigation itself when the setting skips it.
+    fn summarize_step(&mut self, target_id: String, restore_files: bool) -> TreeSelectorAction {
+        if self.skip_summarize_prompt {
+            self.mode = Mode::Tree;
+            TreeSelectorAction::Navigate {
+                target_id,
+                summarize: false,
+                custom_instructions: None,
+                restore_files,
+            }
+        } else {
+            self.mode = Mode::Summarize {
+                target_id,
+                selected: 0,
+                restore_files,
+            };
+            TreeSelectorAction::None
         }
     }
 
@@ -124,18 +174,15 @@ impl TreeSelector {
         match &mut self.mode {
             Mode::Tree => match self.list.handle_key(kb, id) {
                 TreeListAction::Select(target_id) => {
-                    if self.skip_summarize_prompt {
-                        TreeSelectorAction::Navigate {
-                            target_id,
-                            summarize: false,
-                            custom_instructions: None,
-                        }
-                    } else {
-                        self.mode = Mode::Summarize {
+                    let at_leaf = self.list.current_leaf_id() == Some(target_id.as_str());
+                    if self.restorable.contains(&target_id) && !at_leaf {
+                        self.mode = Mode::RestoreFiles {
                             target_id,
                             selected: 0,
                         };
                         TreeSelectorAction::None
+                    } else {
+                        self.summarize_step(target_id, false)
                     }
                 }
                 TreeListAction::Cancel => TreeSelectorAction::Cancel,
@@ -170,35 +217,48 @@ impl TreeSelector {
                     TreeSelectorAction::None
                 }
             }
-            Mode::Summarize {
+            Mode::RestoreFiles {
                 target_id,
                 selected,
             } => {
                 if kb.matches(id, "tui.select.confirm") {
-                    match *selected {
-                        0 => {
-                            let target_id = target_id.clone();
+                    let target_id = target_id.clone();
+                    let restore_files = *selected == 0;
+                    self.summarize_step(target_id, restore_files)
+                } else if kb.matches(id, "tui.select.up") || kb.matches(id, "tui.select.down") {
+                    *selected = 1 - *selected;
+                    TreeSelectorAction::None
+                } else if kb.matches(id, "tui.select.cancel") {
+                    self.mode = Mode::Tree;
+                    TreeSelectorAction::None
+                } else {
+                    TreeSelectorAction::None
+                }
+            }
+            Mode::Summarize {
+                target_id,
+                selected,
+                restore_files,
+            } => {
+                if kb.matches(id, "tui.select.confirm") {
+                    let target_id = target_id.clone();
+                    let restore_files = *restore_files;
+                    let selected = *selected;
+                    match selected {
+                        0 | 1 => {
                             self.mode = Mode::Tree;
                             TreeSelectorAction::Navigate {
                                 target_id,
-                                summarize: false,
+                                summarize: selected == 1,
                                 custom_instructions: None,
-                            }
-                        }
-                        1 => {
-                            let target_id = target_id.clone();
-                            self.mode = Mode::Tree;
-                            TreeSelectorAction::Navigate {
-                                target_id,
-                                summarize: true,
-                                custom_instructions: None,
+                                restore_files,
                             }
                         }
                         _ => {
-                            let target_id = target_id.clone();
                             self.mode = Mode::CustomPrompt {
                                 target_id,
                                 input: SearchInput::new(),
+                                restore_files,
                             };
                             TreeSelectorAction::None
                         }
@@ -217,22 +277,30 @@ impl TreeSelector {
                     TreeSelectorAction::None
                 }
             }
-            Mode::CustomPrompt { target_id, input } => {
+            Mode::CustomPrompt {
+                target_id,
+                input,
+                restore_files,
+            } => {
                 if kb.matches(id, "tui.select.confirm") {
                     let instructions = input.value().trim().to_string();
                     let target_id = target_id.clone();
+                    let restore_files = *restore_files;
                     self.mode = Mode::Tree;
                     TreeSelectorAction::Navigate {
                         target_id,
                         summarize: true,
                         custom_instructions: (!instructions.is_empty()).then_some(instructions),
+                        restore_files,
                     }
                 } else if kb.matches(id, "tui.select.cancel") {
                     // A cancelled editor loops back to the choice.
                     let target_id = target_id.clone();
+                    let restore_files = *restore_files;
                     self.mode = Mode::Summarize {
                         target_id,
                         selected: 2,
+                        restore_files,
                     };
                     TreeSelectorAction::None
                 } else {
@@ -317,12 +385,31 @@ impl TreeSelector {
         lines.push(border());
         lines.push(Vec::new());
         match &self.mode {
-            Mode::Tree | Mode::Summarize { .. } | Mode::CustomPrompt { .. } => {
+            Mode::Tree
+            | Mode::RestoreFiles { .. }
+            | Mode::Summarize { .. }
+            | Mode::CustomPrompt { .. } => {
                 lines.extend(self.list.render(theme, width));
                 match &self.mode {
+                    Mode::RestoreFiles { selected, .. } => {
+                        lines.push(Vec::new());
+                        lines.extend(render_choice(
+                            theme,
+                            width,
+                            kb,
+                            ("Restore code?", &RESTORE_OPTIONS),
+                            *selected,
+                        ));
+                    }
                     Mode::Summarize { selected, .. } => {
                         lines.push(Vec::new());
-                        lines.extend(render_choice(theme, width, kb, *selected));
+                        lines.extend(render_choice(
+                            theme,
+                            width,
+                            kb,
+                            ("Summarize branch?", &SUMMARIZE_OPTIONS),
+                            *selected,
+                        ));
                     }
                     Mode::CustomPrompt { input, .. } => {
                         lines.push(Vec::new());
@@ -342,7 +429,7 @@ impl TreeSelector {
                             "",
                         ));
                     }
-                    _ => {}
+                    Mode::Tree | Mode::LabelInput { .. } => {}
                 }
             }
             Mode::LabelInput { input, .. } => {
@@ -395,20 +482,21 @@ fn input_row(theme: &Theme, width: usize, input: &SearchInput) -> Line {
     truncate_line(&row, width, "")
 }
 
-/// Render the summarize choice list (the three TS options; row one is
-/// "No summary").
+/// Render a titled choice list (the restore choice, or the three TS
+/// summarize options whose row one is "No summary").
 fn render_choice(
     theme: &Theme,
     width: usize,
     kb: &KeybindingsManager,
+    (title, options): (&str, &[&str]),
     selected: usize,
 ) -> Vec<Line> {
     let mut lines = vec![truncate_line(
-        &vec![theme.fg_span(ThemeColor::Muted, "  Summarize branch?".to_string())],
+        &vec![theme.fg_span(ThemeColor::Muted, format!("  {title}"))],
         width,
         "",
     )];
-    for (index, option) in SUMMARIZE_OPTIONS.iter().enumerate() {
+    for (index, option) in options.iter().enumerate() {
         let row = if index == selected {
             vec![
                 theme.fg_span(ThemeColor::Accent, "› ".to_string()),
@@ -627,6 +715,7 @@ mod tests {
                 target_id: "n0".to_string(),
                 summarize: true,
                 custom_instructions: Some("sum".to_string()),
+                restore_files: false,
             }
         );
         // The cancel arm keeps its ladder: escape returns to the choice,
@@ -652,8 +741,37 @@ mod tests {
                 target_id: "n0".to_string(),
                 summarize: true,
                 custom_instructions: Some("b".to_string()),
+                restore_files: false,
             },
             "the reopened editor starts empty, so the draft is exactly the new keystroke"
+        );
+    }
+
+    /// A checkpointed target asks whether to restore the code before the
+    /// summarize step, and the answer rides the navigation.
+    #[test]
+    fn a_checkpointed_target_offers_the_code_restore() {
+        let kb = KeybindingsManager::new();
+        let mut data = wire_chain(2);
+        data["checkpointEntryIds"] = json!(["n0"]);
+        let navigate = |keys: &[&str]| {
+            let mut sel = TreeSelector::new(&data, 40, false, FilterMode::Default).unwrap();
+            sel.set_initial_selection(Some("n0"));
+            keys.iter()
+                .fold(TreeSelectorAction::None, |_, key| sel.handle_key(&kb, key))
+        };
+        let expected = |restore_files| TreeSelectorAction::Navigate {
+            target_id: "n0".to_string(),
+            summarize: false,
+            custom_instructions: None,
+            restore_files,
+        };
+        // Enter opens the restore choice, Enter takes row one (code too),
+        // Enter takes "No summary".
+        assert_eq!(navigate(&["enter", "enter", "enter"]), expected(true));
+        assert_eq!(
+            navigate(&["enter", "down", "enter", "enter"]),
+            expected(false)
         );
     }
 

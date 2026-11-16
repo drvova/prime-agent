@@ -243,6 +243,18 @@ broadcast owns its surface here too (the worker's cron-store
 to every client, so any heartbeat mutation anywhere in the daemon reaches
 attached UIs daemon-wide).
 
+Workspace checkpoints (`workspace_checkpoints.rs`): the worker's turn
+boundaries over pa-core's `CheckpointStore`. The turn runner captures the
+workspace on the turn's blocking thread before `run_prompt` (keyed `Before`
+the turn's first appended entry) and after it, ahead of the idle flip (keyed
+`At` the new leaf); `get_session_tree` lists the restorable entries as
+`checkpointEntryIds`; `navigate_tree` with `restoreFiles` restores the
+target's tree after the leaf move commits (the old leaf's `At` tree is the
+conflict baseline, and its pre-restore state is recorded there so navigating
+back restores it) and reports `files: {restored, conflicts}` or
+`files: {error}`. In-memory sessions and RLM children never checkpoint; every
+failure degrades to a conversation-only rewind.
+
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 

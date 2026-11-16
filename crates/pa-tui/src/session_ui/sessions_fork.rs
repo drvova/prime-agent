@@ -18,16 +18,7 @@ impl SessionUi {
         view: &mut AgentView,
         initial_selected: Option<&str>,
     ) -> Result<()> {
-        let data = self
-            .bounded_request(
-                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
-                DaemonCommand::GetSessionTree {
-                    id: None,
-                    active_session_id: self.active_session_id.clone(),
-                    rest: Map::default(),
-                },
-            )
-            .await?;
+        let data = self.session_tree().await?;
         if data
             .get("flatNodes")
             .and_then(Value::as_array)
@@ -97,6 +88,7 @@ impl SessionUi {
                 target_id,
                 summarize,
                 custom_instructions,
+                restore_files,
             } => {
                 // Selecting the current leaf is a no-op.
                 let leaf = view
@@ -109,21 +101,33 @@ impl SessionUi {
                     self.dirty = true;
                     return Ok(());
                 }
-                self.navigate_tree(&target_id, summarize, custom_instructions, view)
-                    .await?;
+                if restore_files {
+                    self.track_feature_outcome("rewind_files", "initiated", None);
+                }
+                self.navigate_tree(
+                    &target_id,
+                    summarize,
+                    custom_instructions,
+                    restore_files,
+                    view,
+                )
+                .await?;
             }
         }
         self.dirty = true;
         Ok(())
     }
 
+    /// Move the session leaf to `target_id` (and, with `restore_files`, the
+    /// workspace files to its checkpoint). Answers whether the leaf moved.
     async fn navigate_tree(
         &mut self,
         target_id: &str,
         summarize: bool,
         custom_instructions: Option<String>,
+        restore_files: bool,
         view: &mut AgentView,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let result = self
             .bounded_request(
                 Duration::from_millis(UI_REQUEST_TIMEOUT_MS * 3),
@@ -135,6 +139,7 @@ impl SessionUi {
                     custom_instructions,
                     replace_instructions: None,
                     label: None,
+                    restore_files: Some(restore_files),
                     rest: Map::default(),
                 },
             )
@@ -143,17 +148,18 @@ impl SessionUi {
             Ok(data) => data,
             Err(error) => {
                 self.note(&format!("{error:#}"), view);
-                return Ok(());
+                return Ok(false);
             }
         };
         if data.get("aborted").and_then(Value::as_bool) == Some(true) {
             // The branch summary was cancelled: re-open with the same selection.
             self.note("Branch summarization cancelled", view);
-            return self.open_tree_selector(view, Some(target_id)).await;
+            self.open_tree_selector(view, Some(target_id)).await?;
+            return Ok(false);
         }
         if data.get("cancelled").and_then(Value::as_bool) == Some(true) {
             self.note("Navigation cancelled", view);
-            return Ok(());
+            return Ok(false);
         }
         self.rebuild_transcript(view).await;
         // A user-message target re-enters its text in the editor when it is empty.
@@ -163,8 +169,76 @@ impl SessionUi {
             }
         }
         self.note("Navigated to selected point", view);
+        if let Some(files) = data.get("files") {
+            let (note, outcome) = file_rewind_note(files);
+            self.note(&note, view);
+            self.track_feature_outcome("rewind_files", outcome, None);
+        }
         self.dirty = true;
+        Ok(true)
+    }
+
+    /// `/undo`: rewind to before the last prompt on the current branch, its
+    /// files included when the prompt has a checkpoint; the prompt returns to
+    /// the editor. `/redo` returns to the leaf it left.
+    pub(super) async fn undo_last_turn(&mut self, view: &mut AgentView) -> Result<()> {
+        let data = self.session_tree().await?;
+        let leaf = data
+            .get("leafId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let Some((leaf, target)) = leaf.and_then(|leaf| {
+            let target = last_user_message(&data, &leaf)?;
+            Some((leaf, target))
+        }) else {
+            self.note("Nothing to undo", view);
+            self.track_feature_outcome("undo", "unavailable", None);
+            return Ok(());
+        };
+        let restore_files = has_checkpoint(&data, &target);
+        let moved = self
+            .navigate_tree(&target, /*summarize*/ false, None, restore_files, view)
+            .await?;
+        if moved {
+            self.redo_point = Some((self.active_session_id.clone(), leaf));
+        }
+        self.track_feature_outcome("undo", if moved { "completed" } else { "failed" }, None);
         Ok(())
+    }
+
+    /// `/redo`: navigate back to the leaf the last `/undo` left, restoring
+    /// the files that were there.
+    pub(super) async fn redo_last_undo(&mut self, view: &mut AgentView) -> Result<()> {
+        let point = self.redo_point.take();
+        let Some((_, leaf)) = point.filter(|(session, _)| *session == self.active_session_id)
+        else {
+            self.note("Nothing to redo", view);
+            self.track_feature_outcome("redo", "unavailable", None);
+            return Ok(());
+        };
+        let data = self.session_tree().await?;
+        let restore_files = has_checkpoint(&data, &leaf);
+        let moved = self
+            .navigate_tree(&leaf, /*summarize*/ false, None, restore_files, view)
+            .await?;
+        if moved {
+            // The undone prompt the editor still holds was sent on this branch.
+            view.editor.set_text("");
+        }
+        self.track_feature_outcome("redo", if moved { "completed" } else { "failed" }, None);
+        Ok(())
+    }
+
+    async fn session_tree(&mut self) -> Result<Value> {
+        self.bounded_request(
+            Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+            DaemonCommand::GetSessionTree {
+                id: None,
+                active_session_id: self.active_session_id.clone(),
+                rest: Map::default(),
+            },
+        )
+        .await
     }
 
     /// Open the `/fork` selector over the session's user messages.
@@ -613,4 +687,68 @@ async fn describe_session_open_failure(
         // never reaches this decorator: `owner_from_refusal` passes it through).
         error_info,
     })
+}
+
+/// The status row for a navigation's `files` outcome, with its adoption outcome.
+fn file_rewind_note(files: &Value) -> (String, &'static str) {
+    if let Some(error) = files.get("error").and_then(Value::as_str) {
+        return (format!("Files not restored: {error}"), "failed");
+    }
+    let restored = files.get("restored").and_then(Value::as_u64).unwrap_or(0);
+    let conflicts: Vec<&str> = files
+        .get("conflicts")
+        .and_then(Value::as_array)
+        .map(|paths| paths.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let plural = |count: usize| if count == 1 { "file" } else { "files" };
+    let mut note = match restored {
+        0 => "No file changes to restore".to_string(),
+        count => format!(
+            "Restored {count} {}",
+            plural(usize::try_from(count).unwrap_or(usize::MAX))
+        ),
+    };
+    if !conflicts.is_empty() {
+        note = format!(
+            "{note}; kept {} {} changed outside this session: {}",
+            conflicts.len(),
+            plural(conflicts.len()),
+            conflicts.join(", ")
+        );
+    }
+    (note, "completed")
+}
+
+/// Whether the `get_session_tree` data lists a checkpoint for `entry_id`.
+fn has_checkpoint(data: &Value, entry_id: &str) -> bool {
+    data.get("checkpointEntryIds")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(entry_id)))
+}
+
+/// The newest user message on the branch ending at `leaf`.
+fn last_user_message(data: &Value, leaf: &str) -> Option<String> {
+    let nodes = data.get("flatNodes")?.as_array()?;
+    let by_id: std::collections::HashMap<&str, &Value> = nodes
+        .iter()
+        .filter_map(|node| {
+            let entry = node.get("entry")?;
+            Some((entry.get("id")?.as_str()?, entry))
+        })
+        .collect();
+    let mut cursor = by_id.get(leaf).copied();
+    // Bounded by the node count: a malformed cycle cannot spin forever.
+    for _ in 0..nodes.len() {
+        let entry = cursor?;
+        let is_user = entry.get("type").and_then(Value::as_str) == Some("message")
+            && entry.pointer("/message/role").and_then(Value::as_str) == Some("user");
+        if is_user {
+            return entry.get("id").and_then(Value::as_str).map(str::to_string);
+        }
+        cursor = entry
+            .get("parentId")
+            .and_then(Value::as_str)
+            .and_then(|parent| by_id.get(parent).copied());
+    }
+    None
 }

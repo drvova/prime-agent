@@ -13,6 +13,7 @@ use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::session_store::{SessionEntry, SessionFile};
 use crate::session_tree;
 use crate::worker::{SessionCore, Worker};
+use crate::workspace_checkpoints::{FileRewind, WorkspaceCheckpoints};
 use pa_agent::abort::AbortController;
 
 /// One completed abandoned-branch summary to persist: the text, its usage block, its
@@ -31,6 +32,7 @@ pub(crate) struct TreeNavigation {
     /// The live branch-summary run's abort slot; each run replaces it, like
     /// the TS `_branchSummaryAbortController`.
     abort: Mutex<Option<Arc<AbortController>>>,
+    checkpoints: Arc<WorkspaceCheckpoints>,
 }
 
 impl TreeNavigation {
@@ -38,12 +40,14 @@ impl TreeNavigation {
         engine: Arc<dyn SessionEngine>,
         core: Arc<Mutex<SessionCore>>,
         idle_notify: Arc<Notify>,
+        checkpoints: Arc<WorkspaceCheckpoints>,
     ) -> Self {
         TreeNavigation {
             engine,
             core,
             idle_notify,
             abort: Mutex::new(None),
+            checkpoints,
         }
     }
 
@@ -61,7 +65,8 @@ impl TreeNavigation {
     }
 
     /// `get_session_tree`: every entry in file order with its label plus the
-    /// current leaf id (TS `getFlatTree` + `getLeafId`).
+    /// current leaf id (TS `getFlatTree` + `getLeafId`), plus the entries a
+    /// navigation can restore files for (`checkpointEntryIds`).
     pub(crate) fn get_session_tree(&self) -> DaemonResponse {
         let core = self.core.lock().unwrap();
         match core.store.as_ref() {
@@ -71,6 +76,7 @@ impl TreeNavigation {
                 Some(json!({
                     "flatNodes": session_tree::flat_tree(store),
                     "leafId": store.leaf_id(),
+                    "checkpointEntryIds": self.checkpoints.restorable_entry_ids(&core),
                 })),
             ),
             None => response_failure(
@@ -145,6 +151,7 @@ impl TreeNavigation {
             .get("label")
             .and_then(Value::as_str)
             .map(str::to_string);
+        let restore_files = payload.get("restoreFiles").and_then(Value::as_bool) == Some(true);
 
         // Snapshot the tree state under one lock pass; the model call below runs without it.
         let (target, old_leaf, entries, session_id) = {
@@ -254,7 +261,7 @@ impl TreeNavigation {
 
         // Move the leaf and persist the summary entry, then rebuild the engine context.
         let summarized = summary.is_some();
-        let (branch_entries, summary_entry) = {
+        let (branch_entries, summary_entry, landed_leaf) = {
             let mut core = self.core.lock().unwrap();
             let Some(store) = core.store.as_mut() else {
                 return response_failure(
@@ -304,7 +311,11 @@ impl TreeNavigation {
                     }
                 }
             }
-            (store.branch_file_entries(), summary_entry)
+            (
+                store.branch_file_entries(),
+                summary_entry,
+                store.leaf_id().map(str::to_string),
+            )
         };
         // TS `Boolean(summaryText)`: a created summary entry means the navigation rebuilt
         // the context across a compaction-style cut; a plain move reloads faithfully.
@@ -318,6 +329,28 @@ impl TreeNavigation {
             return response_failure(None, "navigate_tree", &error, None);
         }
         let mut data = json!({ "cancelled": false });
+        // The file side runs after the leaf move committed: a failed restore
+        // degrades to a conversation-only rewind and says why.
+        if restore_files {
+            let checkpoints = Arc::clone(&self.checkpoints);
+            let core = Arc::clone(&self.core);
+            let rewind = tokio::task::spawn_blocking(move || {
+                checkpoints.rewind_files(
+                    &core,
+                    &target,
+                    old_leaf.as_deref(),
+                    landed_leaf.as_deref(),
+                )
+            })
+            .await
+            .unwrap_or_else(|join_error| FileRewind::Unavailable(join_error.to_string()));
+            data["files"] = match rewind {
+                FileRewind::Restored { files, conflicts } => {
+                    json!({ "restored": files, "conflicts": conflicts })
+                }
+                FileRewind::Unavailable(reason) => json!({ "error": reason }),
+            };
+        }
         if let Some(editor_text) = editor_text {
             data["editorText"] = json!(editor_text);
         }
@@ -667,6 +700,7 @@ mod trace_fork_tests {
             Arc::new(crate::engine::ScriptedEngine::default()),
             core.clone(),
             Arc::new(tokio::sync::Notify::new()),
+            Arc::new(WorkspaceCheckpoints::new(dir.path().join("agent"))),
         );
         // A spare registry slot admits the fork's distinct controller at prepare
         // time; publication must keep it attached for later writes.
@@ -734,6 +768,7 @@ mod trace_fork_tests {
             Arc::new(crate::engine::ScriptedEngine::default()),
             core.clone(),
             Arc::new(tokio::sync::Notify::new()),
+            Arc::new(WorkspaceCheckpoints::new(dir.path().join("agent"))),
         );
         // At capacity the prepare-time admission is rejected (the registry
         // bound is pa-core's, covered by its bounded-admission tests); the
