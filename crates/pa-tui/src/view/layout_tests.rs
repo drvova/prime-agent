@@ -102,6 +102,7 @@ fn cached_packed_rows_render_identical_to_a_fresh_layout() {
     let mut v = view();
     v.push_entry(ChatEntry::User {
         text: "hello wrapped text ".repeat(9),
+        sent_at: None,
     });
     v.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
         blocks: vec![
@@ -119,6 +120,7 @@ fn cached_packed_rows_render_identical_to_a_fresh_layout() {
     let mut fresh = view();
     fresh.push_entry(ChatEntry::User {
         text: "hello wrapped text ".repeat(9),
+        sent_at: None,
     });
     fresh.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
         blocks: vec![
@@ -490,6 +492,7 @@ fn mixed_100k_paused_toggle_materializes_only_viewport_entries() {
         let entry = match index % 4 {
             0 => ChatEntry::User {
                 text: format!("message {index}"),
+                sent_at: None,
             },
             1 => ChatEntry::Assistant(Box::new(AssistantMessage {
                 blocks: vec![
@@ -615,6 +618,7 @@ fn a_push_after_a_user_row_folds_at_its_own_slot() {
     }
     view.push_entry(ChatEntry::User {
         text: "the question".into(),
+        sent_at: None,
     });
     for index in 0..30 {
         view.push_entry(ChatEntry::Status {
@@ -715,6 +719,7 @@ fn a_card_push_folds_at_the_pushed_slot() {
     view.detail = Detail::Overview;
     view.push_entry(ChatEntry::User {
         text: "the question".into(),
+        sent_at: None,
     });
     for index in 0..30 {
         view.push_entry(ChatEntry::Status {

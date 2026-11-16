@@ -741,7 +741,10 @@ pub struct ScrollInfo {
 
 fn item_to_entry(item: TranscriptItem) -> ChatEntry {
     match item {
-        TranscriptItem::UserMessage { text } => ChatEntry::User { text },
+        TranscriptItem::UserMessage { text } => ChatEntry::User {
+            text,
+            sent_at: None,
+        },
         TranscriptItem::SystemNote { text } => ChatEntry::Status {
             text,
             kind: crate::chat::StatusKind::Info,

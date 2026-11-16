@@ -649,6 +649,7 @@ mod tests {
         let mut v = view();
         v.push_entry(ChatEntry::User {
             text: "select this line".to_string(),
+            sent_at: None,
         });
         let frame = v.render_frame(80, 12);
         let row = (1..frame.len())

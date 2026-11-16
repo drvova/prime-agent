@@ -540,6 +540,7 @@ mod retry_collapse_tests {
         let mut view = view_with(vec![
             ChatEntry::User {
                 text: "hi".to_string(),
+                sent_at: None,
             },
             failed_attempt("429 Too many concurrent requests"),
         ]);

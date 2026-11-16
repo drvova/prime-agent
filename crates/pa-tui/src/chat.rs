@@ -84,7 +84,8 @@ pub enum ChatEntry {
     /// Startup notices, client notes, turn errors.
     Status { text: String, kind: StatusKind },
     /// The user's submitted prompt.
-    User { text: String },
+    /// A user prompt; `sent_at` (epoch ms) renders as the slab's right-aligned clock.
+    User { text: String, sent_at: Option<i64> },
     /// A durable session-command echo row (`session_slash_command`):
     /// the command as typed, laid out like a user message.
     SlashCommand { text: String },
@@ -118,6 +119,17 @@ pub enum ChatEntry {
     RefinementOutcome(Box<crate::custom_message::RefinementOutcomeRow>),
     /// One generic custom row.
     CustomPanel(Box<crate::custom_message::CustomPanelRow>),
+}
+
+impl ChatEntry {
+    /// A user prompt with no known send time.
+    #[must_use]
+    pub fn user(text: impl Into<String>) -> Self {
+        ChatEntry::User {
+            text: text.into(),
+            sent_at: None,
+        }
+    }
 }
 
 // The card types live in `tool_card`; re-exported here because the

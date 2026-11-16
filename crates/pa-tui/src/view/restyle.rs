@@ -112,9 +112,11 @@ mod tests {
         ));
         view.push_entry(ChatEntry::User {
             text: "row zero text".into(),
+            sent_at: None,
         });
         view.push_entry(ChatEntry::User {
             text: "row one text".into(),
+            sent_at: None,
         });
         view
     }
@@ -143,6 +145,7 @@ mod tests {
         for index in 0..40 {
             view.push_entry(ChatEntry::User {
                 text: format!("scroll body {index}"),
+                sent_at: None,
             });
         }
         view.render_frame(100, 30);
@@ -209,6 +212,7 @@ mod tests {
         // A new entry changes the walked rows: the cache rebuilds.
         view.push_entry(ChatEntry::User {
             text: "row two".into(),
+            sent_at: None,
         });
         let (base, start) = base_rows(&mut view);
         view.selection_styled_window(base, start);

@@ -1,0 +1,1 @@
+- Each prompt you send now shows the time you sent it, dim and right-aligned on the prompt (for example `13:54`), including prompts in sessions you reopen, so it is easy to tell when things happened when scrolling back. Windows does not show the time yet.

@@ -56,7 +56,8 @@ fn image_only_user_message_shows_the_image_placeholder() {
     assert_eq!(
         message_value_to_entries(&message),
         vec![ChatEntry::User {
-            text: "[image]".to_string()
+            text: "[image]".to_string(),
+            sent_at: None,
         }]
     );
 }
@@ -73,7 +74,7 @@ fn a_skill_block_user_message_decodes_to_the_card() {
             entries.as_slice(),
             [
                 ChatEntry::SkillInvocation(card),
-                ChatEntry::User { text }
+                ChatEntry::User { text, .. }
             ] if card.name == "websearch"
                 && card.content == "Run one query."
                 && text == "find parity tuis"
@@ -550,7 +551,7 @@ fn an_orphan_result_keeps_its_wire_position() {
         ChatEntry::Tool(card) => assert!(card.result.is_some()),
         other => panic!("the orphan sits at its wire position: {other:?}"),
     }
-    assert!(matches!(&chat[2], ChatEntry::User { text } if text == "after"));
+    assert!(matches!(&chat[2], ChatEntry::User { text, .. } if text == "after"));
 }
 
 #[test]
@@ -723,7 +724,7 @@ fn reconstructs_slim_attach() {
     assert_eq!(data.active_session_id, "abc123def456");
     let view = reconstruct(&data);
     assert_eq!(view.chat.len(), 2);
-    assert!(matches!(&view.chat[0], ChatEntry::User { text } if text == "hello"));
+    assert!(matches!(&view.chat[0], ChatEntry::User { text, .. } if text == "hello"));
     assert!(matches!(&view.chat[1], ChatEntry::Assistant(m) if m.blocks
         == vec![MessageBlock::Text("hi there".to_string())]));
     assert_eq!(view.session_id, "0199-sess");
@@ -1368,7 +1369,8 @@ fn decodes_block_content() {
     assert_eq!(
         items,
         vec![ChatEntry::User {
-            text: "hello world".to_string()
+            text: "hello world".to_string(),
+            sent_at: None,
         }]
     );
     let items = message_value_to_entries(&json!({
@@ -1542,7 +1544,8 @@ fn session_command_rows_respect_display_and_shape() {
     assert_eq!(
         custom_message_entries(&malformed),
         vec![ChatEntry::User {
-            text: "[Malformed session command message]".to_string()
+            text: "[Malformed session command message]".to_string(),
+            sent_at: None,
         }]
     );
 }

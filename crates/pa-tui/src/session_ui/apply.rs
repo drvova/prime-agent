@@ -409,7 +409,11 @@ impl SessionUi {
                             view.push_entry(entry);
                         }
                     }
-                    None => view.push_entry(ChatEntry::User { text }),
+                    // A live prompt is stamped as it lands (its row's clock).
+                    None => view.push_entry(ChatEntry::User {
+                        text,
+                        sent_at: i64::try_from(crate::agents_view_state::now_ms()).ok(),
+                    }),
                 }
             }
             // The other-client arm of a display-name move (`/name` sets it locally).
