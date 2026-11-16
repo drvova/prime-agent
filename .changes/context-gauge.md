@@ -1,0 +1,1 @@
+- The line under the prompt now shows how full the context window is as a gauge: the empty space between `← manage` and the model fills with `━` as the conversation grows (violet, then amber from 70% and red from 90%), next to the exact count, for example `86k/200k 43%`.
