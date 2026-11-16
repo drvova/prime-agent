@@ -41,9 +41,7 @@ impl AgentView {
                             // is the full compact set).
                             let preceded_by_tool =
                                 idx > 0 && Self::is_compact_neighbor(&self.chat[idx - 1]);
-                            if tool_separator
-                                || message.has_trailing_space(self.detail, preceded_by_tool)
-                            {
+                            if tool_separator || message.has_trailing_space(preceded_by_tool) {
                                 return false;
                             }
                             // An assistant message is never a compact neighbor; both rules add
