@@ -85,6 +85,9 @@ pub enum EditorEvent {
     Submitted(String),
     /// Autocomplete overlay visibility changed.
     AutocompleteToggled(bool),
+    /// A slash command was accepted from the completion menu (Tab or Enter on a command row):
+    /// the host's adoption seam for the slash menu.
+    SlashMenuAccepted,
     /// A selection cut/copy asks the host to write `text` to the system
     /// clipboard (the copy chain lives with the host, which owns the terminal).
     ClipboardWrite(String),
@@ -128,8 +131,14 @@ pub struct Editor {
     /// Typing `:name` suggests emoji (the host enables it from the
     /// `emojiShortcodes` setting).
     emoji_shortcodes: bool,
+    /// The completion menu's visible rows (the host sets it from the `autocompleteMaxVisible`
+    /// setting).
+    autocomplete_max_visible: usize,
     events: Vec<EditorEvent>,
 }
+
+/// The completion menu's visible rows until the host applies the user's setting.
+const DEFAULT_AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 
 #[derive(Debug)]
 struct AutocompleteSearch {
@@ -185,6 +194,7 @@ impl Editor {
             pending_autocomplete: None,
             autocomplete_search: None,
             emoji_shortcodes: false,
+            autocomplete_max_visible: DEFAULT_AUTOCOMPLETE_MAX_VISIBLE,
             events: Vec::new(),
         }
     }
@@ -216,6 +226,12 @@ impl Editor {
     pub fn clear_autocomplete_provider(&mut self) {
         self.cancel_autocomplete();
         self.autocomplete_provider = None;
+    }
+
+    /// The completion menu's visible rows (the `autocompleteMaxVisible` setting); the menu
+    /// clamps it to 3..=20. Applies from the next menu that opens.
+    pub fn set_autocomplete_max_visible(&mut self, rows: usize) {
+        self.autocomplete_max_visible = rows;
     }
 
     #[must_use]
@@ -895,6 +911,41 @@ mod tests {
         assert!(
             e.is_showing_autocomplete(),
             "typed slash context still opens on Tab"
+        );
+    }
+
+    /// Accepting a command row from the slash menu reports the adoption event; Tab on a path
+    /// completion does not.
+    #[test]
+    fn accepting_a_slash_menu_row_reports_the_adoption_event() {
+        let mut e = ed();
+        for ch in "/mo".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        e.materialize_autocomplete();
+        let _ = e.take_events();
+        e.handle_input("tab");
+        let events = e.take_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    EditorEvent::SlashMenuAccepted,
+                    EditorEvent::AutocompleteToggled(false),
+                    EditorEvent::Changed(text),
+                ] if text == "/model"
+            ),
+            "{events:?}"
+        );
+        e.set_text("./");
+        e.handle_input("tab");
+        e.materialize_autocomplete();
+        e.handle_input("tab");
+        assert!(
+            !e.take_events()
+                .iter()
+                .any(|event| matches!(event, EditorEvent::SlashMenuAccepted)),
+            "a path completion is not a slash-menu accept"
         );
     }
 

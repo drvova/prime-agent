@@ -1,0 +1,1 @@
+- The slash menu now shows eight commands with each description on its row, a scrollbar when the list overflows, prefix matches ahead of fuzzy ones, a `no command matches /xyz` row instead of vanishing, and the argument hint as dim ghost text after `/command `.

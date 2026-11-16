@@ -239,6 +239,7 @@ pub fn dispatch_events(editor: &mut Editor, on_submit: &mut dyn FnMut(&str)) {
             // performs the copy.
             EditorEvent::Changed(_)
             | EditorEvent::AutocompleteToggled(_)
+            | EditorEvent::SlashMenuAccepted
             | EditorEvent::ClipboardWrite(_) => {}
         }
     }

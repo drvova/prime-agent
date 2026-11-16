@@ -93,6 +93,7 @@ pub(crate) fn render(
     // The placeholder row: while the editor is empty, the first content row is
     // the cursor cell followed by the dim placeholder.
     let placeholder_row = placeholder.filter(|_| editor.get_text().is_empty());
+    let ghost = editor.slash_argument_ghost();
     for (index, line) in visible.iter().enumerate() {
         if index == 0 && placeholder_row.is_some() {
             let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
@@ -155,6 +156,15 @@ pub(crate) fn render(
         if cursor_pos == Some(text.chars().count()) {
             // The end-of-line cursor appends one reversed cell.
             used += 1;
+            // The typed command's argument hint ghosts dim after the cursor.
+            if let Some(hint) = ghost.as_deref() {
+                let hint = truncate_to_width(hint, input_width.saturating_sub(used), "\u{2026}");
+                used += str_width(&hint);
+                row.push(Span::styled(
+                    hint,
+                    bg.patch(theme.fg_style(ThemeColor::Dim)),
+                ));
+            }
         }
         if let Some(position) = cursor_pos {
             let head = split_at_chars(text, position).0;

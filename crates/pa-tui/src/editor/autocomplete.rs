@@ -51,6 +51,24 @@ impl Editor {
         context.command_name.map(|name| (name, context.prefix))
     }
 
+    /// The argument hint ghosted after the cursor once a command name is typed out with its
+    /// separator (`/tier ` ghosts `[default|flex|priority|auto]`): only at the prompt start, with
+    /// the cursor at the line's end and no argument typed yet.
+    pub(crate) fn slash_argument_ghost(&self) -> Option<String> {
+        let context = self.current_slash_command_context()?;
+        let at_line_end = self.cursor_col == self.lines[self.cursor_line].chars().count();
+        if context.kind != crate::autocomplete::SlashKind::Argument
+            || !context.at_prompt_start
+            || !context.prefix.trim().is_empty()
+            || !at_line_end
+        {
+            return None;
+        }
+        self.autocomplete_provider
+            .as_ref()?
+            .argument_hint(context.command_name.as_deref()?)
+    }
+
     pub(crate) fn is_slash_name_completion_at_prompt_start(&self) -> bool {
         let ctx = self.current_slash_command_context();
         let kind_slash = self
@@ -234,7 +252,11 @@ impl Editor {
             self.cancel_autocomplete();
             return;
         };
-        if suggestions.items.is_empty() {
+        // An empty slash list stays open on its no-match row (the provider answers one only at
+        // the prompt start); every other empty lookup closes the menu.
+        let slash_list =
+            suggestions.kind == Some(crate::autocomplete::SuggestionKind::SlashCommand);
+        if suggestions.items.is_empty() && !slash_list {
             self.cancel_autocomplete();
             return;
         }
@@ -250,18 +272,21 @@ impl Editor {
             self.emit(EditorEvent::Changed(self.get_text()));
             return;
         }
-        let matching_prefix =
-            if suggestions.kind == Some(crate::autocomplete::SuggestionKind::SlashCommand) {
-                suggestions
-                    .prefix
-                    .strip_prefix('/')
-                    .unwrap_or(&suggestions.prefix)
-                    .to_string()
-            } else {
-                suggestions.prefix.clone()
-            };
-        let mut state =
-            crate::autocomplete::AutocompleteState::new(suggestions.items, 5, suggestions.kind);
+        let matching_prefix = if slash_list {
+            suggestions
+                .prefix
+                .strip_prefix('/')
+                .unwrap_or(&suggestions.prefix)
+                .to_string()
+        } else {
+            suggestions.prefix.clone()
+        };
+        let mut state = crate::autocomplete::AutocompleteState::new(
+            suggestions.items,
+            self.autocomplete_max_visible,
+            suggestions.kind,
+        );
+        state.query = suggestions.prefix;
         if let Some(idx) = state.best_match_index(&matching_prefix) {
             state.set_selected_index(idx);
         }

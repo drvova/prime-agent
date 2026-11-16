@@ -239,7 +239,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             label: "Autocomplete max items",
             description: "Max visible items in autocomplete dropdown (3-20)",
             current: current.autocomplete_max_visible.to_string(),
-            values: Some(vec!["3".into(), "5".into(), "7".into(), "10".into(), "15".into(), "20".into()]),
+            values: Some(vec!["3".into(), "5".into(), "8".into(), "10".into(), "15".into(), "20".into()]),
             submenu: None,
         },
         SettingsMenuRow {

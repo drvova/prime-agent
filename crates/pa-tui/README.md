@@ -24,6 +24,8 @@ list; rows carry their session's `◷ N` heartbeat count from the
 
 The rewind surface: every `/tree` navigation (also the double-Escape gesture) sends `navigate_tree` with `restoreFiles`, so a rewind also restores the code where the daemon has a checkpoint, and reports the restored count and any kept files (the `rewind` feature outcome).
 
+The slash menu: `autocompleteMaxVisible` rows (default 8), each row the `›` marker, the name column (widest visible name + 2, clamped 12–32), and the muted description on the same row; a one-cell scrollbar replaces the `(n/m)` counter while the list overflows. Matching ranks names and aliases only: exact, then prefix (registry order), then fuzzy matches that start on a word boundary or run contiguously. An unmatched token at the prompt start keeps the menu open on its `no command matches /xyz` row, and `/command ` ghosts the command's argument hint after the cursor. Accepting a command row reports the `slashmenu` feature outcome.
+
 ## Non-goals
 No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the pa-daemon worker. It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
 

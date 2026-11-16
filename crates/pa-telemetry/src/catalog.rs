@@ -260,8 +260,20 @@ pub const AUTH_CATEGORIES: &[&str] = &[
 ];
 
 pub const FEATURE_NAMES: &[&str] = &[
-    "model", "login", "logout", "effort", "goal", "new", "resume", "fork", "clone", "tree",
-    "feedback", "rewind", "summary",
+    "model",
+    "login",
+    "logout",
+    "effort",
+    "goal",
+    "new",
+    "resume",
+    "fork",
+    "clone",
+    "tree",
+    "feedback",
+    "rewind",
+    "summary",
+    "slashmenu",
 ];
 
 pub const FEATURE_OUTCOMES: &[&str] = &[
@@ -759,6 +771,11 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("feature_summary_failed_count", optional(count())),
         ("feature_summary_canceled_count", optional(count())),
         ("feature_summary_unavailable_count", optional(count())),
+        ("feature_slashmenu_initiated_count", optional(count())),
+        ("feature_slashmenu_completed_count", optional(count())),
+        ("feature_slashmenu_failed_count", optional(count())),
+        ("feature_slashmenu_canceled_count", optional(count())),
+        ("feature_slashmenu_unavailable_count", optional(count())),
     ],
 };
 
@@ -1106,6 +1123,11 @@ const TUI_EXIT: EventRule = EventRule {
         ("feature_summary_failed_count", optional(count())),
         ("feature_summary_canceled_count", optional(count())),
         ("feature_summary_unavailable_count", optional(count())),
+        ("feature_slashmenu_initiated_count", optional(count())),
+        ("feature_slashmenu_completed_count", optional(count())),
+        ("feature_slashmenu_failed_count", optional(count())),
+        ("feature_slashmenu_canceled_count", optional(count())),
+        ("feature_slashmenu_unavailable_count", optional(count())),
         ("input_received_count", optional(count())),
         ("input_queued_count", optional(count())),
         ("input_preparation_count", optional(count())),

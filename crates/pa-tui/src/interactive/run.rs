@@ -253,6 +253,9 @@ async fn run_interactive_surface(
             .is_none_or(|settings| settings.emoji_shortcodes()),
     );
     if let Some(settings) = &options.client_settings {
+        view.editor.set_autocomplete_max_visible(
+            usize::try_from(settings.autocomplete_max_visible()).unwrap_or(usize::MAX),
+        );
         view.show_hardware_cursor = settings.show_hardware_cursor();
         // A chat opens at the persisted `chatDetail` level; an unset store reads as the collapsed
         // `overview` startup level (operator directive 2026-09-28).
