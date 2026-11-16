@@ -70,10 +70,11 @@ pub(super) fn render(
     let effort_layout = picker.effort_layout(start, end);
     let filtered_len = picker.filtered_len();
     // An overflowing window carries the slash menu's one-cell scrollbar on its right edge instead
-    // of an `(n/m)` row; the rows give up that column.
+    // of an `(n/m)` row; the rows give up that column plus a one-space gap, so the flush-right
+    // provider never touches the bar.
     let scrollbar = (start > 0 || end < filtered_len)
         .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, filtered_len, start));
-    let row_width = width.saturating_sub(usize::from(scrollbar.is_some()));
+    let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
     for index in start..end {
         let Some(model_index) = picker.filtered_index(index) else {
             continue;
@@ -93,6 +94,7 @@ pub(super) fn render(
             .as_ref()
             .and_then(|cells| cells.get(index - start))
         {
+            row.push(Span::raw(" "));
             row.push(cell.clone());
         }
         lines.push(row);

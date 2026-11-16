@@ -257,8 +257,8 @@ fn renders_the_ts_inline_panel_shape() {
     assert_eq!(
         rows[3],
         format!(
-            "\u{203a} Mock 1{}current \u{b7} prime-inference\u{2588}",
-            " ".repeat(86)
+            "\u{203a} Mock 1{}current \u{b7} prime-inference \u{2588}",
+            " ".repeat(85)
         )
     );
     // The effort cluster: name cell (17), centered gap (33), arrow slots,
@@ -267,9 +267,9 @@ fn renders_the_ts_inline_panel_shape() {
         let name_pad = " ".repeat(17 - name.chars().count());
         let label_pad = " ".repeat(6 - label.chars().count());
         format!(
-            "  {name}{name_pad}{}  {squares}   {label}{label_pad}{}prime-inference\u{2588}",
+            "  {name}{name_pad}{}  {squares}   {label}{label_pad}{}prime-inference \u{2588}",
             " ".repeat(33),
-            " ".repeat(36),
+            " ".repeat(35),
         )
     };
     assert_eq!(
