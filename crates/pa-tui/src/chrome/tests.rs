@@ -1079,3 +1079,40 @@ fn the_collapsed_shells_segment_counts_persistent_shells() {
     assert_eq!(render(1), "▸ 2 shells · 1 persistent");
     assert_eq!(render(0), "▸ 2 shells");
 }
+
+/// A session's accent is stable per name, differs across names, keeps its hue in 150°-294°
+/// (never the gauge's amber or red), and falls back to the theme accent without a name or a
+/// true-color accent.
+#[test]
+fn the_session_accent_is_a_stable_hue_per_name() {
+    use ratatui::style::Color;
+    let t = theme();
+    let rgb = |name: &str| match session_accent(name, &t).fg {
+        Some(Color::Rgb(r, g, b)) => (r, g, b),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rgb("login-fix"), rgb("login-fix"));
+    assert_ne!(rgb("login-fix"), rgb("refactor-auth"));
+    for name in [
+        "a",
+        "b",
+        "login-fix",
+        "refactor-auth",
+        "prime",
+        "docs",
+        "zz",
+    ] {
+        let (r, g, b) = rgb(name);
+        // In the 150°-294° band red never leads both other channels (that is 330°-30°).
+        assert!(
+            !(r > g && r > b && g >= b),
+            "{name}: {r},{g},{b} reads as red or amber"
+        );
+    }
+    assert_eq!(session_accent("", &t), t.fg_style(ThemeColor::Accent));
+    let ansi = Theme::builtin("prime", crate::theme::ColorMode::Color256);
+    assert_eq!(
+        session_accent("login-fix", &ansi),
+        ansi.fg_style(ThemeColor::Accent)
+    );
+}

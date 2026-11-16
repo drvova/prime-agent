@@ -1,0 +1,1 @@
+- Each session now has its own accent color on the context gauge and the working spinner, picked from its name (one of five hues: green-teal, cyan, sky blue, violet, or purple), so parallel sessions are easy to tell apart at a glance. The gauge's amber and red warnings are never used as a session color.

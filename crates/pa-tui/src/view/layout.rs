@@ -427,6 +427,8 @@ impl AgentView {
                 &self.theme,
                 width,
                 stop.as_deref(),
+                // The spinner wears the session's own accent hue.
+                crate::chrome::session_accent(&self.chrome.chat_name, &self.theme),
             ));
         }
         // The side-question pane hugs the transcript tail, not the dock, so the frame's slack

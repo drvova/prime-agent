@@ -250,6 +250,65 @@ impl ContextUsage {
     }
 }
 
+/// The session's own accent: the theme accent's lightness (saturation at least 55%) at one of
+/// five hues picked by the session's name (stable per name), all within 150°-294° so it never
+/// reads as the gauge's amber or red warnings. A theme without a true-color accent keeps its
+/// accent.
+#[must_use]
+pub fn session_accent(name: &str, theme: &Theme) -> Style {
+    let accent = theme.fg_style(ThemeColor::Accent);
+    let (Some(ratatui::style::Color::Rgb(red, green, blue)), false) = (accent.fg, name.is_empty())
+    else {
+        return accent;
+    };
+    // The theme accent's lightness and saturation (HSL).
+    let [red, green, blue] = [red, green, blue].map(|channel| f64::from(channel) / 255.0);
+    let (max, min) = (red.max(green).max(blue), red.min(green).min(blue));
+    let lightness = f64::midpoint(max, min);
+    let spread = 1.0 - (2.0 * lightness - 1.0).abs();
+    // A muted accent still yields hues that read as distinct colors.
+    let saturation = if spread < f64::EPSILON {
+        0.0
+    } else {
+        ((max - min) / spread).max(0.55)
+    };
+    // FNV-1a over the name picks one of five hues 36° apart (green-teal, cyan, sky blue,
+    // violet, purple), so two sessions either match or clearly differ.
+    let hash = name.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let hue = 150.0 + 36.0 * f64::from(hash % 5);
+    let chroma = spread * saturation;
+    let second = chroma * (1.0 - ((hue / 60.0) % 2.0 - 1.0).abs());
+    let sector = (hue / 60.0).floor();
+    let (red, green, blue) = if sector < 3.0 {
+        (0.0, chroma, second)
+    } else if sector < 4.0 {
+        (0.0, second, chroma)
+    } else if sector < 5.0 {
+        (second, 0.0, chroma)
+    } else {
+        (chroma, 0.0, second)
+    };
+    let offset = lightness - chroma / 2.0;
+    let channel = |value: f64| {
+        let scaled = ((value + offset) * 255.0).round().clamp(0.0, 255.0);
+        // Clamped to 0..=255 above, so the cast is exact.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to 0..=255"
+        )]
+        let byte = scaled as u8;
+        byte
+    };
+    accent.fg(ratatui::style::Color::Rgb(
+        channel(red),
+        channel(green),
+        channel(blue),
+    ))
+}
+
 #[must_use]
 pub fn format_token_count(count: u64) -> String {
     if count < 1_000 {
@@ -582,14 +641,14 @@ pub fn render_tray_with_hint(
         let (cells, percent) = (gap - 2, context.percent());
         let used = ((cells as f64 * percent / 100.0).round() as usize).min(cells);
         let tone = if percent >= 90.0 {
-            ThemeColor::Error
+            theme.fg_style(ThemeColor::Error)
         } else if percent >= 70.0 {
-            ThemeColor::Warning
+            theme.fg_style(ThemeColor::Warning)
         } else {
-            ThemeColor::Accent
+            session_accent(&state.chat_name, theme)
         };
         line.push(Span::styled(" ".to_string(), Style::default()));
-        line.push(Span::styled("\u{2501}".repeat(used), theme.fg_style(tone)));
+        line.push(Span::styled("\u{2501}".repeat(used), tone));
         let free = "\u{2500}".repeat(cells - used);
         line.push(Span::styled(free, theme.fg_style(ThemeColor::BorderMuted)));
         line.push(Span::styled(" ".to_string(), Style::default()));

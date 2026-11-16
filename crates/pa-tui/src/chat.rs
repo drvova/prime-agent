@@ -548,8 +548,8 @@ pub fn render_loader(
     theme: &Theme,
     width: usize,
     stop_key: Option<&str>,
+    accent: Style,
 ) -> Vec<Line> {
-    let accent = theme.fg_style(ThemeColor::Accent);
     let muted = theme.fg_style(ThemeColor::Muted);
     let frames = activity_frames(working.activity);
     let spinner = frames[frame % frames.len()];

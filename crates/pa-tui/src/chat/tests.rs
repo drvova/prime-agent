@@ -784,7 +784,14 @@ fn loader_line_shape() {
         elapsed_secs: 1,
         quiet_secs: 0,
     };
-    let rows = render_loader(&working, 4, &theme(), 100, None);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     assert_eq!(rows.len(), 2);
     let text = rows[1]
         .iter()
@@ -807,7 +814,14 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_loader(&working, 0, &t, 100, None);
+    let rows = render_loader(
+        &working,
+        0,
+        &t,
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     assert_eq!(
         rows[1][..4],
         [
@@ -831,7 +845,14 @@ fn loader_shows_the_stall_timer_and_the_stop_chip() {
         elapsed_secs: 9,
         quiet_secs: 4,
     };
-    let rows = render_loader(&working, 0, &theme(), 60, Some("Esc"));
+    let rows = render_loader(
+        &working,
+        0,
+        &theme(),
+        60,
+        Some("Esc"),
+        theme().fg_style(ThemeColor::Accent),
+    );
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
@@ -846,10 +867,17 @@ fn loader_shows_the_stall_timer_and_the_stop_chip() {
         quiet_secs: 2,
         ..working
     };
-    let text: String = render_loader(&quiet, 0, &theme(), 60, None)[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect();
+    let text: String = render_loader(
+        &quiet,
+        0,
+        &theme(),
+        60,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    )[1]
+    .iter()
+    .map(|s| s.content.as_str())
+    .collect();
     assert!(!text.contains("quiet"), "under 3s stays quiet: {text:?}");
 }
 
@@ -864,7 +892,14 @@ fn loader_working_message_replaces_the_activity_label() {
         elapsed_secs: 3,
         quiet_secs: 0,
     };
-    let rows = render_loader(&working, 4, &theme(), 100, None);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
