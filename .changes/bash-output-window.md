@@ -1,0 +1,1 @@
+- Collapsed bash output now shows how a command started as well as how it ended: its first two and last two lines around a `⋮ +N lines` mark, instead of only the last five lines. Short output still shows in full, and Ctrl+O expands everything.
