@@ -5,11 +5,11 @@
 use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
 
 use super::{
-    login_field_row, menu_row, no_match_row, osc8_open, scroll_row, scrub_controls,
-    search_field_lines, search_field_plain_row, AuthPanel, CopyStatus, KeybindingsManager, Line,
-    MenuSegment, Modifier, PanelInput, PanelSurface, PastePromptTone, PasteStyle, PickerSegment,
-    Span, Theme, ThemeColor, BROWSER_DEFAULT_INSTRUCTIONS, OSC8_CLOSE, PASTE_PLACEHOLDER,
-    PREFERRED_VISIBLE_TEAMS, TEAM_SEARCH_PLACEHOLDER, TOKEN_PLACEHOLDER,
+    login_field_row, menu_row, osc8_open, scroll_row, scrub_controls, search_field_lines,
+    search_field_plain_row, AuthPanel, CopyStatus, KeybindingsManager, Line, MenuSegment, Modifier,
+    PanelInput, PanelSurface, PastePromptTone, PasteStyle, PickerSegment, Span, Theme, ThemeColor,
+    BROWSER_DEFAULT_INSTRUCTIONS, OSC8_CLOSE, PASTE_PLACEHOLDER, PREFERRED_VISIBLE_TEAMS,
+    TEAM_SEARCH_PLACEHOLDER, TOKEN_PLACEHOLDER,
 };
 
 impl AuthPanel {
@@ -36,7 +36,7 @@ impl AuthPanel {
                 width,
                 picker.search.value(),
                 picker.search.cursor(),
-                false,
+                /*focused*/ true,
                 TEAM_SEARCH_PLACEHOLDER,
             ));
             let count = picker.filtered.len();
@@ -71,7 +71,13 @@ impl AuthPanel {
                 lines.push(scroll_row(theme, width, picker.selected + 1, count));
             }
             if count == 0 {
-                lines.push(no_match_row(theme, width, "No matching teams"));
+                lines.push(crate::menu_chrome::empty_state_row(
+                    theme,
+                    width,
+                    kb,
+                    picker.search.value(),
+                    "No teams available",
+                ));
             }
             lines.push(
                 Footer::new()

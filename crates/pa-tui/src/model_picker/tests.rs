@@ -309,13 +309,14 @@ fn renders_the_ts_inline_panel_shape() {
         format!(" $0{}$0{}$0", " ".repeat(32), " ".repeat(32))
     );
     assert_eq!(rows[15], "");
+    assert_eq!(rows[16], "  enter switches to Mock 1", "the Enter line");
     assert_eq!(
-        rows[16],
+        rows[17],
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
     );
 
-    assert_eq!(rows.len(), 18, "the frame ends on the blank: {rows:?}");
-    assert_eq!(rows[17], "");
+    assert_eq!(rows.len(), 19, "the frame ends on the blank: {rows:?}");
+    assert_eq!(rows[18], "");
 }
 
 #[test]
@@ -588,7 +589,7 @@ fn an_empty_catalog_opens_the_empty_panel() {
     let ModelCommandOutcome::Open(mut picker) = ModelPicker::open(picker_options(Vec::new()), "");
     let rows = frame_text(&mut picker);
     assert_eq!(rows[2], " >  Search models");
-    assert!(rows.iter().any(|row| row == "  No matching models"));
+    assert!(rows.iter().any(|row| row == "  No models available"));
 }
 
 #[test]
@@ -603,7 +604,9 @@ fn a_query_with_no_matches_renders_the_no_matching_row() {
     let mut picker = ModelPicker::new(picker_options(battery_catalog()));
     picker.set_query("zzz-no-match");
     let rows = frame_text(&mut picker);
-    assert!(rows.iter().any(|row| row == "  No matching models"));
+    assert!(rows
+        .iter()
+        .any(|row| row == "  no match for \u{201c}zzz-no-match\u{201d} \u{b7} esc clears"));
 }
 
 #[test]

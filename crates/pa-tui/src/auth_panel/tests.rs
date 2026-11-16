@@ -376,7 +376,9 @@ fn an_empty_filter_renders_the_ts_empty_row_and_selects_nothing() {
         panel.handle_key(character.to_string().as_str(), &kb(), &mut sink());
     }
     let rows = frame_text(&mut panel);
-    assert!(rows.iter().any(|row| row.contains("No matching teams")));
+    assert!(rows
+        .iter()
+        .any(|row| row.contains("no match for \u{201c}zzz\u{201d}")));
     panel.handle_key("enter", &kb(), &mut sink());
     assert!(
         answer.try_recv().is_err(),

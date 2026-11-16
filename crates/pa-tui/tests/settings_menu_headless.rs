@@ -363,11 +363,16 @@ fn the_settings_page_renders_the_spacing_and_the_new_keys() {
         .expect("the hint row renders");
     assert_eq!(
         rows[hint_index - 1],
+        "  enter sets auto-compact to false",
+        "the Enter line rides directly above the footer"
+    );
+    assert_eq!(
+        rows[hint_index - 2],
         RULE.repeat(100),
-        "the separator rule rides below the description, above the hint"
+        "the separator rule rides below the description, above the Enter line"
     );
     assert!(
-        rows[hint_index - 2].starts_with("  Automatically compact"),
+        rows[hint_index - 3].starts_with("  Automatically compact"),
         "the description rides above the rule with its padding"
     );
     assert!(

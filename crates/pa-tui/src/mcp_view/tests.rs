@@ -433,7 +433,9 @@ fn search_ranks_identity_fields_before_descriptions() {
         view.handle_key(&character.to_string(), &kb());
     }
     let rows = frame_text(&mut view);
-    assert!(rows.iter().any(|row| row == "  No matching services"));
+    assert!(rows
+        .iter()
+        .any(|row| row.starts_with("  no match for \u{201c}linear github\u{201d}")));
 }
 
 /// The TS scoring bands exactly: prefix ties break on the remaining length, substring ties on the
@@ -532,7 +534,9 @@ fn the_empty_roster_renders_the_empty_message() {
         view.handle_key(&character.to_string(), &kb());
     }
     let rows = frame_text(&mut view);
-    assert!(rows.iter().any(|row| row == "  No matching services"));
+    assert!(rows
+        .iter()
+        .any(|row| row == "  no match for \u{201c}zzz\u{201d} \u{b7} esc clears"));
     assert!(
         rows.iter().any(|row| row.contains("Esc close")),
         "the hint still renders: {rows:?}"

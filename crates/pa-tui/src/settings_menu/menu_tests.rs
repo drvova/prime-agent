@@ -234,6 +234,11 @@ fn typing_filters_the_active_tab_and_esc_cancels() {
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("Transport")));
     assert!(!text.iter().any(|row| row.contains("Thinking")));
+    // Esc clears the query first, then closes.
+    assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::None);
+    assert!(render_text(&menu)
+        .iter()
+        .any(|row| row.contains("Thinking")));
     assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::Cancel);
 }
 
@@ -435,7 +440,9 @@ fn digits_type_into_an_active_query() {
     menu.handle_key("2", &kb());
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("s2")));
-    assert!(text.iter().any(|row| row.contains("No matching settings")));
+    assert!(text
+        .iter()
+        .any(|row| row.contains("no match for \u{201c}s2\u{201d}")));
 }
 
 #[test]
@@ -542,7 +549,8 @@ fn render_shows_value_and_selected_description() {
         .iter()
         .position(|row| row.starts_with("  \u{2191}/\u{2193} navigate"))
         .expect("the hint row renders with its padding");
-    assert_eq!(text[hint_index - 1], "\u{2500}".repeat(100));
+    assert_eq!(text[hint_index - 1], "  enter sets auto-compact to false");
+    assert_eq!(text[hint_index - 2], "\u{2500}".repeat(100));
     let description_index = text
         .iter()
         .position(|row| row.starts_with("  Automatically compact"))
@@ -582,7 +590,7 @@ fn backspace_edits_the_search_query() {
     assert!(
         filtered
             .iter()
-            .any(|row| row.contains("No matching settings")),
+            .any(|row| row.contains("no match for \u{201c}zqx\u{201d}")),
         "the garbage query filters the list to the no-match row"
     );
     assert!(

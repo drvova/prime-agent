@@ -6,7 +6,7 @@
 mod tabs;
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::wrap_text;
@@ -90,12 +90,73 @@ pub enum SettingsMenuAction {
     },
 }
 
-/// The open submenu's own selection state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The open submenu's own selection state: `selected` is an option index, `filtered` the option
+/// indices the search keeps.
+#[derive(Debug)]
 struct SubmenuState {
     row: usize,
     kind: SettingsSubmenu,
     selected: usize,
+    search: SearchInput,
+    filtered: Vec<usize>,
+}
+
+impl SubmenuState {
+    fn new(row: usize, kind: SettingsSubmenu, selected: usize) -> Self {
+        let filtered = (0..submenu_labels(&kind).len()).collect();
+        SubmenuState {
+            row,
+            kind,
+            selected,
+            search: SearchInput::new(),
+            filtered,
+        }
+    }
+
+    /// Re-filter the options (case-insensitive substring over the label); the selection stays
+    /// when it survives, else lands on the first match.
+    fn refilter(&mut self) {
+        let query = self.search.value().to_lowercase();
+        self.filtered = submenu_labels(&self.kind)
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| label.to_lowercase().contains(&query))
+            .map(|(index, _)| index)
+            .collect();
+        if !self.filtered.contains(&self.selected) {
+            if let Some(&first) = self.filtered.first() {
+                self.selected = first;
+            }
+        }
+    }
+
+    /// Step the selection through the filtered options, wrapping at the ends.
+    fn step(&mut self, delta: isize) {
+        let count = self.filtered.len();
+        if count == 0 {
+            return;
+        }
+        let position = self
+            .filtered
+            .iter()
+            .position(|&index| index == self.selected)
+            .unwrap_or(0);
+        let next = (position as isize + delta).rem_euclid(count as isize) as usize;
+        self.selected = self.filtered[next];
+    }
+}
+
+/// One submenu's option labels, in display order.
+fn submenu_labels(kind: &SettingsSubmenu) -> Vec<String> {
+    match kind {
+        SettingsSubmenu::Thinking { levels } => levels.clone(),
+        SettingsSubmenu::Theme { themes } => themes.clone(),
+        SettingsSubmenu::Warnings => vec![String::from("Anthropic extra usage")],
+        SettingsSubmenu::ServiceTier => SERVICE_TIER_CHOICES
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
 }
 
 /// The settings menu: the strip rides under the search field, each tab
@@ -503,7 +564,13 @@ impl SettingsMenu {
             return self.activate_selected();
         }
         if kb.matches(key, "tui.select.cancel") || key == "ctrl+c" {
-            return SettingsMenuAction::Cancel;
+            // Esc clears the active tab's query first; the next Esc closes.
+            if self.tabs[self.tab].search.value().is_empty() {
+                return SettingsMenuAction::Cancel;
+            }
+            self.active_mut().search.prefill("");
+            self.apply_filter();
+            return SettingsMenuAction::None;
         }
         // TS `SettingsList.handleInput`: Space stays the row activation
         // above; every other key id goes whole to the active tab's search
@@ -564,11 +631,7 @@ impl SettingsMenu {
                     .unwrap_or(0),
                 _ => 0,
             };
-            self.sub = Some(SubmenuState {
-                row: row_index,
-                kind,
-                selected,
-            });
+            self.sub = Some(SubmenuState::new(row_index, kind, selected));
             return SettingsMenuAction::None;
         }
         self.cycle_selected(1)
@@ -606,31 +669,22 @@ impl SettingsMenu {
         key: &str,
         kb: &KeybindingsManager,
     ) -> SettingsMenuAction {
-        let options = match &sub.kind {
-            SettingsSubmenu::Thinking { levels } => levels.len(),
-            SettingsSubmenu::Theme { themes } => themes.len(),
-            SettingsSubmenu::Warnings => 1,
-            SettingsSubmenu::ServiceTier => SERVICE_TIER_CHOICES.len(),
-        };
-        if kb.matches(key, "tui.select.up") {
-            if options > 0 {
-                sub.selected = if sub.selected == 0 {
-                    options - 1
-                } else {
-                    sub.selected - 1
-                };
-                return Self::submenu_selection_change(sub);
+        if kb.matches(key, "tui.select.up") || kb.matches(key, "tui.select.down") {
+            if sub.filtered.is_empty() {
+                return SettingsMenuAction::None;
             }
-            return SettingsMenuAction::None;
-        }
-        if kb.matches(key, "tui.select.down") {
-            if options > 0 {
-                sub.selected = (sub.selected + 1) % options;
-                return Self::submenu_selection_change(sub);
-            }
-            return SettingsMenuAction::None;
+            sub.step(if kb.matches(key, "tui.select.up") {
+                -1
+            } else {
+                1
+            });
+            return Self::submenu_selection_change(sub);
         }
         if kb.matches(key, "tui.select.confirm") || key == "space" {
+            // A query that hides every option leaves nothing to select.
+            if sub.filtered.is_empty() {
+                return SettingsMenuAction::None;
+            }
             let row_id = self.rows[sub.row].id;
             let value = match &sub.kind {
                 SettingsSubmenu::Thinking { levels } => {
@@ -677,8 +731,27 @@ impl SettingsMenu {
             return SettingsMenuAction::None;
         }
         if kb.matches(key, "tui.select.cancel") || key == "ctrl+c" {
+            // Esc clears a non-empty query first; the next Esc goes back.
+            if !sub.search.value().is_empty() {
+                sub.search.prefill("");
+                let previous = sub.selected;
+                sub.refilter();
+                if sub.selected != previous {
+                    return Self::submenu_selection_change(sub);
+                }
+                return SettingsMenuAction::None;
+            }
             // Theme: Esc restores the row's theme; every submenu just goes back.
             return self.submenu_cancel(sub);
+        }
+        // Every other key edits the submenu's search.
+        let previous = (sub.search.value().to_string(), sub.selected);
+        sub.search.handle_key(key, kb);
+        if sub.search.value() != previous.0 {
+            sub.refilter();
+            if sub.selected != previous.1 {
+                return Self::submenu_selection_change(sub);
+            }
         }
         SettingsMenuAction::None
     }
@@ -704,6 +777,16 @@ impl SettingsMenu {
             },
             // Every other submenu just goes back; the menu itself stays open.
             _ => SettingsMenuAction::SubmenuClosed,
+        }
+    }
+
+    /// The active search query: the open submenu's, else the active tab's.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        match (&self.sub, self.tabs.get(self.tab)) {
+            (Some(sub), _) => sub.search.value(),
+            (None, Some(tab)) => tab.search.value(),
+            (None, None) => "",
         }
     }
 
@@ -772,10 +855,12 @@ impl SettingsMenu {
         lines.push(tabs::strip_row(theme, width, &names, self.tab));
         lines.push(Vec::new());
         if tab.filtered.is_empty() {
-            lines.push(crate::menu_panel::no_match_row(
+            lines.push(empty_state_row(
                 theme,
                 width,
-                "No matching settings",
+                kb,
+                tab.search.value(),
+                "No settings in this tab",
             ));
             lines.push(footer(kb, self.tabs.len()).line(theme, width));
             return lines;
@@ -825,7 +910,29 @@ impl SettingsMenu {
                 lines.push(crate::menu_panel::rule_row(theme, width));
             }
         }
-        lines.push(footer(kb, self.tabs.len()).line(theme, width));
+        // The Enter line: a submenu row opens, a value row steps to its next value.
+        let enter = tab.filtered.get(tab.selected).map(|&row_index| {
+            let row = &self.rows[row_index];
+            match &row.values {
+                Some(values) => {
+                    let next = values
+                        .iter()
+                        .position(|value| *value == row.current)
+                        .map_or(0, |index| (index + 1) % values.len());
+                    format!(
+                        "sets {} to {}",
+                        row.label.to_lowercase(),
+                        values.get(next).map_or("", String::as_str)
+                    )
+                }
+                None => format!("opens {}", row.label),
+            }
+        });
+        lines.extend(
+            footer(kb, self.tabs.len())
+                .enter(kb, enter.as_deref())
+                .rows(theme, width),
+        );
         lines
     }
 
@@ -888,16 +995,39 @@ impl SettingsMenu {
                 "",
             ));
         }
-        lines.push(Vec::new());
-        let max_visible = options.len().min(10);
-        let start = sub
-            .selected
+        lines.extend(crate::menu_panel::search_field_lines(
+            theme,
+            width,
+            sub.search.value(),
+            sub.search.cursor(),
+            /*focused*/ true,
+            "Search",
+        ));
+        let visible_options: Vec<(usize, &(String, Option<&'static str>))> = sub
+            .filtered
+            .iter()
+            .filter_map(|&index| options.get(index).map(|option| (index, option)))
+            .collect();
+        let selected_position = visible_options
+            .iter()
+            .position(|(index, _)| *index == sub.selected)
+            .unwrap_or(0);
+        let max_visible = visible_options.len().min(10);
+        let start = selected_position
             .saturating_sub(max_visible / 2)
-            .min(options.len().saturating_sub(max_visible));
-        let end = (start + max_visible).min(options.len());
-        for (position, (value, description)) in options[start..end].iter().enumerate() {
-            let position = start + position;
-            let selected = position == sub.selected;
+            .min(visible_options.len().saturating_sub(max_visible));
+        let end = (start + max_visible).min(visible_options.len());
+        if visible_options.is_empty() {
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                sub.search.value(),
+                "No options available",
+            ));
+        }
+        for (index, (value, description)) in visible_options[start..end].iter().copied() {
+            let selected = index == sub.selected;
             let trailing: Vec<crate::menu_panel::MenuSegment> = description
                 .map(|description| vec![crate::menu_panel::MenuSegment::muted(description)])
                 .unwrap_or_default();
@@ -910,8 +1040,13 @@ impl SettingsMenu {
             ));
         }
         lines.push(Vec::new());
-        lines.push(
+        let enter = visible_options
+            .iter()
+            .find(|(index, _)| *index == sub.selected)
+            .map(|(_, (value, _))| format!("sets {} to {value}", title.to_lowercase()));
+        lines.extend(
             Footer::new()
+                .enter(kb, enter.as_deref())
                 .bound(
                     kb,
                     &["tui.select.up", "tui.select.down"],
@@ -920,7 +1055,7 @@ impl SettingsMenu {
                 )
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Back)
-                .line(theme, width),
+                .rows(theme, width),
         );
         lines
     }

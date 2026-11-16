@@ -8,8 +8,8 @@ use std::fmt::Write;
 
 use super::{EffortLayout, ModelPicker};
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{EscVerb, Footer, HintRank};
-use crate::menu_panel::{menu_row, no_match_row, scroll_row, search_field_lines};
+use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_row, scroll_row, search_field_lines};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -97,15 +97,25 @@ pub(super) fn render(
     }
 
     if filtered_len == 0 {
-        lines.push(no_match_row(theme, width, "No matching models"));
+        lines.push(empty_state_row(
+            theme,
+            width,
+            kb,
+            picker.query(),
+            "No models available",
+        ));
     } else if let Some(model) = picker.selected_model().cloned() {
         if picker.detail_rows() > 0 {
             lines.extend(detail_lines(theme, width, &model));
         }
     }
 
-    lines.push(
+    let enter = picker
+        .selected_model()
+        .map(|model| format!("switches to {}", model.name));
+    lines.extend(
         Footer::new()
+            .enter(kb, enter.as_deref())
             .bound(
                 kb,
                 &["tui.select.up", "tui.select.down"],
@@ -120,7 +130,7 @@ pub(super) fn render(
             )
             .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
             .esc(kb, EscVerb::Close)
-            .line(theme, width),
+            .rows(theme, width),
     );
 
     lines.push(Vec::new());

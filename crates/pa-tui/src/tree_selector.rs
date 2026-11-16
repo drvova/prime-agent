@@ -246,6 +246,12 @@ impl TreeSelector {
         }
     }
 
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.list.search_query()
+    }
+
     /// The full pane.
     #[must_use]
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
@@ -254,26 +260,19 @@ impl TreeSelector {
         lines.push(Vec::new());
         lines.push(border());
         lines.push(title_row(theme, width, "Session tree"));
-        // The two-space indent sits outside the muted escape.
         let query = self.list.search_query();
-        let search: Line = if query.is_empty() {
-            vec![
-                crate::Span::raw("  "),
-                theme.fg_span(ThemeColor::Muted, "Type to search:".to_string()),
-            ]
-        } else {
-            vec![
-                crate::Span::raw("  "),
-                theme.fg_span(ThemeColor::Muted, "Type to search: ".to_string()),
-                theme.fg_span(ThemeColor::Accent, query.to_string()),
-            ]
-        };
-        lines.push(truncate_line(&search, width, ""));
-        lines.push(border());
+        lines.extend(crate::menu_panel::search_field_lines(
+            theme,
+            width,
+            query,
+            query.chars().count(),
+            matches!(self.mode, Mode::Tree),
+            "Search entries",
+        ));
         lines.push(Vec::new());
         match &self.mode {
             Mode::Tree | Mode::Summarize { .. } | Mode::CustomPrompt { .. } => {
-                lines.extend(self.list.render(theme, width));
+                lines.extend(self.list.render(theme, width, kb));
                 match &self.mode {
                     Mode::Summarize { selected, .. } => {
                         lines.push(Vec::new());
@@ -306,7 +305,7 @@ impl TreeSelector {
             }
         }
         lines.push(Vec::new());
-        lines.push(self.footer(kb).line(theme, width));
+        lines.extend(self.footer(kb).rows(theme, width));
         lines.push(border());
         lines
     }
@@ -317,6 +316,10 @@ impl TreeSelector {
     fn footer(&self, kb: &KeybindingsManager) -> Footer {
         match &self.mode {
             Mode::Tree => Footer::new()
+                .enter(
+                    kb,
+                    self.list.selected_id().map(|_| "navigates to this entry"),
+                )
                 .bound(
                     kb,
                     &["tui.select.up", "tui.select.down"],
