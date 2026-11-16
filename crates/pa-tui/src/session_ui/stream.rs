@@ -97,8 +97,10 @@ impl SessionUi {
             download: false,
             tokens: 0,
             elapsed_secs: 0,
+            quiet_secs: 0,
         });
         view.working_since = Some(since);
+        view.working_heard = Some(std::time::Instant::now());
         self.working_tokens.reset();
     }
 

@@ -176,7 +176,12 @@ pub struct WorkingState {
     pub tokens: u64,
     /// Whole seconds since the loader started.
     pub elapsed_secs: u64,
+    /// Whole seconds since the session last sent anything (the stall timer).
+    pub quiet_secs: u64,
 }
+
+/// A silence this long surfaces as `quiet Ns` on the loader.
+const QUIET_AFTER_SECS: u64 = 3;
 
 /// The live abort row's text (TS `message_end`'s aborted arm): the retry
 /// count and the working-elapsed suffix ride the client, never the wire
@@ -225,6 +230,9 @@ impl WorkingState {
         }
         let mut parts = vec![self.activity.to_string()];
         parts.push(format_working_elapsed(self.elapsed_secs));
+        if self.quiet_secs >= QUIET_AFTER_SECS {
+            parts.push(format!("quiet {}", format_working_elapsed(self.quiet_secs)));
+        }
         if self.tokens > 0 {
             parts.push(format!(
                 "{} {} tokens",
@@ -245,6 +253,32 @@ pub(crate) const LOADER_FRAMES: [&str; 10] = [
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
     "\u{2807}", "\u{280f}",
 ];
+
+/// The loader's spinner per activity, so the animation says what is happening: an orbit
+/// while waiting, a filling column while writing, a dense spin for code, a pulse while
+/// executing; thinking keeps the classic frames.
+fn activity_frames(activity: &str) -> &'static [&'static str] {
+    match activity {
+        "Waiting" => &[
+            "\u{2808}", "\u{2810}", "\u{2820}", "\u{2880}", "\u{2840}", "\u{2804}", "\u{2802}",
+            "\u{2801}",
+        ],
+        "Writing" => &[
+            "\u{2840}", "\u{2844}", "\u{2846}", "\u{2847}", "\u{28c7}", "\u{28e7}", "\u{28f7}",
+            "\u{28ff}", "\u{28fe}", "\u{28fc}", "\u{28f8}", "\u{28b8}", "\u{2838}", "\u{2818}",
+            "\u{2808}", "\u{2800}",
+        ],
+        "Writing code" => &[
+            "\u{28fe}", "\u{28fd}", "\u{28fb}", "\u{28bf}", "\u{287f}", "\u{28df}", "\u{28ef}",
+            "\u{28f7}",
+        ],
+        "Executing" => &[
+            "\u{2802}", "\u{2806}", "\u{2816}", "\u{2836}", "\u{2837}", "\u{283f}", "\u{2837}",
+            "\u{2836}", "\u{2816}", "\u{2806}",
+        ],
+        _ => &LOADER_FRAMES,
+    }
+}
 
 /// The working pulse icon frames (250ms interval): the shared "still working"
 /// marker across the agents view, the subagent tray, and tool markers.
@@ -513,10 +547,12 @@ pub fn render_loader(
     frame: usize,
     theme: &Theme,
     width: usize,
+    stop_key: Option<&str>,
 ) -> Vec<Line> {
     let accent = theme.fg_style(ThemeColor::Accent);
     let muted = theme.fg_style(ThemeColor::Muted);
-    let spinner = LOADER_FRAMES[frame % LOADER_FRAMES.len()];
+    let frames = activity_frames(working.activity);
+    let spinner = frames[frame % frames.len()];
     let message = working.label();
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
     row.push(Span::styled(spinner.to_string(), accent));
@@ -525,6 +561,23 @@ pub fn render_loader(
         // between the two colored runs, so the row resets to default fg there.
         row.push(Span::raw(" ".to_string()));
         row.push(Span::styled(message, muted));
+    }
+    // The stop key as a filled chip, flush right: ` Esc  stop `.
+    if let Some(key) = stop_key {
+        let chip = vec![
+            Span::styled(
+                format!(" {key} "),
+                theme
+                    .bg_style(ThemeBg::SelectedBg)
+                    .patch(theme.fg_style(ThemeColor::Text)),
+            ),
+            Span::styled("  stop ".to_string(), muted),
+        ];
+        let used = crate::width::line_width(&row) + crate::width::line_width(&chip);
+        if used < width {
+            row.push(Span::raw(" ".repeat(width - used)));
+            row.extend(chip);
+        }
     }
     vec![spacer(), pad_to(row, width, Style::default())]
 }

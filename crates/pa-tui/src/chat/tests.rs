@@ -777,57 +777,94 @@ fn aborted_assistant_message_renders_the_red_abort_row() {
 #[test]
 fn loader_line_shape() {
     let working = WorkingState {
-        activity: "Writing",
+        activity: "Thinking",
         message: None,
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        quiet_secs: 0,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(&working, 4, &theme(), 100, None);
     assert_eq!(rows.len(), 2);
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
         .collect::<String>();
-    assert!(text.contains("\u{283c} Writing \u{00b7} 1s \u{00b7} \u{2193} 72 tokens"));
+    assert!(text.contains("\u{283c} Thinking \u{00b7} 1s \u{00b7} \u{2193} 72 tokens"));
 }
 
 /// The gap resets to default fg instead of carrying the label color over the gap.
 #[test]
 fn loader_gap_between_spinner_and_label_is_unstyled() {
     let working = WorkingState {
-        activity: "Writing",
+        activity: "Thinking",
         message: None,
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        quiet_secs: 0,
     };
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_loader(&working, 0, &t, 100);
+    let rows = render_loader(&working, 0, &t, 100, None);
     assert_eq!(
         rows[1][..4],
         [
             Span::styled(" ", Style::default()),
             Span::styled(LOADER_FRAMES[0], accent),
             Span::raw(" "),
-            Span::styled("Writing \u{00b7} 1s \u{00b7} \u{2193} 72 tokens", muted),
+            Span::styled("Thinking \u{00b7} 1s \u{00b7} \u{2193} 72 tokens", muted),
         ]
     );
+}
+
+/// The live bar: the activity's own spinner, a `quiet` stall timer after 3s of silence, and
+/// the stop key as a chip flush right.
+#[test]
+fn loader_shows_the_stall_timer_and_the_stop_chip() {
+    let working = WorkingState {
+        activity: "Writing",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 9,
+        quiet_secs: 4,
+    };
+    let rows = render_loader(&working, 0, &theme(), 60, Some("Esc"));
+    let text = rows[1]
+        .iter()
+        .map(|s| s.content.as_str())
+        .collect::<String>();
+    assert!(
+        text.starts_with(" \u{2840} Writing \u{00b7} 9s \u{00b7} quiet 4s"),
+        "{text:?}"
+    );
+    assert!(text.ends_with(" Esc   stop "), "{text:?}");
+    assert_eq!(crate::width::str_width(&text), 60);
+    let quiet = WorkingState {
+        quiet_secs: 2,
+        ..working
+    };
+    let text: String = render_loader(&quiet, 0, &theme(), 60, None)[1]
+        .iter()
+        .map(|s| s.content.as_str())
+        .collect();
+    assert!(!text.contains("quiet"), "under 3s stays quiet: {text:?}");
 }
 
 /// The loader shows "<message> <elapsed>" and drops the activity label and token count.
 #[test]
 fn loader_working_message_replaces_the_activity_label() {
     let working = WorkingState {
-        activity: "Executing",
+        activity: "Thinking",
         message: Some("\u{203a} setting up python kernel (one-time, ~30s)\u{2026}".into()),
         download: true,
         tokens: 72,
         elapsed_secs: 3,
+        quiet_secs: 0,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(&working, 4, &theme(), 100, None);
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
@@ -836,7 +873,7 @@ fn loader_working_message_replaces_the_activity_label() {
         text.contains("\u{283c} \u{203a} setting up python kernel (one-time, ~30s)\u{2026} 3s"),
         "got: {text}"
     );
-    assert!(!text.contains("Executing"));
+    assert!(!text.contains("Thinking"));
     assert!(!text.contains("72 tokens"));
 }
 

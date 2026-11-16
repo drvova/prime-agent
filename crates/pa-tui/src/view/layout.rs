@@ -330,6 +330,9 @@ impl AgentView {
     pub(super) fn prepare_layout(&mut self, width: usize) {
         if let (Some(working), Some(since)) = (&mut self.working, self.working_since) {
             working.elapsed_secs = since.elapsed().as_secs();
+            working.quiet_secs = self
+                .working_heard
+                .map_or(0, |heard| heard.elapsed().as_secs());
         }
         let options = (
             self.theme.clone(),
@@ -415,7 +418,16 @@ impl AgentView {
                 width,
             ));
         } else if let Some(working) = &self.working {
-            tail.extend(render_loader(working, self.pulse_frame, &self.theme, width));
+            // The stop chip names the key that clears/interrupts (the user's effective binding).
+            let stop = self.editor.keybindings().first_key("app.input.clear");
+            let stop = stop.map(|key| crate::keybindings::format_key_text(&key));
+            tail.extend(render_loader(
+                working,
+                self.pulse_frame,
+                &self.theme,
+                width,
+                stop.as_deref(),
+            ));
         }
         // The side-question pane hugs the transcript tail, not the dock, so the frame's slack
         // lands between the pane and the editor (TS mounts it behind a `Spacer(1)`).
