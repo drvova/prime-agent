@@ -97,6 +97,7 @@ impl SessionUi {
         });
         view.working_since = Some(since);
         self.working_tokens.reset();
+        (self.run_tool_calls, self.run_total_tokens) = (0, 0);
     }
 
     /// Update the loader's activity label from one provider stream event (thinking/text/toolcall

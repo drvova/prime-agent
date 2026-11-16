@@ -454,6 +454,7 @@ impl SessionUi {
                     // Re-register the call in the pending map (a card may predate a
                     // pending-state reset or arrive without its own streamed frame).
                     self.pending_tools.insert(tool_call_id.clone());
+                    self.run_tool_calls += 1;
                     Self::set_working_activity("Executing", false, view);
                     self.track_live_tool_timer();
                 }
@@ -702,7 +703,21 @@ impl SessionUi {
     fn end_run(&mut self, view: &mut AgentView) {
         self.turn_active = false;
         view.working = None;
-        view.working_since = None;
+        // The run's summary row: how long the prompt took and what it cost.
+        if let Some(since) = view.working_since.take() {
+            let elapsed = crate::chat::format_working_elapsed(since.elapsed().as_secs());
+            let (calls, tokens) = (self.run_tool_calls, self.run_total_tokens);
+            let plural = if calls == 1 { "" } else { "s" };
+            let tokens = crate::chrome::format_token_count(tokens);
+            let text = format!(
+                "Worked for {elapsed} \u{b7} {calls} tool call{plural} \u{b7} {tokens} tokens"
+            );
+            view.push_entry(ChatEntry::Status {
+                text,
+                kind: StatusKind::Info,
+            });
+            self.track_feature_outcome("summary", "completed", None);
+        }
         // A run that ends without its `turn_end` (a pre-run abort, a detach) still
         // leaves no live streaming slot or retry countdown behind.
         self.streaming_index = None;
@@ -785,6 +800,7 @@ impl SessionUi {
             }
         } else {
             self.working_tokens.settle(usage_output);
+            self.run_total_tokens += message["usage"]["totalTokens"].as_u64().unwrap_or(0);
             self.record_speed_sample(message, view);
         }
         if let Some(text) = blocks.iter().rev().find_map(|block| match block {

@@ -116,6 +116,8 @@ impl SessionUi {
             steering_mode: "all".to_string(),
             streaming_index: None,
             working_tokens: LoaderTokenTracker::default(),
+            run_tool_calls: 0,
+            run_total_tokens: 0,
             turn_error_shown: false,
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),

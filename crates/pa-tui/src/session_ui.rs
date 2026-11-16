@@ -251,6 +251,10 @@ pub(crate) struct SessionUi {
     pub(crate) steering_mode: String,
     streaming_index: Option<usize>,
     working_tokens: LoaderTokenTracker,
+    /// The run's tool calls and total tokens (every call's `usage.totalTokens`,
+    /// context re-reads included), for the summary row at its end.
+    run_tool_calls: u64,
+    run_total_tokens: u64,
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,

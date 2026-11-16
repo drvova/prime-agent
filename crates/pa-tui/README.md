@@ -24,6 +24,8 @@ list; rows carry their session's `◷ N` heartbeat count from the
 
 The rewind surface: every `/tree` navigation (also the double-Escape gesture) sends `navigate_tree` with `restoreFiles`, so a rewind also restores the code where the daemon has a checkpoint, and reports the restored count and any kept files (the `rewind` feature outcome).
 
+The run summary row: when a run ends, the transcript gets `Worked for <elapsed> · N tool calls · <tokens> tokens` (elapsed from the loader's anchor, tool calls from `tool_execution_start`, tokens summed from each completed message's `usage.totalTokens`; the `summary` feature outcome).
+
 ## Non-goals
 No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the pa-daemon worker. It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
 
