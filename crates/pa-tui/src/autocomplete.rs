@@ -27,6 +27,8 @@ pub struct CompletionItem {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestionKind {
     SlashCommand,
+    /// A command's argument choices (`/effort ` lists the model's levels).
+    SlashArgument,
     File,
     Emoji,
 }
@@ -36,6 +38,16 @@ pub struct Suggestions {
     pub prefix: String,
     pub kind: Option<SuggestionKind>,
     pub items: Vec<CompletionItem>,
+    /// The row the menu opens on when the typed text names none (the current argument choice).
+    pub selected: Option<usize>,
+}
+
+/// One command's argument choices: the rows its argument position lists, and the value currently
+/// in effect (`(current)` in its row, preselected when the menu opens).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ArgumentChoices {
+    pub items: Vec<CompletionItem>,
+    pub current: Option<String>,
 }
 
 /// A suggestion lookup: computed inline, or a background `@` file
@@ -86,7 +98,7 @@ pub trait AutocompleteProvider: Send {
     fn set_skill_commands(&mut self, _skills: Vec<SlashCommandEntry>) {}
     /// Replace one command's argument completions; a default no-op for
     /// providers without argument completions.
-    fn set_argument_completions(&mut self, _command: &'static str, _items: Vec<CompletionItem>) {}
+    fn set_argument_completions(&mut self, _command: &'static str, _choices: ArgumentChoices) {}
     /// The argument hint of a listed command, by name or alias (`[level]` for `/effort`): the
     /// editor ghosts it after `/name `. A default `None` for providers without command listings.
     fn argument_hint(&self, _command: &str) -> Option<String> {
@@ -392,15 +404,23 @@ impl AutocompleteState {
     /// marker, the name column (the widest visible label plus a two-cell gap, clamped to
     /// [`NAME_COLUMN_MIN`]..=[`NAME_COLUMN_MAX`]), and the muted description with the source tag
     /// on the same row — plus a one-cell scrollbar on the right edge while the list overflows.
-    /// An empty slash list renders its no-match row so the menu stays open on a typo.
+    /// An empty slash list renders its no-match row so the menu stays open on a typo. In a
+    /// command list, `live` answers a command's current state (`/fast` → `on`), which replaces
+    /// its static description; it runs per visible row, so it must only read held state.
     #[must_use]
-    pub fn render(&self, theme: &crate::theme::Theme, width: usize) -> Vec<Line> {
+    pub fn render(
+        &self,
+        theme: &crate::theme::Theme,
+        width: usize,
+        live: &dyn Fn(&str) -> Option<String>,
+    ) -> Vec<Line> {
         if self.items.is_empty() {
             let message = match self.kind {
                 Some(SuggestionKind::SlashCommand) => format!("no command matches {}", self.query),
-                Some(SuggestionKind::File | SuggestionKind::Emoji) | None => {
-                    "No matching commands".to_string()
-                }
+                Some(
+                    SuggestionKind::SlashArgument | SuggestionKind::File | SuggestionKind::Emoji,
+                )
+                | None => "No matching commands".to_string(),
             };
             return vec![crate::menu_panel::no_match_row(theme, width, &message)];
         }
@@ -414,16 +434,21 @@ impl AutocompleteState {
             crate::menu_panel::scrollbar_cells(theme, visible.len(), self.items.len(), start)
         });
         let row_width = width.saturating_sub(usize::from(scrollbar.is_some()));
+        let command_list = self.kind == Some(SuggestionKind::SlashCommand);
         let details: Vec<String> = visible
             .iter()
             .map(|item| {
-                [item.description.as_deref(), item.source_tag.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
-                    .filter(|text| !text.is_empty())
-                    .collect::<Vec<_>>()
-                    .join(" \u{b7} ")
+                let state = command_list.then(|| live(&item.value)).flatten();
+                [
+                    state.as_deref().or(item.description.as_deref()),
+                    item.source_tag.as_deref(),
+                ]
+                .into_iter()
+                .flatten()
+                .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                .filter(|text| !text.is_empty())
+                .collect::<Vec<_>>()
+                .join(" \u{b7} ")
             })
             .collect();
         let widest_label = visible
@@ -770,7 +795,7 @@ pub struct CombinedAutocompleteProvider {
     hidden: std::collections::HashSet<String>,
     /// Per-command argument completions: the items offered at the
     /// command's argument position (e.g. the `/tier` tier choices).
-    arguments: std::collections::HashMap<&'static str, Vec<CompletionItem>>,
+    arguments: std::collections::HashMap<&'static str, ArgumentChoices>,
     paths: PathCompletionProvider,
     /// The `@` file search's in-memory file index (one per session view).
     file_index: file_index::FileIndex,
@@ -832,8 +857,8 @@ impl CombinedAutocompleteProvider {
 
     /// Replace one command's argument completions (TS
     /// `command.getArgumentCompletions`, e.g. the `/tier` tier choices).
-    pub fn set_argument_completions(&mut self, command: &'static str, items: Vec<CompletionItem>) {
-        self.arguments.insert(command, items);
+    pub fn set_argument_completions(&mut self, command: &'static str, choices: ArgumentChoices) {
+        self.arguments.insert(command, choices);
     }
 
     /// The slash-name suggestions for a typed prefix, ranked over names and aliases only (never
@@ -943,8 +968,8 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         CombinedAutocompleteProvider::set_skill_commands(self, skills);
     }
 
-    fn set_argument_completions(&mut self, command: &'static str, items: Vec<CompletionItem>) {
-        CombinedAutocompleteProvider::set_argument_completions(self, command, items);
+    fn set_argument_completions(&mut self, command: &'static str, choices: ArgumentChoices) {
+        CombinedAutocompleteProvider::set_argument_completions(self, command, choices);
     }
 
     fn argument_hint(&self, command: &str) -> Option<String> {
@@ -983,6 +1008,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                             prefix: context.prefix,
                             kind: Some(SuggestionKind::SlashCommand),
                             items,
+                            selected: None,
                         }));
                     }
                     // Argument items answer at the argument position (filtered by the typed
@@ -990,9 +1016,10 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                     // (the force-triggered path completion is the file surface there).
                     SlashKind::Argument => {
                         let command = context.command_name.as_deref()?;
-                        let items = self.arguments.get(command)?;
+                        let choices = self.arguments.get(command)?;
                         let term = context.prefix.trim().to_lowercase();
-                        let matches: Vec<CompletionItem> = items
+                        let matches: Vec<CompletionItem> = choices
+                            .items
                             .iter()
                             .filter(|item| term.is_empty() || item.value.starts_with(&term))
                             .cloned()
@@ -1000,10 +1027,14 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                         if matches.is_empty() {
                             return None;
                         }
+                        let selected = matches
+                            .iter()
+                            .position(|item| choices.current.as_ref() == Some(&item.value));
                         return Some(SuggestionLookup::Ready(Suggestions {
                             prefix: context.prefix.clone(),
-                            kind: Some(SuggestionKind::SlashCommand),
+                            kind: Some(SuggestionKind::SlashArgument),
                             items: matches,
+                            selected,
                         }));
                     }
                 }
@@ -1018,6 +1049,7 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
             prefix,
             kind: Some(SuggestionKind::File),
             items,
+            selected: None,
         }))
     }
 

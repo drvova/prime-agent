@@ -161,7 +161,11 @@ impl Editor {
                     .and_then(crate::autocomplete::AutocompleteState::selected_item);
                 if let Some(item) = selected {
                     let is_typed_exact = self.is_slash_name_completion_at_prompt_start();
-                    if is_typed_exact {
+                    let kind = self.autocomplete.as_ref().and_then(|s| s.kind);
+                    let argument_choice =
+                        kind == Some(crate::autocomplete::SuggestionKind::SlashArgument);
+                    let confirm = self.kb_matches(input, "tui.select.confirm");
+                    if is_typed_exact || argument_choice {
                         self.emit(EditorEvent::SlashMenuAccepted);
                     }
                     self.push_undo_snapshot();
@@ -170,7 +174,6 @@ impl Editor {
                     // selection collapses with it.
                     self.selection_anchor = None;
                     let (cl, cc) = (self.cursor_line, self.cursor_col);
-                    let kind = self.autocomplete.as_ref().and_then(|s| s.kind);
                     let result = self.apply_completion(&item, kind);
                     let completed_noop = result.lines == self.lines
                         && result.cursor_line == cl
@@ -180,6 +183,31 @@ impl Editor {
                     self.set_cursor_col(result.cursor_col);
                     self.cancel_autocomplete();
                     self.request_autocomplete_in_symbol_token();
+                    // Tab on a command row inserts `/name ` and chains into the command's
+                    // argument list when it has one.
+                    if is_typed_exact && !confirm {
+                        let line = &self.lines[self.cursor_line];
+                        let separated = self.cursor_col > 0
+                            && line
+                                .chars()
+                                .nth(self.cursor_col - 1)
+                                .is_some_and(char::is_whitespace);
+                        if !separated {
+                            let at = line
+                                .char_indices()
+                                .nth(self.cursor_col)
+                                .map_or(line.len(), |(index, _)| index);
+                            self.lines[self.cursor_line].insert(at, ' ');
+                            self.set_cursor_col(self.cursor_col + 1);
+                        }
+                        self.request_autocomplete(false, false);
+                    }
+                    // Enter on an argument choice inserts it and submits the command.
+                    if argument_choice && confirm && !self.disable_submit {
+                        self.emit(EditorEvent::Changed(self.get_text()));
+                        self.submit_value();
+                        return;
+                    }
                     if !is_typed_exact || !completed_noop {
                         self.emit(EditorEvent::Changed(self.get_text()));
                         return;

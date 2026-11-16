@@ -75,7 +75,37 @@ impl AgentView {
     /// above the cursor row). The panel opens with the full-width muted rule (the operator's
     /// 2026-09-26 top-border directive).
     fn render_autocomplete_overlay(&mut self, width: usize) -> Vec<Line> {
-        editor_surface::overlay(&self.editor, &self.theme, width)
+        // The command rows' live state, read from the chrome the tray already renders: the menu
+        // doubles as a status read-out without a daemon round-trip.
+        let chrome = &self.chrome;
+        let live = |command: &str| match command {
+            "model" => {
+                chrome
+                    .model_id
+                    .as_ref()
+                    .map(|model| match chrome.thinking_suffix.as_deref() {
+                        Some(level) => format!("{model} \u{b7} {level}"),
+                        None => model.clone(),
+                    })
+            }
+            "effort" => chrome.thinking_suffix.clone(),
+            "fast" => Some(
+                if chrome.service_tier.as_deref() == Some("priority") {
+                    "on"
+                } else {
+                    "off"
+                }
+                .to_string(),
+            ),
+            "tier" => Some(
+                chrome
+                    .service_tier
+                    .clone()
+                    .unwrap_or_else(|| "default".to_string()),
+            ),
+            _ => None,
+        };
+        editor_surface::overlay(&self.editor, &self.theme, width, &live)
     }
 
     /// The editor surface (TS `Editor.render` with a background): a

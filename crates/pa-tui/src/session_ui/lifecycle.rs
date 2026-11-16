@@ -628,6 +628,8 @@ impl SessionUi {
         // The tray's effort suffix moves with the same snapshot; the bare name
         // wins when the state reports neither.
         view.chrome.thinking_suffix = self.pending_thinking_suffix.take();
+        // The completion menu's model-scoped choices follow the rebuilt model and level.
+        self.update_model_eligibility_filters(view);
         view.queued = self.pending_queue.take().unwrap_or_default();
         // Any browse selection belonged to the previous queue and drops.
         let _ = self.queue_selection.reset();

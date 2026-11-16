@@ -95,6 +95,7 @@ impl Editor {
         Suggestions {
             prefix: format!(":{name}"),
             kind: Some(SuggestionKind::Emoji),
+            selected: None,
             items: matches
                 .into_iter()
                 .map(|(code, emoji)| CompletionItem {

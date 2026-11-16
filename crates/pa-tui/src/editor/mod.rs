@@ -85,8 +85,8 @@ pub enum EditorEvent {
     Submitted(String),
     /// Autocomplete overlay visibility changed.
     AutocompleteToggled(bool),
-    /// A slash command was accepted from the completion menu (Tab or Enter on a command row):
-    /// the host's adoption seam for the slash menu.
+    /// A slash command or one of its argument choices was accepted from the completion menu (Tab
+    /// or Enter on its row): the host's adoption seam for the slash menu.
     SlashMenuAccepted,
     /// A selection cut/copy asks the host to write `text` to the system
     /// clipboard (the copy chain lives with the host, which owns the terminal).
@@ -252,10 +252,10 @@ impl Editor {
     pub fn set_autocomplete_argument_completions(
         &mut self,
         command: &'static str,
-        items: Vec<crate::autocomplete::CompletionItem>,
+        choices: crate::autocomplete::ArgumentChoices,
     ) {
         if let Some(provider) = self.autocomplete_provider.as_mut() {
-            provider.set_argument_completions(command, items);
+            provider.set_argument_completions(command, choices);
         }
     }
 
@@ -933,7 +933,7 @@ mod tests {
                     EditorEvent::SlashMenuAccepted,
                     EditorEvent::AutocompleteToggled(false),
                     EditorEvent::Changed(text),
-                ] if text == "/model"
+                ] if text == "/model "
             ),
             "{events:?}"
         );
@@ -946,6 +946,53 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, EditorEvent::SlashMenuAccepted)),
             "a path completion is not a slash-menu accept"
+        );
+    }
+
+    /// Tab on a command with argument choices inserts `/name ` and opens the choices on the
+    /// current one; Enter on a choice inserts it and submits, reporting the argument pick.
+    #[test]
+    fn tab_chains_into_argument_choices_and_enter_submits_the_pick() {
+        let mut e = ed();
+        let level = |value: &str| crate::autocomplete::CompletionItem {
+            value: value.to_string(),
+            label: value.to_string(),
+            description: None,
+            argument_hint: None,
+            source_tag: None,
+        };
+        e.set_autocomplete_argument_completions(
+            "effort",
+            crate::autocomplete::ArgumentChoices {
+                items: vec![level("low"), level("medium"), level("high")],
+                current: Some("medium".to_string()),
+            },
+        );
+        for ch in "/eff".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        e.materialize_autocomplete();
+        e.handle_input("tab");
+        e.materialize_autocomplete();
+        assert_eq!(e.get_text(), "/effort ");
+        let menu = e.autocomplete_state().expect("the argument choices open");
+        assert_eq!(
+            menu.selected_item().map(|item| item.value),
+            Some("medium".to_string())
+        );
+        let _ = e.take_events();
+        e.handle_input("down");
+        e.handle_input("enter");
+        let events = e.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, EditorEvent::SlashMenuAccepted)),
+            "{events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(EditorEvent::Submitted(text)) if text == "/effort high"),
+            "{events:?}"
         );
     }
 

@@ -287,7 +287,10 @@ impl Editor {
             suggestions.kind,
         );
         state.query = suggestions.prefix;
-        if let Some(idx) = state.best_match_index(&matching_prefix) {
+        if let Some(idx) = state
+            .best_match_index(&matching_prefix)
+            .or(suggestions.selected)
+        {
             state.set_selected_index(idx);
         }
         let was_showing = self.autocomplete.is_some();
