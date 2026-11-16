@@ -246,10 +246,9 @@ attached UIs daemon-wide).
 Workspace checkpoints (`workspace_checkpoints.rs`): a shadow git store per
 workspace (own git dir, one index per session, user git config shut out)
 snapshots the files before and after every turn, on the turn's blocking thread;
-`get_session_tree` lists `checkpointEntryIds`, and `navigate_tree` with
-`restoreFiles` restores the target's tree after the leaf move, leaving paths
+`navigate_tree` with `restoreFiles` restores the target's tree after the leaf move, leaving paths
 changed outside the session, and answers `files: {restored, conflicts}` or
-`files: {error}`. In-memory sessions and RLM children never checkpoint.
+`files: {error}` (omitted without a checkpoint). In-memory sessions and RLM children never checkpoint.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.

@@ -142,18 +142,6 @@ impl WorkspaceCheckpoints {
         }
     }
 
-    /// The ids of every entry a navigation could restore files for.
-    pub(crate) fn restorable_entry_ids(&self, core: &SessionCore) -> Vec<String> {
-        let (Some(store), Some(session)) = (self.store(core), core.store.as_ref()) else {
-            return Vec::new();
-        };
-        let entries = session.entries().iter();
-        entries
-            .filter(|entry| rewind_tree(&store, entry).is_some())
-            .map(|entry| entry.id.clone())
-            .collect()
-    }
-
     /// Restore the files for a navigation that already moved the leaf off
     /// `old_leaf`, recording the abandoned state at `old_leaf` so
     /// navigating back restores it. Answers the response's `files` value, or
@@ -503,8 +491,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (checkpoints, core, workspace, prompt, answer) = one_turn(root.path());
         let file = |name: &str| std::fs::read_to_string(workspace.join(name)).ok();
-        let restorable = checkpoints.restorable_entry_ids(&core.lock().unwrap());
-        assert_eq!(restorable, vec![prompt.clone(), answer.clone()]);
 
         let undo = navigate(&checkpoints, &core, (&prompt, Some(&answer), None));
         assert_eq!(undo, Some(json!({ "restored": 3, "conflicts": [] })));

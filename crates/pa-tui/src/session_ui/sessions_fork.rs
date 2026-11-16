@@ -99,27 +99,18 @@ impl SessionUi {
                 custom_instructions,
             } => {
                 // Selecting the current leaf is a no-op.
-                let selector = view.tree_selector.as_ref();
-                let leaf =
-                    selector.and_then(|selector| selector.current_leaf_id().map(str::to_string));
-                let restore_files = selector.is_some_and(TreeSelector::restore_files);
+                let leaf = view
+                    .tree_selector
+                    .as_ref()
+                    .and_then(|selector| selector.current_leaf_id().map(str::to_string));
                 view.tree_selector = None;
                 if leaf.as_deref() == Some(target_id.as_str()) {
                     self.note("Already at this point", view);
                     self.dirty = true;
                     return Ok(());
                 }
-                if restore_files {
-                    self.track_feature_outcome("rewind", "initiated", None);
-                }
-                self.navigate_tree(
-                    &target_id,
-                    summarize,
-                    custom_instructions,
-                    restore_files,
-                    view,
-                )
-                .await?;
+                self.navigate_tree(&target_id, summarize, custom_instructions, view)
+                    .await?;
             }
         }
         self.dirty = true;
@@ -131,7 +122,6 @@ impl SessionUi {
         target_id: &str,
         summarize: bool,
         custom_instructions: Option<String>,
-        restore_files: bool,
         view: &mut AgentView,
     ) -> Result<()> {
         let result = self
@@ -145,7 +135,8 @@ impl SessionUi {
                     custom_instructions,
                     replace_instructions: None,
                     label: None,
-                    restore_files: Some(restore_files),
+                    // The daemon restores the files only where a checkpoint exists.
+                    restore_files: Some(true),
                     rest: Map::default(),
                 },
             )
@@ -174,20 +165,17 @@ impl SessionUi {
             }
         }
         self.note("Navigated to selected point", view);
-        if let Some(files) = data.get("files") {
-            let kept: Vec<&str> = files["conflicts"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .collect();
+        // A rewind that touched and kept no file stays quiet.
+        let files = data.get("files");
+        let kept = files
+            .and_then(|files| files["conflicts"].as_array())
+            .map_or(0, Vec::len);
+        if let Some(files) = files.filter(|files| files["restored"] != 0 || kept > 0) {
             let note = match files["error"].as_str() {
                 Some(error) => format!("Files not restored: {error}"),
-                None if kept.is_empty() => format!("Files restored: {}", files["restored"]),
                 None => format!(
-                    "Files restored: {}; kept changes made outside this session: {}",
-                    files["restored"],
-                    kept.join(", ")
+                    "Files restored: {}; kept {kept} changed outside this session",
+                    files["restored"]
                 ),
             };
             self.note(&note, view);

@@ -65,8 +65,7 @@ impl TreeNavigation {
     }
 
     /// `get_session_tree`: every entry in file order with its label plus the
-    /// current leaf id (TS `getFlatTree` + `getLeafId`), plus the entries a
-    /// navigation can restore files for (`checkpointEntryIds`).
+    /// current leaf id (TS `getFlatTree` + `getLeafId`).
     pub(crate) fn get_session_tree(&self) -> DaemonResponse {
         let core = self.core.lock().unwrap();
         match core.store.as_ref() {
@@ -76,7 +75,6 @@ impl TreeNavigation {
                 Some(json!({
                     "flatNodes": session_tree::flat_tree(store),
                     "leafId": store.leaf_id(),
-                    "checkpointEntryIds": self.checkpoints.restorable_entry_ids(&core),
                 })),
             ),
             None => response_failure(
