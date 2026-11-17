@@ -383,7 +383,7 @@ fn code_block_indent_rides_the_render_calls() {
         .map(|row| strip_markers(&row))
         .collect();
     assert!(
-        flat.iter().any(|row| row == "     fn main() {}"),
+        flat.iter().any(|row| row == "     \u{258c} fn main() {}"),
         "non-default indent applied: {flat:?}"
     );
     // The default (no setting) stays two spaces.
@@ -402,7 +402,7 @@ fn code_block_indent_rides_the_render_calls() {
         .map(|row| strip_markers(&row))
         .collect();
     assert!(
-        flat.iter().any(|row| row == "   fn main() {}"),
+        flat.iter().any(|row| row == "   \u{258c} fn main() {}"),
         "default indent: {flat:?}"
     );
 }

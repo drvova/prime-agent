@@ -385,7 +385,7 @@ pub fn render_assistant(
     preceded_by_tool_activity: bool,
     cache: &mut crate::markdown::MarkdownBlockCache,
 ) -> Vec<Line> {
-    let mut md = crate::markdown::MarkdownStyle::from_theme(theme).with_heading_bands(theme);
+    let mut md = crate::markdown::MarkdownStyle::from_theme(theme).for_replies(theme);
     md.code_block_indent = code_block_indent.to_string();
     render_assistant_with_style(
         message,
