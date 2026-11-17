@@ -184,6 +184,7 @@ impl AgentsViewMode {
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
                     Some(placeholder),
+                    None,
                 );
                 (overlay, surface.rows, surface.cursor)
             }
@@ -199,6 +200,7 @@ impl AgentsViewMode {
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
                     Some("Name this agent session"),
+                    None,
                 );
                 (Vec::new(), surface.rows, surface.cursor)
             }

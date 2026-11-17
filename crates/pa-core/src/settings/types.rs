@@ -364,6 +364,9 @@ pub struct Settings {
     pub chat_detail: Option<String>,
     pub thinking_budgets: Option<ThinkingBudgetsSettings>,
     pub editor_padding_x: Option<u64>,
+    /// How many times the user has used the key the empty composer's self-retiring hint
+    /// names; the hint stops showing once the count reaches its retirement threshold.
+    pub composer_hint_uses: Option<u64>,
     pub autocomplete_max_visible: Option<u64>,
     pub show_hardware_cursor: Option<bool>,
     /// Typing `:name` in the prompt editor suggests matching emoji (unset means on).

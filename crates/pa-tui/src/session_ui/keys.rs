@@ -290,7 +290,15 @@ impl SessionUi {
             self.dirty = true;
             return;
         }
-        let _ = view.editor.handle_paste(text);
+        view.composer_status = None;
+        if let crate::editor::PasteDisposition::Marker { .. } = view.editor.handle_paste(text) {
+            // A large paste collapsed into its chip: the paste-chip adoption count.
+            if let Some(telemetry) = self.telemetry.clone() {
+                tokio::spawn(async move {
+                    telemetry.paste_chip_inserted().await;
+                });
+            }
+        }
     }
 
     /// One key press while the `/effort` picker is open: Esc/Ctrl+C close it
@@ -336,6 +344,8 @@ impl SessionUi {
         if let Some(id) = &id {
             self.exit_guard.note_key_handled(id);
         }
+        // A transient composer status lasts until the next keystroke.
+        view.composer_status = None;
         // Any non-Escape key re-arms the double-Esc tree shortcut (one shot per input chain);
         // Escape itself never resets, so repeated Escape converges to the inert empty state.
         if id.is_some_and(|id| id != "escape") {
@@ -614,6 +624,27 @@ impl SessionUi {
             return Ok(());
         }
         if view.editor.keybindings().matches(&id, "app.model.select") {
+            // A use of the key the empty composer's hint names counts toward retiring it; the
+            // count persists off the key path.
+            if let Some(uses) = self.composer_hint.record_use() {
+                view.composer_hint = self.composer_hint.label(view.editor.keybindings());
+                if let Some(settings) = self.client_settings.clone() {
+                    let notes = self.notes.clone();
+                    tokio::task::spawn_blocking(move || {
+                        if let Err(error) = settings.set_composer_hint_uses(uses) {
+                            let _ =
+                                notes.send(format!("saving the key hint count failed: {error:#}"));
+                        }
+                    });
+                }
+                if view.composer_hint.is_none() {
+                    if let Some(telemetry) = self.telemetry.clone() {
+                        tokio::spawn(async move {
+                            telemetry.composer_hint_retired().await;
+                        });
+                    }
+                }
+            }
             // A completion request parked by this same press must not materialize
             // a dropdown over the picker on the next idle tick.
             view.editor.cancel_autocomplete();

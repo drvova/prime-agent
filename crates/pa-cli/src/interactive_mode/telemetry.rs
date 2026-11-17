@@ -177,6 +177,16 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn paste_chip_inserted(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_paste_chip_count");
+        Box::pin(std::future::ready(()))
+    }
+
+    fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_composer_hint_retired_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn scroll_used(
         &self,
         _action: &'static str,

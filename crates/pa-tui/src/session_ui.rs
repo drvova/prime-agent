@@ -254,6 +254,9 @@ pub(crate) struct SessionUi {
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,
+    /// The empty composer's self-retiring key hint (its use count persists in the client
+    /// settings store).
+    pub(crate) composer_hint: notes::RetiringHint,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

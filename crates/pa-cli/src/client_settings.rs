@@ -220,6 +220,13 @@ impl ClientSettings for CliClientSettings {
         u64
     );
     setting!(
+        composer_hint_uses,
+        set_composer_hint_uses,
+        get_composer_hint_uses,
+        set_composer_hint_uses,
+        u64
+    );
+    setting!(
         autocomplete_max_visible,
         set_autocomplete_max_visible,
         get_autocomplete_max_visible,

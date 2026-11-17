@@ -330,15 +330,6 @@ fn apply_hover_affordance(row: &mut Line, theme: &crate::theme::Theme) {
     }
 }
 
-pub(super) fn indicator_row(indicator: &str, bg: Style, border: Style, width: usize) -> Line {
-    // The indicator text paints on the editor surface's background too (operator directive
-    // 2026-09-26): the `↑/↓ N more` rows read as part of the prompt bar.
-    let mut row: Line = vec![Span::styled(indicator.to_string(), border.patch(bg))];
-    let used = str_width(indicator);
-    row.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
-    row
-}
-
 /// Pad a rendered row to the full width (default background).
 pub(super) fn pad_row(line: Line, width: usize) -> Line {
     let used: usize = line.iter().map(|s| str_width(&s.content)).sum();

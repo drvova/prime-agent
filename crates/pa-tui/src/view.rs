@@ -180,6 +180,11 @@ pub struct AgentView {
     /// The last composed frame's clickable geometry (view/click.rs):
     /// recorded during the frame composition; cleared by the inline compose.
     pub(crate) click: click::ClickSurface,
+    /// A transient status shown dim in the empty composer's text row until the next keystroke
+    /// (nc's composer slot): slash results and copies, never errors.
+    pub composer_status: Option<String>,
+    /// The self-retiring key hint flush right in the empty composer (omp); `None` once retired.
+    pub composer_hint: Option<String>,
     /// The ephemeral action toasts (the top-right auto-dismiss overlay;
     /// a sanctioned divergence from TS — see `toast`).
     pub toasts: crate::toast::Toasts,
@@ -328,6 +333,8 @@ impl AgentView {
             window_shows_tail: false,
             detail_transition: false,
             hover_pos: None,
+            composer_status: None,
+            composer_hint: None,
             toasts: crate::toast::Toasts::default(),
             entry_layout: Vec::new(),
             entry_heights: Vec::new(),

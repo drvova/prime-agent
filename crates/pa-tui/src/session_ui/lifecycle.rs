@@ -117,6 +117,12 @@ impl SessionUi {
             streaming_index: None,
             working_tokens: LoaderTokenTracker::default(),
             turn_error_shown: false,
+            composer_hint: super::notes::RetiringHint::new(
+                options
+                    .client_settings
+                    .as_ref()
+                    .map_or(u64::MAX, |settings| settings.composer_hint_uses()),
+            ),
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),
             last_assistant_text: None,

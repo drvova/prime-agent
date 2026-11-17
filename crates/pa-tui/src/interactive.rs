@@ -301,6 +301,12 @@ pub trait InteractionTelemetry: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A tool call started executing with a live timer; counted on `tui exit`.
     fn live_tool_timer_started(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A large bracketed paste collapsed into its composer chip; counted on `tui exit`.
+    /// Implementations count and return at once: the paste path never waits on it.
+    fn paste_chip_inserted(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The empty composer's self-retiring key hint reached its use count and retired; counted on
+    /// `tui exit`. Implementations count and return at once.
+    fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not
