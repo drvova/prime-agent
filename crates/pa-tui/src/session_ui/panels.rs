@@ -13,6 +13,7 @@ pub(crate) struct ActivityUpdates {
     pub bash: mpsc::UnboundedSender<BashActivityUpdate>,
     pub factory: mpsc::UnboundedSender<FactoryUpdate>,
     pub commands: mpsc::UnboundedSender<CommandCatalogUpdate>,
+    pub stats: mpsc::UnboundedSender<super::StatsUpdate>,
 }
 
 impl SessionUi {

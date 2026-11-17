@@ -11,6 +11,13 @@ use super::{
     EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
+/// One background `get_session_stats` reply, tagged with the refresh generation that issued it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StatsUpdate {
+    generation: u64,
+    context: Option<crate::chrome::ContextUsage>,
+}
+
 impl SessionUi {
     /// Create/attach per the session selection and return the live state.
     #[allow(clippy::too_many_arguments)]
@@ -144,6 +151,8 @@ impl SessionUi {
             bash_activities: serde_json::json!({"activities": []}),
             bash_list_epoch: 0,
             bash_updates: activity_updates.bash,
+            stats_updates: activity_updates.stats,
+            stats_generation: 0,
             factory_graph: serde_json::json!({"runs": []}),
             factory_view_session: None,
             factory_refresh_in_flight: false,
@@ -713,7 +722,12 @@ impl SessionUi {
 
     /// Refresh context usage from `get_session_stats`: tokens, context window,
     /// and percent. The title's spend comes from the roster pushes instead.
+    /// Awaited only on the user-initiated `/import` rebuild; the turn-end refresh
+    /// runs off the loop through [`Self::spawn_stats_refresh`].
     pub(crate) async fn refresh_stats(&mut self) {
+        // A spawned refresh still in flight is older than this one: its reply must not
+        // overwrite the usage read here.
+        self.stats_generation += 1;
         let Ok(data) = self
             .bounded_request(
                 Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
@@ -733,6 +747,49 @@ impl SessionUi {
             .get("contextUsage")
             .and_then(crate::chrome::ContextUsage::from_wire);
         self.dirty = true;
+    }
+
+    /// Fire a background `get_session_stats` refresh (a settled turn or compaction): the
+    /// reply lands through the run loop's channel, so the loop keeps handling keys and
+    /// painting while the daemon answers (AGENTS.md "Performance and the critical path").
+    /// Each refresh bumps the generation and only the newest generation's reply applies, so
+    /// a late reply can never overwrite a newer one. A failed or timed-out request sends
+    /// nothing and the tray keeps its usage, the same as the awaited form.
+    pub(crate) fn spawn_stats_refresh(&mut self) {
+        self.stats_generation += 1;
+        let generation = self.stats_generation;
+        let client = self.client.clone();
+        let active_session_id = self.active_session_id.clone();
+        let updates = self.stats_updates.clone();
+        tokio::spawn(async move {
+            let Ok(Ok(data)) = tokio::time::timeout(
+                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                client.request_ok(DaemonCommand::GetSessionStats {
+                    id: None,
+                    active_session_id,
+                    rest: Map::default(),
+                }),
+            )
+            .await
+            else {
+                return;
+            };
+            let _ = updates.send(StatsUpdate {
+                generation,
+                context: data
+                    .get("contextUsage")
+                    .and_then(crate::chrome::ContextUsage::from_wire),
+            });
+        });
+    }
+
+    /// Fold a landed stats refresh into the tray; a reply from a superseded refresh is dropped.
+    pub(crate) fn apply_stats_update(&mut self, update: StatsUpdate, view: &mut AgentView) {
+        if update.generation != self.stats_generation {
+            return;
+        }
+        self.context = update.context;
+        self.rebuild_tray(view);
     }
 
     /// Detach on the agents-view handoff without blocking it: a background task owns the connection
@@ -850,6 +907,7 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             backfill_tx,
         )
@@ -1043,6 +1101,7 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             mpsc::unbounded_channel().0,
         )

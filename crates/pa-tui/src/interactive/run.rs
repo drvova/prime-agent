@@ -228,6 +228,9 @@ async fn run_interactive_surface(
     let (commands_tx, mut commands_rx) =
         mpsc::unbounded_channel::<crate::session_ui::CommandCatalogUpdate>();
     let (page_tx, mut page_rx) = mpsc::unbounded_channel::<crate::session_ui::TranscriptPageNote>();
+    // The turn-end stats refresh reports here: the request runs off the loop, so a slow or
+    // silent daemon never holds a keystroke or a paint behind it.
+    let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsUpdate>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -336,6 +339,7 @@ async fn run_interactive_surface(
         let factory_tx = factory_tx.clone();
         let commands_tx = commands_tx.clone();
         let page_tx = page_tx.clone();
+        let stats_tx = stats_tx.clone();
         let waits_through_update_restart = !matches!(route, SessionOpenRoute::Cli);
         tokio::spawn(async move {
             crate::update_restart_wait::wait_through_update_restart(
@@ -364,6 +368,7 @@ async fn run_interactive_surface(
                     let factory_tx = factory_tx.clone();
                     let commands_tx = commands_tx.clone();
                     let page_tx = page_tx.clone();
+                    let stats_tx = stats_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -390,6 +395,7 @@ async fn run_interactive_surface(
                                 bash: bash_tx,
                                 factory: factory_tx,
                                 commands: commands_tx,
+                                stats: stats_tx,
                             },
                             page_tx,
                         )
@@ -1366,10 +1372,12 @@ async fn run_interactive_surface(
                     while let Some(Ok(event)) = events.as_mut().map(mpsc::UnboundedReceiver::try_recv) {
                         session.apply_client_event(event, &mut view);
                     }
-                    // A settled turn or compaction refreshes the tray's context usage.
+                    // A settled turn or compaction refreshes the tray's context usage. The
+                    // request is spawned and its reply folds in through `stats_rx`, so a key
+                    // pressed as the turn ends paints without waiting on the daemon.
                     let compaction_settled = std::mem::take(&mut session.compaction_settled);
                     if compaction_settled || (was_active && !session.turn_active) {
-                        session.refresh_stats().await;
+                        session.spawn_stats_refresh();
                         session.rebuild_tray(&mut view);
                     }
                     // A `session_binding` supersede notice: the session lives under a new active
@@ -1442,6 +1450,11 @@ async fn run_interactive_surface(
             maybe_note = notes_rx.recv() => {
                 if let Some(note) = maybe_note {
                     session.apply_background_note(&note, &mut view);
+                }
+            }
+            maybe_stats = stats_rx.recv() => {
+                if let Some(update) = maybe_stats {
+                    session.apply_stats_update(update, &mut view);
                 }
             }
             maybe_page = page_rx.recv() => {
