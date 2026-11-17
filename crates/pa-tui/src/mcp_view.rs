@@ -365,11 +365,17 @@ impl McpView {
                 None => McpViewAction::None,
             };
         }
-        // Esc/Ctrl+C close; the modal back key closes from an empty search (its left-edge editing
-        // otherwise feeds the field).
-        if kb.matches(key, "tui.select.cancel")
-            || (kb.matches(key, "app.modal.back") && self.search.cursor() == 0)
-        {
+        // Esc/Ctrl+C clear a non-empty search first, then close; the modal back key closes from
+        // the field's left edge (its left-edge editing otherwise feeds the field).
+        if kb.matches(key, "tui.select.cancel") {
+            if self.search.value().is_empty() {
+                return McpViewAction::Cancel;
+            }
+            self.search.prefill("");
+            self.refilter();
+            return McpViewAction::None;
+        }
+        if kb.matches(key, "app.modal.back") && self.search.cursor() == 0 {
             return McpViewAction::Cancel;
         }
         let previous = self.search.value().to_string();
@@ -378,6 +384,12 @@ impl McpView {
             self.refilter();
         }
         McpViewAction::None
+    }
+
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
     }
 
     /// Prefill the filter (`/mcp <partial>` + Tab or `/plugins <q>`), the caret at the partial's
@@ -447,14 +459,19 @@ impl McpView {
                 // budgets: a viewport too short for both keeps the skeleton alone (the
                 // frame never draws past its viewport).
                 if self.visible_items >= EMPTY_STATE_ROWS {
-                    let message = if self.rows.is_empty() {
-                        "No external services available"
+                    // An empty roster says so; a query that hides every row reads as a no-match.
+                    let query = if self.rows.is_empty() {
+                        ""
                     } else {
-                        "No matching services"
+                        self.search.value()
                     };
-                    // The message row aligns with the row labels and truncates to the frame width.
-                    let line = vec![theme.fg_span(ThemeColor::Muted, format!("  {message}"))];
-                    lines.push(crate::width::truncate_line(&line, width, ""));
+                    lines.push(crate::menu_chrome::empty_state_row(
+                        theme,
+                        width,
+                        kb,
+                        query,
+                        "No external services available",
+                    ));
                     lines.push(Vec::new());
                 }
             } else if self.detail_rows() > 0 {

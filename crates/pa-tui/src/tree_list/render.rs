@@ -9,13 +9,20 @@ use ratatui::style::Modifier;
 impl TreeList {
     /// Render the visible rows plus the counter (TS `TreeList.render`).
     #[must_use]
-    pub fn render(&self, theme: &Theme, width: usize) -> Vec<Line> {
+    pub fn render(
+        &self,
+        theme: &Theme,
+        width: usize,
+        kb: &crate::keybindings::KeybindingsManager,
+    ) -> Vec<Line> {
         let mut lines: Vec<Line> = Vec::new();
         if self.filtered.is_empty() {
-            lines.push(truncate_line(
-                &vec![theme.fg_span(ThemeColor::Muted, "  No entries found".to_string())],
+            lines.push(crate::menu_chrome::empty_state_row(
+                theme,
                 width,
-                "",
+                kb,
+                &self.search_query,
+                "No entries found",
             ));
             lines.push(truncate_line(
                 &vec![theme.fg_span(

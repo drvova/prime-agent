@@ -80,6 +80,12 @@ impl ChoicePicker {
         }
     }
 
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.selector.query()
+    }
+
     /// One bracketed paste into the search (the config selector's own
     /// paste path).
     pub fn paste(&mut self, text: &str) {

@@ -274,6 +274,7 @@ pub const FEATURE_NAMES: &[&str] = &[
     "rewind",
     "summary",
     "slashmenu",
+    "menusearch",
 ];
 
 pub const FEATURE_OUTCOMES: &[&str] = &[
@@ -776,6 +777,11 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("feature_slashmenu_failed_count", optional(count())),
         ("feature_slashmenu_canceled_count", optional(count())),
         ("feature_slashmenu_unavailable_count", optional(count())),
+        ("feature_menusearch_initiated_count", optional(count())),
+        ("feature_menusearch_completed_count", optional(count())),
+        ("feature_menusearch_failed_count", optional(count())),
+        ("feature_menusearch_canceled_count", optional(count())),
+        ("feature_menusearch_unavailable_count", optional(count())),
     ],
 };
 
@@ -1136,6 +1142,11 @@ const TUI_EXIT: EventRule = EventRule {
         ("feature_slashmenu_failed_count", optional(count())),
         ("feature_slashmenu_canceled_count", optional(count())),
         ("feature_slashmenu_unavailable_count", optional(count())),
+        ("feature_menusearch_initiated_count", optional(count())),
+        ("feature_menusearch_completed_count", optional(count())),
+        ("feature_menusearch_failed_count", optional(count())),
+        ("feature_menusearch_canceled_count", optional(count())),
+        ("feature_menusearch_unavailable_count", optional(count())),
         ("input_received_count", optional(count())),
         ("input_queued_count", optional(count())),
         ("input_preparation_count", optional(count())),

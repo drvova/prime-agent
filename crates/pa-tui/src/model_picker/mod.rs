@@ -288,7 +288,17 @@ impl ModelPicker {
         if kb.matches(key, "tui.select.confirm") {
             return self.confirm();
         }
-        if kb.matches(key, "tui.select.cancel") || self.should_treat_as_back(kb, key) {
+        if kb.matches(key, "tui.select.cancel") {
+            // Esc clears a non-empty query first; the next Esc closes.
+            if self.search.value().is_empty() {
+                return ModelPickerAction::Cancel;
+            }
+            self.search.prefill("");
+            self.navigated_into_list = false;
+            self.filter_models("");
+            return ModelPickerAction::None;
+        }
+        if self.should_treat_as_back(kb, key) {
             return ModelPickerAction::Cancel;
         }
         let previous = self.search.value().to_string();
@@ -319,9 +329,9 @@ impl ModelPicker {
             Some(self.viewport_rows),
             8,
             self.filtered.len(),
-            // The frame's fixed rows (the title, the search field, the footer, the trailing
-            // blank) plus the scope row when the session has scoped models.
-            5 + usize::from(self.has_scoped_models()) + detail_rows,
+            // The frame's fixed rows (the title, the search field, the Enter line, the footer,
+            // the trailing blank) plus the scope row when the session has scoped models.
+            6 + usize::from(self.has_scoped_models()) + detail_rows,
             // The scrollbar rides the rows' right edge, so overflow costs no row.
             0,
         )

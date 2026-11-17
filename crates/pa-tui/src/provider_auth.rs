@@ -8,8 +8,8 @@ use std::pin::Pin;
 
 use crate::fuzzy::fuzzy_filter;
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
-use crate::menu_panel::{menu_row, no_match_row, search_field_lines};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::{menu_row, search_field_lines};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::Line;
@@ -314,7 +314,13 @@ impl ProviderAuthSelector {
             }
             Mode::List => {
                 if kb.matches(key, "tui.select.cancel") {
-                    return AuthSelectorAction::Cancel;
+                    // Esc clears a non-empty query first; the next Esc closes.
+                    if self.search.value().is_empty() {
+                        return AuthSelectorAction::Cancel;
+                    }
+                    self.search.prefill("");
+                    self.refilter();
+                    return AuthSelectorAction::None;
                 }
                 if kb.matches(key, "tui.select.up") {
                     let count = self.filtered.len();
@@ -384,6 +390,12 @@ impl ProviderAuthSelector {
         }
     }
 
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
+    }
+
     fn is_logout(&self) -> bool {
         self.kind == AuthSelectorKind::Logout
     }
@@ -440,7 +452,7 @@ impl ProviderAuthSelector {
             width,
             self.search.value(),
             self.search.cursor(),
-            false,
+            /*focused*/ true,
             SEARCH_PLACEHOLDER,
         );
         lines.append(&mut search);
@@ -488,16 +500,18 @@ impl ProviderAuthSelector {
             )]);
         }
         if count == 0 {
-            let message = if self.providers.is_empty() {
-                if self.is_logout() {
-                    "No providers logged in. Use /login first."
-                } else {
-                    "No providers available"
-                }
+            let empty = if self.is_logout() {
+                "No providers logged in. Use /login first."
             } else {
-                "No matching providers"
+                "No providers available"
             };
-            lines.push(no_match_row(theme, width, message));
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                empty,
+            ));
         }
         if count > 0 {
             if let Some(provider) = self.selected_row() {

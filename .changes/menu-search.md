@@ -1,0 +1,1 @@
+- Every menu can now be searched — including `/fork`, the settings submenus, `/hotkeys`, `/changelog`, and `/heartbeats` — a search with no results says `no match for “x” · esc clears` (Esc clears the search before it closes the menu), and the model, effort, settings, fork, and tree menus show what Enter will do for the selected row.

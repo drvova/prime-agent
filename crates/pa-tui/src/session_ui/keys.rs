@@ -362,6 +362,24 @@ impl SessionUi {
         view: &mut AgentView,
         running: &mut bool,
     ) -> Result<()> {
+        // Menu-search adoption: one count each time a menu's query goes from empty to non-empty
+        // (no query text leaves the client).
+        let searching = view.menu_query_active();
+        let result = self.dispatch_key(key, view, running).await;
+        if !searching && view.menu_query_active() {
+            self.track_feature_outcome("menusearch", "initiated", None);
+        }
+        result
+    }
+
+    /// Route one key to the surface that owns the frame, else the transcript, editor, and app
+    /// actions.
+    async fn dispatch_key(
+        &mut self,
+        key: KeyEvent,
+        view: &mut AgentView,
+        running: &mut bool,
+    ) -> Result<()> {
         let id = key_event_to_id(&key);
         // Every key that reaches the session is handled, whichever surface consumes it (the
         // force-quit guard counts the Ctrl+C presses; an exit re-arms it from the loop's break).

@@ -294,6 +294,43 @@ impl AgentView {
         false
     }
 
+    /// Whether an open menu holds a non-empty search query (the menu-search adoption seam: the
+    /// session counts each search a menu starts).
+    #[must_use]
+    pub fn menu_query_active(&self) -> bool {
+        let queries = [
+            self.model_picker
+                .as_ref()
+                .map(crate::model_picker::ModelPicker::query),
+            self.choice_picker
+                .as_ref()
+                .map(crate::choice_picker::ChoicePicker::query),
+            self.mcp_view.as_ref().map(crate::mcp_view::McpView::query),
+            self.heartbeats_picker
+                .as_ref()
+                .map(crate::heartbeats_picker::HeartbeatsPicker::query),
+            self.info_panel
+                .as_ref()
+                .map(crate::info_panel::InfoPanel::query),
+            self.tree_selector
+                .as_ref()
+                .map(crate::tree_selector::TreeSelector::query),
+            self.fork_selector
+                .as_ref()
+                .map(crate::user_message_selector::UserMessageSelector::query),
+            self.provider_auth
+                .as_ref()
+                .map(crate::provider_auth::ProviderAuthSelector::query),
+            self.auth_panel
+                .as_ref()
+                .map(crate::auth_panel::AuthPanel::query),
+            self.settings_menu
+                .as_ref()
+                .map(crate::settings_menu::SettingsMenu::query),
+        ];
+        queries.into_iter().flatten().any(|query| !query.is_empty())
+    }
+
     #[must_use]
     pub fn new(theme: Theme) -> Self {
         Self {

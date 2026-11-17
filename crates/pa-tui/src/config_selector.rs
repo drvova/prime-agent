@@ -201,7 +201,13 @@ impl ConfigSelector {
             return None;
         }
         if kb.matches(key, "tui.select.cancel") {
-            return Some(SelectorAction::Close);
+            // Esc clears a non-empty query first; the next Esc closes.
+            if self.search.value().is_empty() {
+                return Some(SelectorAction::Close);
+            }
+            self.search.prefill("");
+            self.apply_filter();
+            return None;
         }
         if kb.matches(key, "app.clear") {
             return Some(SelectorAction::Exit);
@@ -360,13 +366,15 @@ impl ConfigSelector {
     /// The selector's rendered rows through the shared menu-panel grammar:
     /// the `›` marker rows with the selection band, the group headers,
     /// the scroll indicator, the no-match row.
-    fn list_rows(&self, theme: &Theme, width: usize) -> Vec<Line> {
+    fn list_rows(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
         let mut lines: Vec<Line> = Vec::new();
         if self.filtered.is_empty() {
-            lines.push(crate::menu_panel::no_match_row(
+            lines.push(crate::menu_chrome::empty_state_row(
                 theme,
                 width,
-                self.no_match_text(),
+                kb,
+                self.search.value(),
+                self.empty_text(),
             ));
             return lines;
         }
@@ -452,9 +460,26 @@ impl ConfigSelector {
             true,
             self.search_placeholder(),
         ));
-        lines.extend(self.list_rows(theme, width));
+        lines.extend(self.list_rows(theme, width, kb));
         lines.push(Vec::new());
-        lines.push(self.footer(kb).line(theme, width));
+        // The effort picker's Enter line names the level Enter applies.
+        let enter = match self.kind {
+            SelectorKind::ResourceConfig => None,
+            SelectorKind::Effort => self
+                .filtered
+                .get(self.selected)
+                .and_then(|&index| match self.rows.get(index) {
+                    Some(SelectorRow::Item { label, .. }) => {
+                        Some(format!("sets effort to {label}"))
+                    }
+                    Some(SelectorRow::Group(_) | SelectorRow::Subgroup(_)) | None => None,
+                }),
+        };
+        lines.extend(
+            self.footer(kb)
+                .enter(kb, enter.as_deref())
+                .rows(theme, width),
+        );
         lines
     }
 
@@ -466,11 +491,11 @@ impl ConfigSelector {
         }
     }
 
-    /// The no-match row's message when the filter empties the list.
-    fn no_match_text(&self) -> &'static str {
+    /// The empty list's message (a query that hides every row reads as a no-match instead).
+    fn empty_text(&self) -> &'static str {
         match self.kind {
             SelectorKind::ResourceConfig => "No resources found",
-            SelectorKind::Effort => "No matching levels",
+            SelectorKind::Effort => "No thinking levels available",
         }
     }
 

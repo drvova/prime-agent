@@ -6,8 +6,11 @@
 use serde_json::Value;
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{EscVerb, Footer, HintRank};
-use crate::menu_panel::{fill_row, hug_row, menu_list_layout, plain_cell, status_dot};
+use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{
+    fill_row, hug_row, menu_list_layout, plain_cell, search_field_lines, status_dot,
+};
+use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{str_width, truncate_line, wrap_text};
 use crate::{Line, Span};
@@ -32,10 +35,10 @@ use render::{
 
 const PREFERRED_VISIBLE: usize = 8;
 
-/// Rows the list reserves outside its items (rule, title, blank, column
-/// header, blank, hint, blank; the scroll-indicator row rides
+/// Rows the list reserves outside its items (rule, title, blank, the search
+/// field's three rows, column header, blank, hint, blank; the scroll-indicator row rides
 /// `menu_list_layout`'s reservation, never counted twice).
-const LIST_FRAME_ROWS: usize = 7;
+const LIST_FRAME_ROWS: usize = 10;
 
 /// The detail pane's labeled-pair row budget: the seven base pairs all
 /// fit — the schedule fact never displaces the error row.
@@ -102,6 +105,8 @@ pub struct HeartbeatsPicker {
     /// The last management-action error.
     error: Option<String>,
     viewport_rows: usize,
+    /// The list's search over each heartbeat's label, prompt, and schedule.
+    search: SearchInput,
 }
 
 impl HeartbeatsPicker {
@@ -120,6 +125,7 @@ impl HeartbeatsPicker {
             fetch_error,
             error: None,
             viewport_rows,
+            search: SearchInput::new(),
         };
         // A carried selection (the dock's chosen row) survives the
         // open; anything else lands on the first row (TS default).
@@ -198,12 +204,52 @@ impl HeartbeatsPicker {
         }
     }
 
-    /// The selected row's index (first when unset).
-    fn selected_index(&self) -> usize {
+    /// The list's search query.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
+    }
+
+    /// The heartbeats the query keeps (every query word in the label, prompt, or schedule,
+    /// case-insensitive), in catalog order.
+    fn shown(&self) -> Vec<&HeartbeatEntry> {
+        let words: Vec<String> = self
+            .search
+            .value()
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
         self.heartbeats
+            .iter()
+            .filter(|entry| {
+                let text = format!(
+                    "{} {} {}",
+                    entry.job.label.as_deref().unwrap_or_default(),
+                    entry.job.prompt,
+                    entry.job.schedule_expression
+                )
+                .to_lowercase();
+                words.iter().all(|word| text.contains(word.as_str()))
+            })
+            .collect()
+    }
+
+    /// The selected row's position among the shown rows (first when unset or filtered out).
+    fn selected_index(&self) -> usize {
+        self.shown()
             .iter()
             .position(|entry| Some(&entry.job.id) == self.selected_heartbeat_id.as_ref())
             .unwrap_or(0)
+    }
+
+    /// One key edits the list's search: a changed query lands the selection on the first row
+    /// it keeps.
+    fn edit_search(&mut self, key: &str, kb: &KeybindingsManager) {
+        let previous = self.search.value().to_string();
+        self.search.handle_key(key, kb);
+        if self.search.value() != previous {
+            self.selected_heartbeat_id = self.shown().first().map(|entry| entry.job.id.clone());
+        }
     }
 
     fn find_entry(&self, id: &str) -> Option<&HeartbeatEntry> {
@@ -238,6 +284,17 @@ impl HeartbeatsPicker {
     /// One key id (TS `handleInput`, minus the busy gate: the session UI
     /// awaits the management request itself).
     pub fn handle_key(&mut self, key: &str, kb: &KeybindingsManager) -> HeartbeatsPickerAction {
+        let filtering = self.mode == Mode::List && !self.search.value().is_empty();
+        // A live query: Esc clears it first, and the back key edits it instead of closing.
+        if filtering && key != "ctrl+c" && kb.matches(key, "tui.select.cancel") {
+            self.search.prefill("");
+            self.selected_heartbeat_id = self.shown().first().map(|entry| entry.job.id.clone());
+            return HeartbeatsPickerAction::None;
+        }
+        if filtering && kb.matches(key, "app.modal.back") {
+            self.edit_search(key, kb);
+            return HeartbeatsPickerAction::None;
+        }
         if key == "ctrl+c" || kb.matches(key, "tui.select.cancel") {
             return HeartbeatsPickerAction::Close;
         }
@@ -266,6 +323,10 @@ impl HeartbeatsPicker {
         if kb.matches(key, "tui.select.confirm") {
             return self.confirm_selection();
         }
+        // Every other key on the list edits its search.
+        if self.mode == Mode::List {
+            self.edit_search(key, kb);
+        }
         HeartbeatsPickerAction::None
     }
 
@@ -274,12 +335,13 @@ impl HeartbeatsPicker {
     fn move_selection(&mut self, delta: isize) {
         match self.mode.clone() {
             Mode::List => {
-                if self.heartbeats.is_empty() {
+                let shown = self.shown();
+                if shown.is_empty() {
                     return;
                 }
                 let index = self.selected_index() as isize;
-                let next = (index + delta).clamp(0, self.heartbeats.len() as isize - 1) as usize;
-                self.selected_heartbeat_id = Some(self.heartbeats[next].job.id.clone());
+                let next = (index + delta).clamp(0, shown.len() as isize - 1) as usize;
+                self.selected_heartbeat_id = Some(shown[next].job.id.clone());
             }
             Mode::Detail {
                 heartbeat_id,
@@ -332,7 +394,7 @@ impl HeartbeatsPicker {
         let Some(id) = self.selected_heartbeat_id.clone() else {
             return;
         };
-        if self.find_entry(&id).is_some() {
+        if self.shown().iter().any(|entry| entry.job.id == id) {
             self.mode = Mode::Detail {
                 heartbeat_id: id,
                 action_index: 0,
@@ -380,11 +442,23 @@ impl HeartbeatsPicker {
     fn render_list(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
         let counts: Vec<(ThemeColor, String)> = self.status_counts();
         let mut lines = pane_header_lines(theme, width, "Heartbeats", &counts, None);
-        if self.heartbeats.is_empty() {
-            lines.push(vec![
-                Span::raw("  "),
-                theme.fg_span(ThemeColor::Muted, "No running or paused heartbeats"),
-            ]);
+        lines.extend(search_field_lines(
+            theme,
+            width,
+            self.search.value(),
+            self.search.cursor(),
+            /*focused*/ true,
+            "Search heartbeats",
+        ));
+        let shown = self.shown();
+        if shown.is_empty() {
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                "No running or paused heartbeats",
+            ));
         } else {
             let columns = Columns::new(width, &self.heartbeats);
             lines.push(columns.header_row(theme, width));
@@ -392,19 +466,19 @@ impl HeartbeatsPicker {
             let visible = self.visible_items();
             let start = selected
                 .saturating_sub(visible / 2)
-                .min(self.heartbeats.len().saturating_sub(visible));
-            let end = (start + visible).min(self.heartbeats.len());
+                .min(shown.len().saturating_sub(visible));
+            let end = (start + visible).min(shown.len());
             let now = crate::agents_view_state::now_ms();
-            for (index, entry) in self.heartbeats[start..end].iter().enumerate() {
+            for (index, entry) in shown[start..end].iter().enumerate() {
                 let is_selected = start + index == selected;
                 lines.push(columns.entry_row(theme, width, entry, is_selected, now));
             }
-            if visible > 0 && (start > 0 || end < self.heartbeats.len()) {
+            if visible > 0 && (start > 0 || end < shown.len()) {
                 lines.push(vec![
                     Span::raw("  "),
                     theme.fg_span(
                         ThemeColor::Muted,
-                        format!("({}/{})", selected + 1, self.heartbeats.len()),
+                        format!("({}/{})", selected + 1, shown.len()),
                     ),
                 ]);
             }

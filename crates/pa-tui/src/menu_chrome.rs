@@ -23,6 +23,34 @@ pub(crate) fn title_row(theme: &Theme, width: usize, title: &str) -> Line {
     truncate_line(&line, width, "")
 }
 
+/// The list's empty state: with no query the surface's own text says what is empty; a query that
+/// hides every row says so muted, with the key that clears it (`no match for “x” · esc clears`).
+pub(crate) fn empty_state_row(
+    theme: &Theme,
+    width: usize,
+    kb: &KeybindingsManager,
+    query: &str,
+    empty: &str,
+) -> Line {
+    let text = if query.is_empty() {
+        empty.to_string()
+    } else {
+        let no_match = format!("no match for \u{201c}{query}\u{201d}");
+        match kb.first_key("tui.select.cancel") {
+            Some(key) => {
+                let key = format_key_text(&key).to_lowercase();
+                format!("{no_match}{SEPARATOR}{key} clears")
+            }
+            None => no_match,
+        }
+    };
+    let line = vec![
+        Span::raw(CHROME_INDENT),
+        theme.fg_span(ThemeColor::Muted, text),
+    ];
+    truncate_line(&line, width, "")
+}
+
 /// How much a footer hint matters when the row is too narrow: the lowest rank drops first, and
 /// within a rank the rightmost hint drops first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,6 +98,7 @@ impl Hint {
 /// user override moves the hint with the handler and an unbound action never advertises.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct Footer {
+    enter: Option<String>,
     notice: Option<(ThemeColor, String)>,
     hints: Vec<Hint>,
 }
@@ -126,6 +155,35 @@ impl Footer {
     #[must_use]
     pub(crate) fn esc(self, kb: &KeybindingsManager, verb: EscVerb) -> Self {
         self.bound(kb, &["tui.select.cancel"], verb.label(), HintRank::Core)
+    }
+
+    /// The Enter line a surface opts into: what the confirm key does for the selected row
+    /// (`enter switches to Claude Opus 4.8`), rendered muted directly above the footer by
+    /// [`Footer::rows`]. No action (an empty list) or an unbound confirm key renders no line.
+    #[must_use]
+    pub(crate) fn enter(mut self, kb: &KeybindingsManager, action: Option<&str>) -> Self {
+        self.enter = action
+            .zip(kb.first_key("tui.select.confirm"))
+            .map(|(action, key)| format!("{} {action}", format_key_text(&key).to_lowercase()));
+        self
+    }
+
+    /// The Enter line (when the surface set one) over the footer row.
+    #[must_use]
+    pub(crate) fn rows(&self, theme: &Theme, width: usize) -> Vec<Line> {
+        let mut rows = Vec::with_capacity(2);
+        if let Some(enter) = &self.enter {
+            rows.push(truncate_line(
+                &vec![
+                    Span::raw(CHROME_INDENT),
+                    theme.fg_span(ThemeColor::Muted, enter.clone()),
+                ],
+                width,
+                "\u{2026}",
+            ));
+        }
+        rows.push(self.line(theme, width));
+        rows
     }
 
     /// A leading status in its own tone (a copy result, an armed confirm): it never drops, and
@@ -273,6 +331,49 @@ mod tests {
             text(&picker_footer(&kb).line(&theme(), 80)),
             "  \u{2191}/\u{2193} navigate \u{b7} Ctrl+J select \u{b7} Esc close"
         );
+    }
+
+    /// The two empty states: the surface's own text with no query; the muted no-match line
+    /// naming the clear key once a query hides every row.
+    #[test]
+    fn empty_states_tell_empty_from_no_match() {
+        let kb = KeybindingsManager::new();
+        assert_eq!(
+            text(&empty_state_row(
+                &theme(),
+                80,
+                &kb,
+                "",
+                "No user messages found"
+            )),
+            "  No user messages found"
+        );
+        assert_eq!(
+            text(&empty_state_row(
+                &theme(),
+                80,
+                &kb,
+                "zq",
+                "No user messages found"
+            )),
+            "  no match for \u{201c}zq\u{201d} \u{b7} esc clears"
+        );
+    }
+
+    /// The Enter line rides above the footer only when the surface names an action.
+    #[test]
+    fn the_enter_line_rides_above_the_footer() {
+        let kb = KeybindingsManager::new();
+        let footer = Footer::new().esc(&kb, EscVerb::Close);
+        let rows = footer
+            .clone()
+            .enter(&kb, Some("forks from this message"))
+            .rows(&theme(), 80);
+        assert_eq!(
+            rows.iter().map(text).collect::<Vec<_>>(),
+            vec!["  enter forks from this message", "  Esc close"]
+        );
+        assert_eq!(footer.enter(&kb, None).rows(&theme(), 80).len(), 1);
     }
 
     /// Esc reads `close` on a top-level surface and `back` in a submenu.
