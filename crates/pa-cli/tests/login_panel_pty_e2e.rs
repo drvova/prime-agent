@@ -384,7 +384,9 @@ fn prime_login_renders_the_team_picker_without_a_terminal_takeover() {
         "the inline team picker",
     );
 
-    harness.wait_from(mark, "Acme Corp", "the team row");
+    // The team row's name can paint in two runs (the diff skips a space cell the provider list
+    // already left blank at that column), so the needle is the row's contiguous detail cell.
+    harness.wait_from(mark, "slug: acme", "the team row");
     harness.wait_from(mark, "personal account", "the personal row");
 
     harness.write(b"\r");
