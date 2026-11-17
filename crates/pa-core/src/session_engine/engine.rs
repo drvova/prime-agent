@@ -369,6 +369,21 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The registration takes the shared manager: the inventory handlers
     // serve live views per request.
     crate::mcp::McpManager::register_host_handlers(&mcp_manager, &mut handlers);
+    // `web.search`: the kernel's `web` client and the websearch skill reach
+    // the process-wide native engine; credentials resolve from the shared
+    // auth store per search. Telemetry folds each outcome (never the query)
+    // into the session counters.
+    crate::web_search::WebSearchHost {
+        engine: crate::web_search::WebSearchEngine::shared(),
+        auth: mcp_manager.lock().unwrap().auth_storage_handle(),
+        default_provider: web_search_provider,
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome: &_| counters.note_web_search(outcome))
+                as crate::web_search::SearchObserver
+        }),
+    }
+    .register(&mut handlers);
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings
@@ -477,24 +492,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
-    // TS resolves the web-search credential on the host: `!command` key refs
-    // cannot run in-kernel (the websearch skill's auth.json fallback reads
-    // literals and env-var names, not commands). The selected provider's
-    // credential is read under the auth lock, then resolved off the async
-    // runtime (a `!command` key can block).
-    let websearch_env = {
-        let credential = {
-            let auth = mcp_manager.lock().unwrap().auth_storage_handle();
-            let guard = auth.lock().await;
-            guard.get_all().credential(web_search_provider.id())
-        };
-        let skills = resources.skills.clone();
-        tokio::task::spawn_blocking(move || {
-            super::runtime_wiring::websearch_env(&skills, web_search_provider, credential)
-        })
-        .await
-        .map_err(|join| anyhow::anyhow!("websearch key resolve join failed: {join}"))?
-    };
+    let websearch_env =
+        super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
     // The cell time limit: daemon-backed sessions arm the settings default
     // (60s, `0` disables); daemonless sessions keep `await bash()`
     // unbounded by design (#3523), so their cells are never interrupted.

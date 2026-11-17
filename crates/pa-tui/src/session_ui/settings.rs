@@ -254,7 +254,7 @@ impl SessionUi {
             values.builtin_skills = true;
             values.harness_refinements = true;
             values.emoji_shortcodes = true;
-            values.web_search_provider = "serper".to_string();
+            values.web_search_provider = "auto".to_string();
             values.idle_eviction_minutes = "90".to_string();
             values.mermaid = "streaming".to_string();
             values.tree_filter_mode = "user-only".to_string();

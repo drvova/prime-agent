@@ -180,11 +180,10 @@ impl PackageManager {
             .as_ref()
             .and_then(|bundled| bundled.websearch)
             .unwrap_or_else(|| {
-                let provider = self.settings.get_web_search_provider();
                 Self::websearch_enabled_by_credential(
                     self.agent_dir(),
-                    provider,
-                    std::env::var(provider.api_key_env()).ok().as_deref(),
+                    self.settings.get_web_search_provider(),
+                    &|env| std::env::var(env).ok(),
                 )
             })
     }
@@ -192,25 +191,45 @@ impl PackageManager {
     /// The unset-setting default: the skill follows its credential, so it is
     /// enabled exactly when the machine carries a key for the selected
     /// provider (its stored auth slot or a nonblank ambient key, e.g.
-    /// `SERPER_API_KEY`) and stays off on keyless installs. Existing
-    /// logged-in users keep the skill, and removing the credential (or
-    /// overriding with `bundledSkills.websearch: false`) drops it.
+    /// `SERPER_API_KEY`); under `auto`, a key for any keyed provider. A
+    /// selected keyless engine needs none, and a selected `SearXNG` needs its
+    /// `SEARXNG_ENDPOINT`. Keyless installs on `auto` keep the skill off: the
+    /// kernel's always-on `web.search` serves them, so their prompt is
+    /// unchanged. Existing logged-in users keep the skill, and removing the
+    /// credential (or overriding with `bundledSkills.websearch: false`) drops it.
     fn websearch_enabled_by_credential(
         agent_dir: &std::path::Path,
         provider: crate::settings::WebSearchProvider,
-        ambient_api_key: Option<&str>,
+        ambient: &dyn Fn(&str) -> Option<String>,
     ) -> bool {
-        if ambient_api_key.is_some_and(|value| !value.trim().is_empty()) {
+        use crate::web_search::{ProviderAccess, ProviderId, WebSearchProvider};
+        let nonblank = |env: &str| ambient(env).is_some_and(|value| !value.trim().is_empty());
+        let keyed: Vec<ProviderId> = match provider {
+            WebSearchProvider::Auto => ProviderId::ALL
+                .into_iter()
+                .filter(|engine| matches!(engine.access(), ProviderAccess::ApiKey { .. }))
+                .collect(),
+            WebSearchProvider::Engine(engine) => match engine.access() {
+                ProviderAccess::ApiKey { .. } => vec![engine],
+                ProviderAccess::Endpoint { env } => return nonblank(env),
+                ProviderAccess::Keyless => return true,
+            },
+        };
+        let ambient_key = keyed.iter().any(|engine| match engine.access() {
+            ProviderAccess::ApiKey { env, .. } => nonblank(env),
+            ProviderAccess::Endpoint { .. } | ProviderAccess::Keyless => false,
+        });
+        if ambient_key {
             return true;
         }
-        let stored = std::fs::read_to_string(agent_dir.join("auth.json"))
+        std::fs::read_to_string(agent_dir.join("auth.json"))
             .ok()
-            .and_then(|content| {
-                crate::auth::parse_storage_data(Some(&content))
-                    .ok()
-                    .and_then(|data| data.credential(provider.id()))
-            });
-        stored.is_some()
+            .and_then(|content| crate::auth::parse_storage_data(Some(&content)).ok())
+            .is_some_and(|data| {
+                keyed
+                    .iter()
+                    .any(|engine| data.credential(engine.id()).is_some())
+            })
     }
 
     /// Extra force-exclude patterns for built-in skills.
@@ -696,19 +715,38 @@ mod tests {
 
     #[test]
     fn websearch_credential_presence_gates_the_skill() {
-        use crate::settings::WebSearchProvider;
+        use crate::web_search::{ProviderId, WebSearchProvider};
         let (dir, _manager) = setup();
         let agent_dir = dir.path().join("agent");
-        let enabled = |provider, ambient_api_key| {
-            PackageManager::websearch_enabled_by_credential(&agent_dir, provider, ambient_api_key)
+        let serper = WebSearchProvider::Engine(ProviderId::Serper);
+        let eco = WebSearchProvider::Engine(ProviderId::Eco);
+        let enabled = |provider, ambient: &[(&str, &str)]| {
+            let ambient: Vec<(String, String)> = ambient
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect();
+            PackageManager::websearch_enabled_by_credential(&agent_dir, provider, &|env| {
+                ambient
+                    .iter()
+                    .find(|(key, _)| key == env)
+                    .map(|(_, value)| value.clone())
+            })
         };
 
         // Keyless install: no stored credential, no ambient key.
-        assert!(!enabled(WebSearchProvider::Serper, None));
+        assert!(!enabled(serper, &[]));
+        assert!(!enabled(WebSearchProvider::Auto, &[]));
+        // A selected keyless engine needs no key.
+        assert!(enabled(
+            WebSearchProvider::Engine(ProviderId::Duckduckgo),
+            &[]
+        ));
 
         // A nonblank ambient key is enough; a blank one is not a key.
-        assert!(enabled(WebSearchProvider::Serper, Some("the-key")));
-        assert!(!enabled(WebSearchProvider::Serper, Some("   ")));
+        assert!(enabled(serper, &[("SERPER_API_KEY", "the-key")]));
+        assert!(!enabled(serper, &[("SERPER_API_KEY", "   ")]));
+        // Under auto, any keyed provider's key counts.
+        assert!(enabled(WebSearchProvider::Auto, &[("TAVILY_API_KEY", "k")]));
 
         // A stored credential rides for the selected provider only.
         std::fs::write(
@@ -716,19 +754,20 @@ mod tests {
             r#"{ "serper": { "type": "api_key", "key": "stored" } }"#,
         )
         .unwrap();
-        assert!(enabled(WebSearchProvider::Serper, None));
-        assert!(!enabled(WebSearchProvider::Eco, None));
+        assert!(enabled(serper, &[]));
+        assert!(!enabled(eco, &[]));
+        assert!(enabled(WebSearchProvider::Auto, &[]));
         std::fs::write(
             agent_dir.join("auth.json"),
             r#"{ "eco": { "type": "api_key", "key": "stored" } }"#,
         )
         .unwrap();
-        assert!(enabled(WebSearchProvider::Eco, None));
-        assert!(!enabled(WebSearchProvider::Serper, None));
+        assert!(enabled(eco, &[]));
+        assert!(!enabled(serper, &[]));
 
         // An unparseable store is no credential, not an error.
         std::fs::write(agent_dir.join("auth.json"), "{ not json").unwrap();
-        assert!(!enabled(WebSearchProvider::Serper, None));
+        assert!(!enabled(serper, &[]));
     }
 
     #[test]

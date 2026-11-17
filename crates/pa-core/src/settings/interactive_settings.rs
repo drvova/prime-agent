@@ -24,7 +24,7 @@ impl SettingsManager {
         self.save_global_scope(&["harnessRefinements"])
     }
 
-    /// The service the bundled websearch skill queries (default Serper). Global only, like the
+    /// The provider web search uses when the call names none (default `auto`). Global only, like the
     /// stored keys it selects between: project settings cannot switch it.
     #[must_use]
     pub fn get_web_search_provider(&self) -> WebSearchProvider {
