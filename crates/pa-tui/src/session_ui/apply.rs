@@ -403,9 +403,12 @@ impl SessionUi {
                 self.turn_active = true;
                 self.turn_error_shown = false;
                 // A new turn opens no retry episode yet: an aborted attempt's episode never saw
-                // its `auto_retry_end`.
-                self.retry_episode_waited = None;
-                self.retry_waited = None;
+                // its `auto_retry_end`. The retried run's own `agent_start` lands while the
+                // countdown is still up and keeps the episode it continues.
+                if view.retry.is_none() {
+                    self.retry_episode_waited = None;
+                    self.retry_waited = None;
+                }
                 self.running_tool_labels.clear();
                 // A new turn also settles leftovers from a lost turn-end frame.
                 crate::snapshot::settle_pending_tool_cards(
@@ -802,8 +805,9 @@ impl SessionUi {
         // leaves no live streaming slot or retry countdown behind.
         self.streaming_index = None;
         view.retry = None;
-        self.retry_episode_waited = None;
-        self.retry_waited = None;
+        // The retry episode outlives its attempts' runs: every failed attempt ends its run
+        // before its `auto_retry_start`, and the recovered run's `agent_end` can land before the
+        // `auto_retry_end` and its outcome row. The next human turn's start drops a stale one.
         self.running_tool_labels.clear();
         Self::flush_pending_bash(view);
         // A detached run's `turn_end` never arrives: its open cards settle here.

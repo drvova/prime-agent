@@ -32,9 +32,11 @@ const RECOVERED_STREAM_MS: u64 = 900;
 enum Scenario {
     /// Two counted-down retries, a recovered attempt that streams, then the outcome row.
     Recovered,
-    /// A retry the user aborts mid-attempt (no `auto_retry_end`), then a new run whose one retry
-    /// recovers: the receipt counts only the new episode.
-    AbortedThenRecovered,
+    /// The daemon's real order: a retry the user aborts (no `auto_retry_end`), then a new prompt
+    /// whose attempts are each their own run (`agent_start`, the failed message, `agent_end`,
+    /// then `auto_retry_start`) until the third recovers: the receipt survives the attempts' runs
+    /// and counts only the new episode.
+    AbortedThenWireOrder,
 }
 
 /// The episode's `auto_retry_start` frame.
@@ -45,6 +47,20 @@ fn retry_start(attempt: u32, delay_ms: u64) -> Value {
         "maxAttempts": 3,
         "delayMs": delay_ms,
         "errorMessage": RATE_LIMITED,
+    })
+}
+
+/// One failed attempt's assistant message (the provider error the retry follows).
+fn failed_attempt() -> Value {
+    json!({
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [],
+            "stopReason": "error",
+            "errorMessage": RATE_LIMITED,
+            "timestamp": 1,
+        },
     })
 }
 
@@ -115,14 +131,30 @@ impl MockSupervisor {
                                 write_session_event(&mut events, &json!({ "type": event_type }));
                             }
                         }
-                        Scenario::AbortedThenRecovered => {
+                        Scenario::AbortedThenWireOrder => {
                             // The aborted attempt never reports its episode's end.
                             write_session_event(&mut events, &retry_start(1, 30_000));
-                            for event_type in ["turn_end", "agent_end", "agent_start"] {
+                            for event_type in ["turn_end", "agent_end"] {
                                 write_session_event(&mut events, &json!({ "type": event_type }));
                             }
-                            write_session_event(&mut events, &retry_start(1, RETRY_DELAY_MS));
-                            recovered(&mut events, 1);
+                            // Each failed attempt ends its own run before its retry starts.
+                            for attempt in 1..=2 {
+                                write_session_event(&mut events, &json!({ "type": "agent_start" }));
+                                write_session_event(&mut events, &failed_attempt());
+                                for event_type in ["turn_end", "agent_end"] {
+                                    write_session_event(
+                                        &mut events,
+                                        &json!({ "type": event_type }),
+                                    );
+                                }
+                                write_session_event(
+                                    &mut events,
+                                    &retry_start(attempt, RETRY_DELAY_MS),
+                                );
+                            }
+                            // The recovered attempt's run reports the episode's end.
+                            write_session_event(&mut events, &json!({ "type": "agent_start" }));
+                            recovered(&mut events, 2);
                             for event_type in ["turn_end", "agent_end"] {
                                 write_session_event(&mut events, &json!({ "type": event_type }));
                             }
@@ -204,7 +236,7 @@ fn a_recovered_retry_episode_counts_down_then_leaves_the_waited_receipt() {
 }
 
 #[test]
-fn an_aborted_retry_episode_does_not_leak_into_the_next_receipt() {
+fn the_receipt_survives_the_attempts_runs_and_drops_an_aborted_episode() {
     let plan = HeadlessPlan {
         steps: vec![HeadlessStep::WaitRender {
             needle: "\u{2022} Waited ".to_string(),
@@ -215,11 +247,12 @@ fn an_aborted_retry_episode_does_not_leak_into_the_next_receipt() {
     };
     let outcome = run_headless(plan, options, |socket| {
         let supervisor = MockSupervisor::bind(socket);
-        move || supervisor.serve(Scenario::AbortedThenRecovered)
+        move || supervisor.serve(Scenario::AbortedThenWireOrder)
     });
 
+    // The two 1.2s backoffs, not the aborted episode's 30s and not the daemon's fallback text.
     assert_eq!(
         receipt(&outcome.frames),
-        format!("1.2s through 1 retry \u{00b7} {RATE_LIMITED}")
+        format!("2.4s through 2 retries \u{00b7} {RATE_LIMITED}")
     );
 }
