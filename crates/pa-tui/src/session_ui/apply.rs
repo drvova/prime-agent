@@ -1,9 +1,10 @@
 //! The streamed-event pump: client events, turn updates, assistant/tool
 //! rows, compaction aborts, and the telemetry seams.
 use super::{
-    assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView, ChatEntry,
-    CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock, Result,
-    RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
+    assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView,
+    AttemptSummary, ChatEntry, CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand,
+    Map, MessageBlock, Result, RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate,
+    Value,
 };
 use crate::interactive::reconnect::{ConnectionEffect, ConnectionEvent};
 
@@ -403,9 +404,12 @@ impl SessionUi {
                 self.turn_active = true;
                 self.turn_error_shown = false;
                 // A new turn opens no retry episode yet: an aborted attempt's episode never saw
-                // its `auto_retry_end`.
-                self.retry_episode_waited = None;
-                self.retry_waited = None;
+                // its `auto_retry_end`. The retried run's own `agent_start` lands while the
+                // countdown is still up and keeps the episode it continues.
+                if view.retry.is_none() {
+                    self.retry_episode_waited = None;
+                    self.retry_waited = None;
+                }
                 self.running_tool_labels.clear();
                 // A new turn also settles leftovers from a lost turn-end frame.
                 crate::snapshot::settle_pending_tool_cards(
@@ -415,7 +419,11 @@ impl SessionUi {
                     "the turn ended before this call returned",
                 );
                 self.aborted_tools.clear();
-                self.start_loader(view);
+                // Only the retry that follows a failed attempt's `agent_end` pops its summary.
+                self.attempt_summary = None;
+                // A retried run keeps the episode's start: the timer never resets mid-episode.
+                let since = self.retry_run_since.unwrap_or_else(std::time::Instant::now);
+                self.start_loader_at(view, since);
             }
             TurnUpdate::UserMessage(text) => {
                 match crate::custom_message::skill_invocation_entries(&text) {
@@ -594,7 +602,9 @@ impl SessionUi {
                 // (operator ruling 2026-09-23): the just-failed attempt's error row leaves the chat
                 // — the transient loader line is the ONE error shown while the episode runs, and
                 // the durable outcome row replaces it at the settle.
-                pop_superseded_attempt_row(view);
+                if let Some(since) = self.pop_superseded_attempt(view) {
+                    self.retry_run_since = Some(since);
+                }
                 // The receipt's wait is the episode's backoff: each start adds its own delay, so
                 // the attempts' streaming time (the recovered one's included) never counts.
                 let delay = std::time::Duration::from_millis(delay_ms);
@@ -619,8 +629,9 @@ impl SessionUi {
                 self.retry_waited = waited.filter(|_| success);
                 if final_error.is_some() {
                     self.turn_error_shown = true;
-                    // The give-up's final attempt is superseded by the ONE terminal line.
-                    pop_superseded_attempt_row(view);
+                    // The give-up's final attempt (error and summary rows) is superseded by the
+                    // ONE terminal line.
+                    self.pop_superseded_attempt(view);
                 }
                 // A settled switch restores the primary provider.
                 if let Some(restored_model) = restored_model {
@@ -792,18 +803,30 @@ impl SessionUi {
             );
             let text =
                 format!("Worked for {elapsed} \u{b7} {calls} tool call{s} \u{b7} {tokens} tokens");
+            let follows_failed_attempt = view
+                .chat
+                .last()
+                .is_some_and(crate::snapshot::is_superseded_attempt_row);
             view.push_entry(ChatEntry::Status {
                 text,
                 kind: StatusKind::Info,
             });
+            if follows_failed_attempt {
+                self.attempt_summary = Some(AttemptSummary {
+                    index: view.chat_len() - 1,
+                    since,
+                });
+            }
             self.track_feature_outcome("summary", "completed", None);
         }
+        self.retry_run_since = None;
         // A run that ends without its `turn_end` (a pre-run abort, a detach) still
         // leaves no live streaming slot or retry countdown behind.
         self.streaming_index = None;
         view.retry = None;
-        self.retry_episode_waited = None;
-        self.retry_waited = None;
+        // The retry episode outlives its attempts' runs: every failed attempt ends its run
+        // before its `auto_retry_start`, and the recovered run's `agent_end` can land before the
+        // `auto_retry_end` and its outcome row. The next human turn's start drops a stale one.
         self.running_tool_labels.clear();
         Self::flush_pending_bash(view);
         // A detached run's `turn_end` never arrives: its open cards settle here.
@@ -813,6 +836,20 @@ impl SessionUi {
             &mut self.aborted_tools,
             "the turn ended before this call returned",
         );
+    }
+
+    /// The retry-episode collapse for one failed attempt: its run summary (while it is still the
+    /// last row) and then its error row leave the chat. Returns the popped run's start.
+    fn pop_superseded_attempt(&mut self, view: &mut AgentView) -> Option<std::time::Instant> {
+        let summary = self
+            .attempt_summary
+            .take()
+            .filter(|summary| summary.index + 1 == view.chat_len());
+        if summary.is_some() {
+            view.pop_chat_entry();
+        }
+        pop_superseded_attempt_row(view);
+        summary.map(|summary| summary.since)
     }
 
     /// The abort ladder shared by the Ctrl+C and Escape interrupts: a compacting session aborts the

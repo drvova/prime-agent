@@ -1,0 +1,1 @@
+- A provider retry no longer leaves an `Error: 429 …` row and a `Worked for 0s` summary behind for every failed attempt: a recovered retry keeps one summary timed from the first attempt, and a retry that gives up keeps only its single `Retry failed after N attempts` line.
