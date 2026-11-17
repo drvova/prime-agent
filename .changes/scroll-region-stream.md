@@ -1,0 +1,1 @@
+- Streaming a long reply that scrolls the transcript now shifts the scrolled rows in the terminal and repaints only the new ones, instead of redrawing the whole pane every frame.

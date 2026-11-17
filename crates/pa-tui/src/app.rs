@@ -282,18 +282,33 @@ pub(crate) fn draw(
     // unconditionally, so it may carry the caret only in the show case — the hidden case would
     // leave the terminal's own cursor visible while later paints drag it across every changed row.
     let show_hardware_cursor = view.show_hardware_cursor;
-    let painted = terminal.draw(|f| {
-        let lines: Vec<ratatui::text::Line<'static>> =
-            frame.iter().map(crate::markdown::to_ratatui_line).collect();
-        f.render_widget(ratatui::text::Text::from(lines), frame_area);
-        if show_hardware_cursor {
-            if let Some((row, col)) = cursor {
-                if row < height && col < width {
-                    f.set_cursor_position(ratatui::layout::Position::new(col as u16, row as u16));
+    let mut next = ratatui::buffer::Buffer::empty(frame_area);
+    ratatui::widgets::Widget::render(
+        ratatui::text::Text::from(
+            frame
+                .iter()
+                .map(crate::markdown::to_ratatui_line)
+                .collect::<Vec<_>>(),
+        ),
+        frame_area,
+        &mut next,
+    );
+    // A following transcript that scrolled shifts its region in the terminal (DECSTBM + SU)
+    // and the diff repaints only the rows the shift did not predict.
+    let painted = crate::scroll_region::PAINTER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .draw(terminal, next, view.transcript_scroll_region(), |f| {
+            if show_hardware_cursor {
+                if let Some((row, col)) = cursor {
+                    if row < height && col < width {
+                        f.set_cursor_position(ratatui::layout::Position::new(
+                            col as u16, row as u16,
+                        ));
+                    }
                 }
             }
-        }
-    });
+        });
     // The hidden case still positions: IME candidates anchor at the caret whether or not it
     // is visible. The bare MoveTo rides the same sync bracket, after the paint.
     if !show_hardware_cursor {

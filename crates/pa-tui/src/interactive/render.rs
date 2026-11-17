@@ -357,6 +357,12 @@ impl Renderer {
                 }
                 // A fresh full redraw: the suspended command left arbitrary output behind.
                 term.clear()?;
+                // The cleared screen no longer holds the last painted frame: the next paint
+                // must not shift a scroll region against it.
+                crate::scroll_region::PAINTER
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .invalidate();
                 Ok(())
             }
             Renderer::Headless { .. } => Ok(()),
