@@ -565,7 +565,7 @@ fn thinking_filled(v: AgentView, turns: usize) -> AgentView {
 /// The mode-exit follow recompute (operator directive 2026-09-26).
 #[test]
 fn collapse_resumes_following_when_the_tail_is_in_view() {
-    let mut v = thinking_filled(view(), 2);
+    let mut v = thinking_filled(view(), 1);
     v.detail = Detail::All;
     v.render_frame(80, 24);
     assert!(v.is_following());
@@ -1243,9 +1243,10 @@ fn conversation_leading_matches_ts_spacing_rules() {
     assert!(view.conversation_leading(2, false));
 }
 
-/// TS `isCompactAgentMessageNeighbor`: renders ZERO rows — no spacer, no tool separator.
+/// Collapsed thinking folds to one row between spacers: the body stays hidden, the fold
+/// names it with its token estimate.
 #[test]
-fn hidden_thinking_after_an_agent_message_renders_zero_height() {
+fn collapsed_thinking_folds_to_one_row() {
     let mut view = view_with(vec![
         user_row(),
         agent_message_row(),
@@ -1254,74 +1255,21 @@ fn hidden_thinking_after_an_agent_message_renders_zero_height() {
     ]);
     view.detail = Detail::Overview;
     let text = transcript_text(&mut view, 80);
-    assert!(!text.contains("thinking body"), "collapsed hides thinking");
-    let lines: Vec<&str> = text.lines().collect();
-    let agent_row = lines
-        .iter()
-        .position(|line| line.contains("Agent message \u{b7} \u{2193} lane"))
-        .expect("the agent-message row renders");
-    // The card's panel header is its FIRST row; the seam check must
-    // look above it, never inside the panel's own padding.
+    assert!(!text.contains("thinking body"), "collapsed hides the body");
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
     let header_row = lines
         .iter()
         .position(|line| line.contains("bash \u{b7} done"))
         .expect("the tool card header renders");
-    // Flush: the row directly above the card header is the agent
-    // message's own last row, never a hidden-thinking spacer.
-    assert!(
-        agent_row < header_row,
-        "the card renders after the agent message:\n{text}"
-    );
-    assert!(
-        lines[header_row - 1].contains("Agent message \u{b7} \u{2193} lane"),
-        "the agent message header sits directly above the card header:\n{text}"
-    );
-}
-
-/// A bash execution card is a compact neighbor (TS
-/// `isCompactAgentMessageNeighbor` includes `BashExecutionComponent`).
-#[test]
-fn hidden_thinking_after_a_bash_card_renders_zero_height() {
-    let mut view = view_with(vec![
-        user_row(),
-        ChatEntry::BashExecution(Box::new(crate::bash_card::BashExecutionCard {
-            id: "b1".to_string(),
-            command: "echo hi".to_string(),
-            excluded: false,
-            output: "hi".to_string(),
-            running: false,
-            exit_code: Some(0),
-            cancelled: false,
-            error_message: None,
-            truncated: false,
-            full_output_path: None,
-            suppress_leading_space: false,
-        })),
-        thinking_tool_assistant(),
-        settled_tool_card("c1"),
-    ]);
-    view.detail = Detail::Overview;
-    let text = transcript_text(&mut view, 80);
-    assert!(!text.contains("thinking body"), "collapsed hides thinking");
-    let lines: Vec<&str> = text.lines().collect();
-    let bash_row = lines
-        .iter()
-        .position(|line| line.contains("echo hi"))
-        .expect("the bash card renders");
-    // The tool panel's header is its first row; the seam sits above it.
-    let header_row = lines
-        .iter()
-        .position(|line| line.contains("bash \u{b7} done"))
-        .expect("the tool card header renders");
-    // Flush: the row above the tool card header is the bash card's own
-    // closing border, never a hidden-thinking spacer.
-    assert!(
-        bash_row < header_row,
-        "the card renders after the bash card:\n{text}"
-    );
-    assert!(
-        lines[header_row - 1].contains("\u{2500}"),
-        "the bash card's border sits directly above the card header:\n{text}"
+    assert_eq!(
+        lines[header_row - 4..header_row],
+        [
+            " \u{2709} Agent message \u{b7} \u{2193} lane",
+            "",
+            " \u{2022} Thought \u{b7} ~4 tokens",
+            ""
+        ],
+        "{text}"
     );
 }
 

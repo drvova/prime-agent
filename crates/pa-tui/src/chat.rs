@@ -148,10 +148,9 @@ impl AssistantMessage {
     /// The tool-call separator renders for visible bodies, aborted
     /// messages, and messages not following tool activity.
     #[must_use]
-    pub fn has_trailing_space(&self, detail: Detail, preceded_by_tool_activity: bool) -> bool {
+    pub fn has_trailing_space(&self, preceded_by_tool_activity: bool) -> bool {
         let has_visible_content = self.blocks.iter().any(|block| match block {
-            MessageBlock::Thinking(text) => detail.show_thinking() && !text.trim().is_empty(),
-            MessageBlock::Text(text) => !text.trim().is_empty(),
+            MessageBlock::Thinking(text) | MessageBlock::Text(text) => !text.trim().is_empty(),
         });
         self.has_tool_calls && (has_visible_content || self.aborted || !preceded_by_tool_activity)
     }
@@ -405,7 +404,7 @@ pub(crate) fn render_assistant_with_style(
     preceded_by_tool_activity: bool,
     cache: &mut crate::markdown::MarkdownBlockCache,
 ) -> Vec<Line> {
-    let visible_blocks = geometry::visible_blocks(message, detail);
+    let visible_blocks = geometry::visible_blocks(message);
     let has_visible_content = !visible_blocks.is_empty();
     let mut out: Vec<Line> = Vec::new();
     if has_visible_content {
@@ -417,7 +416,11 @@ pub(crate) fn render_assistant_with_style(
                 out.extend(render_markdown_block(text, md, width, cache));
             }
             MessageBlock::Thinking(text) => {
-                out.extend(render_thinking_block(text, theme, md, width, cache));
+                if detail.show_thinking() {
+                    out.extend(render_thinking_block(text, theme, md, width, cache));
+                } else {
+                    out.push(geometry::folded_thinking_row(text, theme));
+                }
                 // Thinking adds spacing only when another visible block follows.
                 if index + 1 < visible_blocks.len() {
                     out.push(spacer());
