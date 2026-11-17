@@ -23,6 +23,14 @@ mod text_utils;
 mod wrap;
 
 pub use kill_ring::KillRing;
+
+/// One submitted prompt in the recall history, with when it was added (the history search's age
+/// column).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub text: String,
+    pub at: std::time::SystemTime,
+}
 pub(crate) use text_utils::decode_printable;
 pub use text_utils::normalize_text;
 pub use wrap::{is_atomic_marker, word_wrap_line, LayoutLine, Segment, TextChunk, VisualLine};
@@ -98,7 +106,7 @@ pub struct Editor {
 
     pastes: HashMap<usize, String>,
     paste_counter: usize,
-    history: Vec<String>,
+    history: Vec<HistoryEntry>,
     history_index: isize,
     kill_ring: KillRing,
     undo_stack: Vec<EditorSnapshot>,
@@ -441,17 +449,27 @@ impl Editor {
         if trimmed.is_empty() {
             return;
         }
-        if self.history.first() == Some(&trimmed.to_string()) {
+        if self
+            .history
+            .first()
+            .is_some_and(|entry| entry.text == trimmed)
+        {
             return;
         }
-        self.history.insert(0, trimmed.to_string());
+        self.history.insert(
+            0,
+            HistoryEntry {
+                text: trimmed.to_string(),
+                at: std::time::SystemTime::now(),
+            },
+        );
         if self.history.len() > MAX_HISTORY {
             self.history.pop();
         }
     }
 
     #[must_use]
-    pub fn get_history(&self) -> &[String] {
+    pub fn get_history(&self) -> &[HistoryEntry] {
         &self.history
     }
 
@@ -481,7 +499,7 @@ impl Editor {
         if idx == -1 {
             self.set_text_internal("");
         } else {
-            let text = self.history[idx as usize].clone();
+            let text = self.history[idx as usize].text.clone();
             self.set_text_internal(&text);
         }
     }

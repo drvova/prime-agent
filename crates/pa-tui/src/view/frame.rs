@@ -69,6 +69,15 @@ impl AgentView {
                 kind: PickerKind::Choice,
             });
             Some(dock)
+        } else if let Some(search) = &self.history_search {
+            let mut dock = prompt_context;
+            dock.extend(search.render(
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                std::time::SystemTime::now(),
+            ));
+            Some(dock)
         } else if let Some(mcp_view) = self.mcp_view.as_mut() {
             let mut dock = prompt_context;
             dock.extend(mcp_view.render(&self.theme, width, self.editor.keybindings()));
@@ -281,6 +290,7 @@ impl AgentView {
         if self.onboarding.is_some()
             || self.model_picker.is_some()
             || self.choice_picker.is_some()
+            || self.history_search.is_some()
             || self.heartbeats_picker.is_some()
             || self.goal_panel.is_some()
             || self.bash_view.is_some()
