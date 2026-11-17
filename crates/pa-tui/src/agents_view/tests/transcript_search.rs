@@ -1,6 +1,7 @@
 //! The deferred transcript search and the highlighted session's preview row: a resting query
-//! matches inside conversation text with a per-session count, and the preview row holds the
-//! selected session's first prompt without moving the list.
+//! opted in with the `?` prefix matches inside conversation text with a per-session count (a plain
+//! query never does), and the preview row holds the selected session's first prompt without
+//! moving the list.
 
 use super::*;
 
@@ -33,7 +34,7 @@ fn message_line(role: &str, text: &str) -> String {
 }
 
 #[test]
-fn a_resting_query_matches_inside_transcripts_with_a_count() {
+fn only_a_question_prefixed_query_matches_inside_transcripts_with_a_count() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let parser = dir.path().join("a.jsonl");
     let quiet = dir.path().join("b.jsonl");
@@ -49,11 +50,20 @@ fn a_resting_query_matches_inside_transcripts_with_a_count() {
     )
     .expect("write session");
     std::fs::write(&quiet, message_line("user", "write docs")).expect("write session");
-    let mut mode = fresh_mode(vec![
-        session(1, "refactor", &parser, "Split the Parser in two"),
-        session(2, "docs", &quiet, "write docs"),
-    ]);
+    let roster = || {
+        vec![
+            session(1, "refactor", &parser, "Split the Parser in two"),
+            session(2, "docs", &quiet, "write docs"),
+        ]
+    };
+    // A plain query is name, id, and cwd only: it schedules no transcript scan.
+    let mut plain = fresh_mode(roster());
     for ch in "parser".chars() {
+        plain.handle_key(&ch.to_string());
+    }
+    assert!(plain.take_content_search().is_none());
+    let mut mode = fresh_mode(roster());
+    for ch in "?parser".chars() {
         mode.handle_key(&ch.to_string());
     }
     // The title filter answers at once: neither title holds the query.

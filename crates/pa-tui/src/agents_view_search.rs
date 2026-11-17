@@ -1,8 +1,9 @@
 //! The agents-view session search: a picker over the display NAME (primary), the durable session
 //! ID, and the CWD — the name target is the SESSION column's own title, so a prompt-derived title
-//! is searchable exactly as far as the column displays it. The conversation text matches only
-//! through the deferred transcript scan (`agents_view::content_search`), which runs off the paint
-//! path after the query rests; the TS first-message and file-path fields never match.
+//! is searchable exactly as far as the column displays it. The conversation text never matches a
+//! plain query: only a query opted in with the `?` prefix also runs the deferred transcript scan
+//! (`agents_view::content_search`, off the paint path after the query rests), and the prefix itself
+//! is not search text. The TS first-message and file-path fields never match.
 
 use crate::fuzzy::fuzzy_match;
 
@@ -53,7 +54,9 @@ const REGEX_BACKTRACK_LIMIT: usize = 10_000;
 /// Parse a query; invalid `re:` patterns parse to no matches.
 #[must_use]
 pub fn parse_search_query(query: &str) -> ParsedSearchQuery {
+    // The transcript opt-in prefix is not search text: the name, id, and cwd match the rest.
     let trimmed = query.trim();
+    let trimmed = trimmed.strip_prefix('?').map_or(trimmed, str::trim);
     if let Some(pattern) = trimmed.strip_prefix("re:") {
         let pattern = pattern.trim();
         if pattern.is_empty() {

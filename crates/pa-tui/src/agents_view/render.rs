@@ -322,7 +322,17 @@ impl AgentsViewMode {
         }
         if self.rows.is_empty() {
             let text = match (self.query.trim().is_empty(), self.scope_active) {
-                (false, _) => "No sessions match your search.",
+                (false, _)
+                    if self
+                        .query
+                        .trim()
+                        .starts_with(super::content_search::TRANSCRIPT_PREFIX) =>
+                {
+                    "No sessions match your search."
+                }
+                (false, _) => {
+                    "No sessions match your search. Start with ? to search conversations too."
+                }
                 (true, true) => "No subagents yet.",
                 (true, false) => "No sessions yet.",
             };

@@ -1,7 +1,9 @@
-//! The deferred transcript search: a query that rests for [`CONTENT_SEARCH_DEBOUNCE`] also
-//! matches inside each listed session's conversation text. The scan reads the session files on a
-//! blocking worker, never on the paint path; its keyed answer lands as a `ContentSearchLoaded`
-//! input, and only the newest query's answer applies.
+//! The deferred transcript search, an explicit opt-in: the session search matches the name, the
+//! durable session ID, and the cwd, never conversation text, unless the query starts with
+//! [`TRANSCRIPT_PREFIX`]. Such a query that rests for [`CONTENT_SEARCH_DEBOUNCE`] also matches
+//! inside each listed session's conversation text. The scan reads the session files on a blocking
+//! worker, never on the paint path; its keyed answer lands as a `ContentSearchLoaded` input, and
+//! only the newest query's answer applies.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -11,6 +13,16 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::UiInput;
+
+/// The query prefix that opts the search into conversation text (`?parser`).
+pub(crate) const TRANSCRIPT_PREFIX: char = '?';
+
+/// The transcript needle of an opted-in query: the text after [`TRANSCRIPT_PREFIX`], lowercased;
+/// `None` for a plain query, an empty one, or a `re:` pattern (title-only).
+fn transcript_needle(query: &str) -> Option<String> {
+    let rest = query.trim().strip_prefix(TRANSCRIPT_PREFIX)?.trim();
+    (!rest.is_empty() && !rest.starts_with("re:")).then(|| rest.to_lowercase())
+}
 
 /// How long the query rests before the transcript scan starts.
 pub(super) const CONTENT_SEARCH_DEBOUNCE: Duration = Duration::from_millis(150);
@@ -37,14 +49,13 @@ pub(super) struct ContentSearchRequest {
 }
 
 impl ContentSearch {
-    /// A query edit: the previous answer drops and a scan is due after the debounce. An empty
-    /// query or a `re:` pattern (title-only) schedules none.
+    /// A query edit: the previous answer drops, and an opted-in query's scan is due after the
+    /// debounce. A plain query schedules none.
     pub(super) fn query_changed(&mut self, query: &str) {
         self.generation += 1;
         self.hits.clear();
-        let query = query.trim();
-        self.due = (!query.is_empty() && !query.starts_with("re:"))
-            .then(|| tokio::time::Instant::now() + CONTENT_SEARCH_DEBOUNCE);
+        self.due =
+            transcript_needle(query).map(|_| tokio::time::Instant::now() + CONTENT_SEARCH_DEBOUNCE);
     }
 
     pub(super) fn due(&self) -> Option<tokio::time::Instant> {
@@ -68,7 +79,7 @@ impl ContentSearch {
         self.due.take()?;
         Some(ContentSearchRequest {
             generation: self.generation,
-            needle: query.trim().to_lowercase(),
+            needle: transcript_needle(query)?,
             files,
         })
     }

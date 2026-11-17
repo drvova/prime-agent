@@ -1,1 +1,1 @@
-- The sessions list (`/resume`, `← manage`) now also searches inside conversations once you pause typing, shows how many matches each session has, and previews the highlighted session's first prompt.
+- The sessions list (`/resume`, `← manage`) previews the highlighted session's first prompt, and a search that starts with `?` (`?parser`) also looks inside conversations once you pause typing, showing how many matches each session has; a plain search still matches only names, session IDs, and working directories.
