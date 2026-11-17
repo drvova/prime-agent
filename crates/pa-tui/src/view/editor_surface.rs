@@ -59,17 +59,18 @@ pub(crate) fn render(
     tint: PromptTint,
 ) -> EditorBox {
     let bg = crate::chrome::editor_background(theme);
-    let border = theme.fg_style(ThemeColor::BorderMuted);
     let padding_x = 2usize;
     let content_width = width.saturating_sub(padding_x * 2).max(1);
-    // A bang first line swaps the `> ` for the `! `/`!! ` prompt (styled through
-    // the editor border color), which also narrows the input width.
+    // A bang first line swaps the `> ` for the same-width `! `/`!!` prompt.
     let bash_prompt = editor.bash_prompt_prefix();
     let prompt = bash_prompt.unwrap_or("> ");
-    // The prompt's colour, highest claim first: bash mode owns it, then the thinking tint. Only
-    // the colour moves, so no row shifts width.
+    // The prompt's colour, highest claim first: bash mode owns it (by colour on the editor
+    // background, never by width: `!` in the bash-mode tint, the `!` card's; `!!` dim, its
+    // context-excluded card's), then the thinking tint. Only the colour moves, so no row shifts
+    // width.
     let prompt_style = match (bash_prompt, tint) {
-        (Some(_), _) => border,
+        (Some("!!"), _) => bg.patch(theme.fg_style(ThemeColor::Dim)),
+        (Some(_), _) => bg.patch(theme.fg_style(ThemeColor::BashMode)),
         (None, PromptTint::Plain) => bg,
         (None, PromptTint::Thinking(level)) => {
             use pa_types::ai::ModelThinkingLevel as L;

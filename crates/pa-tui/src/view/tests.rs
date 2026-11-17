@@ -208,24 +208,32 @@ fn bang_prompt_renders_in_place_of_the_typed_prefix() {
         !joined.contains("> echo hi"),
         "the default prompt does not render for a bang line:\n{joined}"
     );
-    let border = v.theme.fg_style(ThemeColor::BorderMuted);
+    let bg = crate::chrome::editor_background(&v.theme);
     let prompt_row = frame
         .iter()
         .find(|line| text_of(line).contains("!  echo hi"))
         .expect("the prompt row");
     assert!(
-        prompt_row.iter().any(|span| span.style == border),
-        "the bang prompt renders through the editor border color"
+        prompt_row.contains(&crate::Span::styled(
+            "! ",
+            bg.patch(v.theme.fg_style(ThemeColor::BashMode))
+        )),
+        "the bang prompt is tinted bash-mode on the editor background: {prompt_row:?}"
     );
 
-    let mut v = view();
-    v.editor.set_text("!!echo quiet");
-    let frame = v.render_dock(80);
-    let joined = frame.iter().map(text_of).collect::<Vec<_>>().join("\n");
-    assert!(
-        joined.contains("!!  echo quiet"),
-        "the !! prompt hides its typed prefix:\n{joined}"
-    );
+    // The mode shows by colour only: the draft starts in the same column under `>`, `!` and `!!`.
+    let draft_column = |text: &str| {
+        let mut v = view();
+        v.editor.set_text(text);
+        let frame = v.render_dock(80);
+        frame
+            .iter()
+            .map(text_of)
+            .find_map(|row| row.find("echo quiet"))
+            .expect("the draft row")
+    };
+    assert_eq!(draft_column("!!echo quiet"), draft_column("echo quiet"));
+    assert_eq!(draft_column("!echo quiet"), draft_column("echo quiet"));
 }
 
 /// The composer's `>` prompt carries the session's thinking level (oh-my-pi's effort-tinted
@@ -271,7 +279,7 @@ fn the_prompt_is_tinted_by_the_thinking_level() {
     assert_eq!(prompt_style(None, "draft").0, bg, "no level, no tint");
     assert_eq!(
         prompt_style(Some("high"), "!draft").0,
-        theme.fg_style(ThemeColor::BorderMuted),
+        bg.patch(theme.fg_style(ThemeColor::BashMode)),
         "bash mode owns the prompt over the thinking tint"
     );
 }
