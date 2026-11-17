@@ -834,3 +834,33 @@ fn delete_resets_a_changed_row_and_the_hint_says_saved() {
     // A row already at its default ignores Delete.
     assert_eq!(menu.handle_key("delete", &kb()), SettingsMenuAction::None);
 }
+
+/// A refused save puts the previous value back, drops the `Saved` notice, and shows the reason
+/// under the setting.
+#[test]
+fn a_refused_change_shows_its_reason_under_the_row() {
+    let mut menu = menu();
+    assert_eq!(
+        menu.handle_key("enter", &kb()),
+        SettingsMenuAction::Change {
+            id: "autocompact",
+            value: "false".to_string()
+        }
+    );
+    menu.refuse_last_change("settings file is locked by another process");
+    let text = render_text(&menu);
+    let row = text
+        .iter()
+        .find(|line| line.contains("Auto-compact") && !line.contains("threshold"))
+        .expect("the row renders");
+    assert!(
+        row.trim_end().ends_with("true"),
+        "the value is put back: {row}"
+    );
+    assert!(
+        text.iter()
+            .any(|line| line.trim() == "\u{2717} settings file is locked by another process"),
+        "{text:#?}"
+    );
+    assert!(!text.iter().any(|line| line.contains("Saved")), "{text:#?}");
+}

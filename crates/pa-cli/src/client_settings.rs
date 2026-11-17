@@ -22,6 +22,27 @@ impl CliClientSettings {
     fn manager(&self) -> pa_core::settings::SettingsManager {
         pa_core::settings::SettingsManager::create(&self.cwd, &self.agent_dir)
     }
+
+    /// Run one setter on a fresh manager and report a refused save as the error. The manager
+    /// keeps a value it could not persist (the global settings file did not load: malformed, or
+    /// its lock held by another process) in memory, records a global-scope error and returns
+    /// `Ok`; at this seam that is a refusal the menu must show, not a silent success. The last
+    /// global-scope error is the save's own refusal, which names the load failure behind it.
+    fn save(
+        &self,
+        set: impl FnOnce(&mut pa_core::settings::SettingsManager) -> Result<()>,
+    ) -> Result<pa_core::settings::SettingsManager> {
+        let mut manager = self.manager();
+        set(&mut manager)?;
+        let refused = manager
+            .drain_errors()
+            .into_iter()
+            .rfind(|error| error.scope == pa_core::settings::SettingsScope::Global);
+        match refused {
+            Some(error) => Err(anyhow::anyhow!(error.message)),
+            None => Ok(manager),
+        }
+    }
 }
 
 macro_rules! setting {
@@ -31,7 +52,7 @@ macro_rules! setting {
         }
 
         fn $set(&self, value: $ty) -> Result<()> {
-            self.manager().$setter(value)
+            self.save(|manager| manager.$setter(value)).map(drop)
         }
     };
 }
@@ -43,7 +64,7 @@ macro_rules! str_setting {
         }
 
         fn $set(&self, value: &str) -> Result<()> {
-            self.manager().$setter(value)
+            self.save(|manager| manager.$setter(value)).map(drop)
         }
     };
 }
@@ -54,8 +75,7 @@ impl ClientSettings for CliClientSettings {
     }
 
     fn set_harness_refinements(&self, enabled: bool) -> Result<()> {
-        let mut manager = self.manager();
-        manager.set_harness_refinements(enabled)?;
+        let manager = self.save(|manager| manager.set_harness_refinements(enabled))?;
         // Adoption bookkeeping stays off the UI input/paint path.
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let agent_dir = self.agent_dir.clone();
@@ -74,7 +94,7 @@ impl ClientSettings for CliClientSettings {
     }
 
     fn set_compaction_threshold_percent(&self, percent: f64) -> Result<()> {
-        self.manager().set_compaction_threshold_percent(percent)?;
+        self.save(|manager| manager.set_compaction_threshold_percent(percent))?;
         let settings = self.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
@@ -102,7 +122,7 @@ impl ClientSettings for CliClientSettings {
             serde_json::Value::String(provider.to_string()),
         )
         .map_err(|error| anyhow::anyhow!("Invalid web search provider \"{provider}\": {error}"))?;
-        self.manager().set_web_search_provider(parsed)?;
+        self.save(|manager| manager.set_web_search_provider(parsed))?;
         let settings = self.clone();
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             runtime.spawn(async move {
@@ -126,7 +146,8 @@ impl ClientSettings for CliClientSettings {
     }
 
     fn set_theme(&self, theme: &str) -> Result<()> {
-        self.manager().set_theme(theme.to_string())
+        self.save(|manager| manager.set_theme(theme.to_string()))
+            .map(drop)
     }
 
     fn default_service_tier(&self) -> String {
@@ -142,7 +163,8 @@ impl ClientSettings for CliClientSettings {
         let parsed: pa_types::ai::ServiceTier =
             serde_json::from_value(serde_json::Value::String(tier.to_string()))
                 .map_err(|error| anyhow::anyhow!("Invalid service tier \"{tier}\": {error}"))?;
-        self.manager().set_default_service_tier(parsed)
+        self.save(|manager| manager.set_default_service_tier(parsed))
+            .map(drop)
     }
 
     setting!(
@@ -425,5 +447,26 @@ mod tests {
             std::fs::read_to_string(agent_dir.join("settings.json")).expect("settings file");
         let value: serde_json::Value = serde_json::from_str(&content).expect("parse");
         assert_eq!(value["factory"]["enabled"], false);
+    }
+
+    /// A settings file that does not load refuses every save: the manager keeps the value in
+    /// memory and returns `Ok`, so the seam must turn the recorded refusal into the error.
+    #[test]
+    fn a_refused_save_is_an_error_at_the_seam() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let malformed = "{\"theme\":\"dark\",}";
+        std::fs::write(agent_dir.join("settings.json"), malformed).expect("settings file");
+        let settings = CliClientSettings::new(dir.path().to_path_buf(), agent_dir.clone());
+
+        let error = settings
+            .set_show_images(false)
+            .expect_err("the save is refused");
+        assert!(error.to_string().contains("not saved"), "{error:#}");
+        assert_eq!(
+            std::fs::read_to_string(agent_dir.join("settings.json")).expect("settings file"),
+            malformed
+        );
     }
 }

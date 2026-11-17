@@ -1,0 +1,1 @@
+- A `/settings` change that cannot be saved (for example while another process holds the settings file, or the file does not parse) now shows why under the setting and keeps the old value, instead of claiming `Saved` or failing silently.

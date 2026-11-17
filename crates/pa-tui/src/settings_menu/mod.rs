@@ -203,6 +203,17 @@ pub struct SettingsMenu {
     defaults: std::collections::HashMap<&'static str, String>,
     /// The last change: when it was saved and when it takes effect.
     saved: Option<(std::time::Instant, Applies)>,
+    /// The last changed row and the value it had before, so a refused save can put it back.
+    last_change: Option<(usize, String)>,
+    /// The refused save the detail area reports under its row.
+    refusal: Option<Refusal>,
+}
+
+/// One refused save: the row it belongs to and the reason the save gave.
+#[derive(Debug)]
+struct Refusal {
+    row: usize,
+    reason: String,
 }
 
 /// One tab: the row indices it groups with its search input, filtered window, and selection. A
@@ -599,9 +610,25 @@ impl SettingsMenu {
         expired
     }
 
-    /// Note a saved change for the hint row.
-    fn mark_saved(&mut self, row_index: usize) {
+    /// Note a change for the hint row, keeping the row's previous value until the save answers.
+    fn mark_saved(&mut self, row_index: usize, previous: String) {
         self.saved = Some((std::time::Instant::now(), self.rows[row_index].applies));
+        self.last_change = Some((row_index, previous));
+        self.refusal = None;
+    }
+
+    /// The last change's save was refused: the row gets its previous value back, the `Saved`
+    /// notice drops, and the reason shows in the detail area while that row is selected.
+    pub fn refuse_last_change(&mut self, reason: &str) {
+        let Some((row, previous)) = self.last_change.take() else {
+            return;
+        };
+        self.rows[row].current = previous;
+        self.saved = None;
+        self.refusal = Some(Refusal {
+            row,
+            reason: reason.to_string(),
+        });
     }
 
     /// Delete on a changed row: put it back to its default (a no-op on a default row).
@@ -619,8 +646,8 @@ impl SettingsMenu {
         else {
             return SettingsMenuAction::None;
         };
-        self.rows[row_index].current.clone_from(&default);
-        self.mark_saved(row_index);
+        let previous = std::mem::replace(&mut self.rows[row_index].current, default.clone());
+        self.mark_saved(row_index, previous);
         SettingsMenuAction::Reset {
             id: self.rows[row_index].id,
             value: default,
@@ -646,6 +673,8 @@ impl SettingsMenu {
             sub: None,
             defaults: std::collections::HashMap::new(),
             saved: None,
+            last_change: None,
+            refusal: None,
             max_visible: 10,
         }
     }
@@ -833,9 +862,9 @@ impl SettingsMenu {
                 (index as isize + delta).rem_euclid(count as isize) as usize
             });
         let value = values[index].clone();
-        row.current.clone_from(&value);
+        let previous = std::mem::replace(&mut row.current, value.clone());
         let id = row.id;
-        self.mark_saved(row_index);
+        self.mark_saved(row_index, previous);
         SettingsMenuAction::Change { id, value }
     }
 
@@ -901,8 +930,9 @@ impl SettingsMenu {
             // A value select closes the submenu and updates the row's displayed value.
             if let Some(action) = value {
                 if let SettingsMenuAction::Change { value, .. } = &action {
-                    self.rows[sub.row].current.clone_from(value);
-                    self.mark_saved(sub.row);
+                    let previous =
+                        std::mem::replace(&mut self.rows[sub.row].current, value.clone());
+                    self.mark_saved(sub.row, previous);
                 }
                 return action;
             }
@@ -1134,11 +1164,23 @@ impl SettingsMenu {
             let row = &self.rows[row_index];
             if !row.description.is_empty() || held_description.is_some() {
                 // A shorter description pads above the block, so the block, its rule, and the
-                // Enter line stay anchored to the footer.
-                let description = wrap_text(row.description, description_width);
-                let padding = held_description
+                // Enter line stay anchored to the footer. A refused save shows its reason in
+                // place of the description, in the error tone, within the same rows.
+                let (text, color) = match self
+                    .refusal
+                    .as_ref()
+                    .filter(|refusal| refusal.row == row_index)
+                {
+                    Some(refusal) => (format!("\u{2717} {}", refusal.reason), ThemeColor::Error),
+                    None => (row.description.to_string(), ThemeColor::Dim),
+                };
+                let rows = held_description
                     .unwrap_or(0)
-                    .saturating_sub(description.len());
+                    .max(wrap_text(row.description, description_width).len())
+                    .max(1);
+                let mut description = wrap_text(&text, description_width);
+                description.truncate(rows);
+                let padding = rows.saturating_sub(description.len());
                 lines.extend(std::iter::repeat_with(Vec::new).take(padding));
                 lines.push(Vec::new());
                 for line in description {
@@ -1146,7 +1188,7 @@ impl SettingsMenu {
                     lines.push(crate::width::truncate_line(
                         &vec![
                             crate::Span::raw("  ".to_string()),
-                            crate::Span::styled(plain, theme.fg_style(ThemeColor::Dim)),
+                            crate::Span::styled(plain, theme.fg_style(color)),
                         ],
                         width,
                         "",
