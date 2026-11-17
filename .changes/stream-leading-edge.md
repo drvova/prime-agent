@@ -1,0 +1,1 @@
+- Streamed replies reach the screen sooner: the daemon sends the first token of a reply (and the first after a pause) at once instead of holding it for up to 50 ms, and still sends at most 20 updates a second.

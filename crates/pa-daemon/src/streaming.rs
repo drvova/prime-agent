@@ -1,10 +1,15 @@
 //! Live token-stream coalescing: the emit path parks `message_update` frames in a
-//! single-slot coalescer — a flusher emits at most one parked update per interval;
-//! every other frame flushes the parked update first, so wire order stays identical.
-//! The deltas are ADDITIVE, so the parked run merges delta text; block-end events flush it.
+//! single-slot coalescer, throttled on both edges: an update that arrives when nothing went out
+//! within the interval broadcasts at once (the leading edge: the first token, the first token
+//! after a pause), and anything parked behind it waits for the flusher, which drains the
+//! trailing edge one interval after the last broadcast. Every other frame flushes the parked
+//! update first, so wire order stays identical. The deltas are ADDITIVE, so the parked run merges
+//! delta text; block-end events flush it.
 
 use std::sync::Mutex;
 use std::time::Duration;
+
+use tokio::time::Instant;
 
 use serde_json::{json, Map};
 
@@ -12,8 +17,9 @@ use crate::engine::AssistantSnapshot;
 use crate::protocol::{create_daemon_event_meta, DaemonOutbound};
 use crate::worker::OutboundFrame;
 
-/// One parked update flushes per interval; anything parked longer is a
-/// stream stall, so this bounds both broadcast rate and update staleness.
+/// The minimum gap between two broadcast updates: the leading edge goes out at once, the
+/// trailing edge one interval after the previous broadcast, so this bounds both the broadcast
+/// rate (20 Hz) and the staleness of a parked update.
 pub(crate) const UPDATE_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The session identity a flushed frame is stamped with (the frame is
@@ -50,6 +56,9 @@ struct CoalescerInner {
     pending: Option<PendingUpdate>,
     /// The turn ended: park no more, flush nothing, stop the flusher.
     closed: bool,
+    /// When the last parked update was broadcast (leading edge, trailing edge, or flushed ahead
+    /// of a direct frame); `None` before the turn's first.
+    last_flush: Option<Instant>,
 }
 
 impl TurnStreamCoalescer {
@@ -58,6 +67,7 @@ impl TurnStreamCoalescer {
             inner: Mutex::new(CoalescerInner {
                 pending: None,
                 closed: false,
+                last_flush: None,
             }),
             session: SessionIdentity {
                 active_session_id,
@@ -67,13 +77,16 @@ impl TurnStreamCoalescer {
     }
 
     /// Park one streamed update: the newest snapshot wins; the delta merges into the
-    /// parked run (same kind) or starts a fresh one. `false` when the turn already ended.
+    /// parked run (same kind) or starts a fresh one. When nothing was broadcast within the
+    /// interval the run goes out now (the leading edge) instead of waiting for the flusher.
+    /// `false` when the turn already ended.
     pub(crate) fn park_update(
         &self,
         message: AssistantSnapshot,
         kind: &str,
         delta: &str,
         sequence: u64,
+        events: &crate::worker::EventPump,
     ) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
@@ -98,6 +111,12 @@ impl TurnStreamCoalescer {
                 });
             }
         }
+        if inner
+            .last_flush
+            .is_none_or(|at| at.elapsed() >= UPDATE_FLUSH_INTERVAL)
+        {
+            self.flush_locked(&mut inner, events);
+        }
         true
     }
 
@@ -112,15 +131,40 @@ impl TurnStreamCoalescer {
         }
     }
 
-    /// Flusher tick: broadcast the parked update when one is waiting.
-    /// Returns `false` once the turn closed and the flusher should stop.
+    /// Flusher tick: broadcast the parked update (the trailing edge) once a full interval
+    /// passed since the last broadcast. Returns `false` once the turn closed and the flusher
+    /// should stop.
     pub(crate) fn flush_pending(&self, events: &crate::worker::EventPump) -> bool {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             return false;
         }
-        self.flush_locked(&mut inner, events);
+        if inner
+            .last_flush
+            .is_none_or(|at| at.elapsed() >= UPDATE_FLUSH_INTERVAL)
+        {
+            self.flush_locked(&mut inner, events);
+        }
         true
+    }
+
+    /// When the flusher should next look at the slot: one interval after the last broadcast
+    /// (the earliest the trailing edge may go out), or one interval from now when that moment
+    /// already passed or nothing was broadcast yet (a fresh park then takes the leading edge
+    /// itself). `None` once the turn closed.
+    pub(crate) fn next_flush_at(&self) -> Option<Instant> {
+        let inner = self.inner.lock().unwrap();
+        if inner.closed {
+            return None;
+        }
+        let now = Instant::now();
+        Some(
+            inner
+                .last_flush
+                .map(|at| at + UPDATE_FLUSH_INTERVAL)
+                .filter(|due| *due > now)
+                .unwrap_or(now + UPDATE_FLUSH_INTERVAL),
+        )
     }
 
     /// End of turn: nothing parked after this point is broadcast (an aborted
@@ -138,6 +182,7 @@ impl TurnStreamCoalescer {
         let Some(pending) = inner.pending.take() else {
             return;
         };
+        inner.last_flush = Some(Instant::now());
         let Some(message) = pending.message.into_wire() else {
             return;
         };
@@ -194,55 +239,113 @@ mod tests {
     use std::sync::Arc;
     use tokio::sync::broadcast;
 
+    /// The leading edge: a lone update with nothing broadcast within the interval goes out at
+    /// once. The clock is paused and never advanced, so a tick-driven flush cannot be what sent it.
+    #[tokio::test(start_paused = true)]
+    async fn a_lone_update_broadcasts_without_waiting_for_the_tick() {
+        let (pump, mut rx) = subscribe();
+        let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "first" })),
+            "text_delta",
+            "first",
+            1,
+            &pump,
+        ));
+        let sent = session_event_of(&rx.try_recv().expect("the leading edge broadcast"));
+        assert_eq!(sent["event"]["message"]["text"], "first");
+        assert_eq!(sent["meta"]["sequence"], 1);
+        // An update inside the interval parks for the trailing edge; the flusher drains it only
+        // once a full interval passed since the leading broadcast.
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "first second" })),
+            "text_delta",
+            " second",
+            2,
+            &pump,
+        ));
+        assert!(rx.try_recv().is_err(), "the follow-up parks");
+        assert!(coalescer.flush_pending(&pump));
+        assert!(
+            rx.try_recv().is_err(),
+            "the trailing edge waits out the interval"
+        );
+        tokio::time::advance(UPDATE_FLUSH_INTERVAL).await;
+        assert!(coalescer.flush_pending(&pump));
+        let trailing = session_event_of(&rx.try_recv().expect("the trailing edge broadcast"));
+        assert_eq!(trailing["event"]["message"]["text"], "first second");
+        assert_eq!(
+            trailing["event"]["assistantMessageEvent"]["delta"],
+            " second"
+        );
+    }
+
     #[test]
     fn direct_sends_flush_the_parked_update_first() {
         let (pump, mut rx) = subscribe();
         let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
+        // The first update takes the leading edge; the second parks behind it.
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "part" })),
+            "text_delta",
+            "part",
+            1,
+            &pump,
+        ));
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "partial" })),
             "text_delta",
-            "part",
-            1
+            "ial",
+            2,
+            &pump,
         ));
         // The parked update waits for the flusher until a direct frame
         // arrives: the direct send must broadcast the parked snapshot first.
         coalescer.send_direct(&[event_payload(&json!({ "type": "message_end" }))], &pump);
-        let first = session_event_of(&rx.try_recv().unwrap());
-        assert_eq!(first["event"]["type"], "message_update");
-        assert_eq!(first["event"]["message"]["text"], "partial");
-        let second = session_event_of(&rx.try_recv().unwrap());
-        assert_eq!(second["event"]["type"], "message_end");
+        let leading = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(leading["event"]["message"]["text"], "part");
+        let parked = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(parked["event"]["type"], "message_update");
+        assert_eq!(parked["event"]["message"]["text"], "partial");
+        let end = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(end["event"]["type"], "message_end");
         assert!(rx.try_recv().is_err(), "no further frames");
     }
 
-    #[test]
-    fn a_newer_snapshot_merges_the_superseded_deltas() {
+    #[tokio::test(start_paused = true)]
+    async fn a_newer_snapshot_merges_the_superseded_deltas() {
         let (pump, mut rx) = subscribe();
         let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "The" })),
             "text_delta",
             "The ",
-            1
+            1,
+            &pump,
         ));
+        let leading = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(leading["event"]["message"]["text"], "The");
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "The Thames" })),
             "text_delta",
             "Thames ",
-            2
+            2,
+            &pump,
         ));
         assert!(coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "The Thames flows" })),
             "text_delta",
             "flows",
-            3
+            3,
+            &pump,
         ));
+        tokio::time::advance(UPDATE_FLUSH_INTERVAL).await;
         assert!(coalescer.flush_pending(&pump));
         let flushed = session_event_of(&rx.try_recv().unwrap());
         assert_eq!(flushed["event"]["message"]["text"], "The Thames flows");
         assert_eq!(
             flushed["event"]["assistantMessageEvent"]["delta"],
-            "The Thames flows"
+            "Thames flows"
         );
         // The flushed frame carries the newest frame's broadcast sequence.
         assert_eq!(flushed["meta"]["sequence"], 3);
@@ -260,15 +363,26 @@ mod tests {
             AssistantSnapshot::Wire(json!({ "text": "think" })),
             "thinking_delta",
             "think",
-            1
+            1,
+            &pump,
         ));
         assert!(coalescer.park_update(
-            AssistantSnapshot::Wire(json!({ "text": "thinkanswer" })),
+            AssistantSnapshot::Wire(json!({ "text": "thinkmore" })),
+            "thinking_delta",
+            "more",
+            2,
+            &pump,
+        ));
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "thinkmoreanswer" })),
             "text_delta",
             "answer",
-            2
+            3,
+            &pump,
         ));
         coalescer.send_direct(&[event_payload(&json!({ "type": "turn_end" }))], &pump);
+        let leading = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(leading["event"]["assistantMessageEvent"]["delta"], "think");
         let flushed = session_event_of(&rx.try_recv().unwrap());
         assert_eq!(
             flushed["event"]["assistantMessageEvent"]["type"],
@@ -279,7 +393,7 @@ mod tests {
         assert_eq!(direct["event"]["type"], "turn_end");
         assert!(
             rx.try_recv().is_err(),
-            "no frames beyond the flushed run and the direct one"
+            "no frames beyond the leading update, the flushed run and the direct one"
         );
     }
 
@@ -288,20 +402,38 @@ mod tests {
         let (pump, mut rx) = subscribe();
         let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
         assert!(coalescer.park_update(
-            AssistantSnapshot::Wire(json!({ "text": "partial" })),
+            AssistantSnapshot::Wire(json!({ "text": "lead" })),
             "text_delta",
-            "p",
-            1
+            "lead",
+            1,
+            &pump,
+        ));
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "leadpartial" })),
+            "text_delta",
+            "partial",
+            2,
+            &pump,
         ));
         coalescer.close();
         assert!(!coalescer.park_update(
             AssistantSnapshot::Wire(json!({ "text": "stale" })),
             "text_delta",
             "s",
-            2
+            3,
+            &pump,
         ));
         assert!(!coalescer.flush_pending(&pump), "the flusher stops");
-        assert!(rx.try_recv().is_err(), "a closed turn parks nothing");
+        assert!(
+            coalescer.next_flush_at().is_none(),
+            "a closed turn arms no tick"
+        );
+        let leading = session_event_of(&rx.try_recv().unwrap());
+        assert_eq!(leading["event"]["message"]["text"], "lead");
+        assert!(
+            rx.try_recv().is_err(),
+            "the parked partial is dropped and a closed turn parks nothing"
+        );
     }
 
     #[test]
