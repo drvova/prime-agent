@@ -451,6 +451,77 @@ fn disk_memo_damage_across_processes_misses_and_reprobes() {
     );
 }
 
+/// The tree-identity cache: an unchanged installed `rlm` tree is identified without re-reading its
+/// bytes, in this process and in a fresh one, while an in-place rewrite that keeps the file size
+/// still re-reads the tree, changes the identity, and re-probes.
+#[cfg(unix)]
+#[test]
+fn installed_tree_is_rehashed_only_when_its_stat_fingerprint_moves() {
+    let _memo_state = MEMO_STATE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let venv = dir.path().join("venv");
+    let rlm = venv.join("lib/python3.11/site-packages/rlm");
+    std::fs::create_dir_all(&rlm).unwrap();
+    std::fs::write(rlm.join("__init__.py"), "x = 1\n").unwrap();
+    let counter = dir.path().join("count");
+    let python = dir.path().join("python");
+    std::fs::write(
+        &python,
+        format!("#!/bin/sh\necho x >> {}\nexit 0\n", counter.display()),
+    )
+    .unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    write_bootstrap_version(&venv, "sha256:runtime", &[]).unwrap();
+    let python_str = python.to_string_lossy().to_string();
+    let probe_count = || {
+        std::fs::read_to_string(&counter).map_or(0, |text| {
+            text.lines().filter(|l| !l.trim().is_empty()).count()
+        })
+    };
+    // (interpreter probes, reads of the installed rlm tree)
+    let observed = || (probe_count(), content_reads_for_tests(&rlm));
+
+    invalidate_runtime_probe_cache();
+    assert!(kernel_ready(&python_str, &venv, "sha256:runtime", &[]));
+    assert_eq!(
+        observed(),
+        (2, 1),
+        "the cold call reads the tree and probes"
+    );
+
+    assert!(kernel_ready(&python_str, &venv, "sha256:runtime", &[]));
+    assert_eq!(observed(), (2, 1), "an unchanged tree is not re-read");
+
+    clear_in_process_probe_memo_for_tests();
+    assert!(kernel_ready(&python_str, &venv, "sha256:runtime", &[]));
+    assert_eq!(
+        observed(),
+        (2, 1),
+        "a fresh process identifies the unchanged tree from the venv's cache"
+    );
+
+    // Same size, new bytes, and a modification time that moved: the fingerprint misses.
+    let init = rlm.join("__init__.py");
+    std::fs::write(&init, "x = 2\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&init)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(5))
+        .unwrap();
+    assert!(kernel_ready(&python_str, &venv, "sha256:runtime", &[]));
+    assert_eq!(
+        observed(),
+        (4, 2),
+        "an in-place rewrite re-reads the tree and the new identity re-probes"
+    );
+}
+
 /// The masked class, pinned against the DISK layer: fingerprint-invisible damage is masked by a
 /// cross-process hit until the first failed kernel start drops BOTH layers and.
 #[cfg(unix)]
@@ -720,7 +791,11 @@ fn live_probe_memo_reprobes_when_installed_rlm_is_removed() {
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    let identity = hash_runtime_source(&require_runtime_source_dir().unwrap()).unwrap();
+    let identity = hash_runtime_source(
+        &require_runtime_source_dir().unwrap(),
+        &TreeIdentityCache::in_venv(&fake),
+    )
+    .unwrap();
     write_bootstrap_version(&fake, &identity, &[]).unwrap();
 
     let probe_count = || {
@@ -1171,7 +1246,8 @@ async fn unwritable_venv_disables_uncovered_skills_instead_of_failing() {
     )
     .unwrap();
     let runtime_source = require_runtime_source_dir().unwrap();
-    let runtime_identity = hash_runtime_source(&runtime_source).unwrap();
+    let runtime_identity =
+        hash_runtime_source(&runtime_source, &TreeIdentityCache::in_venv(&venv)).unwrap();
     write_bootstrap_version(&venv, &runtime_identity, &[]).unwrap();
 
     let warnings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
