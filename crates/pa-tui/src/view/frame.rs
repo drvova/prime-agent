@@ -18,6 +18,7 @@ impl AgentView {
     pub(crate) fn editor_dock_shown(&self) -> bool {
         self.onboarding.is_none()
             && self.model_picker.is_none()
+            && self.history_search.is_none()
             && self.choice_picker.is_none()
             && self.mcp_view.is_none()
             && self.factory_view.is_none()
