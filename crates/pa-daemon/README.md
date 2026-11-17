@@ -24,7 +24,10 @@ same plain-stop semantics as the worker-side #246 close, which SIGKILL
 bypasses - via the durable create's `parentActiveSessionId` join), append-only session store ownership (including the
 compaction-entry fold for compacted message reads), client attach/detach
 (full-snapshot and chunked `session_snapshot_begin`/`chunk`/`end`
-streaming), direct-attach transport (supervisor-issued single-use tickets
+streaming; a client whose attach advertises `message_update_delta` reads
+streamed `message_update` frames as `pa_types::daemon::message_delta`
+deltas on its own connection — supervisor client writer or direct link —
+while every other client and the worker→supervisor link keep full frames), direct-attach transport (supervisor-issued single-use tickets
 with a 10s TTL, worker-side peer grants burned on first use, session-plane
 command gating on peer links), kernel agent_message/agent_observe bridge (`agent_messaging.rs`: the worker-side controllers over the supervisor link; the family view joins the supervisor roster with the session's own RLM children registry - the same registry `rlm.list_subagents` reads - so registry children are Child members addressable by name, RLM child id, and persisted session id, the spawning session is the Parent member for a subagent worker, and everything else stays a sibling; delivery tries the direct peer transport then the supervisor-routed `send_message`), worker-to-worker peer messaging (stage 3:
 `worker`-purpose single-use grants minted by `get_worker_peer_transport`

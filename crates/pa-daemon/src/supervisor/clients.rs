@@ -233,7 +233,11 @@ impl Supervisor {
                     // is queued is written first - the worker's own
                     // event-before-response socket order survives the hop.
                     if let Some(payload) = targeted {
-                        if let Err(error) = write_line(&mut writer, &payload).await {
+                        // A delta-capable client reads streamed updates as deltas.
+                        let encoded = attached.wire_frame(&payload);
+                        if let Err(error) =
+                            write_line(&mut writer, encoded.as_ref().unwrap_or(&payload)).await
+                        {
                             // An event-write failure exits through the shared cleanup below.
                             break 'serve Err(error);
                         }

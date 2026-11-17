@@ -131,6 +131,7 @@ pub(crate) fn attach_capabilities() -> Vec<pa_types::daemon::DaemonClientCapabil
         "slim_attach".to_string(),
         "elide_snapshot_images".to_string(),
         "windowed_snapshot".to_string(),
+        pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY.to_string(),
     ]
 }
 

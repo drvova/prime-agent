@@ -385,12 +385,20 @@ impl Worker {
         // fd leak ends in EMFILE.
         let (closed_tx, closed_rx) = tokio::sync::watch::channel(false);
 
+        // The delta `message_update` encoder of a direct session client whose
+        // attach advertised the capability; the supervisor link (and every
+        // other client) keeps full frames.
+        let message_deltas: Arc<
+            std::sync::Mutex<Option<pa_types::daemon::message_delta::MessageDeltaEncoder>>,
+        > = Arc::new(std::sync::Mutex::new(None));
+
         // This connection's subscription. Only authenticated roles stream: the
         // supervisor always, a session client only while attached.
         {
             let worker = Arc::clone(&self);
             let sink = Arc::clone(&sink);
             let role = Arc::clone(&role);
+            let message_deltas = Arc::clone(&message_deltas);
             let mut closed = closed_rx;
             tokio::spawn(async move {
                 let mut events = subscription;
@@ -415,8 +423,23 @@ impl Worker {
                                             "outboundType": frame.outbound_type,
                                             "activeSessionId": active_session_id,
                                         });
+                                        // Every session event a delta-capable client is
+                                        // written passes the encoder, in write order.
+                                        let encoded = if frame.outbound_type == "session_event" {
+                                            message_deltas.lock().unwrap().as_mut().and_then(
+                                                |encoder| {
+                                                    let value =
+                                                        serde_json::from_slice::<Value>(&frame.payload)
+                                                            .ok()?;
+                                                    serde_json::to_vec(&encoder.encode(&value)?).ok()
+                                                },
+                                            )
+                                        } else {
+                                            None
+                                        };
+                                        let payload = encoded.as_deref().unwrap_or(&frame.payload);
                                         if worker
-                                            .write_frame(&sink.writer, &header, &frame.payload)
+                                            .write_frame(&sink.writer, &header, payload)
                                             .await
                                             .is_err()
                                         {
@@ -544,6 +567,7 @@ impl Worker {
                     let request_id = request_id.clone();
                     let command_type = command_type.clone();
                     let session = Arc::clone(session);
+                    let message_deltas = Arc::clone(&message_deltas);
                     tokio::spawn(async move {
                         let response = worker.dispatch(&command_type, &payload).await;
                         // The attach/detach bookkeeping reads the outcome
@@ -551,7 +575,23 @@ impl Worker {
                         let success = response.success;
                         if success {
                             match command_type.as_str() {
-                                "attach" => session.mark_attached(),
+                                "attach" => {
+                                    // The client's capabilities pick its event encoding: a
+                                    // capable attach starts a fresh encoder (full anchors first).
+                                    let capable = payload
+                                        .get("capabilities")
+                                        .and_then(Value::as_array)
+                                        .is_some_and(|capabilities| {
+                                            capabilities.iter().any(|capability| {
+                                                capability.as_str()
+                                                    == Some(pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY)
+                                            })
+                                        });
+                                    *message_deltas.lock().unwrap() = capable.then(
+                                        pa_types::daemon::message_delta::MessageDeltaEncoder::new,
+                                    );
+                                    session.mark_attached();
+                                }
                                 "detach" => session.mark_detached(),
                                 _ => {}
                             }

@@ -707,6 +707,13 @@ impl Supervisor {
             command,
             DaemonCommand::Attach { .. } | DaemonCommand::Reattach { .. }
         );
+        // The client's OWN attach capabilities (the routed payload carries the
+        // supervisor's slim set): they pick this connection's event encoding.
+        let client_attach_capabilities = match command {
+            DaemonCommand::Attach { capabilities, .. }
+            | DaemonCommand::Reattach { capabilities, .. } => capabilities.as_deref(),
+            _ => None,
+        };
         let typed_needed = rebound_to.is_some()
             || client_wants_chunked
             || matches!(
@@ -769,6 +776,7 @@ impl Supervisor {
                     session_id.as_deref(),
                     session_file.as_deref(),
                 );
+                attached.negotiate_message_deltas(client_attach_capabilities);
                 attached.attach(&self.session_subscribers, &active_id);
             }
             let line = spliced_client_line(&command_id, payload);
@@ -827,6 +835,7 @@ impl Supervisor {
                                 session_id.as_deref(),
                                 session_file.as_deref(),
                             );
+                            attached.negotiate_message_deltas(client_attach_capabilities);
                             attached.attach(&self.session_subscribers, &active_id);
                             // The client's own capability set, not the supervisor's, is echoed in
                             // the attach result.
