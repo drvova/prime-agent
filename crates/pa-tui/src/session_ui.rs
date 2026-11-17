@@ -320,6 +320,9 @@ pub(crate) struct SessionUi {
     pub(crate) exit_requested: bool,
     pub(crate) open_agents_view: bool,
     pub(crate) scoped_agents_view: Option<crate::agents_view::AgentsViewScope>,
+    /// The folder a resume entry (bare `/resume`, `app.session.resume`) opens the agents view
+    /// scoped to: this session's cwd. `None` for every other entry (the global view).
+    pub(crate) resume_folder: Option<PathBuf>,
     roster: Vec<Value>,
     heartbeat_catalog: Vec<HeartbeatEntry>,
     heartbeat_refresh_in_flight: bool,

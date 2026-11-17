@@ -5,8 +5,8 @@ use crate::menu_chrome::{EscVerb, Footer, HintRank};
 
 use super::{
     build_layout, mpsc, pad_line, section_title, str_width, truncate_text, AgentsStep,
-    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, DeleteAction, Duration, Line,
-    Result, RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value,
+    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, DeleteAction, Duration,
+    FolderFilter, Line, Result, RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value,
 };
 
 impl AgentsViewMode {
@@ -39,6 +39,8 @@ impl AgentsViewMode {
             count_agents(Section::Idle),
             count_agents(Section::Inactive),
         );
+        // The counts are the active scope's rows: the folder scope's header line below names
+        // which folder they count.
         let mut extra_metadata = vec![(
             "agents".to_string(),
             format!("{running} running, {idle} idle, {inactive} inactive"),
@@ -58,6 +60,56 @@ impl AgentsViewMode {
         // under it: the warning line and its pointer stay above the scope label and the prompt.
         lines.extend(crate::chrome::render_splash(&chrome, theme, width));
         lines.extend(self.render_incident_notice(width));
+        // The resume picker's scope line, dim under the splash on the unscoped list: which
+        // folder the list (and the counts above) covers, what the filter leaves out, and the
+        // toggle key that widens or narrows it.
+        if let (false, Some(scope)) = (self.scope_active, self.folder_scope.as_ref()) {
+            let toggle = self
+                .keybindings
+                .first_key("app.agents.folderScope")
+                .map(|key| crate::keybindings::format_key_text(&key));
+            let text = match scope.filter {
+                FolderFilter::CurrentFolder => {
+                    let home = pa_types::platform::home_dir()
+                        .map(|home| home.to_string_lossy().into_owned());
+                    let folder = crate::chrome::format_splash_cwd(
+                        &scope.folder.to_string_lossy(),
+                        home.as_deref(),
+                    );
+                    let hidden = match self.folder_hidden {
+                        0 => String::new(),
+                        hidden => format!(" \u{b7} +{hidden} in other folders"),
+                    };
+                    let toggle = toggle
+                        .map(|key| format!(" \u{b7} {key} all folders"))
+                        .unwrap_or_default();
+                    // A long folder shortens in its middle, so the count and the toggle hint
+                    // always fit.
+                    let lead = "Sessions \u{b7} ";
+                    let folder = crate::chrome::truncate_path_middle(
+                        &folder,
+                        width
+                            .saturating_sub(
+                                str_width(lead) + str_width(&hidden) + str_width(&toggle),
+                            )
+                            .max(1),
+                    );
+                    format!("{lead}{folder}{hidden}{toggle}")
+                }
+                FolderFilter::AllFolders => {
+                    let toggle = toggle
+                        .map(|key| format!(" \u{b7} {key} this folder"))
+                        .unwrap_or_default();
+                    format!("Sessions \u{b7} all folders{toggle}")
+                }
+            };
+            let row = vec![crate::Span::styled(
+                truncate_text(&text, width),
+                theme.fg_style(ThemeColor::Dim),
+            )];
+            lines.push(crate::width::pad_line(row, width));
+            lines.push(vec![]);
+        }
         // The scoped view's back label, dim, over the full width under the splash.
         if self.scope_active {
             if let Some(scope) = &self.options.scope {
@@ -106,15 +158,22 @@ impl AgentsViewMode {
             .map(str::to_string);
         let notice_height = notice_panel.as_ref().map_or(0, Vec::len);
         // The catalog never truncates silently: while store files are still unfolded, the list
-        // ends with their count.
+        // ends with their count (a store-wide count: the folder-scoped list says so).
+        let all_folders = match self.folder_scope.as_ref().map(|scope| scope.filter) {
+            Some(FolderFilter::CurrentFolder) if !self.scope_active => " (all folders)",
+            Some(FolderFilter::CurrentFolder | FolderFilter::AllFolders) | None => "",
+        };
         let unloaded = self.saved_more.as_ref().map(|more| {
             let text = if self.query.trim().is_empty() {
                 format!(
-                    "{} older sessions not loaded \u{b7} scroll to load",
+                    "{} older sessions{all_folders} not loaded \u{b7} scroll to load",
                     more.remaining
                 )
             } else {
-                format!("Searching {} older sessions\u{2026}", more.remaining)
+                format!(
+                    "Searching {} older sessions{all_folders}\u{2026}",
+                    more.remaining
+                )
             };
             pad_line(
                 vec![self.theme.fg(ThemeColor::Dim, truncate_text(&text, width))],
@@ -336,7 +395,31 @@ impl AgentsViewMode {
                 (true, true) => "No subagents yet.",
                 (true, false) => "No sessions yet.",
             };
-            return vec![vec![self.theme.fg(ThemeColor::Dim, text.to_string())]];
+            // The folder-scoped list never widens on its own: an empty folder says so and names
+            // the toggle that shows every folder.
+            let folder_current = !self.scope_active
+                && self
+                    .folder_scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.filter == FolderFilter::CurrentFolder);
+            let text = match (folder_current, self.query.trim().is_empty()) {
+                (true, empty_query) => {
+                    let lead = if empty_query {
+                        "No sessions in this folder yet."
+                    } else {
+                        "No sessions in this folder match your search."
+                    };
+                    match self.keybindings.first_key("app.agents.folderScope") {
+                        Some(key) => format!(
+                            "{lead} Press {} to show all folders.",
+                            crate::keybindings::format_key_text(&key)
+                        ),
+                        None => lead.to_string(),
+                    }
+                }
+                (false, _) => text.to_string(),
+            };
+            return vec![vec![self.theme.fg(ThemeColor::Dim, text)]];
         }
         let layout = build_layout(&self.rows, width);
         let mut note_details = self
@@ -973,6 +1056,15 @@ impl AgentsViewMode {
             if self.scope_active {
                 footer = footer.bound(kb, &["app.agents.back"], "parent", HintRank::Useful);
             }
+        }
+        // The resume picker's folder toggle, with or without a query (search runs within the
+        // active scope).
+        if let (false, Some(scope)) = (self.scope_active, self.folder_scope.as_ref()) {
+            let label = match scope.filter {
+                FolderFilter::CurrentFolder => "all folders",
+                FolderFilter::AllFolders => "this folder",
+            };
+            footer = footer.bound(kb, &["app.agents.folderScope"], label, HintRank::Useful);
         }
         footer
             .bound(kb, &["app.agents.new"], "new", HintRank::Useful)

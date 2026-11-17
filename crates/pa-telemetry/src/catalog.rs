@@ -1011,6 +1011,29 @@ const TUI_IPYTHON_BASH_RENDERED: EventRule = EventRule {
     ],
 };
 
+/// One resume-picker run ended (v2): the folder scope it ended on (for an
+/// opened session, the scope it was resumed from), the folder toggle's
+/// flips, and whether a session opened. Standalone because `tui exit`
+/// sits at the backend's 128-key cap. Never a path.
+const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
+    name: "tui resume picker closed",
+    since: 2,
+    properties: &[
+        (
+            "scope",
+            required(enum_rule(
+                &["current_folder", "all_folders"],
+                "current_folder",
+            )),
+        ),
+        ("scope_toggle_count", required(count())),
+        (
+            "outcome",
+            required(enum_rule(&["opened", "exited"], "exited")),
+        ),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1327,6 +1350,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &SESSION_ARCHIVED,
         &TUI_EXIT,
         &TUI_IPYTHON_BASH_RENDERED,
+        &TUI_RESUME_PICKER_CLOSED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

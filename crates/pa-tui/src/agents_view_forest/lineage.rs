@@ -289,6 +289,35 @@ pub fn scope_to_subtree(
     )
 }
 
+/// Keep every record whose tree root passes `keep_root` (the resume picker's folder rule: a tree
+/// lists whole by its ROOT session's folder, so a child follows its root even when the child's
+/// own cwd differs, and a child never lists without its root). A record whose parent has not
+/// loaded yet counts as its own root. Returns the kept records and how many roots it left out.
+pub(crate) fn retain_trees_by_root(
+    records: &[UnifiedRecord],
+    keep_root: impl Fn(&UnifiedRecord) -> bool,
+) -> (Vec<UnifiedRecord>, usize) {
+    let index = build_record_index(records);
+    let mut kept = Vec::new();
+    let mut hidden_roots = 0;
+    for (position, record) in records.iter().enumerate() {
+        let mut root = position;
+        let mut visited: HashSet<usize> = HashSet::from([position]);
+        while let Some(parent) = find_parent_index(records, &index.by_key, root) {
+            if !visited.insert(parent) {
+                break;
+            }
+            root = parent;
+        }
+        if keep_root(&records[root]) {
+            kept.push(record.clone());
+        } else if root == position {
+            hidden_roots += 1;
+        }
+    }
+    (kept, hidden_roots)
+}
+
 /// Session ids of the scope root's own ancestors, root-most first.
 pub fn scope_ancestors(records: &[UnifiedRecord], scope: &AgentsViewScope) -> Vec<String> {
     let index = build_record_index(records);

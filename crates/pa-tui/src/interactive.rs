@@ -293,6 +293,16 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One resume-picker run ended (`tui resume picker closed`): `scope` is the folder scope the
+    /// run ended on (`current_folder` / `all_folders`; for an `opened` run, the scope the session
+    /// was resumed from), `toggles` the folder toggle's flips during the run, and `outcome`
+    /// `opened` or `exited` — primitives only, never a path.
+    fn resume_picker_closed(
+        &self,
+        scope: &'static str,
+        toggles: u64,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
     /// of the cell and the command count — primitives only, never command
@@ -524,6 +534,10 @@ pub struct InteractiveOutcome {
     /// The subagent summary line opened the agents view scoped to this session's subtree;
     /// `None` with `return_to_agents_view` means the plain view.
     pub agents_view_scope: Option<crate::agents_view::AgentsViewScope>,
+    /// A resume entry (bare `/resume`, `app.session.resume`) asked for the agents view as the
+    /// resume picker over this folder (the session's cwd); `None` with
+    /// `return_to_agents_view` keeps the list the session came from.
+    pub agents_view_folder: Option<std::path::PathBuf>,
     /// `/resume <selector>` requested this session next.
     pub selection_request: Option<SessionSelection>,
     /// The requested session's RLM depth, when the requester read it from the roster.

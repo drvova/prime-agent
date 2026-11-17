@@ -403,6 +403,13 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["ctrl+r"], "Rename selected agent session"),
     ),
     (
+        "app.agents.folderScope",
+        def!(
+            &["tab"],
+            "Toggle the resume list between this folder and all folders"
+        ),
+    ),
+    (
         "app.agents.expand",
         def!(
             &["alt+right"],

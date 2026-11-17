@@ -14,8 +14,8 @@ use tokio::sync::mpsc;
 
 use crate::agents_view_forest::{
     ancestor_session_ids, build_rows, compute_rollups, has_session_children, resolve_selection,
-    scope_ancestors, scope_root, scope_to_subtree, subtree_contains, ActivityCounts, AgentsViewRow,
-    RowKind, ScopeRoot, SelectionKey, SessionActivity,
+    retain_trees_by_root, scope_ancestors, scope_root, scope_to_subtree, subtree_contains,
+    ActivityCounts, AgentsViewRow, RowKind, ScopeRoot, SelectionKey, SessionActivity,
 };
 use crate::agents_view_state::truncate_text;
 use crate::agents_view_state::{
@@ -64,6 +64,26 @@ mod status;
 use status::Status;
 pub(crate) use status::StatusTone;
 
+/// Which session trees the resume picker lists, by their ROOT session's saved cwd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderFilter {
+    /// Only trees whose root session's saved cwd is the picker's folder (the resume default).
+    CurrentFolder,
+    /// Every folder's trees (the picker widened by its toggle key).
+    AllFolders,
+}
+
+/// The resume picker's folder scope: the folder `/resume` (or a bare `--resume` /
+/// `--continue`) opened from and the active filter. A tree lists whole by its root session's
+/// folder: a subagent follows its root even when its own cwd differs. A subtree scope
+/// ([`AgentsViewScope`]) takes precedence while it is active: the scoped run lists the root's
+/// subtree, and the folder scope resumes when the flow returns to the unscoped list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FolderScope {
+    pub folder: PathBuf,
+    pub filter: FolderFilter,
+}
+
 #[derive(Debug, Clone)]
 pub struct AgentsViewOptions {
     pub socket_path: PathBuf,
@@ -75,6 +95,9 @@ pub struct AgentsViewOptions {
     pub anchor_session_id: Option<String>,
     /// Open scoped to one session's subtree: the root lists its descendants.
     pub scope: Option<AgentsViewScope>,
+    /// The resume picker's folder scope; `None` is the global agents view (every folder, no
+    /// folder toggle).
+    pub folder_scope: Option<FolderScope>,
     pub query: Option<String>,
     /// Session ids to re-expand on open, root-most first (a drilled-in return re-opens the tree).
     pub expanded_ancestors: Vec<String>,
@@ -184,6 +207,12 @@ pub struct AgentsViewOutcome {
     /// emits the `tui agents action` adoption events at the run's end.
     pub actions: Vec<&'static str>,
     pub incident_notice_state: crate::incident_notices::IncidentNoticeState,
+    /// The folder scope the run ended on (the toggle's state carries to the flow's next run of
+    /// the same picker); `None` for the global view.
+    pub folder_scope: Option<FolderScope>,
+    /// How many times this run's folder toggle flipped the scope (the resume picker's adoption
+    /// count).
+    pub folder_toggles: u64,
 }
 
 /// The running-row icon frame cadence (TS `WORKING_ICON_INTERVAL_MS`).
@@ -494,6 +523,17 @@ struct AgentsViewMode {
     pending_shell_open: Option<String>,
     /// The activity polls' counts behind the shells and factory-run lines.
     session_activity: ActivityCounts,
+    /// The resume picker's live folder scope (the toggle flips its filter); `None` for the
+    /// global view.
+    folder_scope: Option<FolderScope>,
+    /// Whether each saved cwd seen this run is the picker's folder, keyed by the raw cwd string:
+    /// the canonicalizing match runs once per distinct folder, never per rebuild.
+    folder_matches: std::collections::HashMap<String, bool>,
+    /// What the folder filter left out on the last rebuild (session trees plus persistent
+    /// shells): the header's `+N in other folders`.
+    folder_hidden: usize,
+    /// The folder toggle's flips this run.
+    folder_toggles: u64,
 }
 
 /// The press state of one left click, row-scoped: the release must land on the same row.
@@ -530,6 +570,7 @@ impl AgentsViewMode {
         let selected_identity = options.selected_row_identity.clone();
         let selected_key = options.selected_key.clone();
         let keybindings = options.keybindings.clone();
+        let folder_scope = options.folder_scope.clone();
         // Every open waits on the anchor: the chat may have switched sessions since the carried
         // row was opened. A scoped view never lists its own root, so that anchor arms no wait.
         let scope_root = options
@@ -597,6 +638,10 @@ impl AgentsViewMode {
             pending_shell_action: None,
             pending_shell_open: None,
             session_activity: ActivityCounts::default(),
+            folder_scope,
+            folder_matches: std::collections::HashMap::new(),
+            folder_hidden: 0,
+            folder_toggles: 0,
         }
     }
 }
@@ -1470,6 +1515,8 @@ async fn run_agents_view_surface(
             panel: opened.as_ref().and_then(|row| row.panel.clone()),
             actions: std::mem::take(&mut mode.actions),
             incident_notice_state: mode.incident_notice_state,
+            folder_scope: mode.folder_scope.take(),
+            folder_toggles: mode.folder_toggles,
         },
     })
 }
