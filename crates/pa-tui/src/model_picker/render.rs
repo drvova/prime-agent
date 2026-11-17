@@ -67,6 +67,12 @@ pub(super) fn render(
         SEARCH_PLACEHOLDER,
     ));
 
+    // While searching, the list keeps the height of the whole active list (the height it had
+    // when the query started), so filtering never moves the rows around it.
+    let list_start = lines.len();
+    let unfiltered = picker.active_indices().len();
+    let unfiltered_rows = picker.list_layout_over(unfiltered);
+    let held = unfiltered_rows + usize::from(unfiltered > unfiltered_rows);
     let (start, end) = picker.filtered_window();
     let effort_layout = picker.effort_layout(start, end);
     for index in start..end {
@@ -104,7 +110,9 @@ pub(super) fn render(
             picker.query(),
             "No models available",
         ));
-    } else if let Some(model) = picker.selected_model().cloned() {
+    }
+    crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
+    if let Some(model) = picker.selected_model().cloned() {
         if picker.detail_rows() > 0 {
             lines.extend(detail_lines(theme, width, &model));
         }

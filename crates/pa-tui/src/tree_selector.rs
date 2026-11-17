@@ -274,9 +274,23 @@ impl TreeSelector {
             Mode::Tree | Mode::Summarize { .. } | Mode::CustomPrompt { .. } => {
                 lines.extend(self.list.render(theme, width, kb));
                 match &self.mode {
-                    Mode::Summarize { selected, .. } => {
+                    Mode::Summarize {
+                        selected,
+                        target_id,
+                    } => {
                         lines.push(Vec::new());
-                        lines.extend(render_choice(theme, width, *selected));
+                        let jump = self.list.branch_jump(target_id);
+                        let head = if jump.edits_message {
+                            "the head moves before this message"
+                        } else {
+                            "the head moves here"
+                        };
+                        let consequence = match jump.turns_left {
+                            0 => head.to_string(),
+                            1 => format!("{head}; 1 turn stays as a branch"),
+                            n => format!("{head}; {n} turns stay as a branch"),
+                        };
+                        lines.extend(render_choice(theme, width, *selected, &consequence));
                     }
                     Mode::CustomPrompt { input, .. } => {
                         lines.push(Vec::new());
@@ -400,12 +414,21 @@ fn input_row(theme: &Theme, width: usize, input: &SearchInput) -> Line {
 
 /// Render the summarize choice list (the three TS options; row one is
 /// "No summary").
-fn render_choice(theme: &Theme, width: usize, selected: usize) -> Vec<Line> {
-    let mut lines = vec![truncate_line(
-        &vec![theme.fg_span(ThemeColor::Muted, "  Summarize branch?".to_string())],
-        width,
-        "",
-    )];
+/// The summarize choice under one fixed consequence line (what the navigation does to the
+/// session), which never wraps, so the options never move.
+fn render_choice(theme: &Theme, width: usize, selected: usize, consequence: &str) -> Vec<Line> {
+    let mut lines = vec![
+        truncate_line(
+            &vec![theme.fg_span(ThemeColor::Text, format!("  {consequence}"))],
+            width,
+            "\u{2026}",
+        ),
+        truncate_line(
+            &vec![theme.fg_span(ThemeColor::Muted, "  Summarize branch?".to_string())],
+            width,
+            "",
+        ),
+    ];
     for (index, option) in SUMMARIZE_OPTIONS.iter().enumerate() {
         lines.push(crate::menu_panel::menu_row(
             theme,
@@ -637,6 +660,33 @@ mod tests {
         assert!(matches!(sel.mode, Mode::Summarize { .. }));
         sel.paste("ignored");
         assert_eq!(sel.list.search_query(), "");
+    }
+
+    /// The summarize confirm says what the navigation does: jumping to a user message two turns
+    /// up the chain moves the head before it, so that message and the two after it stay behind
+    /// as a branch, on one fixed line above the choice.
+    #[test]
+    fn the_summarize_confirm_names_the_turns_left_behind() {
+        let theme = Theme::builtin("prime", ColorMode::TrueColor);
+        let kb = KeybindingsManager::new();
+        let mut sel = TreeSelector::new(&wire_chain(4), 40, false, FilterMode::Default)
+            .expect("a selector over the chain");
+        sel.handle_key(&kb, "up");
+        sel.handle_key(&kb, "up");
+        sel.handle_key(&kb, "enter");
+        let text: Vec<String> = sel
+            .render(&theme, 80, &kb)
+            .iter()
+            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+            .collect();
+        let at = text
+            .iter()
+            .position(|row| row.contains("Summarize branch?"))
+            .expect("the choice renders");
+        assert_eq!(
+            text[at - 1].trim_end(),
+            "  the head moves before this message; 3 turns stay as a branch"
+        );
     }
 
     /// The label pane draws its caret at the cursor (TS `Input.render`'s
