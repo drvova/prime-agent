@@ -9,6 +9,7 @@ pub mod http;
 pub mod json_parse;
 pub mod log;
 pub mod overflow;
+pub mod prewarm;
 pub mod sanitize_unicode;
 pub mod sse;
 pub mod stream_failure;

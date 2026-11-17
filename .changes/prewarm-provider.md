@@ -1,0 +1,1 @@
+- New sessions open the connection to the model provider in the background, so the first reply no longer waits for a fresh TCP and TLS handshake. Nothing is opened under `--offline`.
