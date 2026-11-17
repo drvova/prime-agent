@@ -409,6 +409,44 @@ fn scroll_offset_is_visible_in_frames() {
     assert!(!top.iter().any(|l| row_text(l).contains("reply 29")));
 }
 
+/// The stall the adoption counter records is the one on screen: a quiet loader under a retry
+/// countdown is hidden, so the layout reports no stall until the countdown leaves.
+#[test]
+fn a_stall_counts_as_shown_only_when_the_working_loader_owns_the_status_area() {
+    let mut v = view();
+    let now = std::time::Instant::now();
+    v.working = Some(WorkingState {
+        activity: "Waiting",
+        message: None,
+        download: false,
+        tokens: 0,
+        elapsed_secs: 0,
+        quiet_secs: 0,
+        tool_label: None,
+    });
+    v.working_since = now.checked_sub(std::time::Duration::from_secs(10));
+    v.working_heard = now.checked_sub(std::time::Duration::from_secs(5));
+    v.retry = Some(crate::chat::RetryState {
+        attempt: 1,
+        max_attempts: 3,
+        ends_at: now + std::time::Duration::from_secs(30),
+        error_message: "429 Rate limit exceeded".to_string(),
+        reason: crate::snapshot::RetryStartReason::Quick,
+        provider: None,
+    });
+    v.render_frame(80, 24);
+    assert!(!v.stall_shown, "the retry countdown hides the stall row");
+    v.retry = None;
+    let frame = v.render_frame(80, 24);
+    assert!(
+        frame
+            .iter()
+            .any(|row| row_text(row).contains("Waiting on the model")),
+        "the stall row is on screen"
+    );
+    assert!(v.stall_shown, "the painted stall row is reported");
+}
+
 #[test]
 fn compaction_loader_replaces_the_working_loader() {
     // TS `startCompactionLoader`: the compaction loader owns the status

@@ -79,6 +79,10 @@ pub struct AgentView {
     pub working_since: Option<std::time::Instant>,
     /// When the session last sent anything while working (the loader's stall timer).
     pub working_heard: Option<std::time::Instant>,
+    /// The last layout put the stall row (`Waiting on the model`) on screen: the working loader
+    /// owned the status area (no retry countdown or compaction over it) and had gone quiet. The
+    /// session takes it at the next frame, so one stall counts once.
+    pub stall_shown: bool,
     pub retry: Option<crate::chat::RetryState>,
     pub onboarding: Option<crate::onboarding::OnboardingScreen>,
     pub model_picker: Option<crate::model_picker::ModelPicker>,
@@ -299,6 +303,7 @@ impl AgentView {
             pulse_frame: 0,
             working_since: None,
             working_heard: None,
+            stall_shown: false,
             retry: None,
             onboarding: None,
             model_picker: None,

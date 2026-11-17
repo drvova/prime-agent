@@ -334,6 +334,14 @@ impl AgentView {
                 .working_heard
                 .map_or(0, |heard| heard.elapsed().as_secs());
         }
+        // The tail renders the working loader only under no retry countdown or compaction, so
+        // only then is a quiet loader the stall row the user sees.
+        let loader_owns_status = self.retry.is_none() && self.compaction.is_none();
+        self.stall_shown = loader_owns_status
+            && self
+                .working
+                .as_ref()
+                .is_some_and(crate::chat::WorkingState::stalled);
         let options = (
             self.theme.clone(),
             self.code_block_indent.clone(),

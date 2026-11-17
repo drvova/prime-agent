@@ -5,7 +5,6 @@ use super::{
     CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock, Result,
     RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
 };
-use crate::chat::WorkingState;
 use crate::interactive::reconnect::{ConnectionEffect, ConnectionEvent};
 
 /// The widest running-tool title the live line shows before it truncates.
@@ -251,9 +250,10 @@ impl SessionUi {
                 if active_session_id != self.active_session_id {
                     return;
                 }
-                // Any frame from the session resets the loader's stall timer; a stall the last
-                // paint showed (`Waiting on the model`) ends here and counts once.
-                if view.working.as_ref().is_some_and(WorkingState::stalled) {
+                // Any frame from the session resets the loader's stall timer; a stall a paint
+                // actually showed (`Waiting on the model`) ends here and counts once: the flag is
+                // taken, so the rest of a drained burst sees no stall.
+                if std::mem::take(&mut view.stall_shown) {
                     self.track_turn_feedback(crate::interactive::TurnFeedback::StallShown);
                 }
                 view.working_heard = Some(std::time::Instant::now());
@@ -402,6 +402,11 @@ impl SessionUi {
             TurnUpdate::TurnStarted => {
                 self.turn_active = true;
                 self.turn_error_shown = false;
+                // A new turn opens no retry episode yet: an aborted attempt's episode never saw
+                // its `auto_retry_end`.
+                self.retry_episode_waited = None;
+                self.retry_waited = None;
+                self.running_tool_labels.clear();
                 // A new turn also settles leftovers from a lost turn-end frame.
                 crate::snapshot::settle_pending_tool_cards(
                     view,
@@ -493,13 +498,14 @@ impl SessionUi {
                     } else {
                         tool_name.clone()
                     };
+                    let title =
+                        crate::width::truncate_to_width(&title, TOOL_LABEL_MAX_WIDTH, "\u{2026}");
                     if let Some(working) = &mut view.working {
-                        working.tool_label = Some(crate::width::truncate_to_width(
-                            &title,
-                            TOOL_LABEL_MAX_WIDTH,
-                            "\u{2026}",
-                        ));
+                        working.tool_label = Some(title.clone());
                     }
+                    self.running_tool_labels
+                        .retain(|(running_id, _)| *running_id != tool_call_id);
+                    self.running_tool_labels.push((tool_call_id.clone(), title));
                     crate::snapshot::apply_tool_execution_start(
                         view,
                         &tool_call_id,
@@ -537,10 +543,20 @@ impl SessionUi {
                 // The landed-result gate keeps the loader safe: a late end frame from the aborted
                 // run must not rewrite the new turn's activity label or clear its loader note.
                 if self.apply_tool_result(&tool_call_id, &result, is_error, false, view) {
-                    Self::set_working_activity("Waiting", false, view);
+                    // A parallel call still executing keeps the live line on it (its title, the
+                    // tool activity); only the last call's end falls back to waiting.
+                    let pending = &self.pending_tools;
+                    self.running_tool_labels
+                        .retain(|(running_id, _)| pending.contains(running_id));
+                    let remaining = self.running_tool_labels.last().map(|(_, title)| title);
+                    if remaining.is_none() {
+                        Self::set_working_activity("Waiting", false, view);
+                    }
                     if let Some(working) = &mut view.working {
-                        working.message = None;
-                        working.tool_label = None;
+                        working.tool_label = remaining.cloned();
+                        if remaining.is_none() {
+                            working.message = None;
+                        }
                     }
                 }
             }
@@ -579,13 +595,14 @@ impl SessionUi {
                 // — the transient loader line is the ONE error shown while the episode runs, and
                 // the durable outcome row replaces it at the settle.
                 pop_superseded_attempt_row(view);
-                // The episode's first start anchors the recovery receipt's wait.
-                self.retry_episode_started
-                    .get_or_insert_with(std::time::Instant::now);
+                // The receipt's wait is the episode's backoff: each start adds its own delay, so
+                // the attempts' streaming time (the recovered one's included) never counts.
+                let delay = std::time::Duration::from_millis(delay_ms);
+                *self.retry_episode_waited.get_or_insert_default() += delay;
                 view.retry = Some(RetryState {
                     attempt,
                     max_attempts,
-                    ends_at: std::time::Instant::now() + std::time::Duration::from_millis(delay_ms),
+                    ends_at: std::time::Instant::now() + delay,
                     error_message,
                     reason,
                     provider: view.chrome.model_provider.clone(),
@@ -598,10 +615,7 @@ impl SessionUi {
                 restored_model,
             } => {
                 view.retry = None;
-                let waited = self
-                    .retry_episode_started
-                    .take()
-                    .map(|started| started.elapsed());
+                let waited = self.retry_episode_waited.take();
                 self.retry_waited = waited.filter(|_| success);
                 if final_error.is_some() {
                     self.turn_error_shown = true;
@@ -788,6 +802,9 @@ impl SessionUi {
         // leaves no live streaming slot or retry countdown behind.
         self.streaming_index = None;
         view.retry = None;
+        self.retry_episode_waited = None;
+        self.retry_waited = None;
+        self.running_tool_labels.clear();
         Self::flush_pending_bash(view);
         // A detached run's `turn_end` never arrives: its open cards settle here.
         crate::snapshot::settle_pending_tool_cards(
