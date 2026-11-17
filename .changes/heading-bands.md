@@ -1,0 +1,1 @@
+- Section headings in the agent's replies now stand out: top-level and second-level headings sit on a tinted band with an accent edge, so long answers are easy to scan. Smaller headings stay plain colored text.
