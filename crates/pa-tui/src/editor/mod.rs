@@ -98,6 +98,9 @@ pub struct Editor {
 
     pastes: HashMap<usize, String>,
     paste_counter: usize,
+    /// The `@file` tokens the completion inserted: each one renders as a pill and moves and
+    /// deletes as one unit while it stands whole between whitespace.
+    mentions: Vec<String>,
     history: Vec<String>,
     history_index: isize,
     kill_ring: KillRing,
@@ -161,6 +164,7 @@ impl Editor {
             cursor_col: 0,
             pastes: HashMap::new(),
             paste_counter: 0,
+            mentions: Vec::new(),
             history: Vec::new(),
             history_index: -1,
             kill_ring: KillRing::default(),
@@ -287,16 +291,17 @@ impl Editor {
 
     fn segment(&self, text: &str) -> Vec<Segment> {
         let pastes = self.pastes.clone();
-        segment_with_markers(text, &move |id| pastes.contains_key(&id))
+        segment_with_markers(text, &move |id| pastes.contains_key(&id), &self.mentions)
     }
 
-    /// The char ranges of the registered paste markers in `text` (one layout chunk): the atomic
-    /// units the editor surface renders as chips.
-    pub(crate) fn paste_chip_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+    /// The char ranges of the registered paste markers and `@file` mentions in `text` (one
+    /// layout chunk): the atomic units the editor surface renders as chips.
+    pub(crate) fn chip_ranges(&self, text: &str) -> Vec<(usize, usize)> {
         self.segment(text)
             .into_iter()
             .filter(|segment| {
-                segment.segment.starts_with("[paste #") && is_atomic_marker(&segment.segment)
+                (segment.segment.starts_with("[paste #") && is_atomic_marker(&segment.segment))
+                    || self.mentions.contains(&segment.segment)
             })
             .map(|segment| {
                 (
@@ -305,6 +310,17 @@ impl Editor {
                 )
             })
             .collect()
+    }
+
+    /// How many whole `@file` pills the draft holds (the submit counts the prompts that carry
+    /// one).
+    #[must_use]
+    pub fn mention_pill_count(&self) -> usize {
+        self.lines
+            .iter()
+            .flat_map(|line| self.segment(line))
+            .filter(|segment| self.mentions.contains(&segment.segment))
+            .count()
     }
 
     #[must_use]
@@ -653,6 +669,7 @@ impl Editor {
         self.cursor_col = 0;
         self.pastes.clear();
         self.paste_counter = 0;
+        self.mentions.clear();
         self.history_index = -1;
         self.scroll_offset = 0;
         self.undo_stack.clear();
@@ -938,6 +955,34 @@ mod tests {
         e.settle_autocomplete_search();
         e.autocomplete_state()
             .map(|state| state.items.iter().map(|item| item.value.clone()).collect())
+    }
+
+    /// A completed `@file` is a pill: one chip range, one Left steps over it, one Backspace
+    /// deletes it whole, and a typed `@other.md` with no completion behind it stays plain text.
+    #[test]
+    fn a_completed_file_mention_is_one_pill_that_moves_and_deletes_whole() {
+        let (_base, mut e) = at_editor();
+        for ch in "see @other".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        assert!(settled_menu(&mut e).is_some());
+        e.handle_input("tab");
+        assert_eq!(e.get_text(), "see @other.md ");
+        assert_eq!(e.chip_ranges("see @other.md "), vec![(4, 13)]);
+        assert_eq!(e.mention_pill_count(), 1);
+        e.handle_input("left");
+        e.handle_input("left");
+        assert_eq!(e.get_cursor(), (0, 4), "one Left steps over the whole pill");
+        e.handle_input("right");
+        e.handle_input("backspace");
+        assert_eq!(
+            e.get_text(),
+            "see  ",
+            "one Backspace deletes the whole pill"
+        );
+        let (_base, mut typed) = at_editor();
+        typed.set_text("see @other.md ");
+        assert!(typed.chip_ranges("see @other.md ").is_empty());
     }
 
     #[test]

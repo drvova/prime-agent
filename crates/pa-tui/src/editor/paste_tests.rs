@@ -316,13 +316,13 @@ fn oversized_marker_re_wraps_visually_and_wrap_resumes_after_it() {
     // but re-wraps visually at grapheme granularity.
     let marker = "[paste #1 +20 lines]";
     let line = format!("A{marker}B");
-    let segments = segment_with_markers(&line, &|_| true);
+    let segments = segment_with_markers(&line, &|_| true, &[]);
     let chunks = word_wrap_line(&line, 10, Some(segments));
     let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["A", "[paste #1 ", "+20 lines]", "B"]);
 
     let line = format!("{marker} hello world");
-    let segments = segment_with_markers(&line, &|_| true);
+    let segments = segment_with_markers(&line, &|_| true, &[]);
     let chunks = word_wrap_line(&line, 10, Some(segments));
     let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["[paste #1 ", "+20 lines]", " hello ", "world"]);

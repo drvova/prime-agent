@@ -925,6 +925,9 @@ impl SessionUi {
             self.dirty = true;
             return Ok(());
         }
+        // A submit that carries an `@file` pill counts once for the mention-pill adoption.
+        let carries_pill = view.editor.keybindings().matches(&id, "tui.input.submit")
+            && view.editor.mention_pill_count() > 0;
         view.editor.handle_input(&id);
         if !view.editor.get_text().is_empty() {
             self.clear_ctrl_c_hint();
@@ -932,6 +935,13 @@ impl SessionUi {
         for event in view.editor.take_events() {
             match event {
                 crate::editor::EditorEvent::Submitted(text) => {
+                    if carries_pill {
+                        if let Some(telemetry) = self.telemetry.clone() {
+                            tokio::spawn(async move {
+                                telemetry.mention_pill_sent().await;
+                            });
+                        }
+                    }
                     if self.queue_selection.is_browsing() {
                         self.apply_queue_selection(&text, QueueLane::Steering, view)
                             .await?;

@@ -62,12 +62,21 @@ impl Editor {
     }
 
     pub(crate) fn apply_completion(
-        &self,
+        &mut self,
         item: &crate::autocomplete::CompletionItem,
         kind: Option<crate::autocomplete::SuggestionKind>,
     ) -> crate::autocomplete::CompletionResult {
         if kind == Some(crate::autocomplete::SuggestionKind::Emoji) {
             return self.apply_emoji_completion(&item.value);
+        }
+        // A completed `@file` (not a directory, which stays open for further completion) becomes
+        // a pill: one unit for the cursor, Backspace and the chip render.
+        if kind == Some(crate::autocomplete::SuggestionKind::File)
+            && item.value.starts_with('@')
+            && !item.label.ends_with('/')
+            && !self.mentions.contains(&item.value)
+        {
+            self.mentions.push(item.value.clone());
         }
         match self.autocomplete_provider.as_ref() {
             Some(provider) => {
