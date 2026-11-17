@@ -114,6 +114,9 @@ mod tests {
             download: false,
             tokens: 0,
             elapsed_secs: 0,
+            thought: None,
+            quiet_secs: 0,
+            tool_label: None,
         });
         view.pulse_frame = 3;
         assert_eq!(
