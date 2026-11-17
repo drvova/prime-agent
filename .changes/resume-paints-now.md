@@ -1,0 +1,1 @@
+- `--resume` and `--attach` show the session's window at once, with a loading row where the transcript lands, instead of a blank screen while a large session loads.

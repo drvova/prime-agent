@@ -159,8 +159,10 @@ fn is_divider_row(line: &str, width: usize) -> bool {
     !line.is_empty() && line.chars().count() == width && line.chars().all(|c| c == '\u{2500}')
 }
 
-/// The dock's counts are first-frame state: every captured frame carries both rows with the final
-/// count, so the delayed dock data never repaints the row in late.
+/// The dock is first-frame chrome: every captured frame, the CLI reopen's loading frame included
+/// (latency study item R9), carries the divider and the heartbeat panel row, so the chrome never
+/// repaints in late. Only the values fill in: the loading frame shows the dock's idle form, and
+/// once the attach folds the count it never falls back.
 #[test]
 fn the_activity_dock_is_in_every_frame_from_the_first() {
     let frames = run_open(&OpeningTranscript::Empty);
@@ -169,35 +171,61 @@ fn the_activity_dock_is_in_every_frame_from_the_first() {
         .iter()
         .enumerate()
         .filter(|(_, frame)| {
-            !frame.contains("\u{25f7} 1 heartbeat")
-                || !frame.lines().any(|line| is_divider_row(line, 100))
+            !frame.contains("\u{25f7} ") || !frame.lines().any(|line| is_divider_row(line, 100))
         })
         .map(|(index, _)| index)
         .collect();
     assert!(
         offenders.is_empty(),
         "every frame from the first carries the dock divider plus the \
-         heartbeat panel row (frames {offenders:?} lack it) — the dock \
-         data must fold with the attach, never land as a late repaint:\n{}",
+         heartbeat panel row (frames {offenders:?} lack it) — the chrome \
+         paints with the first frame, never as a late repaint:\n{}",
+        frames.join("\n---frame---\n")
+    );
+    let folded = frames
+        .iter()
+        .position(|frame| frame.contains("\u{25f7} 1 heartbeat"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the attach folds the dock count:\n{}",
+                frames.join("\n---frame---\n")
+            )
+        });
+    assert!(
+        frames[folded..]
+            .iter()
+            .all(|frame| frame.contains("\u{25f7} 1 heartbeat")),
+        "the folded count never falls back to the idle form:\n{}",
         frames.join("\n---frame---\n")
     );
 }
 
-/// A chat that opens directly into content paints its first frame from the snapshot: the
-/// transcript, the pinned title row, and the dock all ride that same frame, and the brand splash
-/// (the new chat's header) never renders — no splash flash above the title, no one-row shift.
+/// A CLI reopen into content paints the loading frame first (latency study item R9, a divergence
+/// from TS, whose first visible frame is the attached content): the empty transcript area with the
+/// loading row, never the brand splash. The first content frame carries the transcript and the
+/// pinned title row together, and the splash renders in no frame — no splash flash above the
+/// title, no one-row shift.
 #[test]
 fn a_direct_open_into_content_never_renders_the_splash() {
     let frames = run_open(&OpeningTranscript::Content);
     assert!(!frames.is_empty(), "frames were captured");
-    let first = &frames[0];
     assert!(
-        first.contains("settled answer"),
-        "the first frame is the content frame:\n{first}"
+        frames[0].contains("Loading session") && !frames[0].contains("settled answer"),
+        "the first frame is the loading frame:\n{}",
+        frames[0]
     );
+    let first = frames
+        .iter()
+        .find(|frame| frame.contains("settled answer"))
+        .unwrap_or_else(|| {
+            panic!(
+                "a frame renders the content:\n{}",
+                frames.join("\n---frame---\n")
+            )
+        });
     assert!(
-        first.contains("layout probe"),
-        "the pinned title row rides the first content frame:\n{first}"
+        first.contains("layout probe") && !first.contains("Loading session"),
+        "the pinned title row rides the first content frame, which replaced the loading row:\n{first}"
     );
     assert!(
         frames.iter().all(|frame| !frame.contains("prime agent")),
