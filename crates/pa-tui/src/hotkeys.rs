@@ -58,6 +58,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let exit = key_display(kb, "app.exit");
     let select_model = key_display(kb, "app.model.select");
     let cycle_thinking = key_display(kb, "app.thinking.cycle");
+    let history_search = key_display(kb, "app.history.search");
     let expand_tools = key_display(kb, "app.tools.expand");
     let focus_subagents = key_display(kb, "app.subagents.focus");
     let external_editor = key_display(kb, "app.editor.external");
@@ -140,6 +141,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{suspend}` | Suspend to background |
 | `{select_model}` | Open model selector |
 | `{cycle_thinking}` | Cycle thinking level |
+| `{history_search}` | Search prompt history |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
     );
     let _ = writeln!(
@@ -205,6 +207,11 @@ mod tests {
             "{guide}"
         );
         assert!(guide.contains("Select to start / end of text"), "{guide}");
+        // Every composer binding lists, the prompt-history search among them.
+        assert!(
+            guide.contains("| `Ctrl+R` | Search prompt history |"),
+            "{guide}"
+        );
         assert!(
             guide.contains(&format!(
                 "| `{alt}+\u{2191}` / `{alt}+\u{2193}` | Browse and edit queued messages |"
