@@ -326,6 +326,58 @@ class ReplTest(unittest.TestCase):
             for event in late_events:
                 self.assertIsNone(event.get("id"))
 
+    def test_background_imports_return_at_once_and_stay_out_of_cells(self):
+        # The slow module prints and warns at import, then blocks on a gate the
+        # cells control. The start call returns at once and nothing imports
+        # while that cell is in flight; once the kernel idles, a cell importing
+        # the slow module while the thread holds its import lock gets it fully
+        # initialized, and none of the import output (nor the absent module's
+        # failure) reaches a cell. The last module marks the thread's end.
+        pkg = tempfile.TemporaryDirectory()
+        self.addCleanup(pkg.cleanup)
+        entered = os.path.join(pkg.name, "entered")
+        finished = os.path.join(pkg.name, "finished")
+        with open(os.path.join(pkg.name, "pa_bg_slow_mod.py"), "w", encoding="utf-8") as handle:
+            handle.write(
+                "import builtins, warnings\n"
+                "print('BG-IMPORT-PRINT')\n"
+                "warnings.warn('BG-IMPORT-WARNING')\n"
+                f"open({entered!r}, 'w').close()\n"
+                "builtins._pa_bg_gate.wait(30)\n"
+                "READY = True\n"
+            )
+        with open(os.path.join(pkg.name, "pa_bg_last_mod.py"), "w", encoding="utf-8") as handle:
+            handle.write(f"open({finished!r}, 'w').close()\n")
+
+        def wait_for(marker: str) -> None:
+            deadline = time.monotonic() + 30
+            while not os.path.exists(marker):
+                self.assertLess(time.monotonic(), deadline, f"the background imports never reached {marker}")
+                time.sleep(0.05)
+
+        start = "\n".join(
+            [
+                "import builtins, sys, threading",
+                f"sys.path.insert(0, {pkg.name!r})",
+                "builtins._pa_bg_gate = threading.Event()",
+                "import rlm.repl as _repl",
+                "_repl.start_background_imports(['pa_bg_slow_mod', 'pa_bg_absent_mod', 'pa_bg_last_mod'])",
+                "print(_repl._background_imports.is_alive(), 'pa_bg_slow_mod' in sys.modules)",
+            ]
+        )
+        events = self.repl.execute("start", start)
+        wait_for(entered)
+        concurrent = "threading.Timer(0.2, builtins._pa_bg_gate.set).start()\nimport pa_bg_slow_mod\nprint(pa_bg_slow_mod.READY)"
+        events += self.repl.execute("concurrent", concurrent)
+        wait_for(finished)
+        joined = "_repl._background_imports.join(30)\nprint(_repl._background_imports.is_alive(), 'pa_bg_absent_mod' in sys.modules)"
+        events += self.repl.execute("joined", joined)
+        self.assertEqual([e["status"] for e in events if e.get("event") == "done"], ["ok", "ok", "ok"])
+        self.assertEqual(
+            (stream_text(events, "stdout"), stream_text(events, "stderr")),
+            ("True False\nTrue\nFalse False\n", ""),
+        )
+
     def test_background_thread_and_fd_output_during_later_cell_is_null(self):
         # Cross-cell misattribution repro: a thread and a direct fd write from
         # cell1 land while cell2 runs; neither may carry cell2's id.

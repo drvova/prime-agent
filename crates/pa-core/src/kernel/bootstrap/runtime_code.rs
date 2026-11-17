@@ -1,8 +1,8 @@
 //! The runtime bootstrap code injected into each kernel right after start or
-//! restore: binds the `rlm`, `bash`, and MCP surfaces and pre-imports every
-//! Python skill.
+//! restore: binds the `rlm`, `bash`, and MCP surfaces, pre-imports every
+//! Python skill, and starts the background import of the default packages.
 
-use super::KernelPythonSkill;
+use super::{default_rlm_extra_import_names, KernelPythonSkill};
 
 /// Line the runtime bootstrap prints when one or more pre-imported Python skills failed to import.
 /// The host scans the bootstrap cell's stdout for this marker.
@@ -84,13 +84,28 @@ except Exception as _prime_agent_rlm_error:
 "#;
 
 /// The code the session injects right after kernel start/restore: binds the `rlm`, `bash`, and MCP
-/// surfaces, imports every Python skill. `bash_notices_wired` emits the bounded-await toggle only
-/// when the host registers the bash completion notice.
+/// surfaces, imports every Python skill, then hands the default packages to the runtime's
+/// background importer (nothing awaits it, so the bootstrap cell still ends at once).
+/// `bash_notices_wired` emits the bounded-await toggle only when the host registers the bash
+/// completion notice.
 #[must_use]
 pub fn build_rlm_bootstrap_code(
     python_skills: &[KernelPythonSkill],
     bash_notices_wired: bool,
 ) -> String {
+    let default_imports_json = serde_json::to_string(&default_rlm_extra_import_names())
+        .unwrap_or_else(|_| "[]".to_string());
+    // Last in the cell, so it never competes with the restore or the skill imports for the GIL.
+    let background_imports = format!(
+        r"
+try:
+    from rlm.repl import start_background_imports as _prime_agent_start_background_imports
+except ImportError:
+    # No prime-agent-runtime in this kernel: the missing-runtime arm above already reports it.
+    pass
+else:
+    _prime_agent_start_background_imports({default_imports_json})"
+    );
     let mut runtime_code = String::from(RLM_BOOTSTRAP_RUNTIME_HEAD_CODE);
     if bash_notices_wired {
         runtime_code.push_str(RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE);
@@ -107,7 +122,7 @@ pub fn build_rlm_bootstrap_code(
         }
     }
     if import_names.is_empty() {
-        return base_code;
+        return format!("{base_code}\n{background_imports}");
     }
     let imports_json = serde_json::to_string(&import_names).unwrap_or_else(|_| "[]".to_string());
     format!(
@@ -187,6 +202,7 @@ if _PRIME_AGENT_SKILL_IMPORT_ERRORS:
         "{PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER}"
         + _prime_agent_json.dumps(_PRIME_AGENT_SKILL_IMPORT_ERRORS)
     )
+{background_imports}
 "#
     )
     .trim()
