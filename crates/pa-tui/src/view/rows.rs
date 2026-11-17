@@ -234,7 +234,9 @@ impl AgentView {
                 // message's settled blocks replay per frame; a settled message drops the copy.
                 if message.streaming {
                     let mut caches = self.md_caches.borrow_mut();
-                    let cache = caches.entry(index).or_default();
+                    let cache = caches
+                        .entry(index)
+                        .or_insert_with(crate::markdown::MarkdownBlockCache::streaming);
                     render_assistant_with_style(
                         message,
                         detail,
