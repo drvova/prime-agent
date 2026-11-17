@@ -1,5 +1,5 @@
 //! The inline panel frame of the `/model` picker: bordered search field,
-//! effort rows, scroll indicator, selection detail, key hint, one blank
+//! effort rows, right-edge scrollbar, selection detail, key hint, one blank
 //! line below the hint (the operator's 2026-09-24 spacing directive).
 //! Geometry is the TS `ModelSelectorComponent` inline path.
 
@@ -8,7 +8,7 @@ use std::fmt::Write;
 
 use super::{EffortLayout, ModelPicker};
 use crate::keybindings::{format_key_text, KeybindingsManager};
-use crate::menu_panel::{hint_row, menu_row, no_match_row, scroll_row, search_field_lines};
+use crate::menu_panel::{hint_row, menu_row, no_match_row, search_field_lines};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -68,6 +68,13 @@ pub(super) fn render(
 
     let (start, end) = picker.filtered_window();
     let effort_layout = picker.effort_layout(start, end);
+    let filtered_len = picker.filtered_len();
+    // An overflowing window carries the slash menu's one-cell scrollbar on its right edge instead
+    // of an `(n/m)` row; the rows give up that column plus a one-space gap, so the flush-right
+    // provider never touches the bar.
+    let scrollbar = (start > 0 || end < filtered_len)
+        .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, filtered_len, start));
+    let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
     for index in start..end {
         let Some(model_index) = picker.filtered_index(index) else {
             continue;
@@ -82,17 +89,15 @@ pub(super) fn render(
             .iter()
             .map(|segment| crate::menu_panel::MenuSegment::muted(segment))
             .collect();
-        lines.push(menu_row(theme, width, primary, &trailing_refs, selected));
-    }
-
-    let filtered_len = picker.filtered_len();
-    if start > 0 || end < filtered_len {
-        lines.push(scroll_row(
-            theme,
-            width,
-            picker.selected_index() + 1,
-            filtered_len,
-        ));
+        let mut row = menu_row(theme, row_width, primary, &trailing_refs, selected);
+        if let Some(cell) = scrollbar
+            .as_ref()
+            .and_then(|cells| cells.get(index - start))
+        {
+            row.push(Span::raw(" "));
+            row.push(cell.clone());
+        }
+        lines.push(row);
     }
 
     if filtered_len == 0 {

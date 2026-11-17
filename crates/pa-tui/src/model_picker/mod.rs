@@ -322,15 +322,16 @@ impl ModelPicker {
             // The frame's fixed rows plus the scope row when the session has
             // scoped models.
             4 + usize::from(self.has_scoped_models()) + detail_rows,
-            1,
+            // The scrollbar rides the rows' right edge, so overflow costs no row.
+            0,
         )
     }
 
     pub(crate) fn detail_rows(&self) -> usize {
         let detail_rows = if self.render_width >= 58 { 4 } else { 5 };
-        // The fixed floor is the search field (3), the scroll row (1), the hint (1), and the
-        // trailing blank (1): the detail block needs that plus its own rows to render at all.
-        if self.viewport_rows >= 6 + detail_rows {
+        // The fixed floor is the search field (3), the hint (1), and the trailing blank (1): the
+        // detail block needs that plus its own rows to render at all.
+        if self.viewport_rows >= 5 + detail_rows {
             detail_rows
         } else {
             0
