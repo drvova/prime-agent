@@ -643,6 +643,7 @@ impl SessionUi {
         if let Some(model) = self.pending_model.take() {
             view.chrome.model_id = Some(model);
             view.chrome.model_provider = self.pending_model_provider.take();
+            self.sync_model_host(view);
         }
         // The tray badge mirrors the session-scoped tier on every rebuild: an
         // attach that reports no tier clears the previous session's badge.

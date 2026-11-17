@@ -898,6 +898,56 @@ fn tray_left_and_right_labels() {
     assert_eq!(str_width(&text), 120);
 }
 
+/// A model on this machine or a private network shows `⌂` and the success tone in the tray,
+/// read from its provider and base URL alone; a public endpoint keeps the dim label.
+#[test]
+fn a_local_model_is_marked_in_the_tray() {
+    let hosts: Vec<ModelHost> = [
+        ("mock", "http://127.0.0.1:18797/v1"),
+        ("custom", "http://localhost:8080/v1"),
+        ("custom", "http://192.168.1.20:1234/v1"),
+        ("custom", "http://10.0.0.5/v1"),
+        ("custom", "http://172.20.0.2/v1"),
+        ("custom", "http://[::1]:11434/v1"),
+        ("custom", "http://gpu-box.local:8000/v1"),
+        ("ollama", "https://ollama.example.com/v1"),
+        ("openai", "https://api.openai.com/v1"),
+        ("custom", "http://172.32.0.1/v1"),
+        ("custom", "not a url"),
+    ]
+    .iter()
+    .map(|(provider, base_url)| ModelHost::of(provider, base_url))
+    .collect();
+    assert_eq!(
+        hosts,
+        [
+            [ModelHost::Local; 8].as_slice(),
+            [ModelHost::Remote; 3].as_slice()
+        ]
+        .concat()
+    );
+    let theme = theme();
+    let state = ChromeState {
+        model_id: Some("mock-1".to_string()),
+        model_host: ModelHost::of("mock", "http://127.0.0.1:18797/v1"),
+        ..Default::default()
+    };
+    let line = render_tray(&state, &theme, 60);
+    let model: Vec<(String, Option<ratatui::style::Color>)> = line
+        .iter()
+        .skip_while(|span| span.content.trim().is_empty())
+        .map(|span| (span.content.clone(), span.style.fg))
+        .collect();
+    let success = theme.fg_style(ThemeColor::Success).fg;
+    assert_eq!(
+        model,
+        vec![
+            ("\u{2302} ".to_string(), success),
+            ("mock-1".to_string(), success)
+        ]
+    );
+}
+
 /// `fast` for the priority tier, the tier name for any other non-default
 /// tier, nothing for `default` or an unset tier.
 #[test]

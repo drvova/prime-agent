@@ -231,9 +231,20 @@ impl SessionUi {
             }
     }
 
+    /// The tray's model host from the configured catalog entry of the current model (its
+    /// provider and base URL; no network). A model the catalog does not list reads as remote.
+    pub(super) fn sync_model_host(&self, view: &mut AgentView) {
+        view.chrome.model_host = self
+            .current_model_entry(view)
+            .map_or(crate::chrome::ModelHost::Remote, |model| {
+                crate::chrome::ModelHost::of(&model.provider, &model.base_url)
+            });
+    }
+
     /// Fold a landed catalog refresh into the session and any open picker.
     pub(crate) fn apply_model_catalog(&mut self, update: ModelCatalogUpdate, view: &mut AgentView) {
         self.model_catalog = update.models;
+        self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
@@ -556,6 +567,7 @@ impl SessionUi {
             view.chrome.model_provider = Some(picked_provider.to_string());
             view.chrome.thinking_suffix = None;
         }
+        self.sync_model_host(view);
         self.dirty = true;
     }
 }
