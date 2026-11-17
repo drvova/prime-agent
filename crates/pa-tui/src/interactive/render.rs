@@ -82,7 +82,8 @@ pub(super) async fn check_tmux_keyboard_setup() -> Option<String> {
 /// Rendering sink: the real terminal or headless frame capture.
 pub(super) enum Renderer {
     Terminal {
-        term: Terminal<crate::hyperlinks::LinkBackend>,
+        /// Boxed: the per-frame buffer and cursor memory make it the enum's large variant.
+        term: Box<Terminal<crate::frame_output::ChatBackend>>,
         /// The `terminal.fullscreenMouse` setting: mouse tracking re-enables on resume.
         mouse: bool,
         /// The reader's channel and force-quit guard: the external-editor cycle stops and
@@ -198,13 +199,13 @@ impl Renderer {
                 // screen, Kitty setup waits until the first draw finishes painting.
                 crate::enhanced_keys::enable(&mut std::io::stdout())?;
                 spawn_session_reader(ui_tx.clone(), exit_guard.clone());
-                let terminal = Terminal::new(crate::hyperlinks::stdout_backend())?;
+                let terminal = Terminal::new(crate::frame_output::stdout_chat_backend())?;
                 // The adopted buffer still holds the previous view's frame, so the clear escape
                 // must never reach the pane on its own: the armed mount's clear and cursor hide
                 // ride the first draw's single flush (see `altscreen::take_first_draw_mount`) —
                 // a clear queued HERE would let any mid-gap flush carry it out early.
                 Ok(Renderer::Terminal {
-                    term: terminal,
+                    term: Box::new(terminal),
                     mouse,
                     ui_tx,
                     exit_guard,
@@ -355,8 +356,10 @@ impl Renderer {
                 if *mouse {
                     crate::mouse_tracking::enable(&mut std::io::stdout())?;
                 }
-                // A fresh full redraw: the suspended command left arbitrary output behind.
+                // A fresh full redraw: the suspended command left arbitrary output behind, and
+                // the cursor sequences above bypassed the frame path's remembered state.
                 term.clear()?;
+                term.backend_mut().writer_mut().inner_mut().forget_cursor();
                 Ok(())
             }
             Renderer::Headless { .. } => Ok(()),
@@ -397,9 +400,9 @@ impl Renderer {
 
     pub(super) fn is_terminal_mut(
         &mut self,
-    ) -> Option<&mut Terminal<crate::hyperlinks::LinkBackend>> {
+    ) -> Option<&mut Terminal<crate::frame_output::ChatBackend>> {
         match self {
-            Renderer::Terminal { term, .. } => Some(term),
+            Renderer::Terminal { term, .. } => Some(&mut **term),
             Renderer::Headless { .. } => None,
         }
     }

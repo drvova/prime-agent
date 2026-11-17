@@ -89,7 +89,7 @@ fn run_app_surface(
     // The replay surface owns the same enhanced-key modes as the session: bracketed pastes
     // arrive as one chunk.
     crate::enhanced_keys::enable(&mut std::io::stdout())?;
-    let mut terminal = Terminal::new(crate::hyperlinks::stdout_backend())?;
+    let mut terminal = Terminal::new(crate::frame_output::stdout_chat_backend())?;
 
     let theme = load_theme(&options.theme);
     let mut view = AgentView::new(theme);
@@ -244,68 +244,125 @@ pub fn dispatch_events(editor: &mut Editor, on_submit: &mut dyn FnMut(&str)) {
     }
 }
 
-pub(crate) fn draw(
-    terminal: &mut Terminal<crate::hyperlinks::LinkBackend>,
+/// Paint one frame. Every byte of the frame (the mount sequences on the first draw, the
+/// synchronized-output bracket, the cell diff, and the cursor update) collects in the backend's
+/// [`crate::frame_output::FrameWriter`] and reaches the terminal as one write with one flush; a
+/// frame whose diff is empty and whose cursor did not move writes nothing at all.
+pub(crate) fn draw<W: std::io::Write>(
+    terminal: &mut Terminal<
+        ratatui::backend::CrosstermBackend<
+            crate::hyperlinks::HyperlinkWriter<crate::frame_output::FrameWriter<W>>,
+        >,
+    >,
     view: &mut AgentView,
 ) -> Result<()> {
+    use ratatui::backend::Backend;
+    // The bytes an empty cell diff still writes (the backend's closing style resets): a frame
+    // body equal to them changed nothing on screen.
+    static EMPTY_DIFF: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let empty_diff = EMPTY_DIFF.get_or_init(|| {
+        let mut probe = ratatui::backend::CrosstermBackend::new(Vec::new());
+        let _ = probe.draw(std::iter::empty());
+        probe.writer().clone()
+    });
     // The mount sequences (the alt-screen adopt/enter, the queued clear, the cursor hide) ride
-    // THIS draw's single flush: the first paint is the mount, and a mid-gap flush can never
+    // THIS draw's single write: the first paint is the mount, and a mid-gap flush can never
     // carry the clear out early over it.
     let mounting = crate::altscreen::take_first_draw_mount();
-    if mounting {
-        let mut out = std::io::stdout();
-        crate::altscreen::enter_queued(&mut out)?;
-        crossterm::queue!(
-            out,
-            crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
-            crossterm::cursor::Hide
-        )?;
-    }
-    let area = terminal.size()?;
-    let frame_area = ratatui::layout::Rect::new(0, 0, area.width, area.height);
-    let width = area.width as usize;
-    let height = area.height as usize;
-    let frame = view.render_frame(width, height);
-    let cursor = view.frame_cursor();
-    // The frame's embedded OSC 8 sequences drive the paint backend's hyperlink injection; install
-    // the ranges before the draw (which strips the sequences from the painted cells).
-    crate::hyperlinks::install_frame(&frame);
-    // OSC 133 describes shell prompts, not alternate-screen rows. In iTerm2 it can
-    // disable soft alternate-screen mode and let cursor moves clear the painted grid.
-    // Keep those markers in the main-screen exit transcript only.
-    // Fullscreen paint brackets the row diff in synchronized output so terminals never display
-    // an intermediate, partly scrolled frame; a terminal without mode 2026 support ignores the
-    // two escape sequences.
-    crossterm::execute!(stdout(), terminal::BeginSynchronizedUpdate)?;
-    // The hardware cursor is positioned at the focused caret for IME on every frame, but only
-    // shown when `showHardwareCursor` is on. ratatui's `set_cursor_position` shows the cursor
-    // unconditionally, so it may carry the caret only in the show case — the hidden case would
-    // leave the terminal's own cursor visible while later paints drag it across every changed row.
+    terminal.backend_mut().writer_mut().inner_mut().begin();
     let show_hardware_cursor = view.show_hardware_cursor;
-    let painted = terminal.draw(|f| {
-        let lines: Vec<ratatui::text::Line<'static>> =
-            frame.iter().map(crate::markdown::to_ratatui_line).collect();
-        f.render_widget(ratatui::text::Text::from(lines), frame_area);
-        if show_hardware_cursor {
-            if let Some((row, col)) = cursor {
-                if row < height && col < width {
-                    f.set_cursor_position(ratatui::layout::Position::new(col as u16, row as u16));
-                }
+    let mut paint = || -> Result<bool> {
+        if mounting {
+            let backend = terminal.backend_mut();
+            crate::altscreen::enter_queued(backend)?;
+            crossterm::queue!(
+                backend,
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::All),
+                crossterm::cursor::Hide
+            )?;
+            backend.writer_mut().inner_mut().cursor_visible = Some(false);
+        }
+        // OSC 133 describes shell prompts, not alternate-screen rows. In iTerm2 it can
+        // disable soft alternate-screen mode and let cursor moves clear the painted grid.
+        // Keep those markers in the main-screen exit transcript only.
+        // Fullscreen paint brackets the row diff in synchronized output so terminals never
+        // display an intermediate, partly scrolled frame; a terminal without mode 2026 support
+        // ignores the two escape sequences.
+        crossterm::queue!(terminal.backend_mut(), terminal::BeginSynchronizedUpdate)?;
+        // The resize check `Terminal::draw` runs first, done here (inside the bracket, as
+        // there) so the frame renders at the size the diff paints at; a resize's clear makes
+        // the next diff a full repaint.
+        terminal.autoresize()?;
+        let body_start = terminal.backend_mut().writer_mut().inner_mut().len();
+        let frame_area = terminal.get_frame().area();
+        let width = frame_area.width as usize;
+        let height = frame_area.height as usize;
+        let frame = view.render_frame(width, height);
+        let cursor = view.frame_cursor();
+        // The frame's embedded OSC 8 sequences drive the paint backend's hyperlink injection;
+        // install the ranges before the paint (which strips the sequences from the painted cells).
+        crate::hyperlinks::install_frame(&frame);
+        {
+            let lines: Vec<ratatui::text::Line<'static>> =
+                frame.iter().map(crate::markdown::to_ratatui_line).collect();
+            terminal
+                .get_frame()
+                .render_widget(ratatui::text::Text::from(lines), frame_area);
+        }
+        terminal.flush()?;
+        let diff_painted = terminal
+            .backend_mut()
+            .writer_mut()
+            .inner_mut()
+            .since(body_start)
+            != empty_diff;
+        // The hardware cursor is positioned at the focused caret for IME on every changed frame,
+        // but only shown when `showHardwareCursor` is on. The visibility and the position are
+        // sent only when they change (ratatui's own `draw` re-sends the hide on every frame);
+        // a painted diff moved the terminal's cursor, so it re-sends the caret position.
+        let caret = cursor
+            .filter(|(row, col)| *row < height && *col < width)
+            .map(|(row, col)| (col as u16, row as u16));
+        let visible = show_hardware_cursor && caret.is_some();
+        let known_visible = terminal
+            .backend_mut()
+            .writer_mut()
+            .inner_mut()
+            .cursor_visible;
+        let visibility_changed = known_visible != Some(visible);
+        if visibility_changed {
+            if visible {
+                terminal.show_cursor()?;
+            } else {
+                terminal.hide_cursor()?;
             }
         }
-    });
-    // The hidden case still positions: IME candidates anchor at the caret whether or not it
-    // is visible. The bare MoveTo rides the same sync bracket, after the paint.
-    if !show_hardware_cursor {
-        if let Some((row, col)) = cursor {
-            if row < height && col < width {
-                use crossterm::cursor::MoveTo;
-                crossterm::queue!(stdout(), MoveTo(col as u16, row as u16))?;
-            }
+        let known_caret = terminal.backend_mut().writer_mut().inner_mut().cursor_at;
+        let caret_moved = caret.is_some() && (diff_painted || known_caret != caret);
+        if let Some((col, row)) = caret.filter(|_| caret_moved) {
+            terminal.set_cursor_position(ratatui::layout::Position::new(col, row))?;
         }
+        terminal.swap_buffers();
+        // The hyperlink writer closes a link region still open at the frame's end.
+        Backend::flush(terminal.backend_mut())?;
+        let writer = terminal.backend_mut().writer_mut().inner_mut();
+        writer.cursor_visible = Some(visible);
+        if caret.is_some() {
+            writer.cursor_at = caret;
+        } else if diff_painted {
+            writer.cursor_at = None;
+        }
+        Ok(mounting || diff_painted || visibility_changed || caret_moved)
+    };
+    let painted = paint();
+    let writer = terminal.backend_mut().writer_mut().inner_mut();
+    if let Ok(false) = painted {
+        writer.discard();
+    } else {
+        // Always release the terminal's pending update, including on paint errors.
+        crossterm::queue!(writer, terminal::EndSynchronizedUpdate)?;
+        writer.commit()?;
     }
-    // Always release the terminal's pending update, including on paint errors.
-    crossterm::execute!(stdout(), terminal::EndSynchronizedUpdate)?;
     painted?;
     if mounting {
         // Mode setup flushes stdout, so it must follow the completed first paint.

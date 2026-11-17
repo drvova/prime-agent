@@ -1,0 +1,1 @@
+- The interactive UI sends each frame to the terminal in a single write, sends nothing for a frame that changes nothing on screen, and re-sends the cursor's visibility and position only when they change.

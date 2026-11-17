@@ -38,7 +38,7 @@ pub(crate) fn arm_first_draw_mount() {
 /// # Errors
 ///
 /// Returns `Err` when writing the enter sequence to the caller's buffer fails.
-pub(crate) fn enter_queued(out: &mut std::io::Stdout) -> anyhow::Result<()> {
+pub(crate) fn enter_queued(out: &mut impl std::io::Write) -> anyhow::Result<()> {
     if !ACTIVE.swap(true, Ordering::SeqCst) {
         crossterm::queue!(out, EnterAlternateScreen)?;
     }

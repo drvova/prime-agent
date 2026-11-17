@@ -347,6 +347,11 @@ impl<W: Write> HyperlinkWriter<W> {
         self.inner
     }
 
+    /// The wrapped writer (the chat paint's per-frame buffer).
+    pub(crate) fn inner_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+
     /// Write the OSC 8 close sequence if a region is open.
     fn close_active(&mut self) {
         if self.active.take().is_some() {
