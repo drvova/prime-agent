@@ -130,6 +130,7 @@ fn prepended_history_keeps_a_top_anchored_window() {
     let head: Vec<ChatEntry> = (0..80).map(|index| body("head", index)).collect();
     sparse.push_entry(ChatEntry::User {
         text: "the tail opens\nwith a user row".to_string(),
+        sent_at: None,
     });
     for index in 0..200 {
         sparse.push_entry(body("tail", index));

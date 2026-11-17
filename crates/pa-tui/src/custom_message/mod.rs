@@ -275,6 +275,7 @@ fn slash_row_entries(
     if !content_is_text || (is_command_row && !command_details_valid) {
         return vec![ChatEntry::User {
             text: "[Malformed session command message]".to_string(),
+            sent_at: None,
         }];
     }
     if is_command_row {

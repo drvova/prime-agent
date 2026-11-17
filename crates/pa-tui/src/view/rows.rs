@@ -111,7 +111,7 @@ impl AgentView {
                 rows.extend(render_text_rows(text, style, width));
                 rows
             }
-            ChatEntry::User { text } => {
+            ChatEntry::User { text, sent_at } => {
                 let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme);
                 md.code_block_indent.clone_from(&self.code_block_indent);
                 md.link_base_url = url::Url::from_directory_path(&self.chrome.cwd).ok();
@@ -123,7 +123,22 @@ impl AgentView {
                 if !first && !follows_skill_card {
                     rows.push(Vec::new());
                 }
+                let start = rows.len();
                 rows.extend(render_user_block_with_style(text, &self.theme, &md, width));
+                // The send time, flush right on the first text row when it fits beside the
+                // text; it never adds a row, so the entry's height is unchanged.
+                let clock = sent_at.and_then(pa_types::platform::local_clock);
+                if let (Some((hour, minute)), Some(row)) = (clock, rows.get_mut(start + 1)) {
+                    let clock = format!("{hour:02}:{minute:02}  ");
+                    let content: String = row.iter().map(|span| span.content.as_str()).collect();
+                    let used = crate::width::str_width(content.trim_end());
+                    if used + 2 + clock.len() <= width {
+                        let bg = self.theme.bg_style(crate::theme::ThemeBg::UserMessageBg);
+                        let dim = bg.patch(self.theme.fg_style(crate::theme::ThemeColor::Dim));
+                        *row = crate::width::truncate_line(row, width - clock.len(), "");
+                        row.push(crate::Span::styled(clock, dim));
+                    }
+                }
                 rows
             }
             ChatEntry::SlashCommand { text } => {

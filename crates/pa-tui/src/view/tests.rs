@@ -30,11 +30,13 @@ fn markdown_link_targets_use_the_owning_view_cwd() {
     first.chrome.cwd = first_path.to_string_lossy().into_owned();
     first.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
+        sent_at: None,
     });
     let mut second = view();
     second.chrome.cwd = second_path.to_string_lossy().into_owned();
     second.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
+        sent_at: None,
     });
     let targets =
         |v: &mut AgentView| crate::hyperlinks::frame_link_ranges(&v.render_transcript(80));
@@ -708,6 +710,7 @@ fn a_scrolled_layout_revalidates_the_hover() {
     for index in 0..10 {
         entries.push(crate::chat::ChatEntry::User {
             text: format!("later user line {index}"),
+            sent_at: None,
         });
     }
     let mut view = collapsed_view(entries);
@@ -916,11 +919,39 @@ fn transcript_text(view: &mut AgentView, width: usize) -> String {
         .join("\n")
 }
 
+/// A prompt's send time sits flush right on its first text row; a row too full for it keeps
+/// its text, and the clock never changes the entry's height.
+#[test]
+fn a_prompt_shows_its_send_time_flush_right() {
+    let sent_at = 1_763_300_000_000;
+    let (hour, minute) = pa_types::platform::local_clock(sent_at).unwrap();
+    let clock = format!("{hour:02}:{minute:02}");
+    let rows_of = |text: &str, sent_at: Option<i64>| {
+        let mut view = view_with(vec![ChatEntry::User {
+            text: text.to_string(),
+            sent_at,
+        }]);
+        let text = transcript_text(&mut view, 40);
+        text.lines().map(str::to_string).collect::<Vec<_>>()
+    };
+    let stamped = rows_of("hello", Some(sent_at));
+    let row = stamped.iter().find(|row| row.contains("hello")).unwrap();
+    assert!(row.ends_with(&format!("{clock}  ")), "{row:?}");
+    assert_eq!(stamped.len(), rows_of("hello", None).len());
+    let full = "x".repeat(34);
+    let crowded = rows_of(&full, Some(sent_at));
+    assert!(
+        !crowded.iter().any(|row| row.contains(&clock)),
+        "{crowded:?}"
+    );
+}
+
 #[test]
 fn cached_transcript_rows_match_fresh_render() {
     let mut view = view_with(vec![
         ChatEntry::User {
             text: "hello".to_string(),
+            sent_at: None,
         },
         ChatEntry::Assistant(Box::new(AssistantMessage {
             blocks: vec![MessageBlock::Text("world".to_string())],
@@ -1088,6 +1119,7 @@ fn compaction_summary_block_toggles_with_the_detail_cycle() {
 fn user_row() -> ChatEntry {
     ChatEntry::User {
         text: "hello".to_string(),
+        sent_at: None,
     }
 }
 
@@ -1125,6 +1157,7 @@ fn tool_card_after_user_message_keeps_ts_two_blank_seam() {
     let mut view = view_with(vec![
         ChatEntry::User {
             text: "run the cell".to_string(),
+            sent_at: None,
         },
         settled_tool_card("t1"),
     ]);
@@ -1173,6 +1206,7 @@ fn conversation_leading_matches_ts_spacing_rules() {
     };
     let user = || ChatEntry::User {
         text: "hello".to_string(),
+        sent_at: None,
     };
 
     // Nothing preceding: the collapsed form leads with a blank, the
@@ -1499,6 +1533,7 @@ fn the_collapsed_view_renders_every_activity_item_as_details_does() {
     entries.push(agent_message_row());
     entries.push(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     entries.extend(settled_cards(2));
     let mut view = collapsed_view(entries);
@@ -1545,6 +1580,7 @@ fn a_running_card_updates_between_frames() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "run_r".to_string(),
@@ -1590,6 +1626,7 @@ fn streamed_cards_render_their_own_rows_immediately() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(streamed("c0"));
     let one = transcript_text(&mut view, 80);
@@ -1616,6 +1653,7 @@ fn a_landing_result_with_receipts_settles_the_card() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "cell".to_string(),
