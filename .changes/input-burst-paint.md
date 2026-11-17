@@ -1,1 +1,1 @@
-- Fast typing and pastes paint less often: keys that arrive together are applied as one batch and drawn once, and a single keystroke still draws at once.
+- Fast typing and held-down keys paint less often: keys that arrive together are applied as one batch and drawn once, and a single keystroke still draws at once.
