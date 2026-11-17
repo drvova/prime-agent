@@ -1,0 +1,1 @@
+- The agents view rename (Ctrl+R) now labels the composer with a ` Name ` chip and opens with the current name selected, so typing replaces it and an arrow key keeps it for editing.
