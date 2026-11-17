@@ -1,0 +1,1 @@
+- The working line under the conversation is more informative: each activity (waiting, thinking, writing, writing code, running a tool) has its own spinner, a `quiet 12s` timer appears when nothing has arrived for 3 seconds so a stalled model or silent tool is easy to spot, and the key that stops the turn shows as a chip on the right (` Esc  stop`).

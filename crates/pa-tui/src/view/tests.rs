@@ -423,6 +423,7 @@ fn compaction_loader_replaces_the_working_loader() {
         tokens: 0,
         elapsed_secs: 0,
         thought: None,
+        quiet_secs: 0,
     });
     v.compaction = Some(crate::chat::CompactionState {
         reason: crate::chat::CompactionReason::Manual,

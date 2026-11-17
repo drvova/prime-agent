@@ -77,6 +77,8 @@ pub struct AgentView {
     pub pulse_frame: usize,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
+    /// When the session last sent anything while working (the loader's stall timer).
+    pub working_heard: Option<std::time::Instant>,
     pub retry: Option<crate::chat::RetryState>,
     pub onboarding: Option<crate::onboarding::OnboardingScreen>,
     pub model_picker: Option<crate::model_picker::ModelPicker>,
@@ -296,6 +298,7 @@ impl AgentView {
             compaction_generation: 0,
             pulse_frame: 0,
             working_since: None,
+            working_heard: None,
             retry: None,
             onboarding: None,
             model_picker: None,

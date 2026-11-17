@@ -247,6 +247,8 @@ impl SessionUi {
                 if active_session_id != self.active_session_id {
                     return;
                 }
+                // Any frame from the session resets the loader's stall timer.
+                view.working_heard = Some(std::time::Instant::now());
                 // The run's stash keys the LATEST sequence the worker has reported: a turn during
                 // this run advances it, so the re-entry matches the post-turn value the next attach
                 // reports. Monotonic max: a replayed event never lowers it.
