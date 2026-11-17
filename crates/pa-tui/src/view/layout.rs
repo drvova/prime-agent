@@ -415,7 +415,13 @@ impl AgentView {
                 width,
             ));
         } else if let Some(working) = &self.working {
-            tail.extend(render_loader(working, self.pulse_frame, &self.theme, width));
+            tail.extend(render_loader(
+                working,
+                self.pulse_frame,
+                &self.theme,
+                self.detail,
+                width,
+            ));
         }
         // The side-question pane hugs the transcript tail, not the dock, so the frame's slack
         // lands between the pane and the editor (TS mounts it behind a `Spacer(1)`).

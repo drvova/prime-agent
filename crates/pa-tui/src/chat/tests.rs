@@ -782,8 +782,9 @@ fn loader_line_shape() {
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        thought: None,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100);
     assert_eq!(rows.len(), 2);
     let text = rows[1]
         .iter()
@@ -801,11 +802,12 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        thought: None,
     };
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_loader(&working, 0, &t, 100);
+    let rows = render_loader(&working, 0, &t, Detail::Overview, 100);
     assert_eq!(
         rows[1][..4],
         [
@@ -826,8 +828,9 @@ fn loader_working_message_replaces_the_activity_label() {
         download: true,
         tokens: 72,
         elapsed_secs: 3,
+        thought: None,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100);
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
@@ -863,4 +866,32 @@ fn live_abort_text_matches_ts() {
         live_abort_text(2, Some(65)),
         "Aborted after 2 retry attempts \u{00b7} 1m 05s"
     );
+}
+
+/// The live thought is one dim italic row under the loader, truncated to the width, and only
+/// where the transcript folds thinking (an expanded transcript streams the block itself).
+#[test]
+fn loader_shows_the_live_thought_only_where_thinking_folds() {
+    let working = WorkingState {
+        activity: "Thinking",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 2,
+        thought: Some("Split the tokenizer out before the resolver moves.".into()),
+    };
+    let t = theme();
+    let rows = render_loader(&working, 0, &t, Detail::Overview, 24);
+    assert_eq!(
+        rows[2],
+        vec![
+            Span::raw("   "),
+            Span::styled(
+                "Split the tokenizer\u{2026}",
+                t.fg_style(ThemeColor::Dim).add_modifier(Modifier::ITALIC),
+            ),
+            Span::raw(" "),
+        ]
+    );
+    assert_eq!(render_loader(&working, 0, &t, Detail::Details, 24).len(), 2);
 }

@@ -1,0 +1,1 @@
+- While the model thinks in the collapsed view, its latest thought shows as one dim italic line under the working spinner; when the turn ends only the folded `• Thought` row stays in the transcript.

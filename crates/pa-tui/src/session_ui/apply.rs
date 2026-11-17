@@ -796,10 +796,38 @@ impl SessionUi {
             let current = self
                 .working_tokens
                 .apply_streaming(usage_output, content_chars);
+            // The live thought: the thinking block's newest closed sentence or line (it holds
+            // still while the next one streams), or the text so far before anything closes.
+            let thought = match (blocks.last(), tool_calls.is_empty()) {
+                (Some(MessageBlock::Thinking(text)), true) => {
+                    let (mut closed, mut start) = (None, 0);
+                    for (at, ch) in text.char_indices() {
+                        let end = at + ch.len_utf8();
+                        let boundary = ch == '\n'
+                            || (matches!(ch, '.' | '?' | '!')
+                                && text[end..].chars().next().is_none_or(char::is_whitespace));
+                        if boundary {
+                            closed = Some(text[start..end].trim())
+                                .filter(|seg| !seg.is_empty())
+                                .or(closed);
+                            start = end;
+                        }
+                    }
+                    closed
+                        .or_else(|| Some(text[start..].trim()).filter(|seg| !seg.is_empty()))
+                        .map(str::to_string)
+                }
+                (Some(MessageBlock::Thinking(_)), false)
+                | (Some(MessageBlock::Text(_)) | None, _) => None,
+            };
             if let Some(working) = &mut view.working {
                 working.tokens = working.tokens.max(current);
+                working.thought = thought;
             }
         } else {
+            if let Some(working) = &mut view.working {
+                working.thought = None;
+            }
             self.working_tokens.settle(usage_output);
             self.working_tokens.run.1 += message["usage"]["totalTokens"].as_u64().unwrap_or(0);
             self.record_speed_sample(message, view);
