@@ -43,6 +43,15 @@ pub enum Scenario {
     /// CPU ms of the owned daemon, its descendants, and the TUI over an idle
     /// window after ready. Linux-only (/proc).
     IdleCost,
+    /// Daemon wire, no TUI: the create command -> a new session's first
+    /// `python_repl` result (worker spawn + kernel boot + the cell).
+    FirstCell,
+    /// Daemon wire: a parent cell's `rlm.spawn` -> the child's first cell
+    /// finishing (child create + its kernel boot + the cell).
+    SubagentFirstCell,
+    /// Daemon wire: a booted kernel's first `import pandas` cell, start ->
+    /// result.
+    PandasImport,
 }
 
 /// Every bench knob for one scenario over one corpus.

@@ -122,6 +122,20 @@ the liveness deadline only fails broken runs):
 | `transcript-paging` | cold | `--resume <huge session>`, then 20 PageUps: each keystroke -> the first frame whose topmost block ordinal is above the previous frame's (one sample per page) |
 | `transcript-top` | cold | `--resume <huge session>`, then the `tui.viewport.top` key -> the first frame showing the session's first block (ordinal 0); the head is never in the attach tail, so this is a daemon page fetch |
 | `idle-cost` | cold | owned daemon + TUI, ready, then a 30 s idle window: CPU ms (utime+stime) of the daemon, its descendants, and the TUI, plus their context switches (medium only, Linux only) |
+| `first-cell` | cold | daemon wire, no TUI: the `create` command -> the first `python_repl` result event of the new session (worker spawn + kernel boot + the cell) |
+| `subagent-first-cell` | cold | daemon wire: a parent cell's `rlm.spawn` -> the child's first cell end (both stamps are the kernels' own wall clocks; the child's task is delivered when the spawning cell returns) |
+| `pandas-import` | cold | daemon wire: after a warm-up cell, the session's first `import pandas` cell, start event -> result event |
+
+The three kernel scenarios drive the daemon over its wire protocol with a
+faux-scripted session (`{"engine": "faux"}` create scripts: the real agent
+loop and the real `python_repl` kernel, with only the provider scripted),
+so they stay offline. They need the kernel venv bootstrapped first
+(`prime-agent --prime-agent-bootstrap`, as the CI bench lane does): the
+binary resolves it under `$HOME`, which the harness carries through. Each
+run starts its own daemon, so `first-cell` includes the worker spawn; the
+discarded warm-up run absorbs a venv rebuild if the runtime identity
+changed. The cold corpus only supplies the isolated agent dir and the
+project cwd (the numbers do not depend on the corpus size).
 
 First paint: `agents-view` and `agents-view-warm` also record the first
 usable paint of the same run (`first_paint`: the first frame whose roster
@@ -181,7 +195,10 @@ worst-gap columns never gate; scenarios without a baseline entry print as
 `(no baseline)`. Noisy scenarios (>20% spread across 3 CI runs) are marked
 `report_only` in the baseline: their deltas always print, the gate never
 fails. `baseline.json` is committed from CI numbers, not laptop/sandbox
-ones.
+ones. The one exception is the kernel scenarios' first entries
+(`first-cell`, `subagent-first-cell`, `pandas-import` on small): sandbox
+medians, labeled as such in their `source` and `report_only` until the
+first CI run replaces them.
 
 ## Local run
 

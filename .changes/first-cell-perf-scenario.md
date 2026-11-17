@@ -1,0 +1,1 @@
+- The performance suite now measures `python_repl` kernel start: a new session's first cell, a subagent's first cell, and the first `import pandas`.
