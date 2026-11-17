@@ -99,6 +99,7 @@ impl SessionUi {
             elapsed_secs: 0,
             thought: None,
             quiet_secs: 0,
+            tool_label: None,
         });
         view.working_since = Some(since);
         view.working_heard = Some(std::time::Instant::now());

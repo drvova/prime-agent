@@ -193,10 +193,16 @@ pub struct WorkingState {
     pub thought: Option<String>,
     /// Whole seconds since the session last sent anything (the stall timer).
     pub quiet_secs: u64,
+    /// The running tool's title, the live label while a tool executes. Prime's tools carry no
+    /// model-stated intent field, so this is the call's collapsed-card title.
+    pub tool_label: Option<String>,
 }
 
-/// A silence this long surfaces as `quiet Ns` on the loader.
+/// A silence this long while the model streams turns the loader into `Waiting on the model`.
 const QUIET_AFTER_SECS: u64 = 3;
+
+/// The activity a running tool sets. Tools are silent by nature, so it never reads as a stall.
+pub(crate) const TOOL_ACTIVITY: &str = "Executing";
 
 /// The live abort row's text (TS `message_end`'s aborted arm): the retry
 /// count and the working-elapsed suffix ride the client, never the wire
@@ -236,6 +242,15 @@ pub fn format_working_elapsed(total_secs: u64) -> String {
 }
 
 impl WorkingState {
+    /// The model went quiet past the threshold while no tool runs (a running tool or a
+    /// tool-owned message never stalls): the loader says it is waiting on the model.
+    #[must_use]
+    pub fn stalled(&self) -> bool {
+        self.message.is_none()
+            && self.activity != TOOL_ACTIVITY
+            && self.quiet_secs >= QUIET_AFTER_SECS
+    }
+
     #[must_use]
     pub fn label(&self) -> String {
         // A tool-provided working message owns the loader line: plain
@@ -243,9 +258,18 @@ impl WorkingState {
         if let Some(message) = &self.message {
             return format!("{message} {}", format_working_elapsed(self.elapsed_secs));
         }
-        let mut parts = vec![self.activity.to_string()];
+        let stalled = self.stalled();
+        let head = if stalled {
+            "Waiting on the model".to_string()
+        } else {
+            match (&self.tool_label, self.activity == TOOL_ACTIVITY) {
+                (Some(title), true) => format!("Running {title}"),
+                (Some(_), false) | (None, true | false) => self.activity.to_string(),
+            }
+        };
+        let mut parts = vec![head];
         parts.push(format_working_elapsed(self.elapsed_secs));
-        if self.quiet_secs >= QUIET_AFTER_SECS {
+        if stalled {
             parts.push(format!("quiet {}", format_working_elapsed(self.quiet_secs)));
         }
         if self.tokens > 0 {
@@ -571,7 +595,12 @@ pub fn render_loader(
 ) -> Vec<Line> {
     let accent = theme.fg_style(ThemeColor::Accent);
     let muted = theme.fg_style(ThemeColor::Muted);
-    let frames = activity_frames(working.activity);
+    // A stalled stream takes the waiting orbit back.
+    let frames = activity_frames(if working.stalled() {
+        "Waiting"
+    } else {
+        working.activity
+    });
     let spinner = frames[frame % frames.len()];
     let message = working.label();
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
@@ -628,6 +657,8 @@ pub struct RetryState {
     /// Why the retry started: a quick retry counts down; a provider
     /// failover switch names the backup the turn re-routes to.
     pub reason: RetryStartReason,
+    /// The session model's provider, named in the countdown line (`openai 429`).
+    pub provider: Option<String>,
 }
 
 impl RetryState {
@@ -638,41 +669,75 @@ impl RetryState {
             .saturating_duration_since(std::time::Instant::now())
             .as_secs()
     }
-
-    /// The loader message for this retry. SANCTIONED DIVERGENCE from the TS
-    /// `auto_retry_start` rendering (operator ruling 2026-09-23): the quick-retry line
-    /// names the ERROR too, not just the attempt.
-    fn message(&self) -> String {
-        match &self.reason {
-            RetryStartReason::Quick => format!(
-                "{} — retrying ({}/{}) in {}s...",
-                self.error_message,
-                self.attempt,
-                self.max_attempts,
-                self.seconds_left()
-            ),
-            RetryStartReason::Backup { backup_model } => format!(
-                "Primary model unavailable ({}) — retrying on backup model {backup_model}...",
-                self.error_message
-            ),
-        }
-    }
 }
 
-/// The retry loader rows (TS `auto_retry_start` rendering: muted spinner +
-/// the retry message).
+/// The retry loader rows. A quick retry is the nc-style countdown line, the amber
+/// `retry 2 of 4 in 3s` head, then the provider and status, with the provider's own words on
+/// the row under it. SANCTIONED DIVERGENCE from the TS `auto_retry_start` rendering (operator
+/// ruling 2026-09-23): the episode names the ERROR too, not just the attempt. A failover
+/// switch keeps its one muted line naming the backup.
 #[must_use]
 pub fn render_retry(retry: &RetryState, frame: usize, theme: &Theme, width: usize) -> Vec<Line> {
     let muted = theme.fg_style(ThemeColor::Muted);
+    let warning = theme.fg_style(ThemeColor::Warning);
     let spinner = LOADER_FRAMES[frame % LOADER_FRAMES.len()];
-    let message = retry.message();
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
-    row.push(Span::styled(spinner.to_string(), muted));
-    // The gap between the spinner and the label is unstyled (the TS
-    // `Loader` pen reset — see `render_loader`).
-    row.push(Span::raw(" ".to_string()));
-    row.push(Span::styled(message, muted));
-    vec![spacer(), pad_to(row, width, Style::default())]
+    match &retry.reason {
+        RetryStartReason::Quick => {
+            row.push(Span::styled(spinner.to_string(), warning));
+            // The gap between the spinner and the label is unstyled (the TS
+            // `Loader` pen reset — see `render_loader`).
+            row.push(Span::raw(" ".to_string()));
+            row.push(Span::styled(
+                format!(
+                    "retry {} of {} in {}s",
+                    retry.attempt,
+                    retry.max_attempts,
+                    retry.seconds_left()
+                ),
+                warning,
+            ));
+            // The provider and HTTP status (`openai 429`): the status is the error's leading
+            // three-digit code, the provider the session model's.
+            let status = retry
+                .error_message
+                .split_whitespace()
+                .next()
+                .filter(|word| word.len() == 3 && word.bytes().all(|byte| byte.is_ascii_digit()));
+            let source = match (retry.provider.as_deref(), status) {
+                (Some(provider), Some(status)) => Some(format!("{provider} {status}")),
+                (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+                (None, None) => None,
+            };
+            if let Some(source) = source {
+                row.push(Span::styled(" \u{00b7} ".to_string(), muted));
+                row.push(Span::styled(source, theme.fg_style(ThemeColor::Text)));
+            }
+            let reason = crate::width::truncate_to_width(
+                &retry.error_message,
+                width.saturating_sub(4),
+                "\u{2026}",
+            );
+            let detail: Line = vec![Span::raw("   ".to_string()), Span::styled(reason, muted)];
+            vec![
+                spacer(),
+                pad_to(row, width, Style::default()),
+                pad_to(detail, width, Style::default()),
+            ]
+        }
+        RetryStartReason::Backup { backup_model } => {
+            row.push(Span::styled(spinner.to_string(), muted));
+            row.push(Span::raw(" ".to_string()));
+            row.push(Span::styled(
+                format!(
+                    "Primary model unavailable ({}) — retrying on backup model {backup_model}...",
+                    retry.error_message
+                ),
+                muted,
+            ));
+            vec![spacer(), pad_to(row, width, Style::default())]
+        }
+    }
 }
 
 #[cfg(test)]

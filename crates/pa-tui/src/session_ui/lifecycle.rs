@@ -117,6 +117,9 @@ impl SessionUi {
             streaming_index: None,
             working_tokens: LoaderTokenTracker::default(),
             turn_error_shown: false,
+            retry_episode_waited: None,
+            retry_waited: None,
+            running_tool_labels: Vec::new(),
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),
             last_assistant_text: None,
@@ -545,6 +548,11 @@ impl SessionUi {
         self.pressed_click = None;
         self.pending_tools.clear();
         self.aborted_tools.clear();
+        // A replaced transcript (a session switch, a resync) ends whatever episode the old one
+        // was in: its `auto_retry_end` may never reach this client.
+        self.retry_episode_waited = None;
+        self.retry_waited = None;
+        self.running_tool_labels.clear();
         for entry in entries {
             view.push_entry(entry);
         }

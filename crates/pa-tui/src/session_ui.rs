@@ -254,6 +254,17 @@ pub(crate) struct SessionUi {
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,
+    /// The running retry episode's backoff so far: the sum of its `auto_retry_start` delays (the
+    /// receipt's wait). Only the waits count, never an attempt's own streaming time. It outlives
+    /// the attempts' own runs (each failed attempt's `agent_end` precedes its retry), and resets
+    /// at a turn start with no countdown up and at a transcript replace, so an episode that never
+    /// saw its end (an abort, a session switch) cannot leak into a later receipt.
+    retry_episode_waited: Option<std::time::Duration>,
+    /// A recovered episode's measured wait, held for its `provider_retry_outcome` row.
+    retry_waited: Option<std::time::Duration>,
+    /// The executing tool calls' live-line titles, in start order: when one of several parallel
+    /// calls ends, the loader keeps the newest remaining title instead of falling back to waiting.
+    running_tool_labels: Vec<(String, String)>,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

@@ -20,6 +20,7 @@ fn backup_switch_loader_renders_the_failover_message() {
         reason: RetryStartReason::Backup {
             backup_model: "prime-backup/mock-1".to_string(),
         },
+        provider: None,
     };
     let rows = render_retry(&retry, 0, &theme(), 60);
     let text = rows[1]
@@ -34,48 +35,44 @@ fn backup_switch_loader_renders_the_failover_message() {
     );
 }
 
+/// The quick-retry countdown (nc): the amber `retry 2 of 4 in 3s` head, the provider and
+/// status, and the provider's own words on the row under it.
 #[test]
-fn retry_loader_renders_countdown() {
+fn retry_loader_counts_down_and_names_the_provider_and_status() {
     let retry = RetryState {
-        attempt: 1,
-        max_attempts: 2,
-        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(1500),
-        error_message: "provider down".to_string(),
+        attempt: 2,
+        max_attempts: 4,
+        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(3500),
+        error_message: "429 Rate limit exceeded".to_string(),
         reason: RetryStartReason::Quick,
-    };
-    let rows = render_retry(&retry, 0, &theme(), 60);
-    let text = rows[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect::<String>();
-    // The quick-retry line names the error too (the one line the
-    // chat shows while the episode runs, updated in place).
-    assert!(
-        text.contains("provider down — retrying (1/2) in 1s..."),
-        "got: {text}"
-    );
-}
-
-/// The muted pen colors the spinner, and the gap to the label resets to default fg.
-#[test]
-fn retry_loader_spans_carry_the_ts_sgr_boundaries() {
-    let retry = RetryState {
-        attempt: 1,
-        max_attempts: 2,
-        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(1500),
-        error_message: "provider down".to_string(),
-        reason: RetryStartReason::Quick,
+        provider: Some("openai".to_string()),
     };
     let t = theme();
+    let warning = t.fg_style(ThemeColor::Warning);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_retry(&retry, 0, &t, 60);
+    let head = "retry 2 of 4 in 3s";
+    let source = "openai 429";
     assert_eq!(
-        rows[1][..4],
-        [
-            Span::styled(" ", Style::default()),
-            Span::styled(LOADER_FRAMES[0], muted),
-            Span::raw(" "),
-            Span::styled("provider down — retrying (1/2) in 1s...", muted),
+        render_retry(&retry, 0, &t, 60),
+        vec![
+            Vec::new(),
+            vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(LOADER_FRAMES[0], warning),
+                Span::raw(" "),
+                Span::styled(head, warning),
+                Span::styled(" \u{00b7} ", muted),
+                Span::styled(source, t.fg_style(ThemeColor::Text)),
+                Span::styled(
+                    " ".repeat(60 - 3 - head.len() - 3 - source.len()),
+                    Style::default()
+                ),
+            ],
+            vec![
+                Span::raw("   "),
+                Span::styled("429 Rate limit exceeded", muted),
+                Span::styled(" ".repeat(60 - 3 - 23), Style::default()),
+            ],
         ]
     );
 }
@@ -784,6 +781,7 @@ fn loader_line_shape() {
         elapsed_secs: 1,
         thought: None,
         quiet_secs: 0,
+        tool_label: None,
     };
     let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100, None);
     assert_eq!(rows.len(), 2);
@@ -805,6 +803,7 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
         elapsed_secs: 1,
         thought: None,
         quiet_secs: 0,
+        tool_label: None,
     };
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
@@ -821,10 +820,29 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
     );
 }
 
-/// The live bar: the activity's own spinner, a `quiet` stall timer after 3s of silence, and
-/// the stop key as a chip flush right.
+/// The live bar row with the stop chip flush right: the spinner in the accent, the label
+/// muted, the ` Esc ` chip filled.
+fn chip_row(t: &Theme, spinner: &'static str, label: &str, width: usize) -> Line {
+    let chip = t
+        .bg_style(ThemeBg::SelectedBg)
+        .patch(t.fg_style(ThemeColor::Text));
+    let used = 3 + crate::width::str_width(label) + " Esc ".len() + "  stop ".len();
+    vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(spinner, t.fg_style(ThemeColor::Accent)),
+        Span::raw(" "),
+        Span::styled(label.to_string(), t.fg_style(ThemeColor::Muted)),
+        Span::raw(" ".repeat(width - used)),
+        Span::styled(" Esc ", chip),
+        Span::styled("  stop ", t.fg_style(ThemeColor::Muted)),
+    ]
+}
+
+/// A stream quiet past the threshold says `Waiting on the model` with the waiting orbit and
+/// the stall timer (nc); under the threshold it keeps its own activity.
 #[test]
-fn loader_shows_the_stall_timer_and_the_stop_chip() {
+fn a_quiet_stream_says_waiting_on_the_model() {
+    let t = theme();
     let working = WorkingState {
         activity: "Writing",
         message: None,
@@ -833,27 +851,59 @@ fn loader_shows_the_stall_timer_and_the_stop_chip() {
         elapsed_secs: 9,
         thought: None,
         quiet_secs: 4,
+        tool_label: None,
     };
-    let rows = render_loader(&working, 0, &theme(), Detail::Overview, 60, Some("Esc"));
-    let text = rows[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect::<String>();
-    assert!(
-        text.starts_with(" \u{2840} Writing \u{00b7} 9s \u{00b7} quiet 4s"),
-        "{text:?}"
+    assert_eq!(
+        render_loader(&working, 0, &t, Detail::Overview, 60, Some("Esc")),
+        vec![
+            Vec::new(),
+            chip_row(
+                &t,
+                "\u{2808}",
+                "Waiting on the model \u{00b7} 9s \u{00b7} quiet 4s",
+                60
+            ),
+        ]
     );
-    assert!(text.ends_with(" Esc   stop "), "{text:?}");
-    assert_eq!(crate::width::str_width(&text), 60);
-    let quiet = WorkingState {
+    let speaking = WorkingState {
         quiet_secs: 2,
         ..working
     };
-    let text: String = render_loader(&quiet, 0, &theme(), Detail::Overview, 60, None)[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect();
-    assert!(!text.contains("quiet"), "under 3s stays quiet: {text:?}");
+    assert_eq!(
+        render_loader(&speaking, 0, &t, Detail::Overview, 60, Some("Esc")),
+        vec![
+            Vec::new(),
+            chip_row(&t, "\u{2840}", "Writing \u{00b7} 9s", 60)
+        ]
+    );
+}
+
+/// A running tool is labelled by its title and never shows a stall, however long it is quiet.
+#[test]
+fn a_running_tool_shows_its_title_and_never_stalls() {
+    let t = theme();
+    let working = WorkingState {
+        activity: "Executing",
+        message: None,
+        download: false,
+        tokens: 0,
+        elapsed_secs: 12,
+        thought: None,
+        quiet_secs: 10,
+        tool_label: Some("cargo test -p pa-tui".to_string()),
+    };
+    assert_eq!(
+        render_loader(&working, 0, &t, Detail::Overview, 60, Some("Esc")),
+        vec![
+            Vec::new(),
+            chip_row(
+                &t,
+                "\u{2802}",
+                "Running cargo test -p pa-tui \u{00b7} 12s",
+                60
+            ),
+        ]
+    );
 }
 
 /// The loader shows "<message> <elapsed>" and drops the activity label and token count.
@@ -867,6 +917,7 @@ fn loader_working_message_replaces_the_activity_label() {
         elapsed_secs: 3,
         thought: None,
         quiet_secs: 0,
+        tool_label: None,
     };
     let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100, None);
     let text = rows[1]
@@ -918,6 +969,7 @@ fn loader_shows_the_live_thought_only_where_thinking_folds() {
         elapsed_secs: 2,
         thought: Some("Split the tokenizer out before the resolver moves.".into()),
         quiet_secs: 0,
+        tool_label: None,
     };
     let t = theme();
     let rows = render_loader(&working, 0, &t, Detail::Overview, 24, None);
