@@ -63,6 +63,7 @@ pub(crate) mod exit_restore;
 pub mod export_share;
 mod external_editor;
 pub mod factory_view;
+mod frame_output;
 pub mod fuzzy;
 pub mod goal_surface;
 pub mod heartbeats_picker;
