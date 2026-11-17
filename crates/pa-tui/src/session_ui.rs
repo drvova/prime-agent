@@ -35,6 +35,7 @@ pub(crate) use heartbeats::HeartbeatsUpdate;
 /// session open instead of echoing into the editor.
 pub(crate) use keys::opening_echo_key_claimed;
 use keys::SelectionAutoScroll;
+pub(crate) use lifecycle::StatsUpdate;
 pub(crate) use model_picker::picker_viewport_rows;
 pub(crate) use model_picker::ModelCatalogUpdate;
 pub(crate) use model_picker::ThinkingCycleNote;
@@ -331,6 +332,10 @@ pub(crate) struct SessionUi {
     /// request must not repaint a newer snapshot.
     bash_list_epoch: u64,
     bash_updates: mpsc::UnboundedSender<BashActivityUpdate>,
+    /// The turn-end stats refresh's reply channel (see `spawn_stats_refresh`).
+    stats_updates: mpsc::UnboundedSender<StatsUpdate>,
+    /// The newest issued stats refresh; an older reply is dropped on arrival.
+    stats_generation: u64,
     /// The last `factory_activity` graph reply (the dock count's cache and
     /// the page open's mount, the `bash_activities` pattern): the
     /// always-on 2s poll keeps it current whether or not the page is

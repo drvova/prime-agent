@@ -14,6 +14,7 @@ pub(crate) struct ActivityUpdates {
     pub factory: mpsc::UnboundedSender<FactoryUpdate>,
     pub commands: mpsc::UnboundedSender<CommandCatalogUpdate>,
     pub thinking: mpsc::UnboundedSender<ThinkingCycleNote>,
+    pub stats: mpsc::UnboundedSender<super::StatsUpdate>,
 }
 
 impl SessionUi {

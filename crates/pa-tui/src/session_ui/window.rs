@@ -772,6 +772,7 @@ mod tests {
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
                 thinking: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             page_tx.clone(),
         )
