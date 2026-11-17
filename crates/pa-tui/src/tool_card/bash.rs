@@ -1,7 +1,7 @@
 //! The `bash` tool-call card: the `$ command` call row, the output
 //! (collapsed: up to five visual lines whole, longer output as its first
-//! and last two around a `⋮ +N lines` mark; expanded: everything), the truncation warning, and the live
-//! `Took`/`Elapsed` duration row.
+//! and last two around a `⋮ +N lines` mark; expanded: everything) and the truncation warning;
+//! the panel header carries the state and the duration.
 
 use serde_json::Value;
 
@@ -61,11 +61,6 @@ fn visit(card: &ToolCallCard, detail: Detail, theme: &Theme, width: usize, rows:
             rows,
         );
     }
-    // The live `Took`/`Elapsed` duration row: the shared emitter ticks
-    // the running card's elapsed on every repaint (a running call has no
-    // result rows yet, so the row is the card's only timing until the
-    // streamed output arrives).
-    super::duration_row(card, theme, content_width, rows);
 }
 
 /// The `$ command` call row (TS `formatBashCall`): dim, with the command
@@ -104,7 +99,7 @@ fn format_bash_call(card: &ToolCallCard, theme: &Theme) -> Line {
 }
 
 /// The result rows (TS `rebuildBashResultRenderComponent`): output rows,
-/// the truncation warning, the duration row.
+/// the truncation warning.
 fn bash_result_rows(
     result: &ToolResultView,
     expanded: bool,
@@ -329,11 +324,23 @@ mod tests {
     }
 
     #[test]
-    fn duration_row_rendered() {
-        let card = done_card("echo hi", "hi");
+    fn the_settled_duration_rides_the_header_without_a_took_row() {
+        let mut card = done_card("echo hi", "hi");
+        let ended = std::time::Instant::now();
+        card.started_at = ended.checked_sub(std::time::Duration::from_millis(3400));
+        card.ended_at = Some(ended);
         let rows = render(&card, 0, Detail::Overview, &theme(), 120, true);
-        let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("Took ")), "got: {flat:?}");
+        let flat: Vec<String> = rows.iter().map(|r| text_of(r).trim().to_string()).collect();
+        assert_eq!(
+            flat,
+            [
+                "bash \u{00b7} done \u{00b7} 3.4s",
+                "",
+                "$ echo hi",
+                "",
+                "\u{23bf} hi"
+            ]
+        );
     }
 
     #[test]
@@ -402,8 +409,7 @@ mod tests {
         };
         let rows = render(&card, 3, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("running")), "got: {flat:?}");
-        assert!(flat.iter().any(|r| r.contains("Elapsed ")), "got: {flat:?}");
+        assert!(flat[0].contains("running \u{00b7} 0.0s"), "got: {flat:?}");
     }
 
     #[test]
@@ -424,8 +430,7 @@ mod tests {
         };
         let rows = render(&card, 3, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("Elapsed ")), "got: {flat:?}");
-        assert!(!flat.iter().any(|r| r.contains("Took ")), "got: {flat:?}");
+        assert!(flat[0].contains("running \u{00b7} 0.3s"), "got: {flat:?}");
     }
 
     #[test]

@@ -68,14 +68,6 @@ fn traverse(
         );
     }
     out.images(card.result.as_ref(), show_images, theme);
-    // The live timer (operator feature 2026-10-03): while the call runs,
-    // the panel carries the same `Elapsed x.xs` row the bash panel shows,
-    // ticking on the loader spinner's repaints. The settled card keeps
-    // its exact TS shape — the fallback panel renders no duration row —
-    // so the tick retires with the call.
-    if super::live_started(card).is_some() {
-        super::duration_row(card, theme, content_width, out);
-    }
 }
 
 /// Preview the first three source lines, not the first three wrapped rows.
@@ -195,8 +187,8 @@ mod tests {
 
     #[test]
     fn running_card_renders_live_elapsed() {
-        // The live timer (operator feature 2026-10-03): a running call
-        // carries the same `Elapsed x.xs` row the bash panel shows,
+        // The live timer (operator feature 2026-10-03): a running call's
+        // header carries the same ticking duration the bash panel shows,
         // recomputed on every repaint.
         let card = ToolCallCard {
             id: "t".into(),
@@ -208,8 +200,10 @@ mod tests {
         };
         let rows = render(&card, 3, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("Elapsed ")), "got: {flat:?}");
-        assert!(!flat.iter().any(|r| r.contains("Took ")), "got: {flat:?}");
+        assert!(
+            flat[0].contains("custom \u{00b7} \u{25c8} running \u{00b7} 0.3s"),
+            "got: {flat:?}"
+        );
     }
 
     #[test]

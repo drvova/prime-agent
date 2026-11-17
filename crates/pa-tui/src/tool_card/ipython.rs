@@ -233,9 +233,9 @@ fn collapsed_line(
     let muted = theme.fg_style(ThemeColor::Muted);
     let dim = theme.fg_style(ThemeColor::Dim);
     let error = theme.fg_style(ThemeColor::Error);
-    let warning = theme.fg_style(ThemeColor::Warning);
     let success = theme.fg_style(ThemeColor::Success);
     let bash_mode = theme.fg_style(ThemeColor::BashMode);
+    let accent = theme.fg_style(ThemeColor::Accent);
 
     let dominant = dominant_bash(details, code);
     let preview = preview_ipython_code(code);
@@ -250,22 +250,28 @@ fn collapsed_line(
         }
     };
 
-    let marker: Line = match CardStatus::of(card, details) {
-        CardStatus::Error => vec![Span::styled("\u{2717}".to_string(), error)],
-        CardStatus::Aborted => vec![Span::styled("\u{2717}".to_string(), warning)],
-        CardStatus::Done => vec![Span::styled("\u{2713}".to_string(), success)],
-        CardStatus::Running => vec![Span::styled(
-            super::working_icon(frame).to_string(),
-            bash_mode,
-        )],
-        CardStatus::Queued => vec![Span::styled("\u{25c7}".to_string(), muted)],
+    // The language label is the card's title: it carries the state by colour (accent while
+    // running, muted once settled or queued, error on failure or interrupt) beside the marker.
+    let (marker, title): (Line, _) = match CardStatus::of(card, details) {
+        CardStatus::Error | CardStatus::Aborted => {
+            (vec![Span::styled("\u{2717}".to_string(), error)], error)
+        }
+        CardStatus::Done => (vec![Span::styled("\u{2713}".to_string(), success)], muted),
+        CardStatus::Running => (
+            vec![Span::styled(
+                super::working_icon(frame).to_string(),
+                bash_mode,
+            )],
+            accent,
+        ),
+        CardStatus::Queued => (vec![Span::styled("\u{25c7}".to_string(), muted)], muted),
     };
 
     let mut parts: Vec<Line> = Vec::new();
     let mut preview_index: Option<usize> = None;
     let mut marker = marker;
     marker.push(Span::raw(" "));
-    marker.push(Span::styled(language_label, muted));
+    marker.push(Span::styled(language_label, title));
     parts.push(marker);
     if let Some(bash) = dominant {
         let preview = preview_bash_command(&bash.first);
