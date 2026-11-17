@@ -10,7 +10,7 @@ use super::flush::split_at_chars;
 use super::frame::pad_row;
 use crate::editor::Editor;
 use crate::prompt_highlight::{
-    ArgTokenSpan, command_token, editor_chunk_highlights, editor_text_spans, find_arg_tokens,
+    command_token, editor_chunk_highlights, editor_text_spans, find_arg_tokens, ArgTokenSpan,
 };
 use crate::theme::{Theme, ThemeBg, ThemeColor};
 use crate::width::{str_width, truncate_to_width};
