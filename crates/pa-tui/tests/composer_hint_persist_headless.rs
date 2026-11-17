@@ -1,5 +1,5 @@
 //! Headless e2e for the empty composer's self-retiring key hint: each
-//! Ctrl+L press saves the use count off the key path, and the saves land
+//! Shift+Tab press saves the use count off the key path, and the saves land
 //! one at a time and only upward, so a slow first save never overwrites
 //! the later presses' counts (the hint would come back on the next launch).
 #![cfg(unix)]
@@ -19,8 +19,8 @@ use support::{options, run_headless, serve_connection, write_json, Request};
 /// How long the stub store takes to save the first count.
 const SLOW_SAVE_MS: u64 = 400;
 
-/// The hint the empty composer shows until Ctrl+L has been used three times.
-const HINT: &str = "Ctrl+L model";
+/// The hint the empty composer shows until Shift+Tab has been used three times.
+const HINT: &str = "\u{21e7}\u{21e5} thinking effort";
 
 struct MockSupervisor {
     listener: UnixListener,
@@ -47,6 +47,17 @@ impl MockSupervisor {
                     }),
                 ),
                 "attach" => write_json(writer, &attach_data(id)),
+                // The session's model has no reasoning: the cycle answers `null`.
+                "cycle_thinking_level" => write_json(
+                    writer,
+                    &json!({
+                        "type": "response",
+                        "id": id,
+                        "command": "cycle_thinking_level",
+                        "success": true,
+                        "data": null,
+                    }),
+                ),
                 _ => return false,
             }
             true
@@ -263,15 +274,13 @@ impl pa_tui::client_settings::ClientSettings for StubSettings {
 #[test]
 fn the_hint_count_persists_in_order_and_never_goes_down() {
     let settings = Arc::new(StubSettings::default());
-    let ctrl_l = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL);
-    let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+    let shift_tab = KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE);
     let mut steps = vec![HeadlessStep::WaitRender {
         needle: HINT.to_string(),
         timeout_ms: 10_000,
     }];
     for _ in 0..3 {
-        steps.push(HeadlessStep::Key(ctrl_l));
-        steps.push(HeadlessStep::Key(esc));
+        steps.push(HeadlessStep::Key(shift_tab));
     }
     steps.push(HeadlessStep::WaitGone {
         needle: HINT.to_string(),

@@ -689,29 +689,6 @@ impl SessionUi {
             return Ok(());
         }
         if view.editor.keybindings().matches(&id, "app.model.select") {
-            // A use of the key the empty composer's hint names counts toward retiring it; the
-            // count persists off the key path.
-            if let Some(uses) = self.composer_hint.record_use() {
-                view.composer_hint = self.composer_hint.label(view.editor.keybindings());
-                if let Some(settings) = self.client_settings.clone() {
-                    let notes = self.notes.clone();
-                    let saves = self.composer_hint_saves.clone();
-                    tokio::task::spawn_blocking(move || {
-                        // One save at a time, and only upward: a later press's save that ran
-                        // first, or another instance's higher count, is never overwritten.
-                        let _serial = saves
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if uses <= settings.composer_hint_uses() {
-                            return;
-                        }
-                        if let Err(error) = settings.set_composer_hint_uses(uses) {
-                            let _ =
-                                notes.send(format!("saving the key hint count failed: {error:#}"));
-                        }
-                    });
-                }
-            }
             // A completion request parked by this same press must not materialize
             // a dropdown over the picker on the next idle tick.
             view.editor.cancel_autocomplete();
@@ -745,6 +722,29 @@ impl SessionUi {
         // settings menu's tab strip, the pickers and panels) took the key above, and the
         // completion dropdown has no Shift+Tab, so the composer is the only place it lands.
         if view.editor.keybindings().matches(&id, "app.thinking.cycle") {
+            // A use of the key the empty composer's hint names counts toward retiring it; the
+            // count persists off the key path.
+            if let Some(uses) = self.composer_hint.record_use() {
+                view.composer_hint = self.composer_hint.label(view.editor.keybindings());
+                if let Some(settings) = self.client_settings.clone() {
+                    let notes = self.notes.clone();
+                    let saves = self.composer_hint_saves.clone();
+                    tokio::task::spawn_blocking(move || {
+                        // One save at a time, and only upward: a later press's save that ran
+                        // first, or another instance's higher count, is never overwritten.
+                        let _serial = saves
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if uses <= settings.composer_hint_uses() {
+                            return;
+                        }
+                        if let Err(error) = settings.set_composer_hint_uses(uses) {
+                            let _ =
+                                notes.send(format!("saving the key hint count failed: {error:#}"));
+                        }
+                    });
+                }
+            }
             self.spawn_thinking_cycle();
             return Ok(());
         }

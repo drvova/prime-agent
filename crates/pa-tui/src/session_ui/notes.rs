@@ -320,9 +320,10 @@ impl SessionUi {
     }
 }
 
-/// The empty composer's self-retiring key hint (omp): it names the model-selector key from the
-/// effective bindings until that key has been used [`RetiringHint::RETIRE_AFTER`] times, then
-/// stops showing for good (the count persists in the client settings store).
+/// The empty composer's self-retiring key hint (omp's `⇧⇥ thinking effort`): it names the
+/// thinking-cycle key from the effective bindings until that key has been used
+/// [`RetiringHint::RETIRE_AFTER`] times, then stops showing for good (the count persists in the
+/// client settings store).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RetiringHint {
     uses: u64,
@@ -344,9 +345,14 @@ impl RetiringHint {
         if self.uses >= Self::RETIRE_AFTER {
             return None;
         }
-        keybindings
-            .first_key("app.model.select")
-            .map(|key| format!("{} model", crate::keybindings::format_key_text(&key)))
+        keybindings.first_key("app.thinking.cycle").map(|key| {
+            // The default key wears omp's compact glyphs; a rebound key spells its own label.
+            let key = match key.as_str() {
+                "shift+tab" => "\u{21e7}\u{21e5}".to_string(),
+                other => crate::keybindings::format_key_text(other),
+            };
+            format!("{key} thinking effort")
+        })
     }
 
     /// Count one use of the named key: the new count to persist while the hint was live,
@@ -365,14 +371,12 @@ mod retiring_hint_tests {
     use super::RetiringHint;
     use crate::keybindings::KeybindingsManager;
 
-    /// The hint names the model key until its third use, then retires and stops counting.
+    /// The hint names the thinking-cycle key until its third use, then retires and stops
+    /// counting.
     #[test]
     fn the_hint_retires_after_three_uses() {
         let kb = KeybindingsManager::new();
-        let label = Some(format!(
-            "{} model",
-            crate::keybindings::format_key_text("ctrl+l")
-        ));
+        let label = Some("\u{21e7}\u{21e5} thinking effort".to_string());
         let mut hint = RetiringHint::new(1);
         assert_eq!(hint.label(&kb), label);
         let uses: Vec<Option<u64>> = (0..3).map(|_| hint.record_use()).collect();

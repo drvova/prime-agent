@@ -362,12 +362,13 @@ fn the_composer_counts_the_lines_it_hides() {
 fn the_empty_composer_row_hosts_the_status_and_the_hint() {
     let mut v = view();
     v.composer_status = Some("Copied last agent message to clipboard".to_string());
-    v.composer_hint = Some("Ctrl+L model".to_string());
+    let hint = "\u{21e7}\u{21e5} thinking effort";
+    v.composer_hint = Some(hint.to_string());
     let bg = crate::chrome::editor_background(&v.theme);
     let dim = bg.patch(v.theme.fg_style(ThemeColor::Dim));
     let status = "Copied last agent message to clipboard";
     // ` > ` + the cursor cell (5), the status, the fill, the hint, the right padding (2).
-    let fill = 80 - 5 - status.len() - "Ctrl+L model".len() - 2;
+    let fill = 80 - 5 - status.len() - crate::width::str_width(hint) - 2;
     let expected: Line = vec![
         crate::Span::styled(" ", bg),
         crate::Span::styled("> ", bg),
@@ -375,7 +376,7 @@ fn the_empty_composer_row_hosts_the_status_and_the_hint() {
         crate::Span::styled(" ", bg.add_modifier(Modifier::REVERSED)),
         crate::Span::styled(status, dim),
         crate::Span::styled(" ".repeat(fill), bg),
-        crate::Span::styled("Ctrl+L model", dim),
+        crate::Span::styled(hint, dim),
         crate::Span::styled("  ", bg),
     ];
     assert!(
@@ -385,7 +386,7 @@ fn the_empty_composer_row_hosts_the_status_and_the_hint() {
     );
     v.editor.handle_input("x");
     let joined: String = v.render_dock(80).iter().map(text_of).collect();
-    assert!(!joined.contains(status) && !joined.contains("Ctrl+L model"));
+    assert!(!joined.contains(status) && !joined.contains(hint));
 }
 
 /// A draft typed into a running turn takes the steering composer (nc): every box row on the warm
