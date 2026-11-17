@@ -1,0 +1,1 @@
+- The tray now marks a model served from your own machine or a private network (a local provider, or a localhost/private-address base URL) with `⌂` and the success colour.

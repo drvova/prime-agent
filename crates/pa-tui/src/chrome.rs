@@ -38,6 +38,64 @@ fn truncate_to_width(value: &str, max_width: usize, ellipsis: &str) -> String {
     format!("{out}{ellipsis}")
 }
 
+/// Where the active model runs, read from its configuration alone (no network): the tray marks
+/// a local or private endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ModelHost {
+    #[default]
+    Remote,
+    /// A known local provider, or a base URL on this machine or a private network.
+    Local,
+}
+
+/// Providers that only ever serve from the user's own machine.
+const LOCAL_PROVIDERS: &[&str] = &[
+    "ollama",
+    "lmstudio",
+    "lm-studio",
+    "llama.cpp",
+    "llamacpp",
+    "localai",
+];
+
+impl ModelHost {
+    /// The host of one model: a known local provider, or a base URL whose host is `localhost`
+    /// (or a `.localhost`/`.local` name), a loopback, private, link-local or unspecified IPv4
+    /// address, or a loopback, unique-local or link-local IPv6 address.
+    #[must_use]
+    pub fn of(provider: &str, base_url: &str) -> Self {
+        let local_provider = LOCAL_PROVIDERS
+            .iter()
+            .any(|known| provider.eq_ignore_ascii_case(known));
+        let local_url = url::Url::parse(base_url)
+            .ok()
+            .and_then(|url| url.host().map(|host| host.to_owned()))
+            .is_some_and(|host| match host {
+                url::Host::Domain(name) => {
+                    let name = name.to_ascii_lowercase();
+                    let last_label = name.rsplit('.').next().unwrap_or_default();
+                    name == "localhost"
+                        || (name.contains('.') && matches!(last_label, "localhost" | "local"))
+                }
+                url::Host::Ipv4(ip) => {
+                    ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_unspecified()
+                }
+                url::Host::Ipv6(ip) => {
+                    let first = ip.segments()[0];
+                    ip.is_loopback()
+                        || ip.is_unspecified()
+                        || first & 0xfe00 == 0xfc00
+                        || first & 0xffc0 == 0xfe80
+                }
+            });
+        if local_provider || local_url {
+            ModelHost::Local
+        } else {
+            ModelHost::Remote
+        }
+    }
+}
+
 /// Where a session runs; drives labels that depend on persistence.
 #[derive(Debug, Clone, Default)]
 pub struct ChromeState {
@@ -50,6 +108,8 @@ pub struct ChromeState {
     /// The current model's provider: two providers can carry the same id,
     /// so only the provider disambiguates the picker's match.
     pub model_provider: Option<String>,
+    /// Where the current model runs: a local one shows `⌂` and the success tone in the tray.
+    pub model_host: ModelHost,
     /// Extra metadata lines under the splash (`label value` each); empty
     /// renders none.
     pub extra_metadata: Vec<(String, String)>,
@@ -548,7 +608,14 @@ pub fn render_tray_with_hint(
         if !right.is_empty() {
             right.push(Span::styled(" \u{00b7} ".to_string(), dim));
         }
-        right.push(Span::styled(label, dim));
+        match state.model_host {
+            ModelHost::Local => {
+                let success = theme.fg_style(ThemeColor::Success);
+                right.push(Span::styled("\u{2302} ".to_string(), success));
+                right.push(Span::styled(label, success));
+            }
+            ModelHost::Remote => right.push(Span::styled(label, dim)),
+        }
     }
     let tier_badge = match state.service_tier.as_deref() {
         Some("priority") => Some("fast"),
