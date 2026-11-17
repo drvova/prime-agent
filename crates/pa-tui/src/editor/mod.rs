@@ -1181,7 +1181,7 @@ mod tests {
     fn the_double_bang_prefix_hides_two_characters() {
         let mut e = ed();
         e.set_text("!!echo hi");
-        assert_eq!(e.bash_prompt_prefix(), Some("!! "));
+        assert_eq!(e.bash_prompt_prefix(), Some("!!"));
         assert_eq!(e.line_start_col(0), 2);
         let layout = e.layout_text(20);
         assert_eq!(layout[0].text, "echo hi", "the raw prefix stays hidden");

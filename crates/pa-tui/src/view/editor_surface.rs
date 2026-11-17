@@ -48,10 +48,19 @@ pub(crate) fn render(
     let border = theme.fg_style(ThemeColor::BorderMuted);
     let padding_x = 2usize;
     let content_width = width.saturating_sub(padding_x * 2).max(1);
-    // A bang first line swaps the `> ` for the `! `/`!! ` prompt (styled through
-    // the editor border color), which also narrows the input width.
+    // A bang first line swaps the `> ` for the same-width `! `/`!!` prompt.
     let bash_prompt = editor.bash_prompt_prefix();
     let prompt = bash_prompt.unwrap_or("> ");
+    // Bash mode shows by colour on the editor background, never by width: `!` in the bash-mode
+    // tint (the `!` card's), `!!` dim (its context-excluded card's).
+    let prompt_style = bash_prompt.map_or(bg, |prefix| {
+        let tint = if prefix == "!!" {
+            ThemeColor::Dim
+        } else {
+            ThemeColor::BashMode
+        };
+        bg.patch(theme.fg_style(tint))
+    });
     let prompt_width = str_width(prompt);
     let input_width = content_width.saturating_sub(prompt_width).max(1);
     let layout_width = input_width;
@@ -96,8 +105,7 @@ pub(crate) fn render(
     for (index, line) in visible.iter().enumerate() {
         if index == 0 && placeholder_row.is_some() {
             let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
-            let style = if bash_prompt.is_some() { border } else { bg };
-            row.push(Span::styled(prompt.to_string(), style));
+            row.push(Span::styled(prompt.to_string(), prompt_style));
             row.push(Span::styled(" ".to_string(), bg));
             let placeholder_width = input_width.saturating_sub(1);
             let text = truncate_to_width(placeholder_row.unwrap_or(""), placeholder_width, "");
@@ -118,8 +126,7 @@ pub(crate) fn render(
         }
         let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
         if index == 0 {
-            let style = if bash_prompt.is_some() { border } else { bg };
-            row.push(Span::styled(prompt.to_string(), style));
+            row.push(Span::styled(prompt.to_string(), prompt_style));
         } else {
             row.push(Span::styled(" ".repeat(prompt_width), bg));
         }
