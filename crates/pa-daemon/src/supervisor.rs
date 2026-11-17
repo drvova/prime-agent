@@ -225,6 +225,12 @@ pub struct Supervisor {
     /// cleared by a landed `compaction_end`.
     pub(crate) compaction_journal:
         std::sync::Mutex<Option<crate::compaction_supervision::TerminalCompactionJournal>>,
+    /// Whether no boot reap is pending. `run` lowers it before the accept loop starts and the
+    /// boot reap raises it once it cleared this socket's predecessors; a supervisor that never
+    /// runs its boot has nothing to reap, so it starts raised. The reap runs off the accept
+    /// path, so a client gets its hello at once; the client's first command, the worker adoption
+    /// pass and the dead-owner lease reclaim wait on this gate instead.
+    pub(crate) boot_reaped: tokio::sync::watch::Sender<bool>,
 }
 
 impl Supervisor {
@@ -288,6 +294,7 @@ impl Supervisor {
             passive_scan_pending: std::sync::atomic::AtomicBool::new(false),
             passive_catalog_epoch: std::sync::atomic::AtomicU64::new(0),
             compaction_journal: std::sync::Mutex::new(None),
+            boot_reaped: tokio::sync::watch::channel(true).0,
         })
     }
 
@@ -406,17 +413,35 @@ impl Supervisor {
         // so no signal can land with the default disposition still active.
         tokio::spawn(crate::signal_drain::install(Arc::clone(&self)));
 
-        // The boot reap (the operator's same-socket predecessor rule): leftover workers of a
-        // dead predecessor — alive, still holding their session leases — die here, and a
-        // wedged predecessor supervisor dies with them; workers on OTHER sockets are never touched.
-        crate::boot_reap::reap_predecessors(&self).await;
-
         // Update boot (spec §6): consume the roster from the spawn env BEFORE the sweep deletes
         // the file it points at, then run the restore + re-arm pass concurrently with serving —
-        // reconnecting clients must see the resume contract (§10.3).
+        // reconnecting clients must see the resume contract (§10.3), which the hello carries.
         let roster = crate::update_restore::consume_roster_env();
         self.restore.begin(roster.as_ref());
-        crate::update_restore::boot_sweep(&self.options.agent_dir, &self.options.socket_path);
+
+        // The boot reap (the operator's same-socket predecessor rule): leftover workers of a
+        // dead predecessor — alive, still holding their session leases — die here, and a
+        // wedged predecessor supervisor dies with them; workers on OTHER sockets are never
+        // touched. The reap's /proc census is blocking work, so it runs off the accept path:
+        // a connecting client gets its hello at once, and everything the reap must precede
+        // (a client's first command, the adoption pass, the lease reclaim) waits on
+        // `boot_reaped` instead of the whole boot.
+        self.boot_reaped.send_replace(false);
+        {
+            let supervisor = Arc::clone(&self);
+            tokio::spawn(async move {
+                crate::boot_reap::reap_predecessors(&supervisor).await;
+                let agent_dir = supervisor.options.agent_dir.clone();
+                let socket_path = supervisor.options.socket_path.clone();
+                drop(
+                    tokio::task::spawn_blocking(move || {
+                        crate::update_restore::boot_sweep(&agent_dir, &socket_path);
+                    })
+                    .await,
+                );
+                supervisor.boot_reaped.send_replace(true);
+            });
+        }
         // Descriptor adoption runs concurrently with the accept loop: a
         // supervisor restarted over live sessions must accept their
         // self-registrations immediately, not behind the whole descriptor
@@ -444,6 +469,7 @@ impl Supervisor {
                 None => AdoptionBoot::PlainStartup,
             };
             tokio::spawn(async move {
+                supervisor.wait_for_boot_reap().await;
                 supervisor.adopt_persisted_workers(boot).await;
                 let _ = adoption_tx.send(true);
             })
@@ -484,7 +510,9 @@ impl Supervisor {
         // does not prove that no worker or waiting caller still needs them.
         {
             let supervisor = Arc::clone(&self);
-            tokio::task::spawn_blocking(move || {
+            tokio::spawn(async move {
+                supervisor.wait_for_boot_reap().await;
+                drop(tokio::task::spawn_blocking(move || {
                 let leases = crate::lease::reclaim_dead_owner_leases(&supervisor.options.agent_dir);
                 let logs = crate::worker_stderr::prune_socket_logs(
                     &supervisor.options.agent_dir,
@@ -497,6 +525,8 @@ impl Supervisor {
                         "boot cleanup: removed {leases} dead-owner lease dir(s), {logs} old socket log(s), {leftovers} TS-era leftover(s)"
                     ));
                 }
+                })
+                .await);
             });
         }
 
@@ -520,6 +550,16 @@ impl Supervisor {
         socket::cleanup_socket_path_after_close(&self.options.socket_path, expected_identity);
         self.flush_telemetry_on_exit().await;
         Ok(())
+    }
+}
+
+impl Supervisor {
+    /// Wait until the boot reap cleared this socket's predecessors (see
+    /// [`Supervisor::boot_reaped`]).
+    pub(crate) async fn wait_for_boot_reap(&self) {
+        let mut reaped = self.boot_reaped.subscribe();
+        // The sender lives in `self`, so the wait can only end by the flip.
+        let _ = reaped.wait_for(|reaped| *reaped).await;
     }
 }
 
