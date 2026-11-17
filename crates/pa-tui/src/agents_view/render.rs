@@ -2,9 +2,9 @@
 //! row builders, the notice/list/row renderers, the cell/truncate helpers, and the terminal/
 //! headless renderer.
 use super::{
-    build_layout, mpsc, pad_line, section_title, str_width, truncate_text, AgentsStep,
-    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, Duration, Line, Result, RowKind,
-    RowLayout, Section, Theme, ThemeColor, UiInput, Value,
+    AgentsStep, AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, Duration, Line, Result,
+    RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value, build_layout, mpsc, pad_line,
+    section_title, str_width, truncate_text,
 };
 
 impl AgentsViewMode {
@@ -183,9 +183,13 @@ impl AgentsViewMode {
                     width,
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
-                    Some(placeholder),
-                    None,
-                    crate::view::editor_surface::PromptTint::Plain,
+                    crate::view::editor_surface::EmptyRow {
+                        placeholder: Some(placeholder),
+                        hint: None,
+                    },
+                    crate::view::editor_surface::SurfaceTone::Idle(
+                        crate::view::editor_surface::PromptTint::Plain,
+                    ),
                 );
                 (overlay, surface.rows, surface.cursor)
             }
@@ -206,9 +210,13 @@ impl AgentsViewMode {
                     width,
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
-                    Some("Name this agent session"),
-                    None,
-                    crate::view::editor_surface::PromptTint::Plain,
+                    crate::view::editor_surface::EmptyRow {
+                        placeholder: Some("Name this agent session"),
+                        hint: None,
+                    },
+                    crate::view::editor_surface::SurfaceTone::Idle(
+                        crate::view::editor_surface::PromptTint::Plain,
+                    ),
                 );
                 (Vec::new(), surface.rows, surface.cursor)
             }

@@ -550,6 +550,15 @@ impl SessionUi {
                 self.dirty = true;
                 return Ok(());
             }
+            // The interrupt below dispatches any parked messages at once (the pending strip's
+            // `— Esc dispatches now`): count that use, fire-and-forget.
+            if self.turn_active && !view.queued.is_empty() {
+                if let Some(telemetry) = self.telemetry.clone() {
+                    tokio::spawn(async move {
+                        telemetry.queue_dispatched_now().await;
+                    });
+                }
+            }
             let action = if self.turn_active || view.editor.get_text().trim().is_empty() {
                 "tree"
             } else {

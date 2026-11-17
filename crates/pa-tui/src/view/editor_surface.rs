@@ -10,7 +10,7 @@ use super::flush::split_at_chars;
 use super::frame::pad_row;
 use crate::editor::Editor;
 use crate::prompt_highlight::{
-    command_token, editor_chunk_highlights, editor_text_spans, find_arg_tokens, ArgTokenSpan,
+    ArgTokenSpan, command_token, editor_chunk_highlights, editor_text_spans, find_arg_tokens,
 };
 use crate::theme::{Theme, ThemeBg, ThemeColor};
 use crate::width::{str_width, truncate_to_width};
@@ -45,20 +45,42 @@ pub(crate) enum PromptTint {
     Thinking(pa_types::ai::ModelThinkingLevel),
 }
 
+/// The editor box's surface tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceTone {
+    /// The plain editor surface, its `> ` prompt in the given tint.
+    Idle(PromptTint),
+    /// A draft typed into a running turn (nc's steering composer): the warm surface and a
+    /// warning-colored `▐` rail down the left edge. The prompt drops the thinking tint, so the
+    /// steering cue reads alone.
+    Steering,
+}
+
+/// What the first content row shows while the editor is empty.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EmptyRow<'a> {
+    /// Dim text after the cursor (a placeholder, or a transient status).
+    pub(crate) placeholder: Option<&'a str>,
+    /// A dim key hint, flush right, when it fits beside the placeholder.
+    pub(crate) hint: Option<&'a str>,
+}
+
 /// Compose one editor box. `header` renders as the two-row block under the top
-/// row; while the editor is empty, `placeholder` (dim, after the cursor) and `hint` (dim, flush
-/// right) take the first content row.
+/// row; while the editor is empty, the [`EmptyRow`]'s placeholder (dim, after the cursor) and
+/// hint (dim, flush right) take the first content row.
 pub(crate) fn render(
     editor: &mut Editor,
     theme: &Theme,
     width: usize,
     terminal_rows: u16,
     header: Option<Line>,
-    placeholder: Option<&str>,
-    hint: Option<&str>,
-    tint: PromptTint,
+    EmptyRow { placeholder, hint }: EmptyRow<'_>,
+    tone: SurfaceTone,
 ) -> EditorBox {
-    let bg = crate::chrome::editor_background(theme);
+    let bg = match tone {
+        SurfaceTone::Idle(_) => crate::chrome::editor_background(theme),
+        SurfaceTone::Steering => theme.steering_surface_style(),
+    };
     let padding_x = 2usize;
     let content_width = width.saturating_sub(padding_x * 2).max(1);
     // A bang first line swaps the `> ` for the same-width `! `/`!!` prompt.
@@ -66,13 +88,13 @@ pub(crate) fn render(
     let prompt = bash_prompt.unwrap_or("> ");
     // The prompt's colour, highest claim first: bash mode owns it (by colour on the editor
     // background, never by width: `!` in the bash-mode tint, the `!` card's; `!!` dim, its
-    // context-excluded card's), then the thinking tint. Only the colour moves, so no row shifts
-    // width.
-    let prompt_style = match (bash_prompt, tint) {
+    // context-excluded card's), then steering (the plain prompt on the warm surface), then the
+    // thinking tint. Only the colour moves, so no row shifts width.
+    let prompt_style = match (bash_prompt, tone) {
         (Some("!!"), _) => bg.patch(theme.fg_style(ThemeColor::Dim)),
         (Some(_), _) => bg.patch(theme.fg_style(ThemeColor::BashMode)),
-        (None, PromptTint::Plain) => bg,
-        (None, PromptTint::Thinking(level)) => {
+        (None, SurfaceTone::Steering | SurfaceTone::Idle(PromptTint::Plain)) => bg,
+        (None, SurfaceTone::Idle(PromptTint::Thinking(level))) => {
             use pa_types::ai::ModelThinkingLevel as L;
             let color = match level {
                 L::Off | L::Minimal | L::Low => ThemeColor::Dim,
@@ -223,6 +245,20 @@ pub(crate) fn render(
         rows.push(overflow_row(hidden_below, "below"));
     } else {
         rows.push(vec![Span::styled(" ".repeat(width), bg)]);
+    }
+    match tone {
+        SurfaceTone::Idle(_) => {}
+        // The rail takes every row's first cell (always a padding space), so the cursor and
+        // click columns keep their places.
+        SurfaceTone::Steering => {
+            let rail = bg.patch(theme.fg_style(ThemeColor::Warning));
+            for row in &mut rows {
+                if let Some(first) = row.first_mut() {
+                    first.content = first.content.chars().skip(1).collect::<String>();
+                }
+                row.insert(0, Span::styled("\u{2590}", rail));
+            }
+        }
     }
     EditorBox {
         rows,

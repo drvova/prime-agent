@@ -281,6 +281,11 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn queue_dispatched_now(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_queue_dispatch_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn suspend_used(
         &self,
         _outcome: &'static str,

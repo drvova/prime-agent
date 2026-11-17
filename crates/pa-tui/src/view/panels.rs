@@ -15,11 +15,19 @@ impl AgentView {
     pub fn render_dock(&mut self, width: usize) -> Vec<Line> {
         // The queued-input strip sits directly above the prompt dock rows
         // (TS `queuedMessagesContainer` above the editor).
-        let browse_key = {
+        let keys = {
             let kb = self.editor.keybindings();
-            crate::keybindings::format_key_text(&kb.get_keys("app.message.navigateOlder").join("/"))
+            let first = |id: &str| {
+                kb.first_key(id)
+                    .map(|key| crate::keybindings::format_key_text(&key))
+                    .unwrap_or_default()
+            };
+            crate::queued::PendingStripKeys {
+                dispatch: first("app.input.clear"),
+                edit: first("app.message.navigateOlder"),
+            }
         };
-        let queue_rows = crate::queued::render_queue(&self.theme, &self.queued, &browse_key, width);
+        let queue_rows = crate::queued::render_queue(&self.theme, &self.queued, &keys, width);
         let mut lines = queue_rows;
         lines.extend(render_prompt_context(
             &self.detail_label(),
@@ -119,6 +127,18 @@ impl AgentView {
                 editor_surface::PromptTint::Plain,
                 editor_surface::PromptTint::Thinking,
             );
+        // A draft typed while a turn runs is a steering draft (Enter steers, the follow-up key
+        // queues): the warm surface says so until the draft empties or the turn ends, and the
+        // prompt drops the thinking tint meanwhile. Browsing a parked message keeps the plain
+        // surface under its own header.
+        let tone = if self.working.is_some()
+            && self.queue_selected.is_none()
+            && !self.editor.get_text().trim().is_empty()
+        {
+            editor_surface::SurfaceTone::Steering
+        } else {
+            editor_surface::SurfaceTone::Idle(tint)
+        };
         let surface = editor_surface::render(
             &mut self.editor,
             &self.theme,
@@ -127,9 +147,11 @@ impl AgentView {
             header,
             // A transient status (a slash result, a copy) rides the empty composer's text row
             // until the next keystroke, beside the self-retiring key hint.
-            self.composer_status.as_deref(),
-            self.composer_hint.as_deref(),
-            tint,
+            editor_surface::EmptyRow {
+                placeholder: self.composer_status.as_deref(),
+                hint: self.composer_hint.as_deref(),
+            },
+            tone,
         );
         // The content rows' click surface: one region over the visible content rows,
         // shifted by the header block's rows.

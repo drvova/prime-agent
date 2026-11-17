@@ -1,11 +1,11 @@
 use super::frame::composite_follow_hint;
 use super::*;
+use crate::Line;
 use crate::chat::{AssistantMessage, MessageBlock};
 use crate::osc133::RowMarkers;
 use crate::theme::{ColorMode, Theme, ThemeBg, ThemeColor};
 use crate::tool_card::{ToolCallCard, ToolResultView};
 use crate::width::str_width;
-use crate::Line;
 use ratatui::style::Modifier;
 
 fn view() -> AgentView {
@@ -388,6 +388,80 @@ fn the_empty_composer_row_hosts_the_status_and_the_hint() {
     assert!(!joined.contains(status) && !joined.contains("Ctrl+L model"));
 }
 
+/// A draft typed into a running turn takes the steering composer (nc): every box row on the warm
+/// surface behind a warning-colored `▐` rail. An empty draft or an idle session keeps the plain
+/// editor surface.
+#[test]
+fn a_draft_during_a_turn_takes_the_steering_composer() {
+    let mut v = view();
+    let steering = v.theme.steering_surface_style();
+    assert_ne!(
+        steering.bg,
+        crate::chrome::editor_background(&v.theme).bg,
+        "the warm surface differs from the editor surface"
+    );
+    let rail = crate::Span::styled(
+        "\u{2590}",
+        steering.patch(v.theme.fg_style(ThemeColor::Warning)),
+    );
+    let railed = |frame: &[Line]| -> Vec<Line> {
+        frame
+            .iter()
+            .filter(|row| row.first() == Some(&rail))
+            .cloned()
+            .collect()
+    };
+    v.working = Some(WorkingState {
+        activity: "Writing",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 2,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
+    });
+    // A thinking level is set, but steering drops its tint from the prompt.
+    v.chrome.thinking_suffix = Some("high".to_string());
+    v.editor.set_text("also cover the tests");
+    let rows = railed(&v.render_dock(80));
+    assert_eq!(rows.len(), 3, "top pad, the draft row, bottom pad");
+    assert_eq!(
+        rows[0],
+        vec![rail.clone(), crate::Span::styled(" ".repeat(79), steering)]
+    );
+    assert_eq!(
+        text_of(&rows[1]).trim_end(),
+        "\u{2590}>  also cover the tests"
+    );
+    assert_eq!(
+        rows[1]
+            .iter()
+            .find(|span| span.content == "> ")
+            .map(|span| span.style),
+        Some(steering),
+        "the steering prompt is plain on the warm surface, never thinking-tinted"
+    );
+    assert!(
+        rows.iter()
+            .flatten()
+            .all(|span| span.style.bg == steering.bg),
+        "every box span sits on the warm surface: {rows:?}"
+    );
+
+    v.editor.set_text("");
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an empty draft reverts"
+    );
+    v.editor.set_text("also cover the tests");
+    v.working = None;
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an idle session reverts"
+    );
+}
+
 #[test]
 fn autocomplete_dropdown_rows_carry_the_popup_background() {
     // Every span of a menu row must carry a background, so an
@@ -725,20 +799,26 @@ fn compaction_streams_the_summary_under_the_loader_in_expanded_detail() {
 fn follow_hint_shows_when_paused_and_hides_when_following() {
     let mut v = filled(view(), 30);
     let following_frame = v.render_frame(80, 24);
-    assert!(!following_frame
-        .iter()
-        .any(|l| row_text(l).contains("to follow")));
+    assert!(
+        !following_frame
+            .iter()
+            .any(|l| row_text(l).contains("to follow"))
+    );
     v.scroll_by(-(v.page_size() as isize));
     let paused_frame = v.render_frame(80, 24);
-    assert!(paused_frame
-        .iter()
-        .any(|l| row_text(l).contains("ctrl+shift+down to follow")));
+    assert!(
+        paused_frame
+            .iter()
+            .any(|l| row_text(l).contains("ctrl+shift+down to follow"))
+    );
     v.scroll_to_bottom();
     let resumed_frame = v.render_frame(80, 24);
     assert!(v.is_following());
-    assert!(!resumed_frame
-        .iter()
-        .any(|l| row_text(l).contains("to follow")));
+    assert!(
+        !resumed_frame
+            .iter()
+            .any(|l| row_text(l).contains("to follow"))
+    );
     // TS shows the hint for every non-following window, even at the very
     // top.
     v.scroll_to_top();
@@ -991,9 +1071,11 @@ fn flush_streams_append_then_repaints_the_changed_tail() {
     // single-span fragments, not strings spanning a style boundary.
     assert!(joined.contains("0.0.0"));
     assert!(joined.contains("first turn"));
-    assert!(first
-        .windows(crate::osc133::ZONE_START.len())
-        .any(|w| w == crate::osc133::ZONE_START.as_bytes()));
+    assert!(
+        first
+            .windows(crate::osc133::ZONE_START.len())
+            .any(|w| w == crate::osc133::ZONE_START.as_bytes())
+    );
     assert!(first.starts_with(b"\r") && first.ends_with(b"\r\n"));
 
     assert!(flush_bytes(&mut v, 80, 24).is_empty());

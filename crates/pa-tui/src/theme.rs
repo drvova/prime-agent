@@ -493,6 +493,56 @@ impl Theme {
         Style::default().fg(to_terminal_color(EFFORT_SQUARE_DARK_COLOR, self.mode))
     }
 
+    /// The steering composer's warm surface: the theme's warning hue washed into the editor
+    /// surface, so typing into a live turn reads as a different place. A palette without RGB
+    /// slots (the base ANSI colors are terminal-defined) keeps the editor surface.
+    #[must_use]
+    pub fn steering_surface_style(&self) -> Style {
+        /// How much of the warning hue the surface takes.
+        const STEERING_TINT: f32 = 0.16;
+        let slot_rgb = |color: Option<Color>| -> Option<(u16, u16, u16)> {
+            match color? {
+                Color::Rgb(r, g, b) => Some((u16::from(r), u16::from(g), u16::from(b))),
+                Color::Indexed(index) => indexed_to_rgb(index),
+                Color::Reset
+                | Color::Black
+                | Color::Red
+                | Color::Green
+                | Color::Yellow
+                | Color::Blue
+                | Color::Magenta
+                | Color::Cyan
+                | Color::Gray
+                | Color::DarkGray
+                | Color::LightRed
+                | Color::LightGreen
+                | Color::LightYellow
+                | Color::LightBlue
+                | Color::LightMagenta
+                | Color::LightCyan
+                | Color::White => None,
+            }
+        };
+        let (Some(warm), Some(surface)) = (
+            slot_rgb(self.fg_style(ThemeColor::Warning).fg),
+            slot_rgb(self.bg_color(ThemeBg::UserMessageBg)),
+        ) else {
+            return self.bg_style(ThemeBg::UserMessageBg);
+        };
+        let mix = |top: u16, bottom: u16| {
+            (f32::from(top) * STEERING_TINT + f32::from(bottom) * (1.0 - STEERING_TINT)).round()
+                as u8
+        };
+        Style::default().bg(to_terminal_color(
+            Color::Rgb(
+                mix(warm.0, surface.0),
+                mix(warm.1, surface.1),
+                mix(warm.2, surface.2),
+            ),
+            self.mode,
+        ))
+    }
+
     /// Row-selection highlight (TS `getSoftSelectionBackgroundColor`):
     /// the selection blended halfway toward the editor surface; non-RGB
     /// palettes keep the plain selection. When the blend cannot clear
