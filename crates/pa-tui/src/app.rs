@@ -295,6 +295,7 @@ pub(crate) fn draw<W: std::io::Write>(
         // the next diff a full repaint.
         terminal.autoresize()?;
         let body_start = terminal.backend_mut().writer_mut().inner_mut().len();
+        let stamp = terminal.backend_mut().writer_mut().inner_mut().stamp();
         let frame_area = terminal.get_frame().area();
         let width = frame_area.width as usize;
         let height = frame_area.height as usize;
@@ -303,63 +304,76 @@ pub(crate) fn draw<W: std::io::Write>(
         // The frame's embedded OSC 8 sequences drive the paint backend's hyperlink injection;
         // install the ranges before the paint (which strips the sequences from the painted cells).
         crate::hyperlinks::install_frame(&frame);
-        {
-            let lines: Vec<ratatui::text::Line<'static>> =
-                frame.iter().map(crate::markdown::to_ratatui_line).collect();
-            terminal
-                .get_frame()
-                .render_widget(ratatui::text::Text::from(lines), frame_area);
-        }
-        terminal.flush()?;
-        let diff_painted = terminal
-            .backend_mut()
-            .writer_mut()
-            .inner_mut()
-            .since(body_start)
-            != empty_diff;
-        // The hardware cursor is positioned at the focused caret for IME on every changed frame,
-        // but only shown when `showHardwareCursor` is on. The visibility and the position are
-        // sent only when they change (ratatui's own `draw` re-sends the hide on every frame);
-        // a painted diff moved the terminal's cursor, so it re-sends the caret position.
-        let caret = cursor
-            .filter(|(row, col)| *row < height && *col < width)
-            .map(|(row, col)| (col as u16, row as u16));
-        let visible = show_hardware_cursor && caret.is_some();
-        let known_visible = terminal
-            .backend_mut()
-            .writer_mut()
-            .inner_mut()
-            .cursor_visible;
-        let visibility_changed = known_visible != Some(visible);
-        if visibility_changed {
-            if visible {
-                terminal.show_cursor()?;
-            } else {
-                terminal.hide_cursor()?;
-            }
-        }
-        let known_caret = terminal.backend_mut().writer_mut().inner_mut().cursor_at;
-        let caret_moved = caret.is_some() && (diff_painted || known_caret != caret);
-        if let Some((col, row)) = caret.filter(|_| caret_moved) {
-            terminal.set_cursor_position(ratatui::layout::Position::new(col, row))?;
-        }
-        terminal.swap_buffers();
-        // The hyperlink writer closes a link region still open at the frame's end.
-        Backend::flush(terminal.backend_mut())?;
-        let writer = terminal.backend_mut().writer_mut().inner_mut();
-        writer.cursor_visible = Some(visible);
-        if caret.is_some() {
-            writer.cursor_at = caret;
-        } else if diff_painted {
-            writer.cursor_at = None;
-        }
-        // The window title follows the session state; it rides the same bracket and write, and
-        // is queued only when its text changes (the spinner repaints tick it), so an idle frame
-        // still writes nothing.
-        let title_start = writer.len();
-        crate::terminal_title::sync(writer, view)?;
-        let titled = writer.len() != title_start;
-        Ok(mounting || diff_painted || visibility_changed || caret_moved || titled)
+        let mut next = ratatui::buffer::Buffer::empty(frame_area);
+        ratatui::widgets::Widget::render(
+            ratatui::text::Text::from(
+                frame
+                    .iter()
+                    .map(crate::markdown::to_ratatui_line)
+                    .collect::<Vec<_>>(),
+            ),
+            frame_area,
+            &mut next,
+        );
+        // A following transcript that scrolled shifts its region in the terminal (DECSTBM + SU)
+        // inside this frame's bracket and write, and the diff repaints only the rows the shift
+        // did not predict; a frame whose shift and diff are both empty still writes nothing.
+        let region = view.transcript_scroll_region();
+        crate::scroll_region::PAINTER
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .draw(terminal, next, region, stamp, |terminal| {
+                terminal.flush()?;
+                let diff_painted = terminal
+                    .backend_mut()
+                    .writer_mut()
+                    .inner_mut()
+                    .since(body_start)
+                    != empty_diff;
+                // The hardware cursor is positioned at the focused caret for IME on every changed
+                // frame, but only shown when `showHardwareCursor` is on. The visibility and the
+                // position are sent only when they change (ratatui's own `draw` re-sends the hide
+                // on every frame); a painted diff moved the terminal's cursor, so it re-sends the
+                // caret position.
+                let caret = cursor
+                    .filter(|(row, col)| *row < height && *col < width)
+                    .map(|(row, col)| (col as u16, row as u16));
+                let visible = show_hardware_cursor && caret.is_some();
+                let known_visible = terminal
+                    .backend_mut()
+                    .writer_mut()
+                    .inner_mut()
+                    .cursor_visible;
+                let visibility_changed = known_visible != Some(visible);
+                if visibility_changed {
+                    if visible {
+                        terminal.show_cursor()?;
+                    } else {
+                        terminal.hide_cursor()?;
+                    }
+                }
+                let known_caret = terminal.backend_mut().writer_mut().inner_mut().cursor_at;
+                let caret_moved = caret.is_some() && (diff_painted || known_caret != caret);
+                if let Some((col, row)) = caret.filter(|_| caret_moved) {
+                    terminal.set_cursor_position(ratatui::layout::Position::new(col, row))?;
+                }
+                // The hyperlink writer closes a link region still open at the frame's end.
+                Backend::flush(terminal.backend_mut())?;
+                let writer = terminal.backend_mut().writer_mut().inner_mut();
+                writer.cursor_visible = Some(visible);
+                if caret.is_some() {
+                    writer.cursor_at = caret;
+                } else if diff_painted {
+                    writer.cursor_at = None;
+                }
+                // The window title follows the session state; it rides the same bracket and
+                // write, and is queued only when its text changes (the spinner repaints tick it),
+                // so an idle frame still writes nothing.
+                let title_start = writer.len();
+                crate::terminal_title::sync(writer, view)?;
+                let titled = writer.len() != title_start;
+                Ok(mounting || diff_painted || visibility_changed || caret_moved || titled)
+            })
     };
     let painted = paint();
     let writer = terminal.backend_mut().writer_mut().inner_mut();

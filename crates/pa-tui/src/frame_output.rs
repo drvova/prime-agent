@@ -4,6 +4,30 @@
 //! `terminal.write` per frame, `packages/tui/src/tui.ts`).
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Tells one [`FrameWriter`] (one terminal surface) from another for [`PaintStamp`].
+static NEXT_WRITER_ID: AtomicUsize = AtomicUsize::new(0);
+
+/// Which writer painted a frame and its frame number there: a paint that reuses the last
+/// frame's screen state (the scroll-region shift) is only sound against the frame painted
+/// immediately before through the same writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PaintStamp {
+    pub(crate) writer: usize,
+    pub(crate) frame: usize,
+}
+
+impl PaintStamp {
+    /// The stamp of the frame that follows this one through the same writer.
+    #[must_use]
+    pub(crate) fn next(self) -> Self {
+        Self {
+            writer: self.writer,
+            frame: self.frame.wrapping_add(1),
+        }
+    }
+}
 
 /// The chat paint backend: the OSC 8 hyperlink writer over the per-frame buffer over stdout.
 pub(crate) type ChatBackend =
@@ -27,6 +51,8 @@ pub(crate) struct FrameWriter<W> {
     inner: W,
     buffer: Vec<u8>,
     open: bool,
+    /// This writer's identity and the frames it has closed (sent or dropped).
+    stamp: PaintStamp,
     /// The cursor visibility the terminal last received; `None` when unknown (before the first
     /// frame, or after a handoff wrote its own sequences).
     pub(crate) cursor_visible: Option<bool>,
@@ -40,6 +66,10 @@ impl<W: Write> FrameWriter<W> {
             inner,
             buffer: Vec::new(),
             open: false,
+            stamp: PaintStamp {
+                writer: NEXT_WRITER_ID.fetch_add(1, Ordering::Relaxed),
+                frame: 0,
+            },
             cursor_visible: None,
             cursor_at: None,
         }
@@ -48,6 +78,11 @@ impl<W: Write> FrameWriter<W> {
     /// Start collecting one frame.
     pub(crate) fn begin(&mut self) {
         self.open = true;
+    }
+
+    /// The open frame's stamp.
+    pub(crate) fn stamp(&self) -> PaintStamp {
+        self.stamp
     }
 
     /// The number of bytes the open frame holds.
@@ -64,11 +99,13 @@ impl<W: Write> FrameWriter<W> {
     pub(crate) fn discard(&mut self) {
         self.open = false;
         self.buffer.clear();
+        self.stamp = self.stamp.next();
     }
 
     /// Send the open frame to the sink: one `write_all` and one flush (nothing when empty).
     pub(crate) fn commit(&mut self) -> io::Result<()> {
         self.open = false;
+        self.stamp = self.stamp.next();
         if self.buffer.is_empty() {
             return Ok(());
         }

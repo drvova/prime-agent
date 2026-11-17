@@ -138,6 +138,9 @@ pub struct AgentView {
     /// Cursor cell within the last dock render: (dock row, column).
     dock_cursor: Option<(usize, usize)>,
     pub(crate) window_rows: usize,
+    /// The last composed frame's transcript window rows, when a paint may
+    /// shift them as a terminal scroll region (following, nothing over them).
+    scroll_region: Option<crate::scroll_region::ScrollRegion>,
     /// Whether the last frame's window reached the tail (operator
     /// directive 2026-09-26): the follow hint shows only then.
     pub(crate) window_shows_tail: bool,
@@ -388,6 +391,7 @@ impl AgentView {
             terminal_rows: 24,
             dock_cursor: None,
             window_rows: 0,
+            scroll_region: None,
             window_shows_tail: false,
             detail_transition: false,
             hover_pos: None,

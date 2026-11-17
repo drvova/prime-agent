@@ -360,6 +360,12 @@ impl Renderer {
                 // the cursor sequences above bypassed the frame path's remembered state.
                 term.clear()?;
                 term.backend_mut().writer_mut().inner_mut().forget_cursor();
+                // The cleared screen no longer holds the last painted frame: the next paint
+                // must not shift a scroll region against it.
+                crate::scroll_region::PAINTER
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .invalidate();
                 Ok(())
             }
             Renderer::Headless { .. } => Ok(()),

@@ -60,10 +60,20 @@ static MOUNT_ARMED: AtomicBool = AtomicBool::new(false);
 /// Returns `Err` when writing the alternate-screen leave sequence to stdout fails.
 pub fn leave() -> Result<()> {
     if ACTIVE.swap(false, Ordering::SeqCst) {
-        crossterm::execute!(stdout(), LeaveAlternateScreen)?;
+        crossterm::execute!(
+            stdout(),
+            crossterm::style::Print(SCROLL_REGION_RESET),
+            LeaveAlternateScreen
+        )?;
     }
     Ok(())
 }
+
+/// The full-screen scroll margins (DECSTBM reset). The scroll-region paint resets its margins
+/// in the same write that sets them; every leave from an owned alternate screen repeats the
+/// reset, so no exit path (a write cut short included) hands the shell a scroll region. The
+/// reset homes the cursor, which `?1049l` then restores; it is never sent on the main screen.
+const SCROLL_REGION_RESET: &str = "\x1b[r";
 
 /// Whether the process owns the alternate screen (the preserve-handoff state an incoming surface
 /// inherits: a run entering on an active alt screen owns its release).
@@ -75,6 +85,8 @@ pub(crate) fn active() -> bool {
 /// surfaces that mounted the screen outside the ownership module must not keep the alt buffer up
 /// after the process dies — `?1049l` on a primary-screen terminal is a no-op.
 pub(crate) fn force_leave(out: &mut std::io::Stdout) {
-    ACTIVE.store(false, Ordering::SeqCst);
+    if ACTIVE.swap(false, Ordering::SeqCst) {
+        let _ = crossterm::execute!(out, crossterm::style::Print(SCROLL_REGION_RESET));
+    }
     let _ = crossterm::execute!(out, LeaveAlternateScreen);
 }

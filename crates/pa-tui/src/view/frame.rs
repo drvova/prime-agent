@@ -65,6 +65,7 @@ impl AgentView {
         // The click surface records this frame's geometry as the compose
         // computes it.
         self.click.clear();
+        self.scroll_region = None;
         // The onboarding splash covers the pane (TS `showOverlay` 100%); its rows select, so
         // the frame-selection regions span the whole frame.
         if let Some(screen) = self.onboarding.as_mut() {
@@ -296,6 +297,15 @@ impl AgentView {
         } else {
             self.toasts.active(now)
         };
+        // The transcript window may scroll as a terminal region only while it follows the tail
+        // with nothing composited over it (no selection, toast, or follow hint).
+        self.scroll_region =
+            (self.following && !self.has_selection() && toasts.is_empty()).then(|| {
+                crate::scroll_region::ScrollRegion {
+                    top: top_rows as u16,
+                    bottom: (top_rows + window_height) as u16,
+                }
+            });
         if !toasts.is_empty() {
             // The action ack renders as the brand-purple pill (the
             // operator directive): the theme's Accent token flipped onto
@@ -318,6 +328,12 @@ impl AgentView {
             self.click.mask_rows(top_rows, top_rows + covered);
         }
         frame
+    }
+
+    /// The last composed frame's transcript rows a paint may shift as a
+    /// terminal scroll region.
+    pub(crate) fn transcript_scroll_region(&self) -> Option<crate::scroll_region::ScrollRegion> {
+        self.scroll_region
     }
 
     /// Hardware cursor position within the last composed frame, when the
