@@ -1,7 +1,7 @@
 //! Chat chrome: the pinned top bar, brand splash header, prompt context
 //! line, and the tray line under the editor.
 
-use crate::width::str_width;
+use crate::width::{line_width, str_width, truncate_line};
 use crate::{Line, Span};
 use ratatui::style::Style;
 use serde_json::Value;
@@ -60,6 +60,9 @@ pub struct ChromeState {
     pub cost_usd: Option<f64>,
     /// Context usage: tokens, window, percent (tray right label).
     pub context: Option<ContextUsage>,
+    /// The auto-compaction threshold (percent of the window) the gauge marks with a `┃` tick;
+    /// `None` (auto-compaction off) draws no tick.
+    pub compaction_percent: Option<f64>,
     /// `← manage` hint: shown for persisted (attachable) sessions.
     pub show_manage: bool,
     /// The attached session's RLM depth: a subagent session renders
@@ -567,76 +570,63 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
     render_tray_with_hint(state, theme, width).0
 }
 
+/// The tray's shrink order as the width drops. Every step keeps all the previous steps'
+/// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
+/// first and vanishes below six cells, then the tier badge, the subagent depth, the context
+/// label's `tokens/window` (the percent stays), the model's effort suffix, the `manage` word
+/// (the `←` stays), the context percent, and the model last. Nothing is cut mid-word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TrayShrink {
+    Full,
+    NoTier,
+    NoDepth,
+    PercentOnly,
+    NoEffort,
+    BareManage,
+    NoContext,
+    NoModel,
+}
+
+const TRAY_SHRINK: [TrayShrink; 8] = [
+    TrayShrink::Full,
+    TrayShrink::NoTier,
+    TrayShrink::NoDepth,
+    TrayShrink::PercentOnly,
+    TrayShrink::NoEffort,
+    TrayShrink::BareManage,
+    TrayShrink::NoContext,
+    TrayShrink::NoModel,
+];
+
 /// The tray row plus the `← manage` hint's column span: a plain click on
 /// the hint's cells performs the hinted action. `None` when the left
-/// label is the override or the hint is hidden.
+/// label is the override or the hint is hidden. The row degrades in the
+/// [`TrayShrink`] order until both lanes fit with a cell between them.
 #[must_use]
 pub fn render_tray_with_hint(
     state: &ChromeState,
     theme: &Theme,
     width: usize,
 ) -> (Line, Option<std::ops::Range<usize>>) {
-    let dim = theme.fg_style(ThemeColor::Dim);
-    let muted = theme.fg_style(ThemeColor::Muted);
-    let mut hint: Option<std::ops::Range<usize>> = None;
-    let mut left: Line = Vec::new();
-    if let Some(override_label) = &state.tray_override {
-        // The override label replaces the location label on the left
-        // while it is set.
-        left.push(Span::styled(override_label.clone(), muted));
-    } else if state.show_manage {
-        left.push(Span::styled("\u{2190}".to_string(), dim));
-        left.push(Span::styled(" manage".to_string(), muted));
-        // The hint's own cells are the clickable region; the depth label
-        // that may follow is metadata, not part of the hinted action.
-        hint = Some(0..left.iter().map(|s| str_width(&s.content)).sum());
-        // A subagent session joins its `depth N` label onto the manage
-        // hint; a root session renders none.
-        if let Some(depth) = state.tray_depth.filter(|depth| *depth > 0) {
-            left.push(Span::styled("  ".to_string(), muted));
-            left.push(Span::styled(format!("depth {depth}"), muted));
-        }
-    }
-    let mut right: Line = Vec::new();
-    // The context label leads the right lane so it sits against its gauge.
-    if let Some(context) = &state.context {
-        let window = format_token_count(context.context_window);
-        let label = format!(
-            "{}/{window} {:.0}%",
-            format_token_count(context.tokens),
-            context.percent()
-        );
-        right.push(Span::styled(label, dim));
-    }
-    if let Some(model) = &state.model_id {
-        let mut label = model.clone();
-        if let Some(suffix) = &state.thinking_suffix {
-            label.push(':');
-            label.push_str(suffix);
-        }
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(label, dim));
-    }
-    let tier_badge = match state.service_tier.as_deref() {
-        Some("priority") => Some("fast"),
-        Some(tier) if tier != "default" => Some(tier),
-        _ => None,
+    let lanes = |shrink: TrayShrink| tray_lanes(state, theme, shrink);
+    let fits = |(left, right, _): &(Line, Line, Option<std::ops::Range<usize>>)| {
+        let (left, right) = (line_width(left), line_width(right));
+        let between = usize::from(left > 0 && right > 0);
+        left + right + between <= width
     };
-    if let Some(badge) = tier_badge {
-        if !right.is_empty() {
-            right.push(Span::styled(" \u{00b7} ".to_string(), dim));
-        }
-        right.push(Span::styled(badge.to_string(), dim));
-    }
-    let left_width: usize = left.iter().map(|s| str_width(&s.content)).sum();
-    let right_width: usize = right.iter().map(|s| str_width(&s.content)).sum();
+    let (left, right, hint) = TRAY_SHRINK
+        .iter()
+        .map(|shrink| lanes(*shrink))
+        .find(fits)
+        .unwrap_or_else(|| lanes(TrayShrink::NoModel));
+    let left_width = line_width(&left);
+    let right_width = line_width(&right);
     let gap = width.saturating_sub(left_width + right_width);
     let mut line: Line = Vec::new();
     line.extend(left);
     // The gap between the lanes is the context gauge: `━` for the used share, `─` for the
-    // rest, amber from 70% and red from 90% (a space pads each end).
+    // rest, amber from 70% and red from 90% (a space pads each end), with a `┃` tick at the
+    // auto-compaction threshold.
     if let Some(context) = state.context.as_ref().filter(|_| gap >= 6) {
         let (cells, percent) = (gap - 2, context.percent());
         let used = ((cells as f64 * percent / 100.0).round() as usize).min(cells);
@@ -647,16 +637,122 @@ pub fn render_tray_with_hint(
         } else {
             session_accent(&state.chat_name, theme)
         };
+        let free = theme.fg_style(ThemeColor::BorderMuted);
+        let tick = state
+            .compaction_percent
+            .map(|threshold| ((cells as f64 * threshold / 100.0).round() as usize).min(cells - 1));
+        let run = |from: usize, to: usize| -> Vec<Span> {
+            let used_cells = used.clamp(from, to) - from;
+            vec![
+                Span::styled("\u{2501}".repeat(used_cells), tone),
+                Span::styled("\u{2500}".repeat(to - from - used_cells), free),
+            ]
+        };
         line.push(Span::styled(" ".to_string(), Style::default()));
-        line.push(Span::styled("\u{2501}".repeat(used), tone));
-        let free = "\u{2500}".repeat(cells - used);
-        line.push(Span::styled(free, theme.fg_style(ThemeColor::BorderMuted)));
+        match tick {
+            Some(at) => {
+                line.extend(run(0, at));
+                line.push(Span::styled(
+                    "\u{2503}".to_string(),
+                    theme.fg_style(ThemeColor::Muted),
+                ));
+                line.extend(run(at + 1, cells));
+            }
+            None => line.extend(run(0, cells)),
+        }
         line.push(Span::styled(" ".to_string(), Style::default()));
     } else {
         line.push(Span::styled(" ".repeat(gap), Style::default()));
     }
     line.extend(right);
-    (line, hint)
+    // Only an override label wider than the row itself can still overflow: clip it.
+    (truncate_line(&line, width, ""), hint)
+}
+
+/// The tray's two lanes at one shrink step: the location label (override, or the manage hint and
+/// depth) on the left with the hint's own cells, the context label, model, and tier on the right.
+fn tray_lanes(
+    state: &ChromeState,
+    theme: &Theme,
+    shrink: TrayShrink,
+) -> (Line, Line, Option<std::ops::Range<usize>>) {
+    let dim = theme.fg_style(ThemeColor::Dim);
+    let muted = theme.fg_style(ThemeColor::Muted);
+    let mut hint: Option<std::ops::Range<usize>> = None;
+    let mut left: Line = Vec::new();
+    if let Some(override_label) = &state.tray_override {
+        // The override label replaces the location label on the left
+        // while it is set.
+        left.push(Span::styled(override_label.clone(), muted));
+    } else if state.show_manage {
+        left.push(Span::styled("\u{2190}".to_string(), dim));
+        if shrink < TrayShrink::BareManage {
+            left.push(Span::styled(" manage".to_string(), muted));
+        }
+        // The hint's own cells are the clickable region; the depth label
+        // that may follow is metadata, not part of the hinted action.
+        hint = Some(0..line_width(&left));
+        // A subagent session joins its `depth N` label onto the manage
+        // hint; a root session renders none.
+        if let Some(depth) = state
+            .tray_depth
+            .filter(|depth| *depth > 0 && shrink < TrayShrink::NoDepth)
+        {
+            left.push(Span::styled("  ".to_string(), muted));
+            left.push(Span::styled(format!("depth {depth}"), muted));
+        }
+    }
+    let mut right: Line = Vec::new();
+    let separator = || Span::styled(" \u{00b7} ".to_string(), dim);
+    // The context label leads the right lane so it sits against its gauge.
+    if let Some(context) = state
+        .context
+        .as_ref()
+        .filter(|_| shrink < TrayShrink::NoContext)
+    {
+        let percent = format!("{:.0}%", context.percent());
+        let label = if shrink < TrayShrink::PercentOnly {
+            format!(
+                "{}/{} {percent}",
+                format_token_count(context.tokens),
+                format_token_count(context.context_window)
+            )
+        } else {
+            percent
+        };
+        right.push(Span::styled(label, dim));
+    }
+    if let Some(model) = state
+        .model_id
+        .as_ref()
+        .filter(|_| shrink < TrayShrink::NoModel)
+    {
+        let mut label = model.clone();
+        if let Some(suffix) = state
+            .thinking_suffix
+            .as_ref()
+            .filter(|_| shrink < TrayShrink::NoEffort)
+        {
+            label.push(':');
+            label.push_str(suffix);
+        }
+        if !right.is_empty() {
+            right.push(separator());
+        }
+        right.push(Span::styled(label, dim));
+    }
+    let tier_badge = match state.service_tier.as_deref() {
+        Some("priority") => Some("fast"),
+        Some(tier) if tier != "default" => Some(tier),
+        _ => None,
+    };
+    if let Some(badge) = tier_badge.filter(|_| shrink < TrayShrink::NoTier) {
+        if !right.is_empty() {
+            right.push(separator());
+        }
+        right.push(Span::styled(badge.to_string(), dim));
+    }
+    (left, right, hint)
 }
 
 /// The tray model label's thinking-effort suffix: a model without

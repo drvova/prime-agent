@@ -248,6 +248,8 @@ pub(crate) struct SessionUi {
     pending_queue: Option<crate::queued::QueuedMessages>,
     queue_selection: crate::queued::QueueSelection,
     context: Option<crate::chrome::ContextUsage>,
+    /// The session's auto-compaction switch: on, the tray gauge ticks the threshold.
+    auto_compaction: bool,
     list_rows: Vec<Value>,
     pub(crate) turn_active: bool,
     /// Completed turns observed on this connection. A prompt ACK may arrive

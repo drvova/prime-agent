@@ -109,6 +109,8 @@ impl SessionUi {
             pending_queue: None,
             queue_selection: crate::queued::QueueSelection::default(),
             context: None,
+            // The settings default: on until the attach state says otherwise.
+            auto_compaction: true,
             list_rows: Vec::new(),
             turn_active: false,
             turn_ends_seen: 0,
@@ -487,6 +489,7 @@ impl SessionUi {
         // or compaction settles): the rebuild below re-syncs it into the
         // chrome exactly like the other reconstructed session fields.
         self.context = reconstructed.context_usage;
+        self.auto_compaction = reconstructed.auto_compaction.unwrap_or(true);
         self.last_assistant_text = last_assistant_text_of(&reconstructed.chat);
         self.pending_queue = Some(reconstructed.queued);
         self.pending_snapshot = Some(reconstructed.chat);
@@ -644,6 +647,7 @@ impl SessionUi {
         view.queue_selected = None;
         view.chrome.chat_name = self.session_display();
         view.chrome.context = self.context;
+        view.chrome.compaction_percent = self.compaction_tick();
         // The rebuilt transcript invalidates the announcement row tracking;
         // the goal state itself carries over (seeded at attach).
         self.goal_view.reset_row_tracking();

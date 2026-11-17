@@ -1116,3 +1116,93 @@ fn the_session_accent_is_a_stable_hue_per_name() {
         ansi.fg_style(ThemeColor::Accent)
     );
 }
+
+/// The gauge ticks the auto-compaction threshold with `┃`; auto-compaction off draws none.
+#[test]
+fn the_gauge_ticks_the_compaction_threshold() {
+    let gauge = |compaction_percent: Option<f64>| {
+        let state = ChromeState {
+            show_manage: true,
+            context: Some(ContextUsage {
+                tokens: 50_000,
+                context_window: 200_000,
+            }),
+            compaction_percent,
+            ..Default::default()
+        };
+        render_tray(&state, &theme(), 50)
+            .iter()
+            .map(|s| s.content.as_str())
+            .collect::<String>()
+    };
+    // `← manage` (8) + `50k/200k 25%` (12) leave 30 cells: 28 gauge cells, 7 used, the tick at 80%.
+    assert_eq!(
+        gauge(Some(80.0)),
+        format!(
+            "\u{2190} manage {}{}\u{2503}{} 50k/200k 25%",
+            "\u{2501}".repeat(7),
+            "\u{2500}".repeat(15),
+            "\u{2500}".repeat(5)
+        )
+    );
+    assert!(!gauge(None).contains('\u{2503}'));
+}
+
+/// As the width drops, the tray gives segments up in its stated order (gauge, tier, depth,
+/// tokens/window, effort, `manage`, percent, model) — each row fits its width, no segment is cut
+/// mid-word, and the lanes never touch.
+#[test]
+fn the_tray_degrades_in_its_shrink_order() {
+    let state = ChromeState {
+        show_manage: true,
+        tray_depth: Some(2),
+        context: Some(ContextUsage {
+            tokens: 50_000,
+            context_window: 200_000,
+        }),
+        model_id: Some("claude-sonnet-4-5".to_string()),
+        thinking_suffix: Some("high".to_string()),
+        service_tier: Some("priority".to_string()),
+        ..Default::default()
+    };
+    let rows: Vec<String> = [140, 80, 60, 50, 45, 40, 35, 30, 25, 20, 12, 4]
+        .into_iter()
+        .map(|width| {
+            let line = render_tray(&state, &theme(), width);
+            let text: String = line.iter().map(|s| s.content.as_str()).collect();
+            assert!(str_width(&text) <= width, "{width}: {text}");
+            // The gauge is not text: collapse it so the rows read as their segments.
+            text.chars()
+                .filter(|c| !matches!(c, '\u{2501}' | '\u{2500}' | '\u{2503}'))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    let full = "\u{2190} manage depth 2 50k/200k 25% \u{b7} claude-sonnet-4-5:high";
+    assert_eq!(
+        rows,
+        [
+            // 140, 80: everything (the gauge takes the slack).
+            format!("{full} \u{b7} fast"),
+            format!("{full} \u{b7} fast"),
+            // 60: the gauge is gone, then the tier badge.
+            full.to_string(),
+            // 50: the subagent depth.
+            "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5:high".to_string(),
+            // 45, 40: the context label keeps its percent.
+            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5:high".to_string(),
+            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5:high".to_string(),
+            // 35: the effort suffix.
+            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5".to_string(),
+            // 30, 25: the `manage` word (the arrow stays).
+            "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
+            "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
+            // 20: the percent; the model goes last (12, 4).
+            "\u{2190} claude-sonnet-4-5".to_string(),
+            "\u{2190}".to_string(),
+            "\u{2190}".to_string(),
+        ]
+    );
+}
