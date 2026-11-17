@@ -1180,7 +1180,7 @@ fn the_gauge_ticks_the_compaction_threshold() {
 }
 
 /// As the width drops, the tray gives segments up in its stated order (gauge, tier, depth,
-/// tokens/window, effort, `manage`, percent, model) — each row fits its width, no segment is cut
+/// tokens/window, effort with its glyph, `manage`, percent, model) — each row fits its width, no segment is cut
 /// mid-word, and the lanes never touch.
 #[test]
 fn the_tray_degrades_in_its_shrink_order() {
@@ -1211,7 +1211,7 @@ fn the_tray_degrades_in_its_shrink_order() {
                 .join(" ")
         })
         .collect();
-    let full = "\u{2190} manage depth 2 50k/200k 25% \u{b7} claude-sonnet-4-5:high";
+    let full = "\u{2190} manage depth 2 50k/200k 25% \u{b7} \u{25cf} claude-sonnet-4-5:high";
     assert_eq!(
         rows,
         [
@@ -1221,11 +1221,11 @@ fn the_tray_degrades_in_its_shrink_order() {
             // 60: the gauge is gone, then the tier badge.
             full.to_string(),
             // 50: the subagent depth.
-            "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5:high".to_string(),
+            "\u{2190} manage 50k/200k 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
             // 45, 40: the context label keeps its percent.
-            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5:high".to_string(),
-            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5:high".to_string(),
-            // 35: the effort suffix.
+            "\u{2190} manage 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
+            "\u{2190} manage 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
+            // 35: the effort suffix, with its thinking glyph.
             "\u{2190} manage 25% \u{b7} claude-sonnet-4-5".to_string(),
             // 30, 25: the `manage` word (the arrow stays).
             "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),

@@ -573,7 +573,7 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
 /// The tray's shrink order as the width drops. Every step keeps all the previous steps'
 /// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
 /// first and vanishes below six cells, then the tier badge, the subagent depth, the context
-/// label's `tokens/window` (the percent stays), the model's effort suffix, the `manage` word
+/// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking glyph), the `manage` word
 /// (the `←` stays), the context percent, and the model last. Nothing is cut mid-word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayShrink {
@@ -739,10 +739,12 @@ fn tray_lanes(
         if !right.is_empty() {
             right.push(separator());
         }
-        // The thinking level as a circle that fills with effort, in the level's theme color.
+        // The thinking level as a circle that fills with effort, in the level's theme color. It
+        // is the effort segment's glyph, so it leaves with the effort suffix.
         let level = state
             .thinking_suffix
             .as_deref()
+            .filter(|_| shrink < TrayShrink::NoEffort)
             .and_then(pa_types::ai::thinking_level_from_str);
         if let Some(level) = level {
             use pa_types::ai::ModelThinkingLevel as L;
