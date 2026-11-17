@@ -1,0 +1,1 @@
+- Streaming replies now send only the new text to the terminal UI instead of the whole message on every update, so long answers no longer cost quadratic socket traffic.

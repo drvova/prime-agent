@@ -324,6 +324,7 @@ pub fn supported_client_capabilities() -> &'static [&'static str] {
         "client_owned_sessions",
         "elide_snapshot_images",
         "windowed_snapshot",
+        pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY,
     ]
 }
 

@@ -7,16 +7,16 @@ use super::*;
 
 /// A worker socket the test drives by hand: it stands in for the real worker on the
 /// far side of `connect_worker`, so the oracles hold the handshake at exact points.
-struct FakeWorkerSocket {
+pub(super) struct FakeWorkerSocket {
     // The listener is held so the bound socket path stays owned by the
     // test for the connection's whole lifetime.
     #[allow(dead_code)]
     listener: Box<dyn pa_types::platform::transport::TransportListener>,
-    read_half: Box<dyn pa_types::platform::transport::AsyncReadHalf>,
-    write_half: Box<dyn pa_types::platform::transport::AsyncWriteHalf>,
+    pub(super) read_half: Box<dyn pa_types::platform::transport::AsyncReadHalf>,
+    pub(super) write_half: Box<dyn pa_types::platform::transport::AsyncWriteHalf>,
 }
 
-async fn bind_fake_worker(
+pub(super) async fn bind_fake_worker(
     socket_path: &Path,
 ) -> Box<dyn pa_types::platform::transport::TransportListener> {
     pa_types::platform::transport::bind_transport(socket_path)
@@ -26,7 +26,7 @@ async fn bind_fake_worker(
 
 /// Accept the connection `connect_worker` dials (its probe already
 /// succeeded), once the connect task is in flight.
-async fn accept_fake_worker(
+pub(super) async fn accept_fake_worker(
     listener: Box<dyn pa_types::platform::transport::TransportListener>,
 ) -> FakeWorkerSocket {
     let stream = listener.accept().await.expect("accept fake worker");
@@ -40,7 +40,9 @@ async fn accept_fake_worker(
 
 /// Read the next private frame the supervisor sent (its header carries the
 /// request id the test's answer must echo).
-async fn read_supervisor_frame(socket: &mut FakeWorkerSocket) -> crate::framing::PrivateFrame {
+pub(super) async fn read_supervisor_frame(
+    socket: &mut FakeWorkerSocket,
+) -> crate::framing::PrivateFrame {
     let mut reader = PrivateFrameReader::new(&mut socket.read_half, DEFAULT_PRIVATE_FRAME_LIMITS);
     reader
         .read_frame()
@@ -51,7 +53,11 @@ async fn read_supervisor_frame(socket: &mut FakeWorkerSocket) -> crate::framing:
 
 /// Answer one request the way the real worker does: the response frame
 /// with the line-serialized [`DaemonResponse`] as its payload.
-async fn answer_supervisor_frame(socket: &mut FakeWorkerSocket, request_id: &str, command: &str) {
+pub(super) async fn answer_supervisor_frame(
+    socket: &mut FakeWorkerSocket,
+    request_id: &str,
+    command: &str,
+) {
     let payload = crate::protocol::response_line_bytes(&DaemonResponse {
         id: None,
         command: command.to_string(),
