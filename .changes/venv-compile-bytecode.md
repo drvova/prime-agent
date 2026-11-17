@@ -1,0 +1,1 @@
+- The Python kernel's first start after an install or upgrade is faster: the kernel venv now compiles its bytecode during setup instead of on first import.

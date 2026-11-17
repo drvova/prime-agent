@@ -1103,6 +1103,12 @@ async fn skill_sync_falls_back_to_per_skill_installs_on_batch_failure() {
     );
     for call in &calls {
         assert!(call.contains(dir.path().join("prime-agent-runtime").to_str().unwrap()));
+        // The batch and the per-skill retries share the base install's
+        // head: each one writes .pyc at install time, not at first import.
+        assert!(
+            call.contains(" --compile-bytecode "),
+            "every install compiles bytecode: {call}"
+        );
     }
     let warnings = warnings.lock().unwrap();
     assert!(
