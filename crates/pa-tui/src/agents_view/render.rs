@@ -187,11 +187,17 @@ impl AgentsViewMode {
                 );
                 (overlay, surface.rows, surface.cursor)
             }
-            // The rename composer's real editor box: the warning header rides INSIDE
-            // the box, the draft renders through the editor's own surface.
+            // The rename composer's real editor box: the ` Name ` chip labels the field INSIDE
+            // the box (the composer answers the question, no modal), the draft renders through
+            // the editor's own surface.
             Composer::Rename(rename) => {
-                let header =
-                    vec![theme.fg(ThemeColor::Warning, "Rename agent session".to_string())];
+                let chip = theme.fg_style(ThemeColor::Warning).add_modifier(
+                    ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD,
+                );
+                let header = vec![
+                    crate::Span::styled(" Name ".to_string(), chip),
+                    theme.fg(ThemeColor::Muted, "  agent session".to_string()),
+                ];
                 let surface = crate::view::editor_surface::render(
                     &mut rename.editor,
                     theme,
@@ -792,7 +798,7 @@ impl AgentsViewMode {
         // The rename composer's hint: save/cancel over the confirm/cancel bindings' every key.
         if let Composer::Rename(_) = &self.composer {
             let hint = format!(
-                "{} save   {} cancel",
+                "{} rename   {} cancel",
                 self.keybindings.key_text("tui.select.confirm"),
                 self.keybindings.key_text("tui.select.cancel")
             );

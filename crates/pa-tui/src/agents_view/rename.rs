@@ -87,6 +87,8 @@ impl AgentsViewMode {
         let mut editor = Editor::new();
         editor.set_keybindings(self.keybindings.clone());
         editor.set_text(&name);
+        // The current name arrives selected: typing replaces it, an arrow keeps and edits it.
+        editor.select_all();
         editor.clear_autocomplete_provider();
         self.composer = Composer::Rename(Box::new(RenameComposer { target, editor }));
     }
