@@ -503,6 +503,8 @@ impl SessionUi {
                             .map(|parsed| parsed.wire_name().to_string());
                     }
                 }
+                // The `/effort` choices mark the newly active level.
+                self.update_model_eligibility_filters(view);
                 self.note(&format!("Thinking level: {level}"), view);
             }
             Err(error) => {

@@ -283,8 +283,14 @@ pub(crate) fn render(
 /// The autocomplete dropdown, mounted just above the editor surface. The panel
 /// opens with the one full-width muted rule every inline menu panel opens with (the
 /// operator's 2026-09-26 top-border directive), its rows float on the popup
-/// background, and the selected row's wash spans the panel's full width.
-pub(crate) fn overlay(editor: &Editor, theme: &Theme, width: usize) -> Vec<Line> {
+/// background, and the selected row's wash spans the panel's full width. `live`
+/// answers a command row's current state (see `AutocompleteState::render`).
+pub(crate) fn overlay(
+    editor: &Editor,
+    theme: &Theme,
+    width: usize,
+    live: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Line> {
     let Some(state) = editor.autocomplete_state() else {
         return Vec::new();
     };
@@ -299,7 +305,7 @@ pub(crate) fn overlay(editor: &Editor, theme: &Theme, width: usize) -> Vec<Line>
     let border = theme.fg_style(ThemeColor::BorderMuted).patch(bg);
     let mut rows: Vec<Line> = vec![vec![Span::styled("\u{2500}".repeat(width.max(1)), border)]];
     let mut overlay = Vec::new();
-    overlay.extend(state.render(theme, input_width));
+    overlay.extend(state.render(theme, input_width, live));
     overlay.push(Vec::new());
     for mut line in overlay {
         // The shared menu rows pad with unstyled spans, so the popup background

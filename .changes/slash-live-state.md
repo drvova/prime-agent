@@ -1,0 +1,1 @@
+- The slash menu now shows live state on its rows (`/model` shows the current model and effort, `/effort`, `/fast`, and `/tier` their current values), and Tab on `/effort` or `/tier` opens their choices with the current one marked and preselected; Enter on a choice runs it.

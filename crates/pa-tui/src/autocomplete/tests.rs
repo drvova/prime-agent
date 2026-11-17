@@ -123,7 +123,13 @@ fn tier_argument_completions_list_filter_and_mark_current() {
             })
             .collect::<Vec<_>>()
     };
-    provider.set_argument_completions("tier", tier_items("flex"));
+    provider.set_argument_completions(
+        "tier",
+        ArgumentChoices {
+            items: tier_items("flex"),
+            current: Some("flex".to_string()),
+        },
+    );
     // No term: every tier lists, the current one marked.
     let suggestions = provider.get_suggestions(&["/tier ".to_string()], 0, 6, false);
     let items = ready(suggestions).items;
@@ -318,7 +324,7 @@ fn row_texts(lines: &[Line]) -> Vec<String> {
 #[test]
 fn slash_menu_rows_carry_descriptions_and_a_scrollbar_on_overflow() {
     let theme = theme();
-    let lines = typed_menu("/").render(&theme, 72);
+    let lines = typed_menu("/").render(&theme, 72, &|_| None);
     assert_eq!(
         row_texts(&lines),
         [
@@ -360,7 +366,7 @@ fn slash_prefix_matches_precede_fuzzy_ones_and_weak_matches_drop() {
 #[test]
 fn an_unmatched_slash_token_keeps_the_menu_open_on_its_no_match_row() {
     let theme = theme();
-    let lines = typed_menu("/xyz").render(&theme, 40);
+    let lines = typed_menu("/xyz").render(&theme, 40, &|_| None);
     assert_eq!(
         lines,
         [vec![
@@ -373,7 +379,7 @@ fn an_unmatched_slash_token_keeps_the_menu_open_on_its_no_match_row() {
 #[test]
 fn empty_items_render_the_shared_no_match_row() {
     let state = AutocompleteState::new(Vec::new(), 5, None);
-    let lines = state.render(&theme(), 40);
+    let lines = state.render(&theme(), 40, &|_| None);
     let text: String = lines[0].iter().map(|s| s.content.as_str()).collect();
     assert_eq!(text, "  No matching commands");
 }
@@ -388,7 +394,7 @@ fn narrow_renders_never_exceed_the_frame_width() {
         .collect();
     for width in [4usize, 6, 9, 40] {
         let state = AutocompleteState::new(items.clone(), 5, Some(SuggestionKind::SlashCommand));
-        for line in &state.render(&theme(), width) {
+        for line in &state.render(&theme(), width, &|_| None) {
             assert!(
                 crate::width::spans_width(line) <= width,
                 "every row clamps to the frame width {width}: {line:?}"
@@ -396,7 +402,7 @@ fn narrow_renders_never_exceed_the_frame_width() {
         }
     }
     let empty = AutocompleteState::new(Vec::new(), 5, None);
-    for line in &empty.render(&theme(), 6) {
+    for line in &empty.render(&theme(), 6, &|_| None) {
         assert!(
             crate::width::spans_width(line) <= 6,
             "the no-match row clamps to the frame width: {line:?}"
@@ -607,7 +613,7 @@ fn render_shows_the_source_tag_as_a_trailing_segment() {
     described.description = Some("Search Google".to_string());
     described.source_tag = Some("#user".to_string());
     let state = AutocompleteState::new(vec![described], 5, Some(SuggestionKind::SlashCommand));
-    let rendered = state.render(&theme(), 80);
+    let rendered = state.render(&theme(), 80, &|_| None);
     let all: String = rendered
         .iter()
         .map(|line| {

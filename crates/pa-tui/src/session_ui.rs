@@ -579,7 +579,8 @@ impl SessionUi {
     }
 
     /// Recompute the model-eligibility autocomplete state (`/fast` hidden when the model is not
-    /// fast-mode-eligible): call after every point the model id or tier can move.
+    /// fast-mode-eligible, the `/tier` and `/effort` argument choices): call after every point the
+    /// model id, tier, or thinking level can move.
     fn update_model_eligibility_filters(&self, view: &mut AgentView) {
         let eligible = self
             .current_model_entry(view)
@@ -591,6 +592,40 @@ impl SessionUi {
         view.editor.set_autocomplete_hidden_commands(hidden);
         view.editor
             .set_autocomplete_argument_completions("tier", self.tier_completion_items(view));
+        view.editor
+            .set_autocomplete_argument_completions("effort", self.effort_completion_items(view));
+    }
+
+    /// The `/effort` choices: the levels the current model supports (catalog-local, no daemon
+    /// read), the active one marked `(current)`. An unknown model offers none.
+    fn effort_completion_items(&self, view: &AgentView) -> crate::autocomplete::ArgumentChoices {
+        let Some(model) = self.current_model_entry(view) else {
+            return crate::autocomplete::ArgumentChoices::default();
+        };
+        let current = view.chrome.thinking_suffix.as_deref().unwrap_or("off");
+        let items = pa_types::ai::get_supported_thinking_levels(model)
+            .into_iter()
+            .map(|level| {
+                let level = level.wire_name();
+                let description = crate::effort_picker::level_description(level);
+                let description = if level == current {
+                    format!("{description} (current)")
+                } else {
+                    description.to_string()
+                };
+                crate::autocomplete::CompletionItem {
+                    value: level.to_string(),
+                    label: level.to_string(),
+                    description: Some(description),
+                    argument_hint: None,
+                    source_tag: None,
+                }
+            })
+            .collect();
+        crate::autocomplete::ArgumentChoices {
+            items,
+            current: Some(current.to_string()),
+        }
     }
 
     /// The `/tier` choices (`scale` is not a user-facing choice): `default` plus
@@ -617,9 +652,10 @@ impl SessionUi {
         tiers
     }
 
-    fn tier_completion_items(&self, view: &AgentView) -> Vec<crate::autocomplete::CompletionItem> {
+    fn tier_completion_items(&self, view: &AgentView) -> crate::autocomplete::ArgumentChoices {
         let current = self.service_tier.as_deref().unwrap_or("default");
-        self.available_service_tiers(view)
+        let items = self
+            .available_service_tiers(view)
             .into_iter()
             .map(|tier| {
                 // The one descriptions owner: the settings row's submenu
@@ -638,7 +674,11 @@ impl SessionUi {
                     source_tag: None,
                 }
             })
-            .collect()
+            .collect();
+        crate::autocomplete::ArgumentChoices {
+            items,
+            current: Some(current.to_string()),
+        }
     }
 
     /// `/tier [tier]`: without an argument report the current tier and the available ones; an

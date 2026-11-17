@@ -174,7 +174,8 @@ impl AgentsViewMode {
             // by the target's state, and an open completion renders its overlay
             // above the box (the chat's stacking).
             Composer::Reply(reply) => {
-                let overlay = crate::view::editor_surface::overlay(&reply.editor, theme, width);
+                let overlay =
+                    crate::view::editor_surface::overlay(&reply.editor, theme, width, &|_| None);
                 let header = reply.header_line(theme);
                 let placeholder = reply.placeholder();
                 let surface = crate::view::editor_surface::render(
