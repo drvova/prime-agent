@@ -273,16 +273,15 @@ impl Editor {
 
     /// Replace the provider's `skill:` commands (this port swaps the list on
     /// the installed provider; TS `setupAutocompleteProvider` rebuilds the
-    /// whole list). The open dropdown drops, but a PARKED request stays: the
-    /// host loop materializes it against the new provider.
+    /// whole list). The open dropdown's rows go stale, so it parks a fresh request in their
+    /// place (a parked request stays as it is): the host loop materializes it against the new
+    /// provider, so a `/` typed before the catalog lands keeps its menu open.
     pub fn set_autocomplete_skill_commands(&mut self, skills: Vec<SlashCommandEntry>) {
-        let was_showing = self.autocomplete.is_some();
-        self.autocomplete = None;
-        if was_showing {
-            self.emit(EditorEvent::AutocompleteToggled(false));
-        }
         if let Some(provider) = self.autocomplete_provider.as_mut() {
             provider.set_skill_commands(skills);
+        }
+        if self.autocomplete.is_some() && self.pending_autocomplete.is_none() {
+            self.request_autocomplete(false, false);
         }
     }
 

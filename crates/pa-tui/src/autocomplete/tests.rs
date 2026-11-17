@@ -312,6 +312,35 @@ fn typed_menu(typed: &str) -> AutocompleteState {
         .expect("the slash menu opens")
 }
 
+/// A command catalog that lands while the `/` menu is open re-reads the menu in place: the menu
+/// stays open and lists the new `skill:` command.
+#[test]
+fn a_landing_command_catalog_keeps_the_open_slash_menu() {
+    let mut editor = crate::editor::Editor::new();
+    editor.handle_input("/");
+    editor.materialize_autocomplete();
+    assert!(editor.is_showing_autocomplete(), "the slash menu opens");
+    editor.set_autocomplete_skill_commands(vec![SlashCommandEntry {
+        name: "skill:brainstorm".to_string(),
+        aliases: Vec::new(),
+        description: Some("Brainstorm approaches".to_string()),
+        argument_hint: Some(SKILL_ARGUMENT_HINT.to_string()),
+        takes_argument: true,
+        source_tag: Some("#project".to_string()),
+    }]);
+    editor.materialize_autocomplete();
+    let menu = editor
+        .autocomplete_state()
+        .expect("the menu stays open across the catalog");
+    assert!(
+        menu.items
+            .iter()
+            .any(|item| item.value == "skill:brainstorm"),
+        "the reopened menu lists the landed skill: {:?}",
+        menu.items
+    );
+}
+
 fn row_texts(lines: &[Line]) -> Vec<String> {
     lines
         .iter()
