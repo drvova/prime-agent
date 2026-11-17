@@ -160,6 +160,9 @@ pub struct AgentView {
     /// settled blocks replay from the cache. `RefCell` because the layout pass borrows immutably.
     md_caches:
         std::cell::RefCell<std::collections::HashMap<usize, crate::markdown::MarkdownBlockCache>>,
+    /// The streaming assistant entry's last rendered rows (see `layout::StreamingEntryRows`).
+    /// `RefCell` because the row count reads it through `&self`.
+    streaming_rows: std::cell::RefCell<Option<layout::StreamingEntryRows>>,
     /// The width the cached rows were laid out for.
     pub(crate) layout_width: usize,
     /// Rendering options that affect cached entry rows.
@@ -336,6 +339,7 @@ impl AgentView {
             sparse_entries: std::collections::BTreeSet::new(),
             toggled_cards: std::collections::BTreeSet::new(),
             md_caches: std::cell::RefCell::new(std::collections::HashMap::new()),
+            streaming_rows: std::cell::RefCell::new(None),
             layout_width: 0,
             layout_options: None,
             flushed_frame: Vec::new(),
@@ -601,6 +605,7 @@ impl AgentView {
         self.entry_layout.clear();
         self.entry_heights.clear();
         self.md_caches.borrow_mut().clear();
+        self.streaming_rows.borrow_mut().take();
         self.pending_bash.clear();
         self.older_history_loading = false;
     }

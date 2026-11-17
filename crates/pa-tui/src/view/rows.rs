@@ -10,7 +10,6 @@ use crate::chat::{
 use crate::theme::ThemeColor;
 use crate::Line;
 
-#[cfg(test)]
 use super::layout;
 
 /// TS `getSpacingContent`: an assistant message's conversation-spacing
@@ -86,6 +85,53 @@ impl AgentView {
         } else {
             SpacingContent::Hidden
         }
+    }
+
+    /// The streaming assistant entry's rows through the one-slot cache (`None` for every other
+    /// entry): a hit replays the last rows, a miss renders once and fills the slot, so the row
+    /// count and the paint of one revision share a single render.
+    pub(super) fn streaming_entry_rows(
+        &self,
+        index: usize,
+        width: usize,
+        spacing: bool,
+        preceded_by_tool: bool,
+    ) -> Option<std::sync::Arc<Vec<Line>>> {
+        let ChatEntry::Assistant(message) = &self.chat[index] else {
+            return None;
+        };
+        if !message.streaming {
+            return None;
+        }
+        let detail = self.entry_detail(index);
+        if let Some(slot) = self.streaming_rows.borrow().as_ref() {
+            if slot.index == index
+                && slot.width == width
+                && slot.detail == detail
+                && slot.spacing == spacing
+                && slot.preceded_by_tool == preceded_by_tool
+                && slot.message == **message
+            {
+                return Some(slot.rows.clone());
+            }
+        }
+        let rows = std::sync::Arc::new(self.render_entry(
+            index,
+            &self.chat[index],
+            width,
+            index == 0,
+            preceded_by_tool,
+        ));
+        *self.streaming_rows.borrow_mut() = Some(layout::StreamingEntryRows {
+            index,
+            width,
+            detail,
+            spacing,
+            preceded_by_tool,
+            message: (**message).clone(),
+            rows: rows.clone(),
+        });
+        Some(rows)
     }
 
     /// Lay out one chat entry's transcript rows (the only producer of

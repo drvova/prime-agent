@@ -10,6 +10,11 @@ impl AgentView {
         // TS `precededByToolActivity` = the compact set.
         let preceded_by_tool = index > 0 && Self::is_compact_neighbor(&self.chat[index - 1]);
         let spacing = self.entry_spacing(index, entry, index == 0, preceded_by_tool);
+        // The streaming assistant measures through the one-slot cache: the stream update's
+        // before/after measures and the frame's paint share one render per revision.
+        if let Some(rows) = self.streaming_entry_rows(index, width, spacing, preceded_by_tool) {
+            return rows.len();
+        }
         let detail = self.entry_detail(index);
         match entry {
             ChatEntry::Status { text, .. } => {
@@ -29,6 +34,8 @@ impl AgentView {
                     )
             }
             ChatEntry::Assistant(message) => {
+                #[cfg(test)]
+                super::layout::ASSISTANT_COUNTS.with(|count| count.set(count.get() + 1));
                 // Settled blocks replay from the entry's render cache.
                 let caches = self.md_caches.borrow();
                 let empty = crate::markdown::MarkdownBlockCache::default();

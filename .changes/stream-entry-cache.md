@@ -1,0 +1,1 @@
+- Streaming replies cost less to draw: frames that change only the spinner or the editor reuse the reply's laid-out rows, and each streamed update lays the reply out once instead of once per measure and once per paint.

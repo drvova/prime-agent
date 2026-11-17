@@ -14,6 +14,8 @@ pub(super) type LayoutOptions = (crate::theme::Theme, String, bool, bool, Option
 thread_local! {
     pub(super) static ENTRY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static ENTRY_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Count-only assistant measures (the geometry pass's own markdown walk).
+    pub(super) static ASSISTANT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -27,6 +29,23 @@ pub(super) struct EntryLayout {
     /// The spacing decision the rows render under.
     pub(super) spacing: bool,
     pub(super) rows: std::sync::Arc<RowPack>,
+}
+
+/// The one-slot cache of the streaming assistant entry's rows. A streaming message is never
+/// cacheable in `entry_layout` (an update may replace its blocks), but most frames during a
+/// stream change something else (the spinner's 80ms phase, a keystroke in the editor), and every
+/// stream update measures the entry before and after its mutation: the slot serves the row count
+/// and the rows while every input of the assistant render is unchanged. The message itself is the
+/// text/thinking revision: an equality compare is linear in the message and needs no counter that
+/// every stream mutation site would have to bump.
+pub(super) struct StreamingEntryRows {
+    pub(super) index: usize,
+    pub(super) width: usize,
+    pub(super) detail: crate::chat::Detail,
+    pub(super) spacing: bool,
+    pub(super) preceded_by_tool: bool,
+    pub(super) message: crate::chat::AssistantMessage,
+    pub(super) rows: std::sync::Arc<Vec<Line>>,
 }
 
 /// One packed row's start: its content blob offset and first span
@@ -353,6 +372,7 @@ impl AgentView {
                     .for_each(|slot| *slot = [None, None, None]);
             }
             self.md_caches.borrow_mut().clear();
+            self.streaming_rows.borrow_mut().take();
         }
         self.entry_layout
             .resize_with(self.chat.len(), || [None, None, None]);

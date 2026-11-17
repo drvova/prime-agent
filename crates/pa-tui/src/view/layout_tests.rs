@@ -1047,3 +1047,53 @@ fn an_assistant_growth_folds_at_its_own_slot() {
         "the paused selection keeps its content while the answer streams"
     );
 }
+
+/// The streaming assistant's one-slot cache serves both passes: a frame that changed only the
+/// spinner phase replays the entry (no render, no count-only measure), and a stream update
+/// renders the entry exactly once, its before and after measures and the next paint all served
+/// by that one render.
+#[test]
+fn a_spinner_frame_replays_the_streaming_entry_and_an_append_renders_it_once() {
+    let mut view = view();
+    view.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
+        blocks: vec![MessageBlock::Text(
+            "## Plan\n\nThe parser does three jobs.\n\n- one\n- two".to_string(),
+        )],
+        has_tool_calls: false,
+        streaming: true,
+        error: None,
+        aborted: false,
+    })));
+    view.render_frame(80, 24);
+    let reset = || {
+        ENTRY_RENDERS.with(|count| count.set(0));
+        ASSISTANT_COUNTS.with(|count| count.set(0));
+    };
+    let work = || {
+        (
+            ENTRY_RENDERS.with(std::cell::Cell::get),
+            ASSISTANT_COUNTS.with(std::cell::Cell::get),
+        )
+    };
+    // A spinner-only frame: the loader's phase moved, the message did not.
+    view.pulse_frame += 1;
+    reset();
+    view.render_frame(80, 24);
+    assert_eq!(work(), (0, 0), "(renders, count-only measures)");
+    // A text append, through the stream path's measure-mutate-measure bracket.
+    reset();
+    view.prepare_entry_mutation(0);
+    if let Some(ChatEntry::Assistant(open)) = view.chat.get_mut(0) {
+        open.blocks = vec![MessageBlock::Text(
+            "## Plan\n\nThe parser does three jobs.\n\n- one\n- two\n- three".to_string(),
+        )];
+    }
+    view.mark_entry_stale(0);
+    let frame = view.render_frame(80, 24);
+    assert_eq!(work(), (1, 0), "(renders, count-only measures)");
+    let text: Vec<String> = frame
+        .iter()
+        .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+        .collect();
+    assert!(text.iter().any(|row| row.contains("three")), "{text:#?}");
+}
