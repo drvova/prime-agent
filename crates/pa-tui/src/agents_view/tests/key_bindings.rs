@@ -206,7 +206,7 @@ fn rename_key_composes_edits_and_dispatches() {
     );
     assert_eq!(
         flat(&mode.render_hints(120, None)),
-        "Enter rename   Esc/Ctrl+C cancel"
+        "  Enter rename · Esc back"
     );
     mode.handle_key("ctrl+u");
     let (frame, _) = mode.render_frame(120, 20);

@@ -448,7 +448,7 @@ impl AgentView {
                 &self.theme,
                 self.pulse_frame,
                 self.detail.tool_output_expanded(),
-                &self.editor.keybindings().key_text("tui.select.cancel"),
+                self.editor.keybindings(),
                 width,
             ));
         }

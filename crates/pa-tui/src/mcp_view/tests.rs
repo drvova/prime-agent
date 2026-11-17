@@ -72,9 +72,10 @@ fn renders_the_ts_inline_panel_shape() {
     let mut view = McpView::from_response(&catalog_response(), 19);
     let rows = frame_text(&mut view);
     let border = "\u{2500}".repeat(110);
-    assert_eq!(rows[0], border, "top rule");
-    assert_eq!(rows[1], " >  Search MCP connections", "search field");
-    assert_eq!(rows[2], border, "bottom rule");
+    assert_eq!(rows[0], "  MCP", "the shared title row");
+    assert_eq!(rows[1], border, "top rule");
+    assert_eq!(rows[2], " >  Search MCP connections", "search field");
+    assert_eq!(rows[3], border, "bottom rule");
     // The connected row leads (the daemon's TS rank); its status reads the honest state, and
     // the record-carried tool count reads `Connected · N tools` (TS) on the notion row.
     let selected = rows
@@ -89,7 +90,7 @@ fn renders_the_ts_inline_panel_shape() {
         selected.ends_with("Connected"),
         "status flush right: {selected}"
     );
-    assert_eq!(rows.len(), 10, "the fixed frame: {rows:?}");
+    assert_eq!(rows.len(), 11, "the fixed frame: {rows:?}");
     // The user stdio row's detail falls back to its status (no description); the hint
     // names the accounts step.
     let detail = rows
@@ -103,7 +104,7 @@ fn renders_the_ts_inline_panel_shape() {
     );
     assert_eq!(
         rows[detail + 1],
-        " \u{2191}/\u{2193} navigate \u{b7} Enter manage accounts \u{b7} Esc close",
+        "  \u{2191}/\u{2193} navigate \u{b7} Enter manage accounts \u{b7} Esc close",
         "the hint row"
     );
     // The notion row carries the record's tool count.
@@ -142,8 +143,8 @@ fn the_frame_height_stays_within_the_viewport_budget() {
     let data = json!({ "connections": [], "services": services });
     let mut view = McpView::from_response(&data, 19);
     let lines = view.render(&theme(), 110, &kb());
-    // search field (3) + window (8) + counter (1) + blank (1) + detail (1) + hint (1).
-    assert_eq!(lines.len(), 15, "the dock stays inside its budget");
+    // title (1) + search field (3) + window (8) + counter (1) + blank (1) + detail (1) + hint (1).
+    assert_eq!(lines.len(), 16, "the dock stays inside its budget");
     assert!(
         lines.iter().any(|line| {
             line.iter()
@@ -156,7 +157,7 @@ fn the_frame_height_stays_within_the_viewport_budget() {
     // A short viewport drops the detail line instead of the search field: the frame only shrinks.
     let mut view = McpView::from_response(&data, 7);
     let rows = frame_text(&mut view);
-    assert_eq!(rows[0], "\u{2500}".repeat(110), "the search field stays");
+    assert_eq!(rows[1], "\u{2500}".repeat(110), "the search field stays");
     assert!(
         !rows.iter().any(|row| row.contains("A catalog service.")),
         "the detail line dropped in the short viewport: {rows:?}"
@@ -164,9 +165,9 @@ fn the_frame_height_stays_within_the_viewport_budget() {
     assert!(rows.len() <= 7, "the short frame stays within budget");
     // A viewport the search field and hint alone fill renders the skeleton only: no service row, no
     // scroll indicator, no detail — the empty row window is never raised back to one row.
-    let mut view = McpView::from_response(&data, 4);
+    let mut view = McpView::from_response(&data, 5);
     let rows = frame_text(&mut view);
-    assert!(rows.len() <= 4, "the skeleton owns the frame: {rows:?}");
+    assert!(rows.len() <= 5, "the skeleton owns the frame: {rows:?}");
     assert!(
         !rows.iter().any(|row| row.contains("Service 0")),
         "no service row in the too-short frame: {rows:?}"
@@ -179,7 +180,7 @@ fn the_frame_height_stays_within_the_viewport_budget() {
     // no `Enter select` filler.
     assert_eq!(
         rows.last().map(String::as_str),
-        Some(" \u{2191}/\u{2193} navigate \u{b7} Enter connect \u{b7} Esc close"),
+        Some("  \u{2191}/\u{2193} navigate \u{b7} Enter connect \u{b7} Esc close"),
         "the hint rides the skeleton's last row"
     );
 }
@@ -201,7 +202,7 @@ fn pasteable_rows_keep_the_honest_status() {
     assert!(
         rows.iter()
             .any(|row| row
-                == " \u{2191}/\u{2193} navigate \u{b7} Enter paste token \u{b7} Esc close"),
+                == "  \u{2191}/\u{2193} navigate \u{b7} Enter paste token \u{b7} Esc close"),
         "the paste action hint names the step: {rows:?}"
     );
     assert!(
@@ -293,7 +294,7 @@ fn credential_rows_render_and_route() {
     );
     assert_eq!(
         rows.last().map(String::as_str),
-        Some(" \u{2191}/\u{2193} navigate \u{b7} Enter add key \u{b7} Esc close"),
+        Some("  \u{2191}/\u{2193} navigate \u{b7} Enter add key \u{b7} Esc close"),
         "the hint names the add-key step"
     );
     assert_eq!(
@@ -328,7 +329,7 @@ fn a_configured_credential_names_the_replace_step() {
     );
     assert_eq!(
         rows.last().map(String::as_str),
-        Some(" \u{2191}/\u{2193} navigate \u{b7} Enter replace key \u{b7} Esc close"),
+        Some("  \u{2191}/\u{2193} navigate \u{b7} Enter replace key \u{b7} Esc close"),
         "the hint names the replace-key step"
     );
 }
@@ -522,7 +523,7 @@ fn the_empty_roster_renders_the_empty_message() {
     assert_eq!(rows[message + 1], "", "the blank row before the hint");
     assert_eq!(
         rows[message + 2],
-        " \u{2191}/\u{2193} navigate \u{b7} Esc close",
+        "  \u{2191}/\u{2193} navigate \u{b7} Esc close",
         "no action filler in the hint (TS)"
     );
     // A query with no matches.
@@ -607,21 +608,21 @@ fn scoring_measures_utf16_units_like_ts() {
 #[test]
 fn the_empty_state_needs_its_window_budget() {
     let data = json!({ "connections": [], "services": [] });
-    let mut view = McpView::from_response(&data, 5);
+    let mut view = McpView::from_response(&data, 6);
     let rows = frame_text(&mut view);
-    assert!(rows.len() <= 5, "the too-short empty frame fits: {rows:?}");
+    assert!(rows.len() <= 6, "the too-short empty frame fits: {rows:?}");
     assert!(
         !rows.iter().any(|row| row.contains("No external services")),
         "the message stays behind its budget: {rows:?}"
     );
     // Once the viewport budgets the two rows, the message rides.
-    let mut view = McpView::from_response(&data, 6);
+    let mut view = McpView::from_response(&data, 7);
     let rows = frame_text(&mut view);
     assert!(
         rows.iter().any(|row| row.contains("No external services")),
         "the message renders inside its budget: {rows:?}"
     );
-    assert!(rows.len() <= 6, "the empty frame fits: {rows:?}");
+    assert!(rows.len() <= 7, "the empty frame fits: {rows:?}");
 }
 
 /// A narrow row keeps a SHORTENED trailing status (TS `getInlineTrailing`: the cluster reduces from
@@ -631,11 +632,14 @@ fn narrow_rows_shorten_the_trailing_status() {
     let theme = theme();
     // Width 24: the trailing budget is 17, so the 19-wide status SHORTENS with the
     // ellipsis instead of dropping off the row.
-    let row = trailing_menu_row(
+    let row = crate::menu_panel::menu_row(
         &theme,
         24,
         vec![Span::raw("CockroachDB")],
-        &[(ThemeColor::Success, "Connected \u{b7} 12 tools")],
+        &[crate::menu_panel::MenuSegment::themed(
+            ThemeColor::Success,
+            "Connected \u{b7} 12 tools",
+        )],
         true,
     );
     let text = row

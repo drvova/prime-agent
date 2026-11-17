@@ -7,9 +7,10 @@
 
 use crate::info_commands::ClientLine;
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{hint_row, menu_list_layout, scroll_row};
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_list_layout, scroll_row};
 use crate::theme::{Theme, ThemeColor};
-use crate::{Line, Span};
+use crate::Line;
 
 /// The panel's fixed frame rows outside the content window with a title: the rule, the title, the
 /// blank under it, the key hint, and the trailing blank (the operator's 2026-09-24 spacing
@@ -201,37 +202,35 @@ impl InfoPanel {
             theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width.max(1)))
         ]);
         if let Some(title) = &self.title {
-            let title: Line = vec![
-                Span::raw("  "),
-                theme.fg_span(ThemeColor::Text, title.clone()),
-            ];
-            lines.push(crate::width::truncate_line(&title, width, ""));
+            lines.push(title_row(theme, width, title));
         }
         lines.push(Vec::new());
         lines.extend(self.layout.rows[self.scroll..end].iter().cloned());
         if end < total || self.scroll > 0 {
             lines.push(scroll_row(theme, width, self.scroll + 1, total));
         }
-        lines.push(hint_row(theme, width, &hint_text(kb)));
+        lines.push(footer(kb).line(theme, width));
         lines.push(Vec::new());
         lines.truncate(viewport_rows.max(1));
         lines
     }
 }
 
-/// The key-hint text: the scroll keys and the close key, the same vocabulary as the pickers'
-/// hints. An unbound action is omitted — the hint never advertises a key the surface does
-/// not handle. A user who unbinds `tui.select.cancel` loses the Esc close; the hint then
-/// names the one close key that always works: Ctrl+C (hardwired in `handle_key`).
-fn hint_text(kb: &KeybindingsManager) -> String {
-    let scroll = crate::menu_panel::key_hint(kb, &["tui.select.up", "tui.select.down"], "scroll");
-    let close = kb.first_key("tui.select.cancel").map_or_else(
-        || "Ctrl+C".to_string(),
-        |key| crate::keybindings::format_key_text(&key),
+/// The footer: the scroll keys and the close key, the same vocabulary as the pickers' footers. An
+/// unbound action is omitted — the footer never advertises a key the surface does not handle. A
+/// user who unbinds `tui.select.cancel` loses the Esc close; the footer then names the one close
+/// key that always works: Ctrl+C (hardwired in `handle_key`).
+fn footer(kb: &KeybindingsManager) -> Footer {
+    let footer = Footer::new().bound(
+        kb,
+        &["tui.select.up", "tui.select.down"],
+        "scroll",
+        HintRank::Useful,
     );
-    match scroll {
-        Some(scroll) => format!("{scroll} \u{b7} {close} close"),
-        None => format!("{close} close"),
+    if kb.first_key("tui.select.cancel").is_some() {
+        footer.esc(kb, EscVerb::Close)
+    } else {
+        footer.keys(["ctrl+c"], "close", HintRank::Core)
     }
 }
 
@@ -286,7 +285,7 @@ mod tests {
         assert_eq!(text[2], "");
         assert_eq!(text[3], " line 0");
         assert_eq!(text[4], " line 1");
-        assert!(text[5].starts_with(" \u{2191}/\u{2193} scroll \u{b7} Esc close"));
+        assert!(text[5].starts_with("  \u{2191}/\u{2193} scroll \u{b7} Esc close"));
         assert_eq!(text[6], "");
         assert_eq!(text.len(), 7);
     }
@@ -311,7 +310,7 @@ mod tests {
         assert_eq!(text[2], " Session Info");
         assert_eq!(text[3], " line 0");
         assert_eq!(text[4], " line 1");
-        assert!(text[5].starts_with(" \u{2191}/\u{2193} scroll"));
+        assert!(text[5].starts_with("  \u{2191}/\u{2193} scroll"));
         assert_eq!(text.last(), Some(&String::new()));
     }
 

@@ -327,7 +327,7 @@ fn the_reply_hints_follow_the_target_state() {
     let mode = armed_live();
     assert_eq!(
         flat(&mode.render_hints(120, None)),
-        "Enter send   Esc/Ctrl+C cancel",
+        "  Enter send · Esc back",
         "the live idle hint"
     );
     let mut streaming = mode_with_parent_and_child();
@@ -336,19 +336,19 @@ fn the_reply_hints_follow_the_target_state() {
     streaming.handle_key("space");
     assert_eq!(
         flat(&streaming.render_hints(120, None)),
-        "Enter steer   Esc/Ctrl+C cancel"
+        "  Enter steer · Esc back"
     );
     let mut with_text = armed_live();
     with_text.handle_key("h");
     let alt = crate::keybindings::format_key_text("alt");
     assert_eq!(
         flat(&with_text.render_hints(120, None)),
-        format!("Enter send   {alt}+Enter queue   Esc/Ctrl+C cancel")
+        format!("  Enter send · {alt}+Enter queue · Esc back")
     );
     let saved = armed_saved();
     assert_eq!(
         flat(&saved.render_hints(120, None)),
-        "Enter resume & send   Esc/Ctrl+C cancel"
+        "  Enter resume & send · Esc back"
     );
 }
 

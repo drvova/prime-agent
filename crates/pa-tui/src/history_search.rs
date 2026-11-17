@@ -6,9 +6,10 @@
 //! untouched.
 
 use crate::editor::HistoryEntry;
-use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
 use crate::menu_panel::{
-    hint_row, menu_row, no_match_row, scroll_row, scrub_controls, search_field_lines, MenuSegment,
+    menu_row, no_match_row, scroll_row, scrub_controls, search_field_lines, MenuSegment,
 };
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
@@ -147,9 +148,9 @@ impl HistorySearch {
         }
     }
 
-    /// The frame: the search field, the visible window of rows with the matched words in accent
-    /// and the age flush right, the scroll position, the empty state, and the key hint. `now`
-    /// anchors the ages.
+    /// The frame: the title, the search field, the visible window of rows with the matched words
+    /// in accent and the age flush right, the scroll position, the empty state, and the shared
+    /// menu footer. `now` anchors the ages.
     pub(crate) fn render(
         &self,
         theme: &Theme,
@@ -157,14 +158,15 @@ impl HistorySearch {
         kb: &KeybindingsManager,
         now: std::time::SystemTime,
     ) -> Vec<Line> {
-        let mut lines = search_field_lines(
+        let mut lines = vec![title_row(theme, width, "History")];
+        lines.extend(search_field_lines(
             theme,
             width,
             self.search.value(),
             self.search.cursor(),
             true,
             SEARCH_PLACEHOLDER,
-        );
+        ));
         let tokens = query_tokens(self.search.value());
         let start = self
             .selected
@@ -226,18 +228,18 @@ impl HistorySearch {
             };
             lines.push(no_match_row(theme, width, message));
         }
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        let hint = format!(
-            "{}/{} navigate \u{b7} {} select \u{b7} {} cancel",
-            key("tui.select.up", "\u{2191}"),
-            key("tui.select.down", "\u{2193}"),
-            key("tui.select.confirm", "Enter"),
-            key("tui.select.cancel", "Esc"),
+        lines.push(
+            Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Close)
+                .line(theme, width),
         );
-        lines.push(hint_row(theme, width, &hint));
         lines
     }
 }
@@ -276,17 +278,17 @@ mod tests {
         let rows = search.render(&theme, 44, &kb, now);
         let text = |row: &Line| row.iter().map(|span| &*span.content).collect::<String>();
         assert_eq!(
-            rows[3..6].iter().map(text).collect::<Vec<_>>(),
+            rows[4..7].iter().map(text).collect::<Vec<_>>(),
             vec![
                 "\u{203a} fix the parser tests                   now".to_string(),
                 "  Parser refactor plan                    3d".to_string(),
-                " \u{2191}/\u{2193} navigate \u{b7} Enter select \u{b7} Esc cancel".to_string(),
+                "  \u{2191}/\u{2193} navigate \u{b7} Enter select \u{b7} Esc close".to_string(),
             ]
         );
         let accent = theme.fg_style(ThemeColor::Accent);
-        let lit: Vec<&str> = rows[3]
+        let lit: Vec<&str> = rows[4]
             .iter()
-            .chain(&rows[4])
+            .chain(&rows[5])
             .filter(|span| span.style.fg == accent.fg)
             .map(|span| &*span.content)
             .collect();
@@ -296,6 +298,6 @@ mod tests {
             HistorySearchAction::Select("fix the parser tests".to_string())
         );
         let unfiltered = HistorySearch::new(&[entry("x", now - Duration::from_secs(32 * 60))]);
-        assert!(text(&unfiltered.render(&theme, 40, &kb, now)[3]).ends_with("32m"));
+        assert!(text(&unfiltered.render(&theme, 40, &kb, now)[4]).ends_with("32m"));
     }
 }

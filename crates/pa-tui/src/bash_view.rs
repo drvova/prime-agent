@@ -5,7 +5,8 @@
 
 use serde_json::Value;
 
-use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
 use crate::menu_panel::{
     fill_row, hug_row, menu_list_layout, plain_cell, scrub_controls, status_dot,
 };
@@ -17,8 +18,7 @@ mod render;
 
 pub(crate) use render::format_duration;
 use render::{
-    action_row, clean_line, error_line, hint_line, marker_line, metadata_row, pane_header_lines,
-    Columns,
+    action_row, clean_line, error_line, marker_line, metadata_row, pane_header_lines, Columns,
 };
 
 // A tail response may outlive its entire pane, so tokens belong to the process,
@@ -618,7 +618,7 @@ impl BashView {
                 ]);
             }
         }
-        lines.extend(self.pane_footer(theme, width, &Self::list_hint(kb)));
+        lines.extend(self.pane_footer(theme, width, &Self::list_footer(kb)));
         // A terminal shorter than the frame degrades by truncation: the
         // pane never renders past its allocated rows.
         lines.truncate(self.viewport_rows.max(1));
@@ -641,7 +641,7 @@ impl BashView {
                 Span::raw("  "),
                 theme.fg_span(ThemeColor::Muted, "This command is no longer available."),
             ]);
-            lines.extend(self.pane_footer(theme, width, &self.detail_hint(kb)));
+            lines.extend(self.pane_footer(theme, width, &self.detail_footer(kb)));
             return lines;
         };
         // The command renders verbatim with non-newline control characters scrubbed:
@@ -756,7 +756,7 @@ impl BashView {
             let (label, description) = &actions[0];
             lines.push(action_row(theme, width, label, description, true));
         }
-        lines.extend(self.pane_footer(theme, width, &self.detail_hint(kb)));
+        lines.extend(self.pane_footer(theme, width, &self.detail_footer(kb)));
         lines.truncate(self.viewport_rows.max(1));
         // The key loop's scroll math walks the same region the pane
         // rendered: record its height after the truncation above.
@@ -765,72 +765,63 @@ impl BashView {
         self.detail_region_rows.set(rendered);
         lines
     }
-    /// The list's bottom hint: an override that empties the open or back
-    /// binding drops its key (the hint never advertises a key the handler
-    /// does not take).
-    fn list_hint(kb: &KeybindingsManager) -> String {
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        let bound = |binding: &str| kb.first_key(binding).map(|key| format_key_text(&key));
-        let open = match bound("app.modal.open") {
-            Some(open) => format!("{}/{open}", key("tui.select.confirm", "Enter")),
-            None => key("tui.select.confirm", "Enter"),
-        };
-        let close = match bound("app.modal.back") {
-            Some(back) => format!("{back}/{}", key("tui.select.cancel", "Esc")),
-            None => key("tui.select.cancel", "Esc"),
-        };
-        format!(
-            "{}/{} move \u{b7} {open} open \u{b7} {close} close",
-            key("tui.select.up", "\u{2191}"),
-            key("tui.select.down", "\u{2193}"),
-        )
+    /// The list's footer: an override that empties the open or back binding drops its key (the
+    /// footer never advertises a key the handler does not take).
+    fn list_footer(kb: &KeybindingsManager) -> Footer {
+        Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "move",
+                HintRank::Useful,
+            )
+            .bound(
+                kb,
+                &["tui.select.confirm", "app.modal.open"],
+                "open",
+                HintRank::Core,
+            )
+            .bound(
+                kb,
+                &["app.modal.back", "tui.select.cancel"],
+                "close",
+                HintRank::Core,
+            )
     }
 
-    /// The detail pane's bottom hint: the scroll keys, and the run key
-    /// only while the open row still offers its cancel action.
-    fn detail_hint(&self, kb: &KeybindingsManager) -> String {
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        let up_down = format!(
-            "{}/{}",
-            key("tui.select.up", "\u{2191}"),
-            key("tui.select.down", "\u{2193}")
-        );
+    /// The detail pane's footer: the scroll keys, and the run key only while the open row still
+    /// offers its cancel action.
+    fn detail_footer(&self, kb: &KeybindingsManager) -> Footer {
         let running = self
             .detail_id()
             .and_then(|id| self.find_activity(&id))
             .is_some_and(|activity| !Self::available_actions(activity).is_empty());
-        if running {
-            format!(
-                "{up_down} scroll \u{b7} {} run \u{b7} {} back \u{b7} {} close",
-                key("tui.select.confirm", "Enter"),
-                key("app.modal.back", "\u{2190}"),
-                key("tui.select.cancel", "Esc"),
-            )
+        let footer = Footer::new().bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "scroll",
+            HintRank::Useful,
+        );
+        let footer = if running {
+            footer.bound(kb, &["tui.select.confirm"], "run", HintRank::Core)
         } else {
-            format!(
-                "{up_down} scroll \u{b7} {} back \u{b7} {} close",
-                key("app.modal.back", "\u{2190}"),
-                key("tui.select.cancel", "Esc"),
-            )
-        }
+            footer
+        };
+        footer
+            .bound(kb, &["app.modal.back"], "back", HintRank::Useful)
+            .esc(kb, EscVerb::Close)
     }
 
     /// The pane footer: the error block, a blank, the hint line, and one
     /// blank below the shortcuts (spacing, not a divider).
-    fn pane_footer(&self, theme: &Theme, width: usize, hint: &str) -> Vec<Line> {
+    fn pane_footer(&self, theme: &Theme, width: usize, footer: &Footer) -> Vec<Line> {
         let mut lines = Vec::new();
         if let Some(error) = &self.error {
             lines.push(Vec::new());
             lines.push(error_line(theme, width, error));
         }
         lines.push(Vec::new());
-        lines.push(hint_line(theme, width, hint));
+        lines.push(footer.line(theme, width));
         lines.push(Vec::new());
         lines
     }

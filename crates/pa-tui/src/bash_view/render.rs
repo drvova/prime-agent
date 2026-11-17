@@ -245,10 +245,7 @@ pub(super) fn pane_header_lines(
     counts: &[(ThemeColor, String)],
     subtitle: Option<&str>,
 ) -> Vec<Line> {
-    let mut title_row = vec![
-        Span::raw("  "),
-        theme.fg_span(ThemeColor::Text, title.to_string()),
-    ];
+    let mut title_row = crate::menu_chrome::title_row(theme, usize::MAX, title);
     if !counts.is_empty() {
         let joined_width = counts
             .iter()
@@ -281,15 +278,6 @@ pub(super) fn pane_header_lines(
     }
     lines.push(Vec::new());
     lines
-}
-
-/// The hint row: dim key text, muted ` description`.
-pub(super) fn hint_line(theme: &Theme, width: usize, hint: &str) -> Line {
-    let line = vec![
-        Span::raw("  "),
-        theme.fg_span(ThemeColor::Dim, hint.to_string()),
-    ];
-    truncate_line(&line, width, "")
 }
 
 /// An error line (`Error: <message>` in the error color).

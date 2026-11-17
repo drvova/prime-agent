@@ -5,7 +5,8 @@
 
 mod tabs;
 
-use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::wrap_text;
@@ -745,14 +746,14 @@ impl SettingsMenu {
         if let Some(sub) = &self.sub {
             return Self::render_submenu(sub, theme, width, kb);
         }
-        let mut lines: Vec<crate::Line> = Vec::new();
+        let mut lines: Vec<crate::Line> = vec![title_row(theme, width, "Settings")];
         if self.rows.is_empty() {
             lines.push(crate::menu_panel::no_match_row(
                 theme,
                 width,
                 "No settings available",
             ));
-            lines.push(hint_row(theme, width, &hint(kb, 0)));
+            lines.push(Footer::new().esc(kb, EscVerb::Close).line(theme, width));
             return lines;
         }
         let tab = &self.tabs[self.tab];
@@ -776,7 +777,7 @@ impl SettingsMenu {
                 width,
                 "No matching settings",
             ));
-            lines.push(hint_row(theme, width, &hint(kb, self.tabs.len())));
+            lines.push(footer(kb, self.tabs.len()).line(theme, width));
             return lines;
         }
         let start = tab
@@ -824,7 +825,7 @@ impl SettingsMenu {
                 lines.push(crate::menu_panel::rule_row(theme, width));
             }
         }
-        lines.push(hint_row(theme, width, &hint(kb, self.tabs.len())));
+        lines.push(footer(kb, self.tabs.len()).line(theme, width));
         lines
     }
 
@@ -871,13 +872,10 @@ impl SettingsMenu {
         lines.push(crate::menu_panel::rule_row(theme, width));
         // The setting's name and description carry the list rows' padding-x (the
         // operator's 2026-09-28 regression pin).
-        lines.push(crate::width::truncate_line(
-            &vec![
-                crate::Span::raw("  ".to_string()),
-                theme.fg_span(ThemeColor::Accent, title.to_string()),
-            ],
+        lines.push(title_row(
+            theme,
             width,
-            "",
+            &format!("Settings \u{203a} {title}"),
         ));
         if !description.is_empty() {
             lines.push(Vec::new());
@@ -912,50 +910,40 @@ impl SettingsMenu {
             ));
         }
         lines.push(Vec::new());
-        lines.push(hint_row(theme, width, &submenu_hint(kb)));
+        lines.push(
+            Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Back)
+                .line(theme, width),
+        );
         lines
     }
 }
 
-/// The settings page's own key-hint row: this surface's keyboard-shortcuts row carries the
-/// two-space inner column the detail block aligns on (the operator's 2026-09-28 padding pass).
-fn hint_row(theme: &Theme, width: usize, hint: &str) -> crate::Line {
-    let line = vec![
-        crate::Span::raw("  ".to_string()),
-        theme.fg_span(ThemeColor::Dim, hint.to_string()),
-    ];
-    crate::width::truncate_line(&line, width, "")
-}
-
-/// The menu's key hint: Space is a literal key the menu always handles; an
-/// unbound Enter drops its label, an unbound Esc drops the close segment.
-fn hint(kb: &KeybindingsManager, tabs: usize) -> String {
-    let mut segments = vec!["Type to search".to_string()];
-    if tabs > 0 {
-        segments.push(format!("{}/1-{tabs} tabs", format_key_text("tab")));
-    }
-    let arrows = format!("{}/{}", format_key_text("left"), format_key_text("right"));
-    segments.push(match kb.first_key("tui.select.confirm") {
-        Some(key) => format!("{arrows}/{}/Space change", format_key_text(&key)),
-        None => format!("{arrows}/Space change"),
-    });
-    if let Some(close) = crate::menu_panel::key_hint(kb, &["tui.select.cancel"], "close") {
-        segments.push(close);
-    }
-    segments.join(" · ")
-}
-
-/// The submenu's key hint: an unbound action is omitted, never advertised
-/// with a default key.
-fn submenu_hint(kb: &KeybindingsManager) -> String {
-    [
-        crate::menu_panel::key_hint(kb, &["tui.select.confirm"], "select"),
-        crate::menu_panel::key_hint(kb, &["tui.select.cancel"], "back"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<String>>()
-    .join(" · ")
+/// The menu's footer: Tab, the digit row, the arrows, and Space are literal keys the menu always
+/// handles; an unbound Enter or Esc drops its hint.
+fn footer(kb: &KeybindingsManager, tabs: usize) -> Footer {
+    Footer::new()
+        .bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "navigate",
+            HintRank::Useful,
+        )
+        .keys(["left", "right"], "change", HintRank::Useful)
+        .keys(
+            ["tab".to_string(), format!("1-{tabs}")],
+            "tabs",
+            HintRank::Extra,
+        )
+        .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+        .esc(kb, EscVerb::Close)
 }
 
 #[cfg(test)]

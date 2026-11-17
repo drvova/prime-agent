@@ -1,0 +1,1 @@
+- Every picker and panel now shares one look: a title row, the `›` selection, and one footer of `key verb` hints read from your keybindings (Esc reads `close`, or `back` in a submenu); `/effort` opens on the current level and the `/import` and `/update` confirms default to No.

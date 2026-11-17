@@ -1,10 +1,10 @@
 use super::{FilterMode, GutterInfo, TreeList};
-use crate::theme::{Theme, ThemeBg, ThemeColor};
+use crate::theme::{Theme, ThemeColor};
 use crate::tree_display;
 use crate::tree_nodes::TreeNode;
 use crate::width::{str_width, truncate_line};
 use crate::{Line, Span};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Modifier;
 
 impl TreeList {
     /// Render the visible rows plus the counter (TS `TreeList.render`).
@@ -33,17 +33,14 @@ impl TreeList {
             .saturating_sub(max / 2)
             .min(self.filtered.len().saturating_sub(max));
         let end = (start + max).min(self.filtered.len());
-        let selected_bg = theme.bg_style(ThemeBg::SelectedBg);
         for position in start..end {
             let index = self.filtered[position];
             let node = &self.flat[index];
             let entry_id = node.data.entry.id().unwrap_or_default();
             let is_selected = position == self.selected;
-            // TS drops the selected row's interior colors: the row writer
-            // re-emits only the background escape, so the cursor and
-            // path markers render unstyled.
+            // The menus' `›` marker leads the selected row.
             let cursor = if is_selected {
-                Span::raw("› ".to_string())
+                Span::raw("\u{203a} ".to_string())
             } else {
                 Span::raw("  ".to_string())
             };
@@ -143,21 +140,14 @@ impl TreeList {
             row.push(label);
             row.push(label_timestamp);
             row.extend(content);
-            if is_selected {
-                // The selected row keeps only the bold modifier over the
-                // selection background: TS drops interior colors under
-                // the selection wrap.
-                for span in &mut row {
-                    let bold = span.style.add_modifier.contains(Modifier::BOLD);
-                    span.style = Style::default();
-                    if bold {
-                        span.style = span.style.add_modifier(Modifier::BOLD);
-                    }
-                    span.style = span.style.patch(selected_bg);
-                }
-            }
             let _ = str_width(&prefix);
-            lines.push(truncate_line(&row, width, ""));
+            if is_selected {
+                // The selected row carries the menus' selection: the full-width soft band over
+                // the row's own colours.
+                lines.push(crate::menu_panel::finish_menu_row(theme, &row, width, true));
+            } else {
+                lines.push(truncate_line(&row, width, ""));
+            }
         }
         lines.push(truncate_line(
             &vec![theme.fg_span(

@@ -7,8 +7,9 @@ use pa_types::ai::{Model, ModelThinkingLevel};
 use std::fmt::Write;
 
 use super::{EffortLayout, ModelPicker};
-use crate::keybindings::{format_key_text, KeybindingsManager};
-use crate::menu_panel::{hint_row, menu_row, no_match_row, search_field_lines};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_row, no_match_row, search_field_lines};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -32,7 +33,7 @@ pub(super) fn render(
     // The scope row renders ABOVE the search field (TS v0.9.7's headerHelpContainer mounts before
     // the search input): one leading space, the active side accented, then the dim toggle key and
     // muted description, truncated with "...".
-    let mut lines = Vec::new();
+    let mut lines = vec![crate::menu_chrome::title_row(theme, width, "Model")];
     if picker.has_scoped_models() {
         let muted = |text: &str| theme.fg_span(ThemeColor::Muted, text.to_string());
         let (all, scoped) = if picker.scoped_side() {
@@ -108,7 +109,24 @@ pub(super) fn render(
         }
     }
 
-    lines.push(hint_line(theme, width, kb));
+    lines.push(
+        Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "model",
+                HintRank::Useful,
+            )
+            .bound(
+                kb,
+                &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
+                "effort",
+                HintRank::Useful,
+            )
+            .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            .esc(kb, EscVerb::Close)
+            .line(theme, width),
+    );
 
     lines.push(Vec::new());
     lines
@@ -288,37 +306,6 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
             crate::width::truncate_line(&line, width, "\u{2026}")
         })
         .collect()
-}
-
-/// The trailing key hint: the model/effort navigation hint on wide panes, the
-/// select/close core below 70 columns.
-fn hint_line(theme: &Theme, width: usize, kb: &KeybindingsManager) -> Line {
-    let select_key = kb
-        .first_key("tui.select.confirm")
-        .map_or_else(|| "Enter".to_string(), |key| format_key_text(&key));
-    let close_key = kb
-        .first_key("tui.select.cancel")
-        .map_or_else(|| "Esc".to_string(), |key| format_key_text(&key));
-    let hint = if width >= 70 {
-        let navigate = format!(
-            "{}/{}",
-            kb.first_key("tui.select.up")
-                .map_or_else(|| "\u{2191}".to_string(), |key| format_key_text(&key)),
-            kb.first_key("tui.select.down")
-                .map_or_else(|| "\u{2193}".to_string(), |key| format_key_text(&key))
-        );
-        let effort = format!(
-            "{}/{}",
-            kb.first_key("tui.editor.cursorLeft")
-                .map_or_else(|| "\u{2190}".to_string(), |key| format_key_text(&key)),
-            kb.first_key("tui.editor.cursorRight")
-                .map_or_else(|| "\u{2192}".to_string(), |key| format_key_text(&key))
-        );
-        format!("{navigate} model \u{b7} {effort} effort \u{b7} {select_key} select \u{b7} {close_key} close")
-    } else {
-        format!("{select_key} select \u{b7} {close_key} close")
-    };
-    hint_row(theme, width, &hint)
 }
 
 /// Truncate to a width and pad to it.

@@ -3,7 +3,8 @@
 //! answers the pending question.
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{hint_row, key_hint, menu_row};
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::menu_row;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::truncate_line;
 use crate::Line;
@@ -29,7 +30,8 @@ pub struct ConfirmPanel {
 }
 
 impl ConfirmPanel {
-    /// The Yes/No confirm of a pending question (`title`, `message`).
+    /// The Yes/No confirm of a pending question (`title`, `message`). The selection opens on
+    /// `No`: a stray Enter never runs the change the question guards.
     pub fn yes_no(title: &str, message: &str) -> Self {
         ConfirmPanel {
             title: title.to_string(),
@@ -40,7 +42,7 @@ impl ConfirmPanel {
                 .map(str::to_string)
                 .collect(),
             options: vec!["Yes".to_string(), "No".to_string()],
-            selected: 0,
+            selected: 1,
         }
     }
 
@@ -74,10 +76,10 @@ impl ConfirmPanel {
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Vec::new());
-        lines.push(vec![crate::Span::raw(format!("  {}", self.title))]);
+        lines.push(title_row(theme, width, &self.title));
         for line in &self.message {
             lines.push(truncate_line(
-                &vec![theme.fg_span(ThemeColor::Muted, format!("  {line}"))],
+                &vec![theme.fg_span(ThemeColor::Muted, format!("{CHROME_INDENT}{line}"))],
                 width,
                 "",
             ));
@@ -93,23 +95,20 @@ impl ConfirmPanel {
             ));
         }
         lines.push(Vec::new());
-        lines.push(hint_row(theme, width, &hint(kb)));
+        lines.push(
+            Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Close)
+                .line(theme, width),
+        );
         lines
     }
-}
-
-/// The pane's key hint: the shared hint-row grammar (an unbound action is
-/// omitted, never advertised with a default key).
-fn hint(kb: &KeybindingsManager) -> String {
-    [
-        key_hint(kb, &["tui.select.up", "tui.select.down"], "navigate"),
-        key_hint(kb, &["tui.select.confirm"], "select"),
-        key_hint(kb, &["tui.select.cancel"], "close"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<String>>()
-    .join(" · ")
 }
 
 #[cfg(test)]
@@ -120,14 +119,19 @@ mod tests {
         KeybindingsManager::new()
     }
 
+    /// The confirm opens on `No`: Enter straight away declines.
     #[test]
-    fn yes_no_moves_and_selects() {
+    fn yes_no_defaults_to_no() {
         let mut panel = ConfirmPanel::yes_no("Import session", "Replace current session?");
-        assert_eq!(panel.handle_key(&kb(), "down"), ConfirmAction::None);
         assert_eq!(
             panel.handle_key(&kb(), "enter"),
             ConfirmAction::Select("No".to_string())
         );
+    }
+
+    #[test]
+    fn yes_no_moves_and_selects() {
+        let mut panel = ConfirmPanel::yes_no("Import session", "Replace current session?");
         assert_eq!(panel.handle_key(&kb(), "up"), ConfirmAction::None);
         assert_eq!(
             panel.handle_key(&kb(), "enter"),
@@ -162,8 +166,8 @@ mod tests {
         assert!(text
             .iter()
             .any(|row| row.contains("continue in current cwd")));
-        assert!(text.iter().any(|row| row.contains("› Yes")));
-        assert!(text.iter().any(|row| row.contains("  No")));
+        assert!(text.iter().any(|row| row.starts_with("  Yes")));
+        assert!(text.iter().any(|row| row.starts_with("› No")));
         assert!(text
             .iter()
             .any(|row| row.contains("↑/↓ navigate · Enter select · Esc close")));

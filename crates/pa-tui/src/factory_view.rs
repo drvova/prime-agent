@@ -29,6 +29,7 @@
 use serde_json::Value;
 
 use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::truncate_line;
 use crate::{Line, Span};
@@ -652,11 +653,15 @@ impl FactoryView {
         if kb.matches(key, "tui.select.confirm") {
             return self.open_selected();
         }
-        // The horizontal arrows are fallbacks after the configured
-        // bindings, so a rebound Left/Right keeps its configured action.
+        // The modal back/open bindings come after the configured
+        // selection bindings, so a rebound Left/Right keeps its configured action.
+        if kb.matches(key, "app.modal.back") {
+            return FactoryViewAction::Close;
+        }
+        if kb.matches(key, "app.modal.open") {
+            return self.open_selected();
+        }
         match key {
-            "left" => FactoryViewAction::Close,
-            "right" => self.open_selected(),
             "r" => match self.selected_run() {
                 Some(run) if Self::available_actions(run).contains(&FactoryAction::Resume) => {
                     FactoryViewAction::Resume {
@@ -808,8 +813,7 @@ impl FactoryView {
             ]);
         }
         rows.push(vec![Span::raw("")]);
-        let (hint, hint_color) = self.hint(kb);
-        rows.push(vec![Span::raw("  "), theme.fg_span(hint_color, hint)]);
+        rows.push(self.footer(kb).line(theme, width));
         // A degenerate budget (a sub-chrome viewport on a short terminal)
         // tail-clips: the hint is the chrome's last row and always survives.
         if rows.len() > budget {
@@ -820,47 +824,49 @@ impl FactoryView {
             .collect()
     }
 
-    /// The bottom hint line: the confirm prompt while a stop is armed,
-    /// else the keys, with stop/resume only when the selected row offers
-    /// them.
-    fn hint(&self, kb: &KeybindingsManager) -> (String, ThemeColor) {
-        let key = |binding: &str, fallback: &str| {
-            kb.first_key(binding)
-                .map_or_else(|| fallback.to_string(), |key| format_key_text(&key))
-        };
-        let stop_key = key("app.agents.delete", "ctrl+x");
+    /// The footer: the confirm prompt while a stop is armed, else the keys, with stop/resume
+    /// only when the selected row offers them (`r` is the literal key the view matches).
+    fn footer(&self, kb: &KeybindingsManager) -> Footer {
         if let Some((armed, _)) = &self.armed {
-            return (
-                format!(
+            let stop_key = kb
+                .first_key("app.agents.delete")
+                .map_or_else(|| "ctrl+x".to_string(), |key| format_key_text(&key));
+            return Footer::new().notice(
+                ThemeColor::Warning,
+                &format!(
                     "stop {}? {stop_key} again to confirm, any other key cancels",
                     self.row_label(armed)
                 ),
-                ThemeColor::Warning,
             );
         }
-        let mut parts = vec![
-            format!(
-                "{}/{} move",
-                key("tui.select.up", "\u{2191}"),
-                key("tui.select.down", "\u{2193}"),
-            ),
-            format!("{}/\u{2192} open", key("tui.select.confirm", "Enter")),
-            "\u{2190} back".to_string(),
-        ];
+        let mut footer = Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "move",
+                HintRank::Useful,
+            )
+            .bound(
+                kb,
+                &["tui.select.confirm", "app.modal.open"],
+                "open",
+                HintRank::Core,
+            )
+            .bound(kb, &["app.modal.back"], "back", HintRank::Useful);
         if self
             .selected
             .as_ref()
             .is_some_and(|selected| self.stop_action(selected).is_some())
         {
-            parts.push(format!("{stop_key} stop"));
+            footer = footer.bound(kb, &["app.agents.delete"], "stop", HintRank::Useful);
         }
         if self
             .selected_run()
             .is_some_and(|run| Self::available_actions(run).contains(&FactoryAction::Resume))
         {
-            parts.push("r resume".to_string());
+            footer = footer.keys(["r"], "resume", HintRank::Useful);
         }
-        (parts.join(" \u{b7} "), ThemeColor::Dim)
+        footer.esc(kb, EscVerb::Close)
     }
 
     /// One run panel: the header (name, state, changed marker), the stats
