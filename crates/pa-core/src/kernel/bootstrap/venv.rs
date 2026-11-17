@@ -17,6 +17,7 @@ use super::{
 
 // The concern children (the flows + the shared record stay in the
 // composition root).
+mod bytecode;
 mod layout;
 mod probe;
 mod runtime_source;
@@ -24,6 +25,8 @@ mod skills;
 mod uv;
 mod version;
 
+pub(crate) use bytecode::compile_venv_bytecode;
+pub use bytecode::KernelBytecode;
 use layout::home_dir;
 pub(crate) use layout::{expand_home, resolve_writable_kernel_venv_dir};
 pub use layout::{kernel_venv_dir, kernel_venv_python};
@@ -116,26 +119,6 @@ async fn run_async(command: &str, args: &[String], project: Option<&Path>) -> an
     .map_err(|e| anyhow!("bootstrap task join failed: {e}"))?
 }
 
-/// The head of every `uv pip install` into the kernel venv. uv leaves
-/// bytecode compilation to the first import by default, so a fresh install
-/// paid the compile inside the first kernel start (and the first
-/// `import pandas` cell) of every session until each module had been
-/// imported once. `--compile-bytecode` moves that cost into the install:
-/// once per venv build or skill sync, never per launch (no `uv run` is
-/// involved, so uv's recompile-on-every-run behavior does not apply), and
-/// off every paint path (the bootstrap already runs behind the kernel
-/// prewarm). Editable skills live outside site-packages and keep their
-/// lazily written `__pycache__`.
-fn pip_install_args(python: &str) -> Vec<String> {
-    vec![
-        "pip".to_string(),
-        "install".to_string(),
-        "--python".to_string(),
-        python.to_string(),
-        "--compile-bytecode".to_string(),
-    ]
-}
-
 pub(crate) async fn bootstrap_venv(
     venv: &Path,
     source_dir: &Path,
@@ -154,8 +137,13 @@ pub(crate) async fn bootstrap_venv(
 
     let venv_str = venv.to_string_lossy().to_string();
     let python_str = python.to_string_lossy().to_string();
-    let mut install_args = pip_install_args(&python_str);
-    install_args.push(source_dir.to_string_lossy().to_string());
+    let mut install_args = vec![
+        "pip".to_string(),
+        "install".to_string(),
+        "--python".to_string(),
+        python_str,
+        source_dir.to_string_lossy().to_string(),
+    ];
     install_args.push(STATE_SNAPSHOT_REQUIREMENT.to_string());
     for uv_arg in default_rlm_extra_uv_args() {
         install_args.push(uv_arg.to_string());
@@ -238,10 +226,15 @@ pub(crate) async fn sync_python_skills(
         // One uv invocation installs the whole batch of missing skills: a fresh bootstrap otherwise
         // pays one process plus build-backend startup per install. A batch failure falls back to
         // the per-skill loop.
-        let mut install_args = pip_install_args(&python_str);
-        // Skills may depend on the runtime too. Keep their resolver pinned
-        // to the same local source, including per-skill retries.
-        install_args.push(source_dir.to_string_lossy().to_string());
+        let mut install_args = vec![
+            "pip".to_string(),
+            "install".to_string(),
+            "--python".to_string(),
+            python_str.clone(),
+            // Skills may depend on the runtime too. Keep their resolver
+            // pinned to the same local source, including per-skill retries.
+            source_dir.to_string_lossy().to_string(),
+        ];
         for skill in &missing {
             install_args.push("--editable".to_string());
             install_args.push(skill.package_path.clone());
@@ -256,13 +249,20 @@ pub(crate) async fn sync_python_skills(
             }
         } else {
             for skill in &missing {
-                let mut install_args = pip_install_args(&python_str);
-                install_args.extend([
-                    source_dir.to_string_lossy().to_string(),
-                    "--editable".to_string(),
-                    skill.package_path.clone(),
-                ]);
-                let result = run_async(uv.executable, &install_args, uv.project).await;
+                let result = run_async(
+                    uv.executable,
+                    &[
+                        "pip".to_string(),
+                        "install".to_string(),
+                        "--python".to_string(),
+                        python_str.clone(),
+                        source_dir.to_string_lossy().to_string(),
+                        "--editable".to_string(),
+                        skill.package_path.clone(),
+                    ],
+                    uv.project,
+                )
+                .await;
                 match result {
                     Ok(()) => {
                         installed.insert(bootstrap_skill_key(skill), (*skill).clone());

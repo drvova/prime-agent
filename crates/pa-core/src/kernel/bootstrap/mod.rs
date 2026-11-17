@@ -24,8 +24,10 @@ use venv::{
     missing_python_skill_import_labels, missing_rlm_extra_import_labels, normalize_python_skills,
     resolve_writable_kernel_venv_dir, sync_python_skills, BootstrapPythonSkill, UvCommand,
 };
-pub use venv::{invalidate_runtime_probe_cache, kernel_venv_dir, kernel_venv_python};
-use venv::{kernel_base_ready, kernel_ready};
+use venv::{compile_venv_bytecode, kernel_base_ready, kernel_ready};
+pub use venv::{
+    invalidate_runtime_probe_cache, kernel_venv_dir, kernel_venv_python, KernelBytecode,
+};
 
 /// One Python skill the kernel should import at bootstrap.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +87,8 @@ pub type KernelBootstrapProgressHandler = std::sync::Arc<dyn Fn(&str) + Send + S
 pub struct EnsureKernelPythonOptions {
     pub python_skills: Vec<KernelPythonSkill>,
     pub on_progress: Option<KernelBootstrapProgressHandler>,
+    /// When the ready venv's bytecode compile runs relative to the return.
+    pub bytecode: KernelBytecode,
 }
 
 impl EnsureKernelPythonOptions {
@@ -250,6 +254,7 @@ async fn ensure_kernel_venv(
     let runtime_identity =
         venv::hash_runtime_source(&source_dir).map_err(|error| format_bootstrap_failure(&error))?;
     if kernel_ready(&python_str, &venv, &runtime_identity, python_skills) {
+        compile_venv_bytecode(&python, &venv, options.bytecode).await;
         return Ok(python);
     }
 
@@ -286,8 +291,23 @@ async fn ensure_kernel_venv(
         options.report("› setting up python kernel (one-time, ~30s)…");
         if had_venv {
             options.report("rebuilding kernel venv");
-            std::fs::remove_dir_all(&venv)
-                .with_context(|| format!("removing {}", venv.display()))?;
+            // Move the old venv aside first: a background bytecode compile
+            // (possibly another process's) may still be writing `__pycache__`
+            // into it, which would fail an in-place recursive removal. The
+            // aside copy is removed best-effort.
+            let aside = venv.with_file_name(format!(
+                "{}.removing-{}",
+                venv.file_name().unwrap_or_default().to_string_lossy(),
+                std::process::id()
+            ));
+            if std::fs::rename(&venv, &aside).is_ok() {
+                if let Err(error) = std::fs::remove_dir_all(&aside) {
+                    tracing::warn!(%error, path = %aside.display(), "old kernel venv not removed");
+                }
+            } else {
+                std::fs::remove_dir_all(&venv)
+                    .with_context(|| format!("removing {}", venv.display()))?;
+            }
         }
         bootstrap_venv(
             &venv,
@@ -303,6 +323,9 @@ async fn ensure_kernel_venv(
     .await;
     drop(release_lock);
     options.report("✓ ready");
+    if let Ok(python) = &result {
+        compile_venv_bytecode(python, &venv, options.bytecode).await;
+    }
     result.map_err(|error| format_bootstrap_failure(&error))
 }
 

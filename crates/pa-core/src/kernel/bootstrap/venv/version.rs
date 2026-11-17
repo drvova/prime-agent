@@ -7,7 +7,7 @@ use super::{default_rlm_extra_uv_args, BootstrapPythonSkill, BootstrapVersion, P
 // as editable packages cannot keep executing through site-packages startup.
 pub(super) const BOOTSTRAP_SCHEMA: u64 = 10;
 pub(super) const STATE_SNAPSHOT_REQUIREMENT: &str = "dill";
-const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
+pub(super) const BOOTSTRAP_VERSION_FILE: &str = ".bootstrap-version";
 pub(super) fn read_bootstrap_version(venv: &Path) -> Option<BootstrapVersion> {
     let raw = std::fs::read_to_string(venv.join(BOOTSTRAP_VERSION_FILE)).ok()?;
     let parsed: BootstrapVersion = serde_json::from_str(&raw).ok()?;
