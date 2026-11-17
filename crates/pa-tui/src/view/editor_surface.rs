@@ -161,9 +161,9 @@ pub(crate) fn render(
             command.as_ref(),
             cursor_pos,
         );
-        // Collapsed pastes render as chips; the editor already moves over and deletes them
-        // as one unit.
-        let chips = editor.paste_chip_ranges(text);
+        // Collapsed pastes and completed `@file` mentions render as chips; the editor moves
+        // over and deletes each as one unit.
+        let chips = editor.chip_ranges(text);
         row.extend(editor_text_spans(
             theme,
             text,

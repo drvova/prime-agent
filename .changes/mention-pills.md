@@ -1,0 +1,1 @@
+- An `@file` mention picked from the completion menu now shows as a pill in the composer: the cursor steps over it and one Backspace deletes it whole.

@@ -123,15 +123,18 @@ pub(crate) fn parse_paste_marker(s: &str) -> Option<(usize, usize)> {
     Some((id, "[paste #".len() + digits + suffix_len))
 }
 
-/// Segment text merging valid paste markers and image markers into atomic units.
+/// Segment text merging valid paste markers, image markers and whole `mentions` (completed
+/// `@file` tokens standing between whitespace or the text's ends) into atomic units.
 pub(crate) fn segment_with_markers(
     text: &str,
     valid_paste_ids: &dyn Fn(usize) -> bool,
+    mentions: &[String],
 ) -> Vec<Segment> {
     let has_paste = text.contains("[paste #");
     let has_image = text.contains("[image #");
+    let has_mention = !mentions.is_empty() && text.contains('@');
     let base = graphemes(text);
-    if !has_paste && !has_image {
+    if !has_paste && !has_image && !has_mention {
         return base;
     }
 
@@ -139,6 +142,33 @@ pub(crate) fn segment_with_markers(
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < text.len() {
+        if has_mention
+            && bytes[i] == b'@'
+            && text[..i]
+                .chars()
+                .next_back()
+                .is_none_or(char::is_whitespace)
+        {
+            let rest = &text[i..];
+            // The longest registered mention that stands whole at this `@`: a mention edited
+            // into a longer word is plain text again.
+            let whole = mentions
+                .iter()
+                .filter(|mention| {
+                    rest.starts_with(mention.as_str())
+                        && rest[mention.len()..]
+                            .chars()
+                            .next()
+                            .is_none_or(char::is_whitespace)
+                })
+                .map(String::len)
+                .max();
+            if let Some(len) = whole {
+                markers.push(marker_span(text, i, len));
+                i += len;
+                continue;
+            }
+        }
         if bytes[i] == b'[' {
             let rest = &text[i..];
             // The TS regexes match a STRICT marker grammar: `split`-style
@@ -516,7 +546,7 @@ mod tests {
     fn marker_segmentation_with_non_ascii_prefix() {
         // segment_with_markers must index markers in the same space as the grapheme segments it
         // merges them into.
-        let segs = segment_with_markers("前[paste #1 +2 lines]后", &|_| true);
+        let segs = segment_with_markers("前[paste #1 +2 lines]后", &|_| true, &[]);
         assert_eq!(segs.len(), 3);
         assert_eq!(segs[0].segment, "前");
         assert_eq!(segs[0].index, 0);
@@ -576,7 +606,7 @@ mod tests {
             }
             // Also via the marker-aware segmentation path (markers absent,
             // so this exercises the plain-grapheme segment branch).
-            let segments = segment_with_markers(&line, &|_| false);
+            let segments = segment_with_markers(&line, &|_| false, &[]);
             let chunks = word_wrap_line(&line, 5, Some(segments));
             let joined: String = chunks.iter().map(|c| c.text.clone()).collect();
             assert_eq!(joined, line);
@@ -727,21 +757,21 @@ mod tests {
 
     #[test]
     fn marker_scan_matches_the_ts_regex_grammar() {
-        let segs = segment_with_markers("[paste #1 junk]", &|_| true);
+        let segs = segment_with_markers("[paste #1 junk]", &|_| true, &[]);
         assert_eq!(segs.len(), 15, "the loose head must not be atomic");
-        let segs = segment_with_markers("[image #1 junk]", &|_| true);
+        let segs = segment_with_markers("[image #1 junk]", &|_| true, &[]);
         assert_eq!(segs.len(), 15, "the loose image head must not be atomic");
-        let segs = segment_with_markers("[[paste #1]]", &|id| id == 1);
+        let segs = segment_with_markers("[[paste #1]]", &|id| id == 1, &[]);
         assert_eq!(segs[0].segment, "[");
         assert_eq!(segs[1].segment, "[paste #1]");
         assert_eq!(segs[1].index, 1);
         assert_eq!(segs[2].segment, "]");
-        let segs = segment_with_markers("[[image #1]]", &|_| false);
+        let segs = segment_with_markers("[[image #1]]", &|_| false, &[]);
         assert_eq!(
             segs[1].segment, "[image #1]",
             "inner image marker is atomic"
         );
-        let segs = segment_with_markers("x[paste #9]y", &|id| id == 1);
+        let segs = segment_with_markers("x[paste #9]y", &|id| id == 1, &[]);
         assert_eq!(segs.len(), 12, "invalid id must not be atomic");
     }
     #[test]

@@ -307,6 +307,9 @@ pub trait InteractionTelemetry: Send + Sync {
     /// The empty composer's self-retiring key hint reached its use count and retired; counted on
     /// `tui exit`. Implementations count and return at once.
     fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A prompt carrying an `@file` mention pill was submitted; counted on `tui exit`.
+    /// Implementations count and return at once: the submit path never waits on it.
+    fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not
