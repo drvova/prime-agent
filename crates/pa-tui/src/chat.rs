@@ -592,8 +592,8 @@ pub fn render_loader(
     detail: Detail,
     width: usize,
     stop_key: Option<&str>,
+    accent: Style,
 ) -> Vec<Line> {
-    let accent = theme.fg_style(ThemeColor::Accent);
     let muted = theme.fg_style(ThemeColor::Muted);
     // A stalled stream takes the waiting orbit back.
     let frames = activity_frames(if working.stalled() {

@@ -783,7 +783,15 @@ fn loader_line_shape() {
         quiet_secs: 0,
         tool_label: None,
     };
-    let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100, None);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        Detail::Overview,
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     assert_eq!(rows.len(), 2);
     let text = rows[1]
         .iter()
@@ -808,7 +816,15 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_loader(&working, 0, &t, Detail::Overview, 100, None);
+    let rows = render_loader(
+        &working,
+        0,
+        &t,
+        Detail::Overview,
+        100,
+        None,
+        t.fg_style(ThemeColor::Accent),
+    );
     assert_eq!(
         rows[1][..4],
         [
@@ -854,7 +870,15 @@ fn a_quiet_stream_says_waiting_on_the_model() {
         tool_label: None,
     };
     assert_eq!(
-        render_loader(&working, 0, &t, Detail::Overview, 60, Some("Esc")),
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
         vec![
             Vec::new(),
             chip_row(
@@ -870,7 +894,15 @@ fn a_quiet_stream_says_waiting_on_the_model() {
         ..working
     };
     assert_eq!(
-        render_loader(&speaking, 0, &t, Detail::Overview, 60, Some("Esc")),
+        render_loader(
+            &speaking,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
         vec![
             Vec::new(),
             chip_row(&t, "\u{2840}", "Writing \u{00b7} 9s", 60)
@@ -893,7 +925,15 @@ fn a_running_tool_shows_its_title_and_never_stalls() {
         tool_label: Some("cargo test -p pa-tui".to_string()),
     };
     assert_eq!(
-        render_loader(&working, 0, &t, Detail::Overview, 60, Some("Esc")),
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
         vec![
             Vec::new(),
             chip_row(
@@ -919,7 +959,15 @@ fn loader_working_message_replaces_the_activity_label() {
         quiet_secs: 0,
         tool_label: None,
     };
-    let rows = render_loader(&working, 4, &theme(), Detail::Overview, 100, None);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        Detail::Overview,
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
@@ -972,7 +1020,15 @@ fn loader_shows_the_live_thought_only_where_thinking_folds() {
         tool_label: None,
     };
     let t = theme();
-    let rows = render_loader(&working, 0, &t, Detail::Overview, 24, None);
+    let rows = render_loader(
+        &working,
+        0,
+        &t,
+        Detail::Overview,
+        24,
+        None,
+        t.fg_style(ThemeColor::Accent),
+    );
     assert_eq!(
         rows[2],
         vec![
@@ -984,5 +1040,17 @@ fn loader_shows_the_live_thought_only_where_thinking_folds() {
             Span::raw(" "),
         ]
     );
-    assert_eq!(render_loader(&working, 0, &t, Detail::Details, 24, None).len(), 2);
+    assert_eq!(
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Details,
+            24,
+            None,
+            t.fg_style(ThemeColor::Accent)
+        )
+        .len(),
+        2
+    );
 }
