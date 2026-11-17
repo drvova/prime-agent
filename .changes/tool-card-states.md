@@ -1,0 +1,1 @@
+- Tool cards show their state by colour: the title is in the accent colour while the call runs, muted once it finishes, and red when it fails or is interrupted (now labelled `interrupted`). The duration moves onto the title row (`bash · done · 3.4s`), replacing the separate `Took`/`Elapsed` row.

@@ -1,8 +1,7 @@
 //! Headless e2e for the live tool-call timer (operator feature
 //! 2026-10-03): while a tool call executes with no stream events, its card
 //! shows the elapsed time ticking up, and once the result lands the
-//! ticking stops and the card shows the final static duration — the
-//! exact `Took` row the settled card always rendered. The red first:
+//! ticking stops and the card's header shows the final static duration. The red first:
 //! a running card showed no duration until the first partial result
 //! arrived, so a quiet tool run (no output) left the card with no
 //! timing at all.
@@ -478,8 +477,8 @@ fn options(socket: PathBuf) -> InteractiveOptions {
 /// How long the mock's tool call runs with no stream events.
 const TOOL_RUN_MS: u64 = 1200;
 
-/// The duration one card row paints, in tenths of a second: the `X.Y`
-/// of an `Elapsed X.Ys` (or `Took X.Ys`) row.
+/// The duration one card header paints, in tenths of a second: the `X.Y`
+/// after the header's `running · ` (or settled `done · `) status.
 fn row_tenths(frame: &str, label: &str) -> Option<u64> {
     let line = frame.lines().find(|line| line.contains(label))?;
     let value = line.split(label).nth(1)?;
@@ -509,11 +508,11 @@ fn a_running_tool_card_ticks_and_settles_to_the_final_duration() {
     let plan = HeadlessPlan {
         steps: vec![
             HeadlessStep::WaitRender {
-                needle: "Elapsed ".to_string(),
+                needle: "running \u{b7} ".to_string(),
                 timeout_ms: 5000,
             },
             HeadlessStep::WaitRender {
-                needle: "Took ".to_string(),
+                needle: "done \u{b7} ".to_string(),
                 timeout_ms: 5000,
             },
         ],
@@ -530,7 +529,7 @@ fn a_running_tool_card_ticks_and_settles_to_the_final_duration() {
     let ticks: Vec<u64> = outcome
         .frames
         .iter()
-        .filter_map(|frame| row_tenths(frame, "Elapsed "))
+        .filter_map(|frame| row_tenths(frame, "running \u{b7} "))
         .collect();
     assert!(
         ticks.len() >= 3,
@@ -548,14 +547,14 @@ fn a_running_tool_card_ticks_and_settles_to_the_final_duration() {
     );
 
     // The settle: the final result lands and the ticking stops — the
-    // settled card carries the static `Took` row and never an `Elapsed`
-    // row again.
+    // settled card carries the static `done · X.Ys` header and never a `running`
+    // header again.
     let settle = outcome
         .frames
         .iter()
-        .position(|frame| row_tenths(frame, "Took ").is_some())
+        .position(|frame| row_tenths(frame, "done \u{b7} ").is_some())
         .expect("the settled card paints its final duration");
-    let took = row_tenths(&outcome.frames[settle], "Took ").expect("the took row parses");
+    let took = row_tenths(&outcome.frames[settle], "done \u{b7} ").expect("the took row parses");
     assert!(
         took >= ticks.iter().copied().max().unwrap_or_default(),
         "the final duration covers the whole run (tenths of a second): \
@@ -564,7 +563,7 @@ fn a_running_tool_card_ticks_and_settles_to_the_final_duration() {
     );
     let settled_tickers = outcome.frames[settle..]
         .iter()
-        .filter(|frame| frame.contains("Elapsed "))
+        .filter(|frame| frame.contains("running \u{b7} "))
         .count();
     assert_eq!(
         settled_tickers,
@@ -577,9 +576,9 @@ fn a_running_tool_card_ticks_and_settles_to_the_final_duration() {
 /// The straggler: a tool call whose end frame never lands still gets its
 /// timer frozen at the turn's settle — the `turn_end` sweep settles the card
 /// the way the failed-frame sweep does (a terminal error result, the
-/// settle instant, the aborted stamp): the frozen `Took` row renders, the
+/// settle instant, the aborted stamp): the frozen `interrupted · X.Ys` header renders, the
 /// panel header is terminal (no running spinner), no later paint ticks
-/// `Elapsed`, and the late end frame lands on nothing.
+/// a `running` duration, and the late end frame lands on nothing.
 #[test]
 fn a_straggler_tool_card_freezes_at_the_turn_settle() {
     std::env::remove_var("TMUX");
@@ -594,11 +593,11 @@ fn a_straggler_tool_card_freezes_at_the_turn_settle() {
     let plan = HeadlessPlan {
         steps: vec![
             HeadlessStep::WaitRender {
-                needle: "Elapsed ".to_string(),
+                needle: "running \u{b7} ".to_string(),
                 timeout_ms: 5000,
             },
             HeadlessStep::WaitRender {
-                needle: "Took ".to_string(),
+                needle: "interrupted \u{b7} ".to_string(),
                 timeout_ms: 5000,
             },
             // The drain barrier: the late end frame is followed on the
@@ -621,7 +620,7 @@ fn a_straggler_tool_card_freezes_at_the_turn_settle() {
     let settle = outcome
         .frames
         .iter()
-        .position(|frame| frame.contains("Took "))
+        .position(|frame| frame.contains("interrupted \u{b7} "))
         .expect("the straggler's timer froze at the turn settle");
     // A timed-out WaitRender only notes; assert the barrier rendered,
     // so the negatives below are read only after the late frame
@@ -635,7 +634,7 @@ fn a_straggler_tool_card_freezes_at_the_turn_settle() {
     );
     let rendered = outcome.frames[settle..].join("\n===\n");
     assert!(
-        !rendered.contains("Elapsed "),
+        !rendered.contains("running \u{b7} "),
         "the frozen straggler never ticks again:
 {rendered}"
     );
@@ -675,7 +674,7 @@ fn a_lost_turns_card_settles_when_the_next_turn_starts() {
                 timeout_ms: 5000,
             },
             HeadlessStep::WaitRender {
-                needle: "Took ".to_string(),
+                needle: "interrupted \u{b7} ".to_string(),
                 timeout_ms: 5000,
             },
             HeadlessStep::WaitRender {
@@ -705,7 +704,7 @@ fn a_lost_turns_card_settles_when_the_next_turn_starts() {
         "the lost turn's streamed output survives the settle:\n{settled}"
     );
     assert!(
-        !settled.contains("Elapsed "),
+        !settled.contains("running \u{b7} "),
         "the lost turn's stale timer never ticks past the new turn's settle:\n{settled}"
     );
     assert!(
@@ -721,7 +720,7 @@ fn a_lost_turns_card_settles_when_the_next_turn_starts() {
 /// The `python_repl` straggler: the summary's duration slot ticks while the
 /// cell runs, and at the settle it FREEZES on the run's honest duration
 /// (from the card timestamps) instead of vanishing — the
-/// bash panel keeps its static `Took` row from the same timestamps, and
+/// bash panel keeps its static header duration from the same timestamps, and
 /// the ipython summary keeps its duration segment.
 #[test]
 fn a_python_repl_straggler_freezes_its_duration_slot() {
