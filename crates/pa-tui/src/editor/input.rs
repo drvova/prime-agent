@@ -161,6 +161,9 @@ impl Editor {
                     .and_then(crate::autocomplete::AutocompleteState::selected_item);
                 if let Some(item) = selected {
                     let is_typed_exact = self.is_slash_name_completion_at_prompt_start();
+                    if is_typed_exact {
+                        self.emit(EditorEvent::SlashMenuAccepted);
+                    }
                     self.push_undo_snapshot();
                     self.last_action = None;
                     // A completion rewrites the buffer at the cursor: the

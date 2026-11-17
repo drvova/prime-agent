@@ -5,9 +5,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::fuzzy::fuzzy_filter;
 use crate::width::str_width;
-use crate::{Line, Span};
+use crate::Line;
 use pa_types::slash_commands::SlashCommandRegistry;
 
 mod file_index;
@@ -88,6 +87,11 @@ pub trait AutocompleteProvider: Send {
     /// Replace one command's argument completions; a default no-op for
     /// providers without argument completions.
     fn set_argument_completions(&mut self, _command: &'static str, _items: Vec<CompletionItem>) {}
+    /// The argument hint of a listed command, by name or alias (`[level]` for `/effort`): the
+    /// editor ghosts it after `/name `. A default `None` for providers without command listings.
+    fn argument_hint(&self, _command: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Slash-command context: which part of a `/command args` line the cursor is in.
@@ -307,7 +311,14 @@ pub struct AutocompleteState {
     pub max_visible: usize,
     pub kind: Option<SuggestionKind>,
     pub forced: bool,
+    /// The typed token the items answer (`/xyz`), named by the empty slash list's no-match row.
+    pub query: String,
 }
+
+/// The menu's name column bounds: the widest visible label plus its gap, clamped so one long
+/// name neither squeezes the descriptions out nor leaves a ragged narrow column.
+const NAME_COLUMN_MIN: usize = 12;
+const NAME_COLUMN_MAX: usize = 32;
 
 impl AutocompleteState {
     #[must_use]
@@ -322,6 +333,7 @@ impl AutocompleteState {
             max_visible: max_visible.clamp(3, 20),
             kind,
             forced: false,
+            query: String::new(),
         }
     }
 
@@ -376,69 +388,74 @@ impl AutocompleteState {
         first_prefix
     }
 
-    /// Render the dropdown through the inline menu panel — the same
-    /// grammar the `/model` picker and the `/mcp` view render with.
+    /// Render the dropdown through the inline menu panel: one row per visible item — the `›`
+    /// marker, the name column (the widest visible label plus a two-cell gap, clamped to
+    /// [`NAME_COLUMN_MIN`]..=[`NAME_COLUMN_MAX`]), and the muted description with the source tag
+    /// on the same row — plus a one-cell scrollbar on the right edge while the list overflows.
+    /// An empty slash list renders its no-match row so the menu stays open on a typo.
     #[must_use]
     pub fn render(&self, theme: &crate::theme::Theme, width: usize) -> Vec<Line> {
         if self.items.is_empty() {
-            return vec![crate::menu_panel::no_match_row(
-                theme,
-                width,
-                "No matching commands",
-            )];
+            let message = match self.kind {
+                Some(SuggestionKind::SlashCommand) => format!("no command matches {}", self.query),
+                Some(SuggestionKind::File | SuggestionKind::Emoji) | None => {
+                    "No matching commands".to_string()
+                }
+            };
+            return vec![crate::menu_panel::no_match_row(theme, width, &message)];
         }
         let start = self
             .selected_index
             .saturating_sub(self.max_visible / 2)
             .min(self.items.len().saturating_sub(self.max_visible));
         let end = (start + self.max_visible).min(self.items.len());
-        let mut lines: Vec<Line> = Vec::new();
-        for (index, item) in self.items[start..end].iter().enumerate() {
-            let index = start + index;
-            let selected = index == self.selected_index;
-            // The argument hint, then the source tag, both muted — TS colors the source
-            // tag separately; this palette folds it into the muted trailing.
-            let mut trailing = Vec::new();
-            if let Some(hint) = item.argument_hint.as_deref() {
-                trailing.push(crate::menu_panel::MenuSegment::muted(hint));
-            }
-            if let Some(tag) = item.source_tag.as_deref() {
-                trailing.push(crate::menu_panel::MenuSegment::muted(tag));
-            }
-            lines.push(crate::menu_panel::menu_row(
-                theme,
-                width,
-                vec![Span::raw(item.label.clone())],
-                &trailing,
-                selected,
-            ));
-        }
-        if start > 0 || end < self.items.len() {
-            lines.push(crate::menu_panel::scroll_row(
-                theme,
-                width,
-                self.selected_index + 1,
-                self.items.len(),
-            ));
-        }
-        if let Some(description) = self
-            .items
-            .get(self.selected_index)
-            .and_then(|item| item.description.as_deref())
-            .filter(|d| !d.trim().is_empty())
-        {
-            let indent = if width >= 4 { "  " } else { "" };
-            let content_width = (width.saturating_sub(str_width(indent) + 2)).max(1);
-            lines.push(Vec::new());
-            for line in crate::width::wrap_text(description, content_width) {
-                let text: String = line.iter().map(|s| s.content.as_str()).collect();
-                lines.push(vec![
-                    Span::raw(indent.to_string()),
-                    theme.fg_span(crate::theme::ThemeColor::Muted, format!("{text} ")),
-                ]);
-            }
-        }
-        lines
+        let visible = &self.items[start..end];
+        let scrollbar = (visible.len() < self.items.len()).then(|| {
+            crate::menu_panel::scrollbar_cells(theme, visible.len(), self.items.len(), start)
+        });
+        let row_width = width.saturating_sub(usize::from(scrollbar.is_some()));
+        let details: Vec<String> = visible
+            .iter()
+            .map(|item| {
+                [item.description.as_deref(), item.source_tag.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" \u{b7} ")
+            })
+            .collect();
+        let widest_label = visible
+            .iter()
+            .map(|item| str_width(&item.label))
+            .max()
+            .unwrap_or(0);
+        let name_width = (widest_label + 2).clamp(NAME_COLUMN_MIN, NAME_COLUMN_MAX);
+        visible
+            .iter()
+            .zip(&details)
+            .enumerate()
+            .map(|(offset, (item, detail))| {
+                let selected = start + offset == self.selected_index;
+                let mut row = crate::menu_panel::column_row(
+                    theme,
+                    row_width,
+                    &item.label,
+                    name_width,
+                    detail,
+                    selected,
+                );
+                if let Some(cell) = scrollbar.as_ref().and_then(|cells| cells.get(offset)) {
+                    let mut cell = cell.clone();
+                    if selected {
+                        cell.style = cell.style.patch(theme.soft_selection_style());
+                    }
+                    row.push(cell);
+                }
+                row
+            })
+            .collect()
     }
 }
 
@@ -640,18 +657,6 @@ pub struct SlashCommandEntry {
     pub source_tag: Option<String>,
 }
 
-impl SlashCommandEntry {
-    /// The fuzzy search text: the name plus its aliases.
-    fn search_text(&self) -> String {
-        let mut text = self.name.clone();
-        for alias in &self.aliases {
-            text.push(' ');
-            text.push_str(alias);
-        }
-        text
-    }
-}
-
 /// The source label of a command row: the scope prefix (`user`/`project`/`temporary`), the source
 /// string itself for package-registry (`npm:…`) sources, `builtin` for builtins. The TS
 /// ladder's git-URL branch is unreachable on this wire (the skills loader only emits `local`).
@@ -722,7 +727,38 @@ pub fn skill_command_entries(commands: &serde_json::Value) -> Vec<SlashCommandEn
         .collect()
 }
 
-/// The installed provider: fuzzy-filtered slash-command completion from
+/// The weakest fuzzy name match the slash menu still lists (`fuzzy_match` scores lower-is-better):
+/// a match must start on a word boundary or run contiguously, so `/mo` lists `autonomous` but not
+/// the scattered `import` or `system-prompt`.
+const MAX_SLASH_FUZZY_SCORE: f64 = 0.0;
+
+/// How a command's name or alias matches the typed slash token, best first.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum SlashRank {
+    Exact,
+    Prefix,
+    /// The best fuzzy score over the name and aliases (lower is better).
+    Fuzzy(f64),
+}
+
+impl SlashRank {
+    fn order(&self, other: &Self) -> std::cmp::Ordering {
+        let tier = |rank: &Self| match rank {
+            Self::Exact => 0u8,
+            Self::Prefix => 1,
+            Self::Fuzzy(_) => 2,
+        };
+        match (self, other) {
+            (Self::Fuzzy(left), Self::Fuzzy(right)) => left.total_cmp(right),
+            (
+                Self::Exact | Self::Prefix | Self::Fuzzy(_),
+                Self::Exact | Self::Prefix | Self::Fuzzy(_),
+            ) => tier(self).cmp(&tier(other)),
+        }
+    }
+}
+
+/// The installed provider: ranked slash-command completion from
 /// the builtin registry plus file/path completion.
 pub struct CombinedAutocompleteProvider {
     commands: Vec<SlashCommandEntry>,
@@ -800,20 +836,40 @@ impl CombinedAutocompleteProvider {
         self.arguments.insert(command, items);
     }
 
-    /// The slash-name suggestions for a typed prefix (fuzzy filter over `name + aliases`,
-    /// registry order preserved on ties; the session's skill commands follow the builtins).
+    /// The slash-name suggestions for a typed prefix, ranked over names and aliases only (never
+    /// descriptions): exact matches first, then prefix matches — one flat tier, so registry order
+    /// holds and Enter stays predictable — then fuzzy matches no weaker than
+    /// [`MAX_SLASH_FUZZY_SCORE`], best first. The session's skill commands follow the builtins.
     fn slash_suggestions(&self, prefix: &str) -> Vec<CompletionItem> {
-        let query = prefix.strip_prefix('/').unwrap_or(prefix);
-        let commands: Vec<&SlashCommandEntry> = self
+        let query = prefix.strip_prefix('/').unwrap_or(prefix).to_lowercase();
+        let mut ranked: Vec<(SlashRank, &SlashCommandEntry)> = self
             .commands
             .iter()
             .chain(self.skill_commands.iter())
             .filter(|command| !self.hidden.contains(&command.name))
+            .filter_map(|command| {
+                let names = || std::iter::once(&command.name).chain(command.aliases.iter());
+                let rank = if names().any(|name| *name == query) {
+                    SlashRank::Exact
+                } else if names().any(|name| name.starts_with(&query)) {
+                    SlashRank::Prefix
+                } else {
+                    let score = names()
+                        .filter_map(|name| crate::fuzzy::fuzzy_match(&query, name))
+                        .min_by(f64::total_cmp)?;
+                    if score > MAX_SLASH_FUZZY_SCORE {
+                        return None;
+                    }
+                    SlashRank::Fuzzy(score)
+                };
+                Some((rank, command))
+            })
             .collect();
-        let scored = fuzzy_filter(&commands, query, |command| command.search_text());
-        scored
+        // A stable sort: equal ranks keep registry order.
+        ranked.sort_by(|(left, _), (right, _)| left.order(right));
+        ranked
             .into_iter()
-            .map(|command| CompletionItem {
+            .map(|(_, command)| CompletionItem {
                 value: command.name.clone(),
                 label: command.name.clone(),
                 description: command.description.clone(),
@@ -891,6 +947,16 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
         CombinedAutocompleteProvider::set_argument_completions(self, command, items);
     }
 
+    fn argument_hint(&self, command: &str) -> Option<String> {
+        self.commands
+            .iter()
+            .chain(self.skill_commands.iter())
+            .find(|entry| {
+                entry.name == command || entry.aliases.iter().any(|alias| alias == command)
+            })
+            .and_then(|entry| entry.argument_hint.clone())
+    }
+
     fn get_suggestions(
         &self,
         lines: &[String],
@@ -908,7 +974,9 @@ impl AutocompleteProvider for CombinedAutocompleteProvider {
                 match context.kind {
                     SlashKind::Name => {
                         let items = self.slash_suggestions(&context.prefix);
-                        if items.is_empty() {
+                        // At the prompt start an unmatched token keeps the menu open on its
+                        // no-match row; a mid-line `/token` is as likely a path, so it closes.
+                        if items.is_empty() && !context.at_prompt_start {
                             return None;
                         }
                         return Some(SuggestionLookup::Ready(Suggestions {

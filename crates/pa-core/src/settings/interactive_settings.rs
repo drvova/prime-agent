@@ -258,7 +258,7 @@ impl SettingsManager {
 
     #[must_use]
     pub fn get_autocomplete_max_visible(&self) -> u64 {
-        self.settings().autocomplete_max_visible.unwrap_or(5)
+        self.settings().autocomplete_max_visible.unwrap_or(8)
     }
 
     /// # Errors

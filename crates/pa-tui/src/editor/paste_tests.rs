@@ -348,6 +348,7 @@ fn a_draft_cleared_into_history_recalls_its_paste_content() {
             EditorEvent::Submitted(text) => Some(text),
             EditorEvent::Changed(_)
             | EditorEvent::AutocompleteToggled(_)
+            | EditorEvent::SlashMenuAccepted
             | EditorEvent::ClipboardWrite(_) => None,
         })
         .collect();

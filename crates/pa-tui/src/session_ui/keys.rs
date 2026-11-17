@@ -1044,7 +1044,11 @@ impl SessionUi {
                         self.toast("Copied selection to clipboard", view);
                     }
                 }
-                _ => {}
+                crate::editor::EditorEvent::SlashMenuAccepted => {
+                    self.track_feature_outcome("slashmenu", "completed", None);
+                }
+                crate::editor::EditorEvent::Changed(_)
+                | crate::editor::EditorEvent::AutocompleteToggled(_) => {}
             }
         }
         self.dirty = true;

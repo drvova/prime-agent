@@ -133,7 +133,7 @@ pub trait ClientSettings: Send + Sync {
     ///
     /// Returns `Err` when the settings store fails.
     fn set_editor_padding_x(&self, padding: u64) -> Result<()>;
-    /// `autocompleteMaxVisible` (TS default 5).
+    /// `autocompleteMaxVisible` (default 8).
     fn autocomplete_max_visible(&self) -> u64;
     /// Persists `autocompleteMaxVisible` to the global scope.
     ///

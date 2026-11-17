@@ -293,29 +293,81 @@ fn theme() -> crate::theme::Theme {
     crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor)
 }
 
+/// The menu opened by typing `/` into an editor with the builtin registry.
+fn typed_menu(typed: &str) -> AutocompleteState {
+    let mut editor = crate::editor::Editor::new();
+    for ch in typed.chars() {
+        editor.handle_input(&ch.to_string());
+    }
+    editor.materialize_autocomplete();
+    editor
+        .autocomplete_state()
+        .cloned()
+        .expect("the slash menu opens")
+}
+
+fn row_texts(lines: &[Line]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+        .collect()
+}
+
+/// A bare `/` lists eight rows, each with its description on the row, and the overflowing list
+/// draws a one-cell scrollbar (accent thumb, muted track) instead of an `(n/m)` counter.
 #[test]
-fn render_uses_the_menu_panel_grammar() {
-    let items: Vec<CompletionItem> = (0..7)
-        .map(|i| CompletionItem {
-            value: format!("cmd{i}"),
-            label: format!("cmd{i}"),
-            description: Some(format!("description {i}")),
-            argument_hint: Some("[arg]".to_string()),
-            source_tag: None,
-        })
+fn slash_menu_rows_carry_descriptions_and_a_scrollbar_on_overflow() {
+    let theme = theme();
+    let lines = typed_menu("/").render(&theme, 72);
+    assert_eq!(
+        row_texts(&lines),
+        [
+            "\u{203a} settings    Open settings menu                                       \u{2588}",
+            "  model       Select model (opens selector UI; Tab filters by typed te\u{2026}\u{2502}",
+            "  effort      Select reasoning/thinking level (opens selector UI)      \u{2502}",
+            "  fast        Toggle OpenAI Fast mode                                  \u{2502}",
+            "  tier        Show or set the service tier                             \u{2502}",
+            "  export      Export session (HTML default, or specify path: .html/.js\u{2026}\u{2502}",
+            "  import      Import and resume a session from a JSONL file            \u{2502}",
+            "  share       Share session as a secret GitHub gist                    \u{2502}",
+        ]
+    );
+    let bar_colors: Vec<_> = lines
+        .iter()
+        .map(|line| line.last().and_then(|cell| cell.style.fg))
         .collect();
-    let state = AutocompleteState::new(items, 5, Some(SuggestionKind::SlashCommand));
-    let lines = state.render(&theme(), 60);
-    let text = |line: &Line| -> String { line.iter().map(|s| s.content.as_str()).collect() };
-    let rendered: Vec<String> = lines.iter().map(text).collect();
-    // The selected row carries the menu marker; the selection band
-    // spans the row.
-    assert!(rendered[0].starts_with("\u{203a} cmd0"));
-    assert_eq!(rendered[0].chars().count(), 60);
-    assert!(rendered.iter().any(|l| l.ends_with("[arg]")));
-    // The shared scroll status row, not a directional form.
-    assert!(rendered.iter().any(|l| l.trim() == "(1/7)"));
-    assert!(rendered.iter().any(|l| l.contains("description 0")));
+    let accent = theme.fg_style(crate::theme::ThemeColor::Accent).fg;
+    let muted = theme.fg_style(crate::theme::ThemeColor::Muted).fg;
+    assert_eq!(
+        bar_colors,
+        std::iter::once(accent)
+            .chain(std::iter::repeat_n(muted, 7))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `/mo` lists the prefix hit before the fuzzy one and drops the scattered matches (`import`,
+/// `system-prompt`) the old subsequence filter listed.
+#[test]
+fn slash_prefix_matches_precede_fuzzy_ones_and_weak_matches_drop() {
+    let provider = provider("/tmp");
+    let items = ready(provider.get_suggestions(&["/mo".to_string()], 0, 3, false)).items;
+    let values: Vec<&str> = items.iter().map(|item| item.value.as_str()).collect();
+    assert_eq!(values, ["model", "autonomous"]);
+}
+
+/// An unmatched token at the prompt start keeps the menu open on one muted no-match row.
+#[test]
+fn an_unmatched_slash_token_keeps_the_menu_open_on_its_no_match_row() {
+    let theme = theme();
+    let lines = typed_menu("/xyz").render(&theme, 40);
+    assert_eq!(
+        lines,
+        [vec![
+            crate::Span::raw("  "),
+            theme.fg_span(crate::theme::ThemeColor::Muted, "no command matches /xyz"),
+        ]]
+    );
 }
 
 #[test]

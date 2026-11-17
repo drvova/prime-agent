@@ -131,6 +131,68 @@ pub(crate) fn menu_row(
     finish_menu_row(theme, &row, width, selected)
 }
 
+/// The narrowest detail cell a [`column_row`] still renders; below it the detail drops.
+const MIN_DETAIL_WIDTH: usize = 10;
+
+/// One two-column inline menu row: the `›` marker, the primary text padded to `primary_width` (its
+/// last two cells are the gap), then the muted detail on the same row, truncated with `…` to the
+/// remaining width. The detail drops when fewer than [`MIN_DETAIL_WIDTH`] cells remain, and the
+/// primary text then takes the whole row.
+pub(crate) fn column_row(
+    theme: &Theme,
+    width: usize,
+    primary: &str,
+    primary_width: usize,
+    detail: &str,
+    selected: bool,
+) -> Line {
+    let inner_width = width.saturating_sub(2).max(1);
+    let detail_width = inner_width.saturating_sub(primary_width);
+    let show_detail = !detail.is_empty() && detail_width >= MIN_DETAIL_WIDTH;
+    let label_width = if show_detail {
+        primary_width.saturating_sub(2).max(1)
+    } else {
+        inner_width
+    };
+    let mut label = Span::raw(primary.to_string());
+    if selected {
+        label.style = label.style.add_modifier(ratatui::style::Modifier::BOLD);
+    }
+    let label = truncate_line(&vec![label], label_width, "\u{2026}");
+    let mut row: Line = vec![Span::raw(if selected { "\u{203a} " } else { "  " })];
+    let label_used = crate::width::spans_width(&label);
+    row.extend(label);
+    if show_detail {
+        row.push(Span::raw(
+            " ".repeat(primary_width.saturating_sub(label_used)),
+        ));
+        let detail = vec![theme.fg_span(ThemeColor::Muted, detail.to_string())];
+        row.extend(truncate_line(&detail, detail_width, "\u{2026}"));
+    }
+    finish_menu_row(theme, &row, width, selected)
+}
+
+/// The one-cell scrollbar column of an overflowing list window, one cell per visible row: the `│`
+/// track muted, the `█` thumb in accent, sized `max(1, rows²/total)` and placed in proportion to
+/// the window's first row.
+pub(crate) fn scrollbar_cells(theme: &Theme, rows: usize, total: usize, start: usize) -> Line {
+    let thumb = (rows * rows / total.max(1)).clamp(1, rows.max(1));
+    let travel = rows.saturating_sub(thumb);
+    let last_start = total.saturating_sub(rows);
+    let top = (start.min(last_start) * travel + last_start / 2)
+        .checked_div(last_start)
+        .unwrap_or(0);
+    (0..rows)
+        .map(|row| {
+            if (top..top + thumb).contains(&row) {
+                theme.fg_span(ThemeColor::Accent, "\u{2588}")
+            } else {
+                theme.fg_span(ThemeColor::Muted, "\u{2502}")
+            }
+        })
+        .collect()
+}
+
 /// The shared row finish: truncate to the width, pad so the selection band spans the row, and patch
 /// the soft selection background.
 fn finish_menu_row(theme: &Theme, row: &Line, width: usize, selected: bool) -> Line {

@@ -447,6 +447,9 @@ impl SessionUi {
                         if let Err(error) = settings.set_autocomplete_max_visible(max_visible) {
                             self.error_row(&format!("{error:#}"), view);
                         }
+                        view.editor.set_autocomplete_max_visible(
+                            usize::try_from(max_visible).unwrap_or(usize::MAX),
+                        );
                     }
                 }
             }

@@ -482,6 +482,29 @@ fn autocomplete_dropdown_rows_carry_the_popup_background() {
     );
 }
 
+/// A command typed out with its separator ghosts its argument hint dim after the cursor.
+#[test]
+fn a_typed_command_ghosts_its_argument_hint_after_the_cursor() {
+    let mut v = view();
+    for ch in "/tier ".chars() {
+        v.editor.handle_input(&ch.to_string());
+    }
+    let frame = v.render_dock(80);
+    let ghost = frame
+        .iter()
+        .flatten()
+        .find(|span| span.content == "[default|flex|priority|auto]")
+        .expect("the hint ghosts after the cursor");
+    let bg = crate::chrome::editor_background(&v.theme);
+    assert_eq!(ghost.style, bg.patch(v.theme.fg_style(ThemeColor::Dim)));
+    v.editor.handle_input("f");
+    let frame = v.render_dock(80);
+    assert!(
+        !frame.iter().any(|line| text_of(line).contains("[default|")),
+        "the first argument character clears the ghost"
+    );
+}
+
 /// The dropdown opens with its top border (operator directive 2026-09-26).
 #[test]
 fn autocomplete_panel_opens_with_the_top_border_rule() {
