@@ -319,6 +319,9 @@ pub trait InteractionTelemetry: Send + Sync {
     /// A prompt carrying an `@file` mention pill was submitted; counted on `tui exit`.
     /// Implementations count and return at once: the submit path never waits on it.
     fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// Up recalled the draft a Ctrl+C cleared; counted on `tui exit`. Implementations count and
+    /// return at once: the key path never waits on it.
+    fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// The live-line feedback moments the adoption counters track.

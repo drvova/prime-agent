@@ -208,6 +208,11 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_draft_recall_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn scroll_used(
         &self,
         _action: &'static str,

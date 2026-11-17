@@ -483,6 +483,20 @@ impl Editor {
         }
     }
 
+    /// Clear the draft into the head of the history, so the next Up on the empty editor recalls
+    /// it ahead of the submitted prompts. Paste markers are stored expanded, like every submitted
+    /// entry: a recalled draft submits what was pasted, even after a submit drops the paste
+    /// table or a later paste reuses the marker's id. Returns the stored text.
+    pub fn clear_into_history(&mut self) -> String {
+        let draft = self.expand_paste_markers(&self.get_text());
+        if self.history.first() != Some(&draft) {
+            self.history.insert(0, draft.clone());
+            self.history.truncate(MAX_HISTORY);
+        }
+        self.set_text("");
+        draft
+    }
+
     #[must_use]
     pub fn get_history(&self) -> &[String] {
         &self.history
