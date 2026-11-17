@@ -11,6 +11,29 @@ use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::width::wrap_text;
 
+/// The `webSearchProvider` values the picker cycles through, `auto` first
+/// (the wire ids pa-core's `WebSearchProvider` parses).
+pub const WEB_SEARCH_PROVIDERS: &[&str] = &[
+    "auto",
+    "serper",
+    "eco",
+    "brave",
+    "tavily",
+    "exa",
+    "kagi",
+    "perplexity",
+    "parallel",
+    "jina",
+    "firecrawl",
+    "searxng",
+    "duckduckgo",
+    "startpage",
+    "mojeek",
+    "ecosia",
+    "hackernews",
+    "public",
+];
+
 /// The reasoning-level descriptions the TS thinking submenu lists.
 fn thinking_description(level: &str) -> &'static str {
     match level {
@@ -321,9 +344,9 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
         SettingsMenuRow {
             id: "web-search-provider",
             label: "Web search provider",
-            description: "Service the websearch skill queries in new sessions; add its API key via /mcp",
+            description: "Web search provider for new sessions: auto uses a configured key, else keyless engines; add keys via /mcp",
             current: current.web_search_provider.clone(),
-            values: Some(vec!["serper".into(), "eco".into()]),
+            values: Some(WEB_SEARCH_PROVIDERS.iter().map(|id| (*id).to_string()).collect()),
             submenu: None,
             applies: Applies::NewSessions,
         },
@@ -545,7 +568,7 @@ impl SettingsCurrentValues {
             skill_commands: true,
             builtin_skills: true,
             harness_refinements: true,
-            web_search_provider: "serper".to_string(),
+            web_search_provider: "auto".to_string(),
             hardware_cursor: false,
             emoji_shortcodes: true,
             editor_padding: 0,

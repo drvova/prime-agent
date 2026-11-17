@@ -308,41 +308,21 @@ pub fn kernel_provisioner(
 
 /// The websearch skill's kernel env, only when a websearch skill is loaded:
 /// the selected provider (`PRIME_AGENT_WEBSEARCH_PROVIDER`, so the settings
-/// choice stays host-side) and, per TS `_addWebsearchKeyEnv`
-/// (agent-session.ts:11137-11158), the provider's stored key under its env
-/// var when the ambient env does not already carry a nonblank one and the
-/// stored credential is an api key that resolves non-empty. The websearch
-/// skill's own `!command` key refs cannot resolve in-kernel, so the host
-/// resolves them here; the caller reads the credential and runs this off the
-/// async runtime, because a `!command` key can block.
+/// choice stays visible kernel-side). API keys never ride the kernel env:
+/// the skill delegates to the native `web.search` host request, which
+/// resolves credentials on the host per search.
 #[must_use]
 pub(crate) fn websearch_env(
     skills: &[Skill],
-    provider: crate::settings::WebSearchProvider,
-    credential: Option<crate::auth::AuthCredential>,
+    provider: crate::web_search::WebSearchProvider,
 ) -> Vec<(String, String)> {
     if !skills.iter().any(|skill| skill.name == "websearch") {
         return Vec::new();
     }
-    let mut env = vec![(
+    vec![(
         "PRIME_AGENT_WEBSEARCH_PROVIDER".to_string(),
         provider.id().to_string(),
-    )];
-    if std::env::var(provider.api_key_env()).is_ok_and(|value| !value.trim().is_empty()) {
-        return env;
-    }
-    let key = match credential {
-        Some(crate::auth::AuthCredential::ApiKey { key, .. }) => {
-            crate::auth::resolve_config_value::resolve_config_value(&key)
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        }
-        _ => None,
-    };
-    if let Some(key) = key {
-        env.push((provider.api_key_env().to_string(), key));
-    }
-    env
+    )]
 }
 
 impl IpythonKernelProvisioner for KernelProvisioner {

@@ -1,22 +1,25 @@
 ---
 name: websearch
-description: Search the web with the provider chosen in /settings (Serper or You.com Eco). Configure its API key via /mcp. Takes one query and returns titles, URLs, snippets, and (with Serper) knowledge-graph data.
+description: Search the web with the provider chosen in /settings (auto by default; keyed providers such as Serper, You.com Eco, Brave, Tavily, or Exa when their API key is set via /mcp). Takes one query and returns titles, URLs, snippets, and any answer the provider synthesizes.
 ---
 
 # Web Search
 
-Search the web with the provider chosen in `/settings` → **Agents** → **Web search provider**:
-Serper (Google results, the default) or You.com Eco Search.
+Search the web with the provider chosen in `/settings` → **Agents** → **Web search provider**.
+The default, `auto`, uses any keyed provider whose API key is configured and otherwise
+searches keyless engines (DuckDuckGo, Startpage, Mojeek, Ecosia), so it works with no key.
+The search runs in Prime Agent's native engine, the same one as `web.search(...)` in the
+Python kernel.
 
 ## Setup
 
-Get a free API key for the chosen provider (Serper: https://serper.dev, You.com Eco:
-https://you.com/platform), then run `/mcp` in Prime Agent and choose
-**Serper (web search)** or **You.com Eco (web search)** to paste it.
-The key is stored in Prime Agent and made available to this skill automatically.
+None is needed for `auto`. For a keyed provider (better ranking, synthesized answers), get
+an API key from it (for example Serper: https://serper.dev, You.com Eco:
+https://you.com/platform), then run `/mcp` in Prime Agent and choose its
+**(web search)** row to paste it. The key stays in Prime Agent.
 
-If web search reports a missing key, walk the user through those two steps;
-don't ask them to set environment variables.
+If web search reports a missing key for a selected provider, walk the user through those
+two steps; don't ask them to set environment variables.
 
 Optional overrides (environment variables):
 

@@ -179,8 +179,14 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 - `mcp.search_tools(query: str, connection_id: str | None = None, limit: int = 20) -> dict`: search live tool names/descriptions and report the search scope
 - `mcp.describe_tool(connection_id: str, tool: str) -> dict`: one live tool's name, description, and inputSchema
 
+## Web search
+
+prime-agent searches the web natively; no API key is needed. The default `auto` provider uses any keyed provider the user configured, otherwise keyless engines, falling back to the next provider when one fails or finds nothing.
+
+- `web.search(query: str, *, provider: str | None = None, num_results: int | None = None, recency: str | None = None, timeout: float | None = None) -> WebSearchResult`: `str(result)` is a readable numbered list (with any synthesized answer and fallback notes); `result.sources` holds `title`, `url`, `snippet`, `published_date`; `result.answer` is set by answer-synthesizing providers. `site:`, `-site:`, `before:`/`after:`, `intitle:`, `filetype:`, quoted phrases, and `OR` in the query are honored. `provider` is `"auto"` or one of `serper`, `eco`, `brave`, `tavily`, `exa`, `kagi`, `perplexity`, `parallel`, `jina`, `firecrawl`, `searxng`, `duckduckgo`, `startpage`, `mojeek`, `ecosia`, `hackernews`, `public`; `recency` is `day`/`week`/`month`/`year`. Raises `RuntimeError` when every provider fails.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, and `mcp.*` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, and `web.*` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

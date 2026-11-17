@@ -404,8 +404,8 @@ mod tests {
         assert_eq!(value["idleEvictionMinutes"], "off");
         assert_eq!(value["treeFilterMode"], "all");
 
-        // The web search provider defaults to Serper and persists the choice.
-        assert_eq!(settings.web_search_provider(), "serper");
+        // The web search provider defaults to auto and persists the choice.
+        assert_eq!(settings.web_search_provider(), "auto");
         settings.set_web_search_provider("eco").expect("provider");
         assert_eq!(settings.web_search_provider(), "eco");
         let content =
@@ -467,6 +467,20 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(agent_dir.join("settings.json")).expect("settings file"),
             malformed
+        );
+    }
+
+    /// The TUI picker cycles exactly the values pa-core parses (the TUI
+    /// cannot link pa-core, so the composition root pins the two lists).
+    #[test]
+    fn the_settings_picker_offers_every_web_search_provider() {
+        let parsed: Vec<&str> = pa_core::web_search::WebSearchProvider::all()
+            .into_iter()
+            .map(pa_core::web_search::WebSearchProvider::id)
+            .collect();
+        assert_eq!(
+            pa_tui::settings_menu::WEB_SEARCH_PROVIDERS,
+            parsed.as_slice()
         );
     }
 }

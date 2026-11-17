@@ -437,7 +437,7 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
             "quiet-startup=true",
             "idle-eviction-minutes=180",
             "idle-eviction-minutes=90",
-            "web-search-provider=eco",
+            "web-search-provider=serper",
         ],
         "every arrow cycle persisted through the settings seam"
     );

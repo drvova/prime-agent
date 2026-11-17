@@ -39,6 +39,7 @@ try:
     rlm = _prime_agent_rlm_module.rlm
     bash = _prime_agent_rlm_module.bash
     import rlm.mcp as mcp
+    import rlm.web as web
 ";
 
 /// One line inside the bootstrap's try block, emitted only when the host

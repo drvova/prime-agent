@@ -661,19 +661,15 @@ fn api_key_credential_views_read_the_shared_store() {
     let views = manager.api_key_credential_views();
     assert_eq!(
         views,
-        vec![
-            McpCredentialView {
-                id: "serper".to_string(),
-                label: "Serper (web search)".to_string(),
+        crate::web_search::KEYED_CREDENTIALS
+            .iter()
+            .map(|(id, label)| McpCredentialView {
+                id: (*id).to_string(),
+                label: (*label).to_string(),
                 configured: false,
-            },
-            McpCredentialView {
-                id: "eco".to_string(),
-                label: "You.com Eco (web search)".to_string(),
-                configured: false,
-            },
-        ],
-        "the api-key credential catalog serves the web-search entries"
+            })
+            .collect::<Vec<_>>(),
+        "the api-key credential catalog serves the keyed web-search providers"
     );
     // A stored API key at the slot marks the row configured.
     {

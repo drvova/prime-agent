@@ -1417,36 +1417,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stored_serper_key_reaches_the_kernel_env() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_dir = dir.path().join("agent");
-        let cwd = dir.path().join("project");
-        std::fs::create_dir_all(&agent_dir).unwrap();
-        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
-        std::fs::write(
-            agent_dir.join("auth.json"),
-            r#"{ "serper": { "type": "api_key", "key": "!printf key-from-cmd" } }"#,
-        )
-        .unwrap();
-        let engine = shell_test_session(cwd, agent_dir).await.unwrap();
-        let injected = engine
-            .provisioner
-            .inner
-            .options
-            .env
-            .get("SERPER_API_KEY")
-            .map(String::as_str);
-        // A nonblank ambient SERPER_API_KEY wins (TS parity): the ambient key
-        // reaches the kernel through the inherited env, not the wiring.
-        if std::env::var("SERPER_API_KEY").is_ok_and(|value| !value.trim().is_empty()) {
-            assert_eq!(injected, None);
-        } else {
-            assert_eq!(injected, Some("key-from-cmd"));
-        }
-    }
-
-    #[tokio::test]
-    async fn a_stored_eco_key_reaches_the_kernel_env_when_eco_is_selected() {
+    async fn the_kernel_env_names_the_selected_provider_and_carries_no_key() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = dir.path().join("agent");
         let cwd = dir.path().join("project");
@@ -1457,7 +1428,8 @@ mod tests {
             serde_json::json!({ "webSearchProvider": "eco" }).to_string(),
         )
         .unwrap();
-        // Only an eco key: the skill gate and the key both follow the selected provider.
+        // The stored key enables the skill; the host resolves it per search,
+        // so it never rides the kernel env.
         std::fs::write(
             agent_dir.join("auth.json"),
             r#"{ "eco": { "type": "api_key", "key": "!printf eco-key-from-cmd" } }"#,
@@ -1473,13 +1445,10 @@ mod tests {
             .filter(|(key, _)| key.contains("WEBSEARCH") || key.ends_with("_API_KEY"))
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
-        let mut expected =
-            std::collections::BTreeMap::from([("PRIME_AGENT_WEBSEARCH_PROVIDER", "eco")]);
-        // A nonblank ambient YOU_API_KEY wins, like SERPER_API_KEY.
-        if !std::env::var("YOU_API_KEY").is_ok_and(|value| !value.trim().is_empty()) {
-            expected.insert("YOU_API_KEY", "eco-key-from-cmd");
-        }
-        assert_eq!(websearch_env, expected);
+        assert_eq!(
+            websearch_env,
+            std::collections::BTreeMap::from([("PRIME_AGENT_WEBSEARCH_PROVIDER", "eco")])
+        );
     }
 
     #[tokio::test]
@@ -1500,35 +1469,6 @@ mod tests {
                 .map(String::as_str),
             Some(""),
             "an inherited RLM_SESSION_ID must not reach an unsaved session's kernel"
-        );
-    }
-
-    #[tokio::test]
-    async fn without_a_websearch_skill_no_serper_key_env() {
-        let dir = tempfile::tempdir().unwrap();
-        let agent_dir = dir.path().join("agent");
-        let cwd = dir.path().join("project");
-        std::fs::create_dir_all(&agent_dir).unwrap();
-        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
-        std::fs::write(
-            agent_dir.join("settings.json"),
-            serde_json::json!({ "bundledSkills": { "websearch": false } }).to_string(),
-        )
-        .unwrap();
-        std::fs::write(
-            agent_dir.join("auth.json"),
-            r#"{ "serper": { "type": "api_key", "key": "!printf key-from-cmd" } }"#,
-        )
-        .unwrap();
-        let engine = shell_test_session(cwd, agent_dir).await.unwrap();
-        assert!(
-            !engine
-                .provisioner
-                .inner
-                .options
-                .env
-                .contains_key("SERPER_API_KEY"),
-            "the key rides the env only when a websearch skill is loaded"
         );
     }
 

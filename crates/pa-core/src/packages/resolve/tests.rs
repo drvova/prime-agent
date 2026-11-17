@@ -932,10 +932,18 @@ fn bundled_skills_collect_with_websearch_excluded_until_enabled() {
         .expect("websearch collected");
     // Unset settings ride with the credential: a keyless machine stays off,
     // a machine carrying an ambient key rides with it.
-    let ambient_key = std::env::var("SERPER_API_KEY").is_ok_and(|value| !value.trim().is_empty());
+    // The unset provider is `auto`: any keyed provider's ambient key counts.
+    let ambient_key = crate::web_search::ProviderId::ALL
+        .into_iter()
+        .filter_map(|provider| match provider.access() {
+            crate::web_search::ProviderAccess::ApiKey { env, .. } => Some(env),
+            crate::web_search::ProviderAccess::Endpoint { .. }
+            | crate::web_search::ProviderAccess::Keyless => None,
+        })
+        .any(|env| std::env::var(env).is_ok_and(|value| !value.trim().is_empty()));
     assert_eq!(
         websearch.enabled, ambient_key,
-        "unset settings ride with the serper credential"
+        "unset settings ride with a web search credential"
     );
     assert_eq!(websearch.metadata.source, MetadataSource::Builtin);
     let other = result
