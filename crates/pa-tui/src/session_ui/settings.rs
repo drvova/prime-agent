@@ -326,8 +326,12 @@ impl SessionUi {
                         self.error_row(&format!("{error:#}"), view);
                     }
                 }
+                // The gauge's threshold tick moves with the setting.
+                self.rebuild_tray(view);
             }
             "autocompact" => {
+                self.auto_compaction = value == "true";
+                self.rebuild_tray(view);
                 self.daemon_switch(
                     DaemonCommand::SetAutoCompaction {
                         id: None,

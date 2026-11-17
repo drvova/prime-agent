@@ -59,8 +59,18 @@ impl SessionUi {
     /// Re-apply the refreshed context usage to the chrome state.
     pub(crate) fn rebuild_tray(&mut self, view: &mut AgentView) {
         view.chrome.context = self.context;
+        view.chrome.compaction_percent = self.compaction_tick();
         view.chrome.chat_name = self.session_display();
         self.dirty = true;
+    }
+
+    /// Where the tray gauge ticks: the auto-compaction threshold (the local settings seam) while
+    /// the session compacts automatically, else nowhere.
+    pub(super) fn compaction_tick(&self) -> Option<f64> {
+        self.client_settings
+            .as_ref()
+            .filter(|_| self.auto_compaction)
+            .map(|settings| settings.compaction_threshold_percent())
     }
 
     pub(crate) fn note(&mut self, text: &str, view: &mut AgentView) {
