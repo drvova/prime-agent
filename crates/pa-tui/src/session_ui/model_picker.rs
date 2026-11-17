@@ -12,6 +12,14 @@ use serde_json::Value;
 /// refreshes again in the background.
 const MODEL_CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
+/// A landed `cycle_thinking_level` round trip: the session it was asked for (a late answer from a
+/// switched-away session never lands) and the daemon's answer, `{ level }` or `null` for a model
+/// without reasoning.
+pub(crate) struct ThinkingCycleNote {
+    session: String,
+    outcome: Result<Value>,
+}
+
 /// A landed `get_model_catalog` refresh: the full catalog and the providers
 /// with configured auth.
 pub(crate) struct ModelCatalogUpdate {
@@ -392,6 +400,68 @@ impl SessionUi {
             }
         }
         self.dirty = true;
+    }
+
+    /// The thinking-cycle key (`app.thinking.cycle`, oh-my-pi's Shift+Tab): the daemon's
+    /// `cycle_thinking_level` advances the level, wrapping through the model's supported ones. The
+    /// round trip is spawned so the key and paint paths never wait on it; the run loop folds the
+    /// answer through [`Self::apply_thinking_cycle`].
+    pub(super) fn spawn_thinking_cycle(&self) {
+        let client = self.client.clone();
+        let active_session_id = self.active_session_id.clone();
+        let session = active_session_id.clone();
+        let notes = self.thinking_cycle_notes.clone();
+        tokio::spawn(async move {
+            let timeout = Duration::from_millis(UI_REQUEST_TIMEOUT_MS);
+            let request = client.request_ok(DaemonCommand::CycleThinkingLevel {
+                id: None,
+                active_session_id,
+                rest: Map::default(),
+            });
+            let outcome = tokio::time::timeout(timeout, request)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "timed out after {}ms waiting for the Prime Agent daemon response",
+                        timeout.as_millis()
+                    ))
+                });
+            let _ = notes.send(ThinkingCycleNote { session, outcome });
+        });
+    }
+
+    /// Fold a landed thinking cycle. A level change is silent (oh-my-pi's): the tray glyph and
+    /// suffix and the composer edge move, no status row. A model without reasoning answers `null`
+    /// and gets the `/effort` command's unsupported note.
+    pub(crate) fn apply_thinking_cycle(&mut self, note: ThinkingCycleNote, view: &mut AgentView) {
+        if note.session != self.active_session_id {
+            return;
+        }
+        match note.outcome {
+            Ok(Value::Null) => {
+                self.note("Current model does not support thinking", view);
+            }
+            Ok(data) => {
+                let Some(level) = data
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .and_then(pa_types::ai::thinking_level_from_str)
+                else {
+                    self.error_row("the thinking cycle answer carried no level", view);
+                    return;
+                };
+                view.chrome.thinking_suffix = Some(level.wire_name().to_string());
+                if let Some(telemetry) = self.telemetry.clone() {
+                    tokio::spawn(async move {
+                        telemetry.effort_cycled().await;
+                    });
+                }
+                self.dirty = true;
+            }
+            Err(error) => {
+                self.error_row(&format!("{error:#}"), view);
+            }
+        }
     }
 
     /// Apply a thinking level: the daemon `set_thinking_level` command switches the session's

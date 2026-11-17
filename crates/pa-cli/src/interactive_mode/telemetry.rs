@@ -188,6 +188,11 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn effort_cycled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_effort_cycle_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn scroll_used(
         &self,
         _action: &'static str,

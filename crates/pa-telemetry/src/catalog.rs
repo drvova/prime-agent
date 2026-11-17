@@ -1024,6 +1024,7 @@ const TUI_EXIT: EventRule = EventRule {
         ("tui_live_tool_timer_count", optional(count())),
         ("tui_stall_shown_count", optional(count())),
         ("tui_retry_receipt_count", optional(count())),
+        ("tui_effort_cycle_count", optional(count())),
         ("tui_selection_count", optional(count())),
         ("tui_click_count", optional(count())),
         ("tui_menu_open_count", optional(count())),

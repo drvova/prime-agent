@@ -34,6 +34,17 @@ pub(crate) struct EditorBox {
     pub(crate) visible_rows: usize,
 }
 
+/// What colours the `> ` prompt (the composer's gutter) when no mode owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PromptTint {
+    /// The plain prompt (the agents view's composers, a model without reasoning).
+    Plain,
+    /// The session's thinking level, oh-my-pi's effort-tinted editor edge
+    /// (`updateEditorBorderColor`): dim through low, muted at medium, accent at high, warm
+    /// above it.
+    Thinking(pa_types::ai::ModelThinkingLevel),
+}
+
 /// Compose one editor box. `header` renders as the two-row block under the top
 /// row; `placeholder` replaces the first content row while the editor is empty.
 pub(crate) fn render(
@@ -43,6 +54,7 @@ pub(crate) fn render(
     terminal_rows: u16,
     header: Option<Line>,
     placeholder: Option<&str>,
+    tint: PromptTint,
 ) -> EditorBox {
     let bg = crate::chrome::editor_background(theme);
     let border = theme.fg_style(ThemeColor::BorderMuted);
@@ -52,6 +64,22 @@ pub(crate) fn render(
     // the editor border color), which also narrows the input width.
     let bash_prompt = editor.bash_prompt_prefix();
     let prompt = bash_prompt.unwrap_or("> ");
+    // The prompt's colour, highest claim first: bash mode owns it, then the thinking tint. Only
+    // the colour moves, so no row shifts width.
+    let prompt_style = match (bash_prompt, tint) {
+        (Some(_), _) => border,
+        (None, PromptTint::Plain) => bg,
+        (None, PromptTint::Thinking(level)) => {
+            use pa_types::ai::ModelThinkingLevel as L;
+            let color = match level {
+                L::Off | L::Minimal | L::Low => ThemeColor::Dim,
+                L::Medium => ThemeColor::Muted,
+                L::High => ThemeColor::Accent,
+                L::Xhigh | L::Max => ThemeColor::Warning,
+            };
+            bg.patch(theme.fg_style(color))
+        }
+    };
     let prompt_width = str_width(prompt);
     let input_width = content_width.saturating_sub(prompt_width).max(1);
     let layout_width = input_width;
@@ -96,8 +124,7 @@ pub(crate) fn render(
     for (index, line) in visible.iter().enumerate() {
         if index == 0 && placeholder_row.is_some() {
             let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
-            let style = if bash_prompt.is_some() { border } else { bg };
-            row.push(Span::styled(prompt.to_string(), style));
+            row.push(Span::styled(prompt.to_string(), prompt_style));
             row.push(Span::styled(" ".to_string(), bg));
             let placeholder_width = input_width.saturating_sub(1);
             let text = truncate_to_width(placeholder_row.unwrap_or(""), placeholder_width, "");
@@ -118,8 +145,7 @@ pub(crate) fn render(
         }
         let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
         if index == 0 {
-            let style = if bash_prompt.is_some() { border } else { bg };
-            row.push(Span::styled(prompt.to_string(), style));
+            row.push(Span::styled(prompt.to_string(), prompt_style));
         } else {
             row.push(Span::styled(" ".repeat(prompt_width), bg));
         }

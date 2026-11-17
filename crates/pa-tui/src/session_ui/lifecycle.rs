@@ -157,6 +157,7 @@ impl SessionUi {
             factory_refresh_queued: false,
             factory_list_epoch: 0,
             factory_updates: activity_updates.factory,
+            thinking_cycle_notes: activity_updates.thinking,
             factory_selected_run: None,
             subagents_focused: false,
             activity_group: crate::chrome::ActivityGroup::Subagents,
@@ -864,6 +865,7 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                thinking: mpsc::unbounded_channel().0,
             },
             backfill_tx,
         )
@@ -1057,6 +1059,7 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                thinking: mpsc::unbounded_channel().0,
             },
             mpsc::unbounded_channel().0,
         )

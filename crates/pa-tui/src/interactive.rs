@@ -307,6 +307,9 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         feedback: TurnFeedback,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The thinking-cycle key moved the session's thinking level; counted on `tui exit`.
+    /// Implementations count and return at once: the paint path never waits on it.
+    fn effort_cycled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// The live-line feedback moments the adoption counters track.

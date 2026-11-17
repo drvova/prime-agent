@@ -643,6 +643,13 @@ impl SessionUi {
                 .await;
             return Ok(());
         }
+        // The thinking cycle (oh-my-pi's Shift+Tab): every surface that owns Shift+Tab (the
+        // settings menu's tab strip, the pickers and panels) took the key above, and the
+        // completion dropdown has no Shift+Tab, so the composer is the only place it lands.
+        if view.editor.keybindings().matches(&id, "app.thinking.cycle") {
+            self.spawn_thinking_cycle();
+            return Ok(());
+        }
         if view.editor.keybindings().matches(&id, "app.tools.expand") {
             self.cycle_detail(view);
             return Ok(());
@@ -940,7 +947,7 @@ pub(crate) fn opening_echo_key_claimed(
 ) -> bool {
     // The always-fire arms: the transcript viewport, the image paste, the
     // escape ladder, the interrupt family, suspend, the model picker and
-    // cycles, the detail cycle, the dock focus, the external editor, the
+    // cycles, the thinking cycle, the detail cycle, the dock focus, the external editor, the
     // stash, the session-level commands, the queue browse, and the
     // follow-up key.
     if kb.matches(id, "tui.viewport.pageUp")
@@ -955,6 +962,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.model.select")
         || kb.matches(id, "app.model.cycleForward")
         || kb.matches(id, "app.model.cycleBackward")
+        || kb.matches(id, "app.thinking.cycle")
         || kb.matches(id, "app.tools.expand")
         || kb.matches(id, "app.subagents.focus")
         || kb.matches(id, "app.editor.external")
@@ -1115,6 +1123,7 @@ mod opening_echo_claim_tests {
             "ctrl+z",
             "ctrl+l",
             "alt+m",
+            "shift+tab",
             "ctrl+o",
             "alt+a",
             "ctrl+g",

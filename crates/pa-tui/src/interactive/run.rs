@@ -227,6 +227,10 @@ async fn run_interactive_surface(
     // autocomplete provider.
     let (commands_tx, mut commands_rx) =
         mpsc::unbounded_channel::<crate::session_ui::CommandCatalogUpdate>();
+    // Spawned `cycle_thinking_level` round trips (the thinking-cycle key) report here; the loop
+    // folds the level into the tray glyph and the composer edge.
+    let (thinking_tx, mut thinking_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::ThinkingCycleNote>();
     let (page_tx, mut page_rx) = mpsc::unbounded_channel::<crate::session_ui::TranscriptPageNote>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
@@ -335,6 +339,7 @@ async fn run_interactive_surface(
         let bash_tx = bash_tx.clone();
         let factory_tx = factory_tx.clone();
         let commands_tx = commands_tx.clone();
+        let thinking_tx = thinking_tx.clone();
         let page_tx = page_tx.clone();
         let waits_through_update_restart = !matches!(route, SessionOpenRoute::Cli);
         tokio::spawn(async move {
@@ -363,6 +368,7 @@ async fn run_interactive_surface(
                     let bash_tx = bash_tx.clone();
                     let factory_tx = factory_tx.clone();
                     let commands_tx = commands_tx.clone();
+                    let thinking_tx = thinking_tx.clone();
                     let page_tx = page_tx.clone();
                     async move {
                         let (client, events) = match first {
@@ -390,6 +396,7 @@ async fn run_interactive_surface(
                                 bash: bash_tx,
                                 factory: factory_tx,
                                 commands: commands_tx,
+                                thinking: thinking_tx,
                             },
                             page_tx,
                         )
@@ -1502,6 +1509,11 @@ async fn run_interactive_surface(
             maybe_commands = commands_rx.recv() => {
                 if let Some(update) = maybe_commands {
                     session.apply_command_catalog(update, &mut view);
+                }
+            }
+            maybe_thinking = thinking_rx.recv() => {
+                if let Some(note) = maybe_thinking {
+                    session.apply_thinking_cycle(note, &mut view);
                 }
             }
             maybe_prompt = prompt_rx.recv() => {

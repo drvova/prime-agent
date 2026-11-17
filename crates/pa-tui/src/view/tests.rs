@@ -228,6 +228,54 @@ fn bang_prompt_renders_in_place_of_the_typed_prefix() {
     );
 }
 
+/// The composer's `>` prompt carries the session's thinking level (oh-my-pi's effort-tinted
+/// editor edge): dim through low, muted at medium, accent at high, warm above it; plain with no
+/// level, and the bash prompt keeps its own colour over the tint.
+#[test]
+fn the_prompt_is_tinted_by_the_thinking_level() {
+    let prompt_style = |suffix: Option<&str>, text: &str| {
+        let mut v = view();
+        v.chrome.thinking_suffix = suffix.map(str::to_string);
+        v.editor.set_text(text);
+        let frame = v.render_dock(80);
+        let row = frame
+            .iter()
+            .find(|line| text_of(line).contains("draft"))
+            .expect("the prompt row");
+        let prompt = row
+            .iter()
+            .find(|span| span.content == "> " || span.content == "! ")
+            .expect("the prompt span");
+        (prompt.style, text_of(row).find("draft"))
+    };
+    let reference = view();
+    let theme = &reference.theme;
+    let bg = crate::chrome::editor_background(theme);
+    let tinted = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        .map(|level| prompt_style(Some(level), "draft"));
+    let draft_column = prompt_style(None, "draft").1;
+    let expected = [
+        ThemeColor::Dim,
+        ThemeColor::Dim,
+        ThemeColor::Dim,
+        ThemeColor::Muted,
+        ThemeColor::Accent,
+        ThemeColor::Warning,
+        ThemeColor::Warning,
+    ]
+    .map(|color| (bg.patch(theme.fg_style(color)), draft_column));
+    assert_eq!(
+        tinted, expected,
+        "one tint per level, the draft never moves"
+    );
+    assert_eq!(prompt_style(None, "draft").0, bg, "no level, no tint");
+    assert_eq!(
+        prompt_style(Some("high"), "!draft").0,
+        theme.fg_style(ThemeColor::BorderMuted),
+        "bash mode owns the prompt over the thinking tint"
+    );
+}
+
 #[test]
 fn autocomplete_dropdown_rows_carry_the_popup_background() {
     // Every span of a menu row must carry a background, so an

@@ -57,6 +57,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let interrupt = key_display(kb, "app.interrupt");
     let exit = key_display(kb, "app.exit");
     let select_model = key_display(kb, "app.model.select");
+    let cycle_thinking = key_display(kb, "app.thinking.cycle");
     let expand_tools = key_display(kb, "app.tools.expand");
     let focus_subagents = key_display(kb, "app.subagents.focus");
     let external_editor = key_display(kb, "app.editor.external");
@@ -138,6 +139,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
         r"| `{exit}` | Exit (when editor is empty) |
 | `{suspend}` | Suspend to background |
 | `{select_model}` | Open model selector |
+| `{cycle_thinking}` | Cycle thinking level |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
     );
     let _ = writeln!(
