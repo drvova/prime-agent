@@ -175,6 +175,10 @@ pub struct WorkingState {
     pub tokens: u64,
     /// Whole seconds since the loader started.
     pub elapsed_secs: u64,
+    /// The latest thought while the model thinks (its newest closed sentence, or the line still
+    /// arriving before one closes): one dim italic row under the loader where the transcript
+    /// folds thinking. `None` once the message moves on to text or tool calls.
+    pub thought: Option<String>,
 }
 
 /// The live abort row's text (TS `message_end`'s aborted arm): the retry
@@ -515,6 +519,7 @@ pub fn render_loader(
     working: &WorkingState,
     frame: usize,
     theme: &Theme,
+    detail: Detail,
     width: usize,
 ) -> Vec<Line> {
     let accent = theme.fg_style(ThemeColor::Accent);
@@ -529,7 +534,21 @@ pub fn render_loader(
         row.push(Span::raw(" ".to_string()));
         row.push(Span::styled(message, muted));
     }
-    vec![spacer(), pad_to(row, width, Style::default())]
+    let mut rows = vec![spacer(), pad_to(row, width, Style::default())];
+    // The live thought sits under the spinner, aligned with its label; an expanded transcript
+    // already streams the whole thinking block, so it shows nothing more here.
+    if let (Some(thought), false) = (&working.thought, detail.show_thinking()) {
+        let thought = crate::width::truncate_to_width(thought, width.saturating_sub(4), "\u{2026}");
+        let style = theme
+            .fg_style(ThemeColor::Dim)
+            .add_modifier(Modifier::ITALIC);
+        rows.push(pad_to(
+            vec![Span::raw("   ".to_string()), Span::styled(thought, style)],
+            width,
+            Style::default(),
+        ));
+    }
+    rows
 }
 
 /// An in-flight provider auto-retry (TS `retryLoader` + `CountdownTimer`):

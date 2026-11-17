@@ -25,6 +25,7 @@ fn filled(turns: usize) -> AgentView {
         download: true,
         tokens: 3,
         elapsed_secs: 0,
+        thought: None,
     });
     view
 }

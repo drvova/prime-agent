@@ -97,6 +97,7 @@ impl SessionUi {
             download: false,
             tokens: 0,
             elapsed_secs: 0,
+            thought: None,
         });
         view.working_since = Some(since);
         self.working_tokens.reset();
