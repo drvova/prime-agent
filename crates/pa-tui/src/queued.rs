@@ -242,14 +242,25 @@ pub struct QueueSelectionItem {
     pub text: String,
 }
 
-/// The strip rows: the "Starting" row of a preparing turn above a truncated dim preview per
-/// human-typed queued message, the condensed internal-prompt row, and the queue hint. Empty input
-/// renders no rows; the hint renders only when a human-typed message is parked.
+/// The keys the pending strip names, from the effective bindings.
+#[derive(Debug, Clone)]
+pub struct PendingStripKeys {
+    /// The interrupt key: aborting the turn dispatches the parked messages at once.
+    pub dispatch: String,
+    /// The browse key: its first press pulls the newest parked message into the editor.
+    pub edit: String,
+}
+
+/// The pending strip (nc's queued strip, under the live line at the top of the dock): the
+/// "Starting" row of a preparing turn, then one `⌎ <lane>: <message>` row per human-typed parked
+/// message (the oldest names the key that dispatches them now), the condensed internal-prompt
+/// row, and the edit hint. Empty input renders no rows; the dispatch clause and the hint render
+/// only when a human-typed message is parked.
 #[must_use]
 pub fn render_queue(
     theme: &Theme,
     queue: &QueuedMessages,
-    browse_key: &str,
+    keys: &PendingStripKeys,
     width: usize,
 ) -> Vec<Line> {
     if queue.is_empty() && queue.starting.is_none() {
@@ -257,17 +268,26 @@ pub fn render_queue(
     }
     let mut rows = vec![Vec::new()];
     if let Some(starting) = queue.starting.as_deref() {
-        rows.push(preview_row(theme, STARTING_LABEL, starting, width));
+        rows.push(preview_row(theme, "", STARTING_LABEL, starting, "", width));
     }
     // The human-typed previews render individually, so what the user parked stays explicit above
     // the condensed row.
     let user_items = flatten(queue);
-    for item in &user_items {
+    let dispatch = format!(" \u{2014} {} dispatches now", keys.dispatch);
+    for (position, item) in user_items.iter().enumerate() {
         let label = match item.lane {
             QueueLane::Steering => STEERING_LABEL,
             QueueLane::FollowUp => FOLLOW_UP_LABEL,
         };
-        rows.push(preview_row(theme, label, &item.text, width));
+        let clause = if position == 0 { dispatch.as_str() } else { "" };
+        rows.push(preview_row(
+            theme,
+            "\u{230e} ",
+            label,
+            &item.text,
+            clause,
+            width,
+        ));
     }
     if let Some(counts) = condensed_counts(queue) {
         rows.push(condensed_row(theme, &counts, width));
@@ -276,7 +296,8 @@ pub fn render_queue(
         // A starting row or internal prompts alone carry no user-typed messages to browse.
         return rows;
     }
-    let hint = format!("\u{2570}\u{2500} {browse_key} to browse and edit queued messages");
+    // The hint indents under the previews' text, past the `⌎ ` lead.
+    let hint = format!("  {} edits the last queued prompt", keys.edit);
     let hint_line: crate::Line = vec![
         crate::Span::raw(" ".repeat(width.min(1))),
         crate::Span::styled(hint, theme.fg_style(ThemeColor::Dim)),
@@ -314,21 +335,38 @@ pub struct QueueBrowseKeys {
     pub follow_up: String,
 }
 
-/// One styled preview row: the labeled message's first line with the TS prompt-highlight styling,
-/// truncated with `...` to the padded content width, with a plain 1-col left pad.
-fn preview_row(theme: &Theme, label: &str, message: &str, width: usize) -> Line {
+/// One styled preview row: the dim `lead`, then the labeled message's first line with the TS
+/// prompt-highlight styling, truncated with `...` so the dim `clause` still fits, with a plain
+/// 1-col left pad.
+fn preview_row(
+    theme: &Theme,
+    lead: &str,
+    label: &str,
+    message: &str,
+    clause: &str,
+    width: usize,
+) -> Line {
     let text = match message.split_once('\n') {
         Some((first_line, _)) => first_line,
         None => message,
     };
+    let dim = theme.fg_style(ThemeColor::Dim);
     let padding_x = width.min(1);
     let mut line: crate::Line = vec![crate::Span::raw(" ".repeat(padding_x))];
+    if !lead.is_empty() {
+        line.push(crate::Span::styled(lead.to_string(), dim));
+    }
     line.extend(crate::prompt_highlight::style_queued_message_preview(
         theme, text, label,
     ));
     // The right pad keeps the row at the full width like TS, so 1 left pad +
     // content cut to `width - 1` leaves the trailing space.
-    pad_line(truncate_line(&line, width.saturating_sub(1), "..."), width)
+    let budget = width.saturating_sub(1 + crate::width::str_width(clause));
+    let mut line = truncate_line(&line, budget, "...");
+    if !clause.is_empty() {
+        line.push(crate::Span::styled(clause.to_string(), dim));
+    }
+    pad_line(line, width)
 }
 
 /// The condensed internal-prompt row (the sanctioned divergence, see the module docs): one dim line

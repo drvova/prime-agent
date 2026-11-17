@@ -231,6 +231,10 @@ pub trait InteractionTelemetry: Send + Sync {
     /// is `select` / `edit` (empty text deletes) / `delete` / `reorder`. Never carries the
     /// message text.
     fn queue_edited(&self, action: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The interrupt key fired while messages were parked, dispatching them at once (the pending
+    /// strip's `— Esc dispatches now`); counted on `tui exit`. Implementations count and return
+    /// at once: the key path never waits on it.
+    fn queue_dispatched_now(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first `app.suspend` cycle (`tui suspend used`): `outcome` is `resumed` (the
     /// SIGCONT continuation restored the terminal) / `failed`.
     fn suspend_used(&self, outcome: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;

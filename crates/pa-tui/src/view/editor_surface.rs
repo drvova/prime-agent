@@ -34,6 +34,16 @@ pub(crate) struct EditorBox {
     pub(crate) visible_rows: usize,
 }
 
+/// The editor box's surface tone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SurfaceTone {
+    /// The plain editor surface.
+    Idle,
+    /// A draft typed into a running turn (nc's steering composer): the warm surface and a
+    /// warning-colored `▐` rail down the left edge.
+    Steering,
+}
+
 /// Compose one editor box. `header` renders as the two-row block under the top
 /// row; `placeholder` replaces the first content row while the editor is empty.
 pub(crate) fn render(
@@ -43,8 +53,12 @@ pub(crate) fn render(
     terminal_rows: u16,
     header: Option<Line>,
     placeholder: Option<&str>,
+    tone: SurfaceTone,
 ) -> EditorBox {
-    let bg = crate::chrome::editor_background(theme);
+    let bg = match tone {
+        SurfaceTone::Idle => crate::chrome::editor_background(theme),
+        SurfaceTone::Steering => theme.steering_surface_style(),
+    };
     let border = theme.fg_style(ThemeColor::BorderMuted);
     let padding_x = 2usize;
     let content_width = width.saturating_sub(padding_x * 2).max(1);
@@ -179,6 +193,20 @@ pub(crate) fn render(
         ));
     } else {
         rows.push(vec![Span::styled(" ".repeat(width), bg)]);
+    }
+    match tone {
+        SurfaceTone::Idle => {}
+        // The rail takes every row's first cell (always a padding space), so the cursor and
+        // click columns keep their places.
+        SurfaceTone::Steering => {
+            let rail = bg.patch(theme.fg_style(ThemeColor::Warning));
+            for row in &mut rows {
+                if let Some(first) = row.first_mut() {
+                    first.content = first.content.chars().skip(1).collect::<String>();
+                }
+                row.insert(0, Span::styled("\u{2590}", rail));
+            }
+        }
     }
     EditorBox {
         rows,

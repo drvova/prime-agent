@@ -226,6 +226,67 @@ fn bang_prompt_renders_in_place_of_the_typed_prefix() {
     );
 }
 
+/// A draft typed into a running turn takes the steering composer (nc): every box row on the warm
+/// surface behind a warning-colored `▐` rail. An empty draft or an idle session keeps the plain
+/// editor surface.
+#[test]
+fn a_draft_during_a_turn_takes_the_steering_composer() {
+    let mut v = view();
+    let steering = v.theme.steering_surface_style();
+    assert_ne!(
+        steering.bg,
+        crate::chrome::editor_background(&v.theme).bg,
+        "the warm surface differs from the editor surface"
+    );
+    let rail = crate::Span::styled(
+        "\u{2590}",
+        steering.patch(v.theme.fg_style(ThemeColor::Warning)),
+    );
+    let railed = |frame: &[Line]| -> Vec<Line> {
+        frame
+            .iter()
+            .filter(|row| row.first() == Some(&rail))
+            .cloned()
+            .collect()
+    };
+    v.working = Some(WorkingState {
+        activity: "Writing",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 2,
+    });
+    v.editor.set_text("also cover the tests");
+    let rows = railed(&v.render_dock(80));
+    assert_eq!(rows.len(), 3, "top pad, the draft row, bottom pad");
+    assert_eq!(
+        rows[0],
+        vec![rail.clone(), crate::Span::styled(" ".repeat(79), steering)]
+    );
+    assert_eq!(
+        text_of(&rows[1]).trim_end(),
+        "\u{2590}>  also cover the tests"
+    );
+    assert!(
+        rows.iter()
+            .flatten()
+            .all(|span| span.style.bg == steering.bg),
+        "every box span sits on the warm surface: {rows:?}"
+    );
+
+    v.editor.set_text("");
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an empty draft reverts"
+    );
+    v.editor.set_text("also cover the tests");
+    v.working = None;
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an idle session reverts"
+    );
+}
+
 #[test]
 fn autocomplete_dropdown_rows_carry_the_popup_background() {
     // Every span of a menu row must carry a background, so an

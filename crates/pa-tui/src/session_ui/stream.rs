@@ -176,9 +176,11 @@ impl SessionUi {
     }
 }
 
-/// The streaming follow-up hint: `<followUp> to queue message` — the tray override while the agent
-/// streams and a draft sits in the editor (an empty draft or an idle session shows nothing; the
-/// exit hint outranks it at the call site).
+/// The steering composer's hint row: `<submit> steer · <followUp> queue`, the tray override while
+/// the agent streams and a draft sits in the editor (nc's `enter steer · tab queue`, spelled with
+/// Prime's effective keys: the submit key steers at the next turn boundary, the follow-up key
+/// queues for the run's end). An empty draft or an idle session shows nothing; the exit hint
+/// outranks it at the call site.
 pub(super) fn streaming_tray_hint(
     keybindings: &crate::keybindings::KeybindingsManager,
     turn_active: bool,
@@ -187,11 +189,17 @@ pub(super) fn streaming_tray_hint(
     if !turn_active || draft.trim().is_empty() {
         return None;
     }
-    let follow_up = keybindings
-        .first_key("app.message.followUp")
-        .map(|key| crate::keybindings::format_key_text(&key))
-        .unwrap_or_default();
-    Some(format!("{follow_up} to queue message"))
+    let key = |id: &str| {
+        keybindings
+            .first_key(id)
+            .map(|key| crate::keybindings::format_key_text(&key))
+            .unwrap_or_default()
+    };
+    Some(format!(
+        "{} steer \u{00b7} {} queue",
+        key("tui.input.submit"),
+        key("app.message.followUp")
+    ))
 }
 
 /// The running-command guard's warning: the clear key cancels it, spelled
@@ -237,10 +245,10 @@ mod streaming_tray_hint_tests {
         assert_eq!(
             streaming_tray_hint(&kb, true, "a draft in the editor"),
             Some(format!(
-                "{}+Enter to queue message",
+                "Enter steer \u{00b7} {}+Enter queue",
                 crate::keybindings::format_key_text("alt")
             )),
-            "the default binding renders the TS sentence"
+            "the default bindings name both lanes"
         );
     }
 
@@ -262,7 +270,7 @@ mod streaming_tray_hint_tests {
         let kb = KeybindingsManager::with_user_bindings(config);
         assert_eq!(
             streaming_tray_hint(&kb, true, "draft"),
-            Some("Ctrl+Q to queue message".to_string()),
+            Some("Enter steer \u{00b7} Ctrl+Q queue".to_string()),
             "the hint follows the effective binding"
         );
     }

@@ -1,0 +1,1 @@
+- Typing while a turn runs now looks different: the composer turns warm with an amber `▐` rail and the hint row reads `Enter steer · Alt+Enter queue` (your keybindings). Parked messages sit under the working line as `⌎ Steering: … — Esc dispatches now`, with `Alt+↑ edits the last queued prompt` beneath them.

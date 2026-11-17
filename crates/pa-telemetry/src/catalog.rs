@@ -1031,6 +1031,7 @@ const TUI_EXIT: EventRule = EventRule {
         ("tui_image_paste_count", optional(count())),
         ("tui_input_queued_count", optional(count())),
         ("tui_queue_edit_count", optional(count())),
+        ("tui_queue_dispatch_count", optional(count())),
         ("tui_prompt_stash_count", optional(count())),
         ("tui_bash_shortcut_count", optional(count())),
         ("tui_bash_bang_count", optional(count())),
