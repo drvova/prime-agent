@@ -324,6 +324,16 @@ fn run_attached_holding_backfill(
     (outcome.frames, requests)
 }
 
+/// The first frame with transcript content: a CLI reopen paints a loading frame before the
+/// attach lands (latency study item R9), so the open's first content frame is the one that must
+/// render the tail.
+fn first_content_frame(frames: &[String]) -> &str {
+    frames
+        .iter()
+        .find(|frame| frame.contains("msg-"))
+        .unwrap_or_else(|| panic!("a frame renders transcript content: {frames:#?}"))
+}
+
 fn first_marker_line(frame: &str) -> Option<String> {
     frame
         .lines()
@@ -367,15 +377,14 @@ fn a_windowed_open_backfills_history_above_the_tail() {
         ],
     );
     assert!(!frames.is_empty(), "frames were captured");
+    let first = first_content_frame(&frames);
     assert!(
-        frames[0].contains("msg-15"),
-        "the first frame renders the tail's bottom: {}",
-        frames[0]
+        first.contains("msg-15"),
+        "the first content frame renders the tail's bottom: {first}"
     );
     assert!(
-        !frames[0].contains("msg-00"),
-        "the windowed first frame holds no head rows: {}",
-        frames[0]
+        !first.contains("msg-00"),
+        "the windowed first content frame holds no head rows: {first}"
     );
     let final_frame = frames.last().expect("the settled frame renders");
     assert_eq!(
@@ -457,10 +466,10 @@ fn a_full_snapshot_attach_never_backfills() {
         ],
     );
     assert!(!frames.is_empty(), "frames were captured");
+    let first = first_content_frame(&frames);
     assert!(
-        frames[0].contains("msg-15"),
-        "the full snapshot's first frame renders the tail: {}",
-        frames[0]
+        first.contains("msg-15"),
+        "the full snapshot's first content frame renders the tail: {first}"
     );
     assert!(
         frames.iter().any(|frame| frame.contains("msg-00")),
@@ -511,10 +520,10 @@ fn an_exit_with_backfill_in_flight_releases_the_daemon_connection() {
         "the windowed attach armed exactly the history backfill: {requests:?}"
     );
     assert!(!frames.is_empty(), "frames were captured");
+    let first = first_content_frame(&frames);
     assert!(
-        frames[0].contains("msg-15"),
-        "the windowed first frame renders the tail's bottom: {}",
-        frames[0]
+        first.contains("msg-15"),
+        "the windowed first content frame renders the tail's bottom: {first}"
     );
 }
 

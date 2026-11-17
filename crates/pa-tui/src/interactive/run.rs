@@ -273,34 +273,60 @@ async fn run_interactive_surface(
         options.fullscreen_mouse,
         &surface_mounted,
     )?;
-    // The startup chrome paints before the session loads only for a NEW
-    // chat (TS `ui.start()` renders the banner once before the session
-    // loads): the startup chrome carries the zero dock a fresh session
-    // mounts (`apply_startup_chrome`), so the placeholder frame never
-    // reflows when the attach lands. A direct open into an existing
-    // session holds the previous surface instead (TS attaches BEFORE
-    // the chat mounts — main.ts and the agents view construct the chat
-    // over an already-attached connection whose `getInitialSnapshot`
-    // is cached, so the first visible frame is the content): the queued
-    // clear rides the first draw's single flush, which carries the
-    // complete frame — no splash flash, no panel appearing late over a
-    // half-open view.
+    // The startup chrome paints before the session loads for a NEW chat
+    // (TS `ui.start()` renders the banner once before the session loads):
+    // the startup chrome carries the zero dock a fresh session mounts
+    // (`apply_startup_chrome`), so the placeholder frame never reflows
+    // when the attach lands.
+    //
+    // A CLI reopen (`--resume`, `--attach`) paints it too: the same chrome
+    // (title row, the activity dock in its idle form, the tray) with the
+    // empty transcript area holding a loading row, never the brand splash.
+    // DIVERGENCE from TS (latency study item R9, approved by the operator):
+    // TS attaches BEFORE the chat mounts — main.ts constructs the chat over
+    // an already-attached connection whose `getInitialSnapshot` is cached,
+    // so its first visible frame is the content — and the port held the
+    // pane blank until then (seconds for a large session). Only the
+    // transcript area and the dock's values fill in when the attach lands:
+    // its rebuild replaces the loading row with the transcript
+    // (`replace_transcript` clears the chat) and recomputes the splash from
+    // the folded transcript (`rebuild_view`), so the suppression below lasts
+    // only until then. The reopen's typed-ahead still queues behind the open
+    // and dispatches after the fold's stash restore (`echoing` below). An
+    // agents-view open keeps holding the previous surface: the agents view
+    // stays visible over the open, and its queued clear rides the first
+    // draw's single flush, which carries the complete content frame — no
+    // splash flash, no panel appearing late over a half-open view.
     //
     // The same predicate names the surface the opening phase below may
-    // repaint: a NEW chat's chrome already mounted (its echo frames
-    // paint at the frame scheduler's cadence), while a held surface
-    // (a direct open into an existing session) and headless capture
-    // runs never paint during the open — the first draw stays the
-    // open's content frame.
-    let opening_paints = !headless
+    // repaint: a mounted chrome's echo frames paint at the frame scheduler's
+    // cadence, while a held surface and headless capture runs never paint
+    // during the open. A headless CLI reopen captures the one loading frame
+    // (the verifier's witness that the chrome painted before the attach).
+    let reopening_from_cli = matches!(route, SessionOpenRoute::Cli)
         && matches!(
             &options.session,
-            SessionSelection::New | SessionSelection::NewChild { .. }
+            SessionSelection::Attach(_) | SessionSelection::Resume(_)
         );
+    if reopening_from_cli {
+        view.splash_suppressed = true;
+        view.push_entry(crate::chat::ChatEntry::Status {
+            text: "Loading session\u{2026}".to_string(),
+            kind: crate::chat::StatusKind::Info,
+        });
+    }
+    let opening_paints = !headless
+        && (reopening_from_cli
+            || matches!(
+                &options.session,
+                SessionSelection::New | SessionSelection::NewChild { .. }
+            ));
     if opening_paints {
         if let Some(renderer) = renderer.is_terminal_mut() {
             crate::app::draw(renderer, &mut view)?;
         }
+    } else if headless && reopening_from_cli {
+        renderer.render_headless_pane(&mut view);
     }
     // The startup open (TS `runAgentsViewLoop` -> `openAgentsViewSession`,
     // TS #2391): an agents-view open that lands while the daemon prepares an
