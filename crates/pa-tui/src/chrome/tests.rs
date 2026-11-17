@@ -216,8 +216,8 @@ fn activity_dock_frames_one_row_with_running_paused_and_goal_counts() {
     assert!(frame[1]
         .iter()
         .all(|span| span.style.fg != theme.fg_style(ThemeColor::Success).fg));
-    // An overflowing row truncates INSIDE the width: the ellipsis
-    // reserves its own column.
+    // The row shrinks in its stated order, whole steps only: tight separators, the lane
+    // words, the zero-count lanes, the paused cluster, then the goal — never a cut word.
     let dock = ActivityDock {
         subagents_running_direct: 1,
         subagents_running_nested: 2,
@@ -227,23 +227,48 @@ fn activity_dock_frames_one_row_with_running_paused_and_goal_counts() {
         goal_label: Some("Pursuing goal (12m 05s)".to_string()),
         ..ActivityDock::default()
     };
-    for width in 20..=45 {
-        let frame = render_activity_dock(&dock, &theme, width);
-        let row = &frame[1];
-        let used = crate::width::spans_width(row);
-        assert!(
-            used <= width,
-            "the truncated row stays inside {width}: {used}"
-        );
-        let text = row
-            .iter()
-            .map(|span| span.content.as_str())
-            .collect::<String>();
-        assert!(
-            text.ends_with('\u{2026}'),
-            "the truncation carries the ellipsis: {text:?}"
-        );
-    }
+    let rows: Vec<String> = [100, 80, 60, 45, 30, 20]
+        .into_iter()
+        .map(|width| {
+            render_activity_dock(&dock, &theme, width)[1]
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    let counts = " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25d0} 2 paused \u{b7} \u{25b8} 2 \u{b7} Pursuing goal (12m 05s)";
+    assert_eq!(
+        rows,
+        vec![
+            " \u{25c6} 3 subagents  \u{b7}  \u{25f7} 4 heartbeats \u{b7} \u{25d0} 2 paused  \u{b7}  \u{25b8} 2 shells  \u{b7}  Pursuing goal (12m 05s)".to_string(),
+            counts.to_string(),
+            counts.to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2 \u{b7} Pursuing goal (12m 05s)".to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2".to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2".to_string(),
+        ]
+    );
+    // The all-zero dock keeps its words while they fit, then its counts, and only a row
+    // narrower than the counts drops the idle lanes.
+    let idle = ActivityDock::default();
+    let rows: Vec<String> = [48, 30, 12]
+        .into_iter()
+        .map(|width| {
+            render_activity_dock(&idle, &theme, width)[1]
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            " \u{25c6} 0 subagents  \u{b7}  \u{25f7} 0 heartbeats  \u{b7}  \u{25b8} 0 shells"
+                .to_string(),
+            " \u{25c6} 0 \u{b7} \u{25f7} 0 \u{b7} \u{25b8} 0".to_string(),
+            " \u{25c6} 0".to_string(),
+        ]
+    );
     // A row that fits whole keeps every character — the ellipsis
     // column is only borrowed when truncation actually happens.
     let frame = render_activity_dock(&dock, &theme, 120);

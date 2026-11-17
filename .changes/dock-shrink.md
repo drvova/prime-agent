@@ -1,0 +1,1 @@
+- The activity row under the tray (`◆ 0 subagents · ◷ 0 heartbeats · ▸ 0 shells`) now shrinks in a fixed order on narrow terminals (tighter separators, then counts without words, then idle lanes, the paused cluster and the goal) instead of ending in a cut-off `…`.

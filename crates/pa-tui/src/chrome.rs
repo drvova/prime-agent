@@ -933,78 +933,116 @@ pub fn render_activity_dock_segments(
     let running = dock.subagents_running_direct + dock.subagents_running_nested;
     let shells = dock.shells.len();
     let factory = dock.factory_counts;
-    let mut line = vec![Span::raw(" ")];
-    let mut segments: Vec<ActivityDockSegment> = Vec::new();
-    for (index, group) in dock.groups().into_iter().enumerate() {
-        if index > 0 {
-            line.push(theme.fg_span(ThemeColor::Dim, "  ·  "));
+    // One lane's label at a shrink step: the glyph and count, then the word until the lane
+    // words drop.
+    let lane_label = |glyph: &str, count: usize, word: &str, plural: &str, shrink: DockShrink| {
+        if shrink < DockShrink::CountsOnly {
+            format!(
+                "{glyph} {count} {word}{}",
+                if count == 1 { "" } else { plural }
+            )
+        } else {
+            format!("{glyph} {count}")
         }
-        // The segment's column span is what the terminal paints (the
-        // truncation below clamps its end).
-        let start = line.iter().map(|s| str_width(&s.content)).sum();
-        match group {
-            ActivityGroup::Subagents => {
-                line.push(theme.fg_span(
-                    activity_color(running),
-                    format!(
-                        "◆ {running} subagent{}",
-                        if running == 1 { "" } else { "s" }
-                    ),
-                ));
+    };
+    let row_at = |shrink: DockShrink| {
+        let separator = if shrink < DockShrink::TightSeparators {
+            "  \u{b7}  "
+        } else {
+            " \u{b7} "
+        };
+        let clusters = shrink < DockShrink::NoClusters;
+        let mut line = vec![Span::raw(" ")];
+        let mut segments: Vec<ActivityDockSegment> = Vec::new();
+        for group in dock.groups() {
+            // A zero-count lane with nothing waiting says nothing once the row is tight; the
+            // subagents lane anchors the dock and always stays.
+            let idle = match group {
+                ActivityGroup::Subagents | ActivityGroup::Goal => false,
+                ActivityGroup::Heartbeats => dock.heartbeats + dock.heartbeats_paused == 0,
+                ActivityGroup::Bash => shells == 0,
+                ActivityGroup::Factory => factory.running + factory.paused == 0,
+            };
+            let hidden = match group {
+                ActivityGroup::Goal => shrink >= DockShrink::NoGoal,
+                ActivityGroup::Subagents
+                | ActivityGroup::Heartbeats
+                | ActivityGroup::Bash
+                | ActivityGroup::Factory => idle && shrink >= DockShrink::NoIdleLanes,
+            };
+            if hidden {
+                continue;
             }
-            ActivityGroup::Heartbeats => {
-                line.push(theme.fg_span(
-                    activity_color(dock.heartbeats),
-                    format!(
-                        "◷ {} heartbeat{}",
-                        dock.heartbeats,
-                        if dock.heartbeats == 1 { "" } else { "s" }
-                    ),
-                ));
-                if dock.heartbeats_paused > 0 {
-                    line.extend(cluster(
-                        &format!("◐ {} paused", dock.heartbeats_paused),
-                        ThemeColor::Warning,
+            if !segments.is_empty() {
+                line.push(theme.fg_span(ThemeColor::Dim, separator));
+            }
+            // The segment's column span is what the terminal paints (the
+            // truncation below clamps its end).
+            let start = line.iter().map(|s| str_width(&s.content)).sum();
+            match group {
+                ActivityGroup::Subagents => {
+                    line.push(theme.fg_span(
+                        activity_color(running),
+                        lane_label("\u{25c6}", running, "subagent", "s", shrink),
                     ));
                 }
-            }
-            // The label reads "shell(s)": the tool name stays bash() everywhere else.
-            ActivityGroup::Bash => {
-                line.push(theme.fg_span(
-                    activity_color(shells),
-                    format!("▸ {} shell{}", shells, if shells == 1 { "" } else { "s" }),
-                ));
-                if dock.shells_persistent > 0 {
-                    line.extend(cluster(
-                        &format!("{} persistent", dock.shells_persistent),
+                ActivityGroup::Heartbeats => {
+                    line.push(theme.fg_span(
+                        activity_color(dock.heartbeats),
+                        lane_label("\u{25f7}", dock.heartbeats, "heartbeat", "s", shrink),
+                    ));
+                    if dock.heartbeats_paused > 0 && clusters {
+                        line.extend(cluster(
+                            &format!("\u{25d0} {} paused", dock.heartbeats_paused),
+                            ThemeColor::Warning,
+                        ));
+                    }
+                }
+                // The label reads "shell(s)": the tool name stays bash() everywhere else.
+                ActivityGroup::Bash => {
+                    line.push(theme.fg_span(
                         activity_color(shells),
+                        lane_label("\u{25b8}", shells, "shell", "s", shrink),
                     ));
+                    if dock.shells_persistent > 0 && clusters {
+                        line.extend(cluster(
+                            &format!("{} persistent", dock.shells_persistent),
+                            activity_color(shells),
+                        ));
+                    }
                 }
-            }
-            // The factory indicator counts the running runs, and the paused
-            // ones in their own amber cluster (the heartbeats' grammar): done
-            // and failed runs stay as panels inside the factory page.
-            ActivityGroup::Factory => {
-                line.push(theme.fg_span(
-                    activity_color(factory.running),
-                    format!("⚙ {} factory", factory.running),
-                ));
-                if factory.paused > 0 {
-                    line.extend(cluster(
-                        &format!("◐ {} paused", factory.paused),
-                        ThemeColor::Warning,
+                // The factory indicator counts the running runs, and the paused
+                // ones in their own amber cluster (the heartbeats' grammar): done
+                // and failed runs stay as panels inside the factory page.
+                ActivityGroup::Factory => {
+                    line.push(theme.fg_span(
+                        activity_color(factory.running),
+                        lane_label("\u{2699}", factory.running, "factory", "", shrink),
                     ));
+                    if factory.paused > 0 && clusters {
+                        line.extend(cluster(
+                            &format!("\u{25d0} {} paused", factory.paused),
+                            ThemeColor::Warning,
+                        ));
+                    }
                 }
+                ActivityGroup::Goal => line.push(goal_span(dock, theme)),
             }
-            ActivityGroup::Goal => line.push(goal_span(dock, theme)),
+            let end = line.iter().map(|s| str_width(&s.content)).sum();
+            segments.push(ActivityDockSegment {
+                group,
+                row: 1,
+                cols: start..end,
+            });
         }
-        let end = line.iter().map(|s| str_width(&s.content)).sum();
-        segments.push(ActivityDockSegment {
-            group,
-            row: 1,
-            cols: start..end,
-        });
-    }
+        (line, segments)
+    };
+    let (line, segments) = DOCK_SHRINK
+        .iter()
+        .map(|shrink| row_at(*shrink))
+        .find(|(line, _)| line.iter().map(|s| str_width(&s.content)).sum::<usize>() <= width)
+        .unwrap_or_else(|| row_at(DockShrink::NoGoal));
+    // Only a subagent count wider than the whole row still truncates.
     let row = truncate_spans_to_width(&line, width);
     let rendered = row
         .iter()
@@ -1023,6 +1061,30 @@ pub fn render_activity_dock_segments(
         .collect();
     (vec![rule, row], segments)
 }
+
+/// The collapsed dock's shrink order as the width drops (the tray's [`TrayShrink`] grammar).
+/// Every step keeps the previous steps' cuts and gives up one more thing, whole: the wide
+/// `  ·  ` separators tighten to ` · `, the lane words go (`◆ 2 subagents` → `◆ 2`), the
+/// zero-count lanes drop (the subagents lane stays), the paused/persistent clusters drop, and
+/// the goal label goes last. Nothing is cut mid-word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum DockShrink {
+    Full,
+    TightSeparators,
+    CountsOnly,
+    NoIdleLanes,
+    NoClusters,
+    NoGoal,
+}
+
+const DOCK_SHRINK: [DockShrink; 6] = [
+    DockShrink::Full,
+    DockShrink::TightSeparators,
+    DockShrink::CountsOnly,
+    DockShrink::NoIdleLanes,
+    DockShrink::NoClusters,
+    DockShrink::NoGoal,
+];
 
 /// A count-holding segment's color: green while its count is above
 /// zero, neutral at zero.
