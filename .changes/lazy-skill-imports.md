@@ -1,0 +1,1 @@
+- Python skills now load on first use instead of at every kernel start, so a skill that imports a heavy library (for example pandas) no longer slows down the Python kernel's startup. Skills keep the same names and call signatures, and a skill that fails to import reports the error the first time it is used.
