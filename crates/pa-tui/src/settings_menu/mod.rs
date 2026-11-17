@@ -53,6 +53,30 @@ pub fn service_tier_description(tier: &str) -> &'static str {
 /// The settings-row and autocomplete choice order.
 pub const SERVICE_TIER_CHOICES: [&str; 4] = ["default", "flex", "priority", "auto"];
 
+/// When a saved change takes effect: the hint row says so after each change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Applies {
+    Now,
+    NextTurn,
+    NewSessions,
+    AfterRestart,
+}
+
+impl Applies {
+    fn hint(self) -> &'static str {
+        match self {
+            Applies::Now => "Saved \u{b7} applies now",
+            Applies::NextTurn => "Saved \u{b7} from the next turn",
+            Applies::NewSessions => "Saved \u{b7} in new sessions",
+            Applies::AfterRestart => "Saved \u{b7} after restart",
+        }
+    }
+}
+
+/// How long the hint row keeps the `Saved` notice after a change. The run loop arms a wake at
+/// its expiry (see [`SettingsMenu::saved_notice`]), so an idle screen repaints it away.
+const SAVED_NOTICE: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// One settings row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsMenuRow {
@@ -64,6 +88,8 @@ pub struct SettingsMenuRow {
     /// The values Enter/Space cycles through (`None` = submenu row).
     pub values: Option<Vec<String>>,
     pub submenu: Option<SettingsSubmenu>,
+    /// When a change to this row takes effect.
+    pub applies: Applies,
 }
 
 /// One key press while the menu is open. The theme submenu's live preview
@@ -81,6 +107,11 @@ pub enum SettingsMenuAction {
     /// The theme submenu's selection moved: preview the theme live.
     PreviewTheme {
         name: String,
+    },
+    /// Delete put a changed row back to its default value.
+    Reset {
+        id: &'static str,
+        value: String,
     },
     /// Esc inside a submenu closed it; the menu itself stays open.
     SubmenuClosed,
@@ -168,10 +199,15 @@ pub struct SettingsMenu {
     tab: usize,
     sub: Option<SubmenuState>,
     max_visible: usize,
+    /// Each row's default value by id: a row whose value differs is tinted, and Delete resets it.
+    defaults: std::collections::HashMap<&'static str, String>,
+    /// The last change: when it was saved and when it takes effect.
+    saved: Option<(std::time::Instant, Applies)>,
 }
 
-/// One tab: the row indices it groups with its own search input, filtered window, and selection —
-/// switching moves the focus only, so coming back restores where the user was.
+/// One tab: the row indices it groups with its search input, filtered window, and selection. A
+/// switch carries the active query over (the search is shared across tabs), and coming back to a
+/// tab under the same query restores where the user was.
 #[derive(Debug)]
 struct SettingsTab {
     name: &'static str,
@@ -215,6 +251,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: percent.to_string(),
             values: Some(thresholds.into_iter().map(|value| value.to_string()).collect()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "autocompact",
@@ -223,6 +260,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.autocompact.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "show-images",
@@ -231,6 +269,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.show_images.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "auto-resize-images",
@@ -239,6 +278,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.auto_resize_images.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "block-images",
@@ -247,6 +287,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.block_images.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "skill-commands",
@@ -255,6 +296,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.skill_commands.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "harness-refinements",
@@ -263,6 +305,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.harness_refinements.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "web-search-provider",
@@ -271,6 +314,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.web_search_provider.clone(),
             values: Some(vec!["serper".into(), "eco".into()]),
             submenu: None,
+            applies: Applies::NewSessions,
         },
         SettingsMenuRow {
             id: "builtin-skills",
@@ -279,6 +323,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.builtin_skills.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::AfterRestart,
         },
         SettingsMenuRow {
             id: "show-hardware-cursor",
@@ -287,6 +332,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.hardware_cursor.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "editor-padding",
@@ -295,6 +341,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.editor_padding.to_string(),
             values: Some(vec!["0".into(), "1".into(), "2".into(), "3".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "autocomplete-max-visible",
@@ -303,6 +350,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.autocomplete_max_visible.to_string(),
             values: Some(vec!["3".into(), "5".into(), "8".into(), "10".into(), "15".into(), "20".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "emoji-shortcodes",
@@ -311,6 +359,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.emoji_shortcodes.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "clear-on-shrink",
@@ -319,6 +368,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.clear_on_shrink.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "terminal-progress",
@@ -327,6 +377,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.terminal_progress.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "idle-eviction-minutes",
@@ -335,6 +386,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.idle_eviction_minutes.clone(),
             values: Some(idle_values),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "steering-mode",
@@ -343,6 +395,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.steering_mode.clone(),
             values: Some(vec!["one-at-a-time".into(), "all".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "follow-up-mode",
@@ -351,6 +404,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.follow_up_mode.clone(),
             values: Some(vec!["one-at-a-time".into(), "all".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "transport",
@@ -359,6 +413,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.transport.clone(),
             values: Some(vec!["sse".into(), "websocket".into(), "websocket-cached".into(), "auto".into()]),
             submenu: None,
+            applies: Applies::NextTurn,
         },
         SettingsMenuRow {
             id: "default-service-tier",
@@ -367,6 +422,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.default_service_tier.clone(),
             values: None,
             submenu: Some(SettingsSubmenu::ServiceTier),
+            applies: Applies::NewSessions,
         },
         SettingsMenuRow {
             id: "mermaid-rendering",
@@ -375,6 +431,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.mermaid.clone(),
             values: Some(vec!["off".into(), "final".into(), "streaming".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "quiet-startup",
@@ -383,6 +440,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.quiet_startup.to_string(),
             values: Some(bool_value()),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "tree-filter-mode",
@@ -391,6 +449,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: current.tree_filter_mode.clone(),
             values: Some(vec!["default".into(), "no-tools".into(), "user-only".into(), "labeled-only".into(), "all".into()]),
             submenu: None,
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "warnings",
@@ -399,6 +458,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             current: "configure".to_string(),
             values: None,
             submenu: Some(SettingsSubmenu::Warnings),
+            applies: Applies::Now,
         },
         SettingsMenuRow {
             id: "thinking",
@@ -409,6 +469,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             submenu: Some(SettingsSubmenu::Thinking {
                 levels: current.available_thinking_levels.clone(),
             }),
+            applies: Applies::NextTurn,
         },
         SettingsMenuRow {
             id: "theme",
@@ -419,6 +480,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             submenu: Some(SettingsSubmenu::Theme {
                 themes: current.available_themes.clone(),
             }),
+            applies: Applies::Now,
         },
     ]
 }
@@ -457,7 +519,114 @@ pub struct SettingsCurrentValues {
     pub available_themes: Vec<String>,
 }
 
+impl SettingsCurrentValues {
+    /// The settings' own defaults (the values a fresh install reads): the menu tints rows that
+    /// differ and Delete resets to them. Session-owned values with no fixed default (thinking,
+    /// transport) stay empty, so they never tint.
+    #[must_use]
+    pub(crate) fn defaults() -> Self {
+        SettingsCurrentValues {
+            autocompact: true,
+            compaction_threshold_percent: 95.0,
+            show_images: true,
+            auto_resize_images: true,
+            block_images: false,
+            skill_commands: true,
+            builtin_skills: true,
+            harness_refinements: true,
+            web_search_provider: "serper".to_string(),
+            hardware_cursor: false,
+            emoji_shortcodes: true,
+            editor_padding: 0,
+            autocomplete_max_visible: 5,
+            clear_on_shrink: false,
+            terminal_progress: false,
+            idle_eviction_minutes: "90".to_string(),
+            steering_mode: "all".to_string(),
+            follow_up_mode: "one-at-a-time".to_string(),
+            transport: String::new(),
+            default_service_tier: "default".to_string(),
+            mermaid: "streaming".to_string(),
+            quiet_startup: false,
+            tree_filter_mode: "user-only".to_string(),
+            warnings_anthropic_extra_usage: true,
+            thinking_level: None,
+            available_thinking_levels: Vec::new(),
+            theme: "prime".to_string(),
+            available_themes: Vec::new(),
+        }
+    }
+}
+
 impl SettingsMenu {
+    /// Compare the rows against these defaults: a differing row is tinted, Delete resets it.
+    #[must_use]
+    pub(crate) fn with_defaults(mut self, defaults: &SettingsCurrentValues) -> Self {
+        self.defaults = settings_menu_rows(defaults)
+            .into_iter()
+            .filter(|row| !row.current.is_empty())
+            .map(|row| (row.id, row.current))
+            .collect();
+        self
+    }
+
+    /// The row's default when it differs from the row's current value.
+    fn changed_default(&self, row: &SettingsMenuRow) -> Option<&str> {
+        self.defaults
+            .get(row.id)
+            .map(String::as_str)
+            .filter(|default| !row.current.is_empty() && *default != row.current)
+    }
+
+    /// The live `Saved` notice: when it expires and when the change applies; `None` once the
+    /// window has passed. The run loop wakes at the expiry so the notice clears on an idle screen.
+    #[must_use]
+    pub(crate) fn saved_notice(&self) -> Option<(std::time::Instant, Applies)> {
+        self.saved
+            .map(|(at, applies)| (at + SAVED_NOTICE, applies))
+            .filter(|(expiry, _)| *expiry > std::time::Instant::now())
+    }
+
+    /// Drop a `Saved` notice whose window has passed; `true` when one went, so the caller
+    /// repaints it away (the toasts' `prune_expired` contract).
+    pub(crate) fn prune_saved_notice(&mut self, now: std::time::Instant) -> bool {
+        let expired = self
+            .saved
+            .is_some_and(|(at, _)| now.duration_since(at) >= SAVED_NOTICE);
+        if expired {
+            self.saved = None;
+        }
+        expired
+    }
+
+    /// Note a saved change for the hint row.
+    fn mark_saved(&mut self, row_index: usize) {
+        self.saved = Some((std::time::Instant::now(), self.rows[row_index].applies));
+    }
+
+    /// Delete on a changed row: put it back to its default (a no-op on a default row).
+    fn reset_selected(&mut self) -> SettingsMenuAction {
+        let Some(&row_index) = self
+            .tabs
+            .get(self.tab)
+            .and_then(|tab| tab.filtered.get(tab.selected))
+        else {
+            return SettingsMenuAction::None;
+        };
+        let Some(default) = self
+            .changed_default(&self.rows[row_index])
+            .map(str::to_string)
+        else {
+            return SettingsMenuAction::None;
+        };
+        self.rows[row_index].current.clone_from(&default);
+        self.mark_saved(row_index);
+        SettingsMenuAction::Reset {
+            id: self.rows[row_index].id,
+            value: default,
+        }
+    }
+
     #[must_use]
     pub fn new(rows: Vec<SettingsMenuRow>) -> Self {
         let tabs = tabs::row_indices(&rows)
@@ -475,6 +644,8 @@ impl SettingsMenu {
             tab: 0,
             rows,
             sub: None,
+            defaults: std::collections::HashMap::new(),
+            saved: None,
             max_visible: 10,
         }
     }
@@ -541,6 +712,10 @@ impl SettingsMenu {
                     return SettingsMenuAction::None;
                 }
             }
+        }
+        // Delete resets the selected row while the query is empty (a query takes it as an edit).
+        if key == "delete" && self.tabs[self.tab].search.value().is_empty() {
+            return self.reset_selected();
         }
         if kb.matches(key, "tui.select.up") {
             let tab = self.active_mut();
@@ -659,7 +834,9 @@ impl SettingsMenu {
             });
         let value = values[index].clone();
         row.current.clone_from(&value);
-        SettingsMenuAction::Change { id: row.id, value }
+        let id = row.id;
+        self.mark_saved(row_index);
+        SettingsMenuAction::Change { id, value }
     }
 
     /// One key inside an open submenu: Enter selects, Esc goes back.
@@ -725,6 +902,7 @@ impl SettingsMenu {
             if let Some(action) = value {
                 if let SettingsMenuAction::Change { value, .. } = &action {
                     self.rows[sub.row].current.clone_from(value);
+                    self.mark_saved(sub.row);
                 }
                 return action;
             }
@@ -790,36 +968,45 @@ impl SettingsMenu {
         }
     }
 
-    /// Switch to a tab: a pure focus move, nothing resets.
+    /// Switch to a tab, carrying the query: the search is shared across tabs while it is
+    /// active, so the strip's per-tab match counts are what the next tab shows. A tab whose query
+    /// already matches keeps its selection.
     fn switch_tab(&mut self, tab: usize) {
+        let query = self.tabs[self.tab].search.value().to_string();
         self.tab = tab;
+        if self.tabs[tab].search.value() != query {
+            self.active_mut().search.prefill(&query);
+            self.apply_filter();
+        }
     }
 
     /// Re-filter the active tab's rows (fuzzy over the label): a fresh query
     /// lands the tab's selection on its first match.
     fn apply_filter(&mut self) {
         let query = self.tabs[self.tab].search.value().to_string();
+        let filtered = self.matching_rows(&self.tabs[self.tab].rows, &query);
         let tab = &mut self.tabs[self.tab];
-        tab.filtered = if query.is_empty() {
-            tab.rows.clone()
-        } else {
-            let candidates: Vec<SettingsMenuRow> = tab
-                .rows
-                .iter()
-                .map(|&index| self.rows[index].clone())
-                .collect();
-            crate::fuzzy::fuzzy_filter(&candidates, &query, |row| row.label.to_string())
-                .iter()
-                .map(|row| {
-                    tab.rows
-                        .iter()
-                        .find(|&index| &self.rows[*index] == row)
-                        .copied()
-                        .expect("fuzzy keeps row values")
-                })
-                .collect()
-        };
+        tab.filtered = filtered;
         tab.selected = 0;
+    }
+
+    /// The row indices of `rows` a query keeps (fuzzy over the label), in match order; an empty
+    /// query keeps them all.
+    fn matching_rows(&self, rows: &[usize], query: &str) -> Vec<usize> {
+        if query.is_empty() {
+            return rows.to_vec();
+        }
+        let candidates: Vec<SettingsMenuRow> =
+            rows.iter().map(|&index| self.rows[index].clone()).collect();
+        crate::fuzzy::fuzzy_filter(&candidates, query, |row| row.label.to_string())
+            .iter()
+            .map(|row| {
+                rows.iter()
+                    .find(|&index| &self.rows[*index] == row)
+                    .copied()
+                    .expect("fuzzy keeps row values")
+            })
+            .collect()
     }
 
     /// Render the shared menu panel over the settings rows; a submenu replaces
@@ -852,8 +1039,36 @@ impl SettingsMenu {
         // side (the operator's 2026-09-28 spacing pass).
         lines.push(Vec::new());
         let names: Vec<&'static str> = self.tabs.iter().map(|tab| tab.name).collect();
-        lines.push(tabs::strip_row(theme, width, &names, self.tab));
+        // While a query is active every tab shows how many of its rows the query matches.
+        let query = tab.search.value();
+        let counts: Vec<usize> = self
+            .tabs
+            .iter()
+            .map(|other| self.matching_rows(&other.rows, query).len())
+            .collect();
+        let counts = if query.is_empty() {
+            tabs::StripCounts::Hidden
+        } else {
+            tabs::StripCounts::Matches(&counts)
+        };
+        lines.push(tabs::strip_row(theme, width, &names, self.tab, counts));
         lines.push(Vec::new());
+        // The list keeps its unfiltered height while searching, so the rows below never move.
+        let list_start = lines.len();
+        let held =
+            tab.rows.len().min(self.max_visible) + usize::from(tab.rows.len() > self.max_visible);
+        let footer = self.footer(kb);
+        // The detail area keeps the height of the tab's tallest description (the minimal hold; a
+        // detail-pane rework may replace it), so neither moving to a shorter description,
+        // starting a query, nor a no-match query moves the rows below.
+        let description_width = width.saturating_sub(4);
+        let held_description = tab
+            .rows
+            .iter()
+            .map(|&row_index| self.rows[row_index].description)
+            .filter(|description| !description.is_empty())
+            .map(|description| wrap_text(description, description_width).len())
+            .max();
         if tab.filtered.is_empty() {
             lines.push(empty_state_row(
                 theme,
@@ -862,7 +1077,19 @@ impl SettingsMenu {
                 tab.search.value(),
                 "No settings in this tab",
             ));
-            lines.push(footer(kb, self.tabs.len()).line(theme, width));
+            crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
+            // A query that hides every row still holds the rows a match would show: the detail
+            // block and the Enter line.
+            if !query.is_empty() {
+                if let Some(rows) = held_description {
+                    lines.extend(std::iter::repeat_with(Vec::new).take(rows + 1));
+                    lines.push(crate::menu_panel::rule_row(theme, width));
+                }
+                if kb.first_key("tui.select.confirm").is_some() {
+                    lines.push(Vec::new());
+                }
+            }
+            lines.push(footer.line(theme, width));
             return lines;
         }
         let start = tab
@@ -874,11 +1101,23 @@ impl SettingsMenu {
             let position = start + position;
             let row = &self.rows[row_index];
             let selected = position == tab.selected;
+            // A value changed from its default is tinted on both label and value.
+            let (label, value) = if self.changed_default(row).is_some() {
+                (
+                    theme.fg_span(ThemeColor::Warning, row.label),
+                    crate::menu_panel::MenuSegment::themed(ThemeColor::Warning, &row.current),
+                )
+            } else {
+                (
+                    crate::Span::raw(row.label),
+                    crate::menu_panel::MenuSegment::muted(&row.current),
+                )
+            };
             lines.push(crate::menu_panel::menu_row(
                 theme,
                 width,
-                vec![crate::Span::raw(row.label)],
-                &[crate::menu_panel::MenuSegment::muted(&row.current)],
+                vec![label],
+                &[value],
                 selected,
             ));
         }
@@ -890,11 +1129,19 @@ impl SettingsMenu {
                 tab.filtered.len(),
             ));
         }
+        crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
         if let Some(&row_index) = tab.filtered.get(tab.selected) {
             let row = &self.rows[row_index];
-            if !row.description.is_empty() {
+            if !row.description.is_empty() || held_description.is_some() {
+                // A shorter description pads above the block, so the block, its rule, and the
+                // Enter line stay anchored to the footer.
+                let description = wrap_text(row.description, description_width);
+                let padding = held_description
+                    .unwrap_or(0)
+                    .saturating_sub(description.len());
+                lines.extend(std::iter::repeat_with(Vec::new).take(padding));
                 lines.push(Vec::new());
-                for line in wrap_text(row.description, width.saturating_sub(4)) {
+                for line in description {
                     let plain: String = line.iter().map(|span| span.content.as_str()).collect();
                     lines.push(crate::width::truncate_line(
                         &vec![
@@ -928,12 +1175,44 @@ impl SettingsMenu {
                 None => format!("opens {}", row.label),
             }
         });
-        lines.extend(
-            footer(kb, self.tabs.len())
-                .enter(kb, enter.as_deref())
-                .rows(theme, width),
-        );
+        lines.extend(footer.enter(kb, enter.as_deref()).rows(theme, width));
         lines
+    }
+
+    /// The menu's footer: Tab, the digit row, the arrows, Space, and Delete are literal keys the
+    /// menu always handles; an unbound Enter or Esc drops its hint. For three seconds after a
+    /// change the row leads with `Saved` and when the change takes effect; a changed selected row
+    /// offers Delete to reset it.
+    fn footer(&self, kb: &KeybindingsManager) -> Footer {
+        let tabs = self.tabs.len();
+        let mut footer = Footer::new();
+        if let Some((_, applies)) = self.saved_notice() {
+            footer = footer.notice(ThemeColor::Success, applies.hint());
+        }
+        let selected_changed = self
+            .tabs
+            .get(self.tab)
+            .and_then(|tab| tab.filtered.get(tab.selected))
+            .is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some());
+        footer = footer
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "navigate",
+                HintRank::Useful,
+            )
+            .keys(["left", "right"], "change", HintRank::Useful);
+        if selected_changed {
+            footer = footer.keys(["delete"], "reset", HintRank::Useful);
+        }
+        footer
+            .keys(
+                ["tab".to_string(), format!("1-{tabs}")],
+                "tabs",
+                HintRank::Extra,
+            )
+            .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            .esc(kb, EscVerb::Close)
     }
 
     /// The submenu render: accent title, muted description, the shared menu
@@ -1059,26 +1338,6 @@ impl SettingsMenu {
         );
         lines
     }
-}
-
-/// The menu's footer: Tab, the digit row, the arrows, and Space are literal keys the menu always
-/// handles; an unbound Enter or Esc drops its hint.
-fn footer(kb: &KeybindingsManager, tabs: usize) -> Footer {
-    Footer::new()
-        .bound(
-            kb,
-            &["tui.select.up", "tui.select.down"],
-            "navigate",
-            HintRank::Useful,
-        )
-        .keys(["left", "right"], "change", HintRank::Useful)
-        .keys(
-            ["tab".to_string(), format!("1-{tabs}")],
-            "tabs",
-            HintRank::Extra,
-        )
-        .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-        .esc(kb, EscVerb::Close)
 }
 
 #[cfg(test)]

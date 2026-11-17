@@ -221,9 +221,9 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default(),
-            ..Default::default()
+            ..crate::settings_menu::SettingsCurrentValues::defaults()
         };
-        // A missing settings seam keeps the TS defaults.
+        // A missing settings seam keeps the defaults.
         if let Some(settings) = &settings {
             values.compaction_threshold_percent = settings.compaction_threshold_percent();
             values.show_images = settings.show_images();
@@ -247,21 +247,6 @@ impl SessionUi {
             values.theme = settings.theme().unwrap_or_else(|| "prime".to_string());
             // The tier row preselects the saved default instead of the struct default.
             values.default_service_tier = settings.default_service_tier();
-        } else {
-            values.show_images = true;
-            values.auto_resize_images = true;
-            values.skill_commands = true;
-            values.builtin_skills = true;
-            values.harness_refinements = true;
-            values.emoji_shortcodes = true;
-            values.web_search_provider = "serper".to_string();
-            values.idle_eviction_minutes = "90".to_string();
-            values.mermaid = "streaming".to_string();
-            values.tree_filter_mode = "user-only".to_string();
-            values.warnings_anthropic_extra_usage = true;
-            values.theme = "prime".to_string();
-            // No settings seam: the tier row reads "default", never a blank value.
-            values.default_service_tier = "default".to_string();
         }
         // This surface ships the builtin themes.
         values.available_themes = pa_types::themes::BUILTIN_THEME_NAMES
@@ -269,7 +254,10 @@ impl SessionUi {
             .map(ToString::to_string)
             .collect();
         let rows = crate::settings_menu::settings_menu_rows(&values);
-        view.settings_menu = Some(crate::settings_menu::SettingsMenu::new(rows));
+        view.settings_menu = Some(
+            crate::settings_menu::SettingsMenu::new(rows)
+                .with_defaults(&crate::settings_menu::SettingsCurrentValues::defaults()),
+        );
         self.track_menu_opened("settings", "command");
         self.dirty = true;
     }
@@ -305,6 +293,14 @@ impl SessionUi {
                 view.theme = crate::app::load_theme(&name);
             }
             crate::settings_menu::SettingsMenuAction::Change { id, value } => {
+                self.apply_settings_change(id, &value, view).await;
+            }
+            crate::settings_menu::SettingsMenuAction::Reset { id, value } => {
+                // Settings-reset adoption: the catalog's 128-key cap leaves no room for a new
+                // feature, so a reset reports the menu feature's otherwise unused `completed`
+                // outcome (`feature_menusearch_completed_count` counts exactly the resets; no
+                // setting id or value leaves the client).
+                self.track_feature_outcome("menusearch", "completed", None);
                 self.apply_settings_change(id, &value, view).await;
             }
         }

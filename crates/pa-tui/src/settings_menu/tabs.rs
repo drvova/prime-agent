@@ -99,6 +99,14 @@ pub(crate) fn row_indices(rows: &[SettingsMenuRow]) -> Vec<(&'static str, Vec<us
     tabs
 }
 
+/// Whether the strip shows each tab's match count (while a query is active).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StripCounts<'a> {
+    Hidden,
+    /// One match count per tab, in tab order.
+    Matches(&'a [usize]),
+}
+
 /// The tab strip: one `N Name` per tab — the number dim, the name muted, the active tab white bold
 /// (the theme's text color, not the dock's background band — the operator's 2026-09-28 selection
 /// ruling). The numbers are the digit keys that jump straight to the tab.
@@ -107,6 +115,7 @@ pub(crate) fn strip_row(
     width: usize,
     names: &[&'static str],
     active: usize,
+    counts: StripCounts<'_>,
 ) -> Line {
     let mut line: Line = vec![Span::raw("  ")];
     for (index, name) in names.iter().enumerate() {
@@ -120,6 +129,19 @@ pub(crate) fn strip_row(
         } else {
             theme.fg_span(ThemeColor::Muted, name.to_string())
         });
+        match counts {
+            StripCounts::Hidden => {}
+            StripCounts::Matches(counts) => {
+                let count = counts.get(index).copied().unwrap_or(0);
+                let color = if count > 0 {
+                    ThemeColor::Accent
+                } else {
+                    ThemeColor::Dim
+                };
+                line.push(Span::raw(" "));
+                line.push(theme.fg_span(color, count.to_string()));
+            }
+        }
     }
     truncate_line(&line, width, "")
 }
@@ -146,7 +168,7 @@ mod tabs_tests {
 
     #[test]
     fn the_strip_lists_the_tabs_and_marks_the_active_one() {
-        let line = strip_row(&theme(), 80, &["General", "Models"], 1);
+        let line = strip_row(&theme(), 80, &["General", "Models"], 1, StripCounts::Hidden);
         let text: String = line.iter().map(|span| span.content.as_str()).collect();
         assert_eq!(text, "  1 General    2 Models");
         let active = line
@@ -168,7 +190,13 @@ mod tabs_tests {
 
     #[test]
     fn the_strip_truncates_to_the_frame_width() {
-        let line = strip_row(&theme(), 12, &["General", "Models", "Display"], 0);
+        let line = strip_row(
+            &theme(),
+            12,
+            &["General", "Models", "Display"],
+            0,
+            StripCounts::Hidden,
+        );
         let text: String = line.iter().map(|span| span.content.as_str()).collect();
         assert!(crate::width::str_width(&text) <= 12);
         assert!(text.contains("General"));

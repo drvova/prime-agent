@@ -23,6 +23,15 @@ pub(crate) fn title_row(theme: &Theme, width: usize, title: &str) -> Line {
     truncate_line(&line, width, "")
 }
 
+/// Hold a searchable list's height while a query is active: the rows pushed since `list_start`
+/// (list rows, scroll row, empty state) are padded with blank rows up to `held`, the height the
+/// unfiltered list renders — which is the height it had when the query started, since a query
+/// only ever starts from the full list. Filtering then never moves the rows around the list.
+pub(crate) fn hold_list_height(lines: &mut Vec<Line>, list_start: usize, held: usize) {
+    let used = lines.len().saturating_sub(list_start);
+    lines.extend(std::iter::repeat_with(Vec::new).take(held.saturating_sub(used)));
+}
+
 /// The list's empty state: with no query the surface's own text says what is empty; a query that
 /// hides every row says so muted, with the key that clears it (`no match for “x” · esc clears`).
 pub(crate) fn empty_state_row(

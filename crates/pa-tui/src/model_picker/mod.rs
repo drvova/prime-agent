@@ -324,11 +324,17 @@ impl ModelPicker {
     /// 2026-09-24 spacing directive) rides the reserved rows: the list shrinks first on a
     /// height-limited terminal, never the frame's own head.
     pub(crate) fn list_layout(&self) -> usize {
+        self.list_layout_over(self.filtered.len())
+    }
+
+    /// The list layout over `rows` candidate rows: the filtered list for the frame, the whole
+    /// active list for the height a search holds.
+    pub(crate) fn list_layout_over(&self, rows: usize) -> usize {
         let detail_rows = self.detail_rows();
         crate::menu_panel::menu_list_layout(
             Some(self.viewport_rows),
             8,
-            self.filtered.len(),
+            rows,
             // The frame's fixed rows (the title, the search field, the Enter line, the footer,
             // the trailing blank) plus the scope row when the session has scoped models.
             6 + usize::from(self.has_scoped_models()) + detail_rows,
