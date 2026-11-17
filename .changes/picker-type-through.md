@@ -1,0 +1,1 @@
+- Typing a letter into a yes/no confirm (`/import`, `/update`) that starts neither answer now closes the confirm and puts the letter in the composer, instead of dropping it.

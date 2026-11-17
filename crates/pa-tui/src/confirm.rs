@@ -18,6 +18,9 @@ pub enum ConfirmAction {
     Cancel,
     /// Navigation only.
     None,
+    /// A printable key no option starts with: the panel has no search field to type into, so it
+    /// closes as declined and the key goes to the composer instead of being swallowed.
+    TypeThrough(String),
 }
 
 /// A pending confirm. Owns the editor dock while open.
@@ -47,7 +50,7 @@ impl ConfirmPanel {
     }
 
     /// One key id: up/down move, confirm selects, escape and ctrl+c
-    /// cancel.
+    /// cancel, and a printable key no option starts with types through.
     pub fn handle_key(&mut self, kb: &KeybindingsManager, id: &str) -> ConfirmAction {
         if id == "ctrl+c" {
             return ConfirmAction::Cancel;
@@ -67,6 +70,18 @@ impl ConfirmPanel {
             return ConfirmAction::Select(
                 self.options.get(self.selected).cloned().unwrap_or_default(),
             );
+        }
+        let mut chars = id.chars();
+        if let (Some(ch), None) = (chars.next(), chars.next()) {
+            let starts_an_option = self.options.iter().any(|option| {
+                option
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.to_lowercase().eq(ch.to_lowercase()))
+            });
+            if !ch.is_control() && !ch.is_whitespace() && !starts_an_option {
+                return ConfirmAction::TypeThrough(id.to_string());
+            }
         }
         ConfirmAction::None
     }
@@ -136,6 +151,25 @@ mod tests {
         assert_eq!(
             panel.handle_key(&kb(), "enter"),
             ConfirmAction::Select("Yes".to_string())
+        );
+    }
+
+    /// A letter that starts no option falls through to the composer; one that starts an option
+    /// stays with the panel.
+    #[test]
+    fn a_letter_no_option_starts_with_types_through() {
+        let mut panel = ConfirmPanel::yes_no("Import session", "Replace current session?");
+        assert_eq!(
+            [
+                panel.handle_key(&kb(), "h"),
+                panel.handle_key(&kb(), "Y"),
+                panel.handle_key(&kb(), "n"),
+            ],
+            [
+                ConfirmAction::TypeThrough("h".to_string()),
+                ConfirmAction::None,
+                ConfirmAction::None,
+            ]
         );
     }
 

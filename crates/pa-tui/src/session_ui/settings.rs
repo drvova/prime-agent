@@ -79,6 +79,12 @@ impl SessionUi {
                 view.confirm = None;
                 self.pending_confirm = None;
             }
+            // A key the panel cannot use declines it and lands in the composer.
+            crate::confirm::ConfirmAction::TypeThrough(text) => {
+                view.confirm = None;
+                self.pending_confirm = None;
+                view.editor.insert_text_at_cursor(&text);
+            }
             crate::confirm::ConfirmAction::Select(option) => {
                 let pending = self.pending_confirm.take();
                 view.confirm = None;
