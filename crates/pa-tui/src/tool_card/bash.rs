@@ -113,18 +113,29 @@ fn bash_result_rows(
     rows: &mut RowOutput,
 ) {
     let tool_output = theme.fg_style(ThemeColor::ToolOutput);
+    let dim = theme.fg_style(ThemeColor::Dim);
     let output = result.text_output(true);
     let output = output.trim();
+    // The output sits behind a two-column gutter: `⎿ ` marks the first row, the rest align
+    // under it, and the elided count takes `⋮` in the same column.
+    let gutter = |first: bool, text: String, style| {
+        let mark = if first { "\u{23bf} " } else { "  " };
+        vec![
+            Span::styled(mark.to_string(), dim),
+            Span::styled(text, style),
+        ]
+    };
+    let output_width = content_width.saturating_sub(2).max(1);
     if !output.is_empty() {
         rows.blank();
         if expanded {
-            for line in output.split('\n') {
-                rows.push(|| vec![Span::styled(line.to_string(), tool_output)]);
+            for (index, line) in output.split('\n').enumerate() {
+                rows.push(|| gutter(index == 0, line.to_string(), tool_output));
             }
         } else {
             let total: usize = output
                 .split('\n')
-                .map(|line| wrapped_text_count(line, content_width).max(1))
+                .map(|line| wrapped_text_count(line, output_width).max(1))
                 .sum();
             // Output past the preview shows its first and last rows around a `⋮ +N lines` mark.
             let windowed = total > BASH_PREVIEW_LINES;
@@ -138,7 +149,7 @@ fn bash_result_rows(
                 let visual: Vec<String> = output
                     .split('\n')
                     .flat_map(|line| {
-                        let wrapped = wrap_text(line, content_width);
+                        let wrapped = wrap_text(line, output_width);
                         let joined = wrapped
                             .iter()
                             .map(|row| row.iter().map(|span| span.content.as_str()).collect());
@@ -154,12 +165,10 @@ fn bash_result_rows(
                     if windowed && index == BASH_EDGE_LINES {
                         let hidden = total - BASH_EDGE_LINES * 2;
                         let mark = format!("\u{22ee} +{hidden} lines");
-                        rows.push(|| {
-                            vec![Span::styled(mark.clone(), theme.fg_style(ThemeColor::Dim))]
-                        });
+                        rows.push(|| vec![Span::styled(mark.clone(), dim)]);
                     }
                     if !windowed || index < BASH_EDGE_LINES || index >= total - BASH_EDGE_LINES {
-                        rows.push(|| vec![Span::styled(row.clone(), tool_output)]);
+                        rows.push(|| gutter(index == 0, row.clone(), tool_output));
                     }
                 }
             }
@@ -282,10 +291,20 @@ mod tests {
             .iter()
             .position(|r| r.contains("\u{22ee} +8 lines"))
             .expect("the mark renders");
-        let window: Vec<&str> = flat[mark - 2..=mark + 2].iter().map(|r| r.trim()).collect();
+        let window: Vec<&str> = flat[mark - 2..=mark + 2]
+            .iter()
+            .map(|r| r.trim_end())
+            .collect();
+        // The gutter column: `⎿` on the first row, `⋮` on the elided count, the rest aligned.
         assert_eq!(
             window,
-            ["1", "2", "\u{22ee} +8 lines", "11", "12"],
+            [
+                "  \u{23bf} 1",
+                "    2",
+                "  \u{22ee} +8 lines",
+                "    11",
+                "    12"
+            ],
             "got: {flat:?}"
         );
     }
