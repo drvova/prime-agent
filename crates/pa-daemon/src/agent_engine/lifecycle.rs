@@ -1102,7 +1102,7 @@ impl AgentSessionEngine {
             // The worker session runs under the daemon scheduler and its wake-ups.
             daemonless: false,
             model_info: Some(model.clone()),
-            // Prewarm; the depth gate keeps subagent workers lazy.
+            // Prewarm at every depth: a subagent worker's kernel boots during its first model call.
             kernel_ready_gate: None,
             prewarm_ipython_kernel: Some(true),
             on_background_work_settled,

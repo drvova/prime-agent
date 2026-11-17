@@ -868,10 +868,9 @@ pub(crate) async fn build_headless_engine_with(
             factory_child,
             daemonless: true,
             model_info: Some(model.clone()),
-            // The kernel boots in the background at creation; a spawned
-            // child boots lazily on first use.
-            prewarm_ipython_kernel: (!matches!(embedding, HeadlessEmbedding::Child(_)))
-                .then_some(true),
+            // The kernel boots in the background at creation, a spawned
+            // child's included (its boot overlaps its first model call).
+            prewarm_ipython_kernel: Some(true),
             kernel_ready_gate,
             // The background-bash wake pair: the completion row's
             // admission fires it, and the kernel's background settle does

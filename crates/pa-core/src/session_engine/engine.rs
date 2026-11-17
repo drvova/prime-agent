@@ -81,7 +81,8 @@ pub struct SessionEngineConfig {
     /// `None` keeps the TS default ("one-at-a-time").
     pub steering_mode: Option<pa_agent::agent::QueueMode>,
     pub follow_up_mode: Option<pa_agent::agent::QueueMode>,
-    /// Boot the kernel in the background at creation, depth-0 gated; boot
+    /// Boot the kernel in the background at creation, at every RLM depth (a
+    /// subagent's kernel boots while its first model call is in flight); boot
     /// failures surface on the next `ensure()`.
     pub prewarm_ipython_kernel: Option<bool>,
     /// The kernel restores its snapshot only after this resolves: a replaced engine
@@ -532,10 +533,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
 
-    // The snapshot arm is not depth-gated: a resumed session prewarms even
-    // when the config flag is off, so its namespace revives before the first turn.
-    let prewarm_configured =
-        config.prewarm_ipython_kernel.unwrap_or(false) && config.rlm_depth.unwrap_or(0) == 0;
+    // A subagent prewarms like a top-level session: its first model call
+    // almost always ends in a `python_repl` cell, so the boot overlaps that
+    // call instead of following it. A resumed session prewarms even when the
+    // config flag is off, so its namespace revives before the first turn.
+    let prewarm_configured = config.prewarm_ipython_kernel.unwrap_or(false);
     if (prewarm_configured || has_snapshot)
         && active_tool_names
             .iter()

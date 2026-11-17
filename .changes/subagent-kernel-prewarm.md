@@ -1,0 +1,1 @@
+- Subagents started with `rlm.spawn` now start their Python kernel as soon as they are created, while their first model call runs, so their first `python_repl` cell no longer waits for a cold kernel start.
