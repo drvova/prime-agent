@@ -982,13 +982,19 @@ fn tray_renders_the_effort_suffix_and_the_bare_id_without_it() {
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(
-        text.contains("faux-1:high"),
-        "the effort suffix rides the id: {text}"
+        text.contains("\u{25cf} faux-1:high"),
+        "the level's glyph and suffix ride the id: {text}"
     );
+    let glyph = line
+        .iter()
+        .find(|s| s.content == "\u{25cf} ")
+        .map(|s| s.style);
+    assert_eq!(glyph, Some(theme().fg_style(ThemeColor::ThinkingHigh)));
     state.thinking_suffix = None;
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(text.contains("faux-1"), "the bare id still renders: {text}");
+    assert!(!text.contains('\u{25cf}'), "no level, no glyph: {text}");
     assert!(!text.contains("faux-1:"), "no suffix, no colon: {text}");
 }
 
