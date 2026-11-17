@@ -183,23 +183,18 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.count(match feedback {
             pa_tui::interactive::TurnFeedback::StallShown => "tui_stall_shown_count",
-            pa_tui::interactive::TurnFeedback::RetryReceipt => "tui_retry_receipt_count",
         });
         Box::pin(std::future::ready(()))
     }
 
-    fn effort_cycled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        self.count("tui_effort_cycle_count");
-        Box::pin(std::future::ready(()))
-    }
-
-    fn paste_chip_inserted(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        self.count("tui_paste_chip_count");
-        Box::pin(std::future::ready(()))
-    }
-
-    fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        self.count("tui_composer_hint_retired_count");
+    fn menu_used(
+        &self,
+        used: pa_tui::interactive::MenuUse,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count(match used {
+            pa_tui::interactive::MenuUse::SlashCommandAccepted => "tui_slash_accept_count",
+            pa_tui::interactive::MenuUse::SearchStarted => "tui_menu_search_count",
+        });
         Box::pin(std::future::ready(()))
     }
 

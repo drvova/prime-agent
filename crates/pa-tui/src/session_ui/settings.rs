@@ -298,20 +298,10 @@ impl SessionUi {
                 // Preview the row's theme back.
                 view.theme = crate::app::load_theme(&name);
             }
-            // A refused save puts the row's previous value back and shows the reason under it.
-            crate::settings_menu::SettingsMenuAction::Change { id, value } => {
-                if let Err(reason) = self.apply_settings_change(id, &value, view).await {
-                    if let Some(menu) = view.settings_menu.as_mut() {
-                        menu.refuse_last_change(&reason);
-                    }
-                }
-            }
-            crate::settings_menu::SettingsMenuAction::Reset { id, value } => {
-                // Settings-reset adoption: the catalog's 128-key cap leaves no room for a new
-                // feature, so a reset reports the menu feature's otherwise unused `completed`
-                // outcome (`feature_menusearch_completed_count` counts exactly the resets; no
-                // setting id or value leaves the client).
-                self.track_feature_outcome("menusearch", "completed", None);
+            // A refused save (a change or a reset to the default) puts the row's previous value
+            // back and shows the reason under it.
+            crate::settings_menu::SettingsMenuAction::Change { id, value }
+            | crate::settings_menu::SettingsMenuAction::Reset { id, value } => {
                 if let Err(reason) = self.apply_settings_change(id, &value, view).await {
                     if let Some(menu) = view.settings_menu.as_mut() {
                         menu.refuse_last_change(&reason);

@@ -311,15 +311,9 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         feedback: TurnFeedback,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// The thinking-cycle key moved the session's thinking level; counted on `tui exit`.
-    /// Implementations count and return at once: the paint path never waits on it.
-    fn effort_cycled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// A large bracketed paste collapsed into its composer chip; counted on `tui exit`.
-    /// Implementations count and return at once: the paste path never waits on it.
-    fn paste_chip_inserted(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// The empty composer's self-retiring key hint reached its use count and retired; counted on
-    /// `tui exit`. Implementations count and return at once.
-    fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A menu interaction the adoption counters track (see [`MenuUse`]); counted on `tui exit`.
+    /// Implementations count and return at once: the key path never waits on it.
+    fn menu_used(&self, used: MenuUse) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A prompt carrying an `@file` mention pill was submitted; counted on `tui exit`.
     /// Implementations count and return at once: the submit path never waits on it.
     fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
@@ -334,8 +328,16 @@ pub enum TurnFeedback {
     /// A streaming turn went quiet and the loader said `Waiting on the model` (counted when the
     /// stall ends).
     StallShown,
-    /// A recovered retry episode left its `Waited Ns through N retries` receipt.
-    RetryReceipt,
+}
+
+/// The menu interactions the adoption counters track. Never carries a query or a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuUse {
+    /// A slash command was accepted from the completion menu (Tab or Enter on a command row, or
+    /// an argument choice).
+    SlashCommandAccepted,
+    /// An open menu's search query went from empty to non-empty.
+    SearchStarted,
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not

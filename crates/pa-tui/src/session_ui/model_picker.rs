@@ -450,6 +450,7 @@ impl SessionUi {
         }
         match note.outcome {
             Ok(Value::Null) => {
+                self.track_feature_outcome("effort", "unavailable", None);
                 self.note("Current model does not support thinking", view);
             }
             Ok(data) => {
@@ -462,11 +463,8 @@ impl SessionUi {
                     return;
                 };
                 view.chrome.thinking_suffix = Some(level.wire_name().to_string());
-                if let Some(telemetry) = self.telemetry.clone() {
-                    tokio::spawn(async move {
-                        telemetry.effort_cycled().await;
-                    });
-                }
+                // The cycle is an effort change: it reports the `effort` feature's outcome.
+                self.track_feature_outcome("effort", "completed", None);
                 self.dirty = true;
             }
             Err(error) => {

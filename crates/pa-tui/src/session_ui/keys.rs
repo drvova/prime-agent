@@ -293,14 +293,7 @@ impl SessionUi {
             return;
         }
         view.composer_status = None;
-        if let crate::editor::PasteDisposition::Marker { .. } = view.editor.handle_paste(text) {
-            // A large paste collapsed into its chip: the paste-chip adoption count.
-            if let Some(telemetry) = self.telemetry.clone() {
-                tokio::spawn(async move {
-                    telemetry.paste_chip_inserted().await;
-                });
-            }
-        }
+        view.editor.handle_paste(text);
     }
 
     /// One key press while the `/effort` picker is open: Esc/Ctrl+C close it
@@ -367,7 +360,7 @@ impl SessionUi {
         let searching = view.menu_query_active();
         let result = self.dispatch_key(key, view, running).await;
         if !searching && view.menu_query_active() {
-            self.track_feature_outcome("menusearch", "initiated", None);
+            self.track_menu_use(crate::interactive::MenuUse::SearchStarted);
         }
         result
     }
@@ -718,13 +711,6 @@ impl SessionUi {
                         }
                     });
                 }
-                if view.composer_hint.is_none() {
-                    if let Some(telemetry) = self.telemetry.clone() {
-                        tokio::spawn(async move {
-                            telemetry.composer_hint_retired().await;
-                        });
-                    }
-                }
             }
             // A completion request parked by this same press must not materialize
             // a dropdown over the picker on the next idle tick.
@@ -1063,7 +1049,7 @@ impl SessionUi {
                     }
                 }
                 crate::editor::EditorEvent::SlashMenuAccepted => {
-                    self.track_feature_outcome("slashmenu", "completed", None);
+                    self.track_menu_use(crate::interactive::MenuUse::SlashCommandAccepted);
                 }
                 crate::editor::EditorEvent::Changed(_)
                 | crate::editor::EditorEvent::AutocompleteToggled(_) => {}

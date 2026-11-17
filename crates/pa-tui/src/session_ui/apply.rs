@@ -477,7 +477,6 @@ impl SessionUi {
                         text,
                         kind: StatusKind::Info,
                     });
-                    self.track_turn_feedback(crate::interactive::TurnFeedback::RetryReceipt);
                 }
                 None => view.push_entry(entry),
             },
@@ -1149,14 +1148,25 @@ impl SessionUi {
         false
     }
 
-    /// Count one live-line feedback moment (a stall shown, a retry receipt) with the session's
-    /// other interaction counters; delivery is the telemetry worker's.
+    /// Count one live-line feedback moment (a stall shown) with the session's other interaction
+    /// counters; delivery is the telemetry worker's.
     fn track_turn_feedback(&self, feedback: crate::interactive::TurnFeedback) {
         let Some(telemetry) = self.telemetry.clone() else {
             return;
         };
         tokio::spawn(async move {
             telemetry.turn_feedback_shown(feedback).await;
+        });
+    }
+
+    /// Count one menu interaction (see [`crate::interactive::MenuUse`]) with the session's other
+    /// interaction counters; delivery is the telemetry worker's.
+    pub(super) fn track_menu_use(&self, used: crate::interactive::MenuUse) {
+        let Some(telemetry) = self.telemetry.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            telemetry.menu_used(used).await;
         });
     }
 
