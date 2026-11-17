@@ -305,8 +305,12 @@ pub(crate) fn draw(
             }
         }
     }
+    // The window title follows the session state; it rides the same bracket and is written only
+    // when its text changes (the spinner repaints tick it, an idle frame writes nothing).
+    let titled = crate::terminal_title::sync(&mut stdout(), view);
     // Always release the terminal's pending update, including on paint errors.
     crossterm::execute!(stdout(), terminal::EndSynchronizedUpdate)?;
+    titled?;
     painted?;
     if mounting {
         // Mode setup flushes stdout, so it must follow the completed first paint.
