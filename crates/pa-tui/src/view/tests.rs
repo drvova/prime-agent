@@ -1471,6 +1471,23 @@ fn streaming_assistant_updates_across_frames() {
     assert!(frame1.contains("and more"));
 }
 
+/// A confirmation posted while a panel replaces the editor dock (so the empty composer's row is
+/// off screen) shows as the overlay toast, not in the hidden composer row.
+#[test]
+fn a_toast_under_a_panel_that_replaces_the_editor_stays_visible() {
+    let mut v = view();
+    v.reload_box = Some("reloading".to_string());
+    v.toast("Factory run r1 is now paused");
+    let frame = v.render_frame(80, 24);
+    assert!(
+        frame
+            .iter()
+            .any(|row| row_text(row).contains("Factory run r1 is now paused")),
+        "the confirmation is on screen: {:?}",
+        frame.iter().map(row_text).collect::<Vec<_>>()
+    );
+}
+
 /// The action toast renders as a compact right-aligned pill (the covered row keeps its own
 /// content).
 #[test]

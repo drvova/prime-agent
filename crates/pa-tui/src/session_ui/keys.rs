@@ -630,7 +630,16 @@ impl SessionUi {
                 view.composer_hint = self.composer_hint.label(view.editor.keybindings());
                 if let Some(settings) = self.client_settings.clone() {
                     let notes = self.notes.clone();
+                    let saves = self.composer_hint_saves.clone();
                     tokio::task::spawn_blocking(move || {
+                        // One save at a time, and only upward: a later press's save that ran
+                        // first, or another instance's higher count, is never overwritten.
+                        let _serial = saves
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if uses <= settings.composer_hint_uses() {
+                            return;
+                        }
                         if let Err(error) = settings.set_composer_hint_uses(uses) {
                             let _ =
                                 notes.send(format!("saving the key hint count failed: {error:#}"));

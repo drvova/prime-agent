@@ -254,7 +254,8 @@ pub trait ClientSettings: Send + Sync {
     fn composer_hint_uses(&self) -> u64 {
         u64::MAX
     }
-    /// Persist the hint-key use count.
+    /// Persist the hint-key use count (the caller saves one count at a time, and only a count
+    /// above the stored one).
     ///
     /// # Errors
     ///

@@ -69,15 +69,10 @@ impl SessionUi {
 
     /// Show an ephemeral action confirmation (a sanctioned divergence from TS — see `toast`): it
     /// never lands in the transcript, and the frame repaints so it appears at once, dim in the
-    /// empty composer's text row until the next keystroke, or as the overlay toast over a draft.
+    /// empty composer's text row while that row is on screen, else as the overlay toast (see
+    /// [`AgentView::toast`]).
     pub(crate) fn toast(&mut self, text: &str, view: &mut AgentView) {
-        // An empty composer hosts it in its text row until the next keystroke (nc's composer
-        // slot); a draft keeps the row, so the overlay carries it instead.
-        if view.editor.get_text().is_empty() {
-            view.composer_status = Some(text.to_string());
-        } else {
-            view.toasts.push(text);
-        }
+        view.toast(text);
         self.dirty = true;
     }
 
