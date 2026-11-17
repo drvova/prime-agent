@@ -68,11 +68,10 @@ pub(super) fn render(
     ));
 
     // While searching, the list keeps the height of the whole active list (the height it had
-    // when the query started), so filtering never moves the rows around it.
+    // when the query started), so filtering never moves the rows around it. The overflow
+    // scrollbar rides the rows' right edge, so the held height is the rows alone.
     let list_start = lines.len();
-    let unfiltered = picker.active_indices().len();
-    let unfiltered_rows = picker.list_layout_over(unfiltered);
-    let held = unfiltered_rows + usize::from(unfiltered > unfiltered_rows);
+    let held = picker.list_layout_over(picker.active_indices().len());
     let (start, end) = picker.filtered_window();
     let effort_layout = picker.effort_layout(start, end);
     let filtered_len = picker.filtered_len();
