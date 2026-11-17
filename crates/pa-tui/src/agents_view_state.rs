@@ -466,12 +466,19 @@ fn parent_keys(record: &UnifiedRecord) -> Vec<String> {
     }
     keys
 }
+/// The rank of a record that matches only inside its transcript: after every title, id or cwd
+/// match (scores are lower-is-better).
+const TRANSCRIPT_ONLY_SCORE: f64 = 1e9;
+
 /// Keep the matching records plus every ancestor, so the hierarchy leading to a match stays
 /// reachable. Hits carry `search_score` (lower is better); retained ancestors keep `None`.
+/// `transcript_hits` (match counts by record identity, from the deferred transcript scan) makes a
+/// record match on its conversation text too, ranked after the direct matches.
 #[must_use]
-pub fn filter_unified_sessions(
+pub fn filter_unified_sessions<S: std::hash::BuildHasher>(
     records: &[UnifiedRecord],
     query: &ParsedSearchQuery,
+    transcript_hits: &HashMap<String, usize, S>,
 ) -> Vec<UnifiedRecord> {
     let by_alias: HashMap<&str, usize> = records
         .iter()
@@ -488,7 +495,12 @@ pub fn filter_unified_sessions(
     for index in 0..records.len() {
         // Every directly matching record carries its score, even one
         // already retained as an ancestor of an earlier hit.
-        let Some(score) = score_search(&record_search_text(&records[index]), query) else {
+        let transcript_hit = transcript_hits
+            .get(&records[index].identity)
+            .is_some_and(|count| *count > 0);
+        let Some(score) = score_search(&record_search_text(&records[index]), query)
+            .or_else(|| transcript_hit.then_some(TRANSCRIPT_ONLY_SCORE))
+        else {
             continue;
         };
         scores[index] = Some(score);
@@ -967,7 +979,8 @@ mod tests {
             }),
         ];
         let records = reconcile_unified_sessions(&[], &saved, None);
-        let filtered = filter_unified_sessions(&records, &parse_search_query("child"));
+        let filtered =
+            filter_unified_sessions(&records, &parse_search_query("child"), &HashMap::new());
         let titles: Vec<&str> = filtered
             .iter()
             .map(|record| {
@@ -975,8 +988,12 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, vec!["root agent", "child agent"]);
-        assert!(filter_unified_sessions(&records, &parse_search_query("zebra")).is_empty());
-        let parent_only = filter_unified_sessions(&records, &parse_search_query("root"));
+        assert!(
+            filter_unified_sessions(&records, &parse_search_query("zebra"), &HashMap::new())
+                .is_empty()
+        );
+        let parent_only =
+            filter_unified_sessions(&records, &parse_search_query("root"), &HashMap::new());
         assert_eq!(parent_only.len(), 1);
         assert_eq!(
             get_str(parent_only[0].saved.as_ref().unwrap(), "name"),
@@ -1136,7 +1153,8 @@ mod tests {
         let records = reconcile_unified_sessions(&roster, &[], None);
         assert_eq!(record_search_text(&records[0]).name, "hey");
         for query in ["hey", "HEY", "Hey"] {
-            let filtered = filter_unified_sessions(&records, &parse_search_query(query));
+            let filtered =
+                filter_unified_sessions(&records, &parse_search_query(query), &HashMap::new());
             assert_eq!(
                 filtered.len(),
                 1,

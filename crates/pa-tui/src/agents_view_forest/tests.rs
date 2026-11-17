@@ -861,6 +861,7 @@ fn an_active_query_ranks_hits_globally_ancestors_sink_last() {
     let filtered = crate::agents_view_state::filter_unified_sessions(
         &records,
         &crate::agents_view_state::parse_search_query("sweep"),
+        &HashMap::new(),
     );
     let by_name = |name: &str| {
         filtered
@@ -950,6 +951,7 @@ fn equal_scores_break_ties_by_recency_not_section() {
     let filtered = crate::agents_view_state::filter_unified_sessions(
         &records,
         &crate::agents_view_state::parse_search_query("sweep"),
+        &HashMap::new(),
     );
     assert_eq!(filtered.len(), 2);
     let rollups: HashMap<String, Rollup> = HashMap::new();

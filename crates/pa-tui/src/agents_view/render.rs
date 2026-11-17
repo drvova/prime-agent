@@ -119,17 +119,21 @@ impl AgentsViewMode {
                 width,
             )
         });
+        // The highlighted session's preview takes one fixed row above the hints, so moving
+        // between sessions with and without a first prompt never shifts the list.
+        let preview = self.render_preview(width);
         let list_rows = height
-            .saturating_sub(lines.len() + 1 + notice_height + usize::from(unloaded.is_some()));
+            .saturating_sub(lines.len() + 2 + notice_height + usize::from(unloaded.is_some()));
         let list_frame_row = lines.len();
         lines.extend(self.render_list(width, list_rows, list_frame_row));
         lines.extend(unloaded);
         if let Some(panel) = notice_panel {
             lines.extend(panel);
         }
-        while lines.len() < height.saturating_sub(1) {
+        while lines.len() < height.saturating_sub(2) {
             lines.push(vec![]);
         }
+        lines.push(preview);
         lines.push(self.render_hints(width, status_fallback.as_deref()));
         while lines.len() > height {
             lines.pop();
@@ -642,18 +646,31 @@ impl AgentsViewMode {
         // session name can never push the model and cost/age columns
         // off-screen. The icon, its space, and the badge take the
         // leading cells.
+        // The transcript scan's match count rides after the title, inside the name column; a
+        // column too narrow for it and a title cell drops the count, never the title.
+        let matches = self
+            .content_search
+            .hit_count(&row.identity)
+            .map(|count| format!(" {count} match{}", if count == 1 { "" } else { "es" }))
+            .filter(|label| {
+                layout.name_width >= 2 + indent_width + badge_width + str_width(label) + 4
+            });
+        let matches_width = matches.as_deref().map_or(0, str_width);
         let title = truncate_text(
             &row.title,
             layout
                 .name_width
-                .saturating_sub(2 + indent_width + badge_width),
+                .saturating_sub(2 + indent_width + badge_width + matches_width),
         );
         // Session titles render uniformly (no bold for named sessions): deliberate divergence
         // from TS `styleRowTitle`, which bolds explicit session names.
         let pad = layout
             .name_width
-            .saturating_sub(str_width(&title) + 2 + indent_width + badge_width);
+            .saturating_sub(str_width(&title) + 2 + indent_width + badge_width + matches_width);
         line.push(crate::Span::styled(title, theme.fg_style(ThemeColor::Text)));
+        if let Some(matches) = matches {
+            line.push(theme.fg(ThemeColor::Accent, matches));
+        }
         line.push(crate::Span::raw(" ".repeat(pad)));
         line.push(crate::Span::styled(
             "  ".to_string(),
@@ -704,6 +721,27 @@ impl AgentsViewMode {
                 crate::width::slice_line_by_column_strict(&out, 0, width, true)
             })
             .collect()
+    }
+
+    /// The highlighted session's preview row: its first prompt, dim, after a `❯` marker;
+    /// a blank row for a selection without one (activity lines, shells, an empty list).
+    pub(super) fn render_preview(&self, width: usize) -> Line {
+        let first_prompt = self
+            .rows
+            .get(self.selected)
+            .filter(|row| matches!(row.kind, RowKind::Agent | RowKind::Subagent))
+            .and_then(|row| row.summary.get("firstMessage"))
+            .and_then(Value::as_str)
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty());
+        let Some(first_prompt) = first_prompt else {
+            return Vec::new();
+        };
+        let line = vec![
+            self.theme.fg(ThemeColor::Dim, "\u{276f} ".to_string()),
+            self.theme.fg(ThemeColor::Muted, first_prompt),
+        ];
+        truncate_line(&line, width)
     }
 
     /// The bottom hint/status line. `status_override` carries the

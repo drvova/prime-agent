@@ -63,7 +63,7 @@ impl AgentsViewMode {
             filtered
         } else {
             let parsed = parse_search_query(self.query.trim());
-            filter_unified_sessions(&filtered, &parsed)
+            filter_unified_sessions(&filtered, &parsed, self.content_search.hits())
         };
         // The rollup runs over the full reconciled set, so a filter never changes a row's total.
         let rollups = compute_rollups(&records);
@@ -418,6 +418,7 @@ impl AgentsViewMode {
     /// success.
     pub(super) fn query_changed(&mut self, was_empty: bool) {
         self.saved_query_rearm = self.saved_fetch_failed;
+        self.content_search.query_changed(&self.query);
         self.end_anchor_wait();
         if was_empty {
             self.search_return = self
