@@ -282,6 +282,13 @@ pub(crate) struct SessionUi {
     /// The retry episode's first run start: the retried run's loader and summary keep it, so the
     /// one summary left covers the whole episode.
     retry_run_since: Option<std::time::Instant>,
+    /// The empty composer's self-retiring key hint (its use count persists in the client
+    /// settings store).
+    pub(crate) composer_hint: notes::RetiringHint,
+    /// Serializes the hint count's background saves: each save re-reads the store and writes
+    /// only a higher count, so presses landing out of order (or another instance's save) never
+    /// lower the persisted value.
+    composer_hint_saves: std::sync::Arc<std::sync::Mutex<()>>,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

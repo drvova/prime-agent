@@ -247,6 +247,22 @@ pub trait ClientSettings: Send + Sync {
     fn telemetry_notice_due(&self) -> bool {
         false
     }
+    /// How many times the empty composer's self-retiring hint key was used (settings
+    /// `composerHintUses`). Defaults to `u64::MAX`: a client without the store never shows the
+    /// hint.
+    #[must_use]
+    fn composer_hint_uses(&self) -> u64 {
+        u64::MAX
+    }
+    /// Persist the hint-key use count (the caller saves one count at a time, and only a count
+    /// above the stored one).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when opening or persisting the settings store fails.
+    fn set_composer_hint_uses(&self, _uses: u64) -> Result<()> {
+        Ok(())
+    }
     /// Persist the notice-shown marker once the disclosure renders
     /// (TS `setTelemetryNoticeShown`).
     ///

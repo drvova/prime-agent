@@ -310,6 +310,12 @@ pub trait InteractionTelemetry: Send + Sync {
     /// The thinking-cycle key moved the session's thinking level; counted on `tui exit`.
     /// Implementations count and return at once: the paint path never waits on it.
     fn effort_cycled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A large bracketed paste collapsed into its composer chip; counted on `tui exit`.
+    /// Implementations count and return at once: the paste path never waits on it.
+    fn paste_chip_inserted(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The empty composer's self-retiring key hint reached its use count and retired; counted on
+    /// `tui exit`. Implementations count and return at once.
+    fn composer_hint_retired(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// The live-line feedback moments the adoption counters track.

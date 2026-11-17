@@ -242,6 +242,20 @@ impl SettingsManager {
         self.save_global_scope(&["editorPaddingX"])
     }
 
+    /// The uses counted against the empty composer's self-retiring key hint (default 0).
+    #[must_use]
+    pub fn get_composer_hint_uses(&self) -> u64 {
+        self.global_settings().composer_hint_uses.unwrap_or(0)
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the global settings scope cannot be saved.
+    pub fn set_composer_hint_uses(&mut self, uses: u64) -> Result<()> {
+        self.global_mut().composer_hint_uses = Some(uses);
+        self.save_global_scope(&["composerHintUses"])
+    }
+
     #[must_use]
     pub fn get_autocomplete_max_visible(&self) -> u64 {
         self.settings().autocomplete_max_visible.unwrap_or(5)

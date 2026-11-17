@@ -1,4 +1,4 @@
-use super::frame::{composite_follow_hint, indicator_row};
+use super::frame::composite_follow_hint;
 use super::*;
 use crate::chat::{AssistantMessage, MessageBlock};
 use crate::osc133::RowMarkers;
@@ -274,6 +274,110 @@ fn the_prompt_is_tinted_by_the_thinking_level() {
         theme.fg_style(ThemeColor::BorderMuted),
         "bash mode owns the prompt over the thinking tint"
     );
+}
+
+/// A large paste lands as one chip (nc/omp): the marker renders on the chip background, the
+/// cursor steps over it and Backspace deletes it as one unit, and submit expands it in full.
+#[test]
+fn a_large_paste_is_one_chip_that_moves_deletes_and_expands_whole() {
+    let mut v = view();
+    let pasted = (1..=12)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    v.editor.handle_input("a");
+    let _ = v.editor.handle_paste(&pasted);
+    let marker = "[paste #1 +13 lines]";
+    assert_eq!(v.editor.get_text(), format!("a{marker}"));
+    let chip = v
+        .theme
+        .soft_selection_style()
+        .patch(v.theme.fg_style(ThemeColor::Accent));
+    let dock = v.render_dock(80);
+    assert!(
+        dock.iter()
+            .flatten()
+            .any(|span| *span == crate::Span::styled(marker, chip)),
+        "the marker renders as one chip span: {dock:?}"
+    );
+    assert_eq!(v.editor.get_expanded_text(), format!("a{pasted}"));
+    v.editor.handle_input("left");
+    assert_eq!(
+        v.editor.get_cursor(),
+        (0, 1),
+        "one Left steps over the whole chip"
+    );
+    v.editor.handle_input("right");
+    v.editor.handle_input("backspace");
+    assert_eq!(
+        v.editor.get_text(),
+        "a",
+        "one Backspace deletes the whole chip"
+    );
+}
+
+/// A draft taller than the box names what it hides in the box's own padding rows, dim and flush
+/// right (nc): `+N lines above` on the top row, `+N lines below` on the bottom one.
+#[test]
+fn the_composer_counts_the_lines_it_hides() {
+    let mut v = view();
+    let text: Vec<String> = (1..=12).map(|n| format!("draft line {n}")).collect();
+    v.editor.set_text(&text.join("\n"));
+    let bg = crate::chrome::editor_background(&v.theme);
+    let dim = bg.patch(v.theme.fg_style(ThemeColor::Dim));
+    let counter = |label: &str| -> Line {
+        vec![
+            crate::Span::styled(" ".repeat(80 - label.len() - 2), bg),
+            crate::Span::styled(label.to_string(), dim),
+            crate::Span::styled("  ", bg),
+        ]
+    };
+    // The box shows 7 of the 12 lines (30% of the 24-row terminal); the cursor sits at the end.
+    let dock = v.render_dock(80);
+    assert!(
+        dock.contains(&counter("+5 lines above")),
+        "the top padding row counts the hidden head: {dock:?}"
+    );
+    v.editor.move_to_doc_start();
+    let dock = v.render_dock(80);
+    assert!(
+        dock.contains(&counter("+5 lines below")),
+        "the bottom padding row counts the hidden tail: {dock:?}"
+    );
+    assert!(!dock.contains(&counter("+5 lines above")));
+}
+
+/// The empty composer's text row carries a transient status (dim, after the cursor) and the
+/// self-retiring key hint (dim, flush right); typing hides both.
+#[test]
+fn the_empty_composer_row_hosts_the_status_and_the_hint() {
+    let mut v = view();
+    v.composer_status = Some("Copied last agent message to clipboard".to_string());
+    v.composer_hint = Some("Ctrl+L model".to_string());
+    let bg = crate::chrome::editor_background(&v.theme);
+    let dim = bg.patch(v.theme.fg_style(ThemeColor::Dim));
+    let status = "Copied last agent message to clipboard";
+    // ` > ` + the cursor cell (5), the status, the fill, the hint, the right padding (2).
+    let fill = 80 - 5 - status.len() - "Ctrl+L model".len() - 2;
+    let expected: Line = vec![
+        crate::Span::styled(" ", bg),
+        crate::Span::styled("> ", bg),
+        crate::Span::styled(" ", bg),
+        crate::Span::styled(" ", bg.add_modifier(Modifier::REVERSED)),
+        crate::Span::styled(status, dim),
+        crate::Span::styled(" ".repeat(fill), bg),
+        crate::Span::styled("Ctrl+L model", dim),
+        crate::Span::styled("  ", bg),
+    ];
+    assert!(
+        v.render_dock(80).contains(&expected),
+        "{:?}",
+        v.render_dock(80)
+    );
+    v.editor.handle_input("x");
+    let joined: String = v.render_dock(80).iter().map(text_of).collect();
+    assert!(!joined.contains(status) && !joined.contains("Ctrl+L model"));
 }
 
 #[test]
@@ -715,23 +819,6 @@ fn collapse_keeps_the_hint_when_rows_remain_below() {
             .any(|l| row_text(l).contains("ctrl+shift+down to follow")),
         "the paused window with rows below keeps the hint"
     );
-}
-
-/// The scroll indicators paint on the editor surface's background (operator directive 2026-09-26).
-#[test]
-fn the_more_indicator_carry_the_bar_background() {
-    let bg = ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(10, 11, 12));
-    let border = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(1, 2, 3));
-    for label in [" ↑ 14 more", " ↓ 3 more"] {
-        let row = indicator_row(label, bg, border, 20);
-        for span in &row {
-            assert_eq!(
-                span.style.bg,
-                Some(ratatui::style::Color::Rgb(10, 11, 12)),
-                "every span of {label:?} carries the bar background"
-            );
-        }
-    }
 }
 
 /// The hover affordance (operator directive 2026-09-26): Muted spans
@@ -1454,6 +1541,23 @@ fn streaming_assistant_updates_across_frames() {
     view.mark_entry_stale(0);
     let frame1 = transcript_text(&mut view, 80);
     assert!(frame1.contains("and more"));
+}
+
+/// A confirmation posted while a panel replaces the editor dock (so the empty composer's row is
+/// off screen) shows as the overlay toast, not in the hidden composer row.
+#[test]
+fn a_toast_under_a_panel_that_replaces_the_editor_stays_visible() {
+    let mut v = view();
+    v.reload_box = Some("reloading".to_string());
+    v.toast("Factory run r1 is now paused");
+    let frame = v.render_frame(80, 24);
+    assert!(
+        frame
+            .iter()
+            .any(|row| row_text(row).contains("Factory run r1 is now paused")),
+        "the confirmation is on screen: {:?}",
+        frame.iter().map(row_text).collect::<Vec<_>>()
+    );
 }
 
 /// The action toast renders as a compact right-aligned pill (the covered row keeps its own

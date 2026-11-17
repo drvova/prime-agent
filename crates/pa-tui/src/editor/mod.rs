@@ -290,6 +290,23 @@ impl Editor {
         segment_with_markers(text, &move |id| pastes.contains_key(&id))
     }
 
+    /// The char ranges of the registered paste markers in `text` (one layout chunk): the atomic
+    /// units the editor surface renders as chips.
+    pub(crate) fn paste_chip_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        self.segment(text)
+            .into_iter()
+            .filter(|segment| {
+                segment.segment.starts_with("[paste #") && is_atomic_marker(&segment.segment)
+            })
+            .map(|segment| {
+                (
+                    segment.index,
+                    segment.index + segment.segment.chars().count(),
+                )
+            })
+            .collect()
+    }
+
     #[must_use]
     pub fn get_text(&self) -> String {
         self.lines.join("\n")

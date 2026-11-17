@@ -124,6 +124,13 @@ impl SessionUi {
             running_tool_labels: Vec::new(),
             attempt_summary: None,
             retry_run_since: None,
+            composer_hint: super::notes::RetiringHint::new(
+                options
+                    .client_settings
+                    .as_ref()
+                    .map_or(u64::MAX, |settings| settings.composer_hint_uses()),
+            ),
+            composer_hint_saves: std::sync::Arc::default(),
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),
             last_assistant_text: None,

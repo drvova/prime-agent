@@ -184,6 +184,7 @@ impl AgentsViewMode {
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
                     Some(placeholder),
+                    None,
                     crate::view::editor_surface::PromptTint::Plain,
                 );
                 (overlay, surface.rows, surface.cursor)
@@ -200,6 +201,7 @@ impl AgentsViewMode {
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
                     Some("Name this agent session"),
+                    None,
                     crate::view::editor_surface::PromptTint::Plain,
                 );
                 (Vec::new(), surface.rows, surface.cursor)

@@ -741,6 +741,8 @@ async fn run_interactive_surface(
     // screen hides any pre-TUI stderr print, so the row is the only
     // shape the user actually sees.
     session.maybe_show_telemetry_notice(&mut view);
+    // The empty composer's self-retiring key hint (omp), until its key has been used enough.
+    view.composer_hint = session.composer_hint.label(view.editor.keybindings());
     // TS `restorePromptStashOnOpen`: a draft stashed on the way out (a
     // previous chat view of this session left via the agents view or a
     // switch) returns to the editor when its chat reopens.

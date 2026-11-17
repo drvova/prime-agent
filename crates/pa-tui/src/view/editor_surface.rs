@@ -1,13 +1,13 @@
 //! The editor box: the shared renderer for every editor-bearing surface (the chat's
 //! prompt dock and the agents view's action composers); the surfaces compose it with
-//! their own headers, placeholders, and click regions. Row shape: the top bg row (a
-//! scroll indicator), the header block's two rows, the content rows, and the trailing
-//! bg row (`↓ N more` once content hides below); a placeholder replaces the first
+//! their own headers, placeholders, and click regions. Row shape: the top bg row (the
+//! `+N lines above` counter once content hides above), the header block's two rows, the
+//! content rows, and the trailing bg row (`+N lines below`); a placeholder replaces the first
 //! content row while the editor is empty.
 
 use super::chunk_selection;
 use super::flush::split_at_chars;
-use super::frame::{indicator_row, pad_row};
+use super::frame::pad_row;
 use crate::editor::Editor;
 use crate::prompt_highlight::{
     command_token, editor_chunk_highlights, editor_text_spans, find_arg_tokens, ArgTokenSpan,
@@ -46,7 +46,8 @@ pub(crate) enum PromptTint {
 }
 
 /// Compose one editor box. `header` renders as the two-row block under the top
-/// row; `placeholder` replaces the first content row while the editor is empty.
+/// row; while the editor is empty, `placeholder` (dim, after the cursor) and `hint` (dim, flush
+/// right) take the first content row.
 pub(crate) fn render(
     editor: &mut Editor,
     theme: &Theme,
@@ -54,6 +55,7 @@ pub(crate) fn render(
     terminal_rows: u16,
     header: Option<Line>,
     placeholder: Option<&str>,
+    hint: Option<&str>,
     tint: PromptTint,
 ) -> EditorBox {
     let bg = crate::chrome::editor_background(theme);
@@ -86,10 +88,21 @@ pub(crate) fn render(
     let (visible, scroll_offset, _hidden_above, hidden_below) =
         editor.visible_window(layout_width, terminal_rows);
     let content_offset = usize::from(header.is_some()) * 2;
+    // The overflow counters (nc): a draft taller than the box names the rows it hides, dim and
+    // flush right in the box's own padding rows, so the box never grows a row for them.
+    let overflow_row = |count: usize, side: &str| -> Line {
+        let label = format!("+{count} line{} {side}", if count == 1 { "" } else { "s" });
+        let label = truncate_to_width(&label, width.saturating_sub(padding_x), "");
+        let used = str_width(&label) + padding_x;
+        vec![
+            Span::styled(" ".repeat(width.saturating_sub(used)), bg),
+            Span::styled(label, bg.patch(theme.fg_style(ThemeColor::Dim))),
+            Span::styled(" ".repeat(padding_x.min(width)), bg),
+        ]
+    };
     let mut rows: Vec<Line> = Vec::new();
     if scroll_offset > 0 {
-        let indicator = format!(" \u{2191} {scroll_offset} more");
-        rows.push(indicator_row(&indicator, bg, border, width));
+        rows.push(overflow_row(scroll_offset, "above"));
     } else {
         rows.push(vec![Span::styled(" ".repeat(width), bg)]);
     }
@@ -118,26 +131,31 @@ pub(crate) fn render(
         .map(|line| find_arg_tokens(line, 0, include_bare_separator))
         .collect();
     let mut cursor: Option<(usize, usize)> = None;
-    // The placeholder row: while the editor is empty, the first content row is
-    // the cursor cell followed by the dim placeholder.
-    let placeholder_row = placeholder.filter(|_| editor.get_text().is_empty());
+    // The empty row: while the editor is empty, the first content row is the cursor cell
+    // followed by the dim placeholder, with the dim hint flush right when both fit.
+    let empty_row = (placeholder.is_some() || hint.is_some()) && editor.get_text().is_empty();
     for (index, line) in visible.iter().enumerate() {
-        if index == 0 && placeholder_row.is_some() {
+        if index == 0 && empty_row {
+            let dim = bg.patch(theme.fg_style(ThemeColor::Dim));
             let mut row: Line = vec![Span::styled(" ".to_string(), bg)];
             row.push(Span::styled(prompt.to_string(), prompt_style));
             row.push(Span::styled(" ".to_string(), bg));
             let placeholder_width = input_width.saturating_sub(1);
-            let text = truncate_to_width(placeholder_row.unwrap_or(""), placeholder_width, "");
-            let fill = " ".repeat(placeholder_width.saturating_sub(str_width(&text)));
+            let text = truncate_to_width(placeholder.unwrap_or(""), placeholder_width, "");
+            // The hint keeps a two-cell gap from the placeholder and drops when it would not fit.
+            let hint =
+                hint.filter(|hint| str_width(&text) + 2 + str_width(hint) <= placeholder_width);
+            let hint_width = hint.map_or(0, str_width);
+            let fill = " ".repeat(placeholder_width.saturating_sub(str_width(&text) + hint_width));
             row.push(Span::styled(
                 " ".to_string(),
                 bg.add_modifier(Modifier::REVERSED),
             ));
-            row.push(Span::styled(
-                text,
-                bg.patch(theme.fg_style(ThemeColor::Dim)),
-            ));
+            row.push(Span::styled(text, dim));
             row.push(Span::styled(fill, bg));
+            if let Some(hint) = hint {
+                row.push(Span::styled(hint.to_string(), dim));
+            }
             row.push(Span::styled(" ".repeat(padding_x), bg));
             rows.push(row);
             cursor = Some((1 + content_offset, prompt_width + 2));
@@ -169,10 +187,14 @@ pub(crate) fn render(
             command.as_ref(),
             cursor_pos,
         );
+        // Collapsed pastes render as chips; the editor already moves over and deletes them
+        // as one unit.
+        let chips = editor.paste_chip_ranges(text);
         row.extend(editor_text_spans(
             theme,
             text,
             &highlights,
+            &chips,
             chunk_selection(selection, line.source_line, line.source_start, text),
             cursor_pos,
             bg,
@@ -197,12 +219,7 @@ pub(crate) fn render(
         rows.push(row);
     }
     if hidden_below > 0 {
-        rows.push(indicator_row(
-            &format!(" \u{2193} {hidden_below} more"),
-            bg,
-            border,
-            width,
-        ));
+        rows.push(overflow_row(hidden_below, "below"));
     } else {
         rows.push(vec![Span::styled(" ".repeat(width), bg)]);
     }

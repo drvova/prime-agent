@@ -125,7 +125,10 @@ impl AgentView {
             width,
             self.terminal_rows,
             header,
-            None,
+            // A transient status (a slash result, a copy) rides the empty composer's text row
+            // until the next keystroke, beside the self-retiring key hint.
+            self.composer_status.as_deref(),
+            self.composer_hint.as_deref(),
             tint,
         );
         // The content rows' click surface: one region over the visible content rows,

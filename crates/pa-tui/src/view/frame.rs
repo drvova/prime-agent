@@ -13,6 +13,39 @@ use crate::{Line, Span};
 use ratatui::style::{Modifier, Style};
 
 impl AgentView {
+    /// The editor dock (and with it the empty composer's text row) is what the frame mounts: no
+    /// onboarding splash, picker, panel, or selector replaces it.
+    pub(crate) fn editor_dock_shown(&self) -> bool {
+        self.onboarding.is_none()
+            && self.model_picker.is_none()
+            && self.choice_picker.is_none()
+            && self.mcp_view.is_none()
+            && self.factory_view.is_none()
+            && self.heartbeats_picker.is_none()
+            && self.goal_panel.is_none()
+            && self.bash_view.is_none()
+            && self.info_panel.is_none()
+            && self.tree_selector.is_none()
+            && self.fork_selector.is_none()
+            && self.share_loader.is_none()
+            && self.confirm.is_none()
+            && self.provider_auth.is_none()
+            && self.auth_panel.is_none()
+            && self.reload_box.is_none()
+            && self.settings_menu.is_none()
+    }
+
+    /// Show an ephemeral action confirmation: dim in the empty composer's text row (until the
+    /// next keystroke) when that row is on screen, else as the overlay toast, which every
+    /// surface shows (a panel that replaces the editor, or a draft that owns the row).
+    pub(crate) fn toast(&mut self, text: &str) {
+        if self.editor_dock_shown() && self.editor.get_text().is_empty() {
+            self.composer_status = Some(text.to_string());
+        } else {
+            self.toasts.push(text);
+        }
+    }
+
     /// Compose the fullscreen frame: top bar, transcript window, dock —
     /// exactly `height` rows.
     pub fn render_frame(&mut self, width: usize, height: usize) -> Vec<Line> {
@@ -147,6 +180,8 @@ impl AgentView {
         // (operator ruling 2026-09-28 — the bar has no gate left).
         let top = render_top_bar(&self.chrome, &self.theme, width);
         let top_rows = 1;
+        // The toast routing's view of the dock must match what this compose mounts.
+        debug_assert_eq!(selector_dock.is_none(), self.editor_dock_shown());
         let dock = match selector_dock {
             // The replacement surfaces swap only the editor part; the `/speed` footer stays
             // the dock's last row (TS `footerSlot`).
@@ -328,15 +363,6 @@ fn apply_hover_affordance(row: &mut Line, theme: &crate::theme::Theme) {
             span.style = span.style.patch(bright);
         }
     }
-}
-
-pub(super) fn indicator_row(indicator: &str, bg: Style, border: Style, width: usize) -> Line {
-    // The indicator text paints on the editor surface's background too (operator directive
-    // 2026-09-26): the `↑/↓ N more` rows read as part of the prompt bar.
-    let mut row: Line = vec![Span::styled(indicator.to_string(), border.patch(bg))];
-    let used = str_width(indicator);
-    row.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
-    row
 }
 
 /// Pad a rendered row to the full width (default background).
