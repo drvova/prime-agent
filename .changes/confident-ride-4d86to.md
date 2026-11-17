@@ -1,0 +1,1 @@
+- The slash menu stays open when you type `/` right after a session opens, instead of closing when the session's command list finishes loading.
