@@ -9,7 +9,7 @@ Provider trait + per-provider streaming clients (anthropic, openai-completions/r
 No agent loop, no tool execution, no session state, no UI. Receives/returns `pa-types` messages.
 
 ## Public API
-`Provider` trait, `ProviderRegistry`, model lookup/resolution, faux provider. `utils::tls::http_client_builder` lets caller-owned HTTP transports apply the shared extra-CA trust configuration. Per-provider internals are `pub(crate)`.
+`Provider` trait, `ProviderRegistry`, model lookup/resolution, faux provider. `utils::tls::http_client_builder` lets caller-owned HTTP transports apply the shared extra-CA trust configuration. Per-provider internals are `pub(crate)`. `utils::prewarm::{prewarm_connection, NetworkMode, PrewarmOutcome}` opens one pooled keep-alive connection to a provider base URL ahead of the first request (once per origin per process, never offline) so the first turn skips the TCP/TLS handshake.
 
 ## Depends on
 pa-types (one-way).

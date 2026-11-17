@@ -641,6 +641,14 @@ impl Worker {
                 let Ok(model) = engine.resolve_model() else {
                     return;
                 };
+                // The first turn's provider connection opens now, beside the session build
+                // and never ahead of the create response: at most once per origin per worker,
+                // never under `--offline`, a failure only a debug event.
+                tokio::spawn(pa_ai::utils::prewarm::prewarm_connection(
+                    model.api.clone(),
+                    model.base_url.clone(),
+                    pa_ai::utils::prewarm::NetworkMode::from_env(),
+                ));
                 let _ = engine.ensure_core_session_async(&model).await;
             });
         }
