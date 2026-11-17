@@ -1,8 +1,8 @@
 //! The agents-view session search: a picker over the display NAME (primary), the durable session
 //! ID, and the CWD — the name target is the SESSION column's own title, so a prompt-derived title
-//! is searchable exactly as far as the column displays it. The TS corpus fields (first message,
-//! transcript, file paths) never match — a deliberate divergence (the query language stays
-//! TS-shaped).
+//! is searchable exactly as far as the column displays it. The conversation text matches only
+//! through the deferred transcript scan (`agents_view::content_search`), which runs off the paint
+//! path after the query rests; the TS first-message and file-path fields never match.
 
 use crate::fuzzy::fuzzy_match;
 

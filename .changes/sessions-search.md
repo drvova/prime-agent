@@ -1,0 +1,1 @@
+- The sessions list (`/resume`, `← manage`) now also searches inside conversations once you pause typing, shows how many matches each session has, and previews the highlighted session's first prompt.

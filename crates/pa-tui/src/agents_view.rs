@@ -32,6 +32,7 @@ use crate::interactive::{SessionPanel, SessionSelection};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{pad_line, str_width};
 use crate::Line;
+mod content_search;
 mod data_input;
 
 mod open_incident;
@@ -303,6 +304,12 @@ enum UiInput {
     },
     /// One shells/factory-runs fetch cycle landed: the activity lines re-count.
     SessionActivityLoaded(Vec<session_activity::ActivityRead>),
+    /// One transcript scan landed: per-identity match counts for the query generation it ran
+    /// for (a later query edit drops it).
+    ContentSearchLoaded {
+        generation: u64,
+        hits: std::collections::HashMap<String, usize>,
+    },
 }
 
 /// The flow's roster connection: one daemon connection alive across the flow's view runs, so a
@@ -471,6 +478,8 @@ struct AgentsViewMode {
     /// The view actions this run performed (`program_shown`, `renamed`), reported on the outcome
     /// for the composition root's adoption events.
     actions: Vec<&'static str>,
+    /// The deferred transcript search behind the query: per-session match counts.
+    content_search: content_search::ContentSearch,
     /// The daemon's heartbeat catalog (the dock's source, TS
     /// `heartbeats`): each row counts its own session's jobs.
     heartbeats: Vec<crate::heartbeats_picker::HeartbeatEntry>,
@@ -581,6 +590,7 @@ impl AgentsViewMode {
             hover_row: None,
             pressed_click: None,
             actions: Vec::new(),
+            content_search: content_search::ContentSearch::default(),
             heartbeats: Vec::new(),
             persistent_shells: Value::Null,
             shell_view: None,
@@ -1111,6 +1121,9 @@ async fn run_agents_view_surface(
                         }
                     }
                 },
+                UiInput::ContentSearchLoaded { generation, hits } => {
+                    mode.content_search_loaded(generation, hits);
+                }
                 UiInput::SessionActivityLoaded(reads) => {
                     mode.apply_session_activity(reads);
                     activity_fetch_at = Some(
@@ -1145,6 +1158,7 @@ async fn run_agents_view_surface(
             let flush_at = saved_flush;
             let shells_at = shells_fetch_at;
             let status_at = mode.status_expiry(std::time::Instant::now());
+            let content_search_at = mode.content_search.due();
             tokio::select! {
                     maybe_event = events.recv() => {
                         match maybe_event {
@@ -1248,6 +1262,18 @@ async fn run_agents_view_surface(
                             &client,
                             mode.live_session_ids(),
                         ));
+                    }
+                    // The transcript search's debounce: the resting query's scan starts off the
+                    // paint path; its answer lands as a `ContentSearchLoaded`.
+                    () = async {
+                        match content_search_at {
+                            Some(at) => tokio::time::sleep_until(at).await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        if let Some(request) = mode.take_content_search() {
+                            content_search::spawn_content_search(request, ui_tx.clone());
+                        }
                     }
                     // The incident-notice poll's wake-up: the drain below the select
                     // does the refresh, so the arm only ends the wait.
@@ -1486,6 +1512,7 @@ fn is_daemon_answer(input: &UiInput) -> bool {
             | UiInput::PersistentShellTail { .. }
             | UiInput::PersistentShellKilled { .. }
             | UiInput::SessionActivityLoaded(_)
+            | UiInput::ContentSearchLoaded { .. }
     )
 }
 
