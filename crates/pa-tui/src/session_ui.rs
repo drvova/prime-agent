@@ -146,6 +146,14 @@ pub(crate) fn last_assistant_text_of(chat: &[ChatEntry]) -> Option<String> {
     })
 }
 
+/// The run summary row a failed attempt left: its chat index (the row is popped only while it is
+/// still the last entry) and the run's start.
+#[derive(Clone, Copy)]
+struct AttemptSummary {
+    index: usize,
+    since: std::time::Instant,
+}
+
 pub(crate) struct SessionUi {
     pub(crate) client: DaemonClient,
     pub(crate) active_session_id: String,
@@ -265,6 +273,12 @@ pub(crate) struct SessionUi {
     /// The executing tool calls' live-line titles, in start order: when one of several parallel
     /// calls ends, the loader keeps the newest remaining title instead of falling back to waiting.
     running_tool_labels: Vec<(String, String)>,
+    /// The run summary a failed attempt's `agent_end` pushed under its error row: the retry that
+    /// supersedes the attempt pops both.
+    attempt_summary: Option<AttemptSummary>,
+    /// The retry episode's first run start: the retried run's loader and summary keep it, so the
+    /// one summary left covers the whole episode.
+    retry_run_since: Option<std::time::Instant>,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

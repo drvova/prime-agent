@@ -120,6 +120,8 @@ impl SessionUi {
             retry_episode_waited: None,
             retry_waited: None,
             running_tool_labels: Vec::new(),
+            attempt_summary: None,
+            retry_run_since: None,
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),
             last_assistant_text: None,
