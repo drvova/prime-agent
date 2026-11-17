@@ -3,17 +3,18 @@
 //! front while a turn or compaction runs, and `!` when a confirm waits on the user. The title is
 //! written from the frame paint only when its text changes, so it ticks on the existing spinner
 //! repaints and never while idle. The terminal's own title is pushed onto its title stack before
-//! the first write and popped at exit (XTWINOPS 22/23; terminals without a stack ignore both).
+//! the first write and popped at exit (XTWINOPS 22;0/23;0; terminals without a stack ignore both).
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::view::AgentView;
 
-/// Push the window title onto the terminal's title stack (XTWINOPS 22;2).
-const TITLE_PUSH: &[u8] = b"\x1b[22;2t";
-/// Pop it back (XTWINOPS 23;2).
-const TITLE_POP: &[u8] = b"\x1b[23;2t";
+/// Push the icon and window titles onto the terminal's title stack (XTWINOPS 22;0): OSC 0
+/// writes both, so both are saved.
+const TITLE_PUSH: &[u8] = b"\x1b[22;0t";
+/// Pop them back (XTWINOPS 23;0).
+const TITLE_POP: &[u8] = b"\x1b[23;0t";
 
 /// Whether this process pushed the terminal's title: the exit restore pops only then.
 static TITLE_PUSHED: AtomicBool = AtomicBool::new(false);
