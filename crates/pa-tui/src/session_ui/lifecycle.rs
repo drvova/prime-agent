@@ -166,6 +166,7 @@ impl SessionUi {
             stash_session_id: String::new(),
             dirty: true,
             ctrl_c_hint_until: None,
+            cleared_draft: None,
             goal_view: GoalView::new(),
             notes,
             compaction_abort_notes,

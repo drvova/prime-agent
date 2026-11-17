@@ -136,6 +136,10 @@ fn up() -> KeyEvent {
     KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
 }
 
+fn ctrl_c() -> KeyEvent {
+    KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+}
+
 fn down() -> KeyEvent {
     KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
 }
@@ -184,6 +188,29 @@ fn up_walks_backward_down_forward_and_the_draft_returns() {
     assert!(
         !last.contains("first prompt") && !last.contains("second prompt"),
         "the final Down returned to the empty draft, not a recalled prompt: {last:?}"
+    );
+}
+
+/// Ctrl+C on a draft clears it without arming the exit hint, and the first Up on the empty prompt
+/// recalls that exact draft ahead of the submitted prompts; the next Up walks on into the history.
+#[test]
+fn ctrl_c_clears_the_draft_and_up_recalls_it_before_the_history() {
+    let mut steps = Vec::new();
+    steps.extend(submit("older prompt"));
+    steps.push(HeadlessStep::Type("my unsent draft".to_string()));
+    steps.push(wait_render("my unsent draft"));
+    steps.push(HeadlessStep::Key(ctrl_c()));
+    steps.push(wait_gone("my unsent draft"));
+    steps.push(HeadlessStep::Key(up()));
+    steps.push(wait_render("my unsent draft"));
+    steps.push(HeadlessStep::Key(up()));
+    steps.push(wait_gone("my unsent draft"));
+    steps.push(wait_render("older prompt"));
+    let frames = run_plan(steps);
+    assert_no_barrier_timeouts(&frames);
+    assert!(
+        frames.iter().all(|frame| !frame.contains("again to exit")),
+        "clearing a draft never arms the exit hint: {frames:?}"
     );
 }
 

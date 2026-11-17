@@ -342,6 +342,8 @@ pub(crate) struct SessionUi {
     /// The Ctrl+C exit hint: a second press inside the window terminates
     /// the client, regardless of turn state.
     ctrl_c_hint_until: Option<Instant>,
+    /// The draft the last Ctrl+C cleared, until Up recalls it (the recall is counted once).
+    cleared_draft: Option<String>,
     pub(crate) goal_view: GoalView,
     notes: mpsc::UnboundedSender<String>,
     compaction_abort_notes: mpsc::UnboundedSender<CompactionAbortNote>,

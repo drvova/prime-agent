@@ -127,7 +127,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 |-----|--------|
 | `{tab}` | Path completion / accept autocomplete |
 | `{clear_input}` | Clear input / cancel autocomplete |
-| `{clear}` | Interrupt current operation (first) / exit (second) |
+| `{clear}` | Clear the draft (Up recalls it) or interrupt (first) / exit (second) |
 "
     );
     if !interrupt.is_empty() {

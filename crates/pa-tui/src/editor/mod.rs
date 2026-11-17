@@ -450,6 +450,18 @@ impl Editor {
         }
     }
 
+    /// Clear the draft into the head of the history, exactly as typed, so the next Up on the empty
+    /// editor recalls it ahead of the submitted prompts. Returns the cleared text.
+    pub fn clear_into_history(&mut self) -> String {
+        let draft = self.get_text();
+        if self.history.first() != Some(&draft) {
+            self.history.insert(0, draft.clone());
+            self.history.truncate(MAX_HISTORY);
+        }
+        self.set_text("");
+        draft
+    }
+
     #[must_use]
     pub fn get_history(&self) -> &[String] {
         &self.history

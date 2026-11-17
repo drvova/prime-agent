@@ -301,6 +301,9 @@ pub trait InteractionTelemetry: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A tool call started executing with a live timer; counted on `tui exit`.
     fn live_tool_timer_started(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// Up recalled the draft a Ctrl+C cleared; counted on `tui exit`. Implementations count and
+    /// return at once: the key path never waits on it.
+    fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not

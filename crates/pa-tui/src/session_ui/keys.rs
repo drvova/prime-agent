@@ -571,9 +571,15 @@ impl SessionUi {
                 self.clear_ctrl_c_hint();
                 return Ok(());
             }
+            // Ctrl+C on a draft clears it (recallable with Up) instead of arming the exit, so a
+            // double press never quits with typed text in the composer. A queue browse keeps its
+            // edit: the browsed text is a queued message, not a draft.
+            let clears_draft = !interrupt
+                && !view.editor.get_text().is_empty()
+                && !self.queue_selection.is_browsing();
             // A second press inside the hint window shuts down unconditionally —
             // no turn wait, no abort wait.
-            if self.ctrl_c_hint_visible() && !interrupt {
+            if self.ctrl_c_hint_visible() && !interrupt && !clears_draft {
                 self.exit_reason = "ctrl_c_twice";
                 *running = false;
                 return Ok(());
@@ -599,7 +605,12 @@ impl SessionUi {
                 });
             }
             self.interrupt_running_work(view);
-            self.show_ctrl_c_hint();
+            if clears_draft {
+                self.cleared_draft = Some(view.editor.clear_into_history());
+                self.clear_ctrl_c_hint();
+            } else {
+                self.show_ctrl_c_hint();
+            }
             self.dirty = true;
             return Ok(());
         }
@@ -881,6 +892,19 @@ impl SessionUi {
         view.editor.handle_input(&id);
         if !view.editor.get_text().is_empty() {
             self.clear_ctrl_c_hint();
+        }
+        // The Up that lands on the cleared draft is its recall, counted once.
+        if view.editor.is_history_navigation_active()
+            && self
+                .cleared_draft
+                .take_if(|draft| *draft == view.editor.get_text())
+                .is_some()
+        {
+            if let Some(telemetry) = self.telemetry.clone() {
+                tokio::spawn(async move {
+                    telemetry.draft_recalled().await;
+                });
+            }
         }
         for event in view.editor.take_events() {
             match event {
