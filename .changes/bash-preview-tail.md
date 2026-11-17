@@ -1,0 +1,1 @@
+- Collapsed bash cards with long output cost less to draw while the command runs: the preview measures each output line once and wraps only the lines it shows.

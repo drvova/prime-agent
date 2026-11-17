@@ -120,10 +120,14 @@ fn bash_result_rows(
                 rows.push(|| vec![Span::styled(line.to_string(), tool_output)]);
             }
         } else {
-            let total: usize = output
-                .split('\n')
+            // One measuring pass over the output (the hint needs the total); only the source
+            // lines that reach the shown tail are wrapped, found by walking back from the end.
+            let lines: Vec<&str> = output.split('\n').collect();
+            let counts: Vec<usize> = lines
+                .iter()
                 .map(|line| wrapped_text_count(line, content_width).max(1))
-                .sum();
+                .collect();
+            let total: usize = counts.iter().sum();
             let skipped = total.saturating_sub(BASH_PREVIEW_LINES);
             if skipped > 0 {
                 rows.push(|| {
@@ -136,13 +140,15 @@ fn bash_result_rows(
             if rows.is_counting() {
                 rows.add_count(total.min(BASH_PREVIEW_LINES));
             } else {
-                let mut remaining = skipped;
-                for line in output.split('\n') {
-                    let count = wrapped_text_count(line, content_width).max(1);
-                    if remaining >= count {
-                        remaining -= count;
-                        continue;
-                    }
+                let mut first = lines.len();
+                let mut covered = 0usize;
+                while first > 0 && covered < BASH_PREVIEW_LINES {
+                    first -= 1;
+                    covered += counts[first];
+                }
+                // The first tail line can start above the preview: its leading rows stay hidden.
+                let mut remaining = covered.saturating_sub(BASH_PREVIEW_LINES);
+                for line in &lines[first..] {
                     let wrapped = wrap_text(line, content_width);
                     if wrapped.is_empty() {
                         rows.push(|| vec![Span::styled(String::new(), tool_output)]);
@@ -427,5 +433,98 @@ mod tests {
         let rows = render(&card, 0, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
         assert!(flat.iter().any(|r| r.contains("$ ...")), "got: {flat:?}");
+    }
+
+    /// The tail-only wrap paints exactly the rows the full walk painted: the pre-change body of
+    /// the collapsed branch, kept here as the oracle, against the shipped one, over wide chars,
+    /// empty lines, lines that wrap across the preview edge, and fewer or more than five rows.
+    #[test]
+    fn the_collapsed_tail_matches_the_full_walk() {
+        fn full_walk(output: &str, content_width: usize, theme: &Theme) -> Vec<Line> {
+            let tool_output = theme.fg_style(ThemeColor::ToolOutput);
+            let mut rows = RowOutput::paint();
+            rows.blank();
+            let total: usize = output
+                .split('\n')
+                .map(|line| wrapped_text_count(line, content_width).max(1))
+                .sum();
+            let skipped = total.saturating_sub(BASH_PREVIEW_LINES);
+            if skipped > 0 {
+                rows.push(|| {
+                    vec![Span::styled(
+                        format!("... {skipped} earlier lines"),
+                        theme.fg_style(ThemeColor::Dim),
+                    )]
+                });
+            }
+            let mut remaining = skipped;
+            for line in output.split('\n') {
+                let count = wrapped_text_count(line, content_width).max(1);
+                if remaining >= count {
+                    remaining -= count;
+                    continue;
+                }
+                let wrapped = wrap_text(line, content_width);
+                if wrapped.is_empty() {
+                    rows.push(|| vec![Span::styled(String::new(), tool_output)]);
+                } else {
+                    for row in wrapped.into_iter().skip(remaining) {
+                        rows.push(|| {
+                            vec![Span::styled(
+                                row.iter()
+                                    .map(|span| span.content.as_str())
+                                    .collect::<String>(),
+                                tool_output,
+                            )]
+                        });
+                    }
+                }
+                remaining = 0;
+            }
+            rows.into_lines()
+        }
+        let theme = theme();
+        let wide = "界".repeat(9);
+        let long = "word ".repeat(13);
+        let lines = [
+            "plain",
+            "",
+            wide.as_str(),
+            long.as_str(),
+            "😀 emoji 😀😀",
+            "tab\there",
+            "x",
+        ];
+        let mut outputs: Vec<String> = Vec::new();
+        for count in [1usize, 2, 4, 5, 6, 9, 14] {
+            for start in 0..lines.len() {
+                outputs.push(
+                    (0..count)
+                        .map(|index| lines[(start + index) % lines.len()])
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+        }
+        for output in &outputs {
+            for width in [1usize, 3, 8, 17, 40] {
+                let result = ToolResultView {
+                    content: vec![json!({ "type": "text", "text": output })],
+                    details: json!({}),
+                    is_error: false,
+                };
+                let trimmed = result.text_output(true);
+                if trimmed.trim().is_empty() {
+                    continue;
+                }
+                let mut rows = RowOutput::paint();
+                bash_result_rows(&result, false, &theme, width, &mut rows);
+                assert_eq!(
+                    rows.into_lines(),
+                    full_walk(trimmed.trim(), width, &theme),
+                    "width {width}, output {output:?}"
+                );
+            }
+        }
     }
 }
