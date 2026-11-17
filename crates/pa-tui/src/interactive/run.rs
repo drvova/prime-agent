@@ -17,6 +17,40 @@ use anyhow::Context;
 const HEADLESS_SETTLE_TIMEOUT_MS: u64 = 60_000;
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+/// The most already-queued terminal inputs one select wake drains into the batch: a burst
+/// applies as one batch with one paint, and the bound keeps a flood from starving the other
+/// arms (stream events, timers) for longer than one batch.
+const INPUT_BURST_LIMIT: usize = 256;
+
+/// Whether the batch's paint waits for the next queued input: plain terminal input (keys, pastes,
+/// mouse reports, resizes, write boundaries) still queued behind the input just handled is part of
+/// the same burst, which paints once after its last input (omp coalesces input the same way,
+/// `packages/tui/src/tui.ts` `#scheduleRender`, minus its 33 ms cadence: a lone input paints in
+/// the iteration that handled it). Anything else at the queue head is a barrier or a headless
+/// step and keeps the per-input paint.
+fn burst_continues(next: Option<&UiInput>) -> bool {
+    match next {
+        Some(
+            UiInput::Key(_)
+            | UiInput::Paste(_)
+            | UiInput::Mouse(_)
+            | UiInput::Resize
+            | UiInput::InputChunkEnd,
+        ) => true,
+        Some(
+            UiInput::Submit(_)
+            | UiInput::SubmitAndSettle { .. }
+            | UiInput::SettleIdle
+            | UiInput::WaitIdle { .. }
+            | UiInput::WaitRender { .. }
+            | UiInput::WaitGone { .. }
+            | UiInput::ScrollTop
+            | UiInput::Timestamp(_)
+            | UiInput::HeadlessDone,
+        )
+        | None => false,
+    }
+}
 /// The spinner's wall-clock cadence, not the render rate.
 const SPINNER_INTERVAL_MS: u128 = 80;
 /// The input-idle window the quiet tick waits out before materializing parked work.
@@ -1187,10 +1221,14 @@ async fn run_interactive_surface(
                 }
                 // Paint the handled input in this iteration: the select below can otherwise wait
                 // out its 50ms tick before the next draw, felt as keystroke-to-render lag. A
-                // handoff paints nothing: the next surface owns the pane.
+                // handoff paints nothing: the next surface owns the pane. A burst still queued
+                // behind this input paints once, after its last input; an input that asked to
+                // leave (an exit, a handoff) paints its own frame as before.
+                let defer_to_burst =
+                    running && !session.exit_requested && burst_continues(pending.front());
                 if let Some(renderer) = renderer
                     .is_terminal_mut()
-                    .filter(|_| !chunk_end || session.dirty)
+                    .filter(|_| (!chunk_end || session.dirty) && !defer_to_burst)
                 {
                     if !session.open_agents_view && session.pending_selection.is_none() {
                         // The inline paint must reflect tray state the handled key just armed (the
@@ -1437,6 +1475,20 @@ async fn run_interactive_surface(
                         quiet_tick_deadline = None;
                     }
                     pending.push_back(input);
+                    // The rest of a burst already queued joins this batch (bounded), so the
+                    // batch above applies it before painting once. Headless plans keep their
+                    // one-step-per-iteration frames.
+                    if renderer.is_terminal() {
+                        while pending.len() < INPUT_BURST_LIMIT {
+                            let Ok(next) = ui_rx.try_recv() else {
+                                break;
+                            };
+                            if matches!(next, UiInput::Key(_) | UiInput::Paste(_)) {
+                                quiet_tick_deadline = None;
+                            }
+                            pending.push_back(next);
+                        }
+                    }
                 }
             }
             maybe_note = notes_rx.recv() => {
@@ -1917,6 +1969,33 @@ async fn run_interactive_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A burst of 50 keys (and the write boundary behind it) drained through the batch's paint
+    /// rule paints once, after its last input; a lone key paints at once.
+    #[test]
+    fn a_queued_burst_paints_once_and_a_lone_key_paints_at_once() {
+        let key = |c| {
+            UiInput::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ))
+        };
+        let paints = |mut pending: VecDeque<UiInput>| {
+            let mut paints = 0;
+            while pending.pop_front().is_some() {
+                if !burst_continues(pending.front()) {
+                    paints += 1;
+                }
+            }
+            paints
+        };
+        let mut burst: VecDeque<UiInput> = (0..50).map(|_| key('x')).collect();
+        burst.push_back(UiInput::InputChunkEnd);
+        assert_eq!(paints(burst), 1);
+        assert_eq!(paints(VecDeque::from([key('x')])), 1);
+        // A barrier behind a key keeps the key's own frame (then the barrier's).
+        assert_eq!(paints(VecDeque::from([key('x'), UiInput::SettleIdle])), 2);
+    }
 
     /// The boundary the select arms is always the current phase's
     /// 80ms edge — the wake must precede the phase change it observes
