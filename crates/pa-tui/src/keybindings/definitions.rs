@@ -292,7 +292,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     ("app.interrupt", def!(&[], "Interrupt current operation")),
     (
         "app.clear",
-        def!(&["ctrl+c"], "Clear the draft or interrupt, then exit"),
+        def!(
+            &["ctrl+c"],
+            "Interrupt running work, else clear the draft, then exit"
+        ),
     ),
     (
         "app.input.clear",

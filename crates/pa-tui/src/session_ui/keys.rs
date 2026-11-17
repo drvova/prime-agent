@@ -571,10 +571,16 @@ impl SessionUi {
                 self.clear_ctrl_c_hint();
                 return Ok(());
             }
-            // Ctrl+C on a draft clears it (recallable with Up) instead of arming the exit, so a
-            // double press never quits with typed text in the composer. A queue browse keeps its
-            // edit: the browsed text is a queued message, not a draft.
+            // Ctrl+C on an idle draft clears it (recallable with Up) instead of arming the exit,
+            // so a double press never quits with typed text in the composer. While work runs it
+            // only interrupts and keeps the draft (the press is about the work, not the text). A
+            // queue browse keeps its edit: the browsed text is a queued message, not a draft.
+            let work_running = self.turn_active
+                || view.compaction.is_some()
+                || self.user_bash_running
+                || self.active_side_question_id.is_some();
             let clears_draft = !interrupt
+                && !work_running
                 && !view.editor.get_text().is_empty()
                 && !self.queue_selection.is_browsing();
             // A second press inside the hint window shuts down unconditionally —

@@ -12,19 +12,22 @@ mod support;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use support::{
     attach_response, create_response, options, run_headless, serve_connection, write_json,
     write_session_event, MockSupervisor, Request,
 };
 
+/// The prompt whose turn the mock keeps running until the client aborts it.
+const HOLD_PROMPT: &str = "hold the turn";
+
 impl MockSupervisor {
     /// Serve one connection: attach an empty session, list one heartbeat (selectable while no
     /// subagents exist — the session shape that must not steal the prompt's Down).
     fn serve(self) {
         let (stream, _) = self.listener.accept().expect("accept");
-        serve_connection(stream, &[], |writer, Request { id, kind, .. }| {
+        serve_connection(stream, &[], |writer, Request { id, kind, command }| {
             match kind {
                 "create" => {
                     write_json(writer, &create_response(id));
@@ -67,7 +70,8 @@ impl MockSupervisor {
                     // An admitted prompt: the ack, then the turn's bookends (`turn_start` +
                     // `turn_end`, no message rows — the transcript keeps nothing of the prompt).
                     // The client marks the turn active on the ack and only `turn_end` clears it;
-                    // the harness's idle gate requires the turn settled.
+                    // the harness's idle gate requires the turn settled. The hold prompt's turn
+                    // keeps running until an abort.
                     write_json(
                         writer,
                         &json!({
@@ -78,6 +82,21 @@ impl MockSupervisor {
                         }),
                     );
                     write_session_event(writer, &json!({ "type": "turn_start" }));
+                    if command.get("message").and_then(Value::as_str) != Some(HOLD_PROMPT) {
+                        write_session_event(writer, &json!({ "type": "turn_end" }));
+                        write_session_event(writer, &json!({ "type": "agent_end" }));
+                    }
+                }
+                "abort" => {
+                    write_json(
+                        writer,
+                        &json!({
+                            "type": "response",
+                            "id": id,
+                            "command": "abort",
+                            "success": true,
+                        }),
+                    );
                     write_session_event(writer, &json!({ "type": "turn_end" }));
                     write_session_event(writer, &json!({ "type": "agent_end" }));
                 }
@@ -211,6 +230,31 @@ fn ctrl_c_clears_the_draft_and_up_recalls_it_before_the_history() {
     assert!(
         frames.iter().all(|frame| !frame.contains("again to exit")),
         "clearing a draft never arms the exit hint: {frames:?}"
+    );
+}
+
+/// While a turn runs, Ctrl+C on a draft only interrupts: the draft stays in the composer and the
+/// exit hint arms, as before drafts were recallable.
+#[test]
+fn ctrl_c_during_a_running_turn_interrupts_and_keeps_the_draft() {
+    let steps = vec![
+        HeadlessStep::Type(HOLD_PROMPT.to_string()),
+        HeadlessStep::Key(enter()),
+        wait_gone(HOLD_PROMPT),
+        HeadlessStep::Type("my unsent draft".to_string()),
+        wait_render("my unsent draft"),
+        HeadlessStep::Key(ctrl_c()),
+        wait_render("again to exit"),
+    ];
+    let frames = run_plan(steps);
+    assert_no_barrier_timeouts(&frames);
+    let hinted = frames
+        .iter()
+        .find(|frame| frame.contains("again to exit"))
+        .expect("the interrupt arms the exit hint");
+    assert!(
+        hinted.contains("my unsent draft"),
+        "the interrupt keeps the draft:\n{hinted}"
     );
 }
 
