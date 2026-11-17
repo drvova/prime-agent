@@ -314,6 +314,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["shift+alt+m"], "Cycle to the previous scoped model"),
     ),
     (
+        "app.thinking.cycle",
+        def!(&["shift+tab"], "Cycle thinking level"),
+    ),
+    (
         "app.tools.expand",
         def!(&["ctrl+o"], "Cycle conversation detail", scope "editor"),
     ),

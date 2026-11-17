@@ -37,6 +37,7 @@ pub(crate) use keys::opening_echo_key_claimed;
 use keys::SelectionAutoScroll;
 pub(crate) use model_picker::picker_viewport_rows;
 pub(crate) use model_picker::ModelCatalogUpdate;
+pub(crate) use model_picker::ThinkingCycleNote;
 use panels::pop_superseded_attempt_row;
 pub(crate) use panels::ActivityUpdates;
 use prompt::PromptOrder;
@@ -316,6 +317,9 @@ pub(crate) struct SessionUi {
     /// Where background factory refreshes deliver the run graph (the run
     /// loop folds them into the open view).
     factory_updates: mpsc::UnboundedSender<FactoryUpdate>,
+    /// Where the spawned `cycle_thinking_level` round trips deliver (the run loop folds the
+    /// level into the tray and the composer edge).
+    thinking_cycle_notes: mpsc::UnboundedSender<ThinkingCycleNote>,
     /// The open view's selected run id: the refresh's watch target.
     factory_selected_run: Option<String>,
     /// The activity dock holds keyboard focus (and renders expanded).

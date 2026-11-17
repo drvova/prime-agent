@@ -108,6 +108,17 @@ impl AgentView {
                 dim,
             )]
         });
+        // The prompt carries the session's thinking level (the tray glyph's level), plain while
+        // the model has none.
+        let tint = self
+            .chrome
+            .thinking_suffix
+            .as_deref()
+            .and_then(pa_types::ai::thinking_level_from_str)
+            .map_or(
+                editor_surface::PromptTint::Plain,
+                editor_surface::PromptTint::Thinking,
+            );
         let surface = editor_surface::render(
             &mut self.editor,
             &self.theme,
@@ -115,6 +126,7 @@ impl AgentView {
             self.terminal_rows,
             header,
             None,
+            tint,
         );
         // The content rows' click surface: one region over the visible content rows,
         // shifted by the header block's rows.

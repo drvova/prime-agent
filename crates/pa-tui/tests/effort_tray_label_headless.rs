@@ -1,7 +1,7 @@
 //! Headless e2e for the tray model label's effort suffix (TS
 //! `getModelContextLabel`): the tray renders `model:effort` while the
 //! session's model supports reasoning, keeps the bare model id when not,
-//! and the label follows a `/effort` switch live.
+//! and the label follows a `/effort` switch live and a Shift+Tab thinking cycle.
 #![cfg(unix)]
 #![warn(clippy::allow_attributes_without_reason)]
 
@@ -9,6 +9,7 @@ mod support;
 
 use std::os::unix::net::UnixListener;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use pa_tui::interactive::{HeadlessPlan, HeadlessStep};
 use serde_json::{json, Value};
 
@@ -115,6 +116,30 @@ impl MockSupervisor {
                             "command": "set_thinking_level",
                             "success": true,
                             "data": null,
+                        }),
+                    );
+                }
+                // The daemon's cycle: the next supported level, wrapping; `null` without reasoning.
+                "cycle_thinking_level" => {
+                    let data = if self.session.model["reasoning"] == true {
+                        let levels = &self.session.levels;
+                        let next = levels
+                            .iter()
+                            .position(|level| *level == self.session.level)
+                            .map_or(0, |index| (index + 1) % levels.len());
+                        self.session.level.clone_from(&levels[next]);
+                        json!({ "level": self.session.level })
+                    } else {
+                        Value::Null
+                    };
+                    write_json(
+                        writer,
+                        &json!({
+                            "type": "response",
+                            "id": id,
+                            "command": "cycle_thinking_level",
+                            "success": true,
+                            "data": data,
                         }),
                     );
                 }
@@ -281,4 +306,72 @@ fn tray_label_stays_bare_without_reasoning() {
         !all.contains("gpt-4o-mini:"),
         "a model without reasoning never carries an effort suffix:\n{all}"
     );
+}
+
+/// Shift+Tab in the composer sends `cycle_thinking_level` and folds the answer silently: the
+/// tray's glyph and suffix move from `medium` to `high`, then wrap from `high` to `off`, with no
+/// status row (oh-my-pi's instant, toast-free change).
+#[test]
+fn shift_tab_cycles_the_thinking_level_into_the_tray() {
+    let shift_tab = || HeadlessStep::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE));
+    let steps = vec![
+        HeadlessStep::WaitRender {
+            needle: "glm-5.3:medium".to_string(),
+            timeout_ms: 10_000,
+        },
+        shift_tab(),
+        HeadlessStep::WaitRender {
+            needle: "\u{25cf} glm-5.3:high".to_string(),
+            timeout_ms: 10_000,
+        },
+        shift_tab(),
+        HeadlessStep::WaitRender {
+            needle: "\u{25cb} glm-5.3:off".to_string(),
+            timeout_ms: 10_000,
+        },
+    ];
+    let frames = run_plan(reasoning_session(), steps);
+    let all = frames.join("\n---\n");
+    assert!(
+        frames
+            .iter()
+            .any(|frame| frame.contains("\u{25cf} glm-5.3:high")),
+        "the first press lands high with its glyph:\n{all}"
+    );
+    assert!(
+        frames
+            .last()
+            .is_some_and(|frame| frame.contains("\u{25cb} glm-5.3:off")),
+        "the second press wraps to off:\n{all}"
+    );
+    assert!(
+        !all.contains("Thinking level:"),
+        "the cycle is silent, no status row:\n{all}"
+    );
+}
+
+/// A model without reasoning answers the cycle with `null`: the composer says so in the
+/// `/effort` command's words, and the tray stays bare.
+#[test]
+fn shift_tab_without_reasoning_says_the_model_cannot_think() {
+    let steps = vec![
+        HeadlessStep::WaitRender {
+            needle: "gpt-4o-mini".to_string(),
+            timeout_ms: 10_000,
+        },
+        HeadlessStep::Key(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
+        HeadlessStep::WaitRender {
+            needle: "Current model does not support thinking".to_string(),
+            timeout_ms: 10_000,
+        },
+    ];
+    let frames = run_plan(plain_session(), steps);
+    let all = frames.join("\n---\n");
+    assert!(
+        frames
+            .last()
+            .is_some_and(|frame| frame.contains("Current model does not support thinking")),
+        "the null answer leaves the unsupported note:\n{all}"
+    );
+    assert!(!all.contains("gpt-4o-mini:"), "the tray stays bare:\n{all}");
 }

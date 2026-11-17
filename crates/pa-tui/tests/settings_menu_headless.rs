@@ -438,6 +438,28 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
     );
 }
 
+/// Shift+Tab is the composer's thinking-cycle key, but the open settings menu keeps it: it
+/// steps the tab strip back (General wraps to Agents) and no thinking cycle leaves the menu.
+#[test]
+fn shift_tab_inside_the_menu_still_moves_the_tabs() {
+    let mut steps = open_settings();
+    steps.push(HeadlessStep::Key(key(KeyCode::BackTab)));
+    steps.push(HeadlessStep::WaitRender {
+        needle: "Web search provider".to_string(),
+        timeout_ms: 5000,
+    });
+    let (frames, _) = run_plan(steps);
+    let agents = frame_with(&frames, "Web search provider");
+    assert!(
+        !agents.iter().any(|row| row.contains("Steering mode")),
+        "Shift+Tab left the General tab: {agents:?}"
+    );
+    assert!(
+        !frames.join("\n").contains("does not support thinking"),
+        "the menu's Shift+Tab never reaches the thinking cycle"
+    );
+}
+
 #[test]
 fn tab_and_the_number_keys_move_the_tabs_not_the_arrows() {
     let mut steps = open_settings();
