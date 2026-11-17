@@ -2229,11 +2229,11 @@ async fn tui_session_tree_navigates_forks_and_clones() {
     }
     let rendered = outcome.frames.join("\n");
     assert!(
-        rendered.contains("Session Tree"),
+        rendered.contains("Session tree"),
         "the tree pane rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("Type to search:"),
+        rendered.contains("Search entries"),
         "the search line rendered:\n{rendered}"
     );
     assert!(
@@ -2245,7 +2245,7 @@ async fn tui_session_tree_navigates_forks_and_clones() {
         "the leaf selection was a no-op:\n{rendered}"
     );
     assert!(
-        rendered.contains("Fork from Message"),
+        rendered.lines().any(|row| row.trim() == "Fork"),
         "the fork selector rendered:\n{rendered}"
     );
     assert!(
@@ -2567,8 +2567,8 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
     drop(supervisor);
 }
 
-/// The visible follow-up queue (TS `queuedMessagesContainer`): prompts
-/// submitted while a turn runs park as dim preview rows with the browse hint.
+/// The visible follow-up queue (the steering composer's pending strip): prompts submitted while a
+/// turn runs park as dim preview rows with the edit hint.
 #[tokio::test]
 async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
     use crossterm::event::{KeyCode, KeyModifiers};
@@ -2654,7 +2654,7 @@ async fn tui_prompts_queued_behind_a_turn_render_the_queue_strip() {
         "the follow-up preview rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("to browse and edit queued messages"),
+        rendered.contains("Alt+↑ edits the last queued prompt"),
         "the browse hint rendered:\n{rendered}"
     );
     assert!(
@@ -2767,10 +2767,11 @@ async fn tui_flagged_model_turn_reports_the_ts_preflight_error_without_credentia
         "the auth-blind turn resolution must not report the resolver's empty-catalog error:\n{rendered}"
     );
     let last = outcome.frames.last().expect("a final frame");
-    // The failed pick must hold the `model:effort` label (TS
-    // `getModelContextLabel`) with glm-5.3's effective level.
+    // The failed pick must hold the `model:effort` label with glm-5.3's effective level: the
+    // tray row ends on it (whatever badge the tray puts in front).
     assert!(
-        last.contains("z-ai/glm-5.3:high ·"),
+        last.lines()
+            .any(|row| row.trim_end().ends_with(" z-ai/glm-5.3:high")),
         "the footer label holds the resolved flagged model (the failed pick switched nothing):\n{last}"
     );
     drop(supervisor);
@@ -2891,7 +2892,7 @@ async fn tui_model_pick_refreshes_the_label_and_the_next_turn_resolves() {
     );
     let last = outcome.frames.last().expect("a final frame");
     assert!(
-        last.contains("mock-2 ·"),
+        last.lines().any(|row| row.trim_end().ends_with(" mock-2")),
         "the footer label refreshed to the picked model:\n{last}"
     );
     drop(supervisor);
@@ -3363,7 +3364,7 @@ async fn tui_side_question_pane_flow() {
         "the in-pane slash notice rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("reply to follow up · esc to return to session"),
+        rendered.contains("Enter follow up · Esc close"),
         "the pane hint rendered:\n{rendered}"
     );
     let last = outcome.frames.last().expect("a final frame");
@@ -3445,7 +3446,7 @@ async fn tui_settings_menu_cycles_rows() {
         "the settings menu rendered its tab strip:\n{rendered}"
     );
     assert!(
-        rendered.contains("Type to search · Tab/1-5 tabs · ←/→/Enter/Space change · Esc close"),
+        rendered.contains("↑/↓ navigate · ←/→ change · Tab/1-5 tabs · Enter select · Esc close"),
         "the settings hint rendered:\n{rendered}"
     );
 }

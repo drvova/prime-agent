@@ -633,6 +633,14 @@ fn rendered_frames(outcome: &pa_tui::interactive::InteractiveOutcome) -> String 
     outcome.frames.join("\n")
 }
 
+/// Move a yes/no confirm onto `Yes`: the confirm opens on `No`, so a bare Enter declines.
+fn yes() -> pa_tui::interactive::HeadlessStep {
+    pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
+        crossterm::event::KeyCode::Up,
+        crossterm::event::KeyModifiers::NONE,
+    ))
+}
+
 fn enter() -> pa_tui::interactive::HeadlessStep {
     pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
         crossterm::event::KeyCode::Enter,
@@ -722,8 +730,10 @@ async fn tui_copy_emits_the_ts_osc52_sequence() {
     );
 }
 
+/// Consecutive copies with the composer empty: each copy runs the OSC 52 chain and its ack lands
+/// dim in the empty composer row (one row, never stacked), which the next keystroke clears.
 #[tokio::test]
-async fn tui_copy_toast_coalesces_consecutive_copies_and_auto_dismisses() {
+async fn tui_copy_ack_shows_in_the_empty_composer_row_and_clears_on_the_next_key() {
     use base64::Engine;
     for var in [
         "DISPLAY",
@@ -770,14 +780,14 @@ async fn tui_copy_toast_coalesces_consecutive_copies_and_auto_dismisses() {
             pa_tui::interactive::HeadlessStep::Submit("/copy".to_string()),
             pa_tui::interactive::HeadlessStep::Submit("/copy".to_string()),
             pa_tui::interactive::HeadlessStep::Submit("/copy".to_string()),
-            // The coalesced count-bump toast renders (observed, not slept-for).
+            // The ack renders in the empty composer row (observed, not slept-for).
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle:
-                    "Clipboard request sent; paste in the local terminal to verify delivery (x3)"
-                        .to_string(),
+                needle: "Clipboard request sent; paste in the local terminal to verify delivery"
+                    .to_string(),
                 timeout_ms: 10_000,
             },
-            // Past the toast's TTL: the overlay dismisses.
+            // The next keystroke clears the transient composer status.
+            pa_tui::interactive::HeadlessStep::Type("x".to_string()),
             pa_tui::interactive::HeadlessStep::WaitGone {
                 needle: "Clipboard request sent; paste in the local terminal to verify delivery"
                     .to_string(),
@@ -812,27 +822,19 @@ async fn tui_copy_toast_coalesces_consecutive_copies_and_auto_dismisses() {
         emission.repeat(3),
         "every copy ran the OSC 52 chain"
     );
-    // Three consecutive copies read as one "(x3)" toast, never stacked rows.
-    let coalesced_label = format!("{label} (x3)");
-    assert!(
-        outcome
-            .frames
-            .iter()
-            .any(|frame| frame.contains(&coalesced_label)),
-        "the coalesced count-bump toast renders"
-    );
+    // Three consecutive copies read as one ack row, never stacked rows.
     for (index, frame) in outcome.frames.iter().enumerate() {
         let rows = frame.lines().filter(|row| row.contains(label)).count();
         assert!(
             rows <= 1,
-            "frame {index} shows the copy toast at most once, got {rows}"
+            "frame {index} shows the copy ack at most once, got {rows}"
         );
     }
-    // The toast is ephemeral: past its TTL the settled frame no longer shows it.
+    // The ack is transient: after the keystroke the settled frame no longer shows it.
     let last = outcome.frames.last().expect("the settled frame");
     assert!(
         !last.contains(label),
-        "the expired toast auto-dismisses:\n{last}"
+        "the next keystroke clears the ack:\n{last}"
     );
 }
 
@@ -1083,6 +1085,7 @@ async fn tui_import_replaces_the_session_from_a_fixture() {
             pa_tui::interactive::HeadlessStep::Submit(
                 "/import /definitely/not/there.jsonl".to_string(),
             ),
+            yes(),
             enter(),
             pa_tui::interactive::HeadlessStep::Submit("hi".to_string()),
             pa_tui::interactive::HeadlessStep::WaitMs(400),
@@ -1149,6 +1152,7 @@ async fn tui_import_replaces_the_session_from_a_fixture() {
     let plan = pa_tui::interactive::HeadlessPlan {
         steps: vec![
             pa_tui::interactive::HeadlessStep::Submit(format!("/import {}", fixture.display())),
+            yes(),
             enter(),
             pa_tui::interactive::HeadlessStep::WaitMs(400),
             // The gone-cwd confirm; Yes retries with the fallback cwd.
@@ -1156,7 +1160,9 @@ async fn tui_import_replaces_the_session_from_a_fixture() {
                 "/import {}",
                 gone_fixture.display()
             )),
+            yes(),
             enter(),
+            yes(),
             enter(),
         ],
         width: 120,
@@ -1648,7 +1654,7 @@ async fn tui_login_and_logout_run_the_provider_flows() {
         "the store status renders:\n{rendered}"
     );
     assert!(
-        rendered.contains("Saved Credentials"),
+        rendered.contains("Log out"),
         "the logout panel renders:\n{rendered}"
     );
     assert!(
@@ -1750,6 +1756,7 @@ async fn tui_update_runs_out_of_band_during_a_turn() {
             pa_tui::interactive::HeadlessStep::WaitMs(800),
             pa_tui::interactive::HeadlessStep::Submit("/update".to_string()),
             pa_tui::interactive::HeadlessStep::WaitMs(400),
+            yes(),
             enter(),
             pa_tui::interactive::HeadlessStep::WaitRender {
                 needle: "updated to".to_string(),
@@ -1826,6 +1833,7 @@ async fn tui_update_failure_lands_the_error_row() {
         steps: vec![
             pa_tui::interactive::HeadlessStep::Submit("/update".to_string()),
             pa_tui::interactive::HeadlessStep::WaitMs(300),
+            yes(),
             enter(),
             pa_tui::interactive::HeadlessStep::WaitRender {
                 needle: "the installer exited with code 3".to_string(),
