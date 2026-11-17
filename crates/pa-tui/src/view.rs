@@ -75,6 +75,8 @@ pub struct AgentView {
     pub compaction_generation: u64,
     /// Animation frame for spinners and the working icon.
     pub pulse_frame: usize,
+    /// The terminal title last written (OSC 0): a paint writes it only when it changes.
+    pub(crate) terminal_title: Option<String>,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
     pub retry: Option<crate::chat::RetryState>,
@@ -295,6 +297,7 @@ impl AgentView {
             compaction: None,
             compaction_generation: 0,
             pulse_frame: 0,
+            terminal_title: None,
             working_since: None,
             retry: None,
             onboarding: None,

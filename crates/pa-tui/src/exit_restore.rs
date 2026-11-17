@@ -77,6 +77,7 @@ pub(crate) fn restore_terminal() {
         // The unconditional leave: the restore must not trust the ownership flag
         // — a desynced flag would keep the alt buffer up past the process death.
         crate::altscreen::force_leave(&mut out);
+        crate::terminal_title::restore(&mut out);
         // The stale-level drain: bare kitty pops AFTER the alt-screen
         // leave, where a mode-counting relay keeps them — the drain's
         // own pop above, written inside the alt screen, does not (see
@@ -109,6 +110,7 @@ pub(crate) fn terminal_release_tail(out: &mut Stdout) {
     // inside the alt screen, never lands on the relay's stack (see
     // enhanced_keys::pop_stale_levels).
     crate::enhanced_keys::pop_stale_levels(out);
+    crate::terminal_title::restore(out);
     let _ = out.write_all(SYNC_OUTPUT_OFF);
     let _ = out.write_all(SGR_RESET);
     let _ = crossterm::execute!(out, crossterm::cursor::Show);
