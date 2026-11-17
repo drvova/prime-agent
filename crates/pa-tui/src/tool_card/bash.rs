@@ -1,6 +1,6 @@
 //! The `bash` tool-call card: the `$ command` call row, the output
-//! (collapsed: the last five visual lines with an `... N earlier lines`
-//! hint; expanded: everything), the truncation warning, and the live
+//! (collapsed: up to five visual lines whole, longer output as its first
+//! and last two around a `⋮ +N lines` mark; expanded: everything), the truncation warning, and the live
 //! `Took`/`Elapsed` duration row.
 
 use serde_json::Value;
@@ -13,8 +13,10 @@ use crate::theme::{Theme, ThemeColor};
 use crate::width::{wrap_text, wrapped_text_count};
 use crate::{Line, Span};
 
-/// Collapsed preview length in visual lines (TS `BASH_PREVIEW_LINES`).
+/// Output up to this many visual lines shows whole when collapsed (TS `BASH_PREVIEW_LINES`).
 const BASH_PREVIEW_LINES: usize = 5;
+/// Longer collapsed output keeps this many rows at each end around the `⋮ +N lines` mark.
+const BASH_EDGE_LINES: usize = 2;
 
 #[must_use]
 pub fn render(
@@ -124,41 +126,41 @@ fn bash_result_rows(
                 .split('\n')
                 .map(|line| wrapped_text_count(line, content_width).max(1))
                 .sum();
-            let skipped = total.saturating_sub(BASH_PREVIEW_LINES);
-            if skipped > 0 {
-                rows.push(|| {
-                    vec![Span::styled(
-                        format!("... {skipped} earlier lines"),
-                        theme.fg_style(ThemeColor::Dim),
-                    )]
-                });
-            }
+            // Output past the preview shows its first and last rows around a `⋮ +N lines` mark.
+            let windowed = total > BASH_PREVIEW_LINES;
             if rows.is_counting() {
-                rows.add_count(total.min(BASH_PREVIEW_LINES));
+                rows.add_count(if windowed {
+                    BASH_EDGE_LINES * 2 + 1
+                } else {
+                    total
+                });
             } else {
-                let mut remaining = skipped;
-                for line in output.split('\n') {
-                    let count = wrapped_text_count(line, content_width).max(1);
-                    if remaining >= count {
-                        remaining -= count;
-                        continue;
-                    }
-                    let wrapped = wrap_text(line, content_width);
-                    if wrapped.is_empty() {
-                        rows.push(|| vec![Span::styled(String::new(), tool_output)]);
-                    } else {
-                        for row in wrapped.into_iter().skip(remaining) {
-                            rows.push(|| {
-                                vec![Span::styled(
-                                    row.iter()
-                                        .map(|span| span.content.as_str())
-                                        .collect::<String>(),
-                                    tool_output,
-                                )]
-                            });
+                let visual: Vec<String> = output
+                    .split('\n')
+                    .flat_map(|line| {
+                        let wrapped = wrap_text(line, content_width);
+                        let joined = wrapped
+                            .iter()
+                            .map(|row| row.iter().map(|span| span.content.as_str()).collect());
+                        let joined: Vec<String> = joined.collect();
+                        if joined.is_empty() {
+                            vec![String::new()]
+                        } else {
+                            joined
                         }
+                    })
+                    .collect();
+                for (index, row) in visual.iter().enumerate() {
+                    if windowed && index == BASH_EDGE_LINES {
+                        let hidden = total - BASH_EDGE_LINES * 2;
+                        let mark = format!("\u{22ee} +{hidden} lines");
+                        rows.push(|| {
+                            vec![Span::styled(mark.clone(), theme.fg_style(ThemeColor::Dim))]
+                        });
                     }
-                    remaining = 0;
+                    if !windowed || index < BASH_EDGE_LINES || index >= total - BASH_EDGE_LINES {
+                        rows.push(|| vec![Span::styled(row.clone(), tool_output)]);
+                    }
                 }
             }
         }
@@ -275,11 +277,17 @@ mod tests {
             flat.iter().any(|r| r.contains("$ seq 1 12")),
             "got: {flat:?}"
         );
-        assert!(
-            flat.iter().any(|r| r.contains("... 7 earlier lines")),
+        // The window: the first and last two rows around the hidden count.
+        let mark = flat
+            .iter()
+            .position(|r| r.contains("\u{22ee} +8 lines"))
+            .expect("the mark renders");
+        let window: Vec<&str> = flat[mark - 2..=mark + 2].iter().map(|r| r.trim()).collect();
+        assert_eq!(
+            window,
+            ["1", "2", "\u{22ee} +8 lines", "11", "12"],
             "got: {flat:?}"
         );
-        assert!(flat.iter().any(|r| r.contains("12")), "got: {flat:?}");
     }
 
     #[test]
@@ -296,7 +304,7 @@ mod tests {
             "got: {flat:?}"
         );
         assert!(
-            !flat.iter().any(|r| r.contains("earlier lines")),
+            !flat.iter().any(|r| r.contains('\u{22ee}')),
             "got: {flat:?}"
         );
     }
