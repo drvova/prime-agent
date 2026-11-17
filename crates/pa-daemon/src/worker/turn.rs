@@ -360,9 +360,11 @@ impl TurnRunner {
         let flusher = {
             let coalescer = Arc::clone(&coalescer);
             let events = self.events.clone();
+            // The trailing edge: the leading edge broadcasts from `park_update` itself, so the
+            // flusher wakes one interval after the last broadcast to drain what parked behind it.
             tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(crate::streaming::UPDATE_FLUSH_INTERVAL).await;
+                while let Some(due) = coalescer.next_flush_at() {
+                    tokio::time::sleep_until(due).await;
                     if !coalescer.flush_pending(&events) {
                         break;
                     }
@@ -773,6 +775,7 @@ impl TurnRunner {
                                 stream_kind.unwrap_or_default(),
                                 delta,
                                 sequence,
+                                &events,
                             ) {
                                 return false;
                             }
