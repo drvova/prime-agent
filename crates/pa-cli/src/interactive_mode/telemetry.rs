@@ -177,6 +177,17 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn turn_feedback_shown(
+        &self,
+        feedback: pa_tui::interactive::TurnFeedback,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count(match feedback {
+            pa_tui::interactive::TurnFeedback::StallShown => "tui_stall_shown_count",
+            pa_tui::interactive::TurnFeedback::RetryReceipt => "tui_retry_receipt_count",
+        });
+        Box::pin(std::future::ready(()))
+    }
+
     fn scroll_used(
         &self,
         _action: &'static str,

@@ -254,6 +254,10 @@ pub(crate) struct SessionUi {
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,
+    /// When the running retry episode's first `auto_retry_start` landed (the receipt's anchor).
+    retry_episode_started: Option<std::time::Instant>,
+    /// A recovered episode's measured wait, held for its `provider_retry_outcome` row.
+    retry_waited: Option<std::time::Duration>,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

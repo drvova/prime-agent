@@ -26,6 +26,7 @@ fn filled(turns: usize) -> AgentView {
         tokens: 3,
         elapsed_secs: 0,
         quiet_secs: 0,
+        tool_label: None,
     });
     view
 }

@@ -47,6 +47,13 @@ pub enum TurnUpdate {
     /// A `custom`-role message the transcript renders (session-command
     /// echo/result rows, or the malformed-notice fallback).
     CustomRow(ChatEntry),
+    /// A recovered `provider_retry_outcome` row: the daemon's entry, plus the episode's retry
+    /// count and last error for the live client's receipt.
+    RetryRecovered {
+        entry: ChatEntry,
+        attempts: u32,
+        last_error: String,
+    },
     /// `auto_retry_start`: a provider failure is being retried after
     /// `delay_ms`.
     AutoRetryStart {
@@ -431,10 +438,28 @@ pub fn working_message_from_update(partial: &Value) -> Option<String> {
 /// the malformed notice; everything else renders nothing.
 fn custom_row_update(message: &Value) -> Option<TurnUpdate> {
     let entries = custom_message_entries(message);
-    match entries.first() {
-        Some(entry) => Some(TurnUpdate::CustomRow(entry.clone())),
-        None => Some(TurnUpdate::StatusUpdate),
+    let Some(entry) = entries.first() else {
+        return Some(TurnUpdate::StatusUpdate);
+    };
+    let details = message.get("details").unwrap_or(&Value::Null);
+    let recovered = message.get("customType").and_then(Value::as_str)
+        == Some(crate::custom_message::PROVIDER_RETRY_OUTCOME_CUSTOM_TYPE)
+        && details.get("success").and_then(Value::as_bool) == Some(true);
+    if recovered {
+        return Some(TurnUpdate::RetryRecovered {
+            entry: entry.clone(),
+            attempts: details
+                .get("attempts")
+                .and_then(Value::as_u64)
+                .map_or(0, |attempts| u32::try_from(attempts).unwrap_or(u32::MAX)),
+            last_error: details
+                .get("finalError")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        });
     }
+    Some(TurnUpdate::CustomRow(entry.clone()))
 }
 
 /// The transcript entries for one `custom`-role message (the dispatch

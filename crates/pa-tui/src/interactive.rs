@@ -301,6 +301,22 @@ pub trait InteractionTelemetry: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A tool call started executing with a live timer; counted on `tui exit`.
     fn live_tool_timer_started(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The live line gave one piece of turn feedback (see [`TurnFeedback`]); counted on
+    /// `tui exit`. Implementations count and return at once: the paint path never waits on it.
+    fn turn_feedback_shown(
+        &self,
+        feedback: TurnFeedback,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
+
+/// The live-line feedback moments the adoption counters track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnFeedback {
+    /// A streaming turn went quiet and the loader said `Waiting on the model` (counted when the
+    /// stall ends).
+    StallShown,
+    /// A recovered retry episode left its `Waited Ns through N retries` receipt.
+    RetryReceipt,
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not
