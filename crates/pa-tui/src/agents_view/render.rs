@@ -667,14 +667,16 @@ impl AgentsViewMode {
         // session name can never push the model and cost/age columns
         // off-screen. The icon, its space, and the badge take the
         // leading cells.
-        // The transcript scan's match count rides after the title, inside the name column; a
-        // column too narrow for it and a title cell drops the count, never the title.
+        // The transcript scan's match count rides after the title, inside the name column. The
+        // title has priority: the count renders only beside the WHOLE title, so a column too
+        // narrow for both drops the count, never a cell of the title.
         let matches = self
             .content_search
             .hit_count(&row.identity)
             .map(|count| format!(" {count} match{}", if count == 1 { "" } else { "es" }))
             .filter(|label| {
-                layout.name_width >= 2 + indent_width + badge_width + str_width(label) + 4
+                layout.name_width
+                    >= 2 + indent_width + badge_width + str_width(&row.title) + str_width(label)
             });
         let matches_width = matches.as_deref().map_or(0, str_width);
         let title = truncate_text(
