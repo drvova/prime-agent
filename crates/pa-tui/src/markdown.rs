@@ -208,7 +208,7 @@ pub struct MarkdownBlockCache(
 impl MarkdownBlockCache {
     /// A cache that also freezes parsed prefixes: for a message that grows by appends.
     #[must_use]
-    pub fn streaming() -> Self {
+    pub(crate) fn streaming() -> Self {
         Self(
             std::collections::HashMap::new(),
             Some(StreamPrefixes::default()),
