@@ -411,6 +411,8 @@ impl SessionUi {
                     self.retry_waited = None;
                 }
                 self.running_tool_labels.clear();
+                // A model turn after an aborted tool means the run went on: no interrupt row.
+                self.tool_aborted = false;
                 // A new turn also settles leftovers from a lost turn-end frame.
                 crate::snapshot::settle_pending_tool_cards(
                     view,
@@ -554,7 +556,10 @@ impl SessionUi {
             } => {
                 // The landed-result gate keeps the loader safe: a late end frame from the aborted
                 // run must not rewrite the new turn's activity label or clear its loader note.
+                let aborted =
+                    result.pointer("/details/status").and_then(Value::as_str) == Some("aborted");
                 if self.apply_tool_result(&tool_call_id, &result, is_error, false, view) {
+                    self.tool_aborted |= aborted;
                     // A parallel call still executing keeps the live line on it (its title, the
                     // tool activity); only the last call's end falls back to waiting.
                     let pending = &self.pending_tools;
@@ -797,6 +802,22 @@ impl SessionUi {
     fn end_run(&mut self, view: &mut AgentView) {
         self.turn_active = false;
         view.working = None;
+        // An interrupt that lands on a running tool ends the run with no aborted assistant
+        // message: the row the model turn would have carried is written here, once.
+        if std::mem::take(&mut self.tool_aborted) && !self.turn_error_shown {
+            view.push_entry(ChatEntry::Assistant(Box::new(
+                crate::chat::AssistantMessage {
+                    blocks: Vec::new(),
+                    has_tool_calls: false,
+                    streaming: false,
+                    error: Some(crate::chat::live_abort_text(
+                        0,
+                        view.working_since.map(|since| since.elapsed().as_secs()),
+                    )),
+                    aborted: true,
+                },
+            )));
+        }
         // The run's summary row: how long the prompt took and what it cost.
         if let Some(since) = view.working_since.take() {
             let elapsed = crate::chat::format_working_elapsed(since.elapsed().as_secs());
