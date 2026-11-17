@@ -254,6 +254,10 @@ pub(crate) struct SessionUi {
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,
+    /// The run's interrupt landed on a running tool (a final result with `details.status:
+    /// "aborted"`): the agent ends without an aborted assistant message, so `agent_end` writes the
+    /// interrupt row itself.
+    tool_aborted: bool,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.

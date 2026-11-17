@@ -1,6 +1,7 @@
 //! Headless e2e for the interrupt between two LLM turns of one agent run: the
 //! wire `turn_end` closes one model turn, not the run (`agent_end` does), so
-//! Escape after a tool turn's `turn_end` must still abort the running agent.
+//! Escape after a tool turn's `turn_end` must still abort the running agent, and an Escape that
+//! lands on a running tool must still leave the interrupt row.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Write};
@@ -19,9 +20,14 @@ use serde_json::{json, Value};
 /// renders, every earlier frame of the run has been applied.
 const GAP_MARKER: &str = "between turns";
 
-/// Serve one client connection: the attach starts a run whose first LLM turn
-/// (a tool call) ends; the run's `agent_end` follows only an abort.
-fn serve(listener: &UnixListener, commands: &Mutex<Vec<String>>) {
+/// Serve one client connection: the attach replays `opening` (a run that is still going); the
+/// run's `abort_frames` (ending in `agent_end`) follow only an abort.
+fn serve(
+    listener: &UnixListener,
+    commands: &Mutex<Vec<String>>,
+    opening: &[Value],
+    abort_frames: &[Value],
+) {
     let (stream, _) = listener.accept().expect("accept");
     let mut writer = stream.try_clone().expect("clone mock socket");
     let mut reader = BufReader::new(stream);
@@ -67,19 +73,22 @@ fn serve(listener: &UnixListener, commands: &Mutex<Vec<String>>) {
         );
         match command.as_str() {
             "attach" => {
-                for event in first_tool_turn() {
-                    write_session_event(&mut writer, &event);
+                for event in opening {
+                    write_session_event(&mut writer, event);
                 }
             }
-            "abort" => write_session_event(&mut writer, &json!({ "type": "agent_end" })),
+            "abort" => {
+                for event in abort_frames {
+                    write_session_event(&mut writer, event);
+                }
+            }
             _ => {}
         }
     }
 }
 
-/// The run's opening frames up to the gap after its first LLM turn.
-fn first_tool_turn() -> Vec<Value> {
-    let assistant = json!({
+fn tool_call_message() -> Value {
+    json!({
         "role": "assistant",
         "content": [
             { "type": "text", "text": "Listing the files." },
@@ -87,7 +96,12 @@ fn first_tool_turn() -> Vec<Value> {
         ],
         "stopReason": "toolUse",
         "timestamp": 1,
-    });
+    })
+}
+
+/// The run's opening frames up to the gap after its first LLM turn.
+fn first_tool_turn() -> Vec<Value> {
+    let assistant = tool_call_message();
     vec![
         json!({ "type": "agent_start" }),
         json!({ "type": "turn_start" }),
@@ -191,7 +205,14 @@ fn escape_between_two_llm_turns_aborts_the_run() {
     let listener = UnixListener::bind(&socket).expect("bind mock socket");
     let commands = Arc::new(Mutex::new(Vec::new()));
     let mock_log = Arc::clone(&commands);
-    let server = std::thread::spawn(move || serve(&listener, &mock_log));
+    let server = std::thread::spawn(move || {
+        serve(
+            &listener,
+            &mock_log,
+            &first_tool_turn(),
+            &[json!({ "type": "agent_end" })],
+        );
+    });
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -216,5 +237,70 @@ fn escape_between_two_llm_turns_aborts_the_run() {
     assert!(
         commands.iter().any(|command| command == "abort"),
         "Escape after the tool turn's turn_end must abort the still-running agent: {commands:?}"
+    );
+}
+
+/// An interrupt that lands on a running tool ends the run without an aborted assistant message
+/// (the loop never asks the model again): the transcript still shows the interrupt row, not just
+/// the tool card's failure.
+#[test]
+fn escape_during_a_running_tool_leaves_the_interrupt_row() {
+    std::env::remove_var("TMUX");
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("tui.sock");
+    let listener = UnixListener::bind(&socket).expect("bind mock socket");
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let mock_log = Arc::clone(&commands);
+    let assistant = tool_call_message();
+    let opening = vec![
+        json!({ "type": "agent_start" }),
+        json!({ "type": "turn_start" }),
+        json!({ "type": "message_end", "message": assistant }),
+        json!({ "type": "tool_execution_start", "toolCallId": "call-1", "toolName": "bash", "args": { "command": "ls" } }),
+        json!({ "type": "session_info_changed", "name": GAP_MARKER }),
+    ];
+    let abort_frames = vec![
+        json!({
+            "type": "tool_execution_end",
+            "toolCallId": "call-1",
+            "result": {
+                "content": [{ "type": "text", "text": "Tool execution aborted" }],
+                "details": { "status": "aborted", "durationMs": 300 },
+            },
+            "isError": true,
+        }),
+        json!({ "type": "turn_end", "message": assistant, "toolResults": [] }),
+        json!({ "type": "agent_end" }),
+    ];
+    let server = std::thread::spawn(move || serve(&listener, &mock_log, &opening, &abort_frames));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let plan = HeadlessPlan {
+        steps: vec![
+            HeadlessStep::WaitRender {
+                needle: GAP_MARKER.to_string(),
+                timeout_ms: 10_000,
+            },
+            HeadlessStep::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            HeadlessStep::WaitIdle { timeout_ms: 10_000 },
+            HeadlessStep::WaitRender {
+                needle: "Worked for".to_string(),
+                timeout_ms: 10_000,
+            },
+        ],
+        width: 100,
+        height: 30,
+    };
+    let outcome = runtime
+        .block_on(run_interactive(options(socket), UiMode::Headless(plan)))
+        .expect("interactive run");
+    server.join().expect("mock supervisor finished");
+    let last = outcome.frames.last().cloned().unwrap_or_default();
+    assert_eq!(
+        last.matches("Operation aborted").count(),
+        1,
+        "the interrupted run shows one interrupt row:\n{last}"
     );
 }
