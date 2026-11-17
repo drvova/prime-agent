@@ -1,0 +1,1 @@
+- `/resume` (and bare `--resume`/`--continue`) now lists the current folder's sessions, subagents included, with Tab to switch between this folder and all folders.

@@ -155,6 +155,7 @@ impl SessionUi {
             exit_requested: false,
             open_agents_view: false,
             scoped_agents_view: None,
+            resume_folder: None,
             roster: Vec::new(),
             heartbeat_catalog: Vec::new(),
             heartbeat_refresh_in_flight: false,

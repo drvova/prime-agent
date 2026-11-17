@@ -351,6 +351,7 @@ async fn down_arrow_focuses_the_dock_and_enter_opens_the_scoped_agents_view() {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: Some(scope),
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

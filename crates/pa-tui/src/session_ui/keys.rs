@@ -825,6 +825,8 @@ impl SessionUi {
         // on the exit path and returns when the chat reopens.
         if view.editor.keybindings().matches(&id, "app.session.resume") {
             if self.return_to_agents_view {
+                // The resume key opens the resume picker, like a bare `/resume`.
+                self.resume_folder = Some(self.cwd.clone());
                 self.open_agents_view = true;
                 self.exit_requested = true;
             } else {

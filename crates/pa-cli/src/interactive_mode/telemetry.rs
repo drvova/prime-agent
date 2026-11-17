@@ -350,6 +350,27 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn resume_picker_closed(
+        &self,
+        scope: &'static str,
+        toggles: u64,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // A standalone event: `tui exit` already carries the backend's 128-key cap, so the
+        // picker's scope adoption cannot fold into its counters.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("scope", serde_json::Value::from(scope));
+            properties.set("scope_toggle_count", serde_json::Value::from(toggles));
+            properties.set("outcome", serde_json::Value::from(outcome));
+            client.track("tui resume picker closed", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn command_used(&self, command: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         // `agent command used` (TS `captureAgentCommandUsed`): every
         // submitted builtin reports from the client, session commands

@@ -251,6 +251,7 @@ async fn the_roundtrip_reentry_renders_the_same_transcript() {
             .then(|| first_outcome.session_id.clone())
             .or(Some("roundtrip-01".to_string())),
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -409,6 +410,7 @@ async fn a_post_turn_sojourn_reentry_still_serves_the_held_packs() {
             .then(|| first_outcome.session_id.clone())
             .or(Some("roundtrip-turn-01".to_string())),
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

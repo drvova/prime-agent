@@ -659,6 +659,7 @@ pub(crate) fn view_options(socket: PathBuf, anchor: Option<String>) -> AgentsVie
         version: "0.0.0".to_string(),
         anchor_session_id: anchor,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

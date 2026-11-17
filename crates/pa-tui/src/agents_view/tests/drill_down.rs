@@ -38,6 +38,7 @@ fn pending_ancestors_expand_and_selection_restores_after_reentry() {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: vec!["p".to_string()],
         selected_row_identity: None,
