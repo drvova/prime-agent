@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import io
 import os
 import re
@@ -917,6 +916,8 @@ def _credentials_unavailable(server: str) -> McpCredentialsUnavailable:
 
 
 async def _auth_identity(server: str, config: dict[str, Any]) -> str:
+    import hashlib
+
     if config.get("credentialSource") == "static-token":
         # A pasted static token has no refresh concept: it either resolves from
         # the bound stored credential or the connection fails closed.

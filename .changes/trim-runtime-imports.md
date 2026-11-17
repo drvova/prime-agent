@@ -1,0 +1,1 @@
+- The Python kernel starts a little faster: its runtime no longer imports the factory executor, Windows job-object code and other modules a kernel start never uses until they are first needed.

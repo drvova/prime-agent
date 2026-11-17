@@ -11,7 +11,6 @@ import ast
 import asyncio
 import codecs
 import contextvars
-import ctypes
 import functools
 import inspect
 import io
@@ -19,20 +18,16 @@ import json
 import linecache
 import os
 import pickle
-import platform
 import select
 import signal
 import sys
-import tempfile
 import threading
 import time
 import traceback
 import types
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .factory import schedule_activity
 from .bash import _kill_live_handles, _rehydrate_persistent_shells
 
 PROTOCOL_VERSION = 3
@@ -177,7 +172,7 @@ async def host_request(data: dict[str, Any]) -> dict[str, Any]:
     if _host_closed:
         raise RuntimeError("host connection closed; host_request cannot be answered")
     _check_payload("host_request", data)
-    rid = uuid.uuid4().hex
+    rid = os.urandom(16).hex()
     future: asyncio.Future[dict[str, Any]] = _loop.create_future()
     _pending_host[rid] = future
     try:
@@ -226,7 +221,7 @@ class _Pump:
 
     def drain(self) -> None:
         """Block until every byte written to the fd so far has been shipped."""
-        token = b"\xff<drain:" + uuid.uuid4().hex.encode() + b">\xff"
+        token = b"\xff<drain:" + os.urandom(16).hex().encode() + b">\xff"
         seen = threading.Event()
         with self._lock:
             self._watch = (token, seen)
@@ -792,6 +787,8 @@ def _snapshot_state(
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     temps: list[str] = []
+
+    import tempfile
 
     def stage_temp(target: str, mode: str):
         # Unique same-directory temps: a fixed '.tmp' name could alias the other
@@ -1582,6 +1579,8 @@ def _handle_request_line(raw: bytes, queue: asyncio.Queue[dict[str, Any]]) -> No
         # Like bash_activity, this bypasses the cell FIFO: the factory view
         # must answer while a cell runs. The handler schedules the async
         # activity on this loop and replies when it settles.
+        from .factory import schedule_activity
+
         _loop.call_soon_threadsafe(schedule_activity, req)
         return
     if rtype in ("execute", "snapshot", "restore"):
@@ -1682,6 +1681,7 @@ def _wait_owner_posix(owner: int, initial_ppid: int) -> None:
 def _wait_owner_windows(owner: int) -> None:
     # Blocks until the owner exits. os.kill(pid, 0) on Windows TERMINATES the
     # target, so a SYNCHRONIZE handle wait is the only sound probe.
+    import ctypes
     from ctypes import wintypes
 
     SYNCHRONIZE = 0x00100000
@@ -1770,7 +1770,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _sigint_handler)
     threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
 
-    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": platform.python_version()})
+    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": sys.version.split()[0]})
 
     _serve_task = _loop.create_task(_serve(queue, user_module.__dict__))
     # On the loop, so re-attached shells can deliver their completion notices.
