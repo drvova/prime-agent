@@ -73,8 +73,8 @@ impl Applies {
     }
 }
 
-/// How long the hint row keeps the `Saved` notice after a change. No timer clears it: the first
-/// repaint after the window simply stops rendering it.
+/// How long the hint row keeps the `Saved` notice after a change. The run loop arms a wake at
+/// its expiry (see [`SettingsMenu::saved_notice`]), so an idle screen repaints it away.
 const SAVED_NOTICE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// One settings row.
@@ -205,8 +205,9 @@ pub struct SettingsMenu {
     saved: Option<(std::time::Instant, Applies)>,
 }
 
-/// One tab: the row indices it groups with its own search input, filtered window, and selection —
-/// switching moves the focus only, so coming back restores where the user was.
+/// One tab: the row indices it groups with its search input, filtered window, and selection. A
+/// switch carries the active query over (the search is shared across tabs), and coming back to a
+/// tab under the same query restores where the user was.
 #[derive(Debug)]
 struct SettingsTab {
     name: &'static str,
@@ -575,6 +576,27 @@ impl SettingsMenu {
             .get(row.id)
             .map(String::as_str)
             .filter(|default| !row.current.is_empty() && *default != row.current)
+    }
+
+    /// The live `Saved` notice: when it expires and when the change applies; `None` once the
+    /// window has passed. The run loop wakes at the expiry so the notice clears on an idle screen.
+    #[must_use]
+    pub(crate) fn saved_notice(&self) -> Option<(std::time::Instant, Applies)> {
+        self.saved
+            .map(|(at, applies)| (at + SAVED_NOTICE, applies))
+            .filter(|(expiry, _)| *expiry > std::time::Instant::now())
+    }
+
+    /// Drop a `Saved` notice whose window has passed; `true` when one went, so the caller
+    /// repaints it away (the toasts' `prune_expired` contract).
+    pub(crate) fn prune_saved_notice(&mut self, now: std::time::Instant) -> bool {
+        let expired = self
+            .saved
+            .is_some_and(|(at, _)| now.duration_since(at) >= SAVED_NOTICE);
+        if expired {
+            self.saved = None;
+        }
+        expired
     }
 
     /// Note a saved change for the hint row.
@@ -946,9 +968,16 @@ impl SettingsMenu {
         }
     }
 
-    /// Switch to a tab: a pure focus move, nothing resets.
+    /// Switch to a tab, carrying the query: the search is shared across tabs while it is
+    /// active, so the strip's per-tab match counts are what the next tab shows. A tab whose query
+    /// already matches keeps its selection.
     fn switch_tab(&mut self, tab: usize) {
+        let query = self.tabs[self.tab].search.value().to_string();
         self.tab = tab;
+        if self.tabs[tab].search.value() != query {
+            self.active_mut().search.prefill(&query);
+            self.apply_filter();
+        }
     }
 
     /// Re-filter the active tab's rows (fuzzy over the label): a fresh query
@@ -1029,6 +1058,17 @@ impl SettingsMenu {
         let held =
             tab.rows.len().min(self.max_visible) + usize::from(tab.rows.len() > self.max_visible);
         let footer = self.footer(kb);
+        // The detail area keeps the height of the tab's tallest description (the minimal hold; a
+        // detail-pane rework may replace it), so neither moving to a shorter description,
+        // starting a query, nor a no-match query moves the rows below.
+        let description_width = width.saturating_sub(4);
+        let held_description = tab
+            .rows
+            .iter()
+            .map(|&row_index| self.rows[row_index].description)
+            .filter(|description| !description.is_empty())
+            .map(|description| wrap_text(description, description_width).len())
+            .max();
         if tab.filtered.is_empty() {
             lines.push(empty_state_row(
                 theme,
@@ -1038,6 +1078,17 @@ impl SettingsMenu {
                 "No settings in this tab",
             ));
             crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
+            // A query that hides every row still holds the rows a match would show: the detail
+            // block and the Enter line.
+            if !query.is_empty() {
+                if let Some(rows) = held_description {
+                    lines.extend(std::iter::repeat_with(Vec::new).take(rows + 1));
+                    lines.push(crate::menu_panel::rule_row(theme, width));
+                }
+                if kb.first_key("tui.select.confirm").is_some() {
+                    lines.push(Vec::new());
+                }
+            }
             lines.push(footer.line(theme, width));
             return lines;
         }
@@ -1081,9 +1132,16 @@ impl SettingsMenu {
         crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
         if let Some(&row_index) = tab.filtered.get(tab.selected) {
             let row = &self.rows[row_index];
-            if !row.description.is_empty() {
+            if !row.description.is_empty() || held_description.is_some() {
+                // A shorter description pads above the block, so the block, its rule, and the
+                // Enter line stay anchored to the footer.
+                let description = wrap_text(row.description, description_width);
+                let padding = held_description
+                    .unwrap_or(0)
+                    .saturating_sub(description.len());
+                lines.extend(std::iter::repeat_with(Vec::new).take(padding));
                 lines.push(Vec::new());
-                for line in wrap_text(row.description, width.saturating_sub(4)) {
+                for line in description {
                     let plain: String = line.iter().map(|span| span.content.as_str()).collect();
                     lines.push(crate::width::truncate_line(
                         &vec![
@@ -1128,7 +1186,7 @@ impl SettingsMenu {
     fn footer(&self, kb: &KeybindingsManager) -> Footer {
         let tabs = self.tabs.len();
         let mut footer = Footer::new();
-        if let Some((_, applies)) = self.saved.filter(|(at, _)| at.elapsed() < SAVED_NOTICE) {
+        if let Some((_, applies)) = self.saved_notice() {
             footer = footer.notice(ThemeColor::Success, applies.hint());
         }
         let selected_changed = self

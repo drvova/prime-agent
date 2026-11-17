@@ -602,3 +602,30 @@ fn threshold_percentage_cycles_through_the_persistence_seam() {
         .iter()
         .any(|row| row.contains("Auto-compact threshold (%)") && row.contains("100")));
 }
+
+/// The `Saved` notice clears on its own on an idle screen: the run loop wakes at its expiry and
+/// repaints it away, with no key or daemon frame to prompt the paint.
+#[test]
+fn the_saved_notice_clears_on_an_idle_screen() {
+    let mut steps = open_settings();
+    // Down x3 lands on Quiet startup (General's fourth row, applied at once).
+    for _ in 0..3 {
+        steps.push(HeadlessStep::Key(key(KeyCode::Down)));
+    }
+    steps.push(HeadlessStep::Key(key(KeyCode::Right)));
+    steps.push(HeadlessStep::WaitRender {
+        needle: "applies now".to_string(),
+        timeout_ms: 3000,
+    });
+    // The notice lasts 3s from the change; the barrier gives it barely more.
+    steps.push(HeadlessStep::WaitGone {
+        needle: "applies now".to_string(),
+        timeout_ms: 3300,
+    });
+    let (frames, _) = run_plan(steps);
+    let all = frames.join("\n");
+    assert!(
+        !all.contains("timed out waiting"),
+        "the notice cleared without input:\n{all}"
+    );
+}

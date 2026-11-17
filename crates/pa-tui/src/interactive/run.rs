@@ -1306,6 +1306,16 @@ async fn run_interactive_surface(
                 render_deadline = Some(expiry);
             }
         }
+        // The settings menu's `Saved` notice clears at its expiry on an idle screen too.
+        if let Some((expiry, _)) = view
+            .settings_menu
+            .as_ref()
+            .and_then(crate::settings_menu::SettingsMenu::saved_notice)
+        {
+            if render_deadline.is_none_or(|armed| expiry < armed) {
+                render_deadline = Some(expiry);
+            }
+        }
         // The animating loader's next phase boundary: every paint clears
         // the deadline it satisfied, and the boundary is the only wake a
         // quiet turn has between stream events (a running tool, a
@@ -1746,6 +1756,14 @@ async fn run_interactive_surface(
 
         // The action toasts auto-dismiss on their TTL: once one goes, the overlay repaints away.
         if view.toasts.prune_expired(Instant::now()) {
+            session.dirty = true;
+        }
+        // The settings menu's `Saved` notice clears the same way (its wake is armed above).
+        if view
+            .settings_menu
+            .as_mut()
+            .is_some_and(|menu| menu.prune_saved_notice(Instant::now()))
+        {
             session.dirty = true;
         }
 

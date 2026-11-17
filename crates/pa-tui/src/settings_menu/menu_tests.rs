@@ -450,7 +450,7 @@ fn digits_type_into_an_active_query() {
 }
 
 #[test]
-fn switching_tabs_keeps_each_tabs_search_and_selection() {
+fn switching_tabs_keeps_the_selection_and_carries_the_query() {
     let mut menu = menu();
     menu.handle_key("down", &kb());
     menu.handle_key("2", &kb());
@@ -462,20 +462,28 @@ fn switching_tabs_keeps_each_tabs_search_and_selection() {
             value: "one-at-a-time".to_string()
         }
     );
-    // Each tab keeps its own query: the filter and the field still hold after
-    // the round trip; tab switches even under an active query.
-    for key in ["w", "a", "r", "n"] {
+    // The query is shared while searching: every tab the user moves to filters by it, so each
+    // tab shows exactly the match count the strip promised.
+    for key in ["a", "u", "t", "o"] {
         menu.handle_key(key, &kb());
     }
-    menu.handle_key("tab", &kb());
-    assert!(render_text(&menu)
+    let promised: Vec<usize> = menu
+        .tabs
         .iter()
-        .any(|row| row.contains("Transport")));
-    menu.handle_key("shift+tab", &kb());
-    let text = render_text(&menu);
-    assert!(text.iter().any(|row| row.contains("warn")));
-    assert!(text.iter().any(|row| row.contains("Warnings")));
-    assert!(!text.iter().any(|row| row.contains("Quiet startup")));
+        .map(|tab| menu.matching_rows(&tab.rows, "auto").len())
+        .collect();
+    let mut shown = vec![(menu.query().to_string(), menu.tabs[menu.tab].filtered.len())];
+    for _ in 1..menu.tabs.len() {
+        menu.handle_key("tab", &kb());
+        shown.push((menu.query().to_string(), menu.tabs[menu.tab].filtered.len()));
+    }
+    assert_eq!(
+        shown,
+        promised
+            .iter()
+            .map(|&count| ("auto".to_string(), count))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -765,6 +773,23 @@ fn a_query_holds_the_list_height_and_counts_matches_per_tab() {
         strip.trim_end(),
         "  1 General 2    2 Models 0    3 Display 1    4 Editor 1    5 Agents 0"
     );
+}
+
+/// The whole panel holds still while searching: a match with a shorter description and a query
+/// that matches nothing render as many rows as the first match.
+#[test]
+fn a_query_holds_the_whole_panel_height() {
+    let heights: Vec<usize> = ["auto", "steer", "zzzz"]
+        .iter()
+        .map(|query| {
+            let mut menu = menu();
+            for character in query.chars() {
+                menu.handle_key(&character.to_string(), &kb());
+            }
+            render_text(&menu).len()
+        })
+        .collect();
+    assert_eq!(heights, vec![heights[0]; 3]);
 }
 
 /// A value changed from its default is tinted, Delete resets it to the default, and the hint row
