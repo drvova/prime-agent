@@ -23,6 +23,14 @@ mod text_utils;
 mod wrap;
 
 pub use kill_ring::KillRing;
+
+/// One submitted prompt in the recall history, with when it was added (the history search's age
+/// column).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub text: String,
+    pub at: std::time::SystemTime,
+}
 pub(crate) use text_utils::decode_printable;
 pub use text_utils::normalize_text;
 pub use wrap::{is_atomic_marker, word_wrap_line, LayoutLine, Segment, TextChunk, VisualLine};
@@ -101,7 +109,7 @@ pub struct Editor {
     /// The `@file` tokens the completion inserted: each one renders as a pill and moves and
     /// deletes as one unit while it stands whole between whitespace.
     mentions: Vec<String>,
-    history: Vec<String>,
+    history: Vec<HistoryEntry>,
     history_index: isize,
     kill_ring: KillRing,
     undo_stack: Vec<EditorSnapshot>,
@@ -474,10 +482,20 @@ impl Editor {
         if trimmed.is_empty() {
             return;
         }
-        if self.history.first() == Some(&trimmed.to_string()) {
+        if self
+            .history
+            .first()
+            .is_some_and(|entry| entry.text == trimmed)
+        {
             return;
         }
-        self.history.insert(0, trimmed.to_string());
+        self.history.insert(
+            0,
+            HistoryEntry {
+                text: trimmed.to_string(),
+                at: std::time::SystemTime::now(),
+            },
+        );
         if self.history.len() > MAX_HISTORY {
             self.history.pop();
         }
@@ -489,8 +507,14 @@ impl Editor {
     /// table or a later paste reuses the marker's id. Returns the stored text.
     pub fn clear_into_history(&mut self) -> String {
         let draft = self.expand_paste_markers(&self.get_text());
-        if self.history.first() != Some(&draft) {
-            self.history.insert(0, draft.clone());
+        if self.history.first().map(|entry| &entry.text) != Some(&draft) {
+            self.history.insert(
+                0,
+                HistoryEntry {
+                    text: draft.clone(),
+                    at: std::time::SystemTime::now(),
+                },
+            );
             self.history.truncate(MAX_HISTORY);
         }
         self.set_text("");
@@ -498,7 +522,7 @@ impl Editor {
     }
 
     #[must_use]
-    pub fn get_history(&self) -> &[String] {
+    pub fn get_history(&self) -> &[HistoryEntry] {
         &self.history
     }
 
@@ -528,7 +552,7 @@ impl Editor {
         if idx == -1 {
             self.set_text_internal("");
         } else {
-            let text = self.history[idx as usize].clone();
+            let text = self.history[idx as usize].text.clone();
             self.set_text_internal(&text);
         }
     }

@@ -334,6 +334,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["ctrl+s"], "Stash or restore draft prompt"),
     ),
     (
+        "app.history.search",
+        def!(&["ctrl+r"], "Search prompt history"),
+    ),
+    (
         "app.message.followUp",
         def!(&["alt+enter"], "Queue follow-up message"),
     ),

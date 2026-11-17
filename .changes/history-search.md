@@ -1,0 +1,1 @@
+- Ctrl+R searches the prompts you sent in this session: type to narrow the list (matched words are highlighted, each row shows its age such as `now`, `32m` or `3d`), and Enter puts the chosen prompt in the composer.

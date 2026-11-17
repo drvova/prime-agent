@@ -104,6 +104,8 @@ pub struct AgentView {
     /// `HeartbeatManagerComponent`, inline-picker style): while set, it
     /// owns the editor dock like the `/model` and `/effort` pickers.
     pub heartbeats_picker: Option<crate::heartbeats_picker::HeartbeatsPicker>,
+    /// The ctrl+r prompt-history search, mounted in the editor dock.
+    pub(crate) history_search: Option<crate::history_search::HistorySearch>,
     pub goal_panel: Option<crate::goal_surface::GoalPanel>,
     pub bash_view: Option<crate::bash_view::BashView>,
     pub share_loader: Option<ShareLoader>,
@@ -250,6 +252,10 @@ impl AgentView {
             picker.paste(text);
             return true;
         }
+        if let Some(search) = self.history_search.as_mut() {
+            search.paste(text);
+            return true;
+        }
         if let Some(mcp) = self.mcp_view.as_mut() {
             mcp.paste(text);
             return true;
@@ -321,6 +327,7 @@ impl AgentView {
             mcp_view: None,
             factory_view: None,
             heartbeats_picker: None,
+            history_search: None,
             goal_panel: None,
             bash_view: None,
             share_loader: None,

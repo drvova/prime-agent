@@ -5,6 +5,7 @@ use super::{
     DockFocusSource, Duration, Instant, KeyEvent, Map, QueueBrowseDirection, QueueLane, Result,
     SessionUi, StatusKind, SubmitBehavior,
 };
+use crate::history_search::HistorySearchAction;
 
 /// How long the Ctrl+C exit hint arms the second-press exit.
 const CTRL_C_EXIT_HINT_MS: u64 = 2_000;
@@ -86,6 +87,7 @@ impl SessionUi {
         }
         let overlay_focused = view.model_picker.is_some()
             || view.choice_picker.is_some()
+            || view.history_search.is_some()
             || view.heartbeats_picker.is_some()
             || view.goal_panel.is_some()
             || view.bash_view.is_some()
@@ -332,6 +334,28 @@ impl SessionUi {
         Ok(())
     }
 
+    /// One key press while the ctrl+r history search is open: Esc/Ctrl+C close it with the draft
+    /// untouched; Enter puts the picked prompt in the composer, the caret at its end.
+    fn handle_history_search_key(&mut self, key: KeyEvent, view: &mut AgentView) -> Result<()> {
+        let Some(id) = key_event_to_id(&key) else {
+            return Ok(());
+        };
+        let action = view
+            .history_search
+            .as_mut()
+            .map(|search| search.handle_key(&id, view.editor.keybindings()));
+        match action {
+            Some(HistorySearchAction::None) | None => {}
+            Some(HistorySearchAction::Cancel) => view.history_search = None,
+            Some(HistorySearchAction::Select(text)) => {
+                view.history_search = None;
+                view.editor.set_text(&text);
+            }
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
     pub(crate) async fn handle_key(
         &mut self,
         key: KeyEvent,
@@ -359,6 +383,10 @@ impl SessionUi {
         // The `/effort` picker owns the frame the same way.
         if view.choice_picker.is_some() {
             return self.handle_choice_picker_key(key, view).await;
+        }
+        // The ctrl+r history search owns the frame the same way.
+        if view.history_search.is_some() {
+            return self.handle_history_search_key(key, view);
         }
         if view.mcp_view.is_some() {
             return self.handle_mcp_view_key(key, view);
@@ -757,6 +785,15 @@ impl SessionUi {
             self.dirty = true;
             return Ok(());
         }
+        // Search this session's prompt history; a pick replaces the draft.
+        if view.editor.keybindings().matches(&id, "app.history.search") {
+            view.history_search = Some(crate::history_search::HistorySearch::new(
+                view.editor.get_history(),
+            ));
+            self.track_menu_opened("history", "shortcut");
+            self.dirty = true;
+            return Ok(());
+        }
         // Stash with a draft, restore with an empty editor; the manual stash
         // returns only on this key, never on a chat open or switch landing.
         if view.editor.keybindings().matches(&id, "app.prompt.stash") {
@@ -1056,6 +1093,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.subagents.focus")
         || kb.matches(id, "app.editor.external")
         || kb.matches(id, "app.prompt.stash")
+        || kb.matches(id, "app.history.search")
         || kb.matches(id, "app.session.new")
         || kb.matches(id, "app.session.resume")
         || kb.matches(id, "app.message.navigateOlder")
