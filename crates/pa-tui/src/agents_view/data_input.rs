@@ -520,6 +520,18 @@ impl AgentsViewMode {
             }
             Composer::Search => {}
         }
+        // An armed stop-or-delete answers `y` (confirm, the second press's twin) and `n` or the
+        // confirm key (cancel: the default, so Enter never runs a destructive action); the arm is
+        // already taken, so every other key falls through as a cancel.
+        if was_delete_armed.is_some() {
+            if key == "y" {
+                self.confirm_delete_for_selected(was_delete_armed);
+                return;
+            }
+            if key == "n" || self.keybindings.matches(key, "tui.select.confirm") {
+                return;
+            }
+        }
         // `app.clear` (default ctrl+c): the first press arms the exit hint, a second press while
         // armed exits.
         if self.keybindings.matches(key, "app.clear") {

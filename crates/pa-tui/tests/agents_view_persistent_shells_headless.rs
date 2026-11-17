@@ -216,7 +216,7 @@ async fn ctrl_x_on_a_shell_row_stops_it_and_its_finished_row_leaves_the_list() {
         AgentsStep::Key("home".to_string()),
         wait_render("open   Ctrl+X stop"),
         AgentsStep::Key("ctrl+x".to_string()),
-        wait_render("Press Ctrl+X again to stop"),
+        wait_render("y stop \u{b7} n cancel"),
         AgentsStep::Key("ctrl+x".to_string()),
         wait_render("Persistent shells (2)"),
     ])

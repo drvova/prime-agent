@@ -3,8 +3,8 @@
 //! headless renderer.
 use super::{
     build_layout, mpsc, pad_line, section_title, str_width, truncate_text, AgentsStep,
-    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, Duration, Line, Result, RowKind,
-    RowLayout, Section, Theme, ThemeColor, UiInput, Value,
+    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, DeleteAction, Duration, Line,
+    Result, RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value,
 };
 
 impl AgentsViewMode {
@@ -735,11 +735,54 @@ impl AgentsViewMode {
                 .find(|row| row.identity == pending.identity)
                 .map_or(pending.stop, Self::delete_arm_word);
             let word = if stop { "stop" } else { "delete" };
-            let hint = first("app.agents.delete").map_or_else(
-                || format!("Press again to {word}"),
-                |key| format!("Press {key} again to {word}"),
+            // The question names the object and what the action leaves alone. Cancel is the
+            // default: only `y` (in the search composer, where letters are not draft text) or a
+            // second press confirms; every other key cancels.
+            // A long title shortens to 20 cells so the clause about what stays still fits.
+            let short = |name: &str| crate::width::truncate_to_width(name, 20, "\u{2026}");
+            let question = match self.delete_action_for_selected() {
+                Some(DeleteAction::StopSubagent { name, .. }) => {
+                    format!(
+                        "Stop subagent \"{}\"? Its parent keeps running.",
+                        short(&name)
+                    )
+                }
+                Some(DeleteAction::DeleteSubagent { name, .. }) => {
+                    format!(
+                        "Delete subagent \"{}\"? Its parent session stays.",
+                        short(&name)
+                    )
+                }
+                Some(DeleteAction::StopAgent { name, .. }) => {
+                    format!("Stop \"{}\"? Its transcript stays to resume.", short(&name))
+                }
+                Some(DeleteAction::DeleteSavedSession { name, .. }) => format!(
+                    "Delete \"{}\" and its transcript? Project files stay.",
+                    short(&name)
+                ),
+                Some(DeleteAction::StopShell { name, .. }) => {
+                    format!("Stop shell \"{}\"? Sessions keep running.", short(&name))
+                }
+                None => format!("{}{} this row?", word[..1].to_uppercase(), &word[1..]),
+            };
+            let letters = matches!(self.composer, Composer::Search);
+            // In the search composer `y` is the advertised answer (a second press still
+            // confirms); the reply composer's letters are draft text, so it keeps the key.
+            let confirm = match (letters, first("app.agents.delete")) {
+                (true, Some(_) | None) => "y".to_string(),
+                (false, Some(key)) => key,
+                (false, None) => "Press again".to_string(),
+            };
+            let cancel = if letters { "n" } else { "Esc" };
+            // The keys always show: a long name shortens the question, never the answer keys.
+            let keys = format!("  {confirm} {word} \u{b7} {cancel} cancel");
+            let question = crate::width::truncate_to_width(
+                &question,
+                width.saturating_sub(str_width(&keys)),
+                "\u{2026}",
             );
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            let hint = format!("{question}{keys}");
+            return truncate_line(&vec![theme.fg(ThemeColor::Warning, hint)], width);
         }
         // The status renders in its own tone. `truncate_text` keeps the style:
         // `truncate_line` re-wraps plain text and would strip the span — the tone
