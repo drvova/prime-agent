@@ -231,11 +231,13 @@ jobs:
           if-no-files-found: error
 
   # release.yml's build-darwin job: both arches on the Apple-silicon pool
-  # (x86_64 cross-compiled, livechecked under Rosetta 2).
+  # (x86_64 cross-compiled, livechecked under Rosetta 2). The fork runs on
+  # the macos-latest Apple-silicon label: the first fork release's macos-15
+  # jobs were cancelled twice after 15 minutes without ever getting a runner.
   build-darwin:
     needs: [tag-check, catalog-ref]
     name: build-${{ matrix.target }}
-    runs-on: macos-15
+    runs-on: macos-latest
     permissions:
       contents: read
     timeout-minutes: 90
