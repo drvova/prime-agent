@@ -2,7 +2,7 @@
 //! sidecar layout, the source-checkout fallback, and the content identity
 //! that invalidates an existing venv on any runtime change.
 
-use super::{expand_home, Digest, Path, PathBuf};
+use super::{expand_home, Path, PathBuf, TreeIdentityCache};
 use anyhow::Context;
 
 /// Directory of the installed `prime-agent-runtime` sources. The Rust binary ships the same sidecar
@@ -59,24 +59,21 @@ pub(in crate::kernel::bootstrap) fn require_runtime_source_dir() -> anyhow::Resu
 }
 
 /// Hash the manifest, Python sources, and packaged machine library so any
-/// runtime change invalidates an existing venv.
+/// runtime change invalidates an existing venv. The bytes are read only when
+/// the tree's stat fingerprint misses `cache`.
 pub(in crate::kernel::bootstrap) fn hash_runtime_source(
     source_dir: &Path,
+    cache: &TreeIdentityCache,
 ) -> anyhow::Result<String> {
     let rlm_dir = source_dir.join("src").join("rlm");
     let mut files = vec![source_dir.join("pyproject.toml")];
     collect_python_files(&rlm_dir, &mut files)?;
     collect_package_data_files(&rlm_dir.join("machines"), &mut files)?;
     files.sort();
-    let mut hasher = sha2::Sha256::new();
-    for file in &files {
-        let relative = file.strip_prefix(source_dir)?;
-        hasher.update(relative.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(&std::fs::read(file)?);
-        hasher.update([0]);
-    }
-    Ok(format!("sha256:{:x}", hasher.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        cache.content_hash(source_dir, &files)?
+    ))
 }
 
 pub(super) fn collect_python_files(dir: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -207,7 +204,9 @@ mod tests {
 name: review-sweep
 ",
         )?;
-        let before = hash_runtime_source(temp.path())?;
+        let memo = tempfile::tempdir()?;
+        let cache = TreeIdentityCache::in_venv(memo.path());
+        let before = hash_runtime_source(temp.path(), &cache)?;
         runtime_fixture(
             temp.path(),
             "---
@@ -215,12 +214,12 @@ name: review-sweep
 version: 2
 ",
         )?;
-        let after = hash_runtime_source(temp.path())?;
+        let after = hash_runtime_source(temp.path(), &cache)?;
         assert_ne!(before, after, "a machine file change is a runtime change");
 
         // A runtime without the machine library still hashes cleanly.
         std::fs::remove_dir_all(temp.path().join("src").join("rlm").join("machines"))?;
-        let bare = hash_runtime_source(temp.path())?;
+        let bare = hash_runtime_source(temp.path(), &cache)?;
         assert_ne!(bare, after);
         Ok(())
     }

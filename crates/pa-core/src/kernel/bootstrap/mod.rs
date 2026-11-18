@@ -22,7 +22,8 @@ pub use runtime_code::{
 use venv::{
     bootstrap_venv, ensure_uv, expand_home, has_prime_agent_runtime,
     missing_python_skill_import_labels, missing_rlm_extra_import_labels, normalize_python_skills,
-    resolve_writable_kernel_venv_dir, sync_python_skills, BootstrapPythonSkill, UvCommand,
+    resolve_writable_kernel_venv_dir, sync_python_skills, BootstrapPythonSkill, TreeIdentityCache,
+    UvCommand,
 };
 use venv::{compile_venv_bytecode, kernel_base_ready, kernel_ready};
 pub use venv::{
@@ -239,6 +240,40 @@ async fn ensure_kernel_python_uncached(
     ensure_kernel_venv(options, python_skills, venv, project).await
 }
 
+/// Which readiness check [`probe_readiness`] runs.
+#[derive(Clone, Copy)]
+enum Readiness<'a> {
+    /// The base runtime plus every one of these Python skills recorded as installed.
+    WithSkills(&'a [BootstrapPythonSkill]),
+    /// The base runtime alone (skills may still need a sync).
+    Base,
+}
+
+/// Run a readiness check on a blocking thread: it stats and may hash the installed runtime trees
+/// and may start the interpreter, none of which belongs on an async worker thread.
+#[tracing::instrument(level = "debug", skip_all)]
+async fn probe_readiness(
+    python: &std::path::Path,
+    venv: &std::path::Path,
+    runtime_identity: &str,
+    readiness: Readiness<'_>,
+) -> anyhow::Result<bool> {
+    let python = python.to_string_lossy().into_owned();
+    let venv = venv.to_path_buf();
+    let runtime_identity = runtime_identity.to_string();
+    let python_skills = match readiness {
+        Readiness::WithSkills(python_skills) => Some(python_skills.to_vec()),
+        Readiness::Base => None,
+    };
+    tokio::task::spawn_blocking(move || match python_skills {
+        Some(python_skills) => kernel_ready(&python, &venv, &runtime_identity, &python_skills),
+        None => kernel_base_ready(&python, &venv, &runtime_identity),
+    })
+    .await
+    .map_err(|error| anyhow!("kernel readiness probe task failed: {error}"))
+}
+
+#[tracing::instrument(level = "debug", skip_all, fields(venv = %venv.display()))]
 async fn ensure_kernel_venv(
     options: &EnsureKernelPythonOptions,
     python_skills: &[BootstrapPythonSkill],
@@ -246,14 +281,30 @@ async fn ensure_kernel_venv(
     project: Option<&std::path::Path>,
 ) -> anyhow::Result<PathBuf> {
     let python = kernel_venv_python(&venv);
-    let python_str = python.to_string_lossy().to_string();
     // Validate the local source before probing any installed runtime or
-    // removing an existing venv. Missing payloads must fail closed.
-    let source_dir =
-        venv::require_runtime_source_dir().map_err(|error| format_bootstrap_failure(&error))?;
-    let runtime_identity =
-        venv::hash_runtime_source(&source_dir).map_err(|error| format_bootstrap_failure(&error))?;
-    if kernel_ready(&python_str, &venv, &runtime_identity, python_skills) {
+    // removing an existing venv. Missing payloads must fail closed. The source
+    // walk and (on a stat-fingerprint miss) its hash run off the async workers.
+    let (source_dir, runtime_identity) = {
+        let venv = venv.clone();
+        tokio::task::spawn_blocking(move || {
+            let source_dir = venv::require_runtime_source_dir()?;
+            let runtime_identity =
+                venv::hash_runtime_source(&source_dir, &TreeIdentityCache::in_venv(&venv))?;
+            anyhow::Ok((source_dir, runtime_identity))
+        })
+        .await
+        .map_err(|error| anyhow!("runtime source identity task failed: {error}"))
+        .and_then(std::convert::identity)
+        .map_err(|error| format_bootstrap_failure(&error))?
+    };
+    if probe_readiness(
+        &python,
+        &venv,
+        &runtime_identity,
+        Readiness::WithSkills(python_skills),
+    )
+    .await?
+    {
         compile_venv_bytecode(&python, &venv, options.bytecode).await;
         return Ok(python);
     }
@@ -261,15 +312,22 @@ async fn ensure_kernel_venv(
     let release_lock = match acquire_bootstrap_lock(&venv).await {
         Ok(release_lock) => release_lock,
         Err(error) if dir_lock::lock_creation_denied(&error) => {
-            return unwritable_venv(options, &python, &venv, &runtime_identity, &error);
+            return unwritable_venv(options, &python, &venv, &runtime_identity, &error).await;
         }
         Err(error) => return Err(error),
     };
     let result = async {
-        if kernel_ready(&python_str, &venv, &runtime_identity, python_skills) {
+        if probe_readiness(
+            &python,
+            &venv,
+            &runtime_identity,
+            Readiness::WithSkills(python_skills),
+        )
+        .await?
+        {
             return Ok(python);
         }
-        if kernel_base_ready(&python_str, &venv, &runtime_identity) {
+        if probe_readiness(&python, &venv, &runtime_identity, Readiness::Base).await? {
             let uv = ensure_uv(project)?;
             let uv_command = UvCommand {
                 executable: &uv,
@@ -333,15 +391,14 @@ async fn ensure_kernel_venv(
 /// created: a base-ready venv degrades the way a `PRIME_AGENT_KERNEL_PYTHON` override
 /// does (uncovered skills disabled with a warning, nothing installed), and anything
 /// less is a setup error naming the venv and both env overrides.
-fn unwritable_venv(
+async fn unwritable_venv(
     options: &EnsureKernelPythonOptions,
     python: &std::path::Path,
     venv: &std::path::Path,
     runtime_identity: &str,
     lock_error: &anyhow::Error,
 ) -> anyhow::Result<PathBuf> {
-    let python_str = python.to_string_lossy().to_string();
-    if !kernel_base_ready(&python_str, venv, runtime_identity) {
+    if !probe_readiness(python, venv, runtime_identity, Readiness::Base).await? {
         return Err(anyhow!(
             "cannot set up the Python kernel runtime: the kernel venv at {} is not writable by \
              this user and does not hold a current runtime. Set PRIME_AGENT_KERNEL_VENV to a \
@@ -350,6 +407,7 @@ fn unwritable_venv(
             venv.display()
         ));
     }
+    let python_str = python.to_string_lossy().to_string();
     let missing = missing_python_skill_import_labels(&python_str, &options.python_skills);
     if !missing.is_empty() {
         options.report(&format!(

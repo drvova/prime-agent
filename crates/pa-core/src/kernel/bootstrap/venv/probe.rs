@@ -3,7 +3,7 @@
 
 use super::{
     collect_python_files, Digest, HashMap, KernelPythonSkill, Mutex, Path, PathBuf, Stdio,
-    DEFAULT_RLM_EXTRA_PACKAGES,
+    TreeIdentityCache, DEFAULT_RLM_EXTRA_PACKAGES,
 };
 
 fn python_imports(python: &str, module_name: &str) -> bool {
@@ -113,8 +113,9 @@ pub(super) fn lock_probe_memo() -> std::sync::MutexGuard<'static, Option<HashMap
 }
 
 /// Identity of the runtime as installed in the venv: the interpreter binary's stat plus a content
-/// hash of the installed `rlm` package tree. Out-of-band damage changes this identity, so a
-/// memoized probe result can never mask a mutated install.
+/// hash of the installed `rlm` and `dill` package trees. Out-of-band damage changes this identity,
+/// so a memoized probe result can never mask a mutated install; an unchanged tree is served from
+/// the venv's stat-keyed [`TreeIdentityCache`] without re-reading its bytes.
 pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
     let mut hasher = sha2::Sha256::new();
     match std::fs::metadata(python) {
@@ -126,12 +127,17 @@ pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
         }
         Err(error) => hasher.update(format!("py-error:{}:{error}", python.display()).as_bytes()),
     }
+    let cache = TreeIdentityCache::in_venv(venv);
     for package in ["rlm", "dill"] {
-        match installed_package_dir(venv, package) {
-            Some(dir) => match hash_python_tree(&dir) {
-                Ok(hash) => hasher.update(format!("{package}:{hash}").as_bytes()),
-                Err(error) => hasher.update(format!("{package}-error:{error}").as_bytes()),
-            },
+        let tree_hash = installed_package_dir(venv, package).map(|dir| {
+            let mut files = Vec::new();
+            collect_python_files(&dir, &mut files)?;
+            files.sort();
+            cache.content_hash(&dir, &files)
+        });
+        match tree_hash {
+            Some(Ok(hash)) => hasher.update(format!("{package}:{hash}").as_bytes()),
+            Some(Err(error)) => hasher.update(format!("{package}-error:{error}").as_bytes()),
             None => hasher.update(format!("{package}-missing").as_bytes()),
         }
     }
@@ -166,23 +172,6 @@ pub(super) fn installed_package_dir(venv: &Path, package: &str) -> Option<PathBu
         }
     }
     None
-}
-
-/// Content hash of a python tree: every `.py` file's relative path and
-/// bytes, in sorted order (same witness shape as `hash_runtime_source`).
-fn hash_python_tree(dir: &Path) -> anyhow::Result<String> {
-    let mut files = Vec::new();
-    collect_python_files(dir, &mut files)?;
-    files.sort();
-    let mut hasher = sha2::Sha256::new();
-    for file in &files {
-        let relative = file.strip_prefix(dir)?;
-        hasher.update(relative.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(&std::fs::read(file)?);
-        hasher.update([0]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// The memo key: every input the runtime-ready probe observes.
