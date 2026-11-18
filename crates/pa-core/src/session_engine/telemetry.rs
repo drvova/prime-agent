@@ -298,6 +298,10 @@ struct ActiveRun {
     /// tools by name, every MCP and custom tool folded into `mcp` /
     /// `custom`: no raw tool names leave the machine).
     tool_summary: HashMap<ToolCategory, ToolCategoryStats>,
+    /// The run's bounded `bash()` awaits, folded from each `python_repl`
+    /// result's `bashWaits` details: finished inside the wait window vs
+    /// yielded a still-running snapshot.
+    bash_waits: crate::kernel::shared::KernelBashWaits,
 }
 
 /// One tool category's per-run aggregates.
@@ -970,6 +974,7 @@ fn handle_event(
                 error_category_counts: std::collections::BTreeMap::new(),
                 compaction_duration_ms: 0,
                 tool_summary: HashMap::new(),
+                bash_waits: crate::kernel::shared::KernelBashWaits::default(),
             });
         }
         AgentEvent::MessageStart { message } => {
@@ -1092,8 +1097,8 @@ fn handle_event(
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
             tool_name,
+            result,
             is_error,
-            ..
         } => {
             let started_at = state.tool_starts.remove(&tool_call_id);
             let duration_ms = started_at.map_or(0, |start| now.saturating_sub(start));
@@ -1109,6 +1114,11 @@ fn handle_event(
                 tool_stats.failures += u64::from(is_error);
                 tool_stats.duration_ms += duration_ms;
                 tool_stats.max_duration_ms = tool_stats.max_duration_ms.max(duration_ms);
+                if let Some(waits) = result.details.get("bashWaits") {
+                    let count = |key: &str| waits.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    run.bash_waits.completed += count("completed");
+                    run.bash_waits.yielded += count("yielded");
+                }
             }
         }
         AgentEvent::AgentEnd { .. } => {
@@ -1254,6 +1264,16 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
         opt_value(median(&mut run.model_latencies)),
     );
     properties.set("model_error_count", Value::from(run.model_error_count));
+    if run.bash_waits != crate::kernel::shared::KernelBashWaits::default() {
+        properties.set(
+            "bash_wait_completed_count",
+            Value::from(run.bash_waits.completed),
+        );
+        properties.set(
+            "bash_wait_yielded_count",
+            Value::from(run.bash_waits.yielded),
+        );
+    }
     for (category, count) in &run.error_category_counts {
         properties.set(&format!("error_{category}_count"), Value::from(*count));
     }

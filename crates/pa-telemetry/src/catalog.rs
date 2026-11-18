@@ -655,6 +655,11 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("custom_tool_error_count", optional(count())),
         ("custom_tool_duration_ms", optional(duration())),
         ("custom_tool_max_duration_ms", optional(duration())),
+        // Bounded `bash()` awaits that returned the finished result inside
+        // their wait window vs yielded a still-running snapshot (set only
+        // when the run had any).
+        ("bash_wait_completed_count", optional(count())),
+        ("bash_wait_yielded_count", optional(count())),
     ],
 };
 

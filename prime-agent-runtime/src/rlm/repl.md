@@ -27,7 +27,7 @@ event.
 
 | Request | Fields |
 |---|---|
-| `execute` | `{"type":"execute","id":str,"code":str}` |
+| `execute` | `{"type":"execute","id":str,"code":str,"timeoutMs"?:int}` — `timeoutMs` is the host's armed cell time limit; bounded `bash()` awaits in the cell degrade before it |
 | `interrupt` | `{"type":"interrupt","id"?:str}` — no reply |
 | `host_reply` | `{"type":"host_reply","id":str,"data":{"status":"ok","result":{...}}}` or an error envelope — no reply |
 | `snapshot` | `{"type":"snapshot","id":str,"path":str,"manifest_path":str,"max_bytes"?:int,"max_variable_bytes"?:int,"prune_oversized"?:bool}` |

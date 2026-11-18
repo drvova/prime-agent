@@ -503,6 +503,40 @@ async fn tool_calls_fold_into_run_aggregates() {
     assert!(!all.contains("private-extension-tool"));
 }
 
+/// Each `python_repl` result's `bashWaits` details fold into the run as two
+/// primitive counters: awaits that finished inside their wait window vs
+/// awaits that yielded a still-running snapshot.
+#[tokio::test]
+async fn bash_wait_outcomes_fold_into_run_counters() {
+    let fixture = fixture();
+    emit(&fixture, AgentEvent::AgentStart);
+    for (completed, yielded) in [(1, 0), (2, 1)] {
+        let (tool_start, mut tool_end) = tool_execution_event("python_repl", false);
+        if let AgentEvent::ToolExecutionEnd { result, .. } = &mut tool_end {
+            result.details =
+                serde_json::json!({ "bashWaits": { "completed": completed, "yielded": yielded } });
+        }
+        emit(&fixture, tool_start);
+        emit(&fixture, tool_end);
+    }
+    emit(&fixture, message_end_event(assistant_message()));
+    emit(
+        &fixture,
+        AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        },
+    );
+    emit(&fixture, AgentEvent::AgentStart);
+    let runs = event_properties(&fixture.mock, "agent run completed").await;
+    assert_eq!(
+        (
+            &runs[0]["bash_wait_completed_count"],
+            &runs[0]["bash_wait_yielded_count"]
+        ),
+        (&serde_json::json!(3), &serde_json::json!(1))
+    );
+}
+
 /// Skills, RLM child usage, MCP connector use, kernel boots, and feature
 /// outcomes count into `agent session ended` instead of their own events.
 #[tokio::test]

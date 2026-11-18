@@ -1279,3 +1279,51 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
         "the child's row carries the finished exit code: {row}"
     );
 }
+
+/// The round trips a three-second command costs a print run that follows
+/// the bounded-await contract: one script, two wait windows. Under the
+/// default window the await returns the finished result in the first cell,
+/// so the run ends after two provider calls. Under a one-second window (the
+/// pre-change default) the await degrades, the turn ends, and the
+/// `[bash-done]` wake costs a third call.
+#[test]
+fn print_three_second_command_completes_in_one_cell_under_the_default_wait() {
+    let kernel = PrintLane::kernel_python();
+    let script = serde_json::json!({
+        "responses": [
+            { "content": [
+                { "type": "toolCall", "name": "ipython",
+                  "arguments": { "code": "r = await bash(\"sleep 3; echo BUILT\")\nprint(\"SNAPSHOT\" if r.running else r.output)" } },
+            ] },
+            "ANSWERED",
+            "ANSWERED AFTER WAKE",
+        ],
+        "repeatLastResponse": true,
+    });
+    let mut provider_calls = Vec::new();
+    for (window, expected_answer) in [(None, "ANSWERED"), (Some("1000"), "ANSWERED AFTER WAKE")] {
+        let lane = lane();
+        let env_extra: Vec<(&str, &str)> = window
+            .map(|ms| ("PRIME_AGENT_BASH_WAIT_MS", ms))
+            .into_iter()
+            .collect();
+        let (stdout, stderr, code) = lane.run(&["-p", "build it"], &script, &kernel, &env_extra);
+        assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
+        assert_eq!(stdout.trim_end(), expected_answer, "window {window:?}");
+        let assistant_messages = PrintLane::entries(&lane.parent_session_file())
+            .iter()
+            .filter(|entry| {
+                entry
+                    .pointer("/message/role")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("assistant")
+            })
+            .count();
+        provider_calls.push(assistant_messages);
+    }
+    assert_eq!(
+        provider_calls,
+        [2, 3],
+        "provider round trips: default window vs a one-second window"
+    );
+}

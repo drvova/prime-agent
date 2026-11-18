@@ -1459,6 +1459,60 @@ class BoundedAwaitTest(unittest.IsolatedAsyncioTestCase):
             handle.kill(grace=0.1)
         self.assertEqual(hints.getvalue().count("still running after"), 3)
 
+    async def test_default_window_returns_a_two_second_command_completed(self):
+        # The default window spans a typical short build or test run: a
+        # degrade here would cost the session a model round trip.
+        self._wire_notices()
+        result = await bash("sleep 2; printf built")
+        self.assertEqual(result, bash_module.BashResult(0, "built", result.duration))
+
+    @mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_WAIT_MS": "200"})
+    async def test_env_overrides_the_default_window(self):
+        self._wire_notices()
+        handle = bash("sleep 2")
+        self.assertIsInstance(await handle, bash_module.BashSnapshot)
+        handle.kill(grace=0.1)
+
+    async def test_wait_degrades_to_a_tail_snapshot_at_the_requested_window(self):
+        self._wire_notices()
+        handle = bash("seq 1 100; sleep 5")
+        started = time.monotonic()
+        snapshot = await handle.wait(0.5)
+        elapsed = time.monotonic() - started
+        self.addCleanup(handle.kill, grace=0.1)
+        self.assertIsInstance(snapshot, bash_module.BashSnapshot)
+        self.assertTrue(0.5 <= elapsed < 3, elapsed)
+        # Compact: only the newest lines, plus the elapsed time in the repr.
+        self.assertEqual(snapshot.output, "\n".join(str(n) for n in range(81, 101)))
+        self.assertIn("after 0.", repr(snapshot))
+        self.assertTrue(handle._buffer.text().startswith("1\n2\n"))
+
+    async def test_wait_returns_as_soon_as_the_command_finishes(self):
+        self._wire_notices()
+        started = time.monotonic()
+        result = await bash("sleep 0.3; printf fast").wait(30)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(result, bash_module.BashResult(0, "fast", result.duration))
+
+    async def test_cancelling_a_long_wait_returns_promptly_and_kills(self):
+        # An abort inside a long requested window keeps the one-shot
+        # kill-on-cancel contract and never rides out the window.
+        self._wire_notices()
+        handle = bash("sleep 30")
+        pgid = handle._pid
+
+        async def consume():
+            return await handle.wait(60)
+
+        waiter = asyncio.create_task(consume())
+        await asyncio.sleep(0.3)
+        started = time.monotonic()
+        waiter.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await waiter
+        self.assertLess(time.monotonic() - started, 5)
+        await _poll_group_dead(pgid)
+
 
 async def _poll_group_dead(pgid: int, timeout: float = 5.0) -> None:
     deadline = asyncio.get_running_loop().time() + timeout
