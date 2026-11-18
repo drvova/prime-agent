@@ -257,6 +257,8 @@ pub(crate) async fn connect_direct(
         let owner = Arc::clone(&owner);
         let active_session_id = ticket.active_session_id.clone();
         tokio::spawn(async move {
+            // Restores every delta `message_update` to its full message.
+            let mut message_deltas = pa_types::daemon::message_delta::MessageDeltaDecoder::new();
             while let Ok(Some(frame)) = reader.read_frame().await {
                 let header_type = frame
                     .header
@@ -264,9 +266,10 @@ pub(crate) async fn connect_direct(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
-                let Ok(payload) = serde_json::from_slice::<Value>(&frame.payload) else {
+                let Ok(mut payload) = serde_json::from_slice::<Value>(&frame.payload) else {
                     continue;
                 };
+                message_deltas.decode(&mut payload);
                 if header_type == "response" {
                     if let Ok(response) =
                         serde_json::from_value::<pa_types::daemon::DaemonResponse>(payload)
@@ -421,6 +424,7 @@ pub(crate) fn direct_attach_capabilities() -> Vec<DaemonClientCapability> {
         "slim_attach".to_string(),
         "elide_snapshot_images".to_string(),
         "windowed_snapshot".to_string(),
+        pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY.to_string(),
     ]
 }
 

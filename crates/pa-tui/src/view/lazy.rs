@@ -641,6 +641,11 @@ impl AgentView {
                 }
             }
         }
+        // The streaming assistant's one-slot replay: a frame that changed nothing the render
+        // reads (a spinner tick, an editor keystroke) reuses the last rows.
+        if let Some(rows) = self.streaming_entry_rows(index, width, spacing, preceded_by_tool) {
+            return EntryRows::Fresh(rows);
+        }
         let rows = std::sync::Arc::new(self.render_entry(
             index,
             entry,

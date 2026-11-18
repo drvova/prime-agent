@@ -57,6 +57,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "chatDetail",
     "thinkingBudgets",
     "editorPaddingX",
+    "composerHintUses",
     "autocompleteMaxVisible",
     "showHardwareCursor",
     "emojiShortcodes",

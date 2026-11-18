@@ -87,9 +87,9 @@ pub(crate) enum PickerKind {
     Choice,
 }
 
-/// The `/model` picker's chrome rows: the bordered search field
-/// renders exactly three rows.
-pub(crate) const MODEL_PICKER_CHROME_ROWS: usize = 3;
+/// The `/model` picker's chrome rows: the title row and the bordered
+/// search field's three rows.
+pub(crate) const MODEL_PICKER_CHROME_ROWS: usize = 4;
 
 /// The `/effort` picker's chrome rows: the config
 /// selector's header block plus the bordered search field.

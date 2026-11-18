@@ -26,7 +26,7 @@ pub struct ToolCallCard {
     /// `tool_execution_start` seen (replayed cards infer it from the
     /// result).
     pub started: bool,
-    /// When the execution started, when seen live (drives `Took`).
+    /// When the execution started, when seen live (drives the header duration).
     pub started_at: Option<Instant>,
     /// When the final result landed (replay sets start and end together).
     pub ended_at: Option<Instant>,
@@ -138,16 +138,21 @@ pub fn render_tool_card(
     rows
 }
 
-/// The generic panel status: error wins even while streaming; `running`
-/// animates until then.
+/// The generic panel status: an interrupt settles first, then error wins
+/// even while streaming; `running` animates until then.
 pub(crate) enum PanelStatus {
     Queued,
     Running,
     Done,
     Error,
+    /// The run ended (Esc, turn boundary) before the call returned.
+    Interrupted,
 }
 
 pub(crate) fn panel_status(card: &ToolCallCard) -> PanelStatus {
+    if card.aborted {
+        return PanelStatus::Interrupted;
+    }
     if let Some(result) = &card.result {
         if !card.result_partial {
             return if result.is_error {
@@ -167,23 +172,51 @@ pub(crate) fn panel_status(card: &ToolCallCard) -> PanelStatus {
     }
 }
 
-/// The panel header row: `label · status`.
+/// The panel header row: `name · status · 3.4s`. The tool name carries the card state by
+/// colour (accent while running, muted once done or queued, error on failure or interrupt), and
+/// the call's duration rides the same row: while the call runs it is recomputed on every paint
+/// (the loader spinner's 80ms phase repaints tick it, #3296's wake, so it adds no wake of its
+/// own), and once the final result lands it is the static run time. A card that never saw its
+/// execution start, or a replayed card whose timing collapsed to one rebuild instant, shows no
+/// duration.
 pub(crate) fn panel_header(card: &ToolCallCard, frame: usize, theme: &Theme) -> Line {
-    use crate::theme::ThemeColor::{BashMode, Dim, Error, Muted, Success};
-    let muted = theme.fg_style(Muted);
+    use crate::theme::ThemeColor::{Accent, BashMode, Dim, Error, Muted, Success};
     let dim = theme.fg_style(Dim);
-    let mut header: Line = vec![Span::styled(card.name.clone(), muted)];
-    header.push(Span::styled(" \u{00b7} ".to_string(), dim));
-    let status: Line = match panel_status(card) {
-        PanelStatus::Error => vec![Span::styled("error".to_string(), theme.fg_style(Error))],
-        PanelStatus::Done => vec![Span::styled("done".to_string(), theme.fg_style(Success))],
-        PanelStatus::Running => vec![Span::styled(
-            format!("{} running", working_icon(frame)),
-            theme.fg_style(BashMode),
-        )],
-        PanelStatus::Queued => vec![Span::styled("queued".to_string(), theme.fg_style(Muted))],
+    let error = theme.fg_style(Error);
+    let (name_color, status) = match panel_status(card) {
+        PanelStatus::Error => (Error, Span::styled("error".to_string(), error)),
+        PanelStatus::Interrupted => (Error, Span::styled("interrupted".to_string(), error)),
+        PanelStatus::Done => (
+            Muted,
+            Span::styled("done".to_string(), theme.fg_style(Success)),
+        ),
+        PanelStatus::Running => (
+            Accent,
+            Span::styled(
+                format!("{} running", working_icon(frame)),
+                theme.fg_style(BashMode),
+            ),
+        ),
+        PanelStatus::Queued => (
+            Muted,
+            Span::styled("queued".to_string(), theme.fg_style(Muted)),
+        ),
     };
-    header.extend(status);
+    let separator = || Span::styled(" \u{00b7} ".to_string(), dim);
+    let mut header: Line = vec![
+        Span::styled(card.name.clone(), theme.fg_style(name_color)),
+        separator(),
+        status,
+    ];
+    let elapsed = card.started_at.and_then(|started| match card.ended_at {
+        Some(ended) if ended == started => None,
+        Some(ended) => Some(ended - started),
+        None => Some(started.elapsed()),
+    });
+    if let Some(elapsed) = elapsed {
+        header.push(separator());
+        header.push(Span::styled(format_bash_duration(elapsed.as_millis()), dim));
+    }
     header
 }
 
@@ -211,46 +244,6 @@ pub(crate) fn panel_line(content: Line, bg: ratatui::style::Style, width: usize)
 /// The bash panel duration: tenths of a second.
 pub(crate) fn format_bash_duration(ms: u128) -> String {
     format!("{:.1}s", ms as f64 / 1000.0)
-}
-
-/// The instant a still-running call started (the live-timer gate,
-/// operator feature 2026-10-03): `Some` while the card saw its execution
-/// start and the final result never landed — every settle path stamps
-/// `ended_at` together with the result — `None` once settled or when the
-/// card never saw its start (the TS render-state lifecycle). A running
-/// call exists only inside an active turn, and the turn's loader spinner
-/// keeps the loop repainting at its 80ms phase cadence (#3296's wake), so
-/// a duration rendered from this instant ticks on those repaints without
-/// adding a wake of its own.
-fn live_started(card: &ToolCallCard) -> Option<Instant> {
-    card.started_at.filter(|_| card.ended_at.is_none())
-}
-
-/// The `Elapsed`/`Took` duration row the panel shells render below the
-/// call's content (the bash card's TS `Took 1.2s` row): while the call
-/// runs the label is `Elapsed` and the value is recomputed on every
-/// paint — the loader spinner's 80ms phase repaints tick it — and once
-/// the final result lands the row is the exact static `Took` timing the
-/// settled card always rendered. A card that never saw its execution
-/// start renders no row.
-fn duration_row(
-    card: &ToolCallCard,
-    theme: &Theme,
-    content_width: usize,
-    rows: &mut layout::RowOutput,
-) {
-    let Some(started) = card.started_at else {
-        return;
-    };
-    let label = if card.ended_at.is_some() {
-        "Took"
-    } else {
-        "Elapsed"
-    };
-    let elapsed = card.ended_at.unwrap_or_else(Instant::now) - started;
-    let text = format!("{label} {}", format_bash_duration(elapsed.as_millis()));
-    rows.blank();
-    rows.wrapped_text(&text, theme.fg_style(ThemeColor::Dim), content_width);
 }
 
 /// The bash tool's output byte budget, used when the spill carries no
@@ -519,6 +512,50 @@ mod tests {
         });
         assert_eq!(image_rows(elided.as_ref(), true, &theme()).len(), 1);
         assert_eq!(eligible_images(elided.as_ref(), true).count(), 1);
+    }
+
+    #[test]
+    fn the_panel_title_carries_the_card_state_by_colour() {
+        use crate::theme::ThemeColor::{Accent, Error, Muted};
+        let theme = theme();
+        let running = ToolCallCard {
+            name: "bash".into(),
+            started: true,
+            ..Default::default()
+        };
+        let done = ToolCallCard {
+            result: Some(ToolResultView::default()),
+            ..running.clone()
+        };
+        let failed = ToolCallCard {
+            result: Some(ToolResultView {
+                is_error: true,
+                ..Default::default()
+            }),
+            ..running.clone()
+        };
+        let interrupted = ToolCallCard {
+            aborted: true,
+            ..failed.clone()
+        };
+        let headers: Vec<(String, Option<ratatui::style::Color>)> =
+            [&running, &done, &failed, &interrupted]
+                .into_iter()
+                .map(|card| {
+                    let header = panel_header(card, 0, &theme);
+                    (text_of(&header), header[0].style.fg)
+                })
+                .collect();
+        let fg = |color| theme.fg_style(color).fg;
+        assert_eq!(
+            headers,
+            vec![
+                ("bash \u{00b7} \u{25c7} running".to_string(), fg(Accent)),
+                ("bash \u{00b7} done".to_string(), fg(Muted)),
+                ("bash \u{00b7} error".to_string(), fg(Error)),
+                ("bash \u{00b7} interrupted".to_string(), fg(Error)),
+            ]
+        );
     }
 
     #[test]

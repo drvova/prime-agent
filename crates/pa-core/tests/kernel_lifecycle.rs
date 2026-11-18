@@ -531,3 +531,83 @@ async fn graceful_shutdown_flushes_the_final_snapshot() {
         .await
         .expect("shutdown");
 }
+
+/// A user cell never waits behind the debounced auto-snapshot: a cell sent while a slow capture is
+/// dumping preempts it, and the capture is owed rather than dropped, so it lands afterwards even
+/// though that cell failed (a failed cell schedules no snapshot of its own).
+#[tokio::test]
+async fn a_cell_sent_during_a_slow_debounced_snapshot_does_not_wait_for_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let Some(mut options) = test_options(Some(dir.path())) else {
+        return;
+    };
+    if let Some(snapshot) = options.snapshot.as_mut() {
+        snapshot.debounce_ms = Some(50);
+    }
+    let manager = started_manager(options).await;
+    // Pickling `slow` blocks the first dump for 4 s (inside the 5 s snapshot bound) after
+    // announcing itself through the marker file; later dumps are instant.
+    let marker = dir.path().join("dump-started");
+    let seeded = execute(
+        &manager,
+        &format!(
+            r#"import os, time
+class Slow:
+    def __reduce__(self):
+        if not os.path.exists({marker:?}):
+            open({marker:?}, "w").close()
+            time.sleep(4)
+        return (str, ("slow",))
+slow = Slow()
+"#
+        ),
+    )
+    .await;
+    assert_eq!(seeded.status, ExecuteStatus::Ok, "{:?}", seeded.error);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the debounced snapshot never started"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let sent = std::time::Instant::now();
+    let failed = execute(
+        &manager,
+        "quick = 2\nraise RuntimeError('after binding quick')",
+    )
+    .await;
+    let waited = sent.elapsed();
+    assert_eq!(failed.status, ExecuteStatus::Error);
+    assert!(
+        waited < Duration::from_secs(2),
+        "the cell waited {waited:?} behind the snapshot"
+    );
+
+    let manifest = manifest_path_in(dir.path());
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let saved: Vec<String> = std::fs::read(&manifest)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(&raw).ok())
+            .and_then(|manifest| serde_json::from_value(manifest["savedNames"].clone()).ok())
+            .unwrap_or_default();
+        if ["quick", "slow"]
+            .iter()
+            .all(|name| saved.iter().any(|saved| saved == name))
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the preempted snapshot never landed: {saved:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    manager
+        .shutdown(KernelShutdownOptions::default())
+        .await
+        .expect("shutdown");
+}

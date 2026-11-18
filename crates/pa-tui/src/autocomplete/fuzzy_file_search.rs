@@ -443,6 +443,7 @@ pub(super) fn suggestions(best: Vec<RankedForm<'_>>, search: &AtSearch<'_>) -> O
     Some(Suggestions {
         prefix: (*at_prefix).to_string(),
         kind: Some(SuggestionKind::File),
+        selected: None,
         items,
     })
 }

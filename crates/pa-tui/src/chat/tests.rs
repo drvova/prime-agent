@@ -20,6 +20,7 @@ fn backup_switch_loader_renders_the_failover_message() {
         reason: RetryStartReason::Backup {
             backup_model: "prime-backup/mock-1".to_string(),
         },
+        provider: None,
     };
     let rows = render_retry(&retry, 0, &theme(), 60);
     let text = rows[1]
@@ -34,48 +35,44 @@ fn backup_switch_loader_renders_the_failover_message() {
     );
 }
 
+/// The quick-retry countdown (nc): the amber `retry 2 of 4 in 3s` head, the provider and
+/// status, and the provider's own words on the row under it.
 #[test]
-fn retry_loader_renders_countdown() {
+fn retry_loader_counts_down_and_names_the_provider_and_status() {
     let retry = RetryState {
-        attempt: 1,
-        max_attempts: 2,
-        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(1500),
-        error_message: "provider down".to_string(),
+        attempt: 2,
+        max_attempts: 4,
+        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(3500),
+        error_message: "429 Rate limit exceeded".to_string(),
         reason: RetryStartReason::Quick,
-    };
-    let rows = render_retry(&retry, 0, &theme(), 60);
-    let text = rows[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect::<String>();
-    // The quick-retry line names the error too (the one line the
-    // chat shows while the episode runs, updated in place).
-    assert!(
-        text.contains("provider down — retrying (1/2) in 1s..."),
-        "got: {text}"
-    );
-}
-
-/// The muted pen colors the spinner, and the gap to the label resets to default fg.
-#[test]
-fn retry_loader_spans_carry_the_ts_sgr_boundaries() {
-    let retry = RetryState {
-        attempt: 1,
-        max_attempts: 2,
-        ends_at: std::time::Instant::now() + std::time::Duration::from_millis(1500),
-        error_message: "provider down".to_string(),
-        reason: RetryStartReason::Quick,
+        provider: Some("openai".to_string()),
     };
     let t = theme();
+    let warning = t.fg_style(ThemeColor::Warning);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_retry(&retry, 0, &t, 60);
+    let head = "retry 2 of 4 in 3s";
+    let source = "openai 429";
     assert_eq!(
-        rows[1][..4],
-        [
-            Span::styled(" ", Style::default()),
-            Span::styled(LOADER_FRAMES[0], muted),
-            Span::raw(" "),
-            Span::styled("provider down — retrying (1/2) in 1s...", muted),
+        render_retry(&retry, 0, &t, 60),
+        vec![
+            Vec::new(),
+            vec![
+                Span::styled(" ", Style::default()),
+                Span::styled(LOADER_FRAMES[0], warning),
+                Span::raw(" "),
+                Span::styled(head, warning),
+                Span::styled(" \u{00b7} ", muted),
+                Span::styled(source, t.fg_style(ThemeColor::Text)),
+                Span::styled(
+                    " ".repeat(60 - 3 - head.len() - 3 - source.len()),
+                    Style::default()
+                ),
+            ],
+            vec![
+                Span::raw("   "),
+                Span::styled("429 Rate limit exceeded", muted),
+                Span::styled(" ".repeat(60 - 3 - 23), Style::default()),
+            ],
         ]
     );
 }
@@ -383,7 +380,7 @@ fn code_block_indent_rides_the_render_calls() {
         .map(|row| strip_markers(&row))
         .collect();
     assert!(
-        flat.iter().any(|row| row == "     fn main() {}"),
+        flat.iter().any(|row| row == "     \u{258c} fn main() {}"),
         "non-default indent applied: {flat:?}"
     );
     // The default (no setting) stays two spaces.
@@ -402,7 +399,7 @@ fn code_block_indent_rides_the_render_calls() {
         .map(|row| strip_markers(&row))
         .collect();
     assert!(
-        flat.iter().any(|row| row == "   fn main() {}"),
+        flat.iter().any(|row| row == "   \u{258c} fn main() {}"),
         "default indent: {flat:?}"
     );
 }
@@ -777,42 +774,174 @@ fn aborted_assistant_message_renders_the_red_abort_row() {
 #[test]
 fn loader_line_shape() {
     let working = WorkingState {
-        activity: "Writing",
+        activity: "Thinking",
         message: None,
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        Detail::Overview,
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     assert_eq!(rows.len(), 2);
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
         .collect::<String>();
-    assert!(text.contains("\u{283c} Writing \u{00b7} 1s \u{00b7} \u{2193} 72 tokens"));
+    assert!(text.contains("\u{283c} Thinking \u{00b7} 1s \u{00b7} \u{2193} 72 tokens"));
 }
 
 /// The gap resets to default fg instead of carrying the label color over the gap.
 #[test]
 fn loader_gap_between_spinner_and_label_is_unstyled() {
     let working = WorkingState {
-        activity: "Writing",
+        activity: "Thinking",
         message: None,
         download: true,
         tokens: 72,
         elapsed_secs: 1,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
     };
     let t = theme();
     let accent = t.fg_style(ThemeColor::Accent);
     let muted = t.fg_style(ThemeColor::Muted);
-    let rows = render_loader(&working, 0, &t, 100);
+    let rows = render_loader(
+        &working,
+        0,
+        &t,
+        Detail::Overview,
+        100,
+        None,
+        t.fg_style(ThemeColor::Accent),
+    );
     assert_eq!(
         rows[1][..4],
         [
             Span::styled(" ", Style::default()),
             Span::styled(LOADER_FRAMES[0], accent),
             Span::raw(" "),
-            Span::styled("Writing \u{00b7} 1s \u{00b7} \u{2193} 72 tokens", muted),
+            Span::styled("Thinking \u{00b7} 1s \u{00b7} \u{2193} 72 tokens", muted),
+        ]
+    );
+}
+
+/// The live bar row with the stop chip flush right: the spinner in the accent, the label
+/// muted, the ` Esc ` chip filled.
+fn chip_row(t: &Theme, spinner: &'static str, label: &str, width: usize) -> Line {
+    let chip = t
+        .bg_style(ThemeBg::SelectedBg)
+        .patch(t.fg_style(ThemeColor::Text));
+    let used = 3 + crate::width::str_width(label) + " Esc ".len() + "  stop ".len();
+    vec![
+        Span::styled(" ", Style::default()),
+        Span::styled(spinner, t.fg_style(ThemeColor::Accent)),
+        Span::raw(" "),
+        Span::styled(label.to_string(), t.fg_style(ThemeColor::Muted)),
+        Span::raw(" ".repeat(width - used)),
+        Span::styled(" Esc ", chip),
+        Span::styled("  stop ", t.fg_style(ThemeColor::Muted)),
+    ]
+}
+
+/// A stream quiet past the threshold says `Waiting on the model` with the waiting orbit and
+/// the stall timer (nc); under the threshold it keeps its own activity.
+#[test]
+fn a_quiet_stream_says_waiting_on_the_model() {
+    let t = theme();
+    let working = WorkingState {
+        activity: "Writing",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 9,
+        thought: None,
+        quiet_secs: 4,
+        tool_label: None,
+    };
+    assert_eq!(
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
+        vec![
+            Vec::new(),
+            chip_row(
+                &t,
+                "\u{2808}",
+                "Waiting on the model \u{00b7} 9s \u{00b7} quiet 4s",
+                60
+            ),
+        ]
+    );
+    let speaking = WorkingState {
+        quiet_secs: 2,
+        ..working
+    };
+    assert_eq!(
+        render_loader(
+            &speaking,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
+        vec![
+            Vec::new(),
+            chip_row(&t, "\u{2840}", "Writing \u{00b7} 9s", 60)
+        ]
+    );
+}
+
+/// A running tool is labelled by its title and never shows a stall, however long it is quiet.
+#[test]
+fn a_running_tool_shows_its_title_and_never_stalls() {
+    let t = theme();
+    let working = WorkingState {
+        activity: "Executing",
+        message: None,
+        download: false,
+        tokens: 0,
+        elapsed_secs: 12,
+        thought: None,
+        quiet_secs: 10,
+        tool_label: Some("cargo test -p pa-tui".to_string()),
+    };
+    assert_eq!(
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Overview,
+            60,
+            Some("Esc"),
+            t.fg_style(ThemeColor::Accent)
+        ),
+        vec![
+            Vec::new(),
+            chip_row(
+                &t,
+                "\u{2802}",
+                "Running cargo test -p pa-tui \u{00b7} 12s",
+                60
+            ),
         ]
     );
 }
@@ -821,13 +950,24 @@ fn loader_gap_between_spinner_and_label_is_unstyled() {
 #[test]
 fn loader_working_message_replaces_the_activity_label() {
     let working = WorkingState {
-        activity: "Executing",
+        activity: "Thinking",
         message: Some("\u{203a} setting up python kernel (one-time, ~30s)\u{2026}".into()),
         download: true,
         tokens: 72,
         elapsed_secs: 3,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
     };
-    let rows = render_loader(&working, 4, &theme(), 100);
+    let rows = render_loader(
+        &working,
+        4,
+        &theme(),
+        Detail::Overview,
+        100,
+        None,
+        theme().fg_style(ThemeColor::Accent),
+    );
     let text = rows[1]
         .iter()
         .map(|s| s.content.as_str())
@@ -836,7 +976,7 @@ fn loader_working_message_replaces_the_activity_label() {
         text.contains("\u{283c} \u{203a} setting up python kernel (one-time, ~30s)\u{2026} 3s"),
         "got: {text}"
     );
-    assert!(!text.contains("Executing"));
+    assert!(!text.contains("Thinking"));
     assert!(!text.contains("72 tokens"));
 }
 
@@ -862,5 +1002,55 @@ fn live_abort_text_matches_ts() {
     assert_eq!(
         live_abort_text(2, Some(65)),
         "Aborted after 2 retry attempts \u{00b7} 1m 05s"
+    );
+}
+
+/// The live thought is one dim italic row under the loader, truncated to the width, and only
+/// where the transcript folds thinking (an expanded transcript streams the block itself).
+#[test]
+fn loader_shows_the_live_thought_only_where_thinking_folds() {
+    let working = WorkingState {
+        activity: "Thinking",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 2,
+        thought: Some("Split the tokenizer out before the resolver moves.".into()),
+        quiet_secs: 0,
+        tool_label: None,
+    };
+    let t = theme();
+    let rows = render_loader(
+        &working,
+        0,
+        &t,
+        Detail::Overview,
+        24,
+        None,
+        t.fg_style(ThemeColor::Accent),
+    );
+    assert_eq!(
+        rows[2],
+        vec![
+            Span::raw("   "),
+            Span::styled(
+                "Split the tokenizer\u{2026}",
+                t.fg_style(ThemeColor::Dim).add_modifier(Modifier::ITALIC),
+            ),
+            Span::raw(" "),
+        ]
+    );
+    assert_eq!(
+        render_loader(
+            &working,
+            0,
+            &t,
+            Detail::Details,
+            24,
+            None,
+            t.fg_style(ThemeColor::Accent)
+        )
+        .len(),
+        2
     );
 }

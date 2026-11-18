@@ -1,0 +1,1 @@
+- Connecting to a freshly started daemon is faster: the daemon greets a client at once instead of after its startup scan for leftover processes, and the client's first request still waits until that scan finishes.

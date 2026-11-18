@@ -101,6 +101,15 @@ struct FlatNode {
     is_virtual_root_child: bool,
 }
 
+/// What a navigation does to the session (the summarize confirm's consequence line).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BranchJump {
+    /// The user turns past the new head, kept as a branch.
+    pub turns_left: usize,
+    /// The target is a user message: the head moves before it and its text returns to the editor.
+    pub edits_message: bool,
+}
+
 /// What a key press did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeListAction {
@@ -205,6 +214,62 @@ impl TreeList {
             }
             self.active_path.insert(id);
             current = self.flat[index].data.entry.parent_id().map(str::to_string);
+        }
+    }
+
+    /// What a navigation to `target_id` does to the session. The head moves to the target, or,
+    /// for a user message, to just before it (its text returns to the editor). The user turns on
+    /// the current leaf's path past that point stay in the session as a branch. The visited sets
+    /// stop a corrupted parent cycle.
+    #[must_use]
+    pub(crate) fn branch_jump(&self, target_id: &str) -> BranchJump {
+        let by_id: HashMap<&str, &FileEntry> = self
+            .flat
+            .iter()
+            .filter_map(|node| node.data.entry.id().map(|id| (id, &node.data.entry)))
+            .collect();
+        let is_user = |entry: &FileEntry| {
+            matches!(
+                entry,
+                FileEntry::Message {
+                    message: pa_types::session::AgentMessage::User(_),
+                    ..
+                }
+            )
+        };
+        let path_up = |from: Option<&str>| {
+            let mut seen: Vec<&FileEntry> = Vec::new();
+            let mut ids: HashSet<&str> = HashSet::new();
+            let mut current = from.and_then(|id| by_id.get(id).copied());
+            while let Some(entry) = current {
+                let Some(id) = entry.id() else { break };
+                if !ids.insert(id) {
+                    break;
+                }
+                seen.push(entry);
+                current = entry
+                    .parent_id()
+                    .and_then(|parent| by_id.get(parent).copied());
+            }
+            (seen, ids)
+        };
+        let target = by_id.get(target_id).copied();
+        let edits_message = target.is_some_and(is_user);
+        let head = if edits_message {
+            target.and_then(FileEntry::parent_id)
+        } else {
+            Some(target_id)
+        };
+        let (_, kept) = path_up(head);
+        let (leaf_path, _) = path_up(self.current_leaf_id.as_deref());
+        let turns_left = leaf_path
+            .into_iter()
+            .take_while(|entry| entry.id().is_some_and(|id| !kept.contains(id)))
+            .filter(|entry| is_user(entry))
+            .count();
+        BranchJump {
+            turns_left,
+            edits_message,
         }
     }
 

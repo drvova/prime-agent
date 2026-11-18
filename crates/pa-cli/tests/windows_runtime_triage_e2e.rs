@@ -600,6 +600,7 @@ async fn subagent_session_stays_a_distinct_store_entry() {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

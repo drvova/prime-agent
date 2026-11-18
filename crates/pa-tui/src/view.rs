@@ -75,8 +75,16 @@ pub struct AgentView {
     pub compaction_generation: u64,
     /// Animation frame for spinners and the working icon.
     pub pulse_frame: usize,
+    /// The terminal title last written (OSC 0): a paint writes it only when it changes.
+    pub(crate) terminal_title: Option<String>,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
+    /// When the session last sent anything while working (the loader's stall timer).
+    pub working_heard: Option<std::time::Instant>,
+    /// The last layout put the stall row (`Waiting on the model`) on screen: the working loader
+    /// owned the status area (no retry countdown or compaction over it) and had gone quiet. The
+    /// session takes it at the next frame, so one stall counts once.
+    pub stall_shown: bool,
     pub retry: Option<crate::chat::RetryState>,
     pub onboarding: Option<crate::onboarding::OnboardingScreen>,
     pub model_picker: Option<crate::model_picker::ModelPicker>,
@@ -98,6 +106,8 @@ pub struct AgentView {
     /// `HeartbeatManagerComponent`, inline-picker style): while set, it
     /// owns the editor dock like the `/model` and `/effort` pickers.
     pub heartbeats_picker: Option<crate::heartbeats_picker::HeartbeatsPicker>,
+    /// The ctrl+r prompt-history search, mounted in the editor dock.
+    pub(crate) history_search: Option<crate::history_search::HistorySearch>,
     pub goal_panel: Option<crate::goal_surface::GoalPanel>,
     pub bash_view: Option<crate::bash_view::BashView>,
     pub share_loader: Option<ShareLoader>,
@@ -128,6 +138,9 @@ pub struct AgentView {
     /// Cursor cell within the last dock render: (dock row, column).
     dock_cursor: Option<(usize, usize)>,
     pub(crate) window_rows: usize,
+    /// The last composed frame's transcript window rows, when a paint may
+    /// shift them as a terminal scroll region (following, nothing over them).
+    scroll_region: Option<crate::scroll_region::ScrollRegion>,
     /// Whether the last frame's window reached the tail (operator
     /// directive 2026-09-26): the follow hint shows only then.
     pub(crate) window_shows_tail: bool,
@@ -160,6 +173,9 @@ pub struct AgentView {
     /// settled blocks replay from the cache. `RefCell` because the layout pass borrows immutably.
     md_caches:
         std::cell::RefCell<std::collections::HashMap<usize, crate::markdown::MarkdownBlockCache>>,
+    /// The streaming assistant entry's last rendered rows (see `layout::StreamingEntryRows`).
+    /// `RefCell` because the row count reads it through `&self`.
+    streaming_rows: std::cell::RefCell<Option<layout::StreamingEntryRows>>,
     /// The width the cached rows were laid out for.
     pub(crate) layout_width: usize,
     /// Rendering options that affect cached entry rows.
@@ -180,6 +196,11 @@ pub struct AgentView {
     /// The last composed frame's clickable geometry (view/click.rs):
     /// recorded during the frame composition; cleared by the inline compose.
     pub(crate) click: click::ClickSurface,
+    /// A transient status shown dim in the empty composer's text row until the next keystroke
+    /// (nc's composer slot): slash results and copies, never errors.
+    pub composer_status: Option<String>,
+    /// The self-retiring key hint flush right in the empty composer (omp); `None` once retired.
+    pub composer_hint: Option<String>,
     /// The ephemeral action toasts (the top-right auto-dismiss overlay;
     /// a sanctioned divergence from TS — see `toast`).
     pub toasts: crate::toast::Toasts,
@@ -239,6 +260,10 @@ impl AgentView {
             picker.paste(text);
             return true;
         }
+        if let Some(search) = self.history_search.as_mut() {
+            search.paste(text);
+            return true;
+        }
         if let Some(mcp) = self.mcp_view.as_mut() {
             mcp.paste(text);
             return true;
@@ -277,6 +302,43 @@ impl AgentView {
         false
     }
 
+    /// Whether an open menu holds a non-empty search query (the menu-search adoption seam: the
+    /// session counts each search a menu starts).
+    #[must_use]
+    pub fn menu_query_active(&self) -> bool {
+        let queries = [
+            self.model_picker
+                .as_ref()
+                .map(crate::model_picker::ModelPicker::query),
+            self.choice_picker
+                .as_ref()
+                .map(crate::choice_picker::ChoicePicker::query),
+            self.mcp_view.as_ref().map(crate::mcp_view::McpView::query),
+            self.heartbeats_picker
+                .as_ref()
+                .map(crate::heartbeats_picker::HeartbeatsPicker::query),
+            self.info_panel
+                .as_ref()
+                .map(crate::info_panel::InfoPanel::query),
+            self.tree_selector
+                .as_ref()
+                .map(crate::tree_selector::TreeSelector::query),
+            self.fork_selector
+                .as_ref()
+                .map(crate::user_message_selector::UserMessageSelector::query),
+            self.provider_auth
+                .as_ref()
+                .map(crate::provider_auth::ProviderAuthSelector::query),
+            self.auth_panel
+                .as_ref()
+                .map(crate::auth_panel::AuthPanel::query),
+            self.settings_menu
+                .as_ref()
+                .map(crate::settings_menu::SettingsMenu::query),
+        ];
+        queries.into_iter().flatten().any(|query| !query.is_empty())
+    }
+
     #[must_use]
     pub fn new(theme: Theme) -> Self {
         Self {
@@ -295,7 +357,10 @@ impl AgentView {
             compaction: None,
             compaction_generation: 0,
             pulse_frame: 0,
+            terminal_title: None,
             working_since: None,
+            working_heard: None,
+            stall_shown: false,
             retry: None,
             onboarding: None,
             model_picker: None,
@@ -308,6 +373,7 @@ impl AgentView {
             mcp_view: None,
             factory_view: None,
             heartbeats_picker: None,
+            history_search: None,
             goal_panel: None,
             bash_view: None,
             share_loader: None,
@@ -325,9 +391,12 @@ impl AgentView {
             terminal_rows: 24,
             dock_cursor: None,
             window_rows: 0,
+            scroll_region: None,
             window_shows_tail: false,
             detail_transition: false,
             hover_pos: None,
+            composer_status: None,
+            composer_hint: None,
             toasts: crate::toast::Toasts::default(),
             entry_layout: Vec::new(),
             entry_heights: Vec::new(),
@@ -336,6 +405,7 @@ impl AgentView {
             sparse_entries: std::collections::BTreeSet::new(),
             toggled_cards: std::collections::BTreeSet::new(),
             md_caches: std::cell::RefCell::new(std::collections::HashMap::new()),
+            streaming_rows: std::cell::RefCell::new(None),
             layout_width: 0,
             layout_options: None,
             flushed_frame: Vec::new(),
@@ -601,6 +671,7 @@ impl AgentView {
         self.entry_layout.clear();
         self.entry_heights.clear();
         self.md_caches.borrow_mut().clear();
+        self.streaming_rows.borrow_mut().take();
         self.pending_bash.clear();
         self.older_history_loading = false;
     }
@@ -741,7 +812,10 @@ pub struct ScrollInfo {
 
 fn item_to_entry(item: TranscriptItem) -> ChatEntry {
     match item {
-        TranscriptItem::UserMessage { text } => ChatEntry::User { text },
+        TranscriptItem::UserMessage { text } => ChatEntry::User {
+            text,
+            sent_at: None,
+        },
         TranscriptItem::SystemNote { text } => ChatEntry::Status {
             text,
             kind: crate::chat::StatusKind::Info,

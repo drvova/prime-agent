@@ -1,0 +1,1 @@
+- The interactive UI no longer freezes at the end of a turn while the daemon answers the context-usage refresh: keys typed as a turn ends paint at once, and the tray's usage updates when the reply lands.

@@ -3,11 +3,12 @@
 //! choice (TS `TreeSelectorComponent`).
 
 use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::tree_list::{FilterMode, TreeList, TreeListAction};
 use crate::tree_nodes::{build_tree, TreeNode};
-use crate::width::{line_width, truncate_line};
+use crate::width::truncate_line;
 use crate::Line;
 use serde_json::Value;
 
@@ -245,6 +246,12 @@ impl TreeSelector {
         }
     }
 
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.list.search_query()
+    }
+
     /// The full pane.
     #[must_use]
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
@@ -252,77 +259,38 @@ impl TreeSelector {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Vec::new());
         lines.push(border());
-        // The margin makes three leading spaces.
-        lines.push(vec![crate::Span::raw("   Session Tree")]);
-        // The label, filter, cycle, and time keys render from the
-        // effective bindings (an override moves the hint with the
-        // handler); the arrows stay TS's literal glyphs. An emptied
-        // binding drops its key, and a part with every binding empty
-        // drops its whole segment.
-        let first = |id: &str| {
-            kb.first_key(id)
-                .map(|key| crate::keybindings::format_key_text(&key))
-        };
-        let bound = |ids: &[&str]| {
-            let keys: Vec<String> = ids.iter().filter_map(|id| first(id)).collect();
-            (!keys.is_empty()).then(|| keys.join("/"))
-        };
-        let mut parts =
-            vec!["  ↑/↓: move. ←/→: page. ^←/^→ or Alt+←/Alt+→: fold/branch.".to_string()];
-        if let Some(label) = first("app.tree.editLabel") {
-            parts.push(format!("{label}: label."));
-        }
-        if let Some(filters) = bound(&[
-            "app.tree.filter.default",
-            "app.tree.filter.noTools",
-            "app.tree.filter.userOnly",
-            "app.tree.filter.labeledOnly",
-            "app.tree.filter.all",
-        ]) {
-            match bound(&[
-                "app.tree.filter.cycleForward",
-                "app.tree.filter.cycleBackward",
-            ]) {
-                Some(cycle) => parts.push(format!("{filters}: filters ({cycle} cycle).")),
-                None => parts.push(format!("{filters}: filters.")),
-            }
-        }
-        if let Some(time) = first("app.tree.toggleLabelTimestamp") {
-            parts.push(format!("{time}: label time"));
-        }
-        // `TruncatedText` appends a plain `...` after the color reset.
-        let hints_line = vec![theme.fg_span(ThemeColor::Muted, parts.join(" "))];
-        if line_width(&hints_line) > width {
-            let mut hints = truncate_line(&hints_line, width.saturating_sub(3), "");
-            hints.push(crate::Span::raw("..."));
-            lines.push(hints);
-        } else {
-            lines.push(truncate_line(&hints_line, width, ""));
-        }
-        // The two-space indent sits outside the muted escape.
+        lines.push(title_row(theme, width, "Session tree"));
         let query = self.list.search_query();
-        let search: Line = if query.is_empty() {
-            vec![
-                crate::Span::raw("  "),
-                theme.fg_span(ThemeColor::Muted, "Type to search:".to_string()),
-            ]
-        } else {
-            vec![
-                crate::Span::raw("  "),
-                theme.fg_span(ThemeColor::Muted, "Type to search: ".to_string()),
-                theme.fg_span(ThemeColor::Accent, query.to_string()),
-            ]
-        };
-        lines.push(truncate_line(&search, width, ""));
-        lines.push(border());
+        lines.extend(crate::menu_panel::search_field_lines(
+            theme,
+            width,
+            query,
+            query.chars().count(),
+            matches!(self.mode, Mode::Tree),
+            "Search entries",
+        ));
         lines.push(Vec::new());
         match &self.mode {
             Mode::Tree | Mode::Summarize { .. } | Mode::CustomPrompt { .. } => {
-                lines.extend(self.list.render(theme, width));
+                lines.extend(self.list.render(theme, width, kb));
                 match &self.mode {
-                    Mode::Summarize { selected, .. } => {
+                    Mode::Summarize {
+                        selected,
+                        target_id,
+                    } => {
                         lines.push(Vec::new());
-                        lines.extend(render_choice(theme, width, kb, *selected));
+                        let jump = self.list.branch_jump(target_id);
+                        let head = if jump.edits_message {
+                            "the head moves before this message"
+                        } else {
+                            "the head moves here"
+                        };
+                        let consequence = match jump.turns_left {
+                            0 => head.to_string(),
+                            1 => format!("{head}; 1 turn stays as a branch"),
+                            n => format!("{head}; {n} turns stay as a branch"),
+                        };
+                        lines.extend(render_choice(theme, width, *selected, &consequence));
                     }
                     Mode::CustomPrompt { input, .. } => {
                         lines.push(Vec::new());
@@ -335,12 +303,6 @@ impl TreeSelector {
                             "",
                         ));
                         lines.push(input_row(theme, width, input));
-                        lines.push(truncate_line(
-                            &vec![theme
-                                .fg_span(ThemeColor::Muted, input_pane_hint(kb, "save", "cancel"))],
-                            width,
-                            "",
-                        ));
                     }
                     _ => {}
                 }
@@ -354,31 +316,86 @@ impl TreeSelector {
                     "",
                 ));
                 lines.push(input_row(theme, width, input));
-                lines.push(truncate_line(
-                    &vec![theme.fg_span(ThemeColor::Muted, input_pane_hint(kb, "save", "cancel"))],
-                    width,
-                    "",
-                ));
             }
         }
         lines.push(Vec::new());
+        lines.extend(self.footer(kb).rows(theme, width));
         lines.push(border());
         lines
     }
-}
 
-/// The key pair every inner pane's bottom hint renders: each segment
-/// carries its binding's first effective key.
-fn input_pane_hint(kb: &KeybindingsManager, confirm_action: &str, cancel_action: &str) -> String {
-    let segments = [
-        crate::menu_panel::key_hint(kb, &["tui.select.confirm"], confirm_action),
-        crate::menu_panel::key_hint(kb, &["tui.select.cancel"], cancel_action),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<String>>()
-    .join("  ");
-    format!("  {segments}")
+    /// The footer for the active mode: the tree's navigation, fold, label, and filter keys; the
+    /// summarize choice's navigation; the input panes' save. Every key renders from the effective
+    /// bindings, and Esc goes back out of the inner panes.
+    fn footer(&self, kb: &KeybindingsManager) -> Footer {
+        match &self.mode {
+            Mode::Tree => Footer::new()
+                .enter(
+                    kb,
+                    self.list.selected_id().map(|_| "navigates to this entry"),
+                )
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "move",
+                    HintRank::Useful,
+                )
+                .bound(
+                    kb,
+                    &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
+                    "page",
+                    HintRank::Extra,
+                )
+                .bound(
+                    kb,
+                    &["app.tree.foldOrUp", "app.tree.unfoldOrDown"],
+                    "fold",
+                    HintRank::Extra,
+                )
+                .bound(kb, &["app.tree.editLabel"], "label", HintRank::Useful)
+                .bound(
+                    kb,
+                    &[
+                        "app.tree.filter.cycleForward",
+                        "app.tree.filter.cycleBackward",
+                    ],
+                    "filter",
+                    HintRank::Useful,
+                )
+                .bound(
+                    kb,
+                    &[
+                        "app.tree.filter.default",
+                        "app.tree.filter.noTools",
+                        "app.tree.filter.userOnly",
+                        "app.tree.filter.labeledOnly",
+                        "app.tree.filter.all",
+                    ],
+                    "filters",
+                    HintRank::Extra,
+                )
+                .bound(
+                    kb,
+                    &["app.tree.toggleLabelTimestamp"],
+                    "label time",
+                    HintRank::Extra,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Close),
+            Mode::Summarize { .. } => Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Back),
+            Mode::LabelInput { .. } | Mode::CustomPrompt { .. } => Footer::new()
+                .bound(kb, &["tui.select.confirm"], "save", HintRank::Core)
+                .esc(kb, EscVerb::Back),
+        }
+    }
 }
 
 /// The input panes' field row (TS `LabelInput.render`): the two-space
@@ -397,33 +414,30 @@ fn input_row(theme: &Theme, width: usize, input: &SearchInput) -> Line {
 
 /// Render the summarize choice list (the three TS options; row one is
 /// "No summary").
-fn render_choice(
-    theme: &Theme,
-    width: usize,
-    kb: &KeybindingsManager,
-    selected: usize,
-) -> Vec<Line> {
-    let mut lines = vec![truncate_line(
-        &vec![theme.fg_span(ThemeColor::Muted, "  Summarize branch?".to_string())],
-        width,
-        "",
-    )];
+/// The summarize choice under one fixed consequence line (what the navigation does to the
+/// session), which never wraps, so the options never move.
+fn render_choice(theme: &Theme, width: usize, selected: usize, consequence: &str) -> Vec<Line> {
+    let mut lines = vec![
+        truncate_line(
+            &vec![theme.fg_span(ThemeColor::Text, format!("  {consequence}"))],
+            width,
+            "\u{2026}",
+        ),
+        truncate_line(
+            &vec![theme.fg_span(ThemeColor::Muted, "  Summarize branch?".to_string())],
+            width,
+            "",
+        ),
+    ];
     for (index, option) in SUMMARIZE_OPTIONS.iter().enumerate() {
-        let row = if index == selected {
-            vec![
-                theme.fg_span(ThemeColor::Accent, "› ".to_string()),
-                crate::Span::raw(option.to_string()),
-            ]
-        } else {
-            vec![crate::Span::raw(format!("  {option}"))]
-        };
-        lines.push(truncate_line(&row, width, ""));
+        lines.push(crate::menu_panel::menu_row(
+            theme,
+            width,
+            vec![crate::Span::raw(option.to_string())],
+            &[],
+            index == selected,
+        ));
     }
-    lines.push(truncate_line(
-        &vec![theme.fg_span(ThemeColor::Muted, input_pane_hint(kb, "select", "back"))],
-        width,
-        "",
-    ));
     lines
 }
 
@@ -452,14 +466,16 @@ mod tests {
             .join("\n")
     }
 
+    /// The tree's footer renders every key from the effective bindings: a rebound label or filter
+    /// key moves with the handler.
     #[test]
-    fn tree_hint_renders_the_effective_bindings() {
+    fn tree_footer_renders_the_effective_bindings() {
         let theme = Theme::builtin("prime", ColorMode::TrueColor);
         let kb = KeybindingsManager::new();
-        let text = frame_text(&selector().render(&theme, 200, &kb));
+        let text = frame_text(&selector().render(&theme, 240, &kb));
         assert!(
             text.contains(
-                "  \u{2191}/\u{2193}: move. \u{2190}/\u{2192}: page. ^\u{2190}/^\u{2192} or Alt+\u{2190}/Alt+\u{2192}: fold/branch. Shift+L: label. Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A: filters (Ctrl+O/Shift+Ctrl+O cycle). Shift+T: label time"
+                "  \u{2191}/\u{2193} move \u{b7} \u{2190}/\u{2192} page \u{b7} Ctrl+\u{2190}/Ctrl+\u{2192} fold \u{b7} Shift+L label \u{b7} Ctrl+O/Shift+Ctrl+O filter \u{b7} Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A filters \u{b7} Shift+T label time \u{b7} Enter select \u{b7} Esc close"
             ),
             "{text}"
         );
@@ -470,81 +486,42 @@ mod tests {
             vec!["ctrl+y".to_string()],
         );
         let kb = KeybindingsManager::with_user_bindings(cfg);
-        let text = frame_text(&selector().render(&theme, 200, &kb));
-        assert!(text.contains("Ctrl+B: label"), "{text}");
+        let text = frame_text(&selector().render(&theme, 240, &kb));
+        assert!(text.contains("Ctrl+B label"), "{text}");
         assert!(
-            text.contains("Ctrl+D/Ctrl+Y/Ctrl+U/Ctrl+L/Ctrl+A: filters"),
+            text.contains("Ctrl+D/Ctrl+Y/Ctrl+U/Ctrl+L/Ctrl+A filters"),
             "{text}"
         );
-        assert!(!text.contains("Shift+L: label"), "{text}");
+        assert!(!text.contains("Shift+L label"), "{text}");
     }
 
+    /// The inner panes' footers: the summarize choice goes back with Esc, the label input saves
+    /// with the effective confirm key, and an unbound Esc drops its hint.
     #[test]
-    fn tree_hint_drops_unbound_keys_and_segments() {
-        let theme = Theme::builtin("prime", ColorMode::TrueColor);
-        let mut cfg = crate::keybindings::KeybindingsConfig::new();
-        cfg.insert("app.tree.filter.noTools".to_string(), Vec::new());
-        let kb = KeybindingsManager::with_user_bindings(cfg);
-        let text = frame_text(&selector().render(&theme, 200, &kb));
-        assert!(
-            text.contains("Ctrl+D/Ctrl+U/Ctrl+L/Ctrl+A: filters ("),
-            "the emptied filter leaves no blank slot: {text}"
-        );
-        assert!(!text.contains("//"), "no empty key slot: {text}");
-        let mut cfg = crate::keybindings::KeybindingsConfig::new();
-        for id in [
-            "app.tree.filter.cycleForward",
-            "app.tree.filter.cycleBackward",
-        ] {
-            cfg.insert(id.to_string(), Vec::new());
-        }
-        let kb = KeybindingsManager::with_user_bindings(cfg);
-        let text = frame_text(&selector().render(&theme, 200, &kb));
-        assert!(
-            text.contains("Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A: filters."),
-            "the cycle suffix drops with its keys: {text}"
-        );
-        assert!(!text.contains("cycle"), "{text}");
-        let mut cfg = crate::keybindings::KeybindingsConfig::new();
-        for id in [
-            "app.tree.filter.default",
-            "app.tree.filter.noTools",
-            "app.tree.filter.userOnly",
-            "app.tree.filter.labeledOnly",
-            "app.tree.filter.all",
-        ] {
-            cfg.insert(id.to_string(), Vec::new());
-        }
-        cfg.insert("app.tree.editLabel".to_string(), Vec::new());
-        let kb = KeybindingsManager::with_user_bindings(cfg);
-        let text = frame_text(&selector().render(&theme, 200, &kb));
-        assert!(!text.contains("filters"), "{text}");
-        assert!(!text.contains("label."), "{text}");
-        assert!(text.contains("Shift+T: label time"), "{text}");
-    }
-
-    #[test]
-    fn inner_pane_hints_render_the_effective_bindings() {
+    fn inner_pane_footers_render_the_effective_bindings() {
         let theme = Theme::builtin("prime", ColorMode::TrueColor);
         let kb = KeybindingsManager::new();
         let mut sel = selector();
         sel.handle_key(&kb, "enter");
         let text = frame_text(&sel.render(&theme, 120, &kb));
-        assert!(text.contains("  Enter select  Esc back"), "{text}");
+        assert!(
+            text.contains("  \u{2191}/\u{2193} navigate \u{b7} Enter select \u{b7} Esc back"),
+            "{text}"
+        );
         let mut cfg = crate::keybindings::KeybindingsConfig::new();
         cfg.insert("tui.select.confirm".to_string(), vec!["ctrl+m".to_string()]);
         let kb = KeybindingsManager::with_user_bindings(cfg);
         let mut sel = selector();
-        sel.handle_key(&kb, "ctrl+m");
+        sel.handle_key(&kb, "shift+l");
         let text = frame_text(&sel.render(&theme, 120, &kb));
-        assert!(text.contains("  Ctrl+M select  Esc back"), "{text}");
+        assert!(text.contains("  Ctrl+M save \u{b7} Esc back"), "{text}");
         let mut cfg = crate::keybindings::KeybindingsConfig::new();
         cfg.insert("tui.select.cancel".to_string(), Vec::new());
         let kb = KeybindingsManager::with_user_bindings(cfg);
         let mut sel = selector();
         sel.handle_key(&kb, "enter");
         let text = frame_text(&sel.render(&theme, 120, &kb));
-        assert!(text.contains("  Enter select\n"), "{text}");
+        assert!(text.contains("Enter select\n"), "{text}");
         assert!(!text.contains("Esc back"), "{text}");
     }
 
@@ -683,6 +660,33 @@ mod tests {
         assert!(matches!(sel.mode, Mode::Summarize { .. }));
         sel.paste("ignored");
         assert_eq!(sel.list.search_query(), "");
+    }
+
+    /// The summarize confirm says what the navigation does: jumping to a user message two turns
+    /// up the chain moves the head before it, so that message and the two after it stay behind
+    /// as a branch, on one fixed line above the choice.
+    #[test]
+    fn the_summarize_confirm_names_the_turns_left_behind() {
+        let theme = Theme::builtin("prime", ColorMode::TrueColor);
+        let kb = KeybindingsManager::new();
+        let mut sel = TreeSelector::new(&wire_chain(4), 40, false, FilterMode::Default)
+            .expect("a selector over the chain");
+        sel.handle_key(&kb, "up");
+        sel.handle_key(&kb, "up");
+        sel.handle_key(&kb, "enter");
+        let text: Vec<String> = sel
+            .render(&theme, 80, &kb)
+            .iter()
+            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+            .collect();
+        let at = text
+            .iter()
+            .position(|row| row.contains("Summarize branch?"))
+            .expect("the choice renders");
+        assert_eq!(
+            text[at - 1].trim_end(),
+            "  the head moves before this message; 3 turns stay as a branch"
+        );
     }
 
     /// The label pane draws its caret at the cursor (TS `Input.render`'s

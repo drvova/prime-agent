@@ -16,9 +16,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use pa_core::kernel::bootstrap::{KernelPythonSkill, UnavailablePythonSkills};
+use pa_core::kernel::bootstrap::{
+    build_rlm_bootstrap_code, parse_unavailable_python_skills, KernelPythonSkill,
+    UnavailablePythonSkills,
+};
+use pa_core::kernel::manager::{KernelStartOptions, ReplKernelManager};
 use pa_core::kernel::provisioner::{IpythonKernelProvisioner, IpythonKernelProvisionerOptions};
-use pa_core::kernel::shared::HostRequestHandlers;
+use pa_core::kernel::shared::{
+    ExecuteOptions, ExecuteStatus, HostRequestHandlers, KernelManagerOptions,
+};
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use pa_core::session_engine::provider_adapter::{json_round_trip, real_stream_fn};
 use pa_core::session_engine::skills_unavailable_notice::{
@@ -220,4 +226,87 @@ async fn notice_rides_the_next_turn_as_model_context() {
         "{content}"
     );
     assert!(content.contains("- edit: boom"), "{content}");
+}
+
+/// The bootstrap binds Python skills without importing them: the first call imports the skill and
+/// keeps the eager call result, signature, and doc, and a skill that raises while importing fails
+/// on that first use with the unavailable-skill error instead of at bootstrap.
+#[tokio::test]
+async fn skills_import_on_first_use_with_the_eager_surface() {
+    let Some(python) = kernel_python() else {
+        return;
+    };
+    let modules = tempfile::TempDir::new().expect("temp dir");
+    std::fs::write(
+        modules.path().join("lazy_probe_skill.py"),
+        "async def run(x: int, *, scale: int = 2) -> int:\n    \"\"\"Scale x.\"\"\"\n    return x * scale\n",
+    )
+    .expect("write the probe skill");
+    std::fs::write(
+        modules.path().join("lazy_broken_skill.py"),
+        "raise RuntimeError('boom at import')\n",
+    )
+    .expect("write the broken skill");
+    let manager = ReplKernelManager::new(KernelManagerOptions {
+        python: Some(python),
+        cwd: Some(modules.path().to_path_buf()),
+        host_handlers: HostRequestHandlers::new(),
+        ..Default::default()
+    });
+    manager
+        .start(KernelStartOptions::default())
+        .await
+        .expect("kernel must start");
+    let run = |code: String| {
+        let manager = manager.clone();
+        async move {
+            manager
+                .execute(&code, ExecuteOptions::default())
+                .await
+                .expect("execute must not fail")
+        }
+    };
+    let modules_dir = modules.path();
+    let path = run(format!("import sys\nsys.path.insert(0, {modules_dir:?})")).await;
+    assert_eq!(path.status, ExecuteStatus::Ok, "{:?}", path.error);
+
+    let bootstrap = run(build_rlm_bootstrap_code(
+        &[skill("lazy-probe-skill"), skill("lazy-broken-skill")],
+        false,
+    ))
+    .await;
+    assert_eq!(bootstrap.status, ExecuteStatus::Ok, "{:?}", bootstrap.error);
+    assert_eq!(
+        parse_unavailable_python_skills(&bootstrap.stdout),
+        None,
+        "both skills are installed, so the bootstrap reports none"
+    );
+    let imported =
+        run("('lazy_probe_skill' in sys.modules, 'lazy_broken_skill' in sys.modules)".to_string())
+            .await;
+    assert_eq!(imported.result.as_deref(), Some("(False, False)"));
+
+    let called = run(
+        "import inspect\n(await lazy_probe_skill(3), str(inspect.signature(lazy_probe_skill)), lazy_probe_skill.__doc__, lazy_probe_skill is sys.modules['lazy_probe_skill'])"
+            .to_string(),
+    )
+    .await;
+    assert_eq!(
+        called.result.as_deref(),
+        Some("(6, '(x: int, *, scale: int = 2) -> int', 'Scale x.', True)")
+    );
+
+    let broken = run("await lazy_broken_skill()".to_string()).await;
+    assert_eq!(broken.status, ExecuteStatus::Error);
+    let error = broken
+        .error
+        .expect("the failed first use carries the kernel error");
+    assert_eq!(
+        (error.ename.as_str(), error.evalue.as_str()),
+        (
+            "RuntimeError",
+            "Python skill lazy_broken_skill is unavailable in this kernel. Import error: boom at import"
+        )
+    );
+    manager.kill();
 }

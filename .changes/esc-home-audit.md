@@ -1,0 +1,1 @@
+- Pressing Esc while a tool is running now leaves an `Operation aborted` row in the transcript, like an interrupt during streaming, instead of ending the turn with only the failed tool card.

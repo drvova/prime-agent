@@ -1,7 +1,7 @@
 //! The `bash` tool-call card: the `$ command` call row, the output
-//! (collapsed: the last five visual lines with an `... N earlier lines`
-//! hint; expanded: everything), the truncation warning, and the live
-//! `Took`/`Elapsed` duration row.
+//! (collapsed: up to five visual lines whole, longer output as its first
+//! and last two around a `⋮ +N lines` mark; expanded: everything) and the truncation warning;
+//! the panel header carries the state and the duration.
 
 use serde_json::Value;
 
@@ -13,8 +13,10 @@ use crate::theme::{Theme, ThemeColor};
 use crate::width::{wrap_text, wrapped_text_count};
 use crate::{Line, Span};
 
-/// Collapsed preview length in visual lines (TS `BASH_PREVIEW_LINES`).
+/// Output up to this many visual lines shows whole when collapsed (TS `BASH_PREVIEW_LINES`).
 const BASH_PREVIEW_LINES: usize = 5;
+/// Longer collapsed output keeps this many rows at each end around the `⋮ +N lines` mark.
+const BASH_EDGE_LINES: usize = 2;
 
 #[must_use]
 pub fn render(
@@ -59,11 +61,6 @@ fn visit(card: &ToolCallCard, detail: Detail, theme: &Theme, width: usize, rows:
             rows,
         );
     }
-    // The live `Took`/`Elapsed` duration row: the shared emitter ticks
-    // the running card's elapsed on every repaint (a running call has no
-    // result rows yet, so the row is the card's only timing until the
-    // streamed output arrives).
-    super::duration_row(card, theme, content_width, rows);
 }
 
 /// The `$ command` call row (TS `formatBashCall`): dim, with the command
@@ -102,7 +99,7 @@ fn format_bash_call(card: &ToolCallCard, theme: &Theme) -> Line {
 }
 
 /// The result rows (TS `rebuildBashResultRenderComponent`): output rows,
-/// the truncation warning, the duration row.
+/// the truncation warning.
 fn bash_result_rows(
     result: &ToolResultView,
     expanded: bool,
@@ -111,54 +108,72 @@ fn bash_result_rows(
     rows: &mut RowOutput,
 ) {
     let tool_output = theme.fg_style(ThemeColor::ToolOutput);
+    let dim = theme.fg_style(ThemeColor::Dim);
     let output = result.text_output(true);
     let output = output.trim();
+    // The output sits behind a two-column gutter: `⎿ ` marks the first row, the rest align
+    // under it, and the elided count takes `⋮` in the same column.
+    let gutter = |first: bool, text: String, style| {
+        let mark = if first { "\u{23bf} " } else { "  " };
+        vec![
+            Span::styled(mark.to_string(), dim),
+            Span::styled(text, style),
+        ]
+    };
+    let output_width = content_width.saturating_sub(2).max(1);
     if !output.is_empty() {
         rows.blank();
         if expanded {
-            for line in output.split('\n') {
-                rows.push(|| vec![Span::styled(line.to_string(), tool_output)]);
+            for (index, line) in output.split('\n').enumerate() {
+                rows.push(|| gutter(index == 0, line.to_string(), tool_output));
             }
         } else {
-            let total: usize = output
-                .split('\n')
-                .map(|line| wrapped_text_count(line, content_width).max(1))
-                .sum();
-            let skipped = total.saturating_sub(BASH_PREVIEW_LINES);
-            if skipped > 0 {
-                rows.push(|| {
-                    vec![Span::styled(
-                        format!("... {skipped} earlier lines"),
-                        theme.fg_style(ThemeColor::Dim),
-                    )]
-                });
-            }
+            // One measuring pass over the output (the window needs the total); only the source
+            // lines that reach the shown head, the mark, or the shown tail are wrapped.
+            let lines: Vec<&str> = output.split('\n').collect();
+            let counts: Vec<usize> = lines
+                .iter()
+                .map(|line| wrapped_text_count(line, output_width).max(1))
+                .collect();
+            let total: usize = counts.iter().sum();
+            // Output past the preview shows its first and last rows around a `⋮ +N lines` mark.
+            let windowed = total > BASH_PREVIEW_LINES;
             if rows.is_counting() {
-                rows.add_count(total.min(BASH_PREVIEW_LINES));
+                rows.add_count(if windowed {
+                    BASH_EDGE_LINES * 2 + 1
+                } else {
+                    total
+                });
             } else {
-                let mut remaining = skipped;
-                for line in output.split('\n') {
-                    let count = wrapped_text_count(line, content_width).max(1);
-                    if remaining >= count {
-                        remaining -= count;
+                let tail = total.saturating_sub(BASH_EDGE_LINES);
+                let mut first_row = 0usize;
+                for (line, count) in lines.iter().zip(&counts) {
+                    let line_start = first_row;
+                    first_row += count;
+                    // A line wholly inside the hidden middle is never wrapped.
+                    if windowed && line_start > BASH_EDGE_LINES && first_row <= tail {
                         continue;
                     }
-                    let wrapped = wrap_text(line, content_width);
-                    if wrapped.is_empty() {
-                        rows.push(|| vec![Span::styled(String::new(), tool_output)]);
+                    let wrapped = wrap_text(line, output_width);
+                    let visual: Vec<String> = if wrapped.is_empty() {
+                        vec![String::new()]
                     } else {
-                        for row in wrapped.into_iter().skip(remaining) {
-                            rows.push(|| {
-                                vec![Span::styled(
-                                    row.iter()
-                                        .map(|span| span.content.as_str())
-                                        .collect::<String>(),
-                                    tool_output,
-                                )]
-                            });
+                        wrapped
+                            .iter()
+                            .map(|row| row.iter().map(|span| span.content.as_str()).collect())
+                            .collect()
+                    };
+                    for (offset, row) in visual.into_iter().enumerate() {
+                        let index = line_start + offset;
+                        if windowed && index == BASH_EDGE_LINES {
+                            let hidden = total - BASH_EDGE_LINES * 2;
+                            let mark = format!("\u{22ee} +{hidden} lines");
+                            rows.push(|| vec![Span::styled(mark.clone(), dim)]);
+                        }
+                        if !windowed || index < BASH_EDGE_LINES || index >= tail {
+                            rows.push(|| gutter(index == 0, row.clone(), tool_output));
                         }
                     }
-                    remaining = 0;
                 }
             }
         }
@@ -275,11 +290,27 @@ mod tests {
             flat.iter().any(|r| r.contains("$ seq 1 12")),
             "got: {flat:?}"
         );
-        assert!(
-            flat.iter().any(|r| r.contains("... 7 earlier lines")),
+        // The window: the first and last two rows around the hidden count.
+        let mark = flat
+            .iter()
+            .position(|r| r.contains("\u{22ee} +8 lines"))
+            .expect("the mark renders");
+        let window: Vec<&str> = flat[mark - 2..=mark + 2]
+            .iter()
+            .map(|r| r.trim_end())
+            .collect();
+        // The gutter column: `⎿` on the first row, `⋮` on the elided count, the rest aligned.
+        assert_eq!(
+            window,
+            [
+                "  \u{23bf} 1",
+                "    2",
+                "  \u{22ee} +8 lines",
+                "    11",
+                "    12"
+            ],
             "got: {flat:?}"
         );
-        assert!(flat.iter().any(|r| r.contains("12")), "got: {flat:?}");
     }
 
     #[test]
@@ -296,17 +327,29 @@ mod tests {
             "got: {flat:?}"
         );
         assert!(
-            !flat.iter().any(|r| r.contains("earlier lines")),
+            !flat.iter().any(|r| r.contains('\u{22ee}')),
             "got: {flat:?}"
         );
     }
 
     #[test]
-    fn duration_row_rendered() {
-        let card = done_card("echo hi", "hi");
+    fn the_settled_duration_rides_the_header_without_a_took_row() {
+        let mut card = done_card("echo hi", "hi");
+        let ended = std::time::Instant::now();
+        card.started_at = ended.checked_sub(std::time::Duration::from_millis(3400));
+        card.ended_at = Some(ended);
         let rows = render(&card, 0, Detail::Overview, &theme(), 120, true);
-        let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("Took ")), "got: {flat:?}");
+        let flat: Vec<String> = rows.iter().map(|r| text_of(r).trim().to_string()).collect();
+        assert_eq!(
+            flat,
+            [
+                "bash \u{00b7} done \u{00b7} 3.4s",
+                "",
+                "$ echo hi",
+                "",
+                "\u{23bf} hi"
+            ]
+        );
     }
 
     #[test]
@@ -375,8 +418,7 @@ mod tests {
         };
         let rows = render(&card, 3, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("running")), "got: {flat:?}");
-        assert!(flat.iter().any(|r| r.contains("Elapsed ")), "got: {flat:?}");
+        assert!(flat[0].contains("running \u{00b7} 0.0s"), "got: {flat:?}");
     }
 
     #[test]
@@ -397,8 +439,7 @@ mod tests {
         };
         let rows = render(&card, 3, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert!(flat.iter().any(|r| r.contains("Elapsed ")), "got: {flat:?}");
-        assert!(!flat.iter().any(|r| r.contains("Took ")), "got: {flat:?}");
+        assert!(flat[0].contains("running \u{00b7} 0.3s"), "got: {flat:?}");
     }
 
     #[test]
@@ -427,5 +468,100 @@ mod tests {
         let rows = render(&card, 0, Detail::Overview, &theme(), 120, true);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
         assert!(flat.iter().any(|r| r.contains("$ ...")), "got: {flat:?}");
+    }
+
+    /// The measure-once wrap paints exactly the rows the full walk painted: the windowed
+    /// collapsed branch that wraps every line, kept here as the oracle, against the shipped one,
+    /// over wide chars, empty lines, lines that wrap across the window edges, and fewer or more
+    /// than five rows.
+    #[test]
+    fn the_collapsed_window_matches_the_full_walk() {
+        fn full_walk(output: &str, content_width: usize, theme: &Theme) -> Vec<Line> {
+            let tool_output = theme.fg_style(ThemeColor::ToolOutput);
+            let dim = theme.fg_style(ThemeColor::Dim);
+            let gutter = |first: bool, text: String| {
+                let mark = if first { "\u{23bf} " } else { "  " };
+                vec![
+                    Span::styled(mark.to_string(), dim),
+                    Span::styled(text, tool_output),
+                ]
+            };
+            let output_width = content_width.saturating_sub(2).max(1);
+            let mut rows = RowOutput::paint();
+            rows.blank();
+            let total: usize = output
+                .split('\n')
+                .map(|line| wrapped_text_count(line, output_width).max(1))
+                .sum();
+            let windowed = total > BASH_PREVIEW_LINES;
+            let visual: Vec<String> = output
+                .split('\n')
+                .flat_map(|line| {
+                    let joined: Vec<String> = wrap_text(line, output_width)
+                        .iter()
+                        .map(|row| row.iter().map(|span| span.content.as_str()).collect())
+                        .collect();
+                    if joined.is_empty() {
+                        vec![String::new()]
+                    } else {
+                        joined
+                    }
+                })
+                .collect();
+            for (index, row) in visual.iter().enumerate() {
+                if windowed && index == BASH_EDGE_LINES {
+                    let hidden = total - BASH_EDGE_LINES * 2;
+                    let mark = format!("\u{22ee} +{hidden} lines");
+                    rows.push(|| vec![Span::styled(mark.clone(), dim)]);
+                }
+                if !windowed || index < BASH_EDGE_LINES || index >= total - BASH_EDGE_LINES {
+                    rows.push(|| gutter(index == 0, row.clone()));
+                }
+            }
+            rows.into_lines()
+        }
+        let theme = theme();
+        let wide = "界".repeat(9);
+        let long = "word ".repeat(13);
+        let lines = [
+            "plain",
+            "",
+            wide.as_str(),
+            long.as_str(),
+            "😀 emoji 😀😀",
+            "tab\there",
+            "x",
+        ];
+        let mut outputs: Vec<String> = Vec::new();
+        for count in [1usize, 2, 4, 5, 6, 9, 14] {
+            for start in 0..lines.len() {
+                outputs.push(
+                    (0..count)
+                        .map(|index| lines[(start + index) % lines.len()])
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+        }
+        for output in &outputs {
+            for width in [1usize, 3, 8, 17, 40] {
+                let result = ToolResultView {
+                    content: vec![json!({ "type": "text", "text": output })],
+                    details: json!({}),
+                    is_error: false,
+                };
+                let trimmed = result.text_output(true);
+                if trimmed.trim().is_empty() {
+                    continue;
+                }
+                let mut rows = RowOutput::paint();
+                bash_result_rows(&result, false, &theme, width, &mut rows);
+                assert_eq!(
+                    rows.into_lines(),
+                    full_walk(trimmed.trim(), width, &theme),
+                    "width {width}, output {output:?}"
+                );
+            }
+        }
     }
 }

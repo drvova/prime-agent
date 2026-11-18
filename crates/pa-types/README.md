@@ -10,6 +10,10 @@ Wire and domain types + serde only: AI messages/content blocks/tool calls/usage/
 
 Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui/pa-cli) live here because pa-tui depends on pa-types alone:
 - `daemon::framing`: the private-frame codec of the worker socket (direct-attach clients speak it too).
+- `daemon::message_delta`: the `message_update_delta` attach capability's codec — the
+  per-connection encoder the serving side (supervisor client writer, worker direct link) runs
+  over every written `session_event`, and the client decoder that restores each delta
+  `message_update` to its full message before anything else reads it.
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the
@@ -53,7 +57,7 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   commit_update_restart`) and the TS mutation classification
   (`is_daemon_mutating_command`, `is_update_drain_command` — the
   update-flow admission gate's read tables) live in `daemon::{command,plane}`.
-Platform contracts (`platform`): the cross-crate transport, process-identity, socket-identity, and home-dir helpers, plus the suspend-to-background signal control (`process::{stop_own_process_group, ignore_sigint_for_suspend, restore_default_sigint}`: the TUI's TS-`handleCtrlZ` cycle — SIGTSTP to the own process group, SIGINT ignored for the stopped window and restored on the SIGCONT resume; unsafe lives behind this wall because pa-tui opts into the workspace `unsafe_code` forbid) (`platform::dirs::home_dir`: `HOME`, then on Windows `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` - Node `os.homedir()` parity, returning `None` so each caller owns its fallback). pa-types is the only crate every transport consumer can depend on (pa-tui depends on pa-types alone), so the shared trait vocabulary and its cfg-gated platform implementations live here: AF_UNIX on Unix, named pipes (`\.\pipe\`, `platform/windows_pipe.rs`) on Windows. Remaining platform areas (process control, perms, ...) are implemented per platform behind the same traits, not re-plumbed in callers.
+Platform contracts (`platform`): the cross-crate transport, process-identity, socket-identity, and home-dir helpers, plus the suspend-to-background signal control (`process::{stop_own_process_group, ignore_sigint_for_suspend, restore_default_sigint}`: the TUI's TS-`handleCtrlZ` cycle — SIGTSTP to the own process group, SIGINT ignored for the stopped window and restored on the SIGCONT resume; unsafe lives behind this wall because pa-tui opts into the workspace `unsafe_code` forbid) (`platform::clock::local_clock`: an epoch-ms timestamp as the local `(hour, minute)` through `localtime_r`, `None` on Windows — the TUI's prompt clock) (`platform::dirs::home_dir`: `HOME`, then on Windows `USERPROFILE` / `HOMEDRIVE`+`HOMEPATH` - Node `os.homedir()` parity, returning `None` so each caller owns its fallback). pa-types is the only crate every transport consumer can depend on (pa-tui depends on pa-types alone), so the shared trait vocabulary and its cfg-gated platform implementations live here: AF_UNIX on Unix, named pipes (`\.\pipe\`, `platform/windows_pipe.rs`) on Windows. Remaining platform areas (process control, perms, ...) are implemented per platform behind the same traits, not re-plumbed in callers.
 
 ## Non-goals
 No provider logic, no session logic, no UI. Beyond pure data helpers and the platform contracts, no behavior: a domain type that wants a method belongs in the owning crate.

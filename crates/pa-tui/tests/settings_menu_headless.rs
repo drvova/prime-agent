@@ -333,7 +333,7 @@ fn open_settings() -> Vec<HeadlessStep> {
 #[test]
 fn the_settings_page_renders_the_spacing_and_the_new_keys() {
     let (frames, _) = run_plan(open_settings());
-    let rows = frame_with(&frames, "Type to search");
+    let rows = frame_with(&frames, "Tab/1-5 tabs");
     let strip_index = rows
         .iter()
         .position(|row| row.starts_with("  1 General"))
@@ -359,20 +359,25 @@ fn the_settings_page_renders_the_spacing_and_the_new_keys() {
     // hint row's own two-space padding.
     let hint_index = rows
         .iter()
-        .position(|row| row.starts_with("  Type to search"))
+        .position(|row| row.contains("Tab/1-5 tabs"))
         .expect("the hint row renders");
     assert_eq!(
         rows[hint_index - 1],
+        "  enter sets auto-compact to false",
+        "the Enter line rides directly above the footer"
+    );
+    assert_eq!(
+        rows[hint_index - 2],
         RULE.repeat(100),
-        "the separator rule rides below the description, above the hint"
+        "the separator rule rides below the description, above the Enter line"
     );
     assert!(
-        rows[hint_index - 2].starts_with("  Automatically compact"),
+        rows[hint_index - 3].starts_with("  Automatically compact"),
         "the description rides above the rule with its padding"
     );
     assert!(
         rows[hint_index].starts_with(
-            "  Type to search · Tab/1-5 tabs · \u{2190}/\u{2192}/Enter/Space change · Esc close"
+            "  \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
         ),
         "the hint names the Tab/number tab keys and the arrow value keys: {:?}",
         rows[hint_index]
@@ -432,9 +437,31 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
             "quiet-startup=true",
             "idle-eviction-minutes=180",
             "idle-eviction-minutes=90",
-            "web-search-provider=eco",
+            "web-search-provider=serper",
         ],
         "every arrow cycle persisted through the settings seam"
+    );
+}
+
+/// Shift+Tab is the composer's thinking-cycle key, but the open settings menu keeps it: it
+/// steps the tab strip back (General wraps to Agents) and no thinking cycle leaves the menu.
+#[test]
+fn shift_tab_inside_the_menu_still_moves_the_tabs() {
+    let mut steps = open_settings();
+    steps.push(HeadlessStep::Key(key(KeyCode::BackTab)));
+    steps.push(HeadlessStep::WaitRender {
+        needle: "Web search provider".to_string(),
+        timeout_ms: 5000,
+    });
+    let (frames, _) = run_plan(steps);
+    let agents = frame_with(&frames, "Web search provider");
+    assert!(
+        !agents.iter().any(|row| row.contains("Steering mode")),
+        "Shift+Tab left the General tab: {agents:?}"
+    );
+    assert!(
+        !frames.join("\n").contains("does not support thinking"),
+        "the menu's Shift+Tab never reaches the thinking cycle"
     );
 }
 
@@ -488,7 +515,7 @@ fn opening_into_a_setting_keeps_the_bar_and_the_padding() {
     let rows = frame_with(&frames, "Thinking Level");
     let title_index = rows
         .iter()
-        .position(|row| row == "  Thinking Level")
+        .position(|row| row == "  Settings \u{203a} Thinking Level")
         .expect("the submenu title renders with its padding");
     assert_eq!(
         rows[title_index - 1],
@@ -505,7 +532,7 @@ fn opening_into_a_setting_keeps_the_bar_and_the_padding() {
     assert!(rows.iter().any(|row| row.contains("high")));
     assert!(rows
         .iter()
-        .any(|row| row.starts_with("  Enter select · Esc back")));
+        .any(|row| row.ends_with("Enter select · Esc back")));
 }
 
 /// A toggle for an unsupported mode is worse than none.
@@ -596,4 +623,31 @@ fn threshold_percentage_cycles_through_the_persistence_seam() {
     assert!(rows
         .iter()
         .any(|row| row.contains("Auto-compact threshold (%)") && row.contains("100")));
+}
+
+/// The `Saved` notice clears on its own on an idle screen: the run loop wakes at its expiry and
+/// repaints it away, with no key or daemon frame to prompt the paint.
+#[test]
+fn the_saved_notice_clears_on_an_idle_screen() {
+    let mut steps = open_settings();
+    // Down x3 lands on Quiet startup (General's fourth row, applied at once).
+    for _ in 0..3 {
+        steps.push(HeadlessStep::Key(key(KeyCode::Down)));
+    }
+    steps.push(HeadlessStep::Key(key(KeyCode::Right)));
+    steps.push(HeadlessStep::WaitRender {
+        needle: "applies now".to_string(),
+        timeout_ms: 3000,
+    });
+    // The notice lasts 3s from the change; the barrier gives it barely more.
+    steps.push(HeadlessStep::WaitGone {
+        needle: "applies now".to_string(),
+        timeout_ms: 3300,
+    });
+    let (frames, _) = run_plan(steps);
+    let all = frames.join("\n");
+    assert!(
+        !all.contains("timed out waiting"),
+        "the notice cleared without input:\n{all}"
+    );
 }

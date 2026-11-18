@@ -1,11 +1,15 @@
 //! The streamed-event pump: client events, turn updates, assistant/tool
 //! rows, compaction aborts, and the telemetry seams.
 use super::{
-    assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView, ChatEntry,
-    CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand, Map, MessageBlock, Result,
-    RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate, Value,
+    assistant_message_parts, event_to_update, pop_superseded_attempt_row, AgentView,
+    AttemptSummary, ChatEntry, CompactionReason, CompactionState, DaemonClientEvent, DaemonCommand,
+    Map, MessageBlock, Result, RetryState, SessionUi, StatusKind, ToolResultView, TurnUpdate,
+    Value,
 };
 use crate::interactive::reconnect::{ConnectionEffect, ConnectionEvent};
+
+/// The widest running-tool title the live line shows before it truncates.
+const TOOL_LABEL_MAX_WIDTH: usize = 48;
 
 /// One backgrounded compaction-abort outcome: a failed abort surfaces as
 /// the transcript note and clears the stuck compaction loader locally.
@@ -247,6 +251,13 @@ impl SessionUi {
                 if active_session_id != self.active_session_id {
                     return;
                 }
+                // Any frame from the session resets the loader's stall timer; a stall a paint
+                // actually showed (`Waiting on the model`) ends here and counts once: the flag is
+                // taken, so the rest of a drained burst sees no stall.
+                if std::mem::take(&mut view.stall_shown) {
+                    self.track_turn_feedback(crate::interactive::TurnFeedback::StallShown);
+                }
+                view.working_heard = Some(std::time::Instant::now());
                 // The run's stash keys the LATEST sequence the worker has reported: a turn during
                 // this run advances it, so the re-entry matches the post-turn value the next attach
                 // reports. Monotonic max: a replayed event never lowers it.
@@ -392,6 +403,16 @@ impl SessionUi {
             TurnUpdate::TurnStarted => {
                 self.turn_active = true;
                 self.turn_error_shown = false;
+                // A new turn opens no retry episode yet: an aborted attempt's episode never saw
+                // its `auto_retry_end`. The retried run's own `agent_start` lands while the
+                // countdown is still up and keeps the episode it continues.
+                if view.retry.is_none() {
+                    self.retry_episode_waited = None;
+                    self.retry_waited = None;
+                }
+                self.running_tool_labels.clear();
+                // A model turn after an aborted tool means the run went on: no interrupt row.
+                self.tool_aborted = false;
                 // A new turn also settles leftovers from a lost turn-end frame.
                 crate::snapshot::settle_pending_tool_cards(
                     view,
@@ -400,7 +421,11 @@ impl SessionUi {
                     "the turn ended before this call returned",
                 );
                 self.aborted_tools.clear();
-                self.start_loader(view);
+                // Only the retry that follows a failed attempt's `agent_end` pops its summary.
+                self.attempt_summary = None;
+                // A retried run keeps the episode's start: the timer never resets mid-episode.
+                let since = self.retry_run_since.unwrap_or_else(std::time::Instant::now);
+                self.start_loader_at(view, since);
             }
             TurnUpdate::UserMessage(text) => {
                 match crate::custom_message::skill_invocation_entries(&text) {
@@ -409,7 +434,11 @@ impl SessionUi {
                             view.push_entry(entry);
                         }
                     }
-                    None => view.push_entry(ChatEntry::User { text }),
+                    // A live prompt is stamped as it lands (its row's clock).
+                    None => view.push_entry(ChatEntry::User {
+                        text,
+                        sent_at: i64::try_from(crate::agents_view_state::now_ms()).ok(),
+                    }),
                 }
             }
             // The other-client arm of a display-name move (`/name` sets it locally).
@@ -427,6 +456,30 @@ impl SessionUi {
             TurnUpdate::CustomRow(entry) => {
                 view.push_entry(entry);
             }
+            // A recovered episode this client watched leaves the nc-style receipt with the
+            // wait it measured; a replayed or unwatched one keeps the daemon's row text.
+            TurnUpdate::RetryRecovered {
+                entry,
+                attempts,
+                last_error,
+            } => match self.retry_waited.take() {
+                Some(waited) => {
+                    let retries = if attempts == 1 { "retry" } else { "retries" };
+                    let waited = waited.as_secs_f64();
+                    let text = if last_error.is_empty() {
+                        format!("\u{2022} Waited {waited:.1}s through {attempts} {retries}")
+                    } else {
+                        format!(
+                            "\u{2022} Waited {waited:.1}s through {attempts} {retries} \u{00b7} {last_error}"
+                        )
+                    };
+                    view.push_entry(ChatEntry::Status {
+                        text,
+                        kind: StatusKind::Info,
+                    });
+                }
+                None => view.push_entry(entry),
+            },
             TurnUpdate::AssistantMessage {
                 message,
                 streaming,
@@ -445,6 +498,27 @@ impl SessionUi {
                 // reticks the settled id on this run's paints, so it lands
                 // on nothing too.
                 if !self.aborted_tools.contains(&tool_call_id) && self.turn_active {
+                    // The live label is the call's title: a python cell's preview (a `%%bash`
+                    // cell previews its command), else the tool's name.
+                    let title = if pa_types::ai::is_python_tool_name(&tool_name) {
+                        let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+                        let preview = crate::code_preview::preview_ipython_code(code);
+                        if preview.text.is_empty() {
+                            tool_name.clone()
+                        } else {
+                            preview.text
+                        }
+                    } else {
+                        tool_name.clone()
+                    };
+                    let title =
+                        crate::width::truncate_to_width(&title, TOOL_LABEL_MAX_WIDTH, "\u{2026}");
+                    if let Some(working) = &mut view.working {
+                        working.tool_label = Some(title.clone());
+                    }
+                    self.running_tool_labels
+                        .retain(|(running_id, _)| *running_id != tool_call_id);
+                    self.running_tool_labels.push((tool_call_id.clone(), title));
                     crate::snapshot::apply_tool_execution_start(
                         view,
                         &tool_call_id,
@@ -455,7 +529,7 @@ impl SessionUi {
                     // pending-state reset or arrive without its own streamed frame).
                     self.pending_tools.insert(tool_call_id.clone());
                     self.working_tokens.run.0 += 1;
-                    Self::set_working_activity("Executing", false, view);
+                    Self::set_working_activity(crate::chat::TOOL_ACTIVITY, false, view);
                     self.track_live_tool_timer();
                 }
             }
@@ -481,10 +555,24 @@ impl SessionUi {
             } => {
                 // The landed-result gate keeps the loader safe: a late end frame from the aborted
                 // run must not rewrite the new turn's activity label or clear its loader note.
+                let aborted =
+                    result.pointer("/details/status").and_then(Value::as_str) == Some("aborted");
                 if self.apply_tool_result(&tool_call_id, &result, is_error, false, view) {
-                    Self::set_working_activity("Waiting", false, view);
+                    self.tool_aborted |= aborted;
+                    // A parallel call still executing keeps the live line on it (its title, the
+                    // tool activity); only the last call's end falls back to waiting.
+                    let pending = &self.pending_tools;
+                    self.running_tool_labels
+                        .retain(|(running_id, _)| pending.contains(running_id));
+                    let remaining = self.running_tool_labels.last().map(|(_, title)| title);
+                    if remaining.is_none() {
+                        Self::set_working_activity("Waiting", false, view);
+                    }
                     if let Some(working) = &mut view.working {
-                        working.message = None;
+                        working.tool_label = remaining.cloned();
+                        if remaining.is_none() {
+                            working.message = None;
+                        }
                     }
                 }
             }
@@ -522,26 +610,36 @@ impl SessionUi {
                 // (operator ruling 2026-09-23): the just-failed attempt's error row leaves the chat
                 // — the transient loader line is the ONE error shown while the episode runs, and
                 // the durable outcome row replaces it at the settle.
-                pop_superseded_attempt_row(view);
+                if let Some(since) = self.pop_superseded_attempt(view) {
+                    self.retry_run_since = Some(since);
+                }
+                // The receipt's wait is the episode's backoff: each start adds its own delay, so
+                // the attempts' streaming time (the recovered one's included) never counts.
+                let delay = std::time::Duration::from_millis(delay_ms);
+                *self.retry_episode_waited.get_or_insert_default() += delay;
                 view.retry = Some(RetryState {
                     attempt,
                     max_attempts,
-                    ends_at: std::time::Instant::now() + std::time::Duration::from_millis(delay_ms),
+                    ends_at: std::time::Instant::now() + delay,
                     error_message,
                     reason,
+                    provider: view.chrome.model_provider.clone(),
                 });
             }
             TurnUpdate::AutoRetryEnd {
-                success: _,
+                success,
                 attempt: _,
                 final_error,
                 restored_model,
             } => {
                 view.retry = None;
+                let waited = self.retry_episode_waited.take();
+                self.retry_waited = waited.filter(|_| success);
                 if final_error.is_some() {
                     self.turn_error_shown = true;
-                    // The give-up's final attempt is superseded by the ONE terminal line.
-                    pop_superseded_attempt_row(view);
+                    // The give-up's final attempt (error and summary rows) is superseded by the
+                    // ONE terminal line.
+                    self.pop_superseded_attempt(view);
                 }
                 // A settled switch restores the primary provider.
                 if let Some(restored_model) = restored_model {
@@ -703,6 +801,22 @@ impl SessionUi {
     fn end_run(&mut self, view: &mut AgentView) {
         self.turn_active = false;
         view.working = None;
+        // An interrupt that lands on a running tool ends the run with no aborted assistant
+        // message: the row the model turn would have carried is written here, once.
+        if std::mem::take(&mut self.tool_aborted) && !self.turn_error_shown {
+            view.push_entry(ChatEntry::Assistant(Box::new(
+                crate::chat::AssistantMessage {
+                    blocks: Vec::new(),
+                    has_tool_calls: false,
+                    streaming: false,
+                    error: Some(crate::chat::live_abort_text(
+                        0,
+                        view.working_since.map(|since| since.elapsed().as_secs()),
+                    )),
+                    aborted: true,
+                },
+            )));
+        }
         // The run's summary row: how long the prompt took and what it cost.
         if let Some(since) = view.working_since.take() {
             let elapsed = crate::chat::format_working_elapsed(since.elapsed().as_secs());
@@ -713,16 +827,31 @@ impl SessionUi {
             );
             let text =
                 format!("Worked for {elapsed} \u{b7} {calls} tool call{s} \u{b7} {tokens} tokens");
+            let follows_failed_attempt = view
+                .chat
+                .last()
+                .is_some_and(crate::snapshot::is_superseded_attempt_row);
             view.push_entry(ChatEntry::Status {
                 text,
                 kind: StatusKind::Info,
             });
+            if follows_failed_attempt {
+                self.attempt_summary = Some(AttemptSummary {
+                    index: view.chat_len() - 1,
+                    since,
+                });
+            }
             self.track_feature_outcome("summary", "completed", None);
         }
+        self.retry_run_since = None;
         // A run that ends without its `turn_end` (a pre-run abort, a detach) still
         // leaves no live streaming slot or retry countdown behind.
         self.streaming_index = None;
         view.retry = None;
+        // The retry episode outlives its attempts' runs: every failed attempt ends its run
+        // before its `auto_retry_start`, and the recovered run's `agent_end` can land before the
+        // `auto_retry_end` and its outcome row. The next human turn's start drops a stale one.
+        self.running_tool_labels.clear();
         Self::flush_pending_bash(view);
         // A detached run's `turn_end` never arrives: its open cards settle here.
         crate::snapshot::settle_pending_tool_cards(
@@ -731,6 +860,20 @@ impl SessionUi {
             &mut self.aborted_tools,
             "the turn ended before this call returned",
         );
+    }
+
+    /// The retry-episode collapse for one failed attempt: its run summary (while it is still the
+    /// last row) and then its error row leave the chat. Returns the popped run's start.
+    fn pop_superseded_attempt(&mut self, view: &mut AgentView) -> Option<std::time::Instant> {
+        let summary = self
+            .attempt_summary
+            .take()
+            .filter(|summary| summary.index + 1 == view.chat_len());
+        if summary.is_some() {
+            view.pop_chat_entry();
+        }
+        pop_superseded_attempt_row(view);
+        summary.map(|summary| summary.since)
     }
 
     /// The abort ladder shared by the Ctrl+C and Escape interrupts: a compacting session aborts the
@@ -796,10 +939,38 @@ impl SessionUi {
             let current = self
                 .working_tokens
                 .apply_streaming(usage_output, content_chars);
+            // The live thought: the thinking block's newest closed sentence or line (it holds
+            // still while the next one streams), or the text so far before anything closes.
+            let thought = match (blocks.last(), tool_calls.is_empty()) {
+                (Some(MessageBlock::Thinking(text)), true) => {
+                    let (mut closed, mut start) = (None, 0);
+                    for (at, ch) in text.char_indices() {
+                        let end = at + ch.len_utf8();
+                        let boundary = ch == '\n'
+                            || (matches!(ch, '.' | '?' | '!')
+                                && text[end..].chars().next().is_none_or(char::is_whitespace));
+                        if boundary {
+                            closed = Some(text[start..end].trim())
+                                .filter(|seg| !seg.is_empty())
+                                .or(closed);
+                            start = end;
+                        }
+                    }
+                    closed
+                        .or_else(|| Some(text[start..].trim()).filter(|seg| !seg.is_empty()))
+                        .map(str::to_string)
+                }
+                (Some(MessageBlock::Thinking(_)), false)
+                | (Some(MessageBlock::Text(_)) | None, _) => None,
+            };
             if let Some(working) = &mut view.working {
                 working.tokens = working.tokens.max(current);
+                working.thought = thought;
             }
         } else {
+            if let Some(working) = &mut view.working {
+                working.thought = None;
+            }
             self.working_tokens.settle(usage_output);
             self.working_tokens.run.1 += message["usage"]["totalTokens"].as_u64().unwrap_or(0);
             self.record_speed_sample(message, view);
@@ -975,6 +1146,28 @@ impl SessionUi {
             }
         }
         false
+    }
+
+    /// Count one live-line feedback moment (a stall shown) with the session's other interaction
+    /// counters; delivery is the telemetry worker's.
+    fn track_turn_feedback(&self, feedback: crate::interactive::TurnFeedback) {
+        let Some(telemetry) = self.telemetry.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            telemetry.turn_feedback_shown(feedback).await;
+        });
+    }
+
+    /// Count one menu interaction (see [`crate::interactive::MenuUse`]) with the session's other
+    /// interaction counters; delivery is the telemetry worker's.
+    pub(super) fn track_menu_use(&self, used: crate::interactive::MenuUse) {
+        let Some(telemetry) = self.telemetry.clone() else {
+            return;
+        };
+        tokio::spawn(async move {
+            telemetry.menu_used(used).await;
+        });
     }
 
     /// Count live timer starts with the session's other interaction counters.

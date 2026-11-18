@@ -271,7 +271,7 @@ fn run_plan(steps: Vec<HeadlessStep>) -> Vec<String> {
 }
 
 /// The tree-selector pane's title row (the mount's needle).
-const TREE_PANE: &str = "Session Tree";
+const TREE_PANE: &str = "Session tree";
 
 /// Sixty Escape presses at the empty editor: the repeat's tree action fires exactly once and the
 /// ladder terminates instead of cycling the selector every second press.

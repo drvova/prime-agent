@@ -222,36 +222,10 @@ pub struct BundledSkillsSettings {
     pub websearch: Option<bool>,
 }
 
-/// `webSearchProvider`: the service the bundled websearch skill queries.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WebSearchProvider {
-    #[default]
-    Serper,
-    /// You.com Eco Search.
-    Eco,
-}
-
-impl WebSearchProvider {
-    /// The provider's id: its settings value, its auth-store slot, and the
-    /// kernel's `PRIME_AGENT_WEBSEARCH_PROVIDER` value.
-    #[must_use]
-    pub fn id(self) -> &'static str {
-        match self {
-            WebSearchProvider::Serper => crate::auth::SERPER_CREDENTIAL_ID,
-            WebSearchProvider::Eco => crate::auth::ECO_CREDENTIAL_ID,
-        }
-    }
-
-    /// The environment variable whose nonblank value overrides the stored key.
-    #[must_use]
-    pub fn api_key_env(self) -> &'static str {
-        match self {
-            WebSearchProvider::Serper => "SERPER_API_KEY",
-            WebSearchProvider::Eco => "YOU_API_KEY",
-        }
-    }
-}
+/// `webSearchProvider`: the provider `web.search()` and the bundled
+/// websearch skill use (`auto`, the default, or one engine id); the catalog
+/// lives with the native engine.
+pub use crate::web_search::WebSearchProvider;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -364,6 +338,9 @@ pub struct Settings {
     pub chat_detail: Option<String>,
     pub thinking_budgets: Option<ThinkingBudgetsSettings>,
     pub editor_padding_x: Option<u64>,
+    /// How many times the user has used the key the empty composer's self-retiring hint
+    /// names; the hint stops showing once the count reaches its retirement threshold.
+    pub composer_hint_uses: Option<u64>,
     pub autocomplete_max_visible: Option<u64>,
     pub show_hardware_cursor: Option<bool>,
     /// Typing `:name` in the prompt editor suggests matching emoji (unset means on).

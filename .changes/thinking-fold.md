@@ -1,0 +1,1 @@
+- In the collapsed conversation view, the model's thinking no longer disappears: each thinking block shows as one dim line, for example `• Thought · ~1.2k tokens`, so you can see that the model reasoned and roughly how much. Ctrl+O still expands it in full.

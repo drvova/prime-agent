@@ -305,7 +305,7 @@ fn user_only_filter_keeps_hidden_intermediates_out_of_the_visible_tree() {
     let mut tree = list(flat, Some("u2"));
     let kb = KeybindingsManager::new();
     tree.handle_key(&kb, "ctrl+u");
-    let rows = tree.render(&theme, 80);
+    let rows = tree.render(&theme, 80, &KeybindingsManager::new());
     let joined: Vec<String> = rows
         .iter()
         .map(|row| {
@@ -359,7 +359,7 @@ fn render_marks_active_path_and_connectors() {
         message_node("u3", Some("a1"), "2024-01-01T00:00:04.000Z", "sibling"),
     ];
     let tree = list(flat, Some("u2"));
-    let rows = tree.render(&theme, 100);
+    let rows = tree.render(&theme, 100, &KeybindingsManager::new());
     let text: Vec<String> = rows
         .iter()
         .map(|line| line.iter().map(|span| span.content.as_str()).collect())
@@ -422,7 +422,7 @@ fn deep_chain_walks_and_renders() {
     assert_eq!(tree.selected_id().as_deref(), Some(leaf.as_str()));
     assert_eq!(tree.active_path.len(), depth);
     let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
-    let rows = tree.render(&theme, 80);
+    let rows = tree.render(&theme, 80, &KeybindingsManager::new());
     assert_eq!(rows.len(), 41, "max_visible rows plus the counter");
     let text: Vec<String> = rows
         .iter()
@@ -443,7 +443,7 @@ fn zero_and_tiny_widths_render_wide_glyphs() {
     ];
     let tree = list(flat, Some("u2"));
     for width in [0, 1, 3] {
-        let rows = tree.render(&theme, width);
+        let rows = tree.render(&theme, width, &KeybindingsManager::new());
         for (row_index, row) in rows.iter().enumerate() {
             let rendered: usize = row.iter().map(|span| str_width(&span.content)).sum();
             assert!(

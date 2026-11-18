@@ -316,14 +316,42 @@ fn oversized_marker_re_wraps_visually_and_wrap_resumes_after_it() {
     // but re-wraps visually at grapheme granularity.
     let marker = "[paste #1 +20 lines]";
     let line = format!("A{marker}B");
-    let segments = segment_with_markers(&line, &|_| true);
+    let segments = segment_with_markers(&line, &|_| true, &[]);
     let chunks = word_wrap_line(&line, 10, Some(segments));
     let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["A", "[paste #1 ", "+20 lines]", "B"]);
 
     let line = format!("{marker} hello world");
-    let segments = segment_with_markers(&line, &|_| true);
+    let segments = segment_with_markers(&line, &|_| true, &[]);
     let chunks = word_wrap_line(&line, 10, Some(segments));
     let texts: Vec<&str> = chunks.iter().map(|c| c.text.as_str()).collect();
     assert_eq!(texts, vec!["[paste #1 ", "+20 lines]", " hello ", "world"]);
+}
+
+/// A draft cleared into the history keeps its pasted content: after a submit drops the paste
+/// table and a later paste reuses id 1, the recalled draft still submits the original paste.
+#[test]
+fn a_draft_cleared_into_history_recalls_its_paste_content() {
+    let mut e = ed();
+    e.handle_input("A");
+    paste_with_marker(&mut e, 20);
+    e.clear_into_history();
+    paste_with_marker(&mut e, 30);
+    e.submit();
+    e.take_events();
+    e.handle_input("up");
+    e.submit();
+    let submitted: Vec<String> = e
+        .take_events()
+        .into_iter()
+        .filter_map(|event| match event {
+            EditorEvent::Submitted(text) => Some(text),
+            EditorEvent::Changed(_)
+            | EditorEvent::AutocompleteToggled(_)
+            | EditorEvent::SlashMenuAccepted
+            | EditorEvent::ClipboardWrite(_) => None,
+        })
+        .collect();
+    let pasted = "line\n".repeat(20);
+    assert_eq!(submitted, vec![format!("A{}", pasted.trim_end())]);
 }

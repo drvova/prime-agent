@@ -3,7 +3,7 @@
 
 use super::{
     collect_python_files, Digest, HashMap, KernelPythonSkill, Mutex, Path, PathBuf, Stdio,
-    DEFAULT_RLM_EXTRA_PACKAGES,
+    TreeIdentityCache, DEFAULT_RLM_EXTRA_PACKAGES,
 };
 
 fn python_imports(python: &str, module_name: &str) -> bool {
@@ -74,7 +74,7 @@ mod safe_path_tests {
 /// The runtime-ready assertion from the TS product: a current
 /// prime-agent-runtime with the callable RLM surface, harness CRUD, bash
 /// handles, and protocol version 3.
-const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ['create_memory', 'update_memory', 'delete_memory', 'create_skill', 'update_skill', 'delete_skill', 'create_subagent', 'update_subagent', 'delete_subagent', 'create_prompt_note', 'update_prompt_note', 'delete_prompt_note', 'record_refinement']; _mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), \"rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime\"; assert callable(rlm.spawn); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm.spawn); assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty; assert not hasattr(rlm, 'run'); assert not hasattr(rlm.rlm, 'run'); assert callable(rlm.end_turn); assert callable(rlm.rlm.end_turn); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert callable(rlm.create_session); assert callable(rlm.rlm.create_session); assert callable(rlm.progress_note); assert callable(rlm.rlm.progress_note); assert callable(rlm.rename); assert callable(rlm.rlm.rename); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from rlm.bash import BashHandle, BashResult; assert callable(rlm.bash); assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']; assert callable(rlm.persistent_shells); assert callable(rlm._set_completion_notices_wired); assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill')); assert {'exit_code', 'output', 'duration'} <= set(BashResult.__dataclass_fields__); import rlm.repl as _repl; assert callable(_repl.main); assert callable(_repl.emit); assert callable(_repl.host_request); assert callable(_repl.is_active); assert _repl.PROTOCOL_VERSION == 3; assert callable(rlm.emit); assert not hasattr(rlm, 'HOST_COMM_TARGET'); assert not hasattr(mcp, 'install_shutdown_hook')";
+const RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ['create_memory', 'update_memory', 'delete_memory', 'create_skill', 'update_skill', 'delete_skill', 'create_subagent', 'update_subagent', 'delete_subagent', 'create_prompt_note', 'update_prompt_note', 'delete_prompt_note', 'record_refinement']; _mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), \"rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime\"; assert callable(rlm.spawn); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm.spawn); assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty; assert not hasattr(rlm, 'run'); assert not hasattr(rlm.rlm, 'run'); assert callable(rlm.end_turn); assert callable(rlm.rlm.end_turn); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert callable(rlm.create_session); assert callable(rlm.rlm.create_session); assert callable(rlm.progress_note); assert callable(rlm.rlm.progress_note); assert callable(rlm.rename); assert callable(rlm.rlm.rename); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from rlm.bash import BashHandle, BashResult; assert callable(rlm.bash); assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']; assert callable(rlm.persistent_shells); assert callable(rlm._set_completion_notices_wired); assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill')); assert {'exit_code', 'output', 'duration'} <= set(BashResult.__dataclass_fields__); import rlm.repl as _repl; assert callable(_repl.main); assert callable(_repl.emit); assert callable(_repl.host_request); assert callable(_repl.is_active); assert _repl.PROTOCOL_VERSION == 3; assert callable(rlm.emit); assert not hasattr(rlm, 'HOST_COMM_TARGET'); assert not hasattr(mcp, 'install_shutdown_hook'); import rlm.web as _web; assert callable(_web.search)";
 
 pub(crate) fn has_prime_agent_runtime(python: &str) -> bool {
     run_quiet(python, &["-c", RUNTIME_READY_CHECK])
@@ -113,8 +113,9 @@ pub(super) fn lock_probe_memo() -> std::sync::MutexGuard<'static, Option<HashMap
 }
 
 /// Identity of the runtime as installed in the venv: the interpreter binary's stat plus a content
-/// hash of the installed `rlm` package tree. Out-of-band damage changes this identity, so a
-/// memoized probe result can never mask a mutated install.
+/// hash of the installed `rlm` and `dill` package trees. Out-of-band damage changes this identity,
+/// so a memoized probe result can never mask a mutated install; an unchanged tree is served from
+/// the venv's stat-keyed [`TreeIdentityCache`] without re-reading its bytes.
 pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
     let mut hasher = sha2::Sha256::new();
     match std::fs::metadata(python) {
@@ -126,12 +127,17 @@ pub(super) fn installed_runtime_identity(python: &Path, venv: &Path) -> String {
         }
         Err(error) => hasher.update(format!("py-error:{}:{error}", python.display()).as_bytes()),
     }
+    let cache = TreeIdentityCache::in_venv(venv);
     for package in ["rlm", "dill"] {
-        match installed_package_dir(venv, package) {
-            Some(dir) => match hash_python_tree(&dir) {
-                Ok(hash) => hasher.update(format!("{package}:{hash}").as_bytes()),
-                Err(error) => hasher.update(format!("{package}-error:{error}").as_bytes()),
-            },
+        let tree_hash = installed_package_dir(venv, package).map(|dir| {
+            let mut files = Vec::new();
+            collect_python_files(&dir, &mut files)?;
+            files.sort();
+            cache.content_hash(&dir, &files)
+        });
+        match tree_hash {
+            Some(Ok(hash)) => hasher.update(format!("{package}:{hash}").as_bytes()),
+            Some(Err(error)) => hasher.update(format!("{package}-error:{error}").as_bytes()),
             None => hasher.update(format!("{package}-missing").as_bytes()),
         }
     }
@@ -166,23 +172,6 @@ pub(super) fn installed_package_dir(venv: &Path, package: &str) -> Option<PathBu
         }
     }
     None
-}
-
-/// Content hash of a python tree: every `.py` file's relative path and
-/// bytes, in sorted order (same witness shape as `hash_runtime_source`).
-fn hash_python_tree(dir: &Path) -> anyhow::Result<String> {
-    let mut files = Vec::new();
-    collect_python_files(dir, &mut files)?;
-    files.sort();
-    let mut hasher = sha2::Sha256::new();
-    for file in &files {
-        let relative = file.strip_prefix(dir)?;
-        hasher.update(relative.to_string_lossy().as_bytes());
-        hasher.update([0]);
-        hasher.update(&std::fs::read(file)?);
-        hasher.update([0]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// The memo key: every input the runtime-ready probe observes.

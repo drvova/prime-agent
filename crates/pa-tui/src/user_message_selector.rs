@@ -2,7 +2,9 @@
 //! grammar.
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{hint_row, key_hint, menu_row, no_match_row, scroll_row};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::{menu_row, scroll_row, search_field_lines};
+use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 
@@ -25,9 +27,14 @@ pub enum UserMessageSelectorAction {
 
 const MAX_VISIBLE: usize = 10;
 
-/// The `/fork` selector state.
+/// The `/fork` selector state: the messages, the search filter over them, and the selection
+/// within the filtered view.
 pub struct UserMessageSelector {
     messages: Vec<UserMessageItem>,
+    search: SearchInput,
+    /// The message indices the query keeps, oldest first.
+    filtered: Vec<usize>,
+    /// The selection's position in `filtered`.
     selected: usize,
 }
 
@@ -36,8 +43,14 @@ impl UserMessageSelector {
     /// message is preselected (TS `initialSelectedId` fallback).
     #[must_use]
     pub fn new(messages: Vec<UserMessageItem>) -> Self {
-        let selected = messages.len().saturating_sub(1);
-        UserMessageSelector { messages, selected }
+        let filtered: Vec<usize> = (0..messages.len()).collect();
+        let selected = filtered.len().saturating_sub(1);
+        UserMessageSelector {
+            messages,
+            search: SearchInput::new(),
+            filtered,
+            selected,
+        }
     }
 
     /// True when there is nothing to fork from.
@@ -46,55 +59,115 @@ impl UserMessageSelector {
         self.messages.is_empty()
     }
 
+    /// The search query.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
+    }
+
+    /// Up/Down move within the filtered list, Enter forks from the selection, Esc clears a
+    /// non-empty query before it closes; every other key edits the query.
     pub fn handle_key(&mut self, kb: &KeybindingsManager, id: &str) -> UserMessageSelectorAction {
-        if self.messages.is_empty() {
+        if kb.matches(id, "tui.select.cancel") {
+            if self.search.value().is_empty() {
+                return UserMessageSelectorAction::Cancel;
+            }
+            self.search.prefill("");
+            self.refilter();
             return UserMessageSelectorAction::None;
         }
+        let count = self.filtered.len();
         if kb.matches(id, "tui.select.up") {
-            self.selected = (self.selected + self.messages.len() - 1) % self.messages.len();
+            if count > 0 {
+                self.selected = (self.selected + count - 1) % count;
+            }
             UserMessageSelectorAction::None
         } else if kb.matches(id, "tui.select.down") {
-            self.selected = (self.selected + 1) % self.messages.len();
+            if count > 0 {
+                self.selected = (self.selected + 1) % count;
+            }
             UserMessageSelectorAction::None
         } else if kb.matches(id, "tui.select.confirm") {
-            let id = self.messages[self.selected].id.clone();
-            UserMessageSelectorAction::Select(id)
-        } else if kb.matches(id, "tui.select.cancel") {
-            UserMessageSelectorAction::Cancel
+            self.filtered
+                .get(self.selected)
+                .map_or(UserMessageSelectorAction::None, |&index| {
+                    UserMessageSelectorAction::Select(self.messages[index].id.clone())
+                })
         } else {
+            let previous = self.search.value().to_string();
+            self.search.handle_key(id, kb);
+            if self.search.value() != previous {
+                self.refilter();
+            }
             UserMessageSelectorAction::None
         }
     }
 
-    /// The full pane: title and description rows, then the shared menu
-    /// list (one row per message, the scroll row, the key hint).
+    /// Keep the messages containing every query word (case-insensitive), in session order; the
+    /// selection lands on the newest match.
+    fn refilter(&mut self) {
+        let words: Vec<String> = self
+            .search
+            .value()
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .collect();
+        self.filtered = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| {
+                let text = message.text.to_lowercase();
+                words.iter().all(|word| text.contains(word.as_str()))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.selected = self.filtered.len().saturating_sub(1);
+    }
+
+    /// The full pane: title and description rows, the search field, then the shared menu list
+    /// (one row per message, the scroll row), the Enter line, and the footer.
     #[must_use]
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
-        // TS mounts the title/description with a one-space margin
-        // (`new Text(..., 1, 0)`).
         let mut lines: Vec<Line> = vec![
-            Vec::new(),
-            vec![Span::raw(" Fork from Message")],
-            vec![
-                Span::raw(" "),
-                theme.fg_span(
-                    ThemeColor::Muted,
-                    "Select a user message to copy the active path up to that point into a new session"
-                        .to_string(),
-                ),
-            ],
-            Vec::new(),
+            title_row(theme, width, "Fork"),
+            crate::width::truncate_line(
+                &vec![
+                    Span::raw(CHROME_INDENT),
+                    theme.fg_span(
+                        ThemeColor::Muted,
+                        "Copy the active path up to a message into a new session",
+                    ),
+                ],
+                width,
+                "",
+            ),
         ];
-        if self.messages.is_empty() {
-            lines.push(no_match_row(theme, width, "No user messages found"));
+        lines.extend(search_field_lines(
+            theme,
+            width,
+            self.search.value(),
+            self.search.cursor(),
+            /*focused*/ true,
+            "Search messages",
+        ));
+        if self.filtered.is_empty() {
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                "No user messages found",
+            ));
         } else {
+            let count = self.filtered.len();
             let start = self
                 .selected
                 .saturating_sub(MAX_VISIBLE / 2)
-                .min(self.messages.len().saturating_sub(MAX_VISIBLE));
-            let end = (start + MAX_VISIBLE).min(self.messages.len());
+                .min(count.saturating_sub(MAX_VISIBLE));
+            let end = (start + MAX_VISIBLE).min(count);
             for position in start..end {
-                let normalized = self.messages[position]
+                let normalized = self.messages[self.filtered[position]]
                     .text
                     .replace('\n', " ")
                     .trim()
@@ -107,33 +180,29 @@ impl UserMessageSelector {
                     position == self.selected,
                 ));
             }
-            if start > 0 || end < self.messages.len() {
-                lines.push(scroll_row(
-                    theme,
-                    width,
-                    self.selected + 1,
-                    self.messages.len(),
-                ));
+            if start > 0 || end < count {
+                lines.push(scroll_row(theme, width, self.selected + 1, count));
             }
         }
         lines.push(Vec::new());
-        lines.push(hint_row(theme, width, &hint(kb)));
+        lines.extend(
+            Footer::new()
+                .enter(
+                    kb,
+                    (!self.filtered.is_empty()).then_some("forks from this message"),
+                )
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "fork", HintRank::Core)
+                .esc(kb, EscVerb::Close)
+                .rows(theme, width),
+        );
         lines
     }
-}
-
-/// The selector's key hint: the shared hint-row grammar (an unbound
-/// action is omitted).
-fn hint(kb: &KeybindingsManager) -> String {
-    [
-        key_hint(kb, &["tui.select.up", "tui.select.down"], "navigate"),
-        key_hint(kb, &["tui.select.confirm"], "select"),
-        key_hint(kb, &["tui.select.cancel"], "close"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<String>>()
-    .join(" · ")
 }
 
 #[cfg(test)]
@@ -209,7 +278,7 @@ mod tests {
         assert!(!rendered.iter().any(|row| row.contains("Message 1 of")));
         assert!(rendered
             .iter()
-            .any(|row| row.contains("\u{2191}/\u{2193} navigate · Enter select · Esc close")));
+            .any(|row| row.contains("\u{2191}/\u{2193} navigate · Enter fork · Esc close")));
     }
 
     #[test]
@@ -225,10 +294,62 @@ mod tests {
             .find(|row| row.contains("navigate"))
             .expect("the hint row renders");
         assert!(
-            hint.contains("Enter select"),
+            hint.contains("Enter fork"),
             "the bound action stays: {hint}"
         );
         assert!(!hint.contains("close"), "the unbound action drops: {hint}");
+    }
+
+    /// Typing filters the messages (the newest match selected), a query that hides every message
+    /// shows the no-match state, and Esc clears the query before it closes.
+    #[test]
+    fn typing_filters_and_esc_clears_before_closing() {
+        let mut selector = UserMessageSelector::new(messages());
+        for key in ["1", "0"] {
+            selector.handle_key(&kb(), key);
+        }
+        assert_eq!(
+            selector.handle_key(&kb(), "enter"),
+            UserMessageSelectorAction::Select("entry-10".to_string())
+        );
+        for key in ["z", "z"] {
+            selector.handle_key(&kb(), key);
+        }
+        let rendered: Vec<String> = selector
+            .render(&theme(), 80, &kb())
+            .iter()
+            .map(row_text)
+            .collect();
+        assert!(
+            rendered
+                .iter()
+                .any(|row| row == "  no match for \u{201c}10zz\u{201d} \u{b7} esc clears"),
+            "{rendered:?}"
+        );
+        assert_eq!(
+            selector.handle_key(&kb(), "escape"),
+            UserMessageSelectorAction::None
+        );
+        assert_eq!(selector.query(), "");
+        assert_eq!(
+            selector.handle_key(&kb(), "escape"),
+            UserMessageSelectorAction::Cancel
+        );
+    }
+
+    /// The Enter line names what Enter does for the selected message.
+    #[test]
+    fn the_enter_line_names_the_fork() {
+        let rendered: Vec<String> = UserMessageSelector::new(messages())
+            .render(&theme(), 80, &kb())
+            .iter()
+            .map(row_text)
+            .collect();
+        let enter = rendered
+            .iter()
+            .position(|row| row == "  enter forks from this message")
+            .expect("the Enter line");
+        assert!(rendered[enter + 1].contains("Enter fork"), "{rendered:?}");
     }
 
     #[test]

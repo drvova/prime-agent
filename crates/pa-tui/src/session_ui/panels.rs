@@ -5,7 +5,7 @@ use super::{
     key_event_to_id, mpsc, paused_heartbeat_count, picker_viewport_rows, tray_goal_label,
     AgentView, BashActivityUpdate, CommandCatalogUpdate, DaemonCommand, DockFocusSource,
     FactoryUpdate, GoalPanel, HeartbeatsUpdate, InfoContent, InfoPanelAction, KeyEvent, Map,
-    Result, SessionUi, Value,
+    Result, SessionUi, ThinkingCycleNote, Value,
 };
 
 pub(crate) struct ActivityUpdates {
@@ -13,6 +13,8 @@ pub(crate) struct ActivityUpdates {
     pub bash: mpsc::UnboundedSender<BashActivityUpdate>,
     pub factory: mpsc::UnboundedSender<FactoryUpdate>,
     pub commands: mpsc::UnboundedSender<CommandCatalogUpdate>,
+    pub thinking: mpsc::UnboundedSender<ThinkingCycleNote>,
+    pub stats: mpsc::UnboundedSender<super::StatsUpdate>,
 }
 
 impl SessionUi {
@@ -540,6 +542,7 @@ mod retry_collapse_tests {
         let mut view = view_with(vec![
             ChatEntry::User {
                 text: "hi".to_string(),
+                sent_at: None,
             },
             failed_attempt("429 Too many concurrent requests"),
         ]);

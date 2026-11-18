@@ -178,6 +178,14 @@ impl ReplKernelManager {
         execution_timeout_ms: Option<u64>,
     ) -> anyhow::Result<InternalExecuteResult> {
         let started = Instant::now();
+        if !opts.internal {
+            // A user cell never waits behind the debounced auto-snapshot: preempt it whether it
+            // is still queued or already dumping (the dump is interruptible up to its commit).
+            let yielding_snapshot = lock(&self.inner.guarded).yielding_snapshot.take();
+            if let Some(snapshot) = yielding_snapshot {
+                snapshot.abort();
+            }
+        }
         if let Some(signal) = &opts.signal {
             if signal.is_aborted() {
                 return Ok(InternalExecuteResult::aborted(started));

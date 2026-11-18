@@ -35,8 +35,10 @@ pub(crate) use heartbeats::HeartbeatsUpdate;
 /// session open instead of echoing into the editor.
 pub(crate) use keys::opening_echo_key_claimed;
 use keys::SelectionAutoScroll;
+pub(crate) use lifecycle::StatsUpdate;
 pub(crate) use model_picker::picker_viewport_rows;
 pub(crate) use model_picker::ModelCatalogUpdate;
+pub(crate) use model_picker::ThinkingCycleNote;
 use panels::pop_superseded_attempt_row;
 pub(crate) use panels::ActivityUpdates;
 use prompt::PromptOrder;
@@ -131,6 +133,7 @@ pub(crate) fn attach_capabilities() -> Vec<pa_types::daemon::DaemonClientCapabil
         "slim_attach".to_string(),
         "elide_snapshot_images".to_string(),
         "windowed_snapshot".to_string(),
+        pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY.to_string(),
     ]
 }
 
@@ -144,6 +147,14 @@ pub(crate) fn last_assistant_text_of(chat: &[ChatEntry]) -> Option<String> {
         }
         _ => None,
     })
+}
+
+/// The run summary row a failed attempt left: its chat index (the row is popped only while it is
+/// still the last entry) and the run's start.
+#[derive(Clone, Copy)]
+struct AttemptSummary {
+    index: usize,
+    since: std::time::Instant,
 }
 
 pub(crate) struct SessionUi {
@@ -240,6 +251,8 @@ pub(crate) struct SessionUi {
     pending_queue: Option<crate::queued::QueuedMessages>,
     queue_selection: crate::queued::QueueSelection,
     context: Option<crate::chrome::ContextUsage>,
+    /// The session's auto-compaction switch: on, the tray gauge ticks the threshold.
+    auto_compaction: bool,
     list_rows: Vec<Value>,
     pub(crate) turn_active: bool,
     /// Completed turns observed on this connection. A prompt ACK may arrive
@@ -254,6 +267,34 @@ pub(crate) struct SessionUi {
     /// The turn already surfaced its error (a failed assistant message or
     /// a retry-exhausted banner); the `turn_end` error stays silent then.
     turn_error_shown: bool,
+    /// The running retry episode's backoff so far: the sum of its `auto_retry_start` delays (the
+    /// receipt's wait). Only the waits count, never an attempt's own streaming time. It outlives
+    /// the attempts' own runs (each failed attempt's `agent_end` precedes its retry), and resets
+    /// at a turn start with no countdown up and at a transcript replace, so an episode that never
+    /// saw its end (an abort, a session switch) cannot leak into a later receipt.
+    retry_episode_waited: Option<std::time::Duration>,
+    /// A recovered episode's measured wait, held for its `provider_retry_outcome` row.
+    retry_waited: Option<std::time::Duration>,
+    /// The executing tool calls' live-line titles, in start order: when one of several parallel
+    /// calls ends, the loader keeps the newest remaining title instead of falling back to waiting.
+    running_tool_labels: Vec<(String, String)>,
+    /// The run summary a failed attempt's `agent_end` pushed under its error row: the retry that
+    /// supersedes the attempt pops both.
+    attempt_summary: Option<AttemptSummary>,
+    /// The retry episode's first run start: the retried run's loader and summary keep it, so the
+    /// one summary left covers the whole episode.
+    retry_run_since: Option<std::time::Instant>,
+    /// The empty composer's self-retiring key hint (its use count persists in the client
+    /// settings store).
+    pub(crate) composer_hint: notes::RetiringHint,
+    /// Serializes the hint count's background saves: each save re-reads the store and writes
+    /// only a higher count, so presses landing out of order (or another instance's save) never
+    /// lower the persisted value.
+    composer_hint_saves: std::sync::Arc<std::sync::Mutex<()>>,
+    /// The run's interrupt landed on a running tool (a final result with `details.status:
+    /// "aborted"`): the agent ends without an aborted assistant message, so `agent_end` writes the
+    /// interrupt row itself.
+    tool_aborted: bool,
     /// Tool cards awaiting their final result: registered at their `message_update` or
     /// `tool_execution_start` frame, unregistered by the final result; a failed final frame settles
     /// every pending card.
@@ -279,6 +320,9 @@ pub(crate) struct SessionUi {
     pub(crate) exit_requested: bool,
     pub(crate) open_agents_view: bool,
     pub(crate) scoped_agents_view: Option<crate::agents_view::AgentsViewScope>,
+    /// The folder a resume entry (bare `/resume`, `app.session.resume`) opens the agents view
+    /// scoped to: this session's cwd. `None` for every other entry (the global view).
+    pub(crate) resume_folder: Option<PathBuf>,
     roster: Vec<Value>,
     heartbeat_catalog: Vec<HeartbeatEntry>,
     heartbeat_refresh_in_flight: bool,
@@ -292,6 +336,10 @@ pub(crate) struct SessionUi {
     /// request must not repaint a newer snapshot.
     bash_list_epoch: u64,
     bash_updates: mpsc::UnboundedSender<BashActivityUpdate>,
+    /// The turn-end stats refresh's reply channel (see `spawn_stats_refresh`).
+    stats_updates: mpsc::UnboundedSender<StatsUpdate>,
+    /// The newest issued stats refresh; an older reply is dropped on arrival.
+    stats_generation: u64,
     /// The last `factory_activity` graph reply (the dock count's cache and
     /// the page open's mount, the `bash_activities` pattern): the
     /// always-on 2s poll keeps it current whether or not the page is
@@ -316,6 +364,9 @@ pub(crate) struct SessionUi {
     /// Where background factory refreshes deliver the run graph (the run
     /// loop folds them into the open view).
     factory_updates: mpsc::UnboundedSender<FactoryUpdate>,
+    /// Where the spawned `cycle_thinking_level` round trips deliver (the run loop folds the
+    /// level into the tray and the composer edge).
+    thinking_cycle_notes: mpsc::UnboundedSender<ThinkingCycleNote>,
     /// The open view's selected run id: the refresh's watch target.
     factory_selected_run: Option<String>,
     /// The activity dock holds keyboard focus (and renders expanded).
@@ -342,6 +393,8 @@ pub(crate) struct SessionUi {
     /// The Ctrl+C exit hint: a second press inside the window terminates
     /// the client, regardless of turn state.
     ctrl_c_hint_until: Option<Instant>,
+    /// The draft the last Ctrl+C cleared, until Up recalls it (the recall is counted once).
+    cleared_draft: Option<String>,
     pub(crate) goal_view: GoalView,
     notes: mpsc::UnboundedSender<String>,
     compaction_abort_notes: mpsc::UnboundedSender<CompactionAbortNote>,
@@ -539,7 +592,8 @@ impl SessionUi {
     }
 
     /// Recompute the model-eligibility autocomplete state (`/fast` hidden when the model is not
-    /// fast-mode-eligible): call after every point the model id or tier can move.
+    /// fast-mode-eligible, the `/tier` and `/effort` argument choices): call after every point the
+    /// model id, tier, or thinking level can move.
     fn update_model_eligibility_filters(&self, view: &mut AgentView) {
         let eligible = self
             .current_model_entry(view)
@@ -551,6 +605,40 @@ impl SessionUi {
         view.editor.set_autocomplete_hidden_commands(hidden);
         view.editor
             .set_autocomplete_argument_completions("tier", self.tier_completion_items(view));
+        view.editor
+            .set_autocomplete_argument_completions("effort", self.effort_completion_items(view));
+    }
+
+    /// The `/effort` choices: the levels the current model supports (catalog-local, no daemon
+    /// read), the active one marked `(current)`. An unknown model offers none.
+    fn effort_completion_items(&self, view: &AgentView) -> crate::autocomplete::ArgumentChoices {
+        let Some(model) = self.current_model_entry(view) else {
+            return crate::autocomplete::ArgumentChoices::default();
+        };
+        let current = view.chrome.thinking_suffix.as_deref().unwrap_or("off");
+        let items = pa_types::ai::get_supported_thinking_levels(model)
+            .into_iter()
+            .map(|level| {
+                let level = level.wire_name();
+                let description = crate::effort_picker::level_description(level);
+                let description = if level == current {
+                    format!("{description} (current)")
+                } else {
+                    description.to_string()
+                };
+                crate::autocomplete::CompletionItem {
+                    value: level.to_string(),
+                    label: level.to_string(),
+                    description: Some(description),
+                    argument_hint: None,
+                    source_tag: None,
+                }
+            })
+            .collect();
+        crate::autocomplete::ArgumentChoices {
+            items,
+            current: Some(current.to_string()),
+        }
     }
 
     /// The `/tier` choices (`scale` is not a user-facing choice): `default` plus
@@ -577,9 +665,10 @@ impl SessionUi {
         tiers
     }
 
-    fn tier_completion_items(&self, view: &AgentView) -> Vec<crate::autocomplete::CompletionItem> {
+    fn tier_completion_items(&self, view: &AgentView) -> crate::autocomplete::ArgumentChoices {
         let current = self.service_tier.as_deref().unwrap_or("default");
-        self.available_service_tiers(view)
+        let items = self
+            .available_service_tiers(view)
             .into_iter()
             .map(|tier| {
                 // The one descriptions owner: the settings row's submenu
@@ -598,7 +687,11 @@ impl SessionUi {
                     source_tag: None,
                 }
             })
-            .collect()
+            .collect();
+        crate::autocomplete::ArgumentChoices {
+            items,
+            current: Some(current.to_string()),
+        }
     }
 
     /// `/tier [tier]`: without an argument report the current tier and the available ones; an

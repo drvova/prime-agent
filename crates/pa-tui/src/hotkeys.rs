@@ -57,6 +57,8 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let interrupt = key_display(kb, "app.interrupt");
     let exit = key_display(kb, "app.exit");
     let select_model = key_display(kb, "app.model.select");
+    let cycle_thinking = key_display(kb, "app.thinking.cycle");
+    let history_search = key_display(kb, "app.history.search");
     let expand_tools = key_display(kb, "app.tools.expand");
     let focus_subagents = key_display(kb, "app.subagents.focus");
     let external_editor = key_display(kb, "app.editor.external");
@@ -127,7 +129,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 |-----|--------|
 | `{tab}` | Path completion / accept autocomplete |
 | `{clear_input}` | Clear input / cancel autocomplete |
-| `{clear}` | Interrupt current operation (first) / exit (second) |
+| `{clear}` | Interrupt running work, keeping the draft; when idle, clear the draft (Up recalls it) (first) / exit (second) |
 "
     );
     if !interrupt.is_empty() {
@@ -138,6 +140,8 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
         r"| `{exit}` | Exit (when editor is empty) |
 | `{suspend}` | Suspend to background |
 | `{select_model}` | Open model selector |
+| `{cycle_thinking}` | Cycle thinking level |
+| `{history_search}` | Search prompt history |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
     );
     let _ = writeln!(
@@ -203,6 +207,11 @@ mod tests {
             "{guide}"
         );
         assert!(guide.contains("Select to start / end of text"), "{guide}");
+        // Every composer binding lists, the prompt-history search among them.
+        assert!(
+            guide.contains("| `Ctrl+R` | Search prompt history |"),
+            "{guide}"
+        );
         assert!(
             guide.contains(&format!(
                 "| `{alt}+\u{2191}` / `{alt}+\u{2193}` | Browse and edit queued messages |"

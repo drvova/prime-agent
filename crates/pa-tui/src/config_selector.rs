@@ -9,8 +9,9 @@ use crossterm::terminal::{self};
 use ratatui::Terminal;
 use std::time::{Duration, Instant};
 
-use crate::keybindings::{format_key_text, KeybindingsManager};
+use crate::keybindings::KeybindingsManager;
 use crate::keys::key_event_to_id;
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
@@ -56,17 +57,11 @@ pub enum SelectorKind {
 }
 
 impl SelectorKind {
-    /// The frame title and its `(key, action)` hint vocabulary.
-    fn header(self) -> (&'static str, &'static [(&'static str, &'static str)]) {
+    /// The frame title.
+    fn title(self) -> &'static str {
         match self {
-            SelectorKind::ResourceConfig => (
-                "Resource Configuration",
-                &[("space", "toggle"), ("escape", "close")],
-            ),
-            SelectorKind::Effort => (
-                "Thinking Level",
-                &[("enter", "select"), ("escape", "close")],
-            ),
+            SelectorKind::ResourceConfig => "Resource Configuration",
+            SelectorKind::Effort => "Effort",
         }
     }
 }
@@ -206,7 +201,13 @@ impl ConfigSelector {
             return None;
         }
         if kb.matches(key, "tui.select.cancel") {
-            return Some(SelectorAction::Close);
+            // Esc clears a non-empty query first; the next Esc closes.
+            if self.search.value().is_empty() {
+                return Some(SelectorAction::Close);
+            }
+            self.search.prefill("");
+            self.apply_filter();
+            return None;
         }
         if kb.matches(key, "app.clear") {
             return Some(SelectorAction::Exit);
@@ -365,13 +366,15 @@ impl ConfigSelector {
     /// The selector's rendered rows through the shared menu-panel grammar:
     /// the `›` marker rows with the selection band, the group headers,
     /// the scroll indicator, the no-match row.
-    fn list_rows(&self, theme: &Theme, width: usize) -> Vec<Line> {
+    fn list_rows(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
         let mut lines: Vec<Line> = Vec::new();
         if self.filtered.is_empty() {
-            lines.push(crate::menu_panel::no_match_row(
+            lines.push(crate::menu_chrome::empty_state_row(
                 theme,
                 width,
-                self.no_match_text(),
+                kb,
+                self.search.value(),
+                self.empty_text(),
             ));
             return lines;
         }
@@ -444,7 +447,11 @@ impl ConfigSelector {
     /// the grouped list, and the key hint (the shared menu-panel grammar).
     #[must_use]
     pub fn render(&self, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Vec<Line> {
-        let mut lines: Vec<Line> = vec![Vec::new(), self.header_line(theme), Vec::new()];
+        let mut lines: Vec<Line> = vec![
+            Vec::new(),
+            crate::menu_chrome::title_row(theme, width, self.kind.title()),
+            Vec::new(),
+        ];
         lines.extend(crate::menu_panel::search_field_lines(
             theme,
             width,
@@ -453,20 +460,27 @@ impl ConfigSelector {
             true,
             self.search_placeholder(),
         ));
-        lines.extend(self.list_rows(theme, width));
+        lines.extend(self.list_rows(theme, width, kb));
         lines.push(Vec::new());
-        lines.push(crate::menu_panel::hint_row(
-            theme,
-            width,
-            &self.hint_text(kb),
-        ));
+        // The effort picker's Enter line names the level Enter applies.
+        let enter = match self.kind {
+            SelectorKind::ResourceConfig => None,
+            SelectorKind::Effort => self
+                .filtered
+                .get(self.selected)
+                .and_then(|&index| match self.rows.get(index) {
+                    Some(SelectorRow::Item { label, .. }) => {
+                        Some(format!("sets effort to {label}"))
+                    }
+                    Some(SelectorRow::Group(_) | SelectorRow::Subgroup(_)) | None => None,
+                }),
+        };
+        lines.extend(
+            self.footer(kb)
+                .enter(kb, enter.as_deref())
+                .rows(theme, width),
+        );
         lines
-    }
-
-    /// The frame title: the surface's name, accent like every menu title.
-    fn header_line(&self, theme: &Theme) -> Line {
-        let (title, _) = self.kind.header();
-        vec![theme.fg_span(ThemeColor::Accent, title.to_string())]
     }
 
     /// The search field's placeholder (the frame's filter hint).
@@ -477,40 +491,31 @@ impl ConfigSelector {
         }
     }
 
-    /// The no-match row's message when the filter empties the list.
-    fn no_match_text(&self) -> &'static str {
+    /// The empty list's message (a query that hides every row reads as a no-match instead).
+    fn empty_text(&self) -> &'static str {
         match self.kind {
             SelectorKind::ResourceConfig => "No resources found",
-            SelectorKind::Effort => "No matching levels",
+            SelectorKind::Effort => "No thinking levels available",
         }
     }
 
-    /// The key hint: an unbound action is omitted, never advertised
-    /// with a default key.
-    fn hint_text(&self, kb: &KeybindingsManager) -> String {
-        let (_, hints) = self.kind.header();
-        hints
-            .iter()
-            .filter_map(|(key, action)| raw_key_hint(kb, key, action))
-            .collect::<Vec<String>>()
-            .join(" \u{b7} ")
+    /// The footer: Space toggles a resource, Enter applies a level; an unbound action is
+    /// omitted, never advertised with a default key.
+    fn footer(&self, kb: &KeybindingsManager) -> Footer {
+        let footer = Footer::new().bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "navigate",
+            HintRank::Useful,
+        );
+        let footer = match self.kind {
+            SelectorKind::ResourceConfig => footer.keys(["space"], "toggle", HintRank::Core),
+            SelectorKind::Effort => {
+                footer.bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            }
+        };
+        footer.esc(kb, EscVerb::Close)
     }
-}
-
-/// One hint segment: the key's label when the action is available, None
-/// when the action's binding is unconfigured.
-fn raw_key_hint(kb: &KeybindingsManager, key: &str, action: &str) -> Option<String> {
-    let label = match key {
-        "space" => "Space".to_string(),
-        "escape" => kb
-            .first_key("tui.select.cancel")
-            .map(|key| format_key_text(&key))?,
-        "enter" => kb
-            .first_key("tui.select.confirm")
-            .map(|key| format_key_text(&key))?,
-        other => format_key_text(other),
-    };
-    Some(format!("{label} {action}"))
 }
 
 /// Options for the selector's terminal loop.

@@ -216,8 +216,8 @@ fn activity_dock_frames_one_row_with_running_paused_and_goal_counts() {
     assert!(frame[1]
         .iter()
         .all(|span| span.style.fg != theme.fg_style(ThemeColor::Success).fg));
-    // An overflowing row truncates INSIDE the width: the ellipsis
-    // reserves its own column.
+    // The row shrinks in its stated order, whole steps only: tight separators, the lane
+    // words, the zero-count lanes, the paused cluster, then the goal — never a cut word.
     let dock = ActivityDock {
         subagents_running_direct: 1,
         subagents_running_nested: 2,
@@ -227,23 +227,48 @@ fn activity_dock_frames_one_row_with_running_paused_and_goal_counts() {
         goal_label: Some("Pursuing goal (12m 05s)".to_string()),
         ..ActivityDock::default()
     };
-    for width in 20..=45 {
-        let frame = render_activity_dock(&dock, &theme, width);
-        let row = &frame[1];
-        let used = crate::width::spans_width(row);
-        assert!(
-            used <= width,
-            "the truncated row stays inside {width}: {used}"
-        );
-        let text = row
-            .iter()
-            .map(|span| span.content.as_str())
-            .collect::<String>();
-        assert!(
-            text.ends_with('\u{2026}'),
-            "the truncation carries the ellipsis: {text:?}"
-        );
-    }
+    let rows: Vec<String> = [100, 80, 60, 45, 30, 20]
+        .into_iter()
+        .map(|width| {
+            render_activity_dock(&dock, &theme, width)[1]
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    let counts = " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25d0} 2 paused \u{b7} \u{25b8} 2 \u{b7} Pursuing goal (12m 05s)";
+    assert_eq!(
+        rows,
+        vec![
+            " \u{25c6} 3 subagents  \u{b7}  \u{25f7} 4 heartbeats \u{b7} \u{25d0} 2 paused  \u{b7}  \u{25b8} 2 shells  \u{b7}  Pursuing goal (12m 05s)".to_string(),
+            counts.to_string(),
+            counts.to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2 \u{b7} Pursuing goal (12m 05s)".to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2".to_string(),
+            " \u{25c6} 3 \u{b7} \u{25f7} 4 \u{b7} \u{25b8} 2".to_string(),
+        ]
+    );
+    // The all-zero dock keeps its words while they fit, then its counts, and only a row
+    // narrower than the counts drops the idle lanes.
+    let idle = ActivityDock::default();
+    let rows: Vec<String> = [48, 30, 12]
+        .into_iter()
+        .map(|width| {
+            render_activity_dock(&idle, &theme, width)[1]
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            " \u{25c6} 0 subagents  \u{b7}  \u{25f7} 0 heartbeats  \u{b7}  \u{25b8} 0 shells"
+                .to_string(),
+            " \u{25c6} 0 \u{b7} \u{25f7} 0 \u{b7} \u{25b8} 0".to_string(),
+            " \u{25c6} 0".to_string(),
+        ]
+    );
     // A row that fits whole keeps every character — the ellipsis
     // column is only borrowed when truncation actually happens.
     let frame = render_activity_dock(&dock, &theme, 120);
@@ -869,8 +894,58 @@ fn tray_left_and_right_labels() {
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(text.starts_with("\u{2190} manage"));
-    assert!(text.contains("faux-1 \u{00b7} 6.1k (5%)"));
+    assert!(text.contains("6.1k/128k 5% \u{00b7} faux-1"));
     assert_eq!(str_width(&text), 120);
+}
+
+/// A model on this machine or a private network shows `⌂` and the success tone in the tray,
+/// read from its provider and base URL alone; a public endpoint keeps the dim label.
+#[test]
+fn a_local_model_is_marked_in_the_tray() {
+    let hosts: Vec<ModelHost> = [
+        ("mock", "http://127.0.0.1:18797/v1"),
+        ("custom", "http://localhost:8080/v1"),
+        ("custom", "http://192.168.1.20:1234/v1"),
+        ("custom", "http://10.0.0.5/v1"),
+        ("custom", "http://172.20.0.2/v1"),
+        ("custom", "http://[::1]:11434/v1"),
+        ("custom", "http://gpu-box.local:8000/v1"),
+        ("ollama", "https://ollama.example.com/v1"),
+        ("openai", "https://api.openai.com/v1"),
+        ("custom", "http://172.32.0.1/v1"),
+        ("custom", "not a url"),
+    ]
+    .iter()
+    .map(|(provider, base_url)| ModelHost::of(provider, base_url))
+    .collect();
+    assert_eq!(
+        hosts,
+        [
+            [ModelHost::Local; 8].as_slice(),
+            [ModelHost::Remote; 3].as_slice()
+        ]
+        .concat()
+    );
+    let theme = theme();
+    let state = ChromeState {
+        model_id: Some("mock-1".to_string()),
+        model_host: ModelHost::of("mock", "http://127.0.0.1:18797/v1"),
+        ..Default::default()
+    };
+    let line = render_tray(&state, &theme, 60);
+    let model: Vec<(String, Option<ratatui::style::Color>)> = line
+        .iter()
+        .skip_while(|span| span.content.trim().is_empty())
+        .map(|span| (span.content.clone(), span.style.fg))
+        .collect();
+    let success = theme.fg_style(ThemeColor::Success).fg;
+    assert_eq!(
+        model,
+        vec![
+            ("\u{2302} ".to_string(), success),
+            ("mock-1".to_string(), success)
+        ]
+    );
 }
 
 /// `fast` for the priority tier, the tier name for any other non-default
@@ -957,13 +1032,19 @@ fn tray_renders_the_effort_suffix_and_the_bare_id_without_it() {
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(
-        text.contains("faux-1:high"),
-        "the effort suffix rides the id: {text}"
+        text.contains("\u{25cf} faux-1:high"),
+        "the level's glyph and suffix ride the id: {text}"
     );
+    let glyph = line
+        .iter()
+        .find(|s| s.content == "\u{25cf} ")
+        .map(|s| s.style);
+    assert_eq!(glyph, Some(theme().fg_style(ThemeColor::ThinkingHigh)));
     state.thinking_suffix = None;
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
     assert!(text.contains("faux-1"), "the bare id still renders: {text}");
+    assert!(!text.contains('\u{25cf}'), "no level, no glyph: {text}");
     assert!(!text.contains("faux-1:"), "no suffix, no colon: {text}");
 }
 
@@ -982,12 +1063,45 @@ fn tray_never_repeats_the_heartbeat_counts() {
     };
     let line = render_tray(&state, &theme(), 120);
     let text = line.iter().map(|s| s.content.as_str()).collect::<String>();
-    assert!(text.contains("mock-1 \u{b7} 190 (0%)"));
+    assert!(text.contains("190/128k 0% \u{b7} mock-1"));
     assert!(!text.contains("Pursuing goal"));
     assert!(!text.contains("goal"));
     assert!(!text.contains("heartbeat"));
     assert!(!text.contains("Ctrl+R"));
     assert_eq!(str_width(&text), 120);
+}
+
+/// The gap between the lanes is the context gauge: the used share in `━` (accent, amber from
+/// 70%, red from 90%), the rest in `─`, a space at each end.
+#[test]
+fn tray_gap_is_the_context_gauge() {
+    let gauge = |tokens: u64| {
+        let state = ChromeState {
+            show_manage: true,
+            context: Some(ContextUsage {
+                tokens,
+                context_window: 200_000,
+            }),
+            ..Default::default()
+        };
+        let line = render_tray(&state, &theme(), 60);
+        assert_eq!(
+            str_width(&line.iter().map(|s| s.content.as_str()).collect::<String>()),
+            60
+        );
+        let span = |glyph: char| line.iter().find(|s| s.content.starts_with(glyph)).cloned();
+        let used = span('\u{2501}').map_or(0, |s| s.content.chars().count());
+        let free = span('\u{2500}').map_or(0, |s| s.content.chars().count());
+        (used, free, span('\u{2501}').map(|s| s.style))
+    };
+    let t = theme();
+    // `← manage` (8) + `100k/200k 50%` (13) leave 39 cells: 37 gauge cells, half used.
+    assert_eq!(
+        gauge(100_000),
+        (19, 18, Some(t.fg_style(ThemeColor::Accent)))
+    );
+    assert_eq!(gauge(150_000).2, Some(t.fg_style(ThemeColor::Warning)));
+    assert_eq!(gauge(190_000).2, Some(t.fg_style(ThemeColor::Error)));
 }
 
 #[test]
@@ -1045,4 +1159,131 @@ fn the_collapsed_shells_segment_counts_persistent_shells() {
     };
     assert_eq!(render(1), "▸ 2 shells · 1 persistent");
     assert_eq!(render(0), "▸ 2 shells");
+}
+
+/// A session's accent is stable per name, differs across names, keeps its hue in 150°-294°
+/// (never the gauge's amber or red), and falls back to the theme accent without a name or a
+/// true-color accent.
+#[test]
+fn the_session_accent_is_a_stable_hue_per_name() {
+    use ratatui::style::Color;
+    let t = theme();
+    let rgb = |name: &str| match session_accent(name, &t).fg {
+        Some(Color::Rgb(r, g, b)) => (r, g, b),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(rgb("login-fix"), rgb("login-fix"));
+    assert_ne!(rgb("login-fix"), rgb("refactor-auth"));
+    for name in [
+        "a",
+        "b",
+        "login-fix",
+        "refactor-auth",
+        "prime",
+        "docs",
+        "zz",
+    ] {
+        let (r, g, b) = rgb(name);
+        // In the 150°-294° band red never leads both other channels (that is 330°-30°).
+        assert!(
+            !(r > g && r > b && g >= b),
+            "{name}: {r},{g},{b} reads as red or amber"
+        );
+    }
+    assert_eq!(session_accent("", &t), t.fg_style(ThemeColor::Accent));
+    let ansi = Theme::builtin("prime", crate::theme::ColorMode::Color256);
+    assert_eq!(
+        session_accent("login-fix", &ansi),
+        ansi.fg_style(ThemeColor::Accent)
+    );
+}
+
+/// The gauge ticks the auto-compaction threshold with `┃`; auto-compaction off draws none.
+#[test]
+fn the_gauge_ticks_the_compaction_threshold() {
+    let gauge = |compaction_percent: Option<f64>| {
+        let state = ChromeState {
+            show_manage: true,
+            context: Some(ContextUsage {
+                tokens: 50_000,
+                context_window: 200_000,
+            }),
+            compaction_percent,
+            ..Default::default()
+        };
+        render_tray(&state, &theme(), 50)
+            .iter()
+            .map(|s| s.content.as_str())
+            .collect::<String>()
+    };
+    // `← manage` (8) + `50k/200k 25%` (12) leave 30 cells: 28 gauge cells, 7 used, the tick at 80%.
+    assert_eq!(
+        gauge(Some(80.0)),
+        format!(
+            "\u{2190} manage {}{}\u{2503}{} 50k/200k 25%",
+            "\u{2501}".repeat(7),
+            "\u{2500}".repeat(15),
+            "\u{2500}".repeat(5)
+        )
+    );
+    assert!(!gauge(None).contains('\u{2503}'));
+}
+
+/// As the width drops, the tray gives segments up in its stated order (gauge, tier, depth,
+/// tokens/window, effort with its glyph, `manage`, percent, model) — each row fits its width, no segment is cut
+/// mid-word, and the lanes never touch.
+#[test]
+fn the_tray_degrades_in_its_shrink_order() {
+    let state = ChromeState {
+        show_manage: true,
+        tray_depth: Some(2),
+        context: Some(ContextUsage {
+            tokens: 50_000,
+            context_window: 200_000,
+        }),
+        model_id: Some("claude-sonnet-4-5".to_string()),
+        thinking_suffix: Some("high".to_string()),
+        service_tier: Some("priority".to_string()),
+        ..Default::default()
+    };
+    let rows: Vec<String> = [140, 80, 60, 50, 45, 40, 35, 30, 25, 20, 12, 4]
+        .into_iter()
+        .map(|width| {
+            let line = render_tray(&state, &theme(), width);
+            let text: String = line.iter().map(|s| s.content.as_str()).collect();
+            assert!(str_width(&text) <= width, "{width}: {text}");
+            // The gauge is not text: collapse it so the rows read as their segments.
+            text.chars()
+                .filter(|c| !matches!(c, '\u{2501}' | '\u{2500}' | '\u{2503}'))
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    let full = "\u{2190} manage depth 2 50k/200k 25% \u{b7} \u{25cf} claude-sonnet-4-5:high";
+    assert_eq!(
+        rows,
+        [
+            // 140, 80: everything (the gauge takes the slack).
+            format!("{full} \u{b7} fast"),
+            format!("{full} \u{b7} fast"),
+            // 60: the gauge is gone, then the tier badge.
+            full.to_string(),
+            // 50: the subagent depth.
+            "\u{2190} manage 50k/200k 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
+            // 45, 40: the context label keeps its percent.
+            "\u{2190} manage 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
+            "\u{2190} manage 25% \u{b7} \u{25cf} claude-sonnet-4-5:high".to_string(),
+            // 35: the effort suffix, with its thinking glyph.
+            "\u{2190} manage 25% \u{b7} claude-sonnet-4-5".to_string(),
+            // 30, 25: the `manage` word (the arrow stays).
+            "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
+            "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
+            // 20: the percent; the model goes last (12, 4).
+            "\u{2190} claude-sonnet-4-5".to_string(),
+            "\u{2190}".to_string(),
+            "\u{2190}".to_string(),
+        ]
+    );
 }

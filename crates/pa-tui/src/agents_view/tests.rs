@@ -13,6 +13,7 @@ mod drill_down;
 mod edge_jumps;
 mod empty_sessions;
 mod entry_anchor;
+mod folder_scope;
 mod heartbeat_badge;
 mod hints_render;
 mod hover_band;
@@ -27,6 +28,7 @@ mod saved_pages;
 mod search_selection;
 mod selection_churn;
 mod shell_enter;
+mod transcript_search;
 
 /// One idle row under test plus a holder row that keeps the selection, with the given title
 /// and one model id. The cost/age stay fixed so the expected rows are exact.
@@ -39,6 +41,7 @@ fn mode_with_row(title: &str, model: &str) -> (AgentsViewMode, usize) {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -146,6 +149,7 @@ fn mode_with_parent_and_child() -> AgentsViewMode {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -175,6 +179,7 @@ fn mode_with_anchor(anchor: Option<&str>, roster: Vec<serde_json::Value>) -> Age
         version: "0.0.0".to_string(),
         anchor_session_id: anchor.map(str::to_string),
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -206,6 +211,7 @@ fn scoped_mode(anchor: Option<&str>, roster: Vec<serde_json::Value>) -> AgentsVi
             active_session_id: Some("p-live".to_string()),
             session_name: Some("p name".to_string()),
         }),
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -237,6 +243,7 @@ fn mode_with_user_bindings(bindings: &[(&str, &str)]) -> AgentsViewMode {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,
@@ -264,6 +271,7 @@ fn fresh_mode(roster: Vec<serde_json::Value>) -> AgentsViewMode {
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

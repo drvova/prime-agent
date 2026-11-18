@@ -177,6 +177,37 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn turn_feedback_shown(
+        &self,
+        feedback: pa_tui::interactive::TurnFeedback,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count(match feedback {
+            pa_tui::interactive::TurnFeedback::StallShown => "tui_stall_shown_count",
+        });
+        Box::pin(std::future::ready(()))
+    }
+
+    fn menu_used(
+        &self,
+        used: pa_tui::interactive::MenuUse,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count(match used {
+            pa_tui::interactive::MenuUse::SlashCommandAccepted => "tui_slash_accept_count",
+            pa_tui::interactive::MenuUse::SearchStarted => "tui_menu_search_count",
+        });
+        Box::pin(std::future::ready(()))
+    }
+
+    fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_mention_pill_count");
+        Box::pin(std::future::ready(()))
+    }
+
+    fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_draft_recall_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn scroll_used(
         &self,
         _action: &'static str,
@@ -245,6 +276,11 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn queue_dispatched_now(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_queue_dispatch_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn suspend_used(
         &self,
         _outcome: &'static str,
@@ -310,6 +346,27 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
                 properties.set(key, serde_json::Value::from(*flag));
             }
             client.track("tui exit", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn resume_picker_closed(
+        &self,
+        scope: &'static str,
+        toggles: u64,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // A standalone event: `tui exit` already carries the backend's 128-key cap, so the
+        // picker's scope adoption cannot fold into its counters.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("scope", serde_json::Value::from(scope));
+            properties.set("scope_toggle_count", serde_json::Value::from(toggles));
+            properties.set("outcome", serde_json::Value::from(outcome));
+            client.track("tui resume picker closed", properties);
             let _ = client.shutdown().await;
         })
     }

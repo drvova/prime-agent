@@ -1,0 +1,1 @@
+- Bash output in tool cards now sits behind a small gutter: a `⎿` marks where the output starts, the lines below align under it, and the `⋮ +N lines` mark sits in the same column, so output is easy to tell apart from the command above it.

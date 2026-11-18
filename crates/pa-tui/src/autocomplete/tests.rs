@@ -123,7 +123,13 @@ fn tier_argument_completions_list_filter_and_mark_current() {
             })
             .collect::<Vec<_>>()
     };
-    provider.set_argument_completions("tier", tier_items("flex"));
+    provider.set_argument_completions(
+        "tier",
+        ArgumentChoices {
+            items: tier_items("flex"),
+            current: Some("flex".to_string()),
+        },
+    );
     // No term: every tier lists, the current one marked.
     let suggestions = provider.get_suggestions(&["/tier ".to_string()], 0, 6, false);
     let items = ready(suggestions).items;
@@ -293,35 +299,116 @@ fn theme() -> crate::theme::Theme {
     crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor)
 }
 
+/// The menu opened by typing `/` into an editor with the builtin registry.
+fn typed_menu(typed: &str) -> AutocompleteState {
+    let mut editor = crate::editor::Editor::new();
+    for ch in typed.chars() {
+        editor.handle_input(&ch.to_string());
+    }
+    editor.materialize_autocomplete();
+    editor
+        .autocomplete_state()
+        .cloned()
+        .expect("the slash menu opens")
+}
+
+/// A command catalog that lands while the `/` menu is open re-reads the menu in place: the menu
+/// stays open and lists the new `skill:` command.
 #[test]
-fn render_uses_the_menu_panel_grammar() {
-    let items: Vec<CompletionItem> = (0..7)
-        .map(|i| CompletionItem {
-            value: format!("cmd{i}"),
-            label: format!("cmd{i}"),
-            description: Some(format!("description {i}")),
-            argument_hint: Some("[arg]".to_string()),
-            source_tag: None,
-        })
+fn a_landing_command_catalog_keeps_the_open_slash_menu() {
+    let mut editor = crate::editor::Editor::new();
+    editor.handle_input("/");
+    editor.materialize_autocomplete();
+    assert!(editor.is_showing_autocomplete(), "the slash menu opens");
+    editor.set_autocomplete_skill_commands(vec![SlashCommandEntry {
+        name: "skill:brainstorm".to_string(),
+        aliases: Vec::new(),
+        description: Some("Brainstorm approaches".to_string()),
+        argument_hint: Some(SKILL_ARGUMENT_HINT.to_string()),
+        takes_argument: true,
+        source_tag: Some("#project".to_string()),
+    }]);
+    editor.materialize_autocomplete();
+    let menu = editor
+        .autocomplete_state()
+        .expect("the menu stays open across the catalog");
+    assert!(
+        menu.items
+            .iter()
+            .any(|item| item.value == "skill:brainstorm"),
+        "the reopened menu lists the landed skill: {:?}",
+        menu.items
+    );
+}
+
+fn row_texts(lines: &[Line]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+        .collect()
+}
+
+/// A bare `/` lists eight rows, each with its description on the row, and the overflowing list
+/// draws a one-cell scrollbar (accent thumb, muted track) instead of an `(n/m)` counter.
+#[test]
+fn slash_menu_rows_carry_descriptions_and_a_scrollbar_on_overflow() {
+    let theme = theme();
+    let lines = typed_menu("/").render(&theme, 72, &|_| None);
+    assert_eq!(
+        row_texts(&lines),
+        [
+            "\u{203a} settings    Open settings menu                                       \u{2588}",
+            "  model       Select model (opens selector UI; Tab filters by typed te\u{2026}\u{2502}",
+            "  effort      Select reasoning/thinking level (opens selector UI)      \u{2502}",
+            "  fast        Toggle OpenAI Fast mode                                  \u{2502}",
+            "  tier        Show or set the service tier                             \u{2502}",
+            "  export      Export session (HTML default, or specify path: .html/.js\u{2026}\u{2502}",
+            "  import      Import and resume a session from a JSONL file            \u{2502}",
+            "  share       Share session as a secret GitHub gist                    \u{2502}",
+        ]
+    );
+    let bar_colors: Vec<_> = lines
+        .iter()
+        .map(|line| line.last().and_then(|cell| cell.style.fg))
         .collect();
-    let state = AutocompleteState::new(items, 5, Some(SuggestionKind::SlashCommand));
-    let lines = state.render(&theme(), 60);
-    let text = |line: &Line| -> String { line.iter().map(|s| s.content.as_str()).collect() };
-    let rendered: Vec<String> = lines.iter().map(text).collect();
-    // The selected row carries the menu marker; the selection band
-    // spans the row.
-    assert!(rendered[0].starts_with("\u{203a} cmd0"));
-    assert_eq!(rendered[0].chars().count(), 60);
-    assert!(rendered.iter().any(|l| l.ends_with("[arg]")));
-    // The shared scroll status row, not a directional form.
-    assert!(rendered.iter().any(|l| l.trim() == "(1/7)"));
-    assert!(rendered.iter().any(|l| l.contains("description 0")));
+    let accent = theme.fg_style(crate::theme::ThemeColor::Accent).fg;
+    let muted = theme.fg_style(crate::theme::ThemeColor::Muted).fg;
+    assert_eq!(
+        bar_colors,
+        std::iter::once(accent)
+            .chain(std::iter::repeat_n(muted, 7))
+            .collect::<Vec<_>>()
+    );
+}
+
+/// `/mo` lists the prefix hit before the fuzzy one and drops the scattered matches (`import`,
+/// `system-prompt`) the old subsequence filter listed.
+#[test]
+fn slash_prefix_matches_precede_fuzzy_ones_and_weak_matches_drop() {
+    let provider = provider("/tmp");
+    let items = ready(provider.get_suggestions(&["/mo".to_string()], 0, 3, false)).items;
+    let values: Vec<&str> = items.iter().map(|item| item.value.as_str()).collect();
+    assert_eq!(values, ["model", "autonomous"]);
+}
+
+/// An unmatched token at the prompt start keeps the menu open on one muted no-match row.
+#[test]
+fn an_unmatched_slash_token_keeps_the_menu_open_on_its_no_match_row() {
+    let theme = theme();
+    let lines = typed_menu("/xyz").render(&theme, 40, &|_| None);
+    assert_eq!(
+        lines,
+        [vec![
+            crate::Span::raw("  "),
+            theme.fg_span(crate::theme::ThemeColor::Muted, "no command matches /xyz"),
+        ]]
+    );
 }
 
 #[test]
 fn empty_items_render_the_shared_no_match_row() {
     let state = AutocompleteState::new(Vec::new(), 5, None);
-    let lines = state.render(&theme(), 40);
+    let lines = state.render(&theme(), 40, &|_| None);
     let text: String = lines[0].iter().map(|s| s.content.as_str()).collect();
     assert_eq!(text, "  No matching commands");
 }
@@ -336,7 +423,7 @@ fn narrow_renders_never_exceed_the_frame_width() {
         .collect();
     for width in [4usize, 6, 9, 40] {
         let state = AutocompleteState::new(items.clone(), 5, Some(SuggestionKind::SlashCommand));
-        for line in &state.render(&theme(), width) {
+        for line in &state.render(&theme(), width, &|_| None) {
             assert!(
                 crate::width::spans_width(line) <= width,
                 "every row clamps to the frame width {width}: {line:?}"
@@ -344,7 +431,7 @@ fn narrow_renders_never_exceed_the_frame_width() {
         }
     }
     let empty = AutocompleteState::new(Vec::new(), 5, None);
-    for line in &empty.render(&theme(), 6) {
+    for line in &empty.render(&theme(), 6, &|_| None) {
         assert!(
             crate::width::spans_width(line) <= 6,
             "the no-match row clamps to the frame width: {line:?}"
@@ -555,7 +642,7 @@ fn render_shows_the_source_tag_as_a_trailing_segment() {
     described.description = Some("Search Google".to_string());
     described.source_tag = Some("#user".to_string());
     let state = AutocompleteState::new(vec![described], 5, Some(SuggestionKind::SlashCommand));
-    let rendered = state.render(&theme(), 80);
+    let rendered = state.render(&theme(), 80, &|_| None);
     let all: String = rendered
         .iter()
         .map(|line| {

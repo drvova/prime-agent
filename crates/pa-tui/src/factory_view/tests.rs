@@ -856,12 +856,12 @@ fn the_stop_key_arms_then_stops_the_selected_row() {
 fn r_resumes_only_a_paused_run() {
     let mut view = FactoryView::new(parse_factory_runs(&runs_response(&scripted_snapshot())), 40);
     assert_eq!(view.handle_key("r", &kb()), FactoryViewAction::None);
-    assert!(!frame_text(&mut view).join("\n").contains("r resume"));
+    assert!(!frame_text(&mut view).join("\n").contains("R resume"));
     let mut paused = parse_factory_runs(&runs_response(&scripted_snapshot()));
     paused[0].state = Some("paused".to_string());
     let mut view = FactoryView::new(paused, 40);
     let _ = view.handle_key("down", &kb());
-    assert!(frame_text(&mut view).join("\n").contains("r resume"));
+    assert!(frame_text(&mut view).join("\n").contains("R resume"));
     assert_eq!(
         view.handle_key("r", &kb()),
         FactoryViewAction::Resume {

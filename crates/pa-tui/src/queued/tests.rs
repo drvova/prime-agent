@@ -15,9 +15,20 @@ fn queue() -> QueuedMessages {
     }
 }
 
+/// The strip's keys as the default bindings spell them.
+fn strip_keys() -> PendingStripKeys {
+    PendingStripKeys {
+        dispatch: "Esc".to_string(),
+        edit: "Alt+\u{2191}".to_string(),
+    }
+}
+
+/// The dispatch clause the oldest parked message carries.
+const DISPATCH: &str = " \u{2014} Esc dispatches now";
+
 #[test]
 fn empty_queue_renders_no_rows() {
-    assert!(render_queue(&theme(), &QueuedMessages::default(), "alt+up", 80).is_empty());
+    assert!(render_queue(&theme(), &QueuedMessages::default(), &strip_keys(), 80).is_empty());
 }
 
 /// A picked-up prompt leaves its lane at delivery (RES-1306): while its turn prepares the strip is
@@ -31,7 +42,7 @@ fn a_preparing_turn_renders_the_starting_row_alone() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 2, "spacer + the starting row, no hint");
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(text.trim(), "Starting: queued before compaction");
@@ -47,13 +58,16 @@ fn the_starting_row_renders_above_the_parked_lanes() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 4, "spacer + starting + follow-up + hint");
     let starting: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(starting.trim(), "Starting: queued before compaction");
     let follow_up: String = rows[2].iter().map(|span| span.content.as_str()).collect();
-    assert_eq!(follow_up.trim(), "Follow-up: then summarize");
-    assert!(crate::ansi::line_to_ansi(&rows[3]).contains("to browse and edit queued messages"));
+    assert_eq!(
+        follow_up.trim(),
+        format!("\u{230e} Follow-up: then summarize{DISPATCH}")
+    );
+    assert!(crate::ansi::line_to_ansi(&rows[3]).contains("edits the last queued prompt"));
 }
 
 /// The strip drops the "Starting" row the moment the projection no longer reports a preparing turn.
@@ -68,42 +82,39 @@ fn the_starting_row_drops_with_the_projection() {
             rlm_child_status: QueueLaneIndices::default(),
             injected_prompts: QueueLaneIndices::default(),
         },
-        "alt+up",
+        &strip_keys(),
         80,
     );
     assert!(rows.is_empty());
 }
 
+/// The pending strip (nc): each parked message under the live line behind a dim `⌎`, the oldest
+/// naming the key that dispatches them now, then the hint naming the key that edits the newest.
 #[test]
-fn queue_renders_labels_and_hint() {
-    let rows = render_queue(&theme(), &queue(), "alt+up", 80);
-    assert_eq!(rows.len(), 4, "spacer + two previews + hint");
-    let expected: crate::Line = crate::width::pad_line(
-        vec![
-            crate::Span::raw(" "),
-            crate::Span::styled(
-                "Steering: turn right".to_string(),
-                theme().fg_style(ThemeColor::Dim),
-            ),
-        ],
-        80,
-    );
+fn queue_renders_the_pending_strip() {
+    let dim = theme().fg_style(ThemeColor::Dim);
+    let row = |spans: Vec<crate::Span>| crate::width::pad_line(spans, 80);
     assert_eq!(
-        rows[1], expected,
-        "the steering preview is indented, dim, labeled and padded"
-    );
-    assert!(crate::ansi::line_to_ansi(&rows[2]).contains("Follow-up: then summarize"));
-    let expected_hint: crate::Line = crate::width::pad_line(
+        render_queue(&theme(), &queue(), &strip_keys(), 80),
         vec![
-            crate::Span::raw(" "),
-            crate::Span::styled(
-                "\u{2570}\u{2500} alt+up to browse and edit queued messages".to_string(),
-                theme().fg_style(ThemeColor::Dim),
-            ),
-        ],
-        80,
+            Vec::new(),
+            row(vec![
+                crate::Span::raw(" "),
+                crate::Span::styled("\u{230e} ", dim),
+                crate::Span::styled("Steering: turn right", dim),
+                crate::Span::styled(DISPATCH, dim),
+            ]),
+            row(vec![
+                crate::Span::raw(" "),
+                crate::Span::styled("\u{230e} ", dim),
+                crate::Span::styled("Follow-up: then summarize", dim),
+            ]),
+            row(vec![
+                crate::Span::raw(" "),
+                crate::Span::styled("  Alt+\u{2191} edits the last queued prompt", dim),
+            ]),
+        ]
     );
-    assert_eq!(rows[3], expected_hint, "the hint row matches TS");
 }
 
 #[test]
@@ -116,13 +127,15 @@ fn slash_previews_render_the_command_segment_in_accent() {
         injected_prompts: QueueLaneIndices::default(),
     };
     let theme = theme();
-    let rows = render_queue(&theme, &queue, "alt+up", 80);
+    let rows = render_queue(&theme, &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 4);
     let expected_command: crate::Line = crate::width::pad_line(
         vec![
             crate::Span::raw(" "),
+            theme.fg_span(ThemeColor::Dim, "\u{230e} "),
             theme.fg_span(ThemeColor::Dim, "Steering: "),
             theme.fg_span(ThemeColor::Accent, "/hotkeys"),
+            theme.fg_span(ThemeColor::Dim, DISPATCH),
         ],
         80,
     );
@@ -133,6 +146,7 @@ fn slash_previews_render_the_command_segment_in_accent() {
     let expected_plain: crate::Line = crate::width::pad_line(
         vec![
             crate::Span::raw(" "),
+            theme.fg_span(ThemeColor::Dim, "\u{230e} "),
             theme.fg_span(ThemeColor::Dim, "Follow-up: fix "),
             theme.fg_span(ThemeColor::Success, "@Cargo.toml"),
             theme.fg_span(ThemeColor::Dim, " "),
@@ -155,14 +169,14 @@ fn long_previews_truncate_with_ellipsis() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 30);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 30);
     assert_eq!(rows.len(), 3);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     // The row pads to the width like TS (a trailing pad column follows the
     // ellipsis), so the check strips the pad.
     assert!(
-        text.trim_end().ends_with("..."),
-        "truncated with ellipsis: {text}"
+        text.trim_end().ends_with(&format!("...{DISPATCH}")),
+        "the preview truncates with an ellipsis and keeps the clause: {text}"
     );
     assert!(
         crate::width::line_width(&rows[1]) <= 30,
@@ -179,9 +193,12 @@ fn multiline_preview_renders_its_first_line() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
-    assert_eq!(text.trim(), "Steering: first line");
+    assert_eq!(
+        text.trim(),
+        format!("\u{230e} Steering: first line{DISPATCH}")
+    );
 }
 
 #[test]
@@ -209,7 +226,7 @@ fn internal_prompts_condense_into_one_counted_row() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         2,
@@ -251,7 +268,7 @@ fn human_prompts_render_before_the_condensed_row() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         5,
@@ -265,17 +282,19 @@ fn human_prompts_render_before_the_condensed_row() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Steering: turn right");
-    assert_eq!(texts[2].trim(), "Follow-up: then summarize");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Steering: turn right{DISPATCH}")
+    );
+    assert_eq!(texts[2].trim(), "\u{230e} Follow-up: then summarize");
     assert_eq!(
         texts[3].trim(),
         "1 heartbeat and 1 other internal prompt queued",
         "the counts name the queued origins only - no agent message queued"
     );
-    assert!(
-        texts[4]
-            .trim()
-            .starts_with("\u{2570}\u{2500} alt+up to browse"),
+    assert_eq!(
+        texts[4].trim(),
+        "Alt+\u{2191} edits the last queued prompt",
         "the hint stays the strip's last row"
     );
 }
@@ -296,7 +315,7 @@ fn condensed_row_counts_each_origin_with_correct_plurals() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 2);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(
@@ -315,7 +334,7 @@ fn one_queued_agent_message_reads_singular() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 2);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(text.trim(), "1 agent message queued");
@@ -333,7 +352,7 @@ fn condensed_row_truncates_to_the_width() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 30);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 30);
     assert_eq!(rows.len(), 2);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert!(
@@ -632,7 +651,7 @@ fn child_status_notices_condense_by_wire_provenance() {
         },
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         5,
@@ -646,8 +665,11 @@ fn child_status_notices_condense_by_wire_provenance() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Steering: turn right");
-    assert_eq!(texts[2].trim(), "Follow-up: then summarize");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Steering: turn right{DISPATCH}")
+    );
+    assert_eq!(texts[2].trim(), "\u{230e} Follow-up: then summarize");
     assert_eq!(
         texts[3].trim(),
         "2 child status notices queued",
@@ -672,7 +694,7 @@ fn a_steering_lane_notice_condenses_too() {
         },
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         4,
@@ -686,7 +708,10 @@ fn a_steering_lane_notice_condenses_too() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Steering: turn right");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Steering: turn right{DISPATCH}")
+    );
     assert_eq!(texts[2].trim(), "1 child status notice queued");
 }
 
@@ -704,7 +729,7 @@ fn user_typed_rows_that_look_like_notices_stay_human() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         5,
@@ -720,15 +745,15 @@ fn user_typed_rows_that_look_like_notices_stay_human() {
         .collect();
     assert_eq!(
         texts[1].trim(),
-        "Steering: [child-exited: no-reply child:not-a-notice]"
+        format!("\u{230e} Steering: [child-exited: no-reply child:not-a-notice]{DISPATCH}")
     );
     assert_eq!(
         texts[2].trim(),
-        "Steering: [child-failed child:also-not-a-notice]"
+        "\u{230e} Steering: [child-failed child:also-not-a-notice]"
     );
     assert_eq!(
         texts[3].trim(),
-        "Follow-up: RLM child status: typed by hand",
+        "\u{230e} Follow-up: RLM child status: typed by hand",
         "the lane label prepends — no label suppression without the four TS prefixes"
     );
 }
@@ -758,7 +783,7 @@ fn mixed_origins_count_child_status_in_the_fixed_order() {
     };
     // Width 120 so the four-origin row reads untruncated (the row text is 88
     // chars; at 80 the strip's ellipsis cut it).
-    let rows = render_queue(&theme(), &queue, "alt+up", 120);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 120);
     // spacer + the one human preview + the condensed row + the hint.
     assert_eq!(rows.len(), 4);
     let texts: Vec<String> = rows
@@ -769,16 +794,16 @@ fn mixed_origins_count_child_status_in_the_fixed_order() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Follow-up: edit this");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Follow-up: edit this{DISPATCH}")
+    );
     assert_eq!(
         texts[2].trim(),
         "1 agent message, 1 heartbeat, 3 child status notices, and 1 other internal prompt queued",
         "each origin counts across both lanes, child status between heartbeats and other"
     );
-    assert_eq!(
-        texts[3].trim(),
-        "╰─ alt+up to browse and edit queued messages"
-    );
+    assert_eq!(texts[3].trim(), "Alt+\u{2191} edits the last queued prompt");
     assert_eq!(
         texts
             .iter()
@@ -823,7 +848,7 @@ fn seven_child_exits_render_as_one_counted_row() {
         },
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         4,
@@ -837,7 +862,10 @@ fn seven_child_exits_render_as_one_counted_row() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Steering: turn right");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Steering: turn right{DISPATCH}")
+    );
     assert_eq!(
         texts[2].trim(),
         "7 child status notices queued",
@@ -872,7 +900,7 @@ fn injected_continuations_condense_into_the_counted_row() {
             follow_up: vec![1, 2],
         },
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         4,
@@ -886,7 +914,10 @@ fn injected_continuations_condense_into_the_counted_row() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Follow-up: keep going");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Follow-up: keep going{DISPATCH}")
+    );
     assert_eq!(
         texts[2].trim(),
         "3 other internal prompts queued",
@@ -917,7 +948,7 @@ fn an_only_internal_queue_renders_just_the_summary_row() {
             follow_up: vec![1],
         },
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(rows.len(), 2, "spacer + the condensed row, no browse hint");
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(
@@ -944,7 +975,7 @@ fn a_same_text_user_row_never_rides_the_injected_rider() {
         rlm_child_status: QueueLaneIndices::default(),
         injected_prompts: QueueLaneIndices::default(),
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 80);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 80);
     assert_eq!(
         rows.len(),
         3,
@@ -953,7 +984,7 @@ fn a_same_text_user_row_never_rides_the_injected_rider() {
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(
         text.trim(),
-        "Steering: [goal: continuation]",
+        format!("\u{230e} Steering: [goal: continuation]{DISPATCH}"),
         "the lane label prepends and the first line renders — the human row it is"
     );
 }
@@ -981,7 +1012,7 @@ fn mixed_origins_count_the_injected_continuations_as_other() {
             follow_up: vec![0],
         },
     };
-    let rows = render_queue(&theme(), &queue, "alt+up", 120);
+    let rows = render_queue(&theme(), &queue, &strip_keys(), 120);
     assert_eq!(
         rows.len(),
         4,
@@ -995,7 +1026,10 @@ fn mixed_origins_count_the_injected_continuations_as_other() {
                 .collect::<String>()
         })
         .collect();
-    assert_eq!(texts[1].trim(), "Follow-up: edit this");
+    assert_eq!(
+        texts[1].trim(),
+        format!("\u{230e} Follow-up: edit this{DISPATCH}")
+    );
     assert_eq!(
         texts[2].trim(),
         "1 agent message, 1 heartbeat, 1 child status notice, and 2 other internal prompts queued",

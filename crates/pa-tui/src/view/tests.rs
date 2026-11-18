@@ -1,4 +1,4 @@
-use super::frame::{composite_follow_hint, indicator_row};
+use super::frame::composite_follow_hint;
 use super::*;
 use crate::chat::{AssistantMessage, MessageBlock};
 use crate::osc133::RowMarkers;
@@ -30,11 +30,13 @@ fn markdown_link_targets_use_the_owning_view_cwd() {
     first.chrome.cwd = first_path.to_string_lossy().into_owned();
     first.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
+        sent_at: None,
     });
     let mut second = view();
     second.chrome.cwd = second_path.to_string_lossy().into_owned();
     second.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
+        sent_at: None,
     });
     let targets =
         |v: &mut AgentView| crate::hyperlinks::frame_link_ranges(&v.render_transcript(80));
@@ -206,23 +208,258 @@ fn bang_prompt_renders_in_place_of_the_typed_prefix() {
         !joined.contains("> echo hi"),
         "the default prompt does not render for a bang line:\n{joined}"
     );
-    let border = v.theme.fg_style(ThemeColor::BorderMuted);
+    let bg = crate::chrome::editor_background(&v.theme);
     let prompt_row = frame
         .iter()
         .find(|line| text_of(line).contains("!  echo hi"))
         .expect("the prompt row");
     assert!(
-        prompt_row.iter().any(|span| span.style == border),
-        "the bang prompt renders through the editor border color"
+        prompt_row.contains(&crate::Span::styled(
+            "! ",
+            bg.patch(v.theme.fg_style(ThemeColor::BashMode))
+        )),
+        "the bang prompt is tinted bash-mode on the editor background: {prompt_row:?}"
     );
 
+    // The mode shows by colour only: the draft starts in the same column under `>`, `!` and `!!`.
+    let draft_column = |text: &str| {
+        let mut v = view();
+        v.editor.set_text(text);
+        let frame = v.render_dock(80);
+        frame
+            .iter()
+            .map(text_of)
+            .find_map(|row| row.find("echo quiet"))
+            .expect("the draft row")
+    };
+    assert_eq!(draft_column("!!echo quiet"), draft_column("echo quiet"));
+    assert_eq!(draft_column("!echo quiet"), draft_column("echo quiet"));
+}
+
+/// The composer's `>` prompt carries the session's thinking level (oh-my-pi's effort-tinted
+/// editor edge): dim through low, muted at medium, accent at high, warm above it; plain with no
+/// level, and the bash prompt keeps its own colour over the tint.
+#[test]
+fn the_prompt_is_tinted_by_the_thinking_level() {
+    let prompt_style = |suffix: Option<&str>, text: &str| {
+        let mut v = view();
+        v.chrome.thinking_suffix = suffix.map(str::to_string);
+        v.editor.set_text(text);
+        let frame = v.render_dock(80);
+        let row = frame
+            .iter()
+            .find(|line| text_of(line).contains("draft"))
+            .expect("the prompt row");
+        let prompt = row
+            .iter()
+            .find(|span| span.content == "> " || span.content == "! ")
+            .expect("the prompt span");
+        (prompt.style, text_of(row).find("draft"))
+    };
+    let reference = view();
+    let theme = &reference.theme;
+    let bg = crate::chrome::editor_background(theme);
+    let tinted = ["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+        .map(|level| prompt_style(Some(level), "draft"));
+    let draft_column = prompt_style(None, "draft").1;
+    let expected = [
+        ThemeColor::Dim,
+        ThemeColor::Dim,
+        ThemeColor::Dim,
+        ThemeColor::Muted,
+        ThemeColor::Accent,
+        ThemeColor::Warning,
+        ThemeColor::Warning,
+    ]
+    .map(|color| (bg.patch(theme.fg_style(color)), draft_column));
+    assert_eq!(
+        tinted, expected,
+        "one tint per level, the draft never moves"
+    );
+    assert_eq!(prompt_style(None, "draft").0, bg, "no level, no tint");
+    assert_eq!(
+        prompt_style(Some("high"), "!draft").0,
+        bg.patch(theme.fg_style(ThemeColor::BashMode)),
+        "bash mode owns the prompt over the thinking tint"
+    );
+}
+
+/// A large paste lands as one chip (nc/omp): the marker renders on the chip background, the
+/// cursor steps over it and Backspace deletes it as one unit, and submit expands it in full.
+#[test]
+fn a_large_paste_is_one_chip_that_moves_deletes_and_expands_whole() {
     let mut v = view();
-    v.editor.set_text("!!echo quiet");
-    let frame = v.render_dock(80);
-    let joined = frame.iter().map(text_of).collect::<Vec<_>>().join("\n");
+    let pasted = (1..=12)
+        .map(|n| format!("line {n}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    v.editor.handle_input("a");
+    let _ = v.editor.handle_paste(&pasted);
+    let marker = "[paste #1 +13 lines]";
+    assert_eq!(v.editor.get_text(), format!("a{marker}"));
+    let chip = v
+        .theme
+        .soft_selection_style()
+        .patch(v.theme.fg_style(ThemeColor::Accent));
+    let dock = v.render_dock(80);
     assert!(
-        joined.contains("!!  echo quiet"),
-        "the !! prompt hides its typed prefix:\n{joined}"
+        dock.iter()
+            .flatten()
+            .any(|span| *span == crate::Span::styled(marker, chip)),
+        "the marker renders as one chip span: {dock:?}"
+    );
+    assert_eq!(v.editor.get_expanded_text(), format!("a{pasted}"));
+    v.editor.handle_input("left");
+    assert_eq!(
+        v.editor.get_cursor(),
+        (0, 1),
+        "one Left steps over the whole chip"
+    );
+    v.editor.handle_input("right");
+    v.editor.handle_input("backspace");
+    assert_eq!(
+        v.editor.get_text(),
+        "a",
+        "one Backspace deletes the whole chip"
+    );
+}
+
+/// A draft taller than the box names what it hides in the box's own padding rows, dim and flush
+/// right (nc): `+N lines above` on the top row, `+N lines below` on the bottom one.
+#[test]
+fn the_composer_counts_the_lines_it_hides() {
+    let mut v = view();
+    let text: Vec<String> = (1..=12).map(|n| format!("draft line {n}")).collect();
+    v.editor.set_text(&text.join("\n"));
+    let bg = crate::chrome::editor_background(&v.theme);
+    let dim = bg.patch(v.theme.fg_style(ThemeColor::Dim));
+    let counter = |label: &str| -> Line {
+        vec![
+            crate::Span::styled(" ".repeat(80 - label.len() - 2), bg),
+            crate::Span::styled(label.to_string(), dim),
+            crate::Span::styled("  ", bg),
+        ]
+    };
+    // The box shows 7 of the 12 lines (30% of the 24-row terminal); the cursor sits at the end.
+    let dock = v.render_dock(80);
+    assert!(
+        dock.contains(&counter("+5 lines above")),
+        "the top padding row counts the hidden head: {dock:?}"
+    );
+    v.editor.move_to_doc_start();
+    let dock = v.render_dock(80);
+    assert!(
+        dock.contains(&counter("+5 lines below")),
+        "the bottom padding row counts the hidden tail: {dock:?}"
+    );
+    assert!(!dock.contains(&counter("+5 lines above")));
+}
+
+/// The empty composer's text row carries a transient status (dim, after the cursor) and the
+/// self-retiring key hint (dim, flush right); typing hides both.
+#[test]
+fn the_empty_composer_row_hosts_the_status_and_the_hint() {
+    let mut v = view();
+    v.composer_status = Some("Copied last agent message to clipboard".to_string());
+    let hint = "\u{21e7}\u{21e5} thinking effort";
+    v.composer_hint = Some(hint.to_string());
+    let bg = crate::chrome::editor_background(&v.theme);
+    let dim = bg.patch(v.theme.fg_style(ThemeColor::Dim));
+    let status = "Copied last agent message to clipboard";
+    // ` > ` + the cursor cell (5), the status, the fill, the hint, the right padding (2).
+    let fill = 80 - 5 - status.len() - crate::width::str_width(hint) - 2;
+    let expected: Line = vec![
+        crate::Span::styled(" ", bg),
+        crate::Span::styled("> ", bg),
+        crate::Span::styled(" ", bg),
+        crate::Span::styled(" ", bg.add_modifier(Modifier::REVERSED)),
+        crate::Span::styled(status, dim),
+        crate::Span::styled(" ".repeat(fill), bg),
+        crate::Span::styled(hint, dim),
+        crate::Span::styled("  ", bg),
+    ];
+    assert!(
+        v.render_dock(80).contains(&expected),
+        "{:?}",
+        v.render_dock(80)
+    );
+    v.editor.handle_input("x");
+    let joined: String = v.render_dock(80).iter().map(text_of).collect();
+    assert!(!joined.contains(status) && !joined.contains(hint));
+}
+
+/// A draft typed into a running turn takes the steering composer (nc): every box row on the warm
+/// surface behind a warning-colored `▐` rail. An empty draft or an idle session keeps the plain
+/// editor surface.
+#[test]
+fn a_draft_during_a_turn_takes_the_steering_composer() {
+    let mut v = view();
+    let steering = v.theme.steering_surface_style();
+    assert_ne!(
+        steering.bg,
+        crate::chrome::editor_background(&v.theme).bg,
+        "the warm surface differs from the editor surface"
+    );
+    let rail = crate::Span::styled(
+        "\u{2590}",
+        steering.patch(v.theme.fg_style(ThemeColor::Warning)),
+    );
+    let railed = |frame: &[Line]| -> Vec<Line> {
+        frame
+            .iter()
+            .filter(|row| row.first() == Some(&rail))
+            .cloned()
+            .collect()
+    };
+    v.working = Some(WorkingState {
+        activity: "Writing",
+        message: None,
+        download: true,
+        tokens: 0,
+        elapsed_secs: 2,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
+    });
+    // A thinking level is set, but steering drops its tint from the prompt.
+    v.chrome.thinking_suffix = Some("high".to_string());
+    v.editor.set_text("also cover the tests");
+    let rows = railed(&v.render_dock(80));
+    assert_eq!(rows.len(), 3, "top pad, the draft row, bottom pad");
+    assert_eq!(
+        rows[0],
+        vec![rail.clone(), crate::Span::styled(" ".repeat(79), steering)]
+    );
+    assert_eq!(
+        text_of(&rows[1]).trim_end(),
+        "\u{2590}>  also cover the tests"
+    );
+    assert_eq!(
+        rows[1]
+            .iter()
+            .find(|span| span.content == "> ")
+            .map(|span| span.style),
+        Some(steering),
+        "the steering prompt is plain on the warm surface, never thinking-tinted"
+    );
+    assert!(
+        rows.iter()
+            .flatten()
+            .all(|span| span.style.bg == steering.bg),
+        "every box span sits on the warm surface: {rows:?}"
+    );
+
+    v.editor.set_text("");
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an empty draft reverts"
+    );
+    v.editor.set_text("also cover the tests");
+    v.working = None;
+    assert!(
+        railed(&v.render_dock(80)).is_empty(),
+        "an idle session reverts"
     );
 }
 
@@ -243,6 +480,29 @@ fn autocomplete_dropdown_rows_carry_the_popup_background() {
     assert!(
         marker_row.iter().all(|span| span.style.bg.is_some()),
         "dropdown row spans the popup background: {marker_row:?}"
+    );
+}
+
+/// A command typed out with its separator ghosts its argument hint dim after the cursor.
+#[test]
+fn a_typed_command_ghosts_its_argument_hint_after_the_cursor() {
+    let mut v = view();
+    for ch in "/tier ".chars() {
+        v.editor.handle_input(&ch.to_string());
+    }
+    let frame = v.render_dock(80);
+    let ghost = frame
+        .iter()
+        .flatten()
+        .find(|span| span.content == "[default|flex|priority|auto]")
+        .expect("the hint ghosts after the cursor");
+    let bg = crate::chrome::editor_background(&v.theme);
+    assert_eq!(ghost.style, bg.patch(v.theme.fg_style(ThemeColor::Dim)));
+    v.editor.handle_input("f");
+    let frame = v.render_dock(80);
+    assert!(
+        !frame.iter().any(|line| text_of(line).contains("[default|")),
+        "the first argument character clears the ghost"
     );
 }
 
@@ -409,6 +669,45 @@ fn scroll_offset_is_visible_in_frames() {
     assert!(!top.iter().any(|l| row_text(l).contains("reply 29")));
 }
 
+/// The stall the adoption counter records is the one on screen: a quiet loader under a retry
+/// countdown is hidden, so the layout reports no stall until the countdown leaves.
+#[test]
+fn a_stall_counts_as_shown_only_when_the_working_loader_owns_the_status_area() {
+    let mut v = view();
+    let now = std::time::Instant::now();
+    v.working = Some(WorkingState {
+        activity: "Waiting",
+        message: None,
+        download: false,
+        tokens: 0,
+        elapsed_secs: 0,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
+    });
+    v.working_since = now.checked_sub(std::time::Duration::from_secs(10));
+    v.working_heard = now.checked_sub(std::time::Duration::from_secs(5));
+    v.retry = Some(crate::chat::RetryState {
+        attempt: 1,
+        max_attempts: 3,
+        ends_at: now + std::time::Duration::from_secs(30),
+        error_message: "429 Rate limit exceeded".to_string(),
+        reason: crate::snapshot::RetryStartReason::Quick,
+        provider: None,
+    });
+    v.render_frame(80, 24);
+    assert!(!v.stall_shown, "the retry countdown hides the stall row");
+    v.retry = None;
+    let frame = v.render_frame(80, 24);
+    assert!(
+        frame
+            .iter()
+            .any(|row| row_text(row).contains("Waiting on the model")),
+        "the stall row is on screen"
+    );
+    assert!(v.stall_shown, "the painted stall row is reported");
+}
+
 #[test]
 fn compaction_loader_replaces_the_working_loader() {
     // TS `startCompactionLoader`: the compaction loader owns the status
@@ -420,6 +719,9 @@ fn compaction_loader_replaces_the_working_loader() {
         download: false,
         tokens: 0,
         elapsed_secs: 0,
+        thought: None,
+        quiet_secs: 0,
+        tool_label: None,
     });
     v.compaction = Some(crate::chat::CompactionState {
         reason: crate::chat::CompactionReason::Manual,
@@ -565,7 +867,7 @@ fn thinking_filled(v: AgentView, turns: usize) -> AgentView {
 /// The mode-exit follow recompute (operator directive 2026-09-26).
 #[test]
 fn collapse_resumes_following_when_the_tail_is_in_view() {
-    let mut v = thinking_filled(view(), 2);
+    let mut v = thinking_filled(view(), 1);
     v.detail = Detail::All;
     v.render_frame(80, 24);
     assert!(v.is_following());
@@ -623,23 +925,6 @@ fn collapse_keeps_the_hint_when_rows_remain_below() {
             .any(|l| row_text(l).contains("ctrl+shift+down to follow")),
         "the paused window with rows below keeps the hint"
     );
-}
-
-/// The scroll indicators paint on the editor surface's background (operator directive 2026-09-26).
-#[test]
-fn the_more_indicator_carry_the_bar_background() {
-    let bg = ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(10, 11, 12));
-    let border = ratatui::style::Style::default().fg(ratatui::style::Color::Rgb(1, 2, 3));
-    for label in [" ↑ 14 more", " ↓ 3 more"] {
-        let row = indicator_row(label, bg, border, 20);
-        for span in &row {
-            assert_eq!(
-                span.style.bg,
-                Some(ratatui::style::Color::Rgb(10, 11, 12)),
-                "every span of {label:?} carries the bar background"
-            );
-        }
-    }
 }
 
 /// The hover affordance (operator directive 2026-09-26): Muted spans
@@ -707,6 +992,7 @@ fn a_scrolled_layout_revalidates_the_hover() {
     for index in 0..10 {
         entries.push(crate::chat::ChatEntry::User {
             text: format!("later user line {index}"),
+            sent_at: None,
         });
     }
     let mut view = collapsed_view(entries);
@@ -915,11 +1201,39 @@ fn transcript_text(view: &mut AgentView, width: usize) -> String {
         .join("\n")
 }
 
+/// A prompt's send time sits flush right on its first text row; a row too full for it keeps
+/// its text, and the clock never changes the entry's height.
+#[test]
+fn a_prompt_shows_its_send_time_flush_right() {
+    let sent_at = 1_763_300_000_000;
+    let (hour, minute) = pa_types::platform::local_clock(sent_at).unwrap();
+    let clock = format!("{hour:02}:{minute:02}");
+    let rows_of = |text: &str, sent_at: Option<i64>| {
+        let mut view = view_with(vec![ChatEntry::User {
+            text: text.to_string(),
+            sent_at,
+        }]);
+        let text = transcript_text(&mut view, 40);
+        text.lines().map(str::to_string).collect::<Vec<_>>()
+    };
+    let stamped = rows_of("hello", Some(sent_at));
+    let row = stamped.iter().find(|row| row.contains("hello")).unwrap();
+    assert!(row.ends_with(&format!("{clock}  ")), "{row:?}");
+    assert_eq!(stamped.len(), rows_of("hello", None).len());
+    let full = "x".repeat(34);
+    let crowded = rows_of(&full, Some(sent_at));
+    assert!(
+        !crowded.iter().any(|row| row.contains(&clock)),
+        "{crowded:?}"
+    );
+}
+
 #[test]
 fn cached_transcript_rows_match_fresh_render() {
     let mut view = view_with(vec![
         ChatEntry::User {
             text: "hello".to_string(),
+            sent_at: None,
         },
         ChatEntry::Assistant(Box::new(AssistantMessage {
             blocks: vec![MessageBlock::Text("world".to_string())],
@@ -1087,6 +1401,7 @@ fn compaction_summary_block_toggles_with_the_detail_cycle() {
 fn user_row() -> ChatEntry {
     ChatEntry::User {
         text: "hello".to_string(),
+        sent_at: None,
     }
 }
 
@@ -1124,6 +1439,7 @@ fn tool_card_after_user_message_keeps_ts_two_blank_seam() {
     let mut view = view_with(vec![
         ChatEntry::User {
             text: "run the cell".to_string(),
+            sent_at: None,
         },
         settled_tool_card("t1"),
     ]);
@@ -1172,6 +1488,7 @@ fn conversation_leading_matches_ts_spacing_rules() {
     };
     let user = || ChatEntry::User {
         text: "hello".to_string(),
+        sent_at: None,
     };
 
     // Nothing preceding: the collapsed form leads with a blank, the
@@ -1243,9 +1560,10 @@ fn conversation_leading_matches_ts_spacing_rules() {
     assert!(view.conversation_leading(2, false));
 }
 
-/// TS `isCompactAgentMessageNeighbor`: renders ZERO rows — no spacer, no tool separator.
+/// Collapsed thinking folds to one row between spacers: the body stays hidden, the fold
+/// names it with its token estimate.
 #[test]
-fn hidden_thinking_after_an_agent_message_renders_zero_height() {
+fn collapsed_thinking_folds_to_one_row() {
     let mut view = view_with(vec![
         user_row(),
         agent_message_row(),
@@ -1254,74 +1572,21 @@ fn hidden_thinking_after_an_agent_message_renders_zero_height() {
     ]);
     view.detail = Detail::Overview;
     let text = transcript_text(&mut view, 80);
-    assert!(!text.contains("thinking body"), "collapsed hides thinking");
-    let lines: Vec<&str> = text.lines().collect();
-    let agent_row = lines
-        .iter()
-        .position(|line| line.contains("Agent message \u{b7} \u{2193} lane"))
-        .expect("the agent-message row renders");
-    // The card's panel header is its FIRST row; the seam check must
-    // look above it, never inside the panel's own padding.
+    assert!(!text.contains("thinking body"), "collapsed hides the body");
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
     let header_row = lines
         .iter()
         .position(|line| line.contains("bash \u{b7} done"))
         .expect("the tool card header renders");
-    // Flush: the row directly above the card header is the agent
-    // message's own last row, never a hidden-thinking spacer.
-    assert!(
-        agent_row < header_row,
-        "the card renders after the agent message:\n{text}"
-    );
-    assert!(
-        lines[header_row - 1].contains("Agent message \u{b7} \u{2193} lane"),
-        "the agent message header sits directly above the card header:\n{text}"
-    );
-}
-
-/// A bash execution card is a compact neighbor (TS
-/// `isCompactAgentMessageNeighbor` includes `BashExecutionComponent`).
-#[test]
-fn hidden_thinking_after_a_bash_card_renders_zero_height() {
-    let mut view = view_with(vec![
-        user_row(),
-        ChatEntry::BashExecution(Box::new(crate::bash_card::BashExecutionCard {
-            id: "b1".to_string(),
-            command: "echo hi".to_string(),
-            excluded: false,
-            output: "hi".to_string(),
-            running: false,
-            exit_code: Some(0),
-            cancelled: false,
-            error_message: None,
-            truncated: false,
-            full_output_path: None,
-            suppress_leading_space: false,
-        })),
-        thinking_tool_assistant(),
-        settled_tool_card("c1"),
-    ]);
-    view.detail = Detail::Overview;
-    let text = transcript_text(&mut view, 80);
-    assert!(!text.contains("thinking body"), "collapsed hides thinking");
-    let lines: Vec<&str> = text.lines().collect();
-    let bash_row = lines
-        .iter()
-        .position(|line| line.contains("echo hi"))
-        .expect("the bash card renders");
-    // The tool panel's header is its first row; the seam sits above it.
-    let header_row = lines
-        .iter()
-        .position(|line| line.contains("bash \u{b7} done"))
-        .expect("the tool card header renders");
-    // Flush: the row above the tool card header is the bash card's own
-    // closing border, never a hidden-thinking spacer.
-    assert!(
-        bash_row < header_row,
-        "the card renders after the bash card:\n{text}"
-    );
-    assert!(
-        lines[header_row - 1].contains("\u{2500}"),
-        "the bash card's border sits directly above the card header:\n{text}"
+    assert_eq!(
+        lines[header_row - 4..header_row],
+        [
+            " \u{2709} Agent message \u{b7} \u{2193} lane",
+            "",
+            " \u{2022} Thought \u{b7} ~4 tokens",
+            ""
+        ],
+        "{text}"
     );
 }
 
@@ -1382,6 +1647,23 @@ fn streaming_assistant_updates_across_frames() {
     view.mark_entry_stale(0);
     let frame1 = transcript_text(&mut view, 80);
     assert!(frame1.contains("and more"));
+}
+
+/// A confirmation posted while a panel replaces the editor dock (so the empty composer's row is
+/// off screen) shows as the overlay toast, not in the hidden composer row.
+#[test]
+fn a_toast_under_a_panel_that_replaces_the_editor_stays_visible() {
+    let mut v = view();
+    v.reload_box = Some("reloading".to_string());
+    v.toast("Factory run r1 is now paused");
+    let frame = v.render_frame(80, 24);
+    assert!(
+        frame
+            .iter()
+            .any(|row| row_text(row).contains("Factory run r1 is now paused")),
+        "the confirmation is on screen: {:?}",
+        frame.iter().map(row_text).collect::<Vec<_>>()
+    );
 }
 
 /// The action toast renders as a compact right-aligned pill (the covered row keeps its own
@@ -1550,6 +1832,7 @@ fn the_collapsed_view_renders_every_activity_item_as_details_does() {
     entries.push(agent_message_row());
     entries.push(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     entries.extend(settled_cards(2));
     let mut view = collapsed_view(entries);
@@ -1596,6 +1879,7 @@ fn a_running_card_updates_between_frames() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "run_r".to_string(),
@@ -1641,6 +1925,7 @@ fn streamed_cards_render_their_own_rows_immediately() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(streamed("c0"));
     let one = transcript_text(&mut view, 80);
@@ -1667,6 +1952,7 @@ fn a_landing_result_with_receipts_settles_the_card() {
     let mut view = collapsed_view(Vec::new());
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
+        sent_at: None,
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "cell".to_string(),

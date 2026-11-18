@@ -23,6 +23,14 @@ mod text_utils;
 mod wrap;
 
 pub use kill_ring::KillRing;
+
+/// One submitted prompt in the recall history, with when it was added (the history search's age
+/// column).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub text: String,
+    pub at: std::time::SystemTime,
+}
 pub(crate) use text_utils::decode_printable;
 pub use text_utils::normalize_text;
 pub use wrap::{is_atomic_marker, word_wrap_line, LayoutLine, Segment, TextChunk, VisualLine};
@@ -85,6 +93,9 @@ pub enum EditorEvent {
     Submitted(String),
     /// Autocomplete overlay visibility changed.
     AutocompleteToggled(bool),
+    /// A slash command or one of its argument choices was accepted from the completion menu (Tab
+    /// or Enter on its row): the host's adoption seam for the slash menu.
+    SlashMenuAccepted,
     /// A selection cut/copy asks the host to write `text` to the system
     /// clipboard (the copy chain lives with the host, which owns the terminal).
     ClipboardWrite(String),
@@ -98,7 +109,10 @@ pub struct Editor {
 
     pastes: HashMap<usize, String>,
     paste_counter: usize,
-    history: Vec<String>,
+    /// The `@file` tokens the completion inserted: each one renders as a pill and moves and
+    /// deletes as one unit while it stands whole between whitespace.
+    mentions: Vec<String>,
+    history: Vec<HistoryEntry>,
     history_index: isize,
     kill_ring: KillRing,
     undo_stack: Vec<EditorSnapshot>,
@@ -128,8 +142,14 @@ pub struct Editor {
     /// Typing `:name` suggests emoji (the host enables it from the
     /// `emojiShortcodes` setting).
     emoji_shortcodes: bool,
+    /// The completion menu's visible rows (the host sets it from the `autocompleteMaxVisible`
+    /// setting).
+    autocomplete_max_visible: usize,
     events: Vec<EditorEvent>,
 }
+
+/// The completion menu's visible rows until the host applies the user's setting.
+const DEFAULT_AUTOCOMPLETE_MAX_VISIBLE: usize = 8;
 
 #[derive(Debug)]
 struct AutocompleteSearch {
@@ -161,6 +181,7 @@ impl Editor {
             cursor_col: 0,
             pastes: HashMap::new(),
             paste_counter: 0,
+            mentions: Vec::new(),
             history: Vec::new(),
             history_index: -1,
             kill_ring: KillRing::default(),
@@ -185,6 +206,7 @@ impl Editor {
             pending_autocomplete: None,
             autocomplete_search: None,
             emoji_shortcodes: false,
+            autocomplete_max_visible: DEFAULT_AUTOCOMPLETE_MAX_VISIBLE,
             events: Vec::new(),
         }
     }
@@ -218,6 +240,12 @@ impl Editor {
         self.autocomplete_provider = None;
     }
 
+    /// The completion menu's visible rows (the `autocompleteMaxVisible` setting); the menu
+    /// clamps it to 3..=20. Applies from the next menu that opens.
+    pub fn set_autocomplete_max_visible(&mut self, rows: usize) {
+        self.autocomplete_max_visible = rows;
+    }
+
     #[must_use]
     pub fn autocomplete_state(&self) -> Option<&crate::autocomplete::AutocompleteState> {
         self.autocomplete.as_ref()
@@ -236,25 +264,24 @@ impl Editor {
     pub fn set_autocomplete_argument_completions(
         &mut self,
         command: &'static str,
-        items: Vec<crate::autocomplete::CompletionItem>,
+        choices: crate::autocomplete::ArgumentChoices,
     ) {
         if let Some(provider) = self.autocomplete_provider.as_mut() {
-            provider.set_argument_completions(command, items);
+            provider.set_argument_completions(command, choices);
         }
     }
 
     /// Replace the provider's `skill:` commands (this port swaps the list on
     /// the installed provider; TS `setupAutocompleteProvider` rebuilds the
-    /// whole list). The open dropdown drops, but a PARKED request stays: the
-    /// host loop materializes it against the new provider.
+    /// whole list). The open dropdown's rows go stale, so it parks a fresh request in their
+    /// place (a parked request stays as it is): the host loop materializes it against the new
+    /// provider, so a `/` typed before the catalog lands keeps its menu open.
     pub fn set_autocomplete_skill_commands(&mut self, skills: Vec<SlashCommandEntry>) {
-        let was_showing = self.autocomplete.is_some();
-        self.autocomplete = None;
-        if was_showing {
-            self.emit(EditorEvent::AutocompleteToggled(false));
-        }
         if let Some(provider) = self.autocomplete_provider.as_mut() {
             provider.set_skill_commands(skills);
+        }
+        if self.autocomplete.is_some() && self.pending_autocomplete.is_none() {
+            self.request_autocomplete(false, false);
         }
     }
 
@@ -287,7 +314,36 @@ impl Editor {
 
     fn segment(&self, text: &str) -> Vec<Segment> {
         let pastes = self.pastes.clone();
-        segment_with_markers(text, &move |id| pastes.contains_key(&id))
+        segment_with_markers(text, &move |id| pastes.contains_key(&id), &self.mentions)
+    }
+
+    /// The char ranges of the registered paste markers and `@file` mentions in `text` (one
+    /// layout chunk): the atomic units the editor surface renders as chips.
+    pub(crate) fn chip_ranges(&self, text: &str) -> Vec<(usize, usize)> {
+        self.segment(text)
+            .into_iter()
+            .filter(|segment| {
+                (segment.segment.starts_with("[paste #") && is_atomic_marker(&segment.segment))
+                    || self.mentions.contains(&segment.segment)
+            })
+            .map(|segment| {
+                (
+                    segment.index,
+                    segment.index + segment.segment.chars().count(),
+                )
+            })
+            .collect()
+    }
+
+    /// How many whole `@file` pills the draft holds (the submit counts the prompts that carry
+    /// one).
+    #[must_use]
+    pub fn mention_pill_count(&self) -> usize {
+        self.lines
+            .iter()
+            .flat_map(|line| self.segment(line))
+            .filter(|segment| self.mentions.contains(&segment.segment))
+            .count()
     }
 
     #[must_use]
@@ -441,17 +497,47 @@ impl Editor {
         if trimmed.is_empty() {
             return;
         }
-        if self.history.first() == Some(&trimmed.to_string()) {
+        if self
+            .history
+            .first()
+            .is_some_and(|entry| entry.text == trimmed)
+        {
             return;
         }
-        self.history.insert(0, trimmed.to_string());
+        self.history.insert(
+            0,
+            HistoryEntry {
+                text: trimmed.to_string(),
+                at: std::time::SystemTime::now(),
+            },
+        );
         if self.history.len() > MAX_HISTORY {
             self.history.pop();
         }
     }
 
+    /// Clear the draft into the head of the history, so the next Up on the empty editor recalls
+    /// it ahead of the submitted prompts. Paste markers are stored expanded, like every submitted
+    /// entry: a recalled draft submits what was pasted, even after a submit drops the paste
+    /// table or a later paste reuses the marker's id. Returns the stored text.
+    pub fn clear_into_history(&mut self) -> String {
+        let draft = self.expand_paste_markers(&self.get_text());
+        if self.history.first().map(|entry| &entry.text) != Some(&draft) {
+            self.history.insert(
+                0,
+                HistoryEntry {
+                    text: draft.clone(),
+                    at: std::time::SystemTime::now(),
+                },
+            );
+            self.history.truncate(MAX_HISTORY);
+        }
+        self.set_text("");
+        draft
+    }
+
     #[must_use]
-    pub fn get_history(&self) -> &[String] {
+    pub fn get_history(&self) -> &[HistoryEntry] {
         &self.history
     }
 
@@ -481,7 +567,7 @@ impl Editor {
         if idx == -1 {
             self.set_text_internal("");
         } else {
-            let text = self.history[idx as usize].clone();
+            let text = self.history[idx as usize].text.clone();
             self.set_text_internal(&text);
         }
     }
@@ -636,6 +722,7 @@ impl Editor {
         self.cursor_col = 0;
         self.pastes.clear();
         self.paste_counter = 0;
+        self.mentions.clear();
         self.history_index = -1;
         self.scroll_offset = 0;
         self.undo_stack.clear();
@@ -898,6 +985,88 @@ mod tests {
         );
     }
 
+    /// Accepting a command row from the slash menu reports the adoption event; Tab on a path
+    /// completion does not.
+    #[test]
+    fn accepting_a_slash_menu_row_reports_the_adoption_event() {
+        let mut e = ed();
+        for ch in "/mo".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        e.materialize_autocomplete();
+        let _ = e.take_events();
+        e.handle_input("tab");
+        let events = e.take_events();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    EditorEvent::SlashMenuAccepted,
+                    EditorEvent::AutocompleteToggled(false),
+                    EditorEvent::Changed(text),
+                ] if text == "/model "
+            ),
+            "{events:?}"
+        );
+        e.set_text("./");
+        e.handle_input("tab");
+        e.materialize_autocomplete();
+        e.handle_input("tab");
+        assert!(
+            !e.take_events()
+                .iter()
+                .any(|event| matches!(event, EditorEvent::SlashMenuAccepted)),
+            "a path completion is not a slash-menu accept"
+        );
+    }
+
+    /// Tab on a command with argument choices inserts `/name ` and opens the choices on the
+    /// current one; Enter on a choice inserts it and submits, reporting the argument pick.
+    #[test]
+    fn tab_chains_into_argument_choices_and_enter_submits_the_pick() {
+        let mut e = ed();
+        let level = |value: &str| crate::autocomplete::CompletionItem {
+            value: value.to_string(),
+            label: value.to_string(),
+            description: None,
+            argument_hint: None,
+            source_tag: None,
+        };
+        e.set_autocomplete_argument_completions(
+            "effort",
+            crate::autocomplete::ArgumentChoices {
+                items: vec![level("low"), level("medium"), level("high")],
+                current: Some("medium".to_string()),
+            },
+        );
+        for ch in "/eff".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        e.materialize_autocomplete();
+        e.handle_input("tab");
+        e.materialize_autocomplete();
+        assert_eq!(e.get_text(), "/effort ");
+        let menu = e.autocomplete_state().expect("the argument choices open");
+        assert_eq!(
+            menu.selected_item().map(|item| item.value),
+            Some("medium".to_string())
+        );
+        let _ = e.take_events();
+        e.handle_input("down");
+        e.handle_input("enter");
+        let events = e.take_events();
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, EditorEvent::SlashMenuAccepted)),
+            "{events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(EditorEvent::Submitted(text)) if text == "/effort high"),
+            "{events:?}"
+        );
+    }
+
     /// An editor completing `@` tokens over a base holding the
     /// `prime-agent/` directory with two children beside an unrelated file.
     fn at_editor() -> (tempfile::TempDir, Editor) {
@@ -921,6 +1090,34 @@ mod tests {
         e.settle_autocomplete_search();
         e.autocomplete_state()
             .map(|state| state.items.iter().map(|item| item.value.clone()).collect())
+    }
+
+    /// A completed `@file` is a pill: one chip range, one Left steps over it, one Backspace
+    /// deletes it whole, and a typed `@other.md` with no completion behind it stays plain text.
+    #[test]
+    fn a_completed_file_mention_is_one_pill_that_moves_and_deletes_whole() {
+        let (_base, mut e) = at_editor();
+        for ch in "see @other".chars() {
+            e.handle_input(&ch.to_string());
+        }
+        assert!(settled_menu(&mut e).is_some());
+        e.handle_input("tab");
+        assert_eq!(e.get_text(), "see @other.md ");
+        assert_eq!(e.chip_ranges("see @other.md "), vec![(4, 13)]);
+        assert_eq!(e.mention_pill_count(), 1);
+        e.handle_input("left");
+        e.handle_input("left");
+        assert_eq!(e.get_cursor(), (0, 4), "one Left steps over the whole pill");
+        e.handle_input("right");
+        e.handle_input("backspace");
+        assert_eq!(
+            e.get_text(),
+            "see  ",
+            "one Backspace deletes the whole pill"
+        );
+        let (_base, mut typed) = at_editor();
+        typed.set_text("see @other.md ");
+        assert!(typed.chip_ranges("see @other.md ").is_empty());
     }
 
     #[test]
@@ -1181,7 +1378,7 @@ mod tests {
     fn the_double_bang_prefix_hides_two_characters() {
         let mut e = ed();
         e.set_text("!!echo hi");
-        assert_eq!(e.bash_prompt_prefix(), Some("!! "));
+        assert_eq!(e.bash_prompt_prefix(), Some("!!"));
         assert_eq!(e.line_start_col(0), 2);
         let layout = e.layout_text(20);
         assert_eq!(layout[0].text, "echo hi", "the raw prefix stays hidden");

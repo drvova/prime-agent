@@ -11,28 +11,24 @@ import ast
 import asyncio
 import codecs
 import contextvars
-import ctypes
 import functools
+import importlib
 import inspect
 import io
 import json
 import linecache
 import os
 import pickle
-import platform
 import select
 import signal
 import sys
-import tempfile
 import threading
 import time
 import traceback
 import types
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from .factory import schedule_activity
 from .bash import _kill_live_handles, _rehydrate_persistent_shells
 
 PROTOCOL_VERSION = 3
@@ -74,6 +70,23 @@ _write_lock = threading.Lock()
 _loop: asyncio.AbstractEventLoop | None = None
 _serve_task: asyncio.Task[Any] | None = None
 
+# The background default-package imports (start_background_imports). Set only
+# on that thread: its Python-level writes (an import-time print, a warning) go
+# to the host's kernel stderr log instead of any cell's output.
+_log_only_output: contextvars.ContextVar[bool] = contextvars.ContextVar("_log_only_output", default=False)
+_background_imports: threading.Thread | None = None
+# Held by that thread around each import; a fork takes it first (see
+# start_background_imports).
+_background_import_lock = threading.Lock()
+_fork_holds_background_import_lock = False
+# The imports start once no request has been in flight for this long, and
+# each later module waits until no request is in flight: a cell never shares
+# the GIL with more than the one module import already under way.
+_BACKGROUND_IMPORTS_IDLE_S = 1.0
+_BACKGROUND_IMPORTS_POLL_S = 0.05
+# A fork waits this long for an import under way; a hung import then forks anyway.
+_BACKGROUND_IMPORTS_FORK_WAIT_S = 30.0
+
 
 class _CellExecution:
     def __init__(self) -> None:
@@ -110,6 +123,14 @@ _finishing_rid: str | None = None
 _handoff_interrupted = False
 
 
+def _log(text: str) -> None:
+    """Write diagnostics to the host's kernel stderr log, never into the protocol."""
+    try:
+        os.write(_host_stderr_fd, text.encode(errors="replace"))
+    except OSError:
+        pass
+
+
 def _send(event: dict[str, Any]) -> None:
     """Write one protocol frame; the locked single write keeps frames atomic."""
     data = (json.dumps(event, separators=(",", ":")) + "\n").encode()
@@ -119,10 +140,7 @@ def _send(event: dict[str, Any]) -> None:
             while view:
                 view = view[os.write(_protocol_fd, view) :]
         except OSError as err:
-            try:
-                os.write(_host_stderr_fd, f"rlm.repl: dropped protocol frame: {err}\n".encode())
-            except OSError:
-                pass
+            _log(f"rlm.repl: dropped protocol frame: {err}\n")
 
 
 def _check_payload(event: str, data: dict[str, Any]) -> None:
@@ -177,7 +195,7 @@ async def host_request(data: dict[str, Any]) -> dict[str, Any]:
     if _host_closed:
         raise RuntimeError("host connection closed; host_request cannot be answered")
     _check_payload("host_request", data)
-    rid = uuid.uuid4().hex
+    rid = os.urandom(16).hex()
     future: asyncio.Future[dict[str, Any]] = _loop.create_future()
     _pending_host[rid] = future
     try:
@@ -226,7 +244,7 @@ class _Pump:
 
     def drain(self) -> None:
         """Block until every byte written to the fd so far has been shipped."""
-        token = b"\xff<drain:" + uuid.uuid4().hex.encode() + b">\xff"
+        token = b"\xff<drain:" + os.urandom(16).hex().encode() + b">\xff"
         seen = threading.Event()
         with self._lock:
             self._watch = (token, seen)
@@ -347,7 +365,9 @@ class _TaggedWriter(io.TextIOBase):
     def write(self, text: str) -> int:
         if not isinstance(text, str):
             raise TypeError(f"write() argument must be str, not {type(text).__name__}")
-        if text:
+        if text and _log_only_output.get():
+            _log(text)
+        elif text:
             cell_id = _current_cell.get()
             with self._frame_lock:
                 for start in range(0, len(text), _STREAM_FRAME_TEXT_CAP):
@@ -792,6 +812,8 @@ def _snapshot_state(
 
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     temps: list[str] = []
+
+    import tempfile
 
     def stage_temp(target: str, mode: str):
         # Unique same-directory temps: a fixed '.tmp' name could alias the other
@@ -1582,6 +1604,8 @@ def _handle_request_line(raw: bytes, queue: asyncio.Queue[dict[str, Any]]) -> No
         # Like bash_activity, this bypasses the cell FIFO: the factory view
         # must answer while a cell runs. The handler schedules the async
         # activity on this loop and replies when it settles.
+        from .factory import schedule_activity
+
         _loop.call_soon_threadsafe(schedule_activity, req)
         return
     if rtype in ("execute", "snapshot", "restore"):
@@ -1682,6 +1706,7 @@ def _wait_owner_posix(owner: int, initial_ppid: int) -> None:
 def _wait_owner_windows(owner: int) -> None:
     # Blocks until the owner exits. os.kill(pid, 0) on Windows TERMINATES the
     # target, so a SYNCHRONIZE handle wait is the only sound probe.
+    import ctypes
     from ctypes import wintypes
 
     SYNCHRONIZE = 0x00100000
@@ -1720,6 +1745,82 @@ def _start_owner_watchdog() -> None:
     threading.Thread(
         target=_owner_watchdog, args=(_resolve_owner_pid(), os.getppid()), daemon=True
     ).start()
+
+
+def _wait_for_idle_kernel(idle_s: float) -> None:
+    """Block until no request has been in flight for ``idle_s`` seconds."""
+    idle_since = time.monotonic()
+    while True:
+        now = time.monotonic()
+        # A lock-free read: set truthiness is atomic, and a stale answer only
+        # shifts the start by one poll.
+        if _inflight:
+            idle_since = now
+        elif now - idle_since >= idle_s:
+            return
+        time.sleep(_BACKGROUND_IMPORTS_POLL_S)
+
+
+def _import_in_background(names: list[str]) -> None:
+    _log_only_output.set(True)
+    _wait_for_idle_kernel(_BACKGROUND_IMPORTS_IDLE_S)
+    started = time.monotonic()
+    for name in names:
+        _wait_for_idle_kernel(0.0)
+        try:
+            with _background_import_lock:
+                importlib.import_module(name)
+        except ModuleNotFoundError as err:
+            if err.name == name:
+                _log(f"rlm.repl: background import skipped {name}: not installed\n")
+            else:
+                _log(f"rlm.repl: background import of {name} failed:\n{traceback.format_exc()}")
+        except Exception:  # noqa: BLE001 - logged; a broken package must not cost the kernel
+            _log(f"rlm.repl: background import of {name} failed:\n{traceback.format_exc()}")
+    _log(f"rlm.repl: background imports finished in {(time.monotonic() - started) * 1000:.0f} ms\n")
+
+
+def start_background_imports(names: list[str]) -> None:
+    """Import ``names`` on a daemon thread, so the model's first use of them is warm.
+
+    The session bootstrap calls this once the kernel is ready; the call
+    returns at once and nothing awaits the thread. The imports wait for an
+    idle kernel (see _BACKGROUND_IMPORTS_IDLE_S), so a cell sent right after
+    ready runs uncontended. Their output and failures go to the kernel stderr
+    log, never into a cell. A cell importing the same module meanwhile blocks
+    on that module's import lock and then sees it fully initialized.
+    Idempotent per process; PRIME_AGENT_KERNEL_BACKGROUND_IMPORTS=0 turns it off.
+    """
+    global _background_imports
+    if _background_imports is not None or os.environ.get("PRIME_AGENT_KERNEL_BACKGROUND_IMPORTS") == "0":
+        return
+    _background_imports = threading.Thread(
+        target=_import_in_background, args=(list(names),), name="rlm-background-imports", daemon=True
+    )
+    if hasattr(os, "register_at_fork"):
+        # A fork while an import holds its module lock would leave that lock
+        # held forever in the child: the fork waits for the import under way.
+        os.register_at_fork(
+            before=_hold_background_imports_for_fork,
+            after_in_parent=_release_background_imports_after_fork,
+            after_in_child=_release_background_imports_after_fork,
+        )
+    _background_imports.start()
+
+
+def _hold_background_imports_for_fork() -> None:
+    global _fork_holds_background_import_lock
+    _fork_holds_background_import_lock = (
+        threading.current_thread() is not _background_imports
+        and _background_import_lock.acquire(timeout=_BACKGROUND_IMPORTS_FORK_WAIT_S)
+    )
+
+
+def _release_background_imports_after_fork() -> None:
+    global _fork_holds_background_import_lock
+    if _fork_holds_background_import_lock:
+        _fork_holds_background_import_lock = False
+        _background_import_lock.release()
 
 
 _pump_out: _Pump
@@ -1770,7 +1871,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _sigint_handler)
     threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
 
-    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": platform.python_version()})
+    _send({"event": "ready", "protocol": PROTOCOL_VERSION, "python": sys.version.split()[0]})
 
     _serve_task = _loop.create_task(_serve(queue, user_module.__dict__))
     # On the loop, so re-attached shells can deliver their completion notices.

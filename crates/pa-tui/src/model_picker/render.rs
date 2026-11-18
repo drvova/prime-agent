@@ -1,5 +1,5 @@
 //! The inline panel frame of the `/model` picker: bordered search field,
-//! effort rows, scroll indicator, selection detail, key hint, one blank
+//! effort rows, right-edge scrollbar, selection detail, key hint, one blank
 //! line below the hint (the operator's 2026-09-24 spacing directive).
 //! Geometry is the TS `ModelSelectorComponent` inline path.
 
@@ -7,8 +7,9 @@ use pa_types::ai::{Model, ModelThinkingLevel};
 use std::fmt::Write;
 
 use super::{EffortLayout, ModelPicker};
-use crate::keybindings::{format_key_text, KeybindingsManager};
-use crate::menu_panel::{hint_row, menu_row, no_match_row, scroll_row, search_field_lines};
+use crate::keybindings::KeybindingsManager;
+use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_row, search_field_lines};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -32,7 +33,7 @@ pub(super) fn render(
     // The scope row renders ABOVE the search field (TS v0.9.7's headerHelpContainer mounts before
     // the search input): one leading space, the active side accented, then the dim toggle key and
     // muted description, truncated with "...".
-    let mut lines = Vec::new();
+    let mut lines = vec![crate::menu_chrome::title_row(theme, width, "Model")];
     if picker.has_scoped_models() {
         let muted = |text: &str| theme.fg_span(ThemeColor::Muted, text.to_string());
         let (all, scoped) = if picker.scoped_side() {
@@ -66,8 +67,20 @@ pub(super) fn render(
         SEARCH_PLACEHOLDER,
     ));
 
+    // While searching, the list keeps the height of the whole active list (the height it had
+    // when the query started), so filtering never moves the rows around it. The overflow
+    // scrollbar rides the rows' right edge, so the held height is the rows alone.
+    let list_start = lines.len();
+    let held = picker.list_layout_over(picker.active_indices().len());
     let (start, end) = picker.filtered_window();
     let effort_layout = picker.effort_layout(start, end);
+    let filtered_len = picker.filtered_len();
+    // An overflowing window carries the slash menu's one-cell scrollbar on its right edge instead
+    // of an `(n/m)` row; the rows give up that column plus a one-space gap, so the flush-right
+    // provider never touches the bar.
+    let scrollbar = (start > 0 || end < filtered_len)
+        .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, filtered_len, start));
+    let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
     for index in start..end {
         let Some(model_index) = picker.filtered_index(index) else {
             continue;
@@ -82,28 +95,55 @@ pub(super) fn render(
             .iter()
             .map(|segment| crate::menu_panel::MenuSegment::muted(segment))
             .collect();
-        lines.push(menu_row(theme, width, primary, &trailing_refs, selected));
-    }
-
-    let filtered_len = picker.filtered_len();
-    if start > 0 || end < filtered_len {
-        lines.push(scroll_row(
-            theme,
-            width,
-            picker.selected_index() + 1,
-            filtered_len,
-        ));
+        let mut row = menu_row(theme, row_width, primary, &trailing_refs, selected);
+        if let Some(cell) = scrollbar
+            .as_ref()
+            .and_then(|cells| cells.get(index - start))
+        {
+            row.push(Span::raw(" "));
+            row.push(cell.clone());
+        }
+        lines.push(row);
     }
 
     if filtered_len == 0 {
-        lines.push(no_match_row(theme, width, "No matching models"));
-    } else if let Some(model) = picker.selected_model().cloned() {
+        lines.push(empty_state_row(
+            theme,
+            width,
+            kb,
+            picker.query(),
+            "No models available",
+        ));
+    }
+    crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
+    if let Some(model) = picker.selected_model().cloned() {
         if picker.detail_rows() > 0 {
             lines.extend(detail_lines(theme, width, &model));
         }
     }
 
-    lines.push(hint_line(theme, width, kb));
+    let enter = picker
+        .selected_model()
+        .map(|model| format!("switches to {}", model.name));
+    lines.extend(
+        Footer::new()
+            .enter(kb, enter.as_deref())
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "model",
+                HintRank::Useful,
+            )
+            .bound(
+                kb,
+                &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
+                "effort",
+                HintRank::Useful,
+            )
+            .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            .esc(kb, EscVerb::Close)
+            .rows(theme, width),
+    );
 
     lines.push(Vec::new());
     lines
@@ -283,37 +323,6 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
             crate::width::truncate_line(&line, width, "\u{2026}")
         })
         .collect()
-}
-
-/// The trailing key hint: the model/effort navigation hint on wide panes, the
-/// select/close core below 70 columns.
-fn hint_line(theme: &Theme, width: usize, kb: &KeybindingsManager) -> Line {
-    let select_key = kb
-        .first_key("tui.select.confirm")
-        .map_or_else(|| "Enter".to_string(), |key| format_key_text(&key));
-    let close_key = kb
-        .first_key("tui.select.cancel")
-        .map_or_else(|| "Esc".to_string(), |key| format_key_text(&key));
-    let hint = if width >= 70 {
-        let navigate = format!(
-            "{}/{}",
-            kb.first_key("tui.select.up")
-                .map_or_else(|| "\u{2191}".to_string(), |key| format_key_text(&key)),
-            kb.first_key("tui.select.down")
-                .map_or_else(|| "\u{2193}".to_string(), |key| format_key_text(&key))
-        );
-        let effort = format!(
-            "{}/{}",
-            kb.first_key("tui.editor.cursorLeft")
-                .map_or_else(|| "\u{2190}".to_string(), |key| format_key_text(&key)),
-            kb.first_key("tui.editor.cursorRight")
-                .map_or_else(|| "\u{2192}".to_string(), |key| format_key_text(&key))
-        );
-        format!("{navigate} model \u{b7} {effort} effort \u{b7} {select_key} select \u{b7} {close_key} close")
-    } else {
-        format!("{select_key} select \u{b7} {close_key} close")
-    };
-    hint_row(theme, width, &hint)
 }
 
 /// Truncate to a width and pad to it.

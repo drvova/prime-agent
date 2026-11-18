@@ -8,6 +8,8 @@ use super::{
     OpenedRow, PathBuf, PressedMouseClick, RowKind, SavedMore, ScopeRoot, SelectionEdge,
     SelectionKey, SessionSelection, Value, ANCHOR_LOADING_HINT, SAVED_CATALOG_PAGE_FILES,
 };
+use super::{retain_trees_by_root, FolderFilter};
+use crate::agents_view_state::{summary_for_record, UnifiedRecord};
 
 impl AgentsViewMode {
     pub(super) fn records(&self) -> Vec<crate::agents_view_state::UnifiedRecord> {
@@ -59,11 +61,71 @@ impl AgentsViewMode {
             }
         }
         let filtered = filter_empty_sessions(working, &preserved);
+        // The resume picker's folder scope, on an unscoped run only (a subtree scope already
+        // lists one root's tree): every tree lists whole by its ROOT session's saved cwd, so a
+        // subagent follows its root and never lists without it. The match is the folder itself
+        // (lexically, or after resolving symlinks on both sides), never its subfolders; a session
+        // without a saved cwd belongs to no folder.
+        let folder = self
+            .folder_scope
+            .as_ref()
+            .filter(|scope| !scope_active && scope.filter == FolderFilter::CurrentFolder)
+            .map(|scope| scope.folder.clone());
+        let folder_current = folder.is_some();
+        let mut anchor_hidden = false;
+        self.folder_hidden = 0;
+        let filtered = match folder {
+            Some(folder) => {
+                let cwd_of = |record: &UnifiedRecord| {
+                    record
+                        .daemon
+                        .as_ref()
+                        .and_then(|summary| summary.get("cwd"))
+                        .or_else(|| record.saved.as_ref().and_then(|saved| saved.get("cwd")))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                for record in &filtered {
+                    self.folder_matches
+                        .entry(cwd_of(record))
+                        .or_insert_with_key(|cwd| {
+                            let saved = std::path::Path::new(cwd);
+                            !cwd.is_empty()
+                                && (saved.components().eq(folder.components())
+                                    || matches!(
+                                        (
+                                            std::fs::canonicalize(saved),
+                                            std::fs::canonicalize(&folder)
+                                        ),
+                                        (Ok(saved), Ok(folder)) if saved == folder
+                                    ))
+                        });
+                }
+                let matches = &self.folder_matches;
+                let (kept, hidden_roots) = retain_trees_by_root(&filtered, |root| {
+                    matches.get(&cwd_of(root)).copied().unwrap_or(false)
+                });
+                // An entry anchor the folder hides never lists here: its wait ends below.
+                if let Some(anchor) = self.options.anchor_session_id.as_deref() {
+                    let is_anchor = |record: &UnifiedRecord| {
+                        summary_for_record(record)
+                            .get("sessionId")
+                            .and_then(Value::as_str)
+                            == Some(anchor)
+                    };
+                    anchor_hidden = filtered.iter().any(is_anchor) && !kept.iter().any(is_anchor);
+                }
+                self.folder_hidden = hidden_roots;
+                kept
+            }
+            None => filtered,
+        };
         let filtered = if self.query.trim().is_empty() {
             filtered
         } else {
             let parsed = parse_search_query(self.query.trim());
-            filter_unified_sessions(&filtered, &parsed)
+            filter_unified_sessions(&filtered, &parsed, self.content_search.hits())
         };
         // The rollup runs over the full reconciled set, so a filter never changes a row's total.
         let rollups = compute_rollups(&records);
@@ -95,7 +157,7 @@ impl AgentsViewMode {
                     .and_then(|scope| scope.session_id.as_deref())
                     .and_then(|root| subtree_contains(&records, root, &anchor_scope))
                     == Some(false);
-            if outside_scope {
+            if outside_scope || anchor_hidden {
                 // An anchor whose full lineage misses the scope root never lists here.
                 self.end_anchor_wait();
             } else {
@@ -135,9 +197,21 @@ impl AgentsViewMode {
                 }
             }
         }
-        // The machine-wide persistent shells head the unscoped, unsearched list.
+        // The machine-wide persistent shells head the unscoped, unsearched list. In the
+        // folder scope a shell follows its session's visibility; a shell of a hidden or deleted
+        // session counts toward the header's other-folders total instead.
         if !scope_active && self.query.trim().is_empty() {
-            rows.splice(0..0, self.persistent_shell_rows(&records));
+            let mut shells = if folder_current {
+                self.persistent_shell_rows(&filtered)
+            } else {
+                self.persistent_shell_rows(&records)
+            };
+            if folder_current {
+                let listed = shells.len();
+                shells.retain(|row| !row.summary["session"].is_null());
+                self.folder_hidden += listed - shells.len();
+            }
+            rows.splice(0..0, shells);
         }
         // Keep the selection on the same row across rebuilds, falling back to the carried
         // identity/key.
@@ -362,7 +436,15 @@ impl AgentsViewMode {
         if self.anchor_selection_pending {
             return Some((more.cursor.clone(), Some(SAVED_CATALOG_PAGE_FILES)));
         }
-        if !self.saved_page_requested {
+        // A folder-scoped list shorter than a page keeps paging the store on its own: the
+        // folder's older sessions may sit past the loaded pages.
+        let folder_short = !self.scope_active
+            && self
+                .folder_scope
+                .as_ref()
+                .is_some_and(|scope| scope.filter == FolderFilter::CurrentFolder)
+            && self.rows.iter().filter(|row| row.selectable()).count() < self.page_step();
+        if !self.saved_page_requested && !folder_short {
             return None;
         }
         let last = self
@@ -418,6 +500,7 @@ impl AgentsViewMode {
     /// success.
     pub(super) fn query_changed(&mut self, was_empty: bool) {
         self.saved_query_rearm = self.saved_fetch_failed;
+        self.content_search.query_changed(&self.query);
         self.end_anchor_wait();
         if was_empty {
             self.search_return = self
@@ -520,6 +603,18 @@ impl AgentsViewMode {
             }
             Composer::Search => {}
         }
+        // An armed stop-or-delete answers `y` (confirm, the second press's twin) and `n` or the
+        // confirm key (cancel: the default, so Enter never runs a destructive action); the arm is
+        // already taken, so every other key falls through as a cancel.
+        if was_delete_armed.is_some() {
+            if key == "y" {
+                self.confirm_delete_for_selected(was_delete_armed);
+                return;
+            }
+            if key == "n" || self.keybindings.matches(key, "tui.select.confirm") {
+                return;
+            }
+        }
         // `app.clear` (default ctrl+c): the first press arms the exit hint, a second press while
         // armed exits.
         if self.keybindings.matches(key, "app.clear") {
@@ -539,6 +634,21 @@ impl AgentsViewMode {
             && self.keybindings.matches(key, "tui.select.cancel")
             && self.dismiss_incident_notice()
         {
+            return;
+        }
+        // `app.agents.folderScope` (default tab, the resume picker's unscoped list only): flip the
+        // list between the picker's folder and every folder. A query keeps searching, now within
+        // the other scope; the selection stays on its row when the row still lists.
+        if self.keybindings.matches(key, "app.agents.folderScope") {
+            if let (false, Some(scope)) = (self.scope_active, self.folder_scope.as_mut()) {
+                scope.filter = match scope.filter {
+                    FolderFilter::CurrentFolder => FolderFilter::AllFolders,
+                    FolderFilter::AllFolders => FolderFilter::CurrentFolder,
+                };
+                self.folder_toggles += 1;
+                self.rebuild_rows();
+                self.sync_selected_row_state();
+            }
             return;
         }
         // `app.agents.rename` (default ctrl+r, empty editor only, before the delete arm):

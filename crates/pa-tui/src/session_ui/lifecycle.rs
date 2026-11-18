@@ -11,6 +11,13 @@ use super::{
     EXIT_DETACH_TIMEOUT_MS, EXIT_STATS_TIMEOUT_MS, UI_REQUEST_TIMEOUT_MS,
 };
 
+/// One background `get_session_stats` reply, tagged with the refresh generation that issued it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct StatsUpdate {
+    generation: u64,
+    context: Option<crate::chrome::ContextUsage>,
+}
+
 impl SessionUi {
     /// Create/attach per the session selection and return the live state.
     #[allow(clippy::too_many_arguments)]
@@ -109,6 +116,8 @@ impl SessionUi {
             pending_queue: None,
             queue_selection: crate::queued::QueueSelection::default(),
             context: None,
+            // The settings default: on until the attach state says otherwise.
+            auto_compaction: true,
             list_rows: Vec::new(),
             turn_active: false,
             turn_ends_seen: 0,
@@ -117,6 +126,19 @@ impl SessionUi {
             streaming_index: None,
             working_tokens: LoaderTokenTracker::default(),
             turn_error_shown: false,
+            retry_episode_waited: None,
+            retry_waited: None,
+            running_tool_labels: Vec::new(),
+            attempt_summary: None,
+            retry_run_since: None,
+            composer_hint: super::notes::RetiringHint::new(
+                options
+                    .client_settings
+                    .as_ref()
+                    .map_or(u64::MAX, |settings| settings.composer_hint_uses()),
+            ),
+            composer_hint_saves: std::sync::Arc::default(),
+            tool_aborted: false,
             pending_tools: HashSet::default(),
             aborted_tools: HashSet::default(),
             last_assistant_text: None,
@@ -133,6 +155,7 @@ impl SessionUi {
             exit_requested: false,
             open_agents_view: false,
             scoped_agents_view: None,
+            resume_folder: None,
             roster: Vec::new(),
             heartbeat_catalog: Vec::new(),
             heartbeat_refresh_in_flight: false,
@@ -144,12 +167,15 @@ impl SessionUi {
             bash_activities: serde_json::json!({"activities": []}),
             bash_list_epoch: 0,
             bash_updates: activity_updates.bash,
+            stats_updates: activity_updates.stats,
+            stats_generation: 0,
             factory_graph: serde_json::json!({"runs": []}),
             factory_view_session: None,
             factory_refresh_in_flight: false,
             factory_refresh_queued: false,
             factory_list_epoch: 0,
             factory_updates: activity_updates.factory,
+            thinking_cycle_notes: activity_updates.thinking,
             factory_selected_run: None,
             subagents_focused: false,
             activity_group: crate::chrome::ActivityGroup::Subagents,
@@ -166,6 +192,7 @@ impl SessionUi {
             stash_session_id: String::new(),
             dirty: true,
             ctrl_c_hint_until: None,
+            cleared_draft: None,
             goal_view: GoalView::new(),
             notes,
             compaction_abort_notes,
@@ -482,6 +509,7 @@ impl SessionUi {
         // or compaction settles): the rebuild below re-syncs it into the
         // chrome exactly like the other reconstructed session fields.
         self.context = reconstructed.context_usage;
+        self.auto_compaction = reconstructed.auto_compaction.unwrap_or(true);
         self.last_assistant_text = last_assistant_text_of(&reconstructed.chat);
         self.pending_queue = Some(reconstructed.queued);
         self.pending_snapshot = Some(reconstructed.chat);
@@ -545,6 +573,11 @@ impl SessionUi {
         self.pressed_click = None;
         self.pending_tools.clear();
         self.aborted_tools.clear();
+        // A replaced transcript (a session switch, a resync) ends whatever episode the old one
+        // was in: its `auto_retry_end` may never reach this client.
+        self.retry_episode_waited = None;
+        self.retry_waited = None;
+        self.running_tool_labels.clear();
         for entry in entries {
             view.push_entry(entry);
         }
@@ -621,6 +654,7 @@ impl SessionUi {
         if let Some(model) = self.pending_model.take() {
             view.chrome.model_id = Some(model);
             view.chrome.model_provider = self.pending_model_provider.take();
+            self.sync_model_host(view);
         }
         // The tray badge mirrors the session-scoped tier on every rebuild: an
         // attach that reports no tier clears the previous session's badge.
@@ -628,12 +662,15 @@ impl SessionUi {
         // The tray's effort suffix moves with the same snapshot; the bare name
         // wins when the state reports neither.
         view.chrome.thinking_suffix = self.pending_thinking_suffix.take();
+        // The completion menu's model-scoped choices follow the rebuilt model and level.
+        self.update_model_eligibility_filters(view);
         view.queued = self.pending_queue.take().unwrap_or_default();
         // Any browse selection belonged to the previous queue and drops.
         let _ = self.queue_selection.reset();
         view.queue_selected = None;
         view.chrome.chat_name = self.session_display();
         view.chrome.context = self.context;
+        view.chrome.compaction_percent = self.compaction_tick();
         // The rebuilt transcript invalidates the announcement row tracking;
         // the goal state itself carries over (seeded at attach).
         self.goal_view.reset_row_tracking();
@@ -713,7 +750,12 @@ impl SessionUi {
 
     /// Refresh context usage from `get_session_stats`: tokens, context window,
     /// and percent. The title's spend comes from the roster pushes instead.
+    /// Awaited only on the user-initiated `/import` rebuild; the turn-end refresh
+    /// runs off the loop through [`Self::spawn_stats_refresh`].
     pub(crate) async fn refresh_stats(&mut self) {
+        // A spawned refresh still in flight is older than this one: its reply must not
+        // overwrite the usage read here.
+        self.stats_generation += 1;
         let Ok(data) = self
             .bounded_request(
                 Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
@@ -733,6 +775,49 @@ impl SessionUi {
             .get("contextUsage")
             .and_then(crate::chrome::ContextUsage::from_wire);
         self.dirty = true;
+    }
+
+    /// Fire a background `get_session_stats` refresh (a settled turn or compaction): the
+    /// reply lands through the run loop's channel, so the loop keeps handling keys and
+    /// painting while the daemon answers (AGENTS.md "Performance and the critical path").
+    /// Each refresh bumps the generation and only the newest generation's reply applies, so
+    /// a late reply can never overwrite a newer one. A failed or timed-out request sends
+    /// nothing and the tray keeps its usage, the same as the awaited form.
+    pub(crate) fn spawn_stats_refresh(&mut self) {
+        self.stats_generation += 1;
+        let generation = self.stats_generation;
+        let client = self.client.clone();
+        let active_session_id = self.active_session_id.clone();
+        let updates = self.stats_updates.clone();
+        tokio::spawn(async move {
+            let Ok(Ok(data)) = tokio::time::timeout(
+                Duration::from_millis(UI_REQUEST_TIMEOUT_MS),
+                client.request_ok(DaemonCommand::GetSessionStats {
+                    id: None,
+                    active_session_id,
+                    rest: Map::default(),
+                }),
+            )
+            .await
+            else {
+                return;
+            };
+            let _ = updates.send(StatsUpdate {
+                generation,
+                context: data
+                    .get("contextUsage")
+                    .and_then(crate::chrome::ContextUsage::from_wire),
+            });
+        });
+    }
+
+    /// Fold a landed stats refresh into the tray; a reply from a superseded refresh is dropped.
+    pub(crate) fn apply_stats_update(&mut self, update: StatsUpdate, view: &mut AgentView) {
+        if update.generation != self.stats_generation {
+            return;
+        }
+        self.context = update.context;
+        self.rebuild_tray(view);
     }
 
     /// Detach on the agents-view handoff without blocking it: a background task owns the connection
@@ -850,6 +935,8 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                thinking: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             backfill_tx,
         )
@@ -1043,6 +1130,8 @@ mod backfill_tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                thinking: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             mpsc::unbounded_channel().0,
         )

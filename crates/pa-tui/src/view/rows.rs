@@ -10,7 +10,6 @@ use crate::chat::{
 use crate::theme::ThemeColor;
 use crate::Line;
 
-#[cfg(test)]
 use super::layout;
 
 /// TS `getSpacingContent`: an assistant message's conversation-spacing
@@ -41,9 +40,7 @@ impl AgentView {
                             // is the full compact set).
                             let preceded_by_tool =
                                 idx > 0 && Self::is_compact_neighbor(&self.chat[idx - 1]);
-                            if tool_separator
-                                || message.has_trailing_space(self.detail, preceded_by_tool)
-                            {
+                            if tool_separator || message.has_trailing_space(preceded_by_tool) {
                                 return false;
                             }
                             // An assistant message is never a compact neighbor; both rules add
@@ -88,6 +85,53 @@ impl AgentView {
         }
     }
 
+    /// The streaming assistant entry's rows through the one-slot cache (`None` for every other
+    /// entry): a hit replays the last rows, a miss renders once and fills the slot, so the row
+    /// count and the paint of one revision share a single render.
+    pub(super) fn streaming_entry_rows(
+        &self,
+        index: usize,
+        width: usize,
+        spacing: bool,
+        preceded_by_tool: bool,
+    ) -> Option<std::sync::Arc<Vec<Line>>> {
+        let ChatEntry::Assistant(message) = &self.chat[index] else {
+            return None;
+        };
+        if !message.streaming {
+            return None;
+        }
+        let detail = self.entry_detail(index);
+        if let Some(slot) = self.streaming_rows.borrow().as_ref() {
+            if slot.index == index
+                && slot.width == width
+                && slot.detail == detail
+                && slot.spacing == spacing
+                && slot.preceded_by_tool == preceded_by_tool
+                && slot.message == **message
+            {
+                return Some(slot.rows.clone());
+            }
+        }
+        let rows = std::sync::Arc::new(self.render_entry(
+            index,
+            &self.chat[index],
+            width,
+            index == 0,
+            preceded_by_tool,
+        ));
+        *self.streaming_rows.borrow_mut() = Some(layout::StreamingEntryRows {
+            index,
+            width,
+            detail,
+            spacing,
+            preceded_by_tool,
+            message: (**message).clone(),
+            rows: rows.clone(),
+        });
+        Some(rows)
+    }
+
     /// Lay out one chat entry's transcript rows (the only producer of
     /// cached layout rows).
     pub(super) fn render_entry(
@@ -113,7 +157,7 @@ impl AgentView {
                 rows.extend(render_text_rows(text, style, width));
                 rows
             }
-            ChatEntry::User { text } => {
+            ChatEntry::User { text, sent_at } => {
                 let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme);
                 md.code_block_indent.clone_from(&self.code_block_indent);
                 md.link_base_url = url::Url::from_directory_path(&self.chrome.cwd).ok();
@@ -125,7 +169,22 @@ impl AgentView {
                 if !first && !follows_skill_card {
                     rows.push(Vec::new());
                 }
+                let start = rows.len();
                 rows.extend(render_user_block_with_style(text, &self.theme, &md, width));
+                // The send time, flush right on the first text row when it fits beside the
+                // text; it never adds a row, so the entry's height is unchanged.
+                let clock = sent_at.and_then(pa_types::platform::local_clock);
+                if let (Some((hour, minute)), Some(row)) = (clock, rows.get_mut(start + 1)) {
+                    let clock = format!("{hour:02}:{minute:02}  ");
+                    let content: String = row.iter().map(|span| span.content.as_str()).collect();
+                    let used = crate::width::str_width(content.trim_end());
+                    if used + 2 + clock.len() <= width {
+                        let bg = self.theme.bg_style(crate::theme::ThemeBg::UserMessageBg);
+                        let dim = bg.patch(self.theme.fg_style(crate::theme::ThemeColor::Dim));
+                        *row = crate::width::truncate_line(row, width - clock.len(), "");
+                        row.push(crate::Span::styled(clock, dim));
+                    }
+                }
                 rows
             }
             ChatEntry::SlashCommand { text } => {
@@ -167,14 +226,17 @@ impl AgentView {
                 rows
             }
             ChatEntry::Assistant(message) => {
-                let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme);
+                let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme)
+                    .for_replies(&self.theme);
                 md.code_block_indent.clone_from(&self.code_block_indent);
                 md.link_base_url = url::Url::from_directory_path(&self.chrome.cwd).ok();
                 // The per-entry block cache (TS's per-component `blockCache`): a streaming
                 // message's settled blocks replay per frame; a settled message drops the copy.
                 if message.streaming {
                     let mut caches = self.md_caches.borrow_mut();
-                    let cache = caches.entry(index).or_default();
+                    let cache = caches
+                        .entry(index)
+                        .or_insert_with(crate::markdown::MarkdownBlockCache::streaming);
                     render_assistant_with_style(
                         message,
                         detail,

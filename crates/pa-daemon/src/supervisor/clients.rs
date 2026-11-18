@@ -141,6 +141,10 @@ impl Supervisor {
             rest: Map::default(),
         };
         write_line(&mut writer, &serde_json::to_value(&hello)?).await?;
+        // The hello goes out at once; commands wait for the boot reap, which must clear this
+        // socket's predecessors before any request can race it (a lease a dead predecessor's
+        // worker still holds, an attach to a session it still serves).
+        self.wait_for_boot_reap().await;
 
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
@@ -233,7 +237,11 @@ impl Supervisor {
                     // is queued is written first - the worker's own
                     // event-before-response socket order survives the hop.
                     if let Some(payload) = targeted {
-                        if let Err(error) = write_line(&mut writer, &payload).await {
+                        // A delta-capable client reads streamed updates as deltas.
+                        let encoded = attached.wire_frame(&payload);
+                        if let Err(error) =
+                            write_line(&mut writer, encoded.as_ref().unwrap_or(&payload)).await
+                        {
                             // An event-write failure exits through the shared cleanup below.
                             break 'serve Err(error);
                         }
@@ -1274,6 +1282,65 @@ mod tests {
         assert!(
             log.contains("shutdown requested by client install-rust-sh (command installer-stop)"),
             "the log names the requesting client and its command: {log}"
+        );
+        connection.abort();
+    }
+
+    /// The boot reap runs off the accept path: while it is pending (the gate `run` lowers until
+    /// the reap cleared this socket's predecessors), a connecting client still gets its hello at
+    /// once, and its first command is answered only once the reap finished.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_hello_does_not_wait_for_the_boot_reap() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let supervisor = Arc::new(
+            Supervisor::new(SupervisorOptions {
+                socket_path: dir.path().join("daemon.sock"),
+                agent_dir: dir.path().join("agent"),
+            })
+            .expect("supervisor"),
+        );
+        supervisor.boot_reaped.send_replace(false);
+        let (server_side, client_side) = tokio::net::UnixStream::pair().expect("socket pair");
+        let connection = {
+            let supervisor = Arc::clone(&supervisor);
+            let stream: Box<dyn TransportStream> = Box::new(server_side);
+            tokio::spawn(async move { supervisor.handle_client(stream).await })
+        };
+        let (client_read, mut client_write) = client_side.into_split();
+        let mut client = BufReader::new(client_read);
+        let mut hello = String::new();
+        tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut hello))
+            .await
+            .expect("the hello arrives while the reap is pending")
+            .expect("hello line");
+        assert!(hello.contains("\"type\":\"daemon_hello\""), "{hello}");
+        let envelope = json!({
+            "type": "command",
+            "id": "r1",
+            "protocol": {"name": "prime-agent.daemon", "version": 7},
+            "clientId": "reap-gate",
+            "command": {"type": "roster_unsubscribe", "id": "r1"},
+        });
+        client_write
+            .write_all((serde_json::to_string(&envelope).unwrap() + "\n").as_bytes())
+            .await
+            .expect("send a command");
+        let mut answer = String::new();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), client.read_line(&mut answer))
+                .await
+                .is_err(),
+            "the first command waits for the reap: {answer}"
+        );
+        supervisor.boot_reaped.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(5), client.read_line(&mut answer))
+            .await
+            .expect("the command is answered once the reap finished")
+            .expect("answer line");
+        assert!(
+            answer.contains("\"id\":\"r1\"") && answer.contains("\"success\":true"),
+            "{answer}"
         );
         connection.abort();
     }

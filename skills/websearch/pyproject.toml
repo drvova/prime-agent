@@ -1,9 +1,9 @@
 [project]
 name = "prime-agent-skill-websearch"
 version = "0.1.0"
-description = "Web search skill for Prime Agent (Serper or You.com Eco Search API)."
+description = "Web search skill for Prime Agent (delegates to the native web.search engine)."
 requires-python = ">=3.10"
-dependencies = ["httpx>=0.27,<1", "prime-agent-runtime"]
+dependencies = ["prime-agent-runtime"]
 
 [project.scripts]
 websearch = "rlm.skill:cli"

@@ -7,9 +7,11 @@
 
 use crate::info_commands::ClientLine;
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{hint_row, menu_list_layout, scroll_row};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_list_layout, scroll_row, search_field_lines};
+use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
-use crate::{Line, Span};
+use crate::Line;
 
 /// The panel's fixed frame rows outside the content window with a title: the rule, the title, the
 /// blank under it, the key hint, and the trailing blank (the operator's 2026-09-24 spacing
@@ -19,6 +21,9 @@ const FIXED_FRAME_ROWS_WITH_TITLE: usize = 5;
 const FIXED_FRAME_ROWS: usize = 4;
 
 const SCROLL_INDICATOR_ROWS: usize = 1;
+
+/// The bordered search field the markdown documents (`/hotkeys`, `/changelog`) carry.
+const SEARCH_FIELD_ROWS: usize = 3;
 
 /// The panel's content: styled info rows or one markdown document.
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +65,10 @@ pub struct InfoPanel {
     /// the same window the panel rendered (a render always precedes a key press).
     visible_rows: usize,
     layout: InfoLayout,
+    /// The line filter over a markdown document (`/hotkeys`, `/changelog`).
+    search: SearchInput,
+    /// The laid-out rows the filter keeps, refreshed every render.
+    matches: Vec<usize>,
 }
 
 impl InfoPanel {
@@ -74,12 +83,50 @@ impl InfoPanel {
                 width: 0,
                 rows: Vec::new(),
             },
+            search: SearchInput::new(),
+            matches: Vec::new(),
         }
+    }
+
+    /// Markdown documents (the hotkeys guide, the changelog) carry the line filter; the short
+    /// row panels do not.
+    fn searchable(&self) -> bool {
+        match self.content {
+            InfoContent::Markdown(_) => true,
+            InfoContent::Rows(_) => false,
+        }
+    }
+
+    /// The line filter's query.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
+    }
+
+    /// Keep the laid-out rows whose text contains the query (case-insensitive).
+    fn refresh_matches(&mut self) {
+        let query = self.search.value().to_lowercase();
+        self.matches = self
+            .layout
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                query.is_empty()
+                    || row
+                        .iter()
+                        .map(|span| span.content.as_str())
+                        .collect::<String>()
+                        .to_lowercase()
+                        .contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
     }
 
     /// The content's rendered-row count (post-wrap): scroll bounds and the indicator's denominator.
     fn content_rows(&self) -> usize {
-        self.layout.rows.len()
+        self.matches.len()
     }
 
     /// Re-lay the content out when the render width changed: info rows re-wrap and
@@ -116,6 +163,10 @@ impl InfoPanel {
         let fixed = match self.title {
             Some(_) => FIXED_FRAME_ROWS_WITH_TITLE,
             None => FIXED_FRAME_ROWS,
+        } + if self.searchable() {
+            SEARCH_FIELD_ROWS
+        } else {
+            0
         };
         menu_list_layout(
             Some(viewport_rows),
@@ -145,6 +196,19 @@ impl InfoPanel {
     /// One key press on the read-only surface: the close keys dismiss, the navigation keys
     /// scroll (arrows by one row, page keys by the window), and every other key is consumed.
     pub fn handle_key(&mut self, key: &str, kb: &KeybindingsManager) -> InfoPanelAction {
+        // A live filter: Esc clears it first, and the back key edits it instead of closing.
+        if !self.search.value().is_empty()
+            && (kb.matches(key, "tui.select.cancel") || kb.matches(key, "app.modal.back"))
+            && key != "ctrl+c"
+        {
+            if kb.matches(key, "tui.select.cancel") {
+                self.search.prefill("");
+                self.scroll = 0;
+            } else {
+                self.search.handle_key(key, kb);
+            }
+            return InfoPanelAction::None;
+        }
         if key == "ctrl+c"
             || kb.matches(key, "tui.select.cancel")
             || kb.matches(key, "app.modal.back")
@@ -177,6 +241,14 @@ impl InfoPanel {
             self.scroll_by(isize::MAX);
             return InfoPanelAction::None;
         }
+        // Every other key edits a document's filter; the row panels stay inert.
+        if self.searchable() {
+            let previous = self.search.value().to_string();
+            self.search.handle_key(key, kb);
+            if self.search.value() != previous {
+                self.scroll = 0;
+            }
+        }
         InfoPanelAction::None
     }
 
@@ -191,6 +263,7 @@ impl InfoPanel {
         viewport_rows: usize,
     ) -> Vec<Line> {
         self.ensure_layout(theme, width, code_block_indent);
+        self.refresh_matches();
         let total = self.content_rows();
         let visible = self.window_height(viewport_rows, total);
         self.visible_rows = visible;
@@ -201,37 +274,58 @@ impl InfoPanel {
             theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width.max(1)))
         ]);
         if let Some(title) = &self.title {
-            let title: Line = vec![
-                Span::raw("  "),
-                theme.fg_span(ThemeColor::Text, title.clone()),
-            ];
-            lines.push(crate::width::truncate_line(&title, width, ""));
+            lines.push(title_row(theme, width, title));
+        }
+        if self.searchable() {
+            lines.extend(search_field_lines(
+                theme,
+                width,
+                self.search.value(),
+                self.search.cursor(),
+                /*focused*/ true,
+                "Filter lines",
+            ));
         }
         lines.push(Vec::new());
-        lines.extend(self.layout.rows[self.scroll..end].iter().cloned());
+        lines.extend(
+            self.matches[self.scroll..end]
+                .iter()
+                .map(|&index| self.layout.rows[index].clone()),
+        );
+        if total == 0 {
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                "Nothing to show",
+            ));
+        }
         if end < total || self.scroll > 0 {
             lines.push(scroll_row(theme, width, self.scroll + 1, total));
         }
-        lines.push(hint_row(theme, width, &hint_text(kb)));
+        lines.push(footer(kb).line(theme, width));
         lines.push(Vec::new());
         lines.truncate(viewport_rows.max(1));
         lines
     }
 }
 
-/// The key-hint text: the scroll keys and the close key, the same vocabulary as the pickers'
-/// hints. An unbound action is omitted — the hint never advertises a key the surface does
-/// not handle. A user who unbinds `tui.select.cancel` loses the Esc close; the hint then
-/// names the one close key that always works: Ctrl+C (hardwired in `handle_key`).
-fn hint_text(kb: &KeybindingsManager) -> String {
-    let scroll = crate::menu_panel::key_hint(kb, &["tui.select.up", "tui.select.down"], "scroll");
-    let close = kb.first_key("tui.select.cancel").map_or_else(
-        || "Ctrl+C".to_string(),
-        |key| crate::keybindings::format_key_text(&key),
+/// The footer: the scroll keys and the close key, the same vocabulary as the pickers' footers. An
+/// unbound action is omitted — the footer never advertises a key the surface does not handle. A
+/// user who unbinds `tui.select.cancel` loses the Esc close; the footer then names the one close
+/// key that always works: Ctrl+C (hardwired in `handle_key`).
+fn footer(kb: &KeybindingsManager) -> Footer {
+    let footer = Footer::new().bound(
+        kb,
+        &["tui.select.up", "tui.select.down"],
+        "scroll",
+        HintRank::Useful,
     );
-    match scroll {
-        Some(scroll) => format!("{scroll} \u{b7} {close} close"),
-        None => format!("{close} close"),
+    if kb.first_key("tui.select.cancel").is_some() {
+        footer.esc(kb, EscVerb::Close)
+    } else {
+        footer.keys(["ctrl+c"], "close", HintRank::Core)
     }
 }
 
@@ -286,7 +380,7 @@ mod tests {
         assert_eq!(text[2], "");
         assert_eq!(text[3], " line 0");
         assert_eq!(text[4], " line 1");
-        assert!(text[5].starts_with(" \u{2191}/\u{2193} scroll \u{b7} Esc close"));
+        assert!(text[5].starts_with("  \u{2191}/\u{2193} scroll \u{b7} Esc close"));
         assert_eq!(text[6], "");
         assert_eq!(text.len(), 7);
     }
@@ -311,7 +405,7 @@ mod tests {
         assert_eq!(text[2], " Session Info");
         assert_eq!(text[3], " line 0");
         assert_eq!(text[4], " line 1");
-        assert!(text[5].starts_with(" \u{2191}/\u{2193} scroll"));
+        assert!(text[5].starts_with("  \u{2191}/\u{2193} scroll"));
         assert_eq!(text.last(), Some(&String::new()));
     }
 

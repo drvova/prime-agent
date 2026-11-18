@@ -2,12 +2,21 @@
 //! and flush on dispose.
 
 use super::{
-    describe_failure, lock, Arc, CaptureFreshness, Duration, ExecuteOptions, ExecuteStatus, Inner,
-    Instant, ManifestStat, MemoSlot, Request, RestoreResult, RestoredNamespaceSkip, SnapshotResult,
-    SnapshotSkip, Value, DEFAULT_SNAPSHOT_DEBOUNCE_MS, DEFAULT_SNAPSHOT_MAX_BYTES,
-    DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES, REPAIR_STEP_TIMEOUT_MS, RESTORE_EXECUTION_TIMEOUT_MS,
-    SNAPSHOT_EXECUTION_TIMEOUT_MS,
+    describe_failure, lock, AbortSignal, Arc, CaptureFreshness, Duration, ExecuteOptions,
+    ExecuteStatus, Inner, Instant, ManifestStat, MemoSlot, Request, RestoreResult,
+    RestoredNamespaceSkip, SnapshotResult, SnapshotSkip, Value, DEFAULT_SNAPSHOT_DEBOUNCE_MS,
+    DEFAULT_SNAPSHOT_MAX_BYTES, DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES, REPAIR_STEP_TIMEOUT_MS,
+    RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, SNAPSHOT_MAX_YIELD_MS,
 };
+
+/// Whether a capture gives way to a user cell that arrives while it is queued or running.
+pub(crate) enum CapturePriority {
+    /// Explicit captures and the dispose flush: a cell waits behind them.
+    RunsToCompletion,
+    /// The debounced auto-snapshot: aborting this signal (the next user cell does) interrupts the
+    /// dump before its commit, leaving the previous payload intact, and the capture is re-armed.
+    YieldsToCells(AbortSignal),
+}
 
 /// The runtime snapshot writer's reason for a name above the per-variable cap: such a skipped name
 /// is a live over-cap survivor unless the same capture also pruned it.
@@ -24,6 +33,7 @@ impl Inner {
         self: &Arc<Self>,
         execution_timeout_ms: Option<u64>,
         prune_oversized: bool,
+        priority: CapturePriority,
     ) -> Option<SnapshotResult> {
         let cfg = self.options.snapshot.clone()?;
         if !lock(&self.guarded).lifecycle.is_running() {
@@ -32,6 +42,8 @@ impl Inner {
         // While the namespace provably cannot have changed, a fresh capture would reproduce the
         // committed payload: skip the kernel request.
         if let Some(fresh) = self.fresh_capture(prune_oversized).await {
+            // The committed payload already holds this namespace: nothing is owed.
+            lock(&self.guarded).snapshot_yielded_since = None;
             return Some(fresh);
         }
         // The user-settled count and the invalidation epoch the memo may claim, read before the
@@ -49,17 +61,25 @@ impl Inner {
                 .unwrap_or(DEFAULT_SNAPSHOT_MAX_VARIABLE_BYTES),
             prune_oversized,
         };
+        let preempt = match priority {
+            CapturePriority::RunsToCompletion => None,
+            CapturePriority::YieldsToCells(signal) => Some(signal),
+        };
         let result = self
             .enqueue_request(
                 request,
                 ExecuteOptions {
+                    signal: preempt.clone(),
                     internal: true,
                     ..ExecuteOptions::default()
                 },
                 execution_timeout_ms,
             )
             .await;
+        // A capture a user cell preempted before its commit is a deferral, not a failure.
+        let preempted = preempt.as_ref().is_some_and(AbortSignal::is_aborted);
         match result {
+            Ok(r) if r.result.status != ExecuteStatus::Ok && preempted => None,
             Ok(r) if r.result.status == ExecuteStatus::Ok => {
                 let Some(fields) = &r.done_fields else {
                     self.append_diagnostic("state snapshot failed: no done fields");
@@ -79,6 +99,7 @@ impl Inner {
                 let capture_sequence = {
                     let mut g = lock(&self.guarded);
                     g.capture_sequence += 1;
+                    g.snapshot_yielded_since = None;
                     g.capture_sequence
                 };
                 self.record_capture_freshness(
@@ -105,6 +126,7 @@ impl Inner {
                 ));
                 None
             }
+            Err(_) if preempted => None,
             Err(error) => {
                 self.append_diagnostic(&format!("state snapshot error: {error:#}"));
                 None
@@ -340,6 +362,9 @@ impl Inner {
 
     /// Debounced auto-snapshot after a successful execution: a later resume
     /// (or a crash before graceful shutdown) revives the most recent namespace.
+    /// The capture yields to user cells (see [`CapturePriority::YieldsToCells`]): a preempted one
+    /// re-arms itself, whatever the preempting cell's outcome, until one commits; after
+    /// [`SNAPSHOT_MAX_YIELD_MS`] of yielding the next one runs to completion.
     pub(crate) fn schedule_snapshot(self: &Arc<Self>) {
         if self.options.snapshot.is_none() {
             return;
@@ -374,9 +399,31 @@ impl Inner {
                 if held.is_some_and(|held| completed <= held + 1) {
                     return;
                 }
-                inner
-                    .capture_snapshot(Some(SNAPSHOT_EXECUTION_TIMEOUT_MS), false)
+                let preempt = AbortSignal::new();
+                let priority = {
+                    let mut g = lock(&inner.guarded);
+                    let overdue = g.snapshot_yielded_since.is_some_and(|since| {
+                        since.elapsed() >= Duration::from_millis(SNAPSHOT_MAX_YIELD_MS)
+                    });
+                    if overdue {
+                        CapturePriority::RunsToCompletion
+                    } else {
+                        g.yielding_snapshot = Some(preempt.clone());
+                        CapturePriority::YieldsToCells(preempt.clone())
+                    }
+                };
+                let committed = inner
+                    .capture_snapshot(Some(SNAPSHOT_EXECUTION_TIMEOUT_MS), false, priority)
                     .await;
+                lock(&inner.guarded).yielding_snapshot = None;
+                if committed.is_none() && preempt.is_aborted() {
+                    // Owed, not dropped: the preempting cell may fail (no re-arm of its own) and
+                    // still have changed the namespace.
+                    lock(&inner.guarded)
+                        .snapshot_yielded_since
+                        .get_or_insert_with(Instant::now);
+                    inner.schedule_snapshot();
+                }
             }
         }));
     }
@@ -443,8 +490,12 @@ impl Inner {
             if !drained {
                 return;
             }
-            self.capture_snapshot(Some(SNAPSHOT_EXECUTION_TIMEOUT_MS), false)
-                .await;
+            self.capture_snapshot(
+                Some(SNAPSHOT_EXECUTION_TIMEOUT_MS),
+                false,
+                CapturePriority::RunsToCompletion,
+            )
+            .await;
         }
         .await;
         // Reset: a superseding start() can revive this kernel for new work.

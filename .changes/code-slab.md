@@ -1,0 +1,1 @@
+- Code blocks in the agent's replies now sit on a tinted slab with an edge marker and the language name on top, so code stands apart from the prose around it. Your `markdown.codeBlockIndent` setting still applies.

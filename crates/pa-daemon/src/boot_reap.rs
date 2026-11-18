@@ -57,12 +57,24 @@ pub(crate) enum ReapOutcome {
 /// Reap the same-socket predecessors before a client or adoption races the reap.
 pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
     let socket_path = supervisor.options.socket_path.clone();
-    // The adoption pass's business, never the reap's: this daemon's own descriptors,
-    // protected while the identity still matches (none recorded stays protected).
-    let protected: HashSet<u32> =
-        protected_worker_pids(&supervisor.options.agent_dir, &socket_path);
-    let mut targets = same_socket_worker_targets(&socket_path, &protected, None);
-    targets.extend(same_socket_supervisor_targets(&socket_path));
+    let agent_dir = supervisor.options.agent_dir.clone();
+    // The census reads every /proc entry: blocking filesystem work, off the async workers.
+    let census = tokio::task::spawn_blocking(move || {
+        // The adoption pass's business, never the reap's: this daemon's own descriptors,
+        // protected while the identity still matches (none recorded stays protected).
+        let protected: HashSet<u32> = protected_worker_pids(&agent_dir, &socket_path);
+        let mut targets = same_socket_worker_targets(&socket_path, &protected, None);
+        targets.extend(same_socket_supervisor_targets(&socket_path));
+        targets
+    })
+    .await;
+    let targets = match census {
+        Ok(targets) => targets,
+        Err(error) => {
+            supervisor.log_line(&format!("boot reap: the census failed: {error}"));
+            Vec::new()
+        }
+    };
     if targets.is_empty() {
         return;
     }

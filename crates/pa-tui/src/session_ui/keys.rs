@@ -5,6 +5,7 @@ use super::{
     DockFocusSource, Duration, Instant, KeyEvent, Map, QueueBrowseDirection, QueueLane, Result,
     SessionUi, StatusKind, SubmitBehavior,
 };
+use crate::history_search::HistorySearchAction;
 
 /// How long the Ctrl+C exit hint arms the second-press exit.
 const CTRL_C_EXIT_HINT_MS: u64 = 2_000;
@@ -86,6 +87,7 @@ impl SessionUi {
         }
         let overlay_focused = view.model_picker.is_some()
             || view.choice_picker.is_some()
+            || view.history_search.is_some()
             || view.heartbeats_picker.is_some()
             || view.goal_panel.is_some()
             || view.bash_view.is_some()
@@ -290,7 +292,8 @@ impl SessionUi {
             self.dirty = true;
             return;
         }
-        let _ = view.editor.handle_paste(text);
+        view.composer_status = None;
+        view.editor.handle_paste(text);
     }
 
     /// One key press while the `/effort` picker is open: Esc/Ctrl+C close it
@@ -324,7 +327,47 @@ impl SessionUi {
         Ok(())
     }
 
+    /// One key press while the ctrl+r history search is open: Esc/Ctrl+C close it with the draft
+    /// untouched; Enter puts the picked prompt in the composer, the caret at its end.
+    fn handle_history_search_key(&mut self, key: KeyEvent, view: &mut AgentView) -> Result<()> {
+        let Some(id) = key_event_to_id(&key) else {
+            return Ok(());
+        };
+        let action = view
+            .history_search
+            .as_mut()
+            .map(|search| search.handle_key(&id, view.editor.keybindings()));
+        match action {
+            Some(HistorySearchAction::None) | None => {}
+            Some(HistorySearchAction::Cancel) => view.history_search = None,
+            Some(HistorySearchAction::Select(text)) => {
+                view.history_search = None;
+                view.editor.set_text(&text);
+            }
+        }
+        self.dirty = true;
+        Ok(())
+    }
+
     pub(crate) async fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        view: &mut AgentView,
+        running: &mut bool,
+    ) -> Result<()> {
+        // Menu-search adoption: one count each time a menu's query goes from empty to non-empty
+        // (no query text leaves the client).
+        let searching = view.menu_query_active();
+        let result = self.dispatch_key(key, view, running).await;
+        if !searching && view.menu_query_active() {
+            self.track_menu_use(crate::interactive::MenuUse::SearchStarted);
+        }
+        result
+    }
+
+    /// Route one key to the surface that owns the frame, else the transcript, editor, and app
+    /// actions.
+    async fn dispatch_key(
         &mut self,
         key: KeyEvent,
         view: &mut AgentView,
@@ -336,6 +379,8 @@ impl SessionUi {
         if let Some(id) = &id {
             self.exit_guard.note_key_handled(id);
         }
+        // A transient composer status lasts until the next keystroke.
+        view.composer_status = None;
         // Any non-Escape key re-arms the double-Esc tree shortcut (one shot per input chain);
         // Escape itself never resets, so repeated Escape converges to the inert empty state.
         if id.is_some_and(|id| id != "escape") {
@@ -349,6 +394,10 @@ impl SessionUi {
         // The `/effort` picker owns the frame the same way.
         if view.choice_picker.is_some() {
             return self.handle_choice_picker_key(key, view).await;
+        }
+        // The ctrl+r history search owns the frame the same way.
+        if view.history_search.is_some() {
+            return self.handle_history_search_key(key, view);
         }
         if view.mcp_view.is_some() {
             return self.handle_mcp_view_key(key, view);
@@ -540,6 +589,15 @@ impl SessionUi {
                 self.dirty = true;
                 return Ok(());
             }
+            // The interrupt below dispatches any parked messages at once (the pending strip's
+            // `— Esc dispatches now`): count that use, fire-and-forget.
+            if self.turn_active && !view.queued.is_empty() {
+                if let Some(telemetry) = self.telemetry.clone() {
+                    tokio::spawn(async move {
+                        telemetry.queue_dispatched_now().await;
+                    });
+                }
+            }
             let action = if self.turn_active || view.editor.get_text().trim().is_empty() {
                 "tree"
             } else {
@@ -571,9 +629,21 @@ impl SessionUi {
                 self.clear_ctrl_c_hint();
                 return Ok(());
             }
+            // Ctrl+C on an idle draft clears it (recallable with Up) instead of arming the exit,
+            // so a double press never quits with typed text in the composer. While work runs it
+            // only interrupts and keeps the draft (the press is about the work, not the text). A
+            // queue browse keeps its edit: the browsed text is a queued message, not a draft.
+            let work_running = self.turn_active
+                || view.compaction.is_some()
+                || self.user_bash_running
+                || self.active_side_question_id.is_some();
+            let clears_draft = !interrupt
+                && !work_running
+                && !view.editor.get_text().is_empty()
+                && !self.queue_selection.is_browsing();
             // A second press inside the hint window shuts down unconditionally —
             // no turn wait, no abort wait.
-            if self.ctrl_c_hint_visible() && !interrupt {
+            if self.ctrl_c_hint_visible() && !interrupt && !clears_draft {
                 self.exit_reason = "ctrl_c_twice";
                 *running = false;
                 return Ok(());
@@ -599,7 +669,12 @@ impl SessionUi {
                 });
             }
             self.interrupt_running_work(view);
-            self.show_ctrl_c_hint();
+            if clears_draft {
+                self.cleared_draft = Some(view.editor.clear_into_history());
+                self.clear_ctrl_c_hint();
+            } else {
+                self.show_ctrl_c_hint();
+            }
             self.dirty = true;
             return Ok(());
         }
@@ -643,6 +718,36 @@ impl SessionUi {
                 .await;
             return Ok(());
         }
+        // The thinking cycle (oh-my-pi's Shift+Tab): every surface that owns Shift+Tab (the
+        // settings menu's tab strip, the pickers and panels) took the key above, and the
+        // completion dropdown has no Shift+Tab, so the composer is the only place it lands.
+        if view.editor.keybindings().matches(&id, "app.thinking.cycle") {
+            // A use of the key the empty composer's hint names counts toward retiring it; the
+            // count persists off the key path.
+            if let Some(uses) = self.composer_hint.record_use() {
+                view.composer_hint = self.composer_hint.label(view.editor.keybindings());
+                if let Some(settings) = self.client_settings.clone() {
+                    let notes = self.notes.clone();
+                    let saves = self.composer_hint_saves.clone();
+                    tokio::task::spawn_blocking(move || {
+                        // One save at a time, and only upward: a later press's save that ran
+                        // first, or another instance's higher count, is never overwritten.
+                        let _serial = saves
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if uses <= settings.composer_hint_uses() {
+                            return;
+                        }
+                        if let Err(error) = settings.set_composer_hint_uses(uses) {
+                            let _ =
+                                notes.send(format!("saving the key hint count failed: {error:#}"));
+                        }
+                    });
+                }
+            }
+            self.spawn_thinking_cycle();
+            return Ok(());
+        }
         if view.editor.keybindings().matches(&id, "app.tools.expand") {
             self.cycle_detail(view);
             return Ok(());
@@ -684,6 +789,15 @@ impl SessionUi {
             self.dirty = true;
             return Ok(());
         }
+        // Search this session's prompt history; a pick replaces the draft.
+        if view.editor.keybindings().matches(&id, "app.history.search") {
+            view.history_search = Some(crate::history_search::HistorySearch::new(
+                view.editor.get_history(),
+            ));
+            self.track_menu_opened("history", "shortcut");
+            self.dirty = true;
+            return Ok(());
+        }
         // Stash with a draft, restore with an empty editor; the manual stash
         // returns only on this key, never on a chat open or switch landing.
         if view.editor.keybindings().matches(&id, "app.prompt.stash") {
@@ -711,6 +825,8 @@ impl SessionUi {
         // on the exit path and returns when the chat reopens.
         if view.editor.keybindings().matches(&id, "app.session.resume") {
             if self.return_to_agents_view {
+                // The resume key opens the resume picker, like a bare `/resume`.
+                self.resume_folder = Some(self.cwd.clone());
                 self.open_agents_view = true;
                 self.exit_requested = true;
             } else {
@@ -878,13 +994,36 @@ impl SessionUi {
             self.dirty = true;
             return Ok(());
         }
+        // A submit that carries an `@file` pill counts once for the mention-pill adoption.
+        let carries_pill = view.editor.keybindings().matches(&id, "tui.input.submit")
+            && view.editor.mention_pill_count() > 0;
         view.editor.handle_input(&id);
         if !view.editor.get_text().is_empty() {
             self.clear_ctrl_c_hint();
         }
+        // The Up that lands on the cleared draft is its recall, counted once.
+        if view.editor.is_history_navigation_active()
+            && self
+                .cleared_draft
+                .take_if(|draft| *draft == view.editor.get_text())
+                .is_some()
+        {
+            if let Some(telemetry) = self.telemetry.clone() {
+                tokio::spawn(async move {
+                    telemetry.draft_recalled().await;
+                });
+            }
+        }
         for event in view.editor.take_events() {
             match event {
                 crate::editor::EditorEvent::Submitted(text) => {
+                    if carries_pill {
+                        if let Some(telemetry) = self.telemetry.clone() {
+                            tokio::spawn(async move {
+                                telemetry.mention_pill_sent().await;
+                            });
+                        }
+                    }
                     if self.queue_selection.is_browsing() {
                         self.apply_queue_selection(&text, QueueLane::Steering, view)
                             .await?;
@@ -911,7 +1050,11 @@ impl SessionUi {
                         self.toast("Copied selection to clipboard", view);
                     }
                 }
-                _ => {}
+                crate::editor::EditorEvent::SlashMenuAccepted => {
+                    self.track_menu_use(crate::interactive::MenuUse::SlashCommandAccepted);
+                }
+                crate::editor::EditorEvent::Changed(_)
+                | crate::editor::EditorEvent::AutocompleteToggled(_) => {}
             }
         }
         self.dirty = true;
@@ -940,7 +1083,7 @@ pub(crate) fn opening_echo_key_claimed(
 ) -> bool {
     // The always-fire arms: the transcript viewport, the image paste, the
     // escape ladder, the interrupt family, suspend, the model picker and
-    // cycles, the detail cycle, the dock focus, the external editor, the
+    // cycles, the thinking cycle, the detail cycle, the dock focus, the external editor, the
     // stash, the session-level commands, the queue browse, and the
     // follow-up key.
     if kb.matches(id, "tui.viewport.pageUp")
@@ -955,10 +1098,12 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.model.select")
         || kb.matches(id, "app.model.cycleForward")
         || kb.matches(id, "app.model.cycleBackward")
+        || kb.matches(id, "app.thinking.cycle")
         || kb.matches(id, "app.tools.expand")
         || kb.matches(id, "app.subagents.focus")
         || kb.matches(id, "app.editor.external")
         || kb.matches(id, "app.prompt.stash")
+        || kb.matches(id, "app.history.search")
         || kb.matches(id, "app.session.new")
         || kb.matches(id, "app.session.resume")
         || kb.matches(id, "app.message.navigateOlder")
@@ -1115,6 +1260,7 @@ mod opening_echo_claim_tests {
             "ctrl+z",
             "ctrl+l",
             "alt+m",
+            "shift+tab",
             "ctrl+o",
             "alt+a",
             "ctrl+g",

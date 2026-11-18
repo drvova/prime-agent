@@ -406,11 +406,13 @@ pub fn editor_chunk_highlights(
 }
 
 /// The visible text spans of one editor chunk: highlight-colored runs with the cursor cell
-/// reverse-video; the appended end-of-line cursor cell stays default.
+/// reverse-video; the appended end-of-line cursor cell stays default. `chips` are char ranges
+/// (collapsed paste markers) that render as an accent chip on the soft selection wash.
 pub fn editor_text_spans(
     theme: &Theme,
     chunk: &str,
     highlights: &[(usize, usize, ThemeColor)],
+    chips: &[(usize, usize)],
     selection: Option<(usize, usize)>,
     cursor_col: Option<usize>,
     bg: Style,
@@ -422,6 +424,10 @@ pub fn editor_text_spans(
     for (start, end, _) in highlights {
         boundaries.push(*start);
         boundaries.push(*end);
+    }
+    for (start, end) in chips {
+        boundaries.push((*start).min(len));
+        boundaries.push((*end).min(len));
     }
     if let Some((start, end)) = selection {
         boundaries.push(start.min(len));
@@ -448,6 +454,12 @@ pub fn editor_text_spans(
             .find(|(s, e, _)| *s <= start && start < *e)
         {
             style = bg.patch(theme.fg_style(*color));
+        }
+        if chips.iter().any(|(s, e)| *s <= start && start < *e) {
+            // The soft selection wash is built to read against the editor surface.
+            style = theme
+                .soft_selection_style()
+                .patch(theme.fg_style(ThemeColor::Accent));
         }
         // The active selection renders reversed-video like the cursor cell
         // (no TS selection to mirror; reverse keeps it visible on every theme).
@@ -855,6 +867,7 @@ mod tests {
             &theme(),
             "hello world",
             &[],
+            &[],
             Some((0, 5)),
             Some(7),
             Style::default(),
@@ -878,7 +891,15 @@ mod tests {
             ]
         );
         // A selection fully past the chunk clips away entirely.
-        let none = editor_text_spans(&theme(), "hi", &[], Some((9, 12)), None, Style::default());
+        let none = editor_text_spans(
+            &theme(),
+            "hi",
+            &[],
+            &[],
+            Some((9, 12)),
+            None,
+            Style::default(),
+        );
         assert!(none.len() == 1 && !none[0].style.add_modifier.contains(Modifier::REVERSED));
     }
 
@@ -891,6 +912,7 @@ mod tests {
             &theme,
             "/new",
             &[(0, 4, ThemeColor::Accent)],
+            &[],
             None,
             Some(2),
             bg,
@@ -911,6 +933,7 @@ mod tests {
             &theme,
             "/new",
             &[(0, 4, ThemeColor::Accent)],
+            &[],
             None,
             Some(4),
             bg,
@@ -926,7 +949,7 @@ mod tests {
             ]
         );
         // No highlights: a single plain run, cursor reversed over its char.
-        let styled = editor_text_spans(&theme, "hello", &[], None, Some(2), bg);
+        let styled = editor_text_spans(&theme, "hello", &[], &[], None, Some(2), bg);
         assert_eq!(
             styled
                 .iter()

@@ -329,6 +329,12 @@ struct CounterValues {
     rlm_child_cache_read_tokens: u64,
     rlm_child_cache_write_tokens: u64,
     rlm_child_cost: f64,
+    web_search_count: u64,
+    web_search_failed_count: u64,
+    web_search_fallback_count: u64,
+    web_search_keyless_count: u64,
+    web_search_result_count: u64,
+    web_search_max_ms: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -375,6 +381,36 @@ impl SessionCounters {
         });
     }
 
+    /// One native web search: answered or failed, whether a fallback
+    /// answered, whether a keyless engine did, the result count, and the
+    /// latency. The query and the provider never upload.
+    pub fn note_web_search(
+        &self,
+        outcome: &Result<crate::web_search::SearchReport, crate::web_search::SearchError>,
+    ) {
+        self.with(|values| {
+            values.web_search_count += 1;
+            let elapsed = match outcome {
+                Ok(report) => {
+                    values.web_search_fallback_count += u64::from(!report.failures.is_empty());
+                    values.web_search_keyless_count += u64::from(matches!(
+                        report.provider.access(),
+                        crate::web_search::ProviderAccess::Keyless
+                    ));
+                    values.web_search_result_count += report.response.sources.len() as u64;
+                    report.elapsed
+                }
+                Err(error) => {
+                    values.web_search_failed_count += 1;
+                    error.elapsed
+                }
+            };
+            values.web_search_max_ms = values
+                .web_search_max_ms
+                .max(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+        });
+    }
+
     fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
@@ -406,6 +442,22 @@ impl SessionCounters {
             }
             if values.rlm_child_usage_count > 0 {
                 properties.set("rlm_child_cost", Value::from(values.rlm_child_cost));
+            }
+            // Sessions that never searched keep their ended event unchanged.
+            if values.web_search_count > 0 {
+                for (key, value) in [
+                    ("web_search_count", values.web_search_count),
+                    ("web_search_failed_count", values.web_search_failed_count),
+                    (
+                        "web_search_fallback_count",
+                        values.web_search_fallback_count,
+                    ),
+                    ("web_search_keyless_count", values.web_search_keyless_count),
+                    ("web_search_result_count", values.web_search_result_count),
+                    ("web_search_max_ms", values.web_search_max_ms),
+                ] {
+                    properties.set(key, Value::from(value));
+                }
             }
             for (key, count) in &values.feature_outcomes {
                 properties.set(key, Value::from(*count));

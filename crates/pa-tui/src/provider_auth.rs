@@ -8,7 +8,8 @@ use std::pin::Pin;
 
 use crate::fuzzy::fuzzy_filter;
 use crate::keybindings::KeybindingsManager;
-use crate::menu_panel::{key_hint, menu_row, search_field_lines};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::{menu_row, search_field_lines};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::Line;
@@ -222,9 +223,9 @@ impl ProviderAuthSelector {
     /// The panel title (the API-key prompt uses `Login to {provider}`).
     fn title(&self) -> String {
         match &self.mode {
-            Mode::Prompt { provider, .. } => format!("Login to {}", provider.name),
-            Mode::List if self.is_logout() => "Saved Credentials".to_string(),
-            Mode::List => "Providers".to_string(),
+            Mode::Prompt { provider, .. } => format!("Log in \u{203a} {}", provider.name),
+            Mode::List if self.is_logout() => "Log out".to_string(),
+            Mode::List => "Log in".to_string(),
         }
     }
 
@@ -313,7 +314,13 @@ impl ProviderAuthSelector {
             }
             Mode::List => {
                 if kb.matches(key, "tui.select.cancel") {
-                    return AuthSelectorAction::Cancel;
+                    // Esc clears a non-empty query first; the next Esc closes.
+                    if self.search.value().is_empty() {
+                        return AuthSelectorAction::Cancel;
+                    }
+                    self.search.prefill("");
+                    self.refilter();
+                    return AuthSelectorAction::None;
                 }
                 if kb.matches(key, "tui.select.up") {
                     let count = self.filtered.len();
@@ -383,6 +390,12 @@ impl ProviderAuthSelector {
         }
     }
 
+    /// The menu's search query (empty when not searching).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        self.search.value()
+    }
+
     fn is_logout(&self) -> bool {
         self.kind == AuthSelectorKind::Logout
     }
@@ -396,19 +409,18 @@ impl ProviderAuthSelector {
         // the frame's first row — no header block, no leading blank.
         let framed = self.is_logout() || !matches!(self.mode, Mode::List);
         if framed {
-            // `MenuPanel` inline chrome: the borderMuted rule and the muted
-            // one-space title (the content's own `startContent` blank opens the body).
+            // `MenuPanel` inline chrome: the borderMuted rule over the title (the content's own
+            // `startContent` blank opens the body).
             lines.push(vec![
                 theme.fg_span(ThemeColor::BorderMuted, "─".repeat(width.max(1)))
             ]);
-            lines.push(vec![
-                theme.fg_span(ThemeColor::Muted, format!(" {}", self.title()))
-            ]);
-            if !self.subtitle().is_empty() {
-                lines.push(vec![
-                    theme.fg_span(ThemeColor::Muted, format!(" {}", self.subtitle()))
-                ]);
-            }
+        }
+        lines.push(title_row(theme, width, &self.title()));
+        if !self.subtitle().is_empty() {
+            lines.push(vec![theme.fg_span(
+                ThemeColor::Muted,
+                format!("{CHROME_INDENT}{}", self.subtitle()),
+            )]);
         }
         match &self.mode {
             // The API-key prompt: the section-title prompt, the plain `> ` field, the blank between
@@ -416,7 +428,7 @@ impl ProviderAuthSelector {
             Mode::Prompt { input, .. } => {
                 lines.push(Vec::new());
                 lines.push(vec![
-                    crate::Span::raw(" ".to_string()),
+                    crate::Span::raw(CHROME_INDENT),
                     theme.fg_span(ThemeColor::Text, "Enter API key:".to_string()),
                 ]);
                 lines.push(crate::menu_panel::login_field_row(
@@ -440,7 +452,7 @@ impl ProviderAuthSelector {
             width,
             self.search.value(),
             self.search.cursor(),
-            false,
+            /*focused*/ true,
             SEARCH_PLACEHOLDER,
         );
         lines.append(&mut search);
@@ -488,37 +500,42 @@ impl ProviderAuthSelector {
             )]);
         }
         if count == 0 {
-            let message = if self.providers.is_empty() {
-                if self.is_logout() {
-                    "No providers logged in. Use /login first."
-                } else {
-                    "No providers available"
-                }
+            let empty = if self.is_logout() {
+                "No providers logged in. Use /login first."
             } else {
-                "No matching providers"
+                "No providers available"
             };
-            lines.push(vec![theme.fg_span(ThemeColor::Muted, message.to_string())]);
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                empty,
+            ));
         }
         if count > 0 {
             if let Some(provider) = self.selected_row() {
                 if let Some(status) = provider.status {
                     lines.push(Vec::new());
-                    lines.push(vec![
-                        theme.fg_span(ThemeColor::Muted, format!(" {}", status.label))
-                    ]);
+                    lines.push(vec![theme.fg_span(
+                        ThemeColor::Muted,
+                        format!("{CHROME_INDENT}{}", status.label),
+                    )]);
                 }
             }
         }
-        let hints = [
-            key_hint(kb, &["tui.select.up", "tui.select.down"], "navigate"),
-            key_hint(kb, &["tui.select.confirm"], "select"),
-            key_hint(kb, &["tui.select.cancel"], "cancel"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<String>>()
-        .join("  ");
-        lines.push(vec![theme.fg_span(ThemeColor::Muted, format!("  {hints}"))]);
+        lines.push(
+            Footer::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Useful,
+                )
+                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .esc(kb, EscVerb::Close)
+                .line(theme, width),
+        );
         if framed {
             lines.push(vec![
                 theme.fg_span(ThemeColor::Border, "─".repeat(width.max(1)))
@@ -801,21 +818,18 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
+        assert_eq!(text[0], "  Log in", "the shared title row opens the frame");
         assert!(
-            text[0].starts_with('─'),
-            "the search field's top rule opens the frame: {text:?}"
+            text[1].starts_with('─'),
+            "the search field's top rule follows the title: {text:?}"
         );
         assert!(
-            text[1].contains("Search providers"),
+            text[2].contains("Search providers"),
             "the placeholder row rides directly under the top rule: {text:?}"
         );
         assert!(
-            text[2].starts_with('─'),
+            text[3].starts_with('─'),
             "the search field's bottom rule follows: {text:?}"
-        );
-        assert!(
-            !text.iter().any(|row| row.trim() == "Providers"),
-            "no title row rides the login menu: {text:?}"
         );
         assert!(!text
             .iter()
@@ -850,7 +864,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        assert!(text.iter().any(|row| row.contains("Saved Credentials")));
+        assert!(text.iter().any(|row| row == "  Log out"));
         assert!(text
             .iter()
             .any(|row| row.contains("Choose a credential to remove.")));
@@ -880,10 +894,10 @@ mod tests {
             text[0].chars().all(|c| c == '\u{2500}'),
             "the borderMuted rule opens the prompt: {text:?}"
         );
-        assert_eq!(text[1], " Login to OpenAI", "the muted one-space title");
+        assert_eq!(text[1], "  Log in \u{203a} OpenAI", "the shared title row");
         assert_eq!(text[2], "", "the startContent blank");
         assert_eq!(
-            text[3], " Enter API key:",
+            text[3], "  Enter API key:",
             "the text-coloured section title"
         );
         assert!(
@@ -895,7 +909,7 @@ mod tests {
         let alt = crate::keybindings::format_key_text("alt");
         assert_eq!(
             text[6],
-            format!(" Enter submit  {alt}+C copy  Esc/Ctrl+C cancel"),
+            format!("  Enter submit \u{b7} {alt}+C copy \u{b7} Esc close"),
             "the TS auth-actions row: {text:?}"
         );
         assert_eq!(text.len(), 7, "no bottom rule rides the prompt: {text:?}");

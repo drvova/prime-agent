@@ -771,6 +771,8 @@ mod tests {
                 bash: mpsc::unbounded_channel().0,
                 factory: mpsc::unbounded_channel().0,
                 commands: mpsc::unbounded_channel().0,
+                thinking: mpsc::unbounded_channel().0,
+                stats: mpsc::unbounded_channel().0,
             },
             page_tx.clone(),
         )
@@ -902,7 +904,8 @@ mod tests {
         assert_eq!(
             view.chat,
             vec![ChatEntry::User {
-                text: "run".to_string()
+                text: "run".to_string(),
+                sent_at: Some(1),
             }],
             "the tail's retry outcome supersedes the attempt the head page ends with"
         );
@@ -980,6 +983,7 @@ mod tests {
             (0..30)
                 .map(|index| ChatEntry::User {
                     text: format!("{prefix} {index}"),
+                    sent_at: None,
                 })
                 .collect()
         };

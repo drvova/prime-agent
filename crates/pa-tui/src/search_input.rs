@@ -7,7 +7,7 @@ use crate::keybindings::KeybindingsManager;
 /// The single-line search input (TS `Input`): value, cursor, undo stack,
 /// and an Emacs-style kill ring. Dispatch happens through the shared
 /// keybinding manager; the model selector owns when keys reach it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SearchInput {
     value: String,
     /// Cursor position in characters.

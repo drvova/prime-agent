@@ -11,15 +11,32 @@ pub(super) fn user_mask(text: &str) -> crate::prompt_highlight::PromptTokenMask 
     crate::prompt_highlight::PromptTokenMask::new(text, command_end, include_bare_separator)
 }
 
-pub(super) fn visible_blocks(message: &AssistantMessage, detail: Detail) -> Vec<&MessageBlock> {
+/// The non-empty blocks; a thinking block stays visible in every detail level (folded to
+/// one row where the level hides thinking).
+pub(super) fn visible_blocks(message: &AssistantMessage) -> Vec<&MessageBlock> {
     message
         .blocks
         .iter()
         .filter(|block| match block {
-            MessageBlock::Thinking(text) => detail.show_thinking() && !text.trim().is_empty(),
-            MessageBlock::Text(text) => !text.trim().is_empty(),
+            MessageBlock::Thinking(text) | MessageBlock::Text(text) => !text.trim().is_empty(),
         })
         .collect()
+}
+
+/// The folded thinking row: ` • Thought · ~1.2k tokens` (chars / 4, the loader's estimate).
+pub(super) fn folded_thinking_row(text: &str, theme: &Theme) -> crate::Line {
+    let tokens =
+        crate::chrome::format_token_count((text.trim().chars().count() as u64).div_ceil(4));
+    let dim = theme.fg_style(ThemeColor::Dim);
+    vec![
+        crate::Span::raw(" "),
+        crate::Span::styled("\u{2022} ".to_string(), dim),
+        crate::Span::styled(
+            "Thought".to_string(),
+            theme.fg_style(ThemeColor::ThinkingText),
+        ),
+        crate::Span::styled(format!(" \u{b7} ~{tokens} tokens"), dim),
+    ]
 }
 
 pub(super) fn trailing_space(
@@ -43,6 +60,7 @@ pub(super) fn thinking_style(md: &MarkdownStyle, theme: &Theme) -> MarkdownStyle
     md.syntax = None;
     md.body = dim;
     md.heading = dim;
+    md.heading_band = None;
     md.link = dim;
     md.link_url = dim;
     md.code = dim;
@@ -76,15 +94,18 @@ pub(crate) fn assistant_row_count(
     preceded_by_tool_activity: bool,
     cache: &MarkdownBlockCache,
 ) -> usize {
-    let blocks = visible_blocks(message, detail);
+    let blocks = visible_blocks(message);
     let mut count = usize::from(!blocks.is_empty());
-    let mut md = MarkdownStyle::from_theme(theme);
+    let mut md = MarkdownStyle::from_theme(theme).for_replies(theme);
     code_block_indent.clone_into(&mut md.code_block_indent);
     let content_width = width.saturating_sub(2).max(1);
     for (index, block) in blocks.iter().enumerate() {
         match block {
             MessageBlock::Text(text) => {
                 count += markdown_row_count_tagged(text.trim(), content_width, &md, "", cache);
+            }
+            MessageBlock::Thinking(_) if !detail.show_thinking() => {
+                count += 1 + usize::from(index + 1 < blocks.len());
             }
             MessageBlock::Thinking(text) => {
                 count += markdown_row_count_tagged(

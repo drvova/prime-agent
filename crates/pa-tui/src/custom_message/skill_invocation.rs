@@ -28,7 +28,10 @@ pub fn skill_invocation_entries(text: &str) -> Option<Vec<ChatEntry>> {
         content: block.content,
     }))];
     if let Some(user_message) = block.user_message {
-        entries.push(ChatEntry::User { text: user_message });
+        entries.push(ChatEntry::User {
+            text: user_message,
+            sent_at: None,
+        });
     }
     Some(entries)
 }
@@ -122,7 +125,8 @@ mod tests {
                     content: "Run one query.".to_string(),
                 })),
                 ChatEntry::User {
-                    text: "find parity tuis".to_string()
+                    text: "find parity tuis".to_string(),
+                    sent_at: None,
                 },
             ]
         );

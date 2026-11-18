@@ -59,19 +59,30 @@ impl SessionUi {
     /// Re-apply the refreshed context usage to the chrome state.
     pub(crate) fn rebuild_tray(&mut self, view: &mut AgentView) {
         view.chrome.context = self.context;
+        view.chrome.compaction_percent = self.compaction_tick();
         view.chrome.chat_name = self.session_display();
         self.dirty = true;
+    }
+
+    /// Where the tray gauge ticks: the auto-compaction threshold (the local settings seam) while
+    /// the session compacts automatically, else nowhere.
+    pub(super) fn compaction_tick(&self) -> Option<f64> {
+        self.client_settings
+            .as_ref()
+            .filter(|_| self.auto_compaction)
+            .map(|settings| settings.compaction_threshold_percent())
     }
 
     pub(crate) fn note(&mut self, text: &str, view: &mut AgentView) {
         self.note_as(text, StatusKind::Info, view);
     }
 
-    /// Show an ephemeral action toast (a sanctioned divergence from TS — see `toast`): the
-    /// confirmation never lands in the transcript, and the frame repaints so the overlay appears at
-    /// once.
+    /// Show an ephemeral action confirmation (a sanctioned divergence from TS — see `toast`): it
+    /// never lands in the transcript, and the frame repaints so it appears at once, dim in the
+    /// empty composer's text row while that row is on screen, else as the overlay toast (see
+    /// [`AgentView::toast`]).
     pub(crate) fn toast(&mut self, text: &str, view: &mut AgentView) {
-        view.toasts.push(text);
+        view.toast(text);
         self.dirty = true;
     }
 
@@ -306,5 +317,71 @@ impl SessionUi {
             kind: StatusKind::Error,
         });
         self.dirty = true;
+    }
+}
+
+/// The empty composer's self-retiring key hint (omp's `⇧⇥ thinking effort`): it names the
+/// thinking-cycle key from the effective bindings until that key has been used
+/// [`RetiringHint::RETIRE_AFTER`] times, then stops showing for good (the count persists in the
+/// client settings store).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetiringHint {
+    uses: u64,
+}
+
+impl RetiringHint {
+    /// Uses of the named key after which the hint retires.
+    pub(crate) const RETIRE_AFTER: u64 = 3;
+
+    pub(crate) fn new(uses: u64) -> Self {
+        RetiringHint { uses }
+    }
+
+    /// The hint text while it is live, spelled with the effective key.
+    pub(crate) fn label(
+        self,
+        keybindings: &crate::keybindings::KeybindingsManager,
+    ) -> Option<String> {
+        if self.uses >= Self::RETIRE_AFTER {
+            return None;
+        }
+        keybindings.first_key("app.thinking.cycle").map(|key| {
+            // The default key wears omp's compact glyphs; a rebound key spells its own label.
+            let key = match key.as_str() {
+                "shift+tab" => "\u{21e7}\u{21e5}".to_string(),
+                other => crate::keybindings::format_key_text(other),
+            };
+            format!("{key} thinking effort")
+        })
+    }
+
+    /// Count one use of the named key: the new count to persist while the hint was live,
+    /// `None` once it had retired (nothing left to count).
+    pub(crate) fn record_use(&mut self) -> Option<u64> {
+        if self.uses >= Self::RETIRE_AFTER {
+            return None;
+        }
+        self.uses += 1;
+        Some(self.uses)
+    }
+}
+
+#[cfg(test)]
+mod retiring_hint_tests {
+    use super::RetiringHint;
+    use crate::keybindings::KeybindingsManager;
+
+    /// The hint names the thinking-cycle key until its third use, then retires and stops
+    /// counting.
+    #[test]
+    fn the_hint_retires_after_three_uses() {
+        let kb = KeybindingsManager::new();
+        let label = Some("\u{21e7}\u{21e5} thinking effort".to_string());
+        let mut hint = RetiringHint::new(1);
+        assert_eq!(hint.label(&kb), label);
+        let uses: Vec<Option<u64>> = (0..3).map(|_| hint.record_use()).collect();
+        assert_eq!(uses, vec![Some(2), Some(3), None]);
+        assert_eq!(hint, RetiringHint::new(3));
+        assert_eq!(hint.label(&kb), None);
     }
 }

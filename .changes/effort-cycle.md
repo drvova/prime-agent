@@ -1,0 +1,1 @@
+- Shift+Tab in the composer now steps the thinking level through what the model supports, wrapping around: the glyph before the model name and the colour of the `>` prompt change at once, with no status row (rebind it as `app.thinking.cycle`).

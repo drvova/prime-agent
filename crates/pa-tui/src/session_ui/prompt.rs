@@ -156,7 +156,7 @@ impl SessionUi {
             editor
                 .get_history()
                 .iter()
-                .flat_map(|text| image_marker_ids(text)),
+                .flat_map(|entry| image_marker_ids(&entry.text)),
         );
         ids
     }

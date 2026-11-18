@@ -395,7 +395,8 @@ mod tests {
         assert_eq!(
             args,
             &crate::chat::ChatEntry::User {
-                text: "find parity tuis".to_string()
+                text: "find parity tuis".to_string(),
+                sent_at: None,
             }
         );
     }

@@ -1,0 +1,1 @@
+- The model picker marks overflow with the same one-cell scrollbar as the slash menu instead of an `(n/m)` row.

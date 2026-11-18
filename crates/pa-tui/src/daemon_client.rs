@@ -383,15 +383,18 @@ impl DaemonClient {
             let mut reader = BufReader::new(reader_half);
             let mut line = String::new();
             let mut hello_tx = Some(hello_tx);
+            // Restores every delta `message_update` to its full message.
+            let mut message_deltas = pa_types::daemon::message_delta::MessageDeltaDecoder::new();
             loop {
                 line.clear();
                 match reader.read_line(&mut line).await {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {}
                 }
-                let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
+                let Ok(mut value) = serde_json::from_str::<Value>(line.trim()) else {
                     continue;
                 };
+                message_deltas.decode(&mut value);
                 let frame_type = value
                     .get("type")
                     .and_then(Value::as_str)

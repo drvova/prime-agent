@@ -1,10 +1,12 @@
 //! The render surface: the frame composer (splash, search prompt, sectioned list, hints), the
 //! row builders, the notice/list/row renderers, the cell/truncate helpers, and the terminal/
 //! headless renderer.
+use crate::menu_chrome::{EscVerb, Footer, HintRank};
+
 use super::{
     build_layout, mpsc, pad_line, section_title, str_width, truncate_text, AgentsStep,
-    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, Duration, Line, Result, RowKind,
-    RowLayout, Section, Theme, ThemeColor, UiInput, Value,
+    AgentsViewMode, AgentsViewRow, AgentsViewUiMode, Composer, DeleteAction, Duration,
+    FolderFilter, Line, Result, RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value,
 };
 
 impl AgentsViewMode {
@@ -37,6 +39,8 @@ impl AgentsViewMode {
             count_agents(Section::Idle),
             count_agents(Section::Inactive),
         );
+        // The counts are the active scope's rows: the folder scope's header line below names
+        // which folder they count.
         let mut extra_metadata = vec![(
             "agents".to_string(),
             format!("{running} running, {idle} idle, {inactive} inactive"),
@@ -56,6 +60,56 @@ impl AgentsViewMode {
         // under it: the warning line and its pointer stay above the scope label and the prompt.
         lines.extend(crate::chrome::render_splash(&chrome, theme, width));
         lines.extend(self.render_incident_notice(width));
+        // The resume picker's scope line, dim under the splash on the unscoped list: which
+        // folder the list (and the counts above) covers, what the filter leaves out, and the
+        // toggle key that widens or narrows it.
+        if let (false, Some(scope)) = (self.scope_active, self.folder_scope.as_ref()) {
+            let toggle = self
+                .keybindings
+                .first_key("app.agents.folderScope")
+                .map(|key| crate::keybindings::format_key_text(&key));
+            let text = match scope.filter {
+                FolderFilter::CurrentFolder => {
+                    let home = pa_types::platform::home_dir()
+                        .map(|home| home.to_string_lossy().into_owned());
+                    let folder = crate::chrome::format_splash_cwd(
+                        &scope.folder.to_string_lossy(),
+                        home.as_deref(),
+                    );
+                    let hidden = match self.folder_hidden {
+                        0 => String::new(),
+                        hidden => format!(" \u{b7} +{hidden} in other folders"),
+                    };
+                    let toggle = toggle
+                        .map(|key| format!(" \u{b7} {key} all folders"))
+                        .unwrap_or_default();
+                    // A long folder shortens in its middle, so the count and the toggle hint
+                    // always fit.
+                    let lead = "Sessions \u{b7} ";
+                    let folder = crate::chrome::truncate_path_middle(
+                        &folder,
+                        width
+                            .saturating_sub(
+                                str_width(lead) + str_width(&hidden) + str_width(&toggle),
+                            )
+                            .max(1),
+                    );
+                    format!("{lead}{folder}{hidden}{toggle}")
+                }
+                FolderFilter::AllFolders => {
+                    let toggle = toggle
+                        .map(|key| format!(" \u{b7} {key} this folder"))
+                        .unwrap_or_default();
+                    format!("Sessions \u{b7} all folders{toggle}")
+                }
+            };
+            let row = vec![crate::Span::styled(
+                truncate_text(&text, width),
+                theme.fg_style(ThemeColor::Dim),
+            )];
+            lines.push(crate::width::pad_line(row, width));
+            lines.push(vec![]);
+        }
         // The scoped view's back label, dim, over the full width under the splash.
         if self.scope_active {
             if let Some(scope) = &self.options.scope {
@@ -104,32 +158,43 @@ impl AgentsViewMode {
             .map(str::to_string);
         let notice_height = notice_panel.as_ref().map_or(0, Vec::len);
         // The catalog never truncates silently: while store files are still unfolded, the list
-        // ends with their count.
+        // ends with their count (a store-wide count: the folder-scoped list says so).
+        let all_folders = match self.folder_scope.as_ref().map(|scope| scope.filter) {
+            Some(FolderFilter::CurrentFolder) if !self.scope_active => " (all folders)",
+            Some(FolderFilter::CurrentFolder | FolderFilter::AllFolders) | None => "",
+        };
         let unloaded = self.saved_more.as_ref().map(|more| {
             let text = if self.query.trim().is_empty() {
                 format!(
-                    "{} older sessions not loaded \u{b7} scroll to load",
+                    "{} older sessions{all_folders} not loaded \u{b7} scroll to load",
                     more.remaining
                 )
             } else {
-                format!("Searching {} older sessions\u{2026}", more.remaining)
+                format!(
+                    "Searching {} older sessions{all_folders}\u{2026}",
+                    more.remaining
+                )
             };
             pad_line(
                 vec![self.theme.fg(ThemeColor::Dim, truncate_text(&text, width))],
                 width,
             )
         });
+        // The highlighted session's preview takes one fixed row above the hints, so moving
+        // between sessions with and without a first prompt never shifts the list.
+        let preview = self.render_preview(width);
         let list_rows = height
-            .saturating_sub(lines.len() + 1 + notice_height + usize::from(unloaded.is_some()));
+            .saturating_sub(lines.len() + 2 + notice_height + usize::from(unloaded.is_some()));
         let list_frame_row = lines.len();
         lines.extend(self.render_list(width, list_rows, list_frame_row));
         lines.extend(unloaded);
         if let Some(panel) = notice_panel {
             lines.extend(panel);
         }
-        while lines.len() < height.saturating_sub(1) {
+        while lines.len() < height.saturating_sub(2) {
             lines.push(vec![]);
         }
+        lines.push(preview);
         lines.push(self.render_hints(width, status_fallback.as_deref()));
         while lines.len() > height {
             lines.pop();
@@ -174,7 +239,8 @@ impl AgentsViewMode {
             // by the target's state, and an open completion renders its overlay
             // above the box (the chat's stacking).
             Composer::Reply(reply) => {
-                let overlay = crate::view::editor_surface::overlay(&reply.editor, theme, width);
+                let overlay =
+                    crate::view::editor_surface::overlay(&reply.editor, theme, width, &|_| None);
                 let header = reply.header_line(theme);
                 let placeholder = reply.placeholder();
                 let surface = crate::view::editor_surface::render(
@@ -183,22 +249,40 @@ impl AgentsViewMode {
                     width,
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
-                    Some(placeholder),
+                    crate::view::editor_surface::EmptyRow {
+                        placeholder: Some(placeholder),
+                        hint: None,
+                    },
+                    crate::view::editor_surface::SurfaceTone::Idle(
+                        crate::view::editor_surface::PromptTint::Plain,
+                    ),
                 );
                 (overlay, surface.rows, surface.cursor)
             }
-            // The rename composer's real editor box: the warning header rides INSIDE
-            // the box, the draft renders through the editor's own surface.
+            // The rename composer's real editor box: the ` Name ` chip labels the field INSIDE
+            // the box (the composer answers the question, no modal), the draft renders through
+            // the editor's own surface.
             Composer::Rename(rename) => {
-                let header =
-                    vec![theme.fg(ThemeColor::Warning, "Rename agent session".to_string())];
+                let chip = theme.fg_style(ThemeColor::Warning).add_modifier(
+                    ratatui::style::Modifier::REVERSED | ratatui::style::Modifier::BOLD,
+                );
+                let header = vec![
+                    crate::Span::styled(" Name ".to_string(), chip),
+                    theme.fg(ThemeColor::Muted, "  agent session".to_string()),
+                ];
                 let surface = crate::view::editor_surface::render(
                     &mut rename.editor,
                     theme,
                     width,
                     u16::try_from(self.last_height).unwrap_or(u16::MAX),
                     Some(header),
-                    Some("Name this agent session"),
+                    crate::view::editor_surface::EmptyRow {
+                        placeholder: Some("Name this agent session"),
+                        hint: None,
+                    },
+                    crate::view::editor_surface::SurfaceTone::Idle(
+                        crate::view::editor_surface::PromptTint::Plain,
+                    ),
                 );
                 (Vec::new(), surface.rows, surface.cursor)
             }
@@ -297,11 +381,45 @@ impl AgentsViewMode {
         }
         if self.rows.is_empty() {
             let text = match (self.query.trim().is_empty(), self.scope_active) {
-                (false, _) => "No sessions match your search.",
+                (false, _)
+                    if self
+                        .query
+                        .trim()
+                        .starts_with(super::content_search::TRANSCRIPT_PREFIX) =>
+                {
+                    "No sessions match your search."
+                }
+                (false, _) => {
+                    "No sessions match your search. Start with ? to search conversations too."
+                }
                 (true, true) => "No subagents yet.",
                 (true, false) => "No sessions yet.",
             };
-            return vec![vec![self.theme.fg(ThemeColor::Dim, text.to_string())]];
+            // The folder-scoped list never widens on its own: an empty folder says so and names
+            // the toggle that shows every folder.
+            let folder_current = !self.scope_active
+                && self
+                    .folder_scope
+                    .as_ref()
+                    .is_some_and(|scope| scope.filter == FolderFilter::CurrentFolder);
+            let text = match (folder_current, self.query.trim().is_empty()) {
+                (true, empty_query) => {
+                    let lead = if empty_query {
+                        "No sessions in this folder yet."
+                    } else {
+                        "No sessions in this folder match your search."
+                    };
+                    match self.keybindings.first_key("app.agents.folderScope") {
+                        Some(key) => format!(
+                            "{lead} Press {} to show all folders.",
+                            crate::keybindings::format_key_text(&key)
+                        ),
+                        None => lead.to_string(),
+                    }
+                }
+                (false, _) => text.to_string(),
+            };
+            return vec![vec![self.theme.fg(ThemeColor::Dim, text)]];
         }
         let layout = build_layout(&self.rows, width);
         let mut note_details = self
@@ -642,18 +760,33 @@ impl AgentsViewMode {
         // session name can never push the model and cost/age columns
         // off-screen. The icon, its space, and the badge take the
         // leading cells.
+        // The transcript scan's match count rides after the title, inside the name column. The
+        // title has priority: the count renders only beside the WHOLE title, so a column too
+        // narrow for both drops the count, never a cell of the title.
+        let matches = self
+            .content_search
+            .hit_count(&row.identity)
+            .map(|count| format!(" {count} match{}", if count == 1 { "" } else { "es" }))
+            .filter(|label| {
+                layout.name_width
+                    >= 2 + indent_width + badge_width + str_width(&row.title) + str_width(label)
+            });
+        let matches_width = matches.as_deref().map_or(0, str_width);
         let title = truncate_text(
             &row.title,
             layout
                 .name_width
-                .saturating_sub(2 + indent_width + badge_width),
+                .saturating_sub(2 + indent_width + badge_width + matches_width),
         );
         // Session titles render uniformly (no bold for named sessions): deliberate divergence
         // from TS `styleRowTitle`, which bolds explicit session names.
         let pad = layout
             .name_width
-            .saturating_sub(str_width(&title) + 2 + indent_width + badge_width);
+            .saturating_sub(str_width(&title) + 2 + indent_width + badge_width + matches_width);
         line.push(crate::Span::styled(title, theme.fg_style(ThemeColor::Text)));
+        if let Some(matches) = matches {
+            line.push(theme.fg(ThemeColor::Accent, matches));
+        }
         line.push(crate::Span::raw(" ".repeat(pad)));
         line.push(crate::Span::styled(
             "  ".to_string(),
@@ -706,6 +839,27 @@ impl AgentsViewMode {
             .collect()
     }
 
+    /// The highlighted session's preview row: its first prompt, dim, after a `❯` marker;
+    /// a blank row for a selection without one (activity lines, shells, an empty list).
+    pub(super) fn render_preview(&self, width: usize) -> Line {
+        let first_prompt = self
+            .rows
+            .get(self.selected)
+            .filter(|row| matches!(row.kind, RowKind::Agent | RowKind::Subagent))
+            .and_then(|row| row.summary.get("firstMessage"))
+            .and_then(Value::as_str)
+            .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|text| !text.is_empty());
+        let Some(first_prompt) = first_prompt else {
+            return Vec::new();
+        };
+        let line = vec![
+            self.theme.fg(ThemeColor::Dim, "\u{276f} ".to_string()),
+            self.theme.fg(ThemeColor::Muted, first_prompt),
+        ];
+        truncate_line(&line, width)
+    }
+
     /// The bottom hint/status line. `status_override` carries the
     /// notice's first line when the degenerate pane skipped the panel.
     pub(super) fn render_hints(&self, width: usize, status_override: Option<&str>) -> Line {
@@ -735,11 +889,54 @@ impl AgentsViewMode {
                 .find(|row| row.identity == pending.identity)
                 .map_or(pending.stop, Self::delete_arm_word);
             let word = if stop { "stop" } else { "delete" };
-            let hint = first("app.agents.delete").map_or_else(
-                || format!("Press again to {word}"),
-                |key| format!("Press {key} again to {word}"),
+            // The question names the object and what the action leaves alone. Cancel is the
+            // default: only `y` (in the search composer, where letters are not draft text) or a
+            // second press confirms; every other key cancels.
+            // A long title shortens to 20 cells so the clause about what stays still fits.
+            let short = |name: &str| crate::width::truncate_to_width(name, 20, "\u{2026}");
+            let question = match self.delete_action_for_selected() {
+                Some(DeleteAction::StopSubagent { name, .. }) => {
+                    format!(
+                        "Stop subagent \"{}\"? Its parent keeps running.",
+                        short(&name)
+                    )
+                }
+                Some(DeleteAction::DeleteSubagent { name, .. }) => {
+                    format!(
+                        "Delete subagent \"{}\"? Its parent session stays.",
+                        short(&name)
+                    )
+                }
+                Some(DeleteAction::StopAgent { name, .. }) => {
+                    format!("Stop \"{}\"? Its transcript stays to resume.", short(&name))
+                }
+                Some(DeleteAction::DeleteSavedSession { name, .. }) => format!(
+                    "Delete \"{}\" and its transcript? Project files stay.",
+                    short(&name)
+                ),
+                Some(DeleteAction::StopShell { name, .. }) => {
+                    format!("Stop shell \"{}\"? Sessions keep running.", short(&name))
+                }
+                None => format!("{}{} this row?", word[..1].to_uppercase(), &word[1..]),
+            };
+            let letters = matches!(self.composer, Composer::Search);
+            // In the search composer `y` is the advertised answer (a second press still
+            // confirms); the reply composer's letters are draft text, so it keeps the key.
+            let confirm = match (letters, first("app.agents.delete")) {
+                (true, Some(_) | None) => "y".to_string(),
+                (false, Some(key)) => key,
+                (false, None) => "Press again".to_string(),
+            };
+            let cancel = if letters { "n" } else { "Esc" };
+            // The keys always show: a long name shortens the question, never the answer keys.
+            let keys = format!("  {confirm} {word} \u{b7} {cancel} cancel");
+            let question = crate::width::truncate_to_width(
+                &question,
+                width.saturating_sub(str_width(&keys)),
+                "\u{2026}",
             );
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            let hint = format!("{question}{keys}");
+            return truncate_line(&vec![theme.fg(ThemeColor::Warning, hint)], width);
         }
         // The status renders in its own tone. `truncate_text` keeps the style:
         // `truncate_line` re-wraps plain text and would strip the span — the tone
@@ -772,31 +969,25 @@ impl AgentsViewMode {
             } else {
                 "resume & send"
             };
-            let mut hints = vec![format!(
-                "{} {word}",
-                self.keybindings.key_text("tui.select.confirm")
-            )];
+            let kb = &self.keybindings;
+            let mut footer =
+                Footer::new().keys(kb.get_keys("tui.select.confirm"), word, HintRank::Core);
             if !reply.editor.get_text().trim().is_empty() {
-                hints.push(format!(
-                    "{} queue",
-                    self.keybindings.key_text("app.message.followUp")
-                ));
+                footer = footer.keys(
+                    kb.get_keys("app.message.followUp"),
+                    "queue",
+                    HintRank::Useful,
+                );
             }
-            hints.push(format!(
-                "{} cancel",
-                self.keybindings.key_text("tui.select.cancel")
-            ));
-            let hint = hints.join("   ");
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            return footer.esc(kb, EscVerb::Back).line(theme, width);
         }
-        // The rename composer's hint: save/cancel over the confirm/cancel bindings' every key.
+        // The rename composer's footer: rename over the confirm binding's every key.
         if let Composer::Rename(_) = &self.composer {
-            let hint = format!(
-                "{} save   {} cancel",
-                self.keybindings.key_text("tui.select.confirm"),
-                self.keybindings.key_text("tui.select.cancel")
-            );
-            return truncate_line(&vec![theme.fg(ThemeColor::Muted, hint)], width);
+            let kb = &self.keybindings;
+            return Footer::new()
+                .keys(kb.get_keys("tui.select.confirm"), "rename", HintRank::Core)
+                .esc(kb, EscVerb::Back)
+                .line(theme, width);
         }
         // Every hint slot renders the effective binding, so a user override moves the hint with
         // the handler.
@@ -813,65 +1004,71 @@ impl AgentsViewMode {
         // The bar lists every effective action key, so a merged binding can never ship without
         // its slot (the operator's completeness directive); a two-key segment keeps whichever
         // is bound.
-        let pair = |a: &str, b: &str| match (first(a), first(b)) {
-            (Some(a), Some(b)) => Some(format!("{a}/{b}")),
-            (Some(only), None) | (None, Some(only)) => Some(only),
-            (None, None) => None,
-        };
-        let mut segments = Vec::new();
-        if let Some(keys) = pair("tui.select.up", "tui.select.down") {
-            segments.push(format!("{keys} navigate"));
-        }
+        let kb = &self.keybindings;
         // The jump slot shows the first effective key of each edge binding (the full key sets
-        // would overflow the hint).
-        if let (Some(top), Some(bottom)) = (first("tui.select.top"), first("tui.select.bottom")) {
-            segments.push(format!("{top}/{bottom} first/last"));
-        }
-        if let Some(keys) = pair("tui.select.confirm", "app.agents.open") {
-            segments.push(format!("{keys} {right_action}"));
-        }
+        // would overflow the hint); both edges must be bound.
+        let jump: &[&str] =
+            if first("tui.select.top").is_some() && first("tui.select.bottom").is_some() {
+                &["tui.select.top", "tui.select.bottom"]
+            } else {
+                &[]
+            };
+        let mut footer = Footer::new()
+            .bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "navigate",
+                HintRank::Useful,
+            )
+            .bound(kb, jump, "first/last", HintRank::Extra)
+            .bound(
+                kb,
+                &["tui.select.confirm", "app.agents.open"],
+                right_action,
+                HintRank::Core,
+            );
         // The rename, stop-or-delete, program, and parent hints only show with an empty search
-        // and a target.
+        // and a target; the multi-key slots render every configured key (dispatch takes the
+        // whole set).
         if self.query.is_empty() {
-            // The multi-key slots render every configured key (dispatch
-            // takes the whole set).
-            let all =
-                |id: &str| Some(self.keybindings.key_text(id)).filter(|keys| !keys.is_empty());
-            if let Some(keys) = all("app.agents.rename").filter(|_| self.rename_target().is_some())
-            {
-                segments.push(format!("{keys} rename"));
+            if self.rename_target().is_some() {
+                footer = footer.keys(kb.get_keys("app.agents.rename"), "rename", HintRank::Useful);
             }
-            // The reply slot (the operator's completeness directive: TS shows none,
-            // so the space arm would be undiscoverable): only while the selected row
-            // is replyable.
-            if let Some(keys) = all("app.agents.reply").filter(|_| self.reply_target().is_some()) {
-                segments.push(format!("{keys} reply"));
+            // The reply slot (the operator's completeness directive: TS shows none, so the
+            // space arm would be undiscoverable): only while the selected row is replyable.
+            if self.reply_target().is_some() {
+                footer = footer.keys(kb.get_keys("app.agents.reply"), "reply", HintRank::Useful);
             }
             if let Some(pending) = self.delete_arm_target() {
-                if let Some(keys) = all("app.agents.delete") {
-                    let word = if pending.stop { "stop" } else { "delete" };
-                    segments.push(format!("{keys} {word}"));
-                }
+                let word = if pending.stop { "stop" } else { "delete" };
+                footer = footer.keys(kb.get_keys("app.agents.delete"), word, HintRank::Useful);
             }
             if self
                 .program_target()
                 .is_some_and(|summary| summary.has_spawn_code)
             {
-                if let Some(keys) = all("app.agents.program") {
-                    segments.push(format!("{keys} program"));
-                }
+                footer = footer.keys(
+                    kb.get_keys("app.agents.program"),
+                    "program",
+                    HintRank::Extra,
+                );
             }
             if self.scope_active {
-                if let Some(back) = first("app.agents.back") {
-                    segments.push(format!("{back} parent"));
-                }
+                footer = footer.bound(kb, &["app.agents.back"], "parent", HintRank::Useful);
             }
         }
-        if let Some(new) = first("app.agents.new") {
-            segments.push(format!("{new} new"));
+        // The resume picker's folder toggle, with or without a query (search runs within the
+        // active scope).
+        if let (false, Some(scope)) = (self.scope_active, self.folder_scope.as_ref()) {
+            let label = match scope.filter {
+                FolderFilter::CurrentFolder => "all folders",
+                FolderFilter::AllFolders => "this folder",
+            };
+            footer = footer.bound(kb, &["app.agents.folderScope"], label, HintRank::Useful);
         }
-        let hints = segments.join("   ");
-        truncate_line(&vec![theme.fg(ThemeColor::Muted, hints)], width)
+        footer
+            .bound(kb, &["app.agents.new"], "new", HintRank::Useful)
+            .line(theme, width)
     }
 }
 

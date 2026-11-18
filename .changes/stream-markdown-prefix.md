@@ -1,0 +1,1 @@
+- Long streamed answers cost less to draw: the settled start of a streaming reply is parsed once and kept, so each update parses only the text that can still change.

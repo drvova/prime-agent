@@ -1,0 +1,1 @@
+- Typing `!` or `!!` now shows bash mode by colour only: the `!` prompt takes the bash-mode tint, `!!` turns dim, and the draft no longer shifts one column to the right for `!!`.

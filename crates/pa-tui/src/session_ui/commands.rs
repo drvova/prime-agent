@@ -167,6 +167,8 @@ impl SessionUi {
             }
             "resume" => {
                 if resolved.args.is_empty() {
+                    // The resume picker: the agents view opens on this folder's sessions.
+                    self.resume_folder = Some(self.cwd.clone());
                     self.open_agents_view = true;
                     self.exit_requested = true;
                 } else {

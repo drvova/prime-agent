@@ -677,3 +677,32 @@ fn an_aborted_cell_freezes_its_duration_from_card_timestamps() {
     );
     assert!(text_of(&first[0]).contains("3.0s"), "got: {first:?}");
 }
+
+#[test]
+fn the_summary_title_carries_the_cell_state_by_colour() {
+    use crate::theme::ThemeColor::{Accent, BashMode, Error, Muted, Success};
+    let theme = theme();
+    let running = cell_card("print(1)", json!({}), false, true);
+    let done = cell_card("print(1)", json!({ "status": "ok" }), false, false);
+    let interrupted = ToolCallCard {
+        aborted: true,
+        ..running.clone()
+    };
+    // The marker and the language label (the title) of each summary line.
+    let colours: Vec<_> = [&running, &done, &interrupted]
+        .into_iter()
+        .map(|card| {
+            let line = &render_card(card, Detail::Overview)[0];
+            (line[1].style.fg, line[3].style.fg)
+        })
+        .collect();
+    let fg = |color| theme.fg_style(color).fg;
+    assert_eq!(
+        colours,
+        vec![
+            (fg(BashMode), fg(Accent)),
+            (fg(Success), fg(Muted)),
+            (fg(Error), fg(Error)),
+        ]
+    );
+}

@@ -231,6 +231,10 @@ pub trait InteractionTelemetry: Send + Sync {
     /// is `select` / `edit` (empty text deletes) / `delete` / `reorder`. Never carries the
     /// message text.
     fn queue_edited(&self, action: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The interrupt key fired while messages were parked, dispatching them at once (the pending
+    /// strip's `— Esc dispatches now`); counted on `tui exit`. Implementations count and return
+    /// at once: the key path never waits on it.
+    fn queue_dispatched_now(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first `app.suspend` cycle (`tui suspend used`): `outcome` is `resumed` (the
     /// SIGCONT continuation restored the terminal) / `failed`.
     fn suspend_used(&self, outcome: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
@@ -289,6 +293,16 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One resume-picker run ended (`tui resume picker closed`): `scope` is the folder scope the
+    /// run ended on (`current_folder` / `all_folders`; for an `opened` run, the scope the session
+    /// was resumed from), `toggles` the folder toggle's flips during the run, and `outcome`
+    /// `opened` or `exited` — primitives only, never a path.
+    fn resume_picker_closed(
+        &self,
+        scope: &'static str,
+        toggles: u64,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
     /// of the cell and the command count — primitives only, never command
@@ -301,6 +315,39 @@ pub trait InteractionTelemetry: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A tool call started executing with a live timer; counted on `tui exit`.
     fn live_tool_timer_started(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The live line gave one piece of turn feedback (see [`TurnFeedback`]); counted on
+    /// `tui exit`. Implementations count and return at once: the paint path never waits on it.
+    fn turn_feedback_shown(
+        &self,
+        feedback: TurnFeedback,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A menu interaction the adoption counters track (see [`MenuUse`]); counted on `tui exit`.
+    /// Implementations count and return at once: the key path never waits on it.
+    fn menu_used(&self, used: MenuUse) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A prompt carrying an `@file` mention pill was submitted; counted on `tui exit`.
+    /// Implementations count and return at once: the submit path never waits on it.
+    fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// Up recalled the draft a Ctrl+C cleared; counted on `tui exit`. Implementations count and
+    /// return at once: the key path never waits on it.
+    fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+}
+
+/// The live-line feedback moments the adoption counters track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnFeedback {
+    /// A streaming turn went quiet and the loader said `Waiting on the model` (counted when the
+    /// stall ends).
+    StallShown,
+}
+
+/// The menu interactions the adoption counters track. Never carries a query or a command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuUse {
+    /// A slash command was accepted from the completion menu (Tab or Enter on a command row, or
+    /// an argument choice).
+    SlashCommandAccepted,
+    /// An open menu's search query went from empty to non-empty.
+    SearchStarted,
 }
 
 /// Options for one interactive run. `Debug` skips the telemetry handle (the trait object is not
@@ -487,6 +534,10 @@ pub struct InteractiveOutcome {
     /// The subagent summary line opened the agents view scoped to this session's subtree;
     /// `None` with `return_to_agents_view` means the plain view.
     pub agents_view_scope: Option<crate::agents_view::AgentsViewScope>,
+    /// A resume entry (bare `/resume`, `app.session.resume`) asked for the agents view as the
+    /// resume picker over this folder (the session's cwd); `None` with
+    /// `return_to_agents_view` keeps the list the session came from.
+    pub agents_view_folder: Option<std::path::PathBuf>,
     /// `/resume <selector>` requested this session next.
     pub selection_request: Option<SessionSelection>,
     /// The requested session's RLM depth, when the requester read it from the roster.

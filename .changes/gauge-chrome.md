@@ -1,0 +1,1 @@
+- The context gauge under the editor marks the auto-compaction threshold with a `┃` tick, and the tray row now shrinks in a fixed order on narrow terminals (the gauge first, then the service-tier badge, subagent depth, token counts, effort suffix, the `manage` word and the percentage, with the model name last) instead of overflowing or cutting words.

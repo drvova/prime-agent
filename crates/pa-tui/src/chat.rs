@@ -84,7 +84,8 @@ pub enum ChatEntry {
     /// Startup notices, client notes, turn errors.
     Status { text: String, kind: StatusKind },
     /// The user's submitted prompt.
-    User { text: String },
+    /// A user prompt; `sent_at` (epoch ms) renders as the slab's right-aligned clock.
+    User { text: String, sent_at: Option<i64> },
     /// A durable session-command echo row (`session_slash_command`):
     /// the command as typed, laid out like a user message.
     SlashCommand { text: String },
@@ -120,6 +121,17 @@ pub enum ChatEntry {
     CustomPanel(Box<crate::custom_message::CustomPanelRow>),
 }
 
+impl ChatEntry {
+    /// A user prompt with no known send time.
+    #[must_use]
+    pub fn user(text: impl Into<String>) -> Self {
+        ChatEntry::User {
+            text: text.into(),
+            sent_at: None,
+        }
+    }
+}
+
 // The card types live in `tool_card`; re-exported here because the
 // transcript vocabulary (`ChatEntry`) is this module's.
 pub use crate::tool_card::{render_tool_card, ToolCallCard, ToolResultView};
@@ -148,10 +160,9 @@ impl AssistantMessage {
     /// The tool-call separator renders for visible bodies, aborted
     /// messages, and messages not following tool activity.
     #[must_use]
-    pub fn has_trailing_space(&self, detail: Detail, preceded_by_tool_activity: bool) -> bool {
+    pub fn has_trailing_space(&self, preceded_by_tool_activity: bool) -> bool {
         let has_visible_content = self.blocks.iter().any(|block| match block {
-            MessageBlock::Thinking(text) => detail.show_thinking() && !text.trim().is_empty(),
-            MessageBlock::Text(text) => !text.trim().is_empty(),
+            MessageBlock::Thinking(text) | MessageBlock::Text(text) => !text.trim().is_empty(),
         });
         self.has_tool_calls && (has_visible_content || self.aborted || !preceded_by_tool_activity)
     }
@@ -176,7 +187,22 @@ pub struct WorkingState {
     pub tokens: u64,
     /// Whole seconds since the loader started.
     pub elapsed_secs: u64,
+    /// The latest thought while the model thinks (its newest closed sentence, or the line still
+    /// arriving before one closes): one dim italic row under the loader where the transcript
+    /// folds thinking. `None` once the message moves on to text or tool calls.
+    pub thought: Option<String>,
+    /// Whole seconds since the session last sent anything (the stall timer).
+    pub quiet_secs: u64,
+    /// The running tool's title, the live label while a tool executes. Prime's tools carry no
+    /// model-stated intent field, so this is the call's collapsed-card title.
+    pub tool_label: Option<String>,
 }
+
+/// A silence this long while the model streams turns the loader into `Waiting on the model`.
+const QUIET_AFTER_SECS: u64 = 3;
+
+/// The activity a running tool sets. Tools are silent by nature, so it never reads as a stall.
+pub(crate) const TOOL_ACTIVITY: &str = "Executing";
 
 /// The live abort row's text (TS `message_end`'s aborted arm): the retry
 /// count and the working-elapsed suffix ride the client, never the wire
@@ -216,6 +242,15 @@ pub fn format_working_elapsed(total_secs: u64) -> String {
 }
 
 impl WorkingState {
+    /// The model went quiet past the threshold while no tool runs (a running tool or a
+    /// tool-owned message never stalls): the loader says it is waiting on the model.
+    #[must_use]
+    pub fn stalled(&self) -> bool {
+        self.message.is_none()
+            && self.activity != TOOL_ACTIVITY
+            && self.quiet_secs >= QUIET_AFTER_SECS
+    }
+
     #[must_use]
     pub fn label(&self) -> String {
         // A tool-provided working message owns the loader line: plain
@@ -223,8 +258,20 @@ impl WorkingState {
         if let Some(message) = &self.message {
             return format!("{message} {}", format_working_elapsed(self.elapsed_secs));
         }
-        let mut parts = vec![self.activity.to_string()];
+        let stalled = self.stalled();
+        let head = if stalled {
+            "Waiting on the model".to_string()
+        } else {
+            match (&self.tool_label, self.activity == TOOL_ACTIVITY) {
+                (Some(title), true) => format!("Running {title}"),
+                (Some(_), false) | (None, true | false) => self.activity.to_string(),
+            }
+        };
+        let mut parts = vec![head];
         parts.push(format_working_elapsed(self.elapsed_secs));
+        if stalled {
+            parts.push(format!("quiet {}", format_working_elapsed(self.quiet_secs)));
+        }
         if self.tokens > 0 {
             parts.push(format!(
                 "{} {} tokens",
@@ -245,6 +292,32 @@ pub(crate) const LOADER_FRAMES: [&str; 10] = [
     "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
     "\u{2807}", "\u{280f}",
 ];
+
+/// The loader's spinner per activity, so the animation says what is happening: an orbit
+/// while waiting, a filling column while writing, a dense spin for code, a pulse while
+/// executing; thinking keeps the classic frames.
+fn activity_frames(activity: &str) -> &'static [&'static str] {
+    match activity {
+        "Waiting" => &[
+            "\u{2808}", "\u{2810}", "\u{2820}", "\u{2880}", "\u{2840}", "\u{2804}", "\u{2802}",
+            "\u{2801}",
+        ],
+        "Writing" => &[
+            "\u{2840}", "\u{2844}", "\u{2846}", "\u{2847}", "\u{28c7}", "\u{28e7}", "\u{28f7}",
+            "\u{28ff}", "\u{28fe}", "\u{28fc}", "\u{28f8}", "\u{28b8}", "\u{2838}", "\u{2818}",
+            "\u{2808}", "\u{2800}",
+        ],
+        "Writing code" => &[
+            "\u{28fe}", "\u{28fd}", "\u{28fb}", "\u{28bf}", "\u{287f}", "\u{28df}", "\u{28ef}",
+            "\u{28f7}",
+        ],
+        "Executing" => &[
+            "\u{2802}", "\u{2806}", "\u{2816}", "\u{2836}", "\u{2837}", "\u{283f}", "\u{2837}",
+            "\u{2836}", "\u{2816}", "\u{2806}",
+        ],
+        _ => &LOADER_FRAMES,
+    }
+}
 
 /// The working pulse icon frames (250ms interval): the shared "still working"
 /// marker across the agents view, the subagent tray, and tool markers.
@@ -382,7 +455,7 @@ pub fn render_assistant(
     preceded_by_tool_activity: bool,
     cache: &mut crate::markdown::MarkdownBlockCache,
 ) -> Vec<Line> {
-    let mut md = crate::markdown::MarkdownStyle::from_theme(theme);
+    let mut md = crate::markdown::MarkdownStyle::from_theme(theme).for_replies(theme);
     md.code_block_indent = code_block_indent.to_string();
     render_assistant_with_style(
         message,
@@ -405,7 +478,7 @@ pub(crate) fn render_assistant_with_style(
     preceded_by_tool_activity: bool,
     cache: &mut crate::markdown::MarkdownBlockCache,
 ) -> Vec<Line> {
-    let visible_blocks = geometry::visible_blocks(message, detail);
+    let visible_blocks = geometry::visible_blocks(message);
     let has_visible_content = !visible_blocks.is_empty();
     let mut out: Vec<Line> = Vec::new();
     if has_visible_content {
@@ -417,7 +490,11 @@ pub(crate) fn render_assistant_with_style(
                 out.extend(render_markdown_block(text, md, width, cache));
             }
             MessageBlock::Thinking(text) => {
-                out.extend(render_thinking_block(text, theme, md, width, cache));
+                if detail.show_thinking() {
+                    out.extend(render_thinking_block(text, theme, md, width, cache));
+                } else {
+                    out.push(geometry::folded_thinking_row(text, theme));
+                }
                 // Thinking adds spacing only when another visible block follows.
                 if index + 1 < visible_blocks.len() {
                     out.push(spacer());
@@ -512,11 +589,19 @@ pub fn render_loader(
     working: &WorkingState,
     frame: usize,
     theme: &Theme,
+    detail: Detail,
     width: usize,
+    stop_key: Option<&str>,
+    accent: Style,
 ) -> Vec<Line> {
-    let accent = theme.fg_style(ThemeColor::Accent);
     let muted = theme.fg_style(ThemeColor::Muted);
-    let spinner = LOADER_FRAMES[frame % LOADER_FRAMES.len()];
+    // A stalled stream takes the waiting orbit back.
+    let frames = activity_frames(if working.stalled() {
+        "Waiting"
+    } else {
+        working.activity
+    });
+    let spinner = frames[frame % frames.len()];
     let message = working.label();
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
     row.push(Span::styled(spinner.to_string(), accent));
@@ -526,7 +611,38 @@ pub fn render_loader(
         row.push(Span::raw(" ".to_string()));
         row.push(Span::styled(message, muted));
     }
-    vec![spacer(), pad_to(row, width, Style::default())]
+    // The stop key as a filled chip, flush right: ` Esc  stop `.
+    if let Some(key) = stop_key {
+        let chip = vec![
+            Span::styled(
+                format!(" {key} "),
+                theme
+                    .bg_style(ThemeBg::SelectedBg)
+                    .patch(theme.fg_style(ThemeColor::Text)),
+            ),
+            Span::styled("  stop ".to_string(), muted),
+        ];
+        let used = crate::width::line_width(&row) + crate::width::line_width(&chip);
+        if used < width {
+            row.push(Span::raw(" ".repeat(width - used)));
+            row.extend(chip);
+        }
+    }
+    let mut rows = vec![spacer(), pad_to(row, width, Style::default())];
+    // The live thought sits under the spinner, aligned with its label; an expanded transcript
+    // already streams the whole thinking block, so it shows nothing more here.
+    if let (Some(thought), false) = (&working.thought, detail.show_thinking()) {
+        let thought = crate::width::truncate_to_width(thought, width.saturating_sub(4), "\u{2026}");
+        let style = theme
+            .fg_style(ThemeColor::Dim)
+            .add_modifier(Modifier::ITALIC);
+        rows.push(pad_to(
+            vec![Span::raw("   ".to_string()), Span::styled(thought, style)],
+            width,
+            Style::default(),
+        ));
+    }
+    rows
 }
 
 /// An in-flight provider auto-retry (TS `retryLoader` + `CountdownTimer`):
@@ -541,6 +657,8 @@ pub struct RetryState {
     /// Why the retry started: a quick retry counts down; a provider
     /// failover switch names the backup the turn re-routes to.
     pub reason: RetryStartReason,
+    /// The session model's provider, named in the countdown line (`openai 429`).
+    pub provider: Option<String>,
 }
 
 impl RetryState {
@@ -551,41 +669,75 @@ impl RetryState {
             .saturating_duration_since(std::time::Instant::now())
             .as_secs()
     }
-
-    /// The loader message for this retry. SANCTIONED DIVERGENCE from the TS
-    /// `auto_retry_start` rendering (operator ruling 2026-09-23): the quick-retry line
-    /// names the ERROR too, not just the attempt.
-    fn message(&self) -> String {
-        match &self.reason {
-            RetryStartReason::Quick => format!(
-                "{} — retrying ({}/{}) in {}s...",
-                self.error_message,
-                self.attempt,
-                self.max_attempts,
-                self.seconds_left()
-            ),
-            RetryStartReason::Backup { backup_model } => format!(
-                "Primary model unavailable ({}) — retrying on backup model {backup_model}...",
-                self.error_message
-            ),
-        }
-    }
 }
 
-/// The retry loader rows (TS `auto_retry_start` rendering: muted spinner +
-/// the retry message).
+/// The retry loader rows. A quick retry is the nc-style countdown line, the amber
+/// `retry 2 of 4 in 3s` head, then the provider and status, with the provider's own words on
+/// the row under it. SANCTIONED DIVERGENCE from the TS `auto_retry_start` rendering (operator
+/// ruling 2026-09-23): the episode names the ERROR too, not just the attempt. A failover
+/// switch keeps its one muted line naming the backup.
 #[must_use]
 pub fn render_retry(retry: &RetryState, frame: usize, theme: &Theme, width: usize) -> Vec<Line> {
     let muted = theme.fg_style(ThemeColor::Muted);
+    let warning = theme.fg_style(ThemeColor::Warning);
     let spinner = LOADER_FRAMES[frame % LOADER_FRAMES.len()];
-    let message = retry.message();
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
-    row.push(Span::styled(spinner.to_string(), muted));
-    // The gap between the spinner and the label is unstyled (the TS
-    // `Loader` pen reset — see `render_loader`).
-    row.push(Span::raw(" ".to_string()));
-    row.push(Span::styled(message, muted));
-    vec![spacer(), pad_to(row, width, Style::default())]
+    match &retry.reason {
+        RetryStartReason::Quick => {
+            row.push(Span::styled(spinner.to_string(), warning));
+            // The gap between the spinner and the label is unstyled (the TS
+            // `Loader` pen reset — see `render_loader`).
+            row.push(Span::raw(" ".to_string()));
+            row.push(Span::styled(
+                format!(
+                    "retry {} of {} in {}s",
+                    retry.attempt,
+                    retry.max_attempts,
+                    retry.seconds_left()
+                ),
+                warning,
+            ));
+            // The provider and HTTP status (`openai 429`): the status is the error's leading
+            // three-digit code, the provider the session model's.
+            let status = retry
+                .error_message
+                .split_whitespace()
+                .next()
+                .filter(|word| word.len() == 3 && word.bytes().all(|byte| byte.is_ascii_digit()));
+            let source = match (retry.provider.as_deref(), status) {
+                (Some(provider), Some(status)) => Some(format!("{provider} {status}")),
+                (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+                (None, None) => None,
+            };
+            if let Some(source) = source {
+                row.push(Span::styled(" \u{00b7} ".to_string(), muted));
+                row.push(Span::styled(source, theme.fg_style(ThemeColor::Text)));
+            }
+            let reason = crate::width::truncate_to_width(
+                &retry.error_message,
+                width.saturating_sub(4),
+                "\u{2026}",
+            );
+            let detail: Line = vec![Span::raw("   ".to_string()), Span::styled(reason, muted)];
+            vec![
+                spacer(),
+                pad_to(row, width, Style::default()),
+                pad_to(detail, width, Style::default()),
+            ]
+        }
+        RetryStartReason::Backup { backup_model } => {
+            row.push(Span::styled(spinner.to_string(), muted));
+            row.push(Span::raw(" ".to_string()));
+            row.push(Span::styled(
+                format!(
+                    "Primary model unavailable ({}) — retrying on backup model {backup_model}...",
+                    retry.error_message
+                ),
+                muted,
+            ));
+            vec![spacer(), pad_to(row, width, Style::default())]
+        }
+    }
 }
 
 #[cfg(test)]

@@ -694,6 +694,13 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("rlm_child_cache_read_tokens", optional(tokens())),
         ("rlm_child_cache_write_tokens", optional(tokens())),
         ("rlm_child_cost", optional(cost())),
+        // Native web search (the query and provider never upload).
+        ("web_search_count", optional(count())),
+        ("web_search_failed_count", optional(count())),
+        ("web_search_fallback_count", optional(count())),
+        ("web_search_keyless_count", optional(count())),
+        ("web_search_result_count", optional(count())),
+        ("web_search_max_ms", optional(duration())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),
@@ -1004,6 +1011,29 @@ const TUI_IPYTHON_BASH_RENDERED: EventRule = EventRule {
     ],
 };
 
+/// One resume-picker run ended (v2): the folder scope it ended on (for an
+/// opened session, the scope it was resumed from), the folder toggle's
+/// flips, and whether a session opened. Standalone because `tui exit`
+/// sits at the backend's 128-key cap. Never a path.
+const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
+    name: "tui resume picker closed",
+    since: 2,
+    properties: &[
+        (
+            "scope",
+            required(enum_rule(
+                &["current_folder", "all_folders"],
+                "current_folder",
+            )),
+        ),
+        ("scope_toggle_count", required(count())),
+        (
+            "outcome",
+            required(enum_rule(&["opened", "exited"], "exited")),
+        ),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1022,15 +1052,21 @@ const TUI_EXIT: EventRule = EventRule {
         ("turn_active", required(boolean())),
         ("tui_scroll_count", optional(count())),
         ("tui_live_tool_timer_count", optional(count())),
+        ("tui_stall_shown_count", optional(count())),
+        ("tui_mention_pill_count", optional(count())),
+        ("tui_draft_recall_count", optional(count())),
         ("tui_selection_count", optional(count())),
         ("tui_click_count", optional(count())),
         ("tui_menu_open_count", optional(count())),
+        ("tui_slash_accept_count", optional(count())),
+        ("tui_menu_search_count", optional(count())),
         ("tui_activity_open_count", optional(count())),
         ("tui_subagents_open_count", optional(count())),
         ("tui_scoped_agent_count", optional(count())),
         ("tui_image_paste_count", optional(count())),
         ("tui_input_queued_count", optional(count())),
         ("tui_queue_edit_count", optional(count())),
+        ("tui_queue_dispatch_count", optional(count())),
         ("tui_prompt_stash_count", optional(count())),
         ("tui_bash_shortcut_count", optional(count())),
         ("tui_bash_bang_count", optional(count())),
@@ -1267,7 +1303,29 @@ const WEB_SEARCH_PROVIDER_CHANGED: EventRule = EventRule {
     since: 2,
     properties: &[(
         "provider",
-        required(enum_rule(&["serper", "eco"], "serper")),
+        required(enum_rule(
+            &[
+                "auto",
+                "serper",
+                "eco",
+                "brave",
+                "tavily",
+                "exa",
+                "kagi",
+                "perplexity",
+                "parallel",
+                "jina",
+                "firecrawl",
+                "searxng",
+                "duckduckgo",
+                "startpage",
+                "mojeek",
+                "ecosia",
+                "hackernews",
+                "public",
+            ],
+            "auto",
+        )),
     )],
 };
 
@@ -1292,6 +1350,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &SESSION_ARCHIVED,
         &TUI_EXIT,
         &TUI_IPYTHON_BASH_RENDERED,
+        &TUI_RESUME_PICKER_CLOSED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

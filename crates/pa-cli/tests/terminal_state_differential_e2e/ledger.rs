@@ -57,6 +57,9 @@ pub(crate) struct ModeLedger {
     sgr_ended_reset: bool,
     /// OSC 8 hyperlink opens minus closes (a dangling open wraps the shell's output in the link).
     hyperlink_depth: usize,
+    /// The XTWINOPS title stack (`ESC[22;Pst` pushes, `ESC[23;Pst` pops): a title write is the
+    /// product's only while a pushed title waits to be restored, and the depth must be zero at exit.
+    title_depth: usize,
     /// One-shot, state-free writes the ledger counts for the report.
     osc_52_writes: usize,
     osc_133_markers: usize,
@@ -208,6 +211,12 @@ impl ModeLedger {
                     self.findings
                         .push(format!("kitty protocol form with unknown prefix {other:?}"));
                 }
+            },
+            b't' if prefix.is_none() => match first_param(params) {
+                Some(22) => self.title_depth += 1,
+                Some(23) => self.title_depth = self.title_depth.saturating_sub(1),
+                // The other window ops (the size reports and queries): no title state.
+                Some(_) | None => {}
             },
             b'q' if !params.is_empty() => {
                 let shape = first_param(params);
@@ -372,10 +381,10 @@ impl ModeLedger {
             self.osc_133_markers += 1;
         } else if text.starts_with("1337;") {
             self.osc_1337_images += 1;
-        } else if text.starts_with("0;") || text.starts_with("2;") {
+        } else if (text.starts_with("0;") || text.starts_with("2;")) && self.title_depth == 0 {
             self.findings.push(format!(
-                "window-title OSC write ({text:?}): the product owns no title \
-                 restore"
+                "window-title OSC write ({text:?}) with no pushed title: nothing \
+                 restores the terminal's own title"
             ));
         }
     }
@@ -442,6 +451,12 @@ impl ModeLedger {
                      owns no restore for it"
                 ));
             }
+        }
+        if self.title_depth != 0 {
+            leaks.push(format!(
+                "title stack left at depth {} (XTWINOPS 22 push without its 23 pop)",
+                self.title_depth
+            ));
         }
         if !self.sgr_active.is_empty() {
             leaks.push(format!(
@@ -598,6 +613,21 @@ fn the_ledger_catches_forbidden_writes() {
     assert!(
         findings.iter().any(|f| f.contains("window-title")),
         "the title write went unnoticed: {findings:?}"
+    );
+}
+
+#[test]
+fn the_ledger_owns_a_title_write_only_between_its_push_and_pop() {
+    assert!(findings_of(b"\x1b[22;0t\x1b]0;title\x07\x1b[23;0t").is_empty());
+    let unpopped = findings_of(b"\x1b[22;0t\x1b]0;title\x07");
+    assert!(
+        unpopped.iter().any(|f| f.contains("title stack")),
+        "the unpopped title went unnoticed: {unpopped:?}"
+    );
+    let after_pop = findings_of(b"\x1b[22;0t\x1b[23;0t\x1b]0;title\x07");
+    assert!(
+        after_pop.iter().any(|f| f.contains("window-title")),
+        "the title written after the pop went unnoticed: {after_pop:?}"
     );
 }
 

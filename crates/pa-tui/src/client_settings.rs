@@ -18,10 +18,10 @@ pub trait ClientSettings: Send + Sync {
         anyhow::bail!("Harness refinement settings are unavailable")
     }
 
-    /// `webSearchProvider` (`serper`/`eco`; default `serper`): the service the
-    /// websearch skill queries in new sessions.
+    /// `webSearchProvider` (`auto` or an engine id; default `auto`): the
+    /// provider web search uses in new sessions.
     fn web_search_provider(&self) -> String {
-        "serper".to_string()
+        "auto".to_string()
     }
     /// Persist the web search provider globally.
     ///
@@ -133,7 +133,7 @@ pub trait ClientSettings: Send + Sync {
     ///
     /// Returns `Err` when the settings store fails.
     fn set_editor_padding_x(&self, padding: u64) -> Result<()>;
-    /// `autocompleteMaxVisible` (TS default 5).
+    /// `autocompleteMaxVisible` (default 8).
     fn autocomplete_max_visible(&self) -> u64;
     /// Persists `autocompleteMaxVisible` to the global scope.
     ///
@@ -246,6 +246,22 @@ pub trait ClientSettings: Send + Sync {
     #[must_use]
     fn telemetry_notice_due(&self) -> bool {
         false
+    }
+    /// How many times the empty composer's self-retiring hint key was used (settings
+    /// `composerHintUses`). Defaults to `u64::MAX`: a client without the store never shows the
+    /// hint.
+    #[must_use]
+    fn composer_hint_uses(&self) -> u64 {
+        u64::MAX
+    }
+    /// Persist the hint-key use count (the caller saves one count at a time, and only a count
+    /// above the stored one).
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when opening or persisting the settings store fails.
+    fn set_composer_hint_uses(&self, _uses: u64) -> Result<()> {
+        Ok(())
     }
     /// Persist the notice-shown marker once the disclosure renders
     /// (TS `setTelemetryNoticeShown`).

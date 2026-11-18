@@ -119,8 +119,8 @@ fn texts_at(events: &[Value], positions: &[usize]) -> Vec<String> {
 #[tokio::test]
 async fn a_provider_burst_broadcasts_one_coalesced_update_per_tick_not_per_delta() {
     const DELTAS: usize = 120;
-    // 1ms spacing: the burst spans ~120ms, so the 50ms flusher tick
-    // flushes at most a handful of mid-burst snapshots.
+    // 1ms spacing: the burst spans ~120ms+, so the leading edge plus one
+    // trailing-edge flush per 50ms interval is a handful of mid-burst snapshots.
     let engine = Arc::new(BurstStreamEngine {
         deltas: DELTAS,
         spacing_ms: 1,
@@ -271,7 +271,7 @@ async fn an_instant_burst_flushes_the_final_snapshot_with_its_settle_frame() {
     assert_eq!(end.len(), 1, "the turn settles with one message_end");
     assert!(
         updates.len() <= 3,
-        "an instant burst broadcasts at most the settle-flushed snapshot (a mid-burst tick race adds one per 50ms stall), saw {}",
+        "an instant burst broadcasts its leading-edge update plus the settle-flushed snapshot (a burst spanning a 50ms interval adds one trailing-edge flush), saw {}",
         updates.len()
     );
     assert!(

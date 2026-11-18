@@ -184,6 +184,7 @@ fn view_options(socket: &Path, session_dir: &Path, config: serde_json::Value) ->
         version: "0.0.0".to_string(),
         anchor_session_id: None,
         scope: None,
+        folder_scope: None,
         query: None,
         expanded_ancestors: Vec::new(),
         selected_row_identity: None,

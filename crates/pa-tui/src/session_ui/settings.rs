@@ -79,6 +79,12 @@ impl SessionUi {
                 view.confirm = None;
                 self.pending_confirm = None;
             }
+            // A key the panel cannot use declines it and lands in the composer.
+            crate::confirm::ConfirmAction::TypeThrough(text) => {
+                view.confirm = None;
+                self.pending_confirm = None;
+                view.editor.insert_text_at_cursor(&text);
+            }
             crate::confirm::ConfirmAction::Select(option) => {
                 let pending = self.pending_confirm.take();
                 view.confirm = None;
@@ -221,9 +227,9 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default(),
-            ..Default::default()
+            ..crate::settings_menu::SettingsCurrentValues::defaults()
         };
-        // A missing settings seam keeps the TS defaults.
+        // A missing settings seam keeps the defaults.
         if let Some(settings) = &settings {
             values.compaction_threshold_percent = settings.compaction_threshold_percent();
             values.show_images = settings.show_images();
@@ -247,21 +253,6 @@ impl SessionUi {
             values.theme = settings.theme().unwrap_or_else(|| "prime".to_string());
             // The tier row preselects the saved default instead of the struct default.
             values.default_service_tier = settings.default_service_tier();
-        } else {
-            values.show_images = true;
-            values.auto_resize_images = true;
-            values.skill_commands = true;
-            values.builtin_skills = true;
-            values.harness_refinements = true;
-            values.emoji_shortcodes = true;
-            values.web_search_provider = "serper".to_string();
-            values.idle_eviction_minutes = "90".to_string();
-            values.mermaid = "streaming".to_string();
-            values.tree_filter_mode = "user-only".to_string();
-            values.warnings_anthropic_extra_usage = true;
-            values.theme = "prime".to_string();
-            // No settings seam: the tier row reads "default", never a blank value.
-            values.default_service_tier = "default".to_string();
         }
         // This surface ships the builtin themes.
         values.available_themes = pa_types::themes::BUILTIN_THEME_NAMES
@@ -269,7 +260,10 @@ impl SessionUi {
             .map(ToString::to_string)
             .collect();
         let rows = crate::settings_menu::settings_menu_rows(&values);
-        view.settings_menu = Some(crate::settings_menu::SettingsMenu::new(rows));
+        view.settings_menu = Some(
+            crate::settings_menu::SettingsMenu::new(rows)
+                .with_defaults(&crate::settings_menu::SettingsCurrentValues::defaults()),
+        );
         self.track_menu_opened("settings", "command");
         self.dirty = true;
     }
@@ -304,8 +298,15 @@ impl SessionUi {
                 // Preview the row's theme back.
                 view.theme = crate::app::load_theme(&name);
             }
-            crate::settings_menu::SettingsMenuAction::Change { id, value } => {
-                self.apply_settings_change(id, &value, view).await;
+            // A refused save (a change or a reset to the default) puts the row's previous value
+            // back and shows the reason under it.
+            crate::settings_menu::SettingsMenuAction::Change { id, value }
+            | crate::settings_menu::SettingsMenuAction::Reset { id, value } => {
+                if let Err(reason) = self.apply_settings_change(id, &value, view).await {
+                    if let Some(menu) = view.settings_menu.as_mut() {
+                        menu.refuse_last_change(&reason);
+                    }
+                }
             }
         }
         self.dirty = true;
@@ -314,7 +315,12 @@ impl SessionUi {
 
     /// One settings row's change: daemon commands for session-owned switches,
     /// the settings seam for persisted preferences.
-    async fn apply_settings_change(&mut self, id: &str, value: &str, view: &mut AgentView) {
+    async fn apply_settings_change(
+        &mut self,
+        id: &str,
+        value: &str,
+        view: &mut AgentView,
+    ) -> Result<(), String> {
         match id {
             "autocompact-threshold" => {
                 if let Some(settings) = &self.client_settings {
@@ -323,27 +329,28 @@ impl SessionUi {
                         .map_err(anyhow::Error::from)
                         .and_then(|percent| settings.set_compaction_threshold_percent(percent));
                     if let Err(error) = result {
-                        self.error_row(&format!("{error:#}"), view);
+                        return Err(format!("{error:#}"));
                     }
                 }
+                // The gauge's threshold tick moves with the setting.
+                self.rebuild_tray(view);
             }
             "autocompact" => {
-                self.daemon_switch(
-                    DaemonCommand::SetAutoCompaction {
-                        id: None,
-                        active_session_id: self.active_session_id.clone(),
-                        enabled: value == "true",
-                        rest: Map::default(),
-                    },
-                    view,
-                )
-                .await;
+                self.daemon_switch(DaemonCommand::SetAutoCompaction {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    enabled: value == "true",
+                    rest: Map::default(),
+                })
+                .await?;
+                // The gauge's threshold tick shows only while the switch is on.
+                self.auto_compaction = value == "true";
+                self.rebuild_tray(view);
             }
             "show-images" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_show_images(value == "true") {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 self.show_images = value == "true";
@@ -353,22 +360,19 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_image_auto_resize(enabled),
                     value,
-                    view,
-                );
+                )?;
             }
             "block-images" => {
                 self.persist_bool_setting(
                     |settings, blocked| settings.set_block_images(blocked),
                     value,
-                    view,
-                );
+                )?;
             }
             "skill-commands" => {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_enable_skill_commands(enabled),
                     value,
-                    view,
-                );
+                )?;
                 // The cached skill list re-applies under the new setting value (no daemon
                 // round trip).
                 let enabled = self
@@ -387,13 +391,12 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_harness_refinements(enabled),
                     value,
-                    view,
-                );
+                )?;
             }
             "web-search-provider" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_web_search_provider(value) {
-                        self.error_row(&format!("{error:#}"), view);
+                        return Err(format!("{error:#}"));
                     }
                 }
             }
@@ -401,8 +404,7 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_enable_builtin_skills(enabled),
                     value,
-                    view,
-                );
+                )?;
                 // The toggle takes effect after a reload.
                 let _ = self.handle_reload_command(view);
             }
@@ -411,8 +413,7 @@ impl SessionUi {
                 // setting actually persisted.
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_show_hardware_cursor(value == "true") {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 // The very next frame shows or hides the hardware cursor at the focused
@@ -422,8 +423,7 @@ impl SessionUi {
             "emoji-shortcodes" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_emoji_shortcodes(value == "true") {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 view.editor.set_emoji_shortcodes(value == "true");
@@ -432,7 +432,7 @@ impl SessionUi {
                 if let Some(settings) = &self.client_settings {
                     if let Ok(padding) = value.parse::<u64>() {
                         if let Err(error) = settings.set_editor_padding_x(padding) {
-                            self.error_row(&format!("{error:#}"), view);
+                            return Err(format!("{error:#}"));
                         }
                     }
                 }
@@ -441,8 +441,11 @@ impl SessionUi {
                 if let Some(settings) = &self.client_settings {
                     if let Ok(max_visible) = value.parse::<u64>() {
                         if let Err(error) = settings.set_autocomplete_max_visible(max_visible) {
-                            self.error_row(&format!("{error:#}"), view);
+                            return Err(format!("{error:#}"));
                         }
+                        view.editor.set_autocomplete_max_visible(
+                            usize::try_from(max_visible).unwrap_or(usize::MAX),
+                        );
                     }
                 }
             }
@@ -450,74 +453,62 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_clear_on_shrink(enabled),
                     value,
-                    view,
-                );
+                )?;
             }
             "terminal-progress" => {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_show_terminal_progress(enabled),
                     value,
-                    view,
-                );
+                )?;
             }
             "idle-eviction-minutes" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_idle_eviction_minutes(value) {
-                        self.error_row(&format!("{error:#}"), view);
+                        return Err(format!("{error:#}"));
                     }
                 }
             }
             "steering-mode" => {
-                self.daemon_switch(
-                    DaemonCommand::SetSteeringMode {
-                        id: None,
-                        active_session_id: self.active_session_id.clone(),
-                        mode: serde_json::Value::String(value.to_string()),
-                        rest: Map::default(),
-                    },
-                    view,
-                )
-                .await;
+                self.daemon_switch(DaemonCommand::SetSteeringMode {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    mode: serde_json::Value::String(value.to_string()),
+                    rest: Map::default(),
+                })
+                .await?;
                 // Refresh the steering-mode cache the queued-input event reads, so a
                 // submission right after the switch reports the new mode.
                 let _ = self.connection_state(view).await;
             }
             "follow-up-mode" => {
-                self.daemon_switch(
-                    DaemonCommand::SetFollowUpMode {
-                        id: None,
-                        active_session_id: self.active_session_id.clone(),
-                        mode: serde_json::Value::String(value.to_string()),
-                        rest: Map::default(),
-                    },
-                    view,
-                )
-                .await;
+                self.daemon_switch(DaemonCommand::SetFollowUpMode {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    mode: serde_json::Value::String(value.to_string()),
+                    rest: Map::default(),
+                })
+                .await?;
             }
             "transport" => {
                 let Ok(transport) = serde_json::from_value::<pa_types::ai::Transport>(
                     serde_json::Value::String(value.to_string()),
                 ) else {
-                    return;
+                    return Ok(());
                 };
-                self.daemon_switch(
-                    DaemonCommand::SetTransport {
-                        id: None,
-                        active_session_id: self.active_session_id.clone(),
-                        transport,
-                        rest: Map::default(),
-                    },
-                    view,
-                )
-                .await;
+                self.daemon_switch(DaemonCommand::SetTransport {
+                    id: None,
+                    active_session_id: self.active_session_id.clone(),
+                    transport,
+                    rest: Map::default(),
+                })
+                .await?;
             }
             "default-service-tier" => {
                 // Persist the default tier (new sessions start on it), then apply it to
                 // the running session through the same daemon tier switch `/tier` uses.
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_default_service_tier(value) {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 let tier = match serde_json::from_value::<pa_types::ai::ServiceTier>(Value::String(
@@ -525,8 +516,7 @@ impl SessionUi {
                 )) {
                     Ok(tier) => tier,
                     Err(error) => {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 };
                 let switched = self
@@ -541,20 +531,19 @@ impl SessionUi {
                     )
                     .await;
                 if let Err(error) = switched {
-                    self.error_row(&format!("{error:#}"), view);
-                    return;
+                    return Err(format!("{error:#}"));
                 }
                 // The status row reports what the session actually applied; a state read
                 // that fails or omits the tier shows no success row.
                 let Some(state) = self.connection_state(view).await else {
-                    return;
+                    return Ok(());
                 };
                 let Some(applied) = state
                     .get("serviceTier")
                     .and_then(Value::as_str)
                     .map(str::to_string)
                 else {
-                    return;
+                    return Ok(());
                 };
                 self.service_tier = Some(applied.clone());
                 view.chrome.service_tier = Some(applied.clone());
@@ -568,7 +557,7 @@ impl SessionUi {
             "mermaid-rendering" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_mermaid_rendering_mode(value) {
-                        self.error_row(&format!("{error:#}"), view);
+                        return Err(format!("{error:#}"));
                     }
                 }
             }
@@ -576,14 +565,12 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, quiet| settings.set_quiet_startup(quiet),
                     value,
-                    view,
-                );
+                )?;
             }
             "tree-filter-mode" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_tree_filter_mode(value) {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 // The `/tree` selector reads the live field.
@@ -593,8 +580,7 @@ impl SessionUi {
                 self.persist_bool_setting(
                     |settings, enabled| settings.set_warnings_anthropic_extra_usage(enabled),
                     value,
-                    view,
-                );
+                )?;
             }
             "thinking" => {
                 self.apply_thinking_level(value, view).await;
@@ -602,40 +588,38 @@ impl SessionUi {
             "theme" => {
                 if let Some(settings) = &self.client_settings {
                     if let Err(error) = settings.set_theme(value) {
-                        self.error_row(&format!("{error:#}"), view);
-                        return;
+                        return Err(format!("{error:#}"));
                     }
                 }
                 view.theme = crate::app::load_theme(value);
             }
             other => {
-                self.error_row(&format!("Unknown setting: {other}"), view);
+                return Err(format!("Unknown setting: {other}"));
             }
         }
+        Ok(())
     }
 
-    /// Persist one boolean row through the settings seam, surfacing errors.
+    /// Persist one boolean row through the settings seam; a refused save is the row's error.
     fn persist_bool_setting(
-        &mut self,
+        &self,
         set: impl FnOnce(&dyn crate::client_settings::ClientSettings, bool) -> anyhow::Result<()>,
         value: &str,
-        view: &mut AgentView,
-    ) {
-        if let Some(settings) = &self.client_settings {
-            if let Err(error) = set(settings.as_ref(), value == "true") {
-                self.error_row(&format!("{error:#}"), view);
+    ) -> Result<(), String> {
+        match &self.client_settings {
+            Some(settings) => {
+                set(settings.as_ref(), value == "true").map_err(|error| format!("{error:#}"))
             }
+            None => Ok(()),
         }
     }
 
-    /// A session-switch daemon command: the result never blocks the menu.
-    async fn daemon_switch(&mut self, command: DaemonCommand, view: &mut AgentView) {
-        if let Err(error) = self
-            .bounded_request(Duration::from_millis(UI_REQUEST_TIMEOUT_MS), command)
+    /// A session-switch daemon command; a refusal is the row's error.
+    async fn daemon_switch(&mut self, command: DaemonCommand) -> Result<(), String> {
+        self.bounded_request(Duration::from_millis(UI_REQUEST_TIMEOUT_MS), command)
             .await
-        {
-            self.error_row(&format!("{error:#}"), view);
-        }
+            .map(drop)
+            .map_err(|error| format!("{error:#}"))
     }
 
     // Fast mode, depth, and reload (/fast, /rlm-max-depth, /reload)

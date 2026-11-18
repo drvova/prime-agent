@@ -5,6 +5,9 @@
 
 mod geometry;
 pub(crate) use geometry::{markdown_row_count, markdown_row_count_tagged};
+#[cfg(test)]
+#[path = "markdown/incremental_tests.rs"]
+mod incremental_tests;
 mod inline;
 #[cfg(test)]
 mod tests;
@@ -22,6 +25,12 @@ use ratatui::text as rt;
 pub struct MarkdownStyle {
     pub body: Style,
     pub heading: Style,
+    /// The band behind H1/H2 text (with a `▌` edge): assistant replies set it through
+    /// [`MarkdownStyle::for_replies`]; `None` keeps every heading text-only.
+    pub heading_band: Option<Style>,
+    /// The slab behind fenced code (with a `▌` edge and the language label): assistant
+    /// replies set it through [`MarkdownStyle::for_replies`]; `None` keeps the plain indent.
+    pub code_slab: Option<Style>,
     pub link: Style,
     pub link_url: Style,
     pub code: Style,
@@ -53,12 +62,23 @@ impl Default for MarkdownStyle {
 }
 
 impl MarkdownStyle {
+    /// The assistant-reply style: H1/H2 headings on the theme's selection band, fenced code
+    /// on the tool-panel slab.
+    #[must_use]
+    pub(crate) fn for_replies(mut self, theme: &crate::theme::Theme) -> Self {
+        self.heading_band = Some(theme.bg_style(crate::theme::ThemeBg::SelectedBg));
+        self.code_slab = Some(theme.bg_style(crate::theme::ThemeBg::ToolPanelBg));
+        self
+    }
+
     #[must_use]
     pub fn from_theme(theme: &crate::theme::Theme) -> Self {
         use crate::theme::ThemeColor as C;
         Self {
             body: theme.fg_style(C::MdBody),
             heading: theme.fg_style(C::MdHeading),
+            heading_band: None,
+            code_slab: None,
             link: theme.fg_style(C::MdLink),
             link_url: theme.fg_style(C::MdLinkUrl),
             code: theme.fg_style(C::MdCode),
@@ -102,11 +122,18 @@ pub fn render_markdown_tagged(
     if text.trim().is_empty() {
         return Vec::new();
     }
-    let normalized = normalize_source(text);
+    let MarkdownBlockCache(rows, stream) = cache;
+    let (frozen, tail) = stream_blocks(text, style_tag, stream.as_ref());
+    let block_count = frozen.len() + tail.len();
+    let block_at = |index: usize| -> &Block {
+        frozen
+            .get(index)
+            .unwrap_or_else(|| &tail[index - frozen.len()])
+    };
     let mut lines: Vec<Line> = Vec::new();
-    let blocks = parse_blocks(&normalized);
-    for (i, block) in blocks.iter().enumerate() {
-        let next = blocks.get(i + 1);
+    for index in 0..block_count {
+        let block = block_at(index);
+        let next = (index + 1 < block_count).then(|| block_at(index + 1));
         // A blank source line separates blocks: TS's lexer emits one `space` token per blank
         // run and `renderToken` pushes one empty row for it; `parse_blocks` skips the blank
         // source lines, so the row is emitted here, ahead of the block it precedes.
@@ -115,12 +142,15 @@ pub fn render_markdown_tagged(
         }
         let key = block_cache_key(
             style_tag,
-            &blocks,
-            i,
+            block,
+            next,
             content_width,
             style.link_base_url.as_ref(),
         );
-        if let Some(cached) = key.as_ref().and_then(|key| cache.0.get(key)) {
+        if let Some(cached) = key
+            .as_ref()
+            .and_then(|key| rows.get(key as &dyn AsBlockKey))
+        {
             lines.extend_from_slice(cached);
             continue;
         }
@@ -130,10 +160,38 @@ pub fn render_markdown_tagged(
                 render_block(block, next, content_width, style, &mut rendered);
                 lines.extend_from_slice(&rendered);
                 rendered.shrink_to_fit();
-                cache.0.insert(key, rendered);
+                rows.insert(key.to_owned_key(), rendered);
             }
             // The final block renders into the caller's buffer: every render path only appends.
             None => render_block(block, next, content_width, style, &mut lines),
+        }
+    }
+    // The streaming entry freezes the prefix this text cannot change any more (see
+    // [`StreamPrefixes`]); the verdict reads the blocks above, the update runs after them.
+    let freeze = stream.as_ref().and_then(|stream| {
+        let end = stable_boundary(text)?;
+        let current = stream
+            .matching(text, style_tag)
+            .map_or(0, |slot| slot.source.len());
+        if end <= current || stream.rejected.contains(&(style_tag.to_string(), end)) {
+            return None;
+        }
+        let blocks = parse_blocks(&normalize_source(&text[..end]));
+        let settles = blocks.len() < block_count
+            && !matches!(
+                blocks.last().map(|block| &block.kind),
+                Some(BlockKind::List(_)) | None
+            )
+            && blocks
+                .iter()
+                .enumerate()
+                .all(|(index, block)| block == block_at(index));
+        Some((end, settles.then_some(blocks)))
+    });
+    if let (Some(stream), Some((end, verdict))) = (stream.as_mut(), freeze) {
+        match verdict {
+            Some(blocks) => stream.freeze(text, style_tag, end, blocks),
+            None => stream.reject(style_tag, end),
         }
     }
     lines
@@ -154,14 +212,136 @@ fn normalize_source(text: &str) -> String {
 /// stays bounded without it — entries are keyed by settled (non-final) blocks, the whole map
 /// drops when the message settles (`view.rs`) or the layout width or render options change,
 /// and the final block is never cached (appended text can reinterpret an open block).
+///
+/// A streaming entry's cache ([`MarkdownBlockCache::streaming`]) also keeps the parsed blocks of
+/// each text's frozen prefix, so a frame re-parses only the text after it (omp's
+/// `#streamPrefixTokens`).
 #[derive(Default)]
-pub struct MarkdownBlockCache(std::collections::HashMap<BlockKey, Vec<Line>>);
+pub struct MarkdownBlockCache(
+    std::collections::HashMap<BlockKey, Vec<Line>>,
+    Option<StreamPrefixes>,
+);
+
+impl MarkdownBlockCache {
+    /// A cache that also freezes parsed prefixes: for a message that grows by appends.
+    #[must_use]
+    pub(crate) fn streaming() -> Self {
+        Self(
+            std::collections::HashMap::new(),
+            Some(StreamPrefixes::default()),
+        )
+    }
+}
+
+/// How many texts of one message keep a frozen prefix (its text and thinking blocks).
+const FROZEN_PREFIX_SLOTS: usize = 4;
+/// How many rejected boundaries one message remembers.
+const REJECTED_BOUNDARIES: usize = 8;
+
+/// The streaming entry's frozen prefixes (omp's frozen-prefix lex, `components/markdown.ts`
+/// `#lexTopLevel` / `stableBlockBoundary`): for each text of the message, the longest prefix that
+/// ends at a block boundary no append can move, with that prefix's parsed blocks. Block parsing is
+/// local across such a boundary, so `parse(prefix + tail)` is `parse(prefix)` followed by
+/// `parse(tail)` (whose first block follows a blank line). A boundary freezes only when:
+///
+/// - it follows a blank line and the next line starts with a non-space character, so the next
+///   line opens a fresh block (it cannot be an indented continuation);
+/// - the prefix holds no escape byte and no carriage return (the source normalization and the
+///   line split stay local to each side);
+/// - the prefix's last block is not a list (a later item or a lazy line can continue a list
+///   across blank lines, omp's `listMayContinueAt`);
+/// - the prefix's blocks equal the leading blocks of the current full parse, and a block follows
+///   them (an open fence, or any block that reads past the boundary, fails this check).
+///
+/// A rejected boundary is never retried: its prefix does not change.
+#[derive(Default)]
+struct StreamPrefixes {
+    slots: Vec<FrozenPrefix>,
+    rejected: Vec<(String, usize)>,
+}
+
+/// One text's frozen prefix.
+struct FrozenPrefix {
+    style_tag: String,
+    /// The raw (pre-normalization) prefix the blocks were parsed from.
+    source: String,
+    blocks: Vec<Block>,
+}
+
+impl StreamPrefixes {
+    /// The frozen prefix `text` grew from, if any.
+    fn matching(&self, text: &str, style_tag: &str) -> Option<&FrozenPrefix> {
+        self.slots
+            .iter()
+            .filter(|slot| {
+                slot.style_tag == style_tag
+                    && text.len() > slot.source.len()
+                    && text.starts_with(slot.source.as_str())
+            })
+            .max_by_key(|slot| slot.source.len())
+    }
+
+    fn freeze(&mut self, text: &str, style_tag: &str, end: usize, blocks: Vec<Block>) {
+        let slot = FrozenPrefix {
+            style_tag: style_tag.to_string(),
+            source: text[..end].to_string(),
+            blocks,
+        };
+        // The text's previous (shorter) prefix is superseded.
+        self.slots
+            .retain(|old| !(old.style_tag == style_tag && text.starts_with(old.source.as_str())));
+        if self.slots.len() >= FROZEN_PREFIX_SLOTS {
+            self.slots.remove(0);
+        }
+        self.slots.push(slot);
+    }
+
+    fn reject(&mut self, style_tag: &str, end: usize) {
+        if self.rejected.len() >= REJECTED_BOUNDARIES {
+            self.rejected.remove(0);
+        }
+        self.rejected.push((style_tag.to_string(), end));
+    }
+}
+
+/// `text`'s last block boundary a frozen prefix may end at (see [`StreamPrefixes`]): the byte
+/// offset just past the last blank line, when the next line starts with a non-space character and
+/// the text before it holds no escape byte and no carriage return.
+fn stable_boundary(text: &str) -> Option<usize> {
+    let end = text.rfind("\n\n")? + 2;
+    let next = text[end..].chars().next()?;
+    if next.is_whitespace() {
+        return None;
+    }
+    let prefix = &text[..end];
+    if prefix.contains(['\u{1b}', '\r']) {
+        return None;
+    }
+    Some(end)
+}
+
+/// The blocks of `text`: the frozen prefix's parsed blocks (borrowed) and the parsed rest. A
+/// text without a frozen prefix parses whole into the second part.
+fn stream_blocks<'c>(
+    text: &str,
+    style_tag: &str,
+    stream: Option<&'c StreamPrefixes>,
+) -> (&'c [Block], Vec<Block>) {
+    let Some(slot) = stream.and_then(|stream| stream.matching(text, style_tag)) else {
+        return (&[], parse_blocks(&normalize_source(text)));
+    };
+    let mut tail = parse_blocks(&normalize_source(&text[slot.source.len()..]));
+    // The tail's first block follows the prefix's closing blank line.
+    if let Some(first) = tail.first_mut() {
+        first.sep_blank = true;
+    }
+    (&slot.blocks, tail)
+}
 
 /// The cache key: every `render_block` input a streamed append can change — the style discriminator
 /// (the dim thinking block), the width, the parsed block itself, and the following block's
 /// trailing-blank effect. Keying on the parsed `BlockKind` covers each of the block's own render
 /// inputs structurally, so a field added later is covered automatically.
-#[derive(PartialEq, Eq, Hash)]
 struct BlockKey {
     link_base_url: Option<url::Url>,
     style_tag: String,
@@ -173,26 +353,107 @@ struct BlockKey {
     blank_after: [bool; 2],
 }
 
+/// The borrowed form of a [`BlockKey`]: the per-frame lookup hashes and compares the parsed block
+/// in place, and only a miss builds the owned key.
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+struct BlockKeyRef<'a> {
+    link_base_url: Option<&'a url::Url>,
+    style_tag: &'a str,
+    width: usize,
+    kind: &'a BlockKind,
+    lines: &'a [String],
+    blank_after: [bool; 2],
+}
+
+impl BlockKeyRef<'_> {
+    fn to_owned_key(self) -> BlockKey {
+        BlockKey {
+            link_base_url: self.link_base_url.cloned(),
+            style_tag: self.style_tag.to_string(),
+            width: self.width,
+            kind: self.kind.clone(),
+            lines: self.lines.to_vec(),
+            blank_after: self.blank_after,
+        }
+    }
+}
+
+/// The one view the owned and the borrowed key share: the cache map hashes and compares every
+/// key through it, so an owned key and its borrowed form always agree (the map's `Borrow`
+/// contract).
+trait AsBlockKey {
+    fn key(&self) -> BlockKeyRef<'_>;
+}
+
+impl AsBlockKey for BlockKey {
+    fn key(&self) -> BlockKeyRef<'_> {
+        BlockKeyRef {
+            link_base_url: self.link_base_url.as_ref(),
+            style_tag: &self.style_tag,
+            width: self.width,
+            kind: &self.kind,
+            lines: &self.lines,
+            blank_after: self.blank_after,
+        }
+    }
+}
+
+impl AsBlockKey for BlockKeyRef<'_> {
+    fn key(&self) -> BlockKeyRef<'_> {
+        *self
+    }
+}
+
+impl<'a> std::borrow::Borrow<dyn AsBlockKey + 'a> for BlockKey {
+    fn borrow(&self) -> &(dyn AsBlockKey + 'a) {
+        self
+    }
+}
+
+impl std::hash::Hash for dyn AsBlockKey + '_ {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl PartialEq for dyn AsBlockKey + '_ {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for dyn AsBlockKey + '_ {}
+
+impl std::hash::Hash for BlockKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key().hash(state);
+    }
+}
+
+impl PartialEq for BlockKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.key() == other.key()
+    }
+}
+
+impl Eq for BlockKey {}
+
 /// The one cacheability rule shared by render and count (TS `useCache = cacheable && i <
 /// tokens.length - 1`): every block but the last is cacheable; the final one returns `None`.
-fn block_cache_key(
-    style_tag: &str,
-    blocks: &[Block],
-    index: usize,
+fn block_cache_key<'a>(
+    style_tag: &'a str,
+    block: &'a Block,
+    next: Option<&Block>,
     width: usize,
-    link_base_url: Option<&url::Url>,
-) -> Option<BlockKey> {
-    if index + 1 == blocks.len() {
-        return None;
-    }
-    let next = blocks.get(index + 1);
-    let block = &blocks[index];
-    Some(BlockKey {
-        link_base_url: link_base_url.cloned(),
-        style_tag: style_tag.to_string(),
+    link_base_url: Option<&'a url::Url>,
+) -> Option<BlockKeyRef<'a>> {
+    next?;
+    Some(BlockKeyRef {
+        link_base_url,
+        style_tag,
         width,
-        kind: block.kind.clone(),
-        lines: block.lines.clone(),
+        kind: &block.kind,
+        lines: &block.lines,
         blank_after: [
             geometry::blank_after(next, false),
             geometry::blank_after(next, true),
@@ -242,7 +503,7 @@ enum BlockKind {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct Block {
     kind: BlockKind,
     /// True when a blank line precedes this block (TS emits a `space` token).
@@ -677,6 +938,9 @@ fn code_rows(block: &Block, lang: Option<&str>, style: &MarkdownStyle) -> Vec<Li
             .map(|line| vec![Span::styled(line.clone(), style.code_block)])
             .collect()
     });
+    if let Some(slab) = style.code_slab {
+        return slab_rows(lines, lang, slab, style, indent);
+    }
     if lines.is_empty() {
         return vec![vec![Span::raw(indent)]];
     }
@@ -686,6 +950,47 @@ fn code_rows(block: &Block, lang: Option<&str>, style: &MarkdownStyle) -> Vec<Li
             let mut row: Line = vec![Span::raw(indent)];
             row.extend(line);
             row
+        })
+        .collect()
+}
+
+/// Fenced code on a slab: the indent, a `▌` edge, the language label as the first row, every line on
+/// the slab background padded to the widest line (one rectangle, two cells of margin).
+fn slab_rows(
+    lines: Vec<Line>,
+    lang: Option<&str>,
+    slab: Style,
+    style: &MarkdownStyle,
+    indent: &str,
+) -> Vec<Line> {
+    let mut rows: Vec<Line> = Vec::new();
+    if let Some(lang) = lang.filter(|lang| !lang.is_empty()) {
+        rows.push(vec![Span::styled(lang.to_string(), style.link_url)]);
+    }
+    rows.extend(lines);
+    if rows.is_empty() {
+        rows.push(Vec::new());
+    }
+    let widest = rows
+        .iter()
+        .map(|row| crate::width::line_width(row))
+        .max()
+        .unwrap_or(0);
+    rows.into_iter()
+        .map(|row| {
+            let pad = widest - crate::width::line_width(&row) + 2;
+            // The `markdown.codeBlockIndent` setting still leads the block.
+            let mut out: Line = vec![
+                Span::raw(indent.to_string()),
+                Span::styled("\u{258c}".to_string(), style.code_block_border),
+                Span::styled(" ".to_string(), slab),
+            ];
+            out.extend(
+                row.into_iter()
+                    .map(|span| Span::styled(span.content, span.style.patch(slab))),
+            );
+            out.push(Span::styled(" ".repeat(pad), slab));
+            out
         })
         .collect()
 }
@@ -728,6 +1033,17 @@ fn heading_spans(text: &str, depth: usize, style: &MarkdownStyle) -> Vec<Span> {
         if underlined {
             s.style = s.style.add_modifier(Modifier::UNDERLINED);
         }
+    }
+    // H1/H2 sit on a band behind a `▌` edge, padded past the words, so long answers scan
+    // by their sections. Kept inside the shared builder, the row count wraps the same cells.
+    let has_text = spans.iter().any(|span| !span.content.trim().is_empty());
+    if let Some(band) = style.heading_band.filter(|_| depth <= 2 && has_text) {
+        for span in &mut spans {
+            span.style = span.style.patch(band);
+        }
+        spans.insert(0, Span::styled("\u{258c}".to_string(), style.heading));
+        spans.insert(1, Span::styled(" ".to_string(), band));
+        spans.push(Span::styled("   ".to_string(), band));
     }
     spans
 }

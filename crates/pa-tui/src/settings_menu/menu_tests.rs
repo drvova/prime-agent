@@ -106,9 +106,7 @@ fn an_empty_row_set_keeps_the_empty_state_and_closes() {
     assert_eq!(menu.handle_key("2", &kb()), SettingsMenuAction::None);
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("No settings available")));
-    assert!(text
-        .iter()
-        .any(|row| { row.contains("Type to search · ←/→/Enter/Space change · Esc close") }));
+    assert!(text.iter().any(|row| row == "  Esc close"));
     assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::Cancel);
 }
 
@@ -150,10 +148,14 @@ fn enter_opens_the_thinking_submenu_and_selection_applies() {
             value: "high".to_string()
         }
     );
+    // The change leads the hint row for three seconds, saying when it takes effect.
     let text = render_text(&menu);
-    assert!(text.iter().any(|row| {
-        row.contains("Type to search · Tab/1-5 tabs · ←/→/Enter/Space change · Esc close")
-    }));
+    assert!(
+        text.iter().any(|row| {
+            row == "  Saved · from the next turn · \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
+        }),
+        "{text:#?}"
+    );
 }
 
 #[test]
@@ -222,7 +224,7 @@ fn enter_opens_the_service_tier_submenu_preselected_and_selection_applies() {
     let text = render_text(&menu);
     assert!(text
         .iter()
-        .any(|row| row.contains("Enter/Space change · Esc close")));
+        .any(|row| row.ends_with("Enter select · Esc close")));
 }
 
 #[test]
@@ -236,6 +238,11 @@ fn typing_filters_the_active_tab_and_esc_cancels() {
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("Transport")));
     assert!(!text.iter().any(|row| row.contains("Thinking")));
+    // Esc clears the query first, then closes.
+    assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::None);
+    assert!(render_text(&menu)
+        .iter()
+        .any(|row| row.contains("Thinking")));
     assert_eq!(menu.handle_key("esc", &kb()), SettingsMenuAction::Cancel);
 }
 
@@ -437,11 +444,13 @@ fn digits_type_into_an_active_query() {
     menu.handle_key("2", &kb());
     let text = render_text(&menu);
     assert!(text.iter().any(|row| row.contains("s2")));
-    assert!(text.iter().any(|row| row.contains("No matching settings")));
+    assert!(text
+        .iter()
+        .any(|row| row.contains("no match for \u{201c}s2\u{201d}")));
 }
 
 #[test]
-fn switching_tabs_keeps_each_tabs_search_and_selection() {
+fn switching_tabs_keeps_the_selection_and_carries_the_query() {
     let mut menu = menu();
     menu.handle_key("down", &kb());
     menu.handle_key("2", &kb());
@@ -453,20 +462,28 @@ fn switching_tabs_keeps_each_tabs_search_and_selection() {
             value: "one-at-a-time".to_string()
         }
     );
-    // Each tab keeps its own query: the filter and the field still hold after
-    // the round trip; tab switches even under an active query.
-    for key in ["w", "a", "r", "n"] {
+    // The query is shared while searching: every tab the user moves to filters by it, so each
+    // tab shows exactly the match count the strip promised.
+    for key in ["a", "u", "t", "o"] {
         menu.handle_key(key, &kb());
     }
-    menu.handle_key("tab", &kb());
-    assert!(render_text(&menu)
+    let promised: Vec<usize> = menu
+        .tabs
         .iter()
-        .any(|row| row.contains("Transport")));
-    menu.handle_key("shift+tab", &kb());
-    let text = render_text(&menu);
-    assert!(text.iter().any(|row| row.contains("warn")));
-    assert!(text.iter().any(|row| row.contains("Warnings")));
-    assert!(!text.iter().any(|row| row.contains("Quiet startup")));
+        .map(|tab| menu.matching_rows(&tab.rows, "auto").len())
+        .collect();
+    let mut shown = vec![(menu.query().to_string(), menu.tabs[menu.tab].filtered.len())];
+    for _ in 1..menu.tabs.len() {
+        menu.handle_key("tab", &kb());
+        shown.push((menu.query().to_string(), menu.tabs[menu.tab].filtered.len()));
+    }
+    assert_eq!(
+        shown,
+        promised
+            .iter()
+            .map(|&count| ("auto".to_string(), count))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -475,18 +492,18 @@ fn the_strip_lists_the_tabs_and_marks_the_active_one() {
     let lines = menu().render(&theme, 100, &KeybindingsManager::new());
     // The strip rides under the search field with a blank row on
     // either side (the operator's 2026-09-28 spacing pass).
-    let strip_blank_above: String = lines[3].iter().map(|span| span.content.as_str()).collect();
+    let strip_blank_above: String = lines[4].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(strip_blank_above, "");
-    let text: String = lines[4].iter().map(|span| span.content.as_str()).collect();
+    let text: String = lines[5].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(
         text,
         "  1 General    2 Models    3 Display    4 Editor    5 Agents"
     );
-    let strip_blank_below: String = lines[5].iter().map(|span| span.content.as_str()).collect();
+    let strip_blank_below: String = lines[6].iter().map(|span| span.content.as_str()).collect();
     assert_eq!(strip_blank_below, "");
     // The active tab renders white bold (the operator's 2026-09-28 selection ruling — the theme's
     // text color, not the dock's background band).
-    let active = lines[4]
+    let active = lines[5]
         .iter()
         .find(|span| span.content == "General")
         .expect("the active tab renders");
@@ -496,7 +513,7 @@ fn the_strip_lists_the_tabs_and_marks_the_active_one() {
             .fg_style(ThemeColor::Text)
             .add_modifier(ratatui::style::Modifier::BOLD)
     );
-    let inactive = lines[4]
+    let inactive = lines[5]
         .iter()
         .find(|span| span.content == "Models")
         .expect("an inactive tab renders");
@@ -509,16 +526,17 @@ fn the_header_and_the_settings_list_breathe_apart() {
     // The search field: [rule, field, rule]; then the spacing pass's blank row under the field, the
     // strip, and the blank row below the tabs before the settings list begins (the operator's
     // 2026-09-28 spacing directives 1 + 2).
-    assert_eq!(text[0], "\u{2500}".repeat(100));
-    assert!(text[1].starts_with(" >  Search settings"));
-    assert_eq!(text[2], "\u{2500}".repeat(100));
-    assert_eq!(text[3], "");
+    assert_eq!(text[0], "  Settings");
+    assert_eq!(text[1], "\u{2500}".repeat(100));
+    assert!(text[2].starts_with(" >  Search settings"));
+    assert_eq!(text[3], "\u{2500}".repeat(100));
+    assert_eq!(text[4], "");
     assert_eq!(
-        text[4],
+        text[5],
         "  1 General    2 Models    3 Display    4 Editor    5 Agents"
     );
-    assert_eq!(text[5], "");
-    assert!(text[6].starts_with("\u{203a} Auto-compact"));
+    assert_eq!(text[6], "");
+    assert!(text[7].starts_with("\u{203a} Auto-compact"));
 }
 
 #[test]
@@ -529,7 +547,7 @@ fn render_shows_value_and_selected_description() {
         .iter()
         .any(|row| row.contains("Automatically compact context when it gets too large")));
     assert!(text.iter().any(|row| {
-        row.contains("Type to search · Tab/1-5 tabs · ←/→/Enter/Space change · Esc close")
+        row == "  \u{2191}/\u{2193} navigate · \u{2190}/\u{2192} change · Tab/1-5 tabs · Enter select · Esc close"
     }));
     let selected = text
         .iter()
@@ -541,9 +559,10 @@ fn render_shows_value_and_selected_description() {
     // directive), and the hint row carries the description's two-space padding-x.
     let hint_index = text
         .iter()
-        .position(|row| row.starts_with("  Type to search"))
+        .position(|row| row.starts_with("  \u{2191}/\u{2193} navigate"))
         .expect("the hint row renders with its padding");
-    assert_eq!(text[hint_index - 1], "\u{2500}".repeat(100));
+    assert_eq!(text[hint_index - 1], "  enter sets auto-compact to false");
+    assert_eq!(text[hint_index - 2], "\u{2500}".repeat(100));
     let description_index = text
         .iter()
         .position(|row| row.starts_with("  Automatically compact"))
@@ -562,11 +581,11 @@ fn opening_into_a_setting_keeps_the_top_bar_and_the_padding() {
     // pin a).
     assert_eq!(text[0], "\u{2500}".repeat(100));
     // The name and description keep the list rows' padding-x (regression pin b).
-    assert_eq!(text[1], "  Thinking Level");
+    assert_eq!(text[1], "  Settings \u{203a} Thinking Level");
     assert!(text[3].starts_with("  Select reasoning depth"));
     assert!(text
         .iter()
-        .any(|row| row.starts_with("  Enter select · Esc back")));
+        .any(|row| row == "  \u{2191}/\u{2193} navigate · Enter select · Esc back"));
 }
 
 /// The search field takes the WHOLE key id (TS `Input.handleInput`, the
@@ -583,7 +602,7 @@ fn backspace_edits_the_search_query() {
     assert!(
         filtered
             .iter()
-            .any(|row| row.contains("No matching settings")),
+            .any(|row| row.contains("no match for \u{201c}zqx\u{201d}")),
         "the garbage query filters the list to the no-match row"
     );
     assert!(
@@ -732,4 +751,116 @@ fn threshold_control_retains_off_grid_values_and_selects_neighbouring_presets() 
             );
         }
     }
+}
+
+/// A query keeps the list at its unfiltered height: a query that keeps the first row (so the
+/// detail block below is the same) renders exactly as many rows as the empty query, and the
+/// strip shows each tab's match count.
+#[test]
+fn a_query_holds_the_list_height_and_counts_matches_per_tab() {
+    let mut menu = menu();
+    let before = render_text(&menu);
+    for key in ["a", "u", "t", "o"] {
+        menu.handle_key(key, &kb());
+    }
+    let after = render_text(&menu);
+    assert_eq!(after.len(), before.len(), "{after:#?}");
+    let strip = after
+        .iter()
+        .find(|row| row.contains("General"))
+        .expect("the strip renders");
+    assert_eq!(
+        strip.trim_end(),
+        "  1 General 2    2 Models 0    3 Display 1    4 Editor 1    5 Agents 0"
+    );
+}
+
+/// The whole panel holds still while searching: a match with a shorter description and a query
+/// that matches nothing render as many rows as the first match.
+#[test]
+fn a_query_holds_the_whole_panel_height() {
+    let heights: Vec<usize> = ["auto", "steer", "zzzz"]
+        .iter()
+        .map(|query| {
+            let mut menu = menu();
+            for character in query.chars() {
+                menu.handle_key(&character.to_string(), &kb());
+            }
+            render_text(&menu).len()
+        })
+        .collect();
+    assert_eq!(heights, vec![heights[0]; 3]);
+}
+
+/// A value changed from its default is tinted, Delete resets it to the default, and the hint row
+/// then says the change was saved and when it applies.
+#[test]
+fn delete_resets_a_changed_row_and_the_hint_says_saved() {
+    let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::Color256);
+    let mut values = SettingsCurrentValues::defaults();
+    values.quiet_startup = true;
+    let mut menu = SettingsMenu::new(settings_menu_rows(&values))
+        .with_defaults(&SettingsCurrentValues::defaults());
+    // General: autocompact, steering-mode, follow-up-mode, quiet-startup.
+    for _ in 0..3 {
+        menu.handle_key("down", &kb());
+    }
+    let row_colour = |menu: &SettingsMenu| {
+        menu.render(&theme, 100, &kb())
+            .into_iter()
+            .find(|line| line.iter().any(|span| span.content == "Quiet startup"))
+            .and_then(|line| {
+                line.into_iter()
+                    .find(|span| span.content == "Quiet startup")
+                    .map(|span| span.style.fg)
+            })
+            .expect("the row renders")
+    };
+    assert_eq!(row_colour(&menu), theme.fg_style(ThemeColor::Warning).fg);
+    assert_eq!(
+        menu.handle_key("delete", &kb()),
+        SettingsMenuAction::Reset {
+            id: "quiet-startup",
+            value: "false".to_string()
+        }
+    );
+    assert_ne!(row_colour(&menu), theme.fg_style(ThemeColor::Warning).fg);
+    let text = render_text(&menu);
+    assert!(
+        text.iter()
+            .any(|row| row.trim_start().starts_with("Saved \u{b7} applies now")),
+        "{text:#?}"
+    );
+    // A row already at its default ignores Delete.
+    assert_eq!(menu.handle_key("delete", &kb()), SettingsMenuAction::None);
+}
+
+/// A refused save puts the previous value back, drops the `Saved` notice, and shows the reason
+/// under the setting.
+#[test]
+fn a_refused_change_shows_its_reason_under_the_row() {
+    let mut menu = menu();
+    assert_eq!(
+        menu.handle_key("enter", &kb()),
+        SettingsMenuAction::Change {
+            id: "autocompact",
+            value: "false".to_string()
+        }
+    );
+    menu.refuse_last_change("settings file is locked by another process");
+    let text = render_text(&menu);
+    let row = text
+        .iter()
+        .find(|line| line.contains("Auto-compact") && !line.contains("threshold"))
+        .expect("the row renders");
+    assert!(
+        row.trim_end().ends_with("true"),
+        "the value is put back: {row}"
+    );
+    assert!(
+        text.iter()
+            .any(|line| line.trim() == "\u{2717} settings file is locked by another process"),
+        "{text:#?}"
+    );
+    assert!(!text.iter().any(|line| line.contains("Saved")), "{text:#?}");
 }

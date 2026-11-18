@@ -10,8 +10,8 @@ use crate::fuzzy::fuzzy_filter;
 use crate::hyperlinks::{osc8_open, OSC8_CLOSE};
 use crate::keybindings::KeybindingsManager;
 use crate::menu_panel::{
-    hint_row, key_hint, login_field_row, menu_row, no_match_row, scroll_row, scrub_controls,
-    search_field_lines, search_field_plain_row, MenuSegment,
+    login_field_row, menu_row, scroll_row, scrub_controls, search_field_lines,
+    search_field_plain_row, MenuSegment,
 };
 use crate::provider_auth::ProviderAuthOutcome;
 use crate::search_input::SearchInput;
@@ -606,7 +606,11 @@ impl AuthPanel {
                 }
             }
             PanelInput::Teams { picker, reply } => {
-                if kb.matches(key, "tui.select.cancel") {
+                // Esc clears a non-empty query first; the next Esc cancels the pick.
+                if kb.matches(key, "tui.select.cancel") && !picker.search.value().is_empty() {
+                    picker.search.prefill("");
+                    picker.refilter();
+                } else if kb.matches(key, "tui.select.cancel") {
                     if let Some(reply) = reply.take() {
                         let _ = reply.send(PrimeTeamPick::Cancelled);
                     }
@@ -632,6 +636,15 @@ impl AuthPanel {
         if answered {
             self.input = PanelInput::Working;
             self.notice = None;
+        }
+    }
+
+    /// The team picker's search query (empty for every other input).
+    #[must_use]
+    pub fn query(&self) -> &str {
+        match &self.input {
+            PanelInput::Teams { picker, .. } => picker.search.value(),
+            PanelInput::Working | PanelInput::Paste { .. } => "",
         }
     }
 

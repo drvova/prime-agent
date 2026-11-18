@@ -522,6 +522,69 @@ fn wrap_stress_megabyte_monoword_candidate_only() {
     assert_eq!(joined, token, "hard-broken rows round-trip");
 }
 
+/// Assistant replies band H1/H2: a `▌` edge, then the words on the selection band padded past
+/// them; H3 stays text-only, and the row count matches the banded rows.
+#[test]
+fn assistant_headings_sit_on_a_band() {
+    let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+    let style = MarkdownStyle::from_theme(&theme).for_replies(&theme);
+    let band = theme.bg_style(crate::theme::ThemeBg::SelectedBg);
+    let source = "## Root cause\n\n### Detail";
+    let lines = render_markdown(source, 40, &style);
+    let h2 = &lines[0];
+    assert_eq!(
+        (h2[0].content.as_str(), h2[0].style),
+        ("\u{258c}", style.heading)
+    );
+    let text: String = h2.iter().map(|s| s.content.as_str()).collect();
+    assert_eq!(text, "\u{258c} Root cause   ");
+    assert!(h2[1..].iter().all(|s| s.style.bg == band.bg), "{h2:?}");
+    assert!(
+        lines[2].iter().all(|s| s.style.bg != band.bg),
+        "H3 stays text-only: {:?}",
+        lines[2]
+    );
+    let cache = crate::markdown::MarkdownBlockCache::default();
+    assert_eq!(
+        geometry::markdown_row_count_tagged(source, 40, &style, "", &cache),
+        lines.len()
+    );
+}
+
+/// Assistant replies put fenced code on a slab: the indent, a `▌` edge, the language label
+/// first, every row padded to one rectangle on the slab; the row count matches the paint.
+#[test]
+fn assistant_code_sits_on_a_slab() {
+    let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+    let style = MarkdownStyle::from_theme(&theme).for_replies(&theme);
+    let slab = theme.bg_style(crate::theme::ThemeBg::ToolPanelBg);
+    let source = "```rust\nfn main() {}\nlet x = 1;\n```";
+    let lines = render_markdown(source, 60, &style);
+    let text: Vec<String> = lines
+        .iter()
+        .map(|l| l.iter().map(|s| s.content.as_str()).collect())
+        .collect();
+    assert_eq!(
+        text,
+        [
+            "  \u{258c} rust          ",
+            "  \u{258c} fn main() {}  ",
+            "  \u{258c} let x = 1;    "
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| l[2..].iter().all(|s| s.style.bg == slab.bg)),
+        "{lines:?}"
+    );
+    let cache = crate::markdown::MarkdownBlockCache::default();
+    assert_eq!(
+        geometry::markdown_row_count_tagged(source, 60, &style, "", &cache),
+        lines.len()
+    );
+}
+
 #[test]
 fn heading_and_paragraph() {
     let style = MarkdownStyle::default();

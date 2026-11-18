@@ -16,6 +16,10 @@ pub const HOST_REQUEST_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 pub const KERNEL_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_SNAPSHOT_DEBOUNCE_MS: u64 = 1_500;
 pub const SNAPSHOT_EXECUTION_TIMEOUT_MS: u64 = 5_000;
+/// How long the debounced auto-snapshot keeps giving way to user cells: once a debounced capture
+/// first yielded longer ago than this without a commit since, the next one runs to completion
+/// even when a cell arrives, so continuous cells cannot postpone crash durability forever.
+pub(crate) const SNAPSHOT_MAX_YIELD_MS: u64 = 30_000;
 /// Restore deserializes everything a snapshot serializes: bounded like the repair step.
 pub const RESTORE_EXECUTION_TIMEOUT_MS: u64 = 30_000;
 /// The provisioner's runtime bootstrap imports the runtime and skills in one

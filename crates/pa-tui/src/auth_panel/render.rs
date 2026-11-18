@@ -2,12 +2,14 @@
 //! OSC 8 wrap, the paste field, the team picker rows, and the auth-actions row the provider
 //! selector's API-key prompt reuses.
 
+use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
+
 use super::{
-    hint_row, key_hint, login_field_row, menu_row, no_match_row, osc8_open, scroll_row,
-    scrub_controls, search_field_lines, search_field_plain_row, AuthPanel, CopyStatus,
-    KeybindingsManager, Line, MenuSegment, Modifier, PanelInput, PanelSurface, PastePromptTone,
-    PasteStyle, PickerSegment, Span, Theme, ThemeColor, BROWSER_DEFAULT_INSTRUCTIONS, OSC8_CLOSE,
-    PASTE_PLACEHOLDER, PREFERRED_VISIBLE_TEAMS, TEAM_SEARCH_PLACEHOLDER, TOKEN_PLACEHOLDER,
+    login_field_row, menu_row, osc8_open, scroll_row, scrub_controls, search_field_lines,
+    search_field_plain_row, AuthPanel, CopyStatus, KeybindingsManager, Line, MenuSegment, Modifier,
+    PanelInput, PanelSurface, PastePromptTone, PasteStyle, PickerSegment, Span, Theme, ThemeColor,
+    BROWSER_DEFAULT_INSTRUCTIONS, OSC8_CLOSE, PASTE_PLACEHOLDER, PREFERRED_VISIBLE_TEAMS,
+    TEAM_SEARCH_PLACEHOLDER, TOKEN_PLACEHOLDER,
 };
 
 impl AuthPanel {
@@ -21,20 +23,20 @@ impl AuthPanel {
             lines.push(vec![
                 theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width))
             ]);
-            lines.push(content_row(theme, width, ThemeColor::Muted, &self.title));
+            lines.push(title_row(theme, width, &self.title));
             if let Some(subtitle) = &self.subtitle {
                 lines.push(content_row(theme, width, ThemeColor::Muted, subtitle));
             }
         }
         // The team picker is its own panel: the rule, the title, the subtitle, the bordered
-        // field, the rows (no leading content blank, no auth-actions row, no nav hint).
+        // field, the rows, and the shared footer (no leading content blank, no auth-actions row).
         if let PanelInput::Teams { picker, .. } = &mut self.input {
             lines.append(&mut search_field_lines(
                 theme,
                 width,
                 picker.search.value(),
                 picker.search.cursor(),
-                false,
+                /*focused*/ true,
                 TEAM_SEARCH_PLACEHOLDER,
             ));
             let count = picker.filtered.len();
@@ -69,8 +71,26 @@ impl AuthPanel {
                 lines.push(scroll_row(theme, width, picker.selected + 1, count));
             }
             if count == 0 {
-                lines.push(no_match_row(theme, width, "No matching teams"));
+                lines.push(crate::menu_chrome::empty_state_row(
+                    theme,
+                    width,
+                    kb,
+                    picker.search.value(),
+                    "No teams available",
+                ));
             }
+            lines.push(
+                Footer::new()
+                    .bound(
+                        kb,
+                        &["tui.select.up", "tui.select.down"],
+                        "navigate",
+                        HintRank::Useful,
+                    )
+                    .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                    .esc(kb, EscVerb::Close)
+                    .line(theme, width),
+            );
             return lines;
         }
         if !self.content_open() {
@@ -212,15 +232,12 @@ impl AuthPanel {
                 if self.auth_url.is_some() {
                     lines.push(Vec::new());
                 } else {
-                    let hints = [
-                        key_hint(kb, &["tui.select.confirm"], "submit"),
-                        key_hint(kb, &["tui.select.cancel"], "cancel"),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<String>>()
-                    .join("  ");
-                    lines.push(hint_row(theme, width, &hints));
+                    lines.push(
+                        Footer::new()
+                            .bound(kb, &["tui.select.confirm"], "submit", HintRank::Core)
+                            .esc(kb, EscVerb::Close)
+                            .line(theme, width),
+                    );
                 }
             }
             PanelInput::Teams { .. } => unreachable!("the team picker returned above"),
@@ -240,14 +257,13 @@ impl AuthPanel {
         // The URL block's actions row rides last — the copy-key hint with the copy status,
         // the submit hint while the paste field is mounted, and the cancel hint.
         if self.auth_url.is_some() {
-            let actions = auth_actions_row(
+            lines.push(auth_actions_row(
                 theme,
-                usize::MAX,
+                width,
                 kb,
                 matches!(self.input, PanelInput::Paste { .. }),
                 self.copy_status,
-            );
-            lines.extend(crate::width::wrap_line(&actions, width));
+            ));
         }
         lines
     }
@@ -271,12 +287,14 @@ pub(crate) fn auth_actions_row(
     input_visible: bool,
     copy_state: Option<CopyStatus>,
 ) -> Line {
-    let mut row: Line = vec![Span::raw(" ".to_string())];
-    let mut parts: Vec<Line> = Vec::new();
+    let mut footer = Footer::new();
     if input_visible {
-        if let Some(hint) = key_hint_row(theme, keybindings, "tui.select.confirm", "submit") {
-            parts.push(hint);
-        }
+        footer = footer.bound(
+            keybindings,
+            &["tui.select.confirm"],
+            "submit",
+            HintRank::Core,
+        );
     }
     if let Some(state) = copy_state {
         let tone = match state {
@@ -289,48 +307,28 @@ pub(crate) fn auth_actions_row(
             CopyStatus::Requested => "Sign-in link sent to terminal clipboard (unconfirmed)",
             CopyStatus::Failed => "Failed to copy sign-in link",
         };
-        parts.push(vec![theme.fg_span(tone, text.to_string())]);
+        footer = footer.notice(tone, text);
     }
     // The copy keys (the plain text-entry keys drop out while the field is visible — a typed
     // key is field input), the description turning to "retry" after a failed copy.
     let configured_copy_keys = keybindings.get_keys("app.clipboard.copyLoginUrl");
-    let copy_keys = if input_visible {
+    let copy_keys: Vec<&String> = if input_visible {
         configured_copy_keys
             .iter()
             .filter(|key| !is_text_entry_keybinding(key))
-            .cloned()
-            .collect::<Vec<_>>()
+            .collect()
     } else {
-        configured_copy_keys
-            .iter()
-            .take(1)
-            .cloned()
-            .collect::<Vec<_>>()
+        configured_copy_keys.iter().take(1).collect()
     };
-    if !copy_keys.is_empty() {
-        let action = if copy_state == Some(CopyStatus::Failed) {
-            "retry"
-        } else {
-            "copy"
-        };
-        parts.push(vec![
-            Span::styled(
-                crate::keybindings::format_key_text(&copy_keys.join("/")),
-                theme.fg_style(ThemeColor::Dim),
-            ),
-            Span::styled(format!(" {action}"), theme.fg_style(ThemeColor::Muted)),
-        ]);
-    }
-    if let Some(hint) = key_hint_row(theme, keybindings, "tui.select.cancel", "cancel") {
-        parts.push(hint);
-    }
-    for (index, part) in parts.into_iter().enumerate() {
-        if index > 0 {
-            row.push(Span::raw("  ".to_string()));
-        }
-        row.extend(part);
-    }
-    crate::width::truncate_line(&row, width, "")
+    let action = if copy_state == Some(CopyStatus::Failed) {
+        "retry"
+    } else {
+        "copy"
+    };
+    footer
+        .keys(copy_keys, action, HintRank::Useful)
+        .esc(keybindings, EscVerb::Close)
+        .line(theme, width)
 }
 
 /// One content row at the panel's single-column indent: `" {text}"` in `tone`, truncated to
@@ -344,24 +342,6 @@ fn content_row(theme: &Theme, width: usize, tone: ThemeColor, text: &str) -> Lin
         width,
         "",
     )
-}
-
-/// The dim key label over the muted ` {action}` — one hint part of the auth-actions row. An
-/// unbound action is omitted: the hint never advertises a key the surface does not handle.
-fn key_hint_row(
-    theme: &Theme,
-    keybindings: &KeybindingsManager,
-    binding: &str,
-    action: &str,
-) -> Option<Line> {
-    let label = keybindings.key_text(binding);
-    if label.is_empty() {
-        return None;
-    }
-    Some(vec![
-        Span::styled(label, theme.fg_style(ThemeColor::Dim)),
-        Span::styled(format!(" {action}"), theme.fg_style(ThemeColor::Muted)),
-    ])
 }
 
 /// TS `addInstructions`' code arm (`/^(?:Code|Enter code):\s*(.+)$/i`): the verification

@@ -146,6 +146,15 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
             tui_options.onboarding.is_some(),
             continue_view.is_some(),
         );
+        // Bare `--resume` and `--continue` are the resume picker: the view opens on the
+        // launch folder's sessions (the folder toggle widens it); `prime-agent agents` stays
+        // the global view.
+        let folder_scope = (options.session.resume_bare || continue_view.is_some()).then(|| {
+            pa_tui::agents_view::FolderScope {
+                folder: tui_options.cwd.clone(),
+                filter: pa_tui::agents_view::FolderFilter::CurrentFolder,
+            }
+        });
         // The interactive dispatch, one future so EVERY exit — the view
         // loop's, the session run's, a failed open's error return —
         // passes the quick-exit join below.
@@ -154,7 +163,7 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
                 let (anchor, notice) = continue_view.map_or((None, None), |view| {
                     (Some(view.session_id), Some(view.notice))
                 });
-                run_agents_view_flow(tui_options, anchor, notice, None).await
+                run_agents_view_flow(tui_options, anchor, notice, folder_scope, None).await
             } else {
                 let outcome =
                     pa_tui::interactive::run_interactive(tui_options.clone(), UiMode::Terminal)
@@ -170,7 +179,7 @@ pub fn run_interactive_mode(options: &RunOptions) -> Result<i32> {
                     ..tui_options
                 };
                 let entry = (base.clone(), outcome);
-                run_agents_view_flow(base, None, None, Some(entry)).await
+                run_agents_view_flow(base, None, None, None, Some(entry)).await
             }
         };
         let result = run.await;
@@ -238,10 +247,14 @@ fn print_resume_hint(hint: Option<&str>) {
 /// continues its handoff before the first view run. A session a run requests
 /// (`/resume <selector>`, the factory page's state open) runs next, and leaving
 /// it reopens the requesting session's origin page when the request carried one.
+/// `folder_scope` opens the first view as the resume picker over that folder; a later
+/// resume entry (bare `/resume`) re-opens it over the requesting session's folder, and every
+/// other return keeps the list the session came from (its toggle state included).
 async fn run_agents_view_flow(
     mut base: InteractiveOptions,
     anchor: Option<String>,
     notice: Option<String>,
+    mut folder_scope: Option<pa_tui::agents_view::FolderScope>,
     entry: Option<(InteractiveOptions, InteractiveOutcome)>,
 ) -> Result<()> {
     let mut anchor = anchor;
@@ -272,6 +285,16 @@ async fn run_agents_view_flow(
             }
             if let Some(notice) = &outcome.agents_view_notice {
                 status_message = Some(notice.clone());
+            }
+            // A resume entry opens a fresh picker over the session's own folder.
+            if let (true, Some(folder)) = (
+                outcome.return_to_agents_view,
+                outcome.agents_view_folder.clone(),
+            ) {
+                folder_scope = Some(pa_tui::agents_view::FolderScope {
+                    folder,
+                    filter: pa_tui::agents_view::FolderFilter::CurrentFolder,
+                });
             }
             if !outcome.return_to_agents_view && outcome.selection_request.is_none() {
                 print_resume_hint(outcome.resume_hint.as_deref());
@@ -319,6 +342,7 @@ async fn run_agents_view_flow(
             version: base.version.clone(),
             anchor_session_id: anchor.clone(),
             scope: frames.last().map(|(scope, _)| scope.clone()),
+            folder_scope: folder_scope.clone(),
             query: query.clone(),
             expanded_ancestors: expanded_ancestors.clone(),
             selected_row_identity: selected_row_identity.clone(),
@@ -340,13 +364,37 @@ async fn run_agents_view_flow(
         )
         .await?;
         let mut view = view_run.outcome;
+        // `tui resume picker closed`: one per unscoped picker run (a subtree-scoped run lists
+        // one tree, with no folder toggle).
+        let picker_report = view
+            .folder_scope
+            .as_ref()
+            .filter(|_| frames.is_empty())
+            .map(|scope| {
+                let scope = match scope.filter {
+                    pa_tui::agents_view::FolderFilter::CurrentFolder => "current_folder",
+                    pa_tui::agents_view::FolderFilter::AllFolders => "all_folders",
+                };
+                let outcome = if view.selection.is_some() {
+                    "opened"
+                } else {
+                    "exited"
+                };
+                (scope, view.folder_toggles, outcome)
+            });
+        folder_scope = view.folder_scope.take();
         let actions_report = {
             let telemetry = base.telemetry.clone();
             let actions = std::mem::take(&mut view.actions);
             async move {
-                for action in actions {
-                    if let Some(telemetry) = telemetry.as_ref() {
+                if let Some(telemetry) = telemetry.as_ref() {
+                    for action in actions {
                         telemetry.agents_view_action(action).await;
+                    }
+                    if let Some((scope, toggles, outcome)) = picker_report {
+                        telemetry
+                            .resume_picker_closed(scope, toggles, outcome)
+                            .await;
                     }
                 }
             }

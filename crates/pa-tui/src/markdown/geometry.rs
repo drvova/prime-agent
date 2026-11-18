@@ -1,7 +1,7 @@
 //! Geometry uses the same wrapping traversal as painted Markdown rows.
 use super::{
-    block_cache_key, code_rows, heading_spans, normalize_source, parse_blocks, render_inline,
-    wrapped_span_count, Block, BlockKind, MarkdownBlockCache, MarkdownStyle,
+    block_cache_key, code_rows, heading_spans, render_inline, stream_blocks, wrapped_span_count,
+    AsBlockKey, Block, BlockKind, MarkdownBlockCache, MarkdownStyle,
 };
 use crate::{Line, Span};
 use ratatui::style::Style;
@@ -82,26 +82,24 @@ pub(crate) fn markdown_row_count_tagged(
     if text.trim().is_empty() {
         return 0;
     }
-    let normalized = normalize_source(text);
-    let blocks = parse_blocks(&normalized);
+    let (frozen, tail) = stream_blocks(text, style_tag, cache.1.as_ref());
+    let block_count = frozen.len() + tail.len();
+    let block_at = |index: usize| -> &Block {
+        frozen
+            .get(index)
+            .unwrap_or_else(|| &tail[index - frozen.len()])
+    };
     let width = width.max(1);
     let mut total = 0;
-    for (index, block) in blocks.iter().enumerate() {
-        let next = blocks.get(index + 1);
+    for index in 0..block_count {
+        let block = block_at(index);
+        let next = (index + 1 < block_count).then(|| block_at(index + 1));
         total += usize::from(block.sep_blank);
-        // The key build clones the block's lines, so an empty cache skips it.
+        // An empty cache skips the lookup.
         let cached = (!cache.0.is_empty())
-            .then(|| {
-                block_cache_key(
-                    style_tag,
-                    &blocks,
-                    index,
-                    width,
-                    style.link_base_url.as_ref(),
-                )
-            })
+            .then(|| block_cache_key(style_tag, block, next, width, style.link_base_url.as_ref()))
             .flatten()
-            .and_then(|key| cache.0.get(&key));
+            .and_then(|key| cache.0.get(&key as &dyn AsBlockKey));
         if let Some(rows) = cached {
             total += rows.len();
             continue;

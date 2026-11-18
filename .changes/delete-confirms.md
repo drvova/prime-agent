@@ -1,0 +1,1 @@
+- The agents view's Ctrl+X confirm now names what it will stop or delete and what it leaves alone (for example `Delete "notes" and its transcript? Project files stay.`), answers `y` or `n`, and treats Enter as cancel.

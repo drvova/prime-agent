@@ -1,0 +1,1 @@
+- The terminal window title now shows the session state: `<session> · prime` when idle, the working spinner in front while a turn runs, and a leading `!` when a confirm is waiting for you. The previous title comes back when Prime Agent exits.

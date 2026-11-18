@@ -80,6 +80,7 @@ fn kitty_child_mode() {
                 version: options.version.clone(),
                 anchor_session_id: anchor,
                 scope: None,
+                folder_scope: None,
                 query: None,
                 expanded_ancestors: Vec::new(),
                 selected_row_identity: None,

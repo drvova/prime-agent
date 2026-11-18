@@ -17,13 +17,17 @@ use super::{
 
 // The concern children (the flows + the shared record stay in the
 // composition root).
+mod bytecode;
 mod layout;
 mod probe;
 mod runtime_source;
 mod skills;
+mod tree_identity;
 mod uv;
 mod version;
 
+pub(crate) use bytecode::compile_venv_bytecode;
+pub use bytecode::KernelBytecode;
 use layout::home_dir;
 pub(crate) use layout::{expand_home, resolve_writable_kernel_venv_dir};
 pub use layout::{kernel_venv_dir, kernel_venv_python};
@@ -46,6 +50,9 @@ use skills::{
     file_content_hash, read_python_skill_dependency_names, read_python_skill_project_name,
 };
 pub(crate) use skills::{normalize_python_skills, BootstrapPythonSkill};
+#[cfg(test)]
+use tree_identity::content_reads_for_tests;
+pub(in crate::kernel::bootstrap) use tree_identity::TreeIdentityCache;
 pub(crate) use uv::ensure_uv;
 #[cfg(test)]
 use uv::windows_executable_candidates;

@@ -147,6 +147,27 @@ fn program_key_shows_and_hides_the_spawn_program() {
     );
 }
 
+/// The rename field opens with the current name selected: the first typed key replaces it
+/// whole (the composer answers the question in place), and an arrow keeps it for editing.
+#[test]
+fn the_rename_prefill_is_selected_so_typing_replaces_it() {
+    let mut mode = mode_with_parent_and_child();
+    mode.handle_key("ctrl+r");
+    mode.handle_key("x");
+    let Composer::Rename(rename) = &mode.composer else {
+        panic!("the composer stayed in rename mode");
+    };
+    assert_eq!(rename.editor.get_text(), "x");
+    mode.handle_key("escape");
+    mode.handle_key("ctrl+r");
+    mode.handle_key("right");
+    mode.handle_key("x");
+    let Composer::Rename(rename) = &mode.composer else {
+        panic!("the composer stayed in rename mode");
+    };
+    assert_eq!(rename.editor.get_text(), "p namex");
+}
+
 /// TS `enterRenameMode`/`confirmRename` (the `app.agents.rename` key,
 /// default ctrl+r): the composer owns the prompt and the key routing —
 /// the header and the save/cancel hint render, the prefill is the
@@ -166,14 +187,14 @@ fn rename_key_composes_edits_and_dispatches() {
         "p name",
         "the prefill is the session name"
     );
-    // The rendered frame: the warning header rides INSIDE the box; the hint:
-    // save/cancel.
+    // The rendered frame: the ` Name ` chip labels the field INSIDE the box; the hint:
+    // rename/cancel.
     let (frame, _) = mode.render_frame(120, 20);
     let rendered: Vec<String> = frame.iter().map(flat).collect();
     let header_row = rendered
         .iter()
-        .position(|row| row.starts_with("  Rename agent session"))
-        .expect("the rename header rendered with TS's two-space indent");
+        .position(|row| row.starts_with("   Name   agent session"))
+        .expect("the Name chip rendered with the box's two-space indent");
     assert!(
         rendered[header_row - 1].trim().is_empty(),
         "the box's top bg row rides above the header"
@@ -185,7 +206,7 @@ fn rename_key_composes_edits_and_dispatches() {
     );
     assert_eq!(
         flat(&mode.render_hints(120, None)),
-        "Enter save   Esc/Ctrl+C cancel"
+        "  Enter rename · Esc back"
     );
     mode.handle_key("ctrl+u");
     let (frame, _) = mode.render_frame(120, 20);

@@ -29,14 +29,15 @@ pub enum BashBang {
 
 /// The prompt prefix the editor renders in place of a leading `!`/`!!`, and how many
 /// characters of the typed line stay hidden behind it (the leading whitespace plus the
-/// prefix, one wider when the user typed its trailing space).
+/// prefix, one wider when the user typed its trailing space). Both prefixes are as wide as the
+/// default `> ` prompt, so entering bash mode never shifts the draft: the mode shows by colour.
 #[must_use]
 pub fn bash_prompt_info(line: &str) -> Option<(&'static str, usize)> {
     let trimmed = line.trim_start();
     let leading = line.chars().count() - trimmed.chars().count();
     if trimmed.starts_with("!!") {
         let hidden = leading + if trimmed.starts_with("!! ") { 3 } else { 2 };
-        Some(("!! ", hidden))
+        Some(("!!", hidden))
     } else if trimmed.starts_with('!') {
         let hidden = leading + if trimmed.starts_with("! ") { 2 } else { 1 };
         Some(("! ", hidden))
@@ -196,9 +197,9 @@ mod tests {
     #[test]
     fn bash_prompt_info_matches_the_ts_ladder() {
         assert_eq!(bash_prompt_info("!echo hi"), Some(("! ", 1)));
-        assert_eq!(bash_prompt_info("!!echo hi"), Some(("!! ", 2)));
+        assert_eq!(bash_prompt_info("!!echo hi"), Some(("!!", 2)));
         assert_eq!(bash_prompt_info("! echo hi"), Some(("! ", 2)));
-        assert_eq!(bash_prompt_info("!! echo hi"), Some(("!! ", 3)));
+        assert_eq!(bash_prompt_info("!! echo hi"), Some(("!!", 3)));
         assert_eq!(bash_prompt_info("  !echo"), Some(("! ", 3)));
         assert_eq!(bash_prompt_info("!"), Some(("! ", 1)));
         assert_eq!(bash_prompt_info("echo hi"), None);

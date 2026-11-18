@@ -288,7 +288,17 @@ impl ModelPicker {
         if kb.matches(key, "tui.select.confirm") {
             return self.confirm();
         }
-        if kb.matches(key, "tui.select.cancel") || self.should_treat_as_back(kb, key) {
+        if kb.matches(key, "tui.select.cancel") {
+            // Esc clears a non-empty query first; the next Esc closes.
+            if self.search.value().is_empty() {
+                return ModelPickerAction::Cancel;
+            }
+            self.search.prefill("");
+            self.navigated_into_list = false;
+            self.filter_models("");
+            return ModelPickerAction::None;
+        }
+        if self.should_treat_as_back(kb, key) {
             return ModelPickerAction::Cancel;
         }
         let previous = self.search.value().to_string();
@@ -314,23 +324,30 @@ impl ModelPicker {
     /// 2026-09-24 spacing directive) rides the reserved rows: the list shrinks first on a
     /// height-limited terminal, never the frame's own head.
     pub(crate) fn list_layout(&self) -> usize {
+        self.list_layout_over(self.filtered.len())
+    }
+
+    /// The list layout over `rows` candidate rows: the filtered list for the frame, the whole
+    /// active list for the height a search holds.
+    pub(crate) fn list_layout_over(&self, rows: usize) -> usize {
         let detail_rows = self.detail_rows();
         crate::menu_panel::menu_list_layout(
             Some(self.viewport_rows),
             8,
-            self.filtered.len(),
-            // The frame's fixed rows plus the scope row when the session has
-            // scoped models.
-            4 + usize::from(self.has_scoped_models()) + detail_rows,
-            1,
+            rows,
+            // The frame's fixed rows (the title, the search field, the Enter line, the footer,
+            // the trailing blank) plus the scope row when the session has scoped models.
+            6 + usize::from(self.has_scoped_models()) + detail_rows,
+            // The scrollbar rides the rows' right edge, so overflow costs no row.
+            0,
         )
     }
 
     pub(crate) fn detail_rows(&self) -> usize {
         let detail_rows = if self.render_width >= 58 { 4 } else { 5 };
-        // The fixed floor is the search field (3), the scroll row (1), the hint (1), and the
-        // trailing blank (1): the detail block needs that plus its own rows to render at all.
-        if self.viewport_rows >= 6 + detail_rows {
+        // The fixed floor is the search field (3), the hint (1), and the trailing blank (1): the
+        // detail block needs that plus its own rows to render at all.
+        if self.viewport_rows >= 5 + detail_rows {
             detail_rows
         } else {
             0

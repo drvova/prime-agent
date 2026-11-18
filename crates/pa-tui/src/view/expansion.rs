@@ -99,16 +99,16 @@ pub(super) mod tests {
         view.push_entry(finished_tool_card("c0", "alpha"));
         view.push_entry(finished_tool_card("c1", "beta"));
         assert_eq!(view.detail, Detail::Overview);
-        // The click toggles card 0 alone: its first output lines render,
+        // The click toggles card 0 alone: its windowed middle lines render,
         // card 1's stay folded.
         view.toggle_card_expansion(0);
         let toggled = transcript_text(&mut view);
         assert!(
-            toggled.contains("alpha 1"),
+            toggled.contains("alpha 4"),
             "the clicked card's own output expanded: {toggled}"
         );
         assert!(
-            !toggled.contains("beta 1"),
+            !toggled.contains("beta 4"),
             "the other card stays collapsed: {toggled}"
         );
         // The cycle resets every card to each new level: `details` keeps
@@ -117,20 +117,20 @@ pub(super) mod tests {
         let at_details = transcript_text(&mut view);
         assert_eq!(view.detail, Detail::Details);
         assert!(
-            !at_details.contains("alpha 1"),
+            !at_details.contains("alpha 4"),
             "the cycle reset the toggled card: {at_details}"
         );
         view.cycle_detail();
         let at_all = transcript_text(&mut view);
         assert!(
-            at_all.contains("alpha 1") && at_all.contains("beta 1"),
+            at_all.contains("alpha 4") && at_all.contains("beta 4"),
             "the `all` level expands every card: {at_all}"
         );
         view.cycle_detail();
         let collapsed = transcript_text(&mut view);
         assert_eq!(view.detail, Detail::Overview);
         assert!(
-            !collapsed.contains("alpha 1"),
+            !collapsed.contains("alpha 4"),
             "no stale flipped rows survive the cycle: {collapsed}"
         );
     }

@@ -98,6 +98,7 @@ mod command;
 pub mod framing;
 pub mod herdr_env;
 pub mod launch_env;
+pub mod message_delta;
 mod outbound;
 mod plane;
 pub mod update_flow;

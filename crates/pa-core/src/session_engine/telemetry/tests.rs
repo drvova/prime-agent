@@ -536,6 +536,73 @@ async fn session_counters_ride_session_ended() {
     assert_eq!(ended["kernel_bootstrap_failed_count"], serde_json::json!(1));
     assert_eq!(ended["kernel_bootstrap_max_ms"], serde_json::json!(1_200));
     assert_eq!(ended["feature_goal_completed_count"], serde_json::json!(1));
+    assert!(
+        ended.get("web_search_count").is_none(),
+        "a session that never searched carries no web search keys"
+    );
+}
+
+/// Native web searches fold into `agent session ended`: counts, the
+/// fallback and keyless shares, results, and the slowest latency; the
+/// query and the provider never ride.
+#[tokio::test]
+async fn web_searches_fold_into_session_ended_without_the_query() {
+    use crate::web_search::{ProviderFailure, ProviderId, SearchError, SearchReport};
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    let source = crate::web_search::SearchSource {
+        title: "private title".to_string(),
+        url: "https://private.example/".to_string(),
+        snippet: None,
+        published_date: None,
+        author: None,
+    };
+    let failure = ProviderFailure {
+        provider: ProviderId::Serper,
+        reason: "401".to_string(),
+        status: Some(401),
+    };
+    counters.note_web_search(&Ok(SearchReport {
+        provider: ProviderId::Duckduckgo,
+        response: crate::web_search::SearchResponse {
+            sources: vec![source.clone(), source],
+            ..Default::default()
+        },
+        failures: vec![failure.clone()],
+        notes: Vec::new(),
+        elapsed: std::time::Duration::from_millis(900),
+    }));
+    counters.note_web_search(&Err(SearchError {
+        message: "private failure".to_string(),
+        failures: vec![failure],
+        elapsed: std::time::Duration::from_millis(2_500),
+    }));
+    telemetry.end().await.unwrap();
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    let web_search: serde_json::Map<String, serde_json::Value> = ended
+        .iter()
+        .filter(|(key, _)| key.starts_with("web_search"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(web_search),
+        serde_json::json!({
+            "web_search_count": 2,
+            "web_search_failed_count": 1,
+            "web_search_fallback_count": 1,
+            "web_search_keyless_count": 1,
+            "web_search_result_count": 2,
+            "web_search_max_ms": 2_500,
+        })
+    );
+    let all = serde_json::to_string(&fixture.mock.events()).unwrap();
+    assert!(!all.contains("private"));
 }
 
 /// `build_client` reuses the installation id a TS install wrote to

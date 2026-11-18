@@ -111,19 +111,66 @@ fn the_delete_confirm_hint_and_the_cleared_arm() {
         .iter()
         .map(|span| span.content.as_str())
         .collect::<String>();
-    assert!(
-        hint.contains("again to stop"),
-        "the confirm hint row: {hint}"
-    );
-    assert!(
-        hint.contains("again to stop"),
-        "the live row reads stop: {hint}"
+    // The question names the subagent and what stays; the keys say y confirms, n cancels.
+    assert_eq!(
+        hint,
+        "Stop subagent \"worker one\"? Its parent keeps running.  y stop \u{b7} n cancel"
     );
     // A moved selection never executes the armed row: the arm dies with the key that moved the
     // selection, and no dispatch ever rode along.
     mode.handle_key("down");
     assert!(mode.pending_delete.is_none(), "the arm dies with the move");
     assert!(mode.pending_delete_action.is_none());
+}
+
+/// The armed confirm defaults to Cancel: `n` and Enter cancel without a dispatch (Enter never
+/// opens the row either), and `y` confirms like the second ctrl+x.
+#[test]
+fn the_armed_confirm_answers_y_and_n_and_enter_cancels() {
+    let mut mode = mode_with_parent_and_child();
+    let parent_row = mode
+        .rows
+        .iter()
+        .find(|row| row.kind == RowKind::Agent)
+        .expect("the parent row")
+        .clone();
+    mode.toggle_subagent_list(&parent_row);
+    let child = mode
+        .rows
+        .iter()
+        .position(|row| row.summary.get("rlmChildId").is_some())
+        .expect("the child row");
+    mode.selected = child;
+    for cancel in ["n", "enter"] {
+        mode.handle_key("ctrl+x");
+        mode.handle_key(cancel);
+        assert_eq!(
+            (
+                mode.pending_delete.is_none(),
+                mode.pending_delete_action.is_none(),
+                mode.selected,
+                mode.running,
+            ),
+            (true, true, child, true),
+            "{cancel} cancels in place"
+        );
+    }
+    mode.handle_key("ctrl+x");
+    // A narrow row shortens the question, never the answer keys.
+    let hint = mode
+        .render_hints(44, None)
+        .iter()
+        .map(|span| span.content.as_str())
+        .collect::<String>();
+    assert_eq!(
+        hint,
+        "Stop subagent \"worker on\u{2026}  y stop \u{b7} n cancel"
+    );
+    mode.handle_key("y");
+    assert!(matches!(
+        mode.take_delete_action(),
+        Some(DeleteAction::StopSubagent { .. })
+    ));
 }
 
 /// A `success` response whose own outcome field says nothing happened (`cancelled: false`,
@@ -260,9 +307,9 @@ fn the_confirm_hint_rides_the_current_live_work() {
         .iter()
         .map(|span| span.content.as_str())
         .collect::<String>();
-    assert!(
-        hint.contains("again to stop"),
-        "the running row's confirm reads stop: {hint}"
+    assert_eq!(
+        hint,
+        "Stop subagent \"worker one\"? Its parent keeps running.  y stop \u{b7} n cancel"
     );
     mode.roster[1]["status"] = serde_json::json!("idle");
     mode.rebuild_rows();
@@ -271,9 +318,9 @@ fn the_confirm_hint_rides_the_current_live_work() {
         .iter()
         .map(|span| span.content.as_str())
         .collect::<String>();
-    assert!(
-        hint.contains("again to delete"),
-        "the settled row's confirm reads delete: {hint}"
+    assert_eq!(
+        hint,
+        "Delete subagent \"worker one\"? Its parent session stays.  y delete \u{b7} n cancel"
     );
 }
 

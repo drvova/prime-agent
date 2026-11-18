@@ -1,0 +1,1 @@
+- Ctrl+C on a non-empty composer while nothing is running now clears the draft instead of arming the exit (mid-turn it still interrupts and keeps the text), and Up on the empty composer brings that exact draft back, pastes included, before the earlier prompts.

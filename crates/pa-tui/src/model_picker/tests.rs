@@ -241,11 +241,14 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
 
 /// The frame matches the TS inline menu panel row for row (the f17 model-selector capture
 /// geometry): bordered search field, `›` rows with the effort cluster centered (squares at column
-/// 54, label at 62), trailing flush right, scroll indicator, price detail, key hint.
+/// 54, label at 62), trailing flush right, a right-edge scrollbar (9 models in 8 rows: a 7-row `█`
+/// thumb over a `│` track), price detail, key hint.
 #[test]
 fn renders_the_ts_inline_panel_shape() {
     let mut picker = ModelPicker::new(picker_options(battery_catalog()));
     let rows = frame_text(&mut picker);
+    assert_eq!(rows[0], "  Model", "the shared title row opens the frame");
+    let rows = rows[1..].to_vec();
     let border = "\u{2500}".repeat(120);
     assert_eq!(rows[0], border, "top rule");
     assert_eq!(rows[2], border, "bottom rule");
@@ -256,8 +259,8 @@ fn renders_the_ts_inline_panel_shape() {
     assert_eq!(
         rows[3],
         format!(
-            "\u{203a} Mock 1{}current \u{b7} prime-inference",
-            " ".repeat(87)
+            "\u{203a} Mock 1{}current \u{b7} prime-inference \u{2588}",
+            " ".repeat(85)
         )
     );
     // The effort cluster: name cell (17), centered gap (33), arrow slots,
@@ -266,9 +269,9 @@ fn renders_the_ts_inline_panel_shape() {
         let name_pad = " ".repeat(17 - name.chars().count());
         let label_pad = " ".repeat(6 - label.chars().count());
         format!(
-            "  {name}{name_pad}{}  {squares}   {label}{label_pad}{}prime-inference",
+            "  {name}{name_pad}{}  {squares}   {label}{label_pad}{}prime-inference \u{2588}",
             " ".repeat(33),
-            " ".repeat(37),
+            " ".repeat(35),
         )
     };
     assert_eq!(
@@ -291,10 +294,17 @@ fn renders_the_ts_inline_panel_shape() {
             "medium"
         )
     );
-    assert_eq!(rows[11], "  (1/9)");
-    assert_eq!(rows[12], "");
+    assert!(
+        rows[10].ends_with("\u{2502}"),
+        "the track below the thumb: {:?}",
+        rows[10]
+    );
     assert_eq!(
-        rows[13],
+        rows[11], "",
+        "no `(n/m)` row: the scrollbar marks the overflow"
+    );
+    assert_eq!(
+        rows[12],
         format!(
             " Input{}Cached input{}Output {}$ / 1M tokens",
             " ".repeat(34 - 5),
@@ -303,13 +313,14 @@ fn renders_the_ts_inline_panel_shape() {
         )
     );
     assert_eq!(
-        rows[14],
+        rows[13],
         format!(" $0{}$0{}$0", " ".repeat(32), " ".repeat(32))
     );
-    assert_eq!(rows[15], "");
+    assert_eq!(rows[14], "");
+    assert_eq!(rows[15], "  enter switches to Mock 1", "the Enter line");
     assert_eq!(
         rows[16],
-        " \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
     );
 
     assert_eq!(rows.len(), 18, "the frame ends on the blank: {rows:?}");
@@ -585,8 +596,8 @@ fn an_empty_catalog_opens_the_empty_panel() {
     // renders the bordered field and the no-match row.
     let ModelCommandOutcome::Open(mut picker) = ModelPicker::open(picker_options(Vec::new()), "");
     let rows = frame_text(&mut picker);
-    assert_eq!(rows[1], " >  Search models");
-    assert!(rows.iter().any(|row| row == "  No matching models"));
+    assert_eq!(rows[2], " >  Search models");
+    assert!(rows.iter().any(|row| row == "  No models available"));
 }
 
 #[test]
@@ -601,7 +612,9 @@ fn a_query_with_no_matches_renders_the_no_matching_row() {
     let mut picker = ModelPicker::new(picker_options(battery_catalog()));
     picker.set_query("zzz-no-match");
     let rows = frame_text(&mut picker);
-    assert!(rows.iter().any(|row| row == "  No matching models"));
+    assert!(rows
+        .iter()
+        .any(|row| row == "  no match for \u{201c}zzz-no-match\u{201d} \u{b7} esc clears"));
 }
 
 #[test]

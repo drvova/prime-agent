@@ -17,6 +17,40 @@ use anyhow::Context;
 const HEADLESS_SETTLE_TIMEOUT_MS: u64 = 60_000;
 
 const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+/// The most already-queued terminal inputs one select wake drains into the batch: a burst
+/// applies as one batch with one paint, and the bound keeps a flood from starving the other
+/// arms (stream events, timers) for longer than one batch.
+const INPUT_BURST_LIMIT: usize = 256;
+
+/// Whether the batch's paint waits for the next queued input: plain terminal input (keys, pastes,
+/// mouse reports, resizes, write boundaries) still queued behind the input just handled is part of
+/// the same burst, which paints once after its last input (omp coalesces input the same way,
+/// `packages/tui/src/tui.ts` `#scheduleRender`, minus its 33 ms cadence: a lone input paints in
+/// the iteration that handled it). Anything else at the queue head is a barrier or a headless
+/// step and keeps the per-input paint.
+fn burst_continues(next: Option<&UiInput>) -> bool {
+    match next {
+        Some(
+            UiInput::Key(_)
+            | UiInput::Paste(_)
+            | UiInput::Mouse(_)
+            | UiInput::Resize
+            | UiInput::InputChunkEnd,
+        ) => true,
+        Some(
+            UiInput::Submit(_)
+            | UiInput::SubmitAndSettle { .. }
+            | UiInput::SettleIdle
+            | UiInput::WaitIdle { .. }
+            | UiInput::WaitRender { .. }
+            | UiInput::WaitGone { .. }
+            | UiInput::ScrollTop
+            | UiInput::Timestamp(_)
+            | UiInput::HeadlessDone,
+        )
+        | None => false,
+    }
+}
 /// The spinner's wall-clock cadence, not the render rate.
 const SPINNER_INTERVAL_MS: u128 = 80;
 /// The input-idle window the quiet tick waits out before materializing parked work.
@@ -227,7 +261,14 @@ async fn run_interactive_surface(
     // autocomplete provider.
     let (commands_tx, mut commands_rx) =
         mpsc::unbounded_channel::<crate::session_ui::CommandCatalogUpdate>();
+    // Spawned `cycle_thinking_level` round trips (the thinking-cycle key) report here; the loop
+    // folds the level into the tray glyph and the composer edge.
+    let (thinking_tx, mut thinking_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::ThinkingCycleNote>();
     let (page_tx, mut page_rx) = mpsc::unbounded_channel::<crate::session_ui::TranscriptPageNote>();
+    // The turn-end stats refresh reports here: the request runs off the loop, so a slow or
+    // silent daemon never holds a keystroke or a paint behind it.
+    let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsUpdate>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -253,6 +294,9 @@ async fn run_interactive_surface(
             .is_none_or(|settings| settings.emoji_shortcodes()),
     );
     if let Some(settings) = &options.client_settings {
+        view.editor.set_autocomplete_max_visible(
+            usize::try_from(settings.autocomplete_max_visible()).unwrap_or(usize::MAX),
+        );
         view.show_hardware_cursor = settings.show_hardware_cursor();
         // A chat opens at the persisted `chatDetail` level; an unset store reads as the collapsed
         // `overview` startup level (operator directive 2026-09-28).
@@ -273,34 +317,60 @@ async fn run_interactive_surface(
         options.fullscreen_mouse,
         &surface_mounted,
     )?;
-    // The startup chrome paints before the session loads only for a NEW
-    // chat (TS `ui.start()` renders the banner once before the session
-    // loads): the startup chrome carries the zero dock a fresh session
-    // mounts (`apply_startup_chrome`), so the placeholder frame never
-    // reflows when the attach lands. A direct open into an existing
-    // session holds the previous surface instead (TS attaches BEFORE
-    // the chat mounts — main.ts and the agents view construct the chat
-    // over an already-attached connection whose `getInitialSnapshot`
-    // is cached, so the first visible frame is the content): the queued
-    // clear rides the first draw's single flush, which carries the
-    // complete frame — no splash flash, no panel appearing late over a
-    // half-open view.
+    // The startup chrome paints before the session loads for a NEW chat
+    // (TS `ui.start()` renders the banner once before the session loads):
+    // the startup chrome carries the zero dock a fresh session mounts
+    // (`apply_startup_chrome`), so the placeholder frame never reflows
+    // when the attach lands.
+    //
+    // A CLI reopen (`--resume`, `--attach`) paints it too: the same chrome
+    // (title row, the activity dock in its idle form, the tray) with the
+    // empty transcript area holding a loading row, never the brand splash.
+    // DIVERGENCE from TS (latency study item R9, approved by the operator):
+    // TS attaches BEFORE the chat mounts — main.ts constructs the chat over
+    // an already-attached connection whose `getInitialSnapshot` is cached,
+    // so its first visible frame is the content — and the port held the
+    // pane blank until then (seconds for a large session). Only the
+    // transcript area and the dock's values fill in when the attach lands:
+    // its rebuild replaces the loading row with the transcript
+    // (`replace_transcript` clears the chat) and recomputes the splash from
+    // the folded transcript (`rebuild_view`), so the suppression below lasts
+    // only until then. The reopen's typed-ahead still queues behind the open
+    // and dispatches after the fold's stash restore (`echoing` below). An
+    // agents-view open keeps holding the previous surface: the agents view
+    // stays visible over the open, and its queued clear rides the first
+    // draw's single flush, which carries the complete content frame — no
+    // splash flash, no panel appearing late over a half-open view.
     //
     // The same predicate names the surface the opening phase below may
-    // repaint: a NEW chat's chrome already mounted (its echo frames
-    // paint at the frame scheduler's cadence), while a held surface
-    // (a direct open into an existing session) and headless capture
-    // runs never paint during the open — the first draw stays the
-    // open's content frame.
-    let opening_paints = !headless
+    // repaint: a mounted chrome's echo frames paint at the frame scheduler's
+    // cadence, while a held surface and headless capture runs never paint
+    // during the open. A headless CLI reopen captures the one loading frame
+    // (the verifier's witness that the chrome painted before the attach).
+    let reopening_from_cli = matches!(route, SessionOpenRoute::Cli)
         && matches!(
             &options.session,
-            SessionSelection::New | SessionSelection::NewChild { .. }
+            SessionSelection::Attach(_) | SessionSelection::Resume(_)
         );
+    if reopening_from_cli {
+        view.splash_suppressed = true;
+        view.push_entry(crate::chat::ChatEntry::Status {
+            text: "Loading session\u{2026}".to_string(),
+            kind: crate::chat::StatusKind::Info,
+        });
+    }
+    let opening_paints = !headless
+        && (reopening_from_cli
+            || matches!(
+                &options.session,
+                SessionSelection::New | SessionSelection::NewChild { .. }
+            ));
     if opening_paints {
         if let Some(renderer) = renderer.is_terminal_mut() {
             crate::app::draw(renderer, &mut view)?;
         }
+    } else if headless && reopening_from_cli {
+        renderer.render_headless_pane(&mut view);
     }
     // The startup open (TS `runAgentsViewLoop` -> `openAgentsViewSession`,
     // TS #2391): an agents-view open that lands while the daemon prepares an
@@ -335,7 +405,9 @@ async fn run_interactive_surface(
         let bash_tx = bash_tx.clone();
         let factory_tx = factory_tx.clone();
         let commands_tx = commands_tx.clone();
+        let thinking_tx = thinking_tx.clone();
         let page_tx = page_tx.clone();
+        let stats_tx = stats_tx.clone();
         let waits_through_update_restart = !matches!(route, SessionOpenRoute::Cli);
         tokio::spawn(async move {
             crate::update_restart_wait::wait_through_update_restart(
@@ -363,7 +435,9 @@ async fn run_interactive_surface(
                     let bash_tx = bash_tx.clone();
                     let factory_tx = factory_tx.clone();
                     let commands_tx = commands_tx.clone();
+                    let thinking_tx = thinking_tx.clone();
                     let page_tx = page_tx.clone();
+                    let stats_tx = stats_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -390,6 +464,8 @@ async fn run_interactive_surface(
                                 bash: bash_tx,
                                 factory: factory_tx,
                                 commands: commands_tx,
+                                thinking: thinking_tx,
+                                stats: stats_tx,
                             },
                             page_tx,
                         )
@@ -734,6 +810,8 @@ async fn run_interactive_surface(
     // screen hides any pre-TUI stderr print, so the row is the only
     // shape the user actually sees.
     session.maybe_show_telemetry_notice(&mut view);
+    // The empty composer's self-retiring key hint (omp), until its key has been used enough.
+    view.composer_hint = session.composer_hint.label(view.editor.keybindings());
     // TS `restorePromptStashOnOpen`: a draft stashed on the way out (a
     // previous chat view of this session left via the agents view or a
     // switch) returns to the editor when its chat reopens.
@@ -781,6 +859,7 @@ async fn run_interactive_surface(
                 frames: Vec::new(),
                 clipboard_emissions: Vec::new(),
                 agents_view_scope: None,
+                agents_view_folder: None,
                 return_to_agents_view: false,
                 selection_request: None,
                 selection_rlm_depth: None,
@@ -1187,10 +1266,14 @@ async fn run_interactive_surface(
                 }
                 // Paint the handled input in this iteration: the select below can otherwise wait
                 // out its 50ms tick before the next draw, felt as keystroke-to-render lag. A
-                // handoff paints nothing: the next surface owns the pane.
+                // handoff paints nothing: the next surface owns the pane. A burst still queued
+                // behind this input paints once, after its last input; an input that asked to
+                // leave (an exit, a handoff) paints its own frame as before.
+                let defer_to_burst =
+                    running && !session.exit_requested && burst_continues(pending.front());
                 if let Some(renderer) = renderer
                     .is_terminal_mut()
-                    .filter(|_| !chunk_end || session.dirty)
+                    .filter(|_| (!chunk_end || session.dirty) && !defer_to_burst)
                 {
                     if !session.open_agents_view && session.pending_selection.is_none() {
                         // The inline paint must reflect tray state the handled key just armed (the
@@ -1306,6 +1389,16 @@ async fn run_interactive_surface(
                 render_deadline = Some(expiry);
             }
         }
+        // The settings menu's `Saved` notice clears at its expiry on an idle screen too.
+        if let Some((expiry, _)) = view
+            .settings_menu
+            .as_ref()
+            .and_then(crate::settings_menu::SettingsMenu::saved_notice)
+        {
+            if render_deadline.is_none_or(|armed| expiry < armed) {
+                render_deadline = Some(expiry);
+            }
+        }
         // The animating loader's next phase boundary: every paint clears
         // the deadline it satisfied, and the boundary is the only wake a
         // quiet turn has between stream events (a running tool, a
@@ -1366,10 +1459,12 @@ async fn run_interactive_surface(
                     while let Some(Ok(event)) = events.as_mut().map(mpsc::UnboundedReceiver::try_recv) {
                         session.apply_client_event(event, &mut view);
                     }
-                    // A settled turn or compaction refreshes the tray's context usage.
+                    // A settled turn or compaction refreshes the tray's context usage. The
+                    // request is spawned and its reply folds in through `stats_rx`, so a key
+                    // pressed as the turn ends paints without waiting on the daemon.
                     let compaction_settled = std::mem::take(&mut session.compaction_settled);
                     if compaction_settled || (was_active && !session.turn_active) {
-                        session.refresh_stats().await;
+                        session.spawn_stats_refresh();
                         session.rebuild_tray(&mut view);
                     }
                     // A `session_binding` supersede notice: the session lives under a new active
@@ -1437,11 +1532,30 @@ async fn run_interactive_surface(
                         quiet_tick_deadline = None;
                     }
                     pending.push_back(input);
+                    // The rest of a burst already queued joins this batch (bounded), so the
+                    // batch above applies it before painting once. Headless plans keep their
+                    // one-step-per-iteration frames.
+                    if renderer.is_terminal() {
+                        while pending.len() < INPUT_BURST_LIMIT {
+                            let Ok(next) = ui_rx.try_recv() else {
+                                break;
+                            };
+                            if matches!(next, UiInput::Key(_) | UiInput::Paste(_)) {
+                                quiet_tick_deadline = None;
+                            }
+                            pending.push_back(next);
+                        }
+                    }
                 }
             }
             maybe_note = notes_rx.recv() => {
                 if let Some(note) = maybe_note {
                     session.apply_background_note(&note, &mut view);
+                }
+            }
+            maybe_stats = stats_rx.recv() => {
+                if let Some(update) = maybe_stats {
+                    session.apply_stats_update(update, &mut view);
                 }
             }
             maybe_page = page_rx.recv() => {
@@ -1502,6 +1616,11 @@ async fn run_interactive_surface(
             maybe_commands = commands_rx.recv() => {
                 if let Some(update) = maybe_commands {
                     session.apply_command_catalog(update, &mut view);
+                }
+            }
+            maybe_thinking = thinking_rx.recv() => {
+                if let Some(note) = maybe_thinking {
+                    session.apply_thinking_cycle(note, &mut view);
                 }
             }
             maybe_prompt = prompt_rx.recv() => {
@@ -1748,6 +1867,14 @@ async fn run_interactive_surface(
         if view.toasts.prune_expired(Instant::now()) {
             session.dirty = true;
         }
+        // The settings menu's `Saved` notice clears the same way (its wake is armed above).
+        if view
+            .settings_menu
+            .as_mut()
+            .is_some_and(|menu| menu.prune_saved_notice(Instant::now()))
+        {
+            session.dirty = true;
+        }
 
         // The tray override row follows the session's hint state on every frame. Refreshed here —
         // after the select, right before the paint — because a loop-top refresh goes stale across
@@ -1887,6 +2014,7 @@ async fn run_interactive_surface(
         clipboard_emissions: session.take_osc_emissions(),
         return_to_agents_view: preserve_alt_screen,
         agents_view_scope: session.scoped_agents_view.take(),
+        agents_view_folder: session.resume_folder.take(),
         selection_request: session.pending_selection,
         selection_rlm_depth: session.pending_selection_rlm_depth,
         selection_origin: session.pending_selection_origin,
@@ -1917,6 +2045,33 @@ async fn run_interactive_surface(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A burst of 50 keys (and the write boundary behind it) drained through the batch's paint
+    /// rule paints once, after its last input; a lone key paints at once.
+    #[test]
+    fn a_queued_burst_paints_once_and_a_lone_key_paints_at_once() {
+        let key = |c| {
+            UiInput::Key(crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Char(c),
+                crossterm::event::KeyModifiers::NONE,
+            ))
+        };
+        let paints = |mut pending: VecDeque<UiInput>| {
+            let mut paints = 0;
+            while pending.pop_front().is_some() {
+                if !burst_continues(pending.front()) {
+                    paints += 1;
+                }
+            }
+            paints
+        };
+        let mut burst: VecDeque<UiInput> = (0..50).map(|_| key('x')).collect();
+        burst.push_back(UiInput::InputChunkEnd);
+        assert_eq!(paints(burst), 1);
+        assert_eq!(paints(VecDeque::from([key('x')])), 1);
+        // A barrier behind a key keeps the key's own frame (then the barrier's).
+        assert_eq!(paints(VecDeque::from([key('x'), UiInput::SettleIdle])), 2);
+    }
 
     /// The boundary the select arms is always the current phase's
     /// 80ms edge — the wake must precede the phase change it observes

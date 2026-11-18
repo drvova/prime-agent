@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use pa_types::daemon::message_delta::{MessageDeltaEncoder, MESSAGE_UPDATE_DELTA_CAPABILITY};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -16,6 +17,10 @@ pub(crate) struct ClientSubscriptions {
     connection_id: String,
     sessions: Mutex<Vec<String>>,
     queue: mpsc::Sender<Arc<Value>>,
+    /// The delta `message_update` encoder, present once an attach on this
+    /// connection advertised [`MESSAGE_UPDATE_DELTA_CAPABILITY`]; the
+    /// connection's event writer runs every targeted frame through it.
+    message_deltas: Mutex<Option<MessageDeltaEncoder>>,
 }
 
 impl ClientSubscriptions {
@@ -24,7 +29,31 @@ impl ClientSubscriptions {
             connection_id,
             sessions: Mutex::new(Vec::new()),
             queue,
+            message_deltas: Mutex::new(None),
         })
+    }
+
+    /// An attach or reattach landed with the client's own `capabilities`: a
+    /// delta-capable client gets a fresh encoder (its next update of every
+    /// session is a full anchor); any other client gets today's full frames.
+    pub(crate) fn negotiate_message_deltas(&self, capabilities: Option<&[String]>) {
+        let capable = capabilities.is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|capability| capability == MESSAGE_UPDATE_DELTA_CAPABILITY)
+        });
+        *self.message_deltas.lock().unwrap() = capable.then(MessageDeltaEncoder::new);
+    }
+
+    /// The frame to write in place of `payload` (a delta `message_update`),
+    /// or `None` to write it unchanged. Called once per written frame, in
+    /// write order, so the encoder's base is what this client last read.
+    pub(crate) fn wire_frame(&self, payload: &Value) -> Option<Value> {
+        self.message_deltas
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|encoder| encoder.encode(payload))
     }
 
     /// The attached-session list (pause bookkeeping, detach-on-disconnect

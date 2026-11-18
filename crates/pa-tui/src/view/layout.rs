@@ -14,6 +14,8 @@ pub(super) type LayoutOptions = (crate::theme::Theme, String, bool, bool, Option
 thread_local! {
     pub(super) static ENTRY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static ENTRY_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Count-only assistant measures (the geometry pass's own markdown walk).
+    pub(super) static ASSISTANT_COUNTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -27,6 +29,23 @@ pub(super) struct EntryLayout {
     /// The spacing decision the rows render under.
     pub(super) spacing: bool,
     pub(super) rows: std::sync::Arc<RowPack>,
+}
+
+/// The one-slot cache of the streaming assistant entry's rows. A streaming message is never
+/// cacheable in `entry_layout` (an update may replace its blocks), but most frames during a
+/// stream change something else (the spinner's 80ms phase, a keystroke in the editor), and every
+/// stream update measures the entry before and after its mutation: the slot serves the row count
+/// and the rows while every input of the assistant render is unchanged. The message itself is the
+/// text/thinking revision: an equality compare is linear in the message and needs no counter that
+/// every stream mutation site would have to bump.
+pub(super) struct StreamingEntryRows {
+    pub(super) index: usize,
+    pub(super) width: usize,
+    pub(super) detail: crate::chat::Detail,
+    pub(super) spacing: bool,
+    pub(super) preceded_by_tool: bool,
+    pub(super) message: crate::chat::AssistantMessage,
+    pub(super) rows: std::sync::Arc<Vec<Line>>,
 }
 
 /// One packed row's start: its content blob offset and first span
@@ -330,7 +349,18 @@ impl AgentView {
     pub(super) fn prepare_layout(&mut self, width: usize) {
         if let (Some(working), Some(since)) = (&mut self.working, self.working_since) {
             working.elapsed_secs = since.elapsed().as_secs();
+            working.quiet_secs = self
+                .working_heard
+                .map_or(0, |heard| heard.elapsed().as_secs());
         }
+        // The tail renders the working loader only under no retry countdown or compaction, so
+        // only then is a quiet loader the stall row the user sees.
+        let loader_owns_status = self.retry.is_none() && self.compaction.is_none();
+        self.stall_shown = loader_owns_status
+            && self
+                .working
+                .as_ref()
+                .is_some_and(crate::chat::WorkingState::stalled);
         let options = (
             self.theme.clone(),
             self.code_block_indent.clone(),
@@ -353,6 +383,7 @@ impl AgentView {
                     .for_each(|slot| *slot = [None, None, None]);
             }
             self.md_caches.borrow_mut().clear();
+            self.streaming_rows.borrow_mut().take();
         }
         self.entry_layout
             .resize_with(self.chat.len(), || [None, None, None]);
@@ -415,7 +446,19 @@ impl AgentView {
                 width,
             ));
         } else if let Some(working) = &self.working {
-            tail.extend(render_loader(working, self.pulse_frame, &self.theme, width));
+            // The stop chip names the key that clears/interrupts (the user's effective binding).
+            let stop = self.editor.keybindings().first_key("app.input.clear");
+            let stop = stop.map(|key| crate::keybindings::format_key_text(&key));
+            tail.extend(render_loader(
+                working,
+                self.pulse_frame,
+                &self.theme,
+                self.detail,
+                width,
+                stop.as_deref(),
+                // The spinner wears the session's own accent hue.
+                crate::chrome::session_accent(&self.chrome.chat_name, &self.theme),
+            ));
         }
         // The side-question pane hugs the transcript tail, not the dock, so the frame's slack
         // lands between the pane and the editor (TS mounts it behind a `Spacer(1)`).
@@ -425,7 +468,7 @@ impl AgentView {
                 &self.theme,
                 self.pulse_frame,
                 self.detail.tool_output_expanded(),
-                &self.editor.keybindings().key_text("tui.select.cancel"),
+                self.editor.keybindings(),
                 width,
             ));
         }

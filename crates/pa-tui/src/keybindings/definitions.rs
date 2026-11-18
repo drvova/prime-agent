@@ -292,7 +292,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     ("app.interrupt", def!(&[], "Interrupt current operation")),
     (
         "app.clear",
-        def!(&["ctrl+c"], "Interrupt current operation, then exit"),
+        def!(
+            &["ctrl+c"],
+            "Interrupt running work, else clear the draft, then exit"
+        ),
     ),
     (
         "app.input.clear",
@@ -314,6 +317,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["shift+alt+m"], "Cycle to the previous scoped model"),
     ),
     (
+        "app.thinking.cycle",
+        def!(&["shift+tab"], "Cycle thinking level"),
+    ),
+    (
         "app.tools.expand",
         def!(&["ctrl+o"], "Cycle conversation detail", scope "editor"),
     ),
@@ -325,6 +332,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     (
         "app.prompt.stash",
         def!(&["ctrl+s"], "Stash or restore draft prompt"),
+    ),
+    (
+        "app.history.search",
+        def!(&["ctrl+r"], "Search prompt history"),
     ),
     (
         "app.message.followUp",
@@ -390,6 +401,13 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     (
         "app.agents.rename",
         def!(&["ctrl+r"], "Rename selected agent session"),
+    ),
+    (
+        "app.agents.folderScope",
+        def!(
+            &["tab"],
+            "Toggle the resume list between this folder and all folders"
+        ),
     ),
     (
         "app.agents.expand",

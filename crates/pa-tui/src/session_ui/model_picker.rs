@@ -12,6 +12,14 @@ use serde_json::Value;
 /// refreshes again in the background.
 const MODEL_CATALOG_REFRESH_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
+/// A landed `cycle_thinking_level` round trip: the session it was asked for (a late answer from a
+/// switched-away session never lands) and the daemon's answer, `{ level }` or `null` for a model
+/// without reasoning.
+pub(crate) struct ThinkingCycleNote {
+    session: String,
+    outcome: Result<Value>,
+}
+
 /// A landed `get_model_catalog` refresh: the full catalog and the providers
 /// with configured auth.
 pub(crate) struct ModelCatalogUpdate {
@@ -223,9 +231,20 @@ impl SessionUi {
             }
     }
 
+    /// The tray's model host from the configured catalog entry of the current model (its
+    /// provider and base URL; no network). A model the catalog does not list reads as remote.
+    pub(super) fn sync_model_host(&self, view: &mut AgentView) {
+        view.chrome.model_host = self
+            .current_model_entry(view)
+            .map_or(crate::chrome::ModelHost::Remote, |model| {
+                crate::chrome::ModelHost::of(&model.provider, &model.base_url)
+            });
+    }
+
     /// Fold a landed catalog refresh into the session and any open picker.
     pub(crate) fn apply_model_catalog(&mut self, update: ModelCatalogUpdate, view: &mut AgentView) {
         self.model_catalog = update.models;
+        self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
@@ -394,6 +413,66 @@ impl SessionUi {
         self.dirty = true;
     }
 
+    /// The thinking-cycle key (`app.thinking.cycle`, oh-my-pi's Shift+Tab): the daemon's
+    /// `cycle_thinking_level` advances the level, wrapping through the model's supported ones. The
+    /// round trip is spawned so the key and paint paths never wait on it; the run loop folds the
+    /// answer through [`Self::apply_thinking_cycle`].
+    pub(super) fn spawn_thinking_cycle(&self) {
+        let client = self.client.clone();
+        let active_session_id = self.active_session_id.clone();
+        let session = active_session_id.clone();
+        let notes = self.thinking_cycle_notes.clone();
+        tokio::spawn(async move {
+            let timeout = Duration::from_millis(UI_REQUEST_TIMEOUT_MS);
+            let request = client.request_ok(DaemonCommand::CycleThinkingLevel {
+                id: None,
+                active_session_id,
+                rest: Map::default(),
+            });
+            let outcome = tokio::time::timeout(timeout, request)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "timed out after {}ms waiting for the Prime Agent daemon response",
+                        timeout.as_millis()
+                    ))
+                });
+            let _ = notes.send(ThinkingCycleNote { session, outcome });
+        });
+    }
+
+    /// Fold a landed thinking cycle. A level change is silent (oh-my-pi's): the tray glyph and
+    /// suffix and the composer edge move, no status row. A model without reasoning answers `null`
+    /// and gets the `/effort` command's unsupported note.
+    pub(crate) fn apply_thinking_cycle(&mut self, note: ThinkingCycleNote, view: &mut AgentView) {
+        if note.session != self.active_session_id {
+            return;
+        }
+        match note.outcome {
+            Ok(Value::Null) => {
+                self.track_feature_outcome("effort", "unavailable", None);
+                self.note("Current model does not support thinking", view);
+            }
+            Ok(data) => {
+                let Some(level) = data
+                    .get("level")
+                    .and_then(Value::as_str)
+                    .and_then(pa_types::ai::thinking_level_from_str)
+                else {
+                    self.error_row("the thinking cycle answer carried no level", view);
+                    return;
+                };
+                view.chrome.thinking_suffix = Some(level.wire_name().to_string());
+                // The cycle is an effort change: it reports the `effort` feature's outcome.
+                self.track_feature_outcome("effort", "completed", None);
+                self.dirty = true;
+            }
+            Err(error) => {
+                self.error_row(&format!("{error:#}"), view);
+            }
+        }
+    }
+
     /// Apply a thinking level: the daemon `set_thinking_level` command switches the session's
     /// level, then the client records the `Thinking level: <level>` status row.
     pub(super) async fn apply_thinking_level(&mut self, level: &str, view: &mut AgentView) {
@@ -433,6 +512,8 @@ impl SessionUi {
                             .map(|parsed| parsed.wire_name().to_string());
                     }
                 }
+                // The `/effort` choices mark the newly active level.
+                self.update_model_eligibility_filters(view);
                 self.note(&format!("Thinking level: {level}"), view);
             }
             Err(error) => {
@@ -484,6 +565,7 @@ impl SessionUi {
             view.chrome.model_provider = Some(picked_provider.to_string());
             view.chrome.thinking_suffix = None;
         }
+        self.sync_model_host(view);
         self.dirty = true;
     }
 }

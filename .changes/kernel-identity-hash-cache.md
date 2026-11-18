@@ -1,0 +1,1 @@
+- Python kernel starts no longer re-read and re-hash the bundled runtime and the installed runtime packages when those files are unchanged, so the readiness check before each kernel start is faster, including the first start in a new session worker.
