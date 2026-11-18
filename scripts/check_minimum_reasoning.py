@@ -63,7 +63,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             number = self.server.main_requests
             if number == 1 or self.server.scenario == 'branch':
                 # Enough history for a real summary after a second user turn.
-                delta, finish = {'content': 'Seed observation. ' * 300}, 'stop'
+                # Numbered, not one sentence repeated: a reply that repeats
+                # the same text over and over is what the stream loop guard
+                # cuts (and retries once), which would void the seed history.
+                delta, finish = {'content': ' '.join(
+                    f'Seed observation {index}.' for index in range(300))}, 'stop'
             elif number == 2:
                 offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
                 name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
