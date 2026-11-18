@@ -705,6 +705,11 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("web_search_keyless_count", optional(count())),
         ("web_search_result_count", optional(count())),
         ("web_search_max_ms", optional(duration())),
+        // Request-view thinning of aged tool results (counts only).
+        ("context_thinned_request_count", optional(count())),
+        ("context_thinned_result_count", optional(count())),
+        ("context_thinned_chars_saved", optional(tokens())),
+        ("context_thinned_tokens_saved", optional(tokens())),
         // Provider auth descriptors (strategy and counters only: never a
         // provider, URL, account, or token).
         (

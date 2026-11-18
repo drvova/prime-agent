@@ -269,6 +269,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // compaction budget and the auto-refine gates.
     let compaction_settings = settings.settings().compaction.clone().unwrap_or_default();
     let compaction_threshold_percent = settings.get_compaction_threshold_percent();
+    let thinning_settings = super::context_thinning::ThinningSettings::resolve(
+        settings.settings().context_thinning.as_ref(),
+    );
     let auto_refine_gates =
         super::refine::AutoRefineGates::from_settings(settings.settings().auto_refine.as_ref());
     // Request timing: the settings half of the flag is read once here
@@ -396,6 +399,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if compaction_settings.agent_callable.unwrap_or(true) {
         turn_boundary.register_compact_handlers(&mut handlers, keep_recent_tokens);
     }
+    // `rlm.session.tool_result`: the recall path a thinned result's pointer names.
+    super::context_thinning::register_tool_result_recall(&mut handlers, &wiring.session);
     // The daemon worker owns persistence outside the session manager, so
     // its conversation-log path implies the same artifact tree.
     let session_artifact_dir: Option<PathBuf> = wiring
@@ -705,6 +710,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }
         None => timing_stream_fn,
     };
+    // The thinning transform's model-window probe binds its agent late (the
+    // transform is built into the agent); weak, so the seam pins nothing.
+    let thinning_agent: std::sync::Arc<std::sync::OnceLock<std::sync::Weak<Agent>>> =
+        std::sync::Arc::default();
     let agent = Agent::new(AgentOptions {
         // Every request in the session carries this identity: providers key prompt caching
         // (`prompt_cache_key`), session headers, and WebSocket/`previous_response_id` reuse on it
@@ -725,11 +734,37 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             std::sync::Arc::clone(&request_timing_wiring),
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
         )),
-        // The Rust engine wires no transform, so the instrumented seam
-        // wraps a pass-through that marks the turn's dispatch moment.
+        // The request view thins aged tool results under context pressure
+        // (the stored transcript stays whole); the instrumented seam marks
+        // the turn's dispatch moment around it.
         transform_context: Some(super::request_timing::instrument_transform_context(
             std::sync::Arc::clone(&request_timing_wiring),
-            super::request_timing::pass_through_transform(),
+            super::context_thinning::thinning_transform(
+                thinning_settings,
+                {
+                    // The window of the model the request goes to: a run's
+                    // routed override, else the session model (in-memory
+                    // reads; the slot binds once the agent exists).
+                    let slot = std::sync::Arc::clone(&thinning_agent);
+                    std::sync::Arc::new(move || {
+                        let slot = std::sync::Arc::clone(&slot);
+                        Box::pin(async move {
+                            let Some(agent) = slot.get().and_then(std::sync::Weak::upgrade) else {
+                                return model_context_window;
+                            };
+                            match agent.model_override() {
+                                Some(routed) => routed.model.context_window,
+                                None => agent.state().await.model.context_window,
+                            }
+                        })
+                    })
+                },
+                config.telemetry.is_some().then(|| {
+                    let counters = std::sync::Arc::clone(&session_counters);
+                    std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
+                        as super::context_thinning::ThinningObserver
+                }),
+            ),
         )),
         should_stop_after_turn: {
             let steering = config.queued_steering_probe.take();
@@ -755,6 +790,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     });
 
     let agent = Arc::new(agent);
+    let _ = thinning_agent.set(Arc::downgrade(&agent));
     // The in-process bash-notice sinks bind their agent late: their
     // handlers registered before the agent existed.
     *bash_notice_agent

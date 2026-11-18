@@ -110,6 +110,20 @@ pub struct CompactionSettings {
     pub agent_callable: Option<bool>,
 }
 
+/// `contextThinning`: the request-view thinning of aged tool results
+/// (`session_engine::context_thinning`); unset fields take its defaults.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextThinningSettings {
+    pub enabled: Option<bool>,
+    /// Estimated context share (percent of the window) past which aged results thin.
+    pub threshold_percent: Option<f64>,
+    /// Newest tool rounds always kept whole.
+    pub keep_recent_rounds: Option<u64>,
+    /// Results at or under this many characters are never thinned.
+    pub min_chars: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchSummarySettings {
@@ -284,6 +298,7 @@ pub struct Settings {
     pub follow_up_mode: Option<QueueModeSetting>,
     pub theme: Option<String>,
     pub compaction: Option<CompactionSettings>,
+    pub context_thinning: Option<ContextThinningSettings>,
     pub auto_refine: Option<AutoRefineSettings>,
     /// Master switch for harness creation and context loading; unset preserves enabled behavior.
     pub harness_refinements: Option<bool>,

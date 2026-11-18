@@ -345,6 +345,12 @@ struct CounterValues {
     web_search_keyless_count: u64,
     web_search_result_count: u64,
     web_search_max_ms: u64,
+    /// Requests whose view thinned aged tool results, the results thinned
+    /// across them, and the characters (and chars/4 tokens) not re-sent.
+    context_thinned_request_count: u64,
+    context_thinned_result_count: u64,
+    context_thinned_chars_saved: u64,
+    context_thinned_tokens_saved: u64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -374,6 +380,17 @@ impl SessionCounters {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
+    }
+
+    /// One provider request whose view thinned aged tool results (counts
+    /// only; no result text uploads).
+    pub fn note_context_thinning(&self, stats: &super::context_thinning::ThinningStats) {
+        self.with(|values| {
+            values.context_thinned_request_count += 1;
+            values.context_thinned_result_count += stats.thinned_results;
+            values.context_thinned_chars_saved += stats.chars_saved;
+            values.context_thinned_tokens_saved += stats.tokens_saved();
+        });
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -465,6 +482,29 @@ impl SessionCounters {
                     ("web_search_keyless_count", values.web_search_keyless_count),
                     ("web_search_result_count", values.web_search_result_count),
                     ("web_search_max_ms", values.web_search_max_ms),
+                ] {
+                    properties.set(key, Value::from(value));
+                }
+            }
+            // Sessions that never thinned keep their ended event unchanged.
+            if values.context_thinned_request_count > 0 {
+                for (key, value) in [
+                    (
+                        "context_thinned_request_count",
+                        values.context_thinned_request_count,
+                    ),
+                    (
+                        "context_thinned_result_count",
+                        values.context_thinned_result_count,
+                    ),
+                    (
+                        "context_thinned_chars_saved",
+                        values.context_thinned_chars_saved,
+                    ),
+                    (
+                        "context_thinned_tokens_saved",
+                        values.context_thinned_tokens_saved,
+                    ),
                 ] {
                     properties.set(key, Value::from(value));
                 }
