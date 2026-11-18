@@ -176,6 +176,9 @@ struct InputLiveHarness {
     /// teardown on the still-accepting listener.
     connected: Arc<std::sync::atomic::AtomicBool>,
     master: PtyReader,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl InputLiveHarness {
@@ -201,15 +204,12 @@ impl InputLiveHarness {
         )
         .expect("open pty");
         let child = spawn_child(&socket, &pty.slave);
-        // Leak the temp dir's socket path on purpose: the child needs the
-        // socket for the lifetime of the test, and the whole tree dies
-        // with the child at teardown.
-        std::mem::forget(dir);
         InputLiveHarness {
             child,
             server,
             connected,
             master: PtyReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 

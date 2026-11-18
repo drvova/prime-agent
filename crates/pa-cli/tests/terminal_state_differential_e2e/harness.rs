@@ -44,9 +44,12 @@ pub(crate) struct DifferentialHarness {
     listener: Option<std::os::unix::net::UnixListener>,
     _server: Option<std::thread::JoinHandle<()>>,
     /// The mock socket's path (the refusal determinism polls it).
-    socket_path: PathBuf,
+    pub(crate) socket_path: PathBuf,
     /// The pty's termios before the child spawned.
     pub(crate) before: Termios,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl DifferentialHarness {
@@ -74,8 +77,6 @@ impl DifferentialHarness {
         .expect("open pty");
         let before = Termios::capture(pty.master.as_raw_fd());
         let child = spawn_child(spec, &socket, &pty.slave);
-        // The child needs the socket and the temp dir for its lifetime.
-        std::mem::forget(dir);
         DifferentialHarness {
             child,
             master: PtyReader::new(pty.master),
@@ -83,6 +84,7 @@ impl DifferentialHarness {
             _server: Some(server),
             socket_path: socket,
             before,
+            _socket_dir: dir,
         }
     }
 
