@@ -16,6 +16,13 @@ Subcommands:
 
   version   validate a fork tag (vX.Y.Z-<suffix>.N, X.Y.Z = Cargo.toml) and
             print the bare version the build stamps
+  next-tag  read the repository's tags on stdin and print the release tag
+            (the next vX.Y.Z-<suffix>.N for Cargo.toml's version, or the
+            given --release-tag) and the fork release before it, as
+            GITHUB_OUTPUT lines
+  should-release
+            read changed paths on stdin (the diff since the previous fork
+            release) and print release=true when any of them is shipped code
   channel   write latest.json + the `stable` pointer from a merged manifest
             (release.yml's "Merge per-target manifests" output shape)
   render    write install.sh / install.ps1 / prime-switch / prime-switch.ps1
@@ -56,17 +63,112 @@ def write_utf8(path, text):
     pathlib.Path(path).write_bytes(text.encode("utf-8"))
 
 
+FORK_TAG = r"v([0-9]+)\.([0-9]+)\.([0-9]+)-([a-z0-9]+)\.([0-9]+)"
+
+# What a fork release ships: the binary's sources (vendor/ is a patched
+# dependency, install-rust.sh is compiled in), the payload
+# assemble_artifacts.py stages (prime-agent-runtime/, skills/), the published
+# installers and switchers, the release scripts, and this pipeline itself.
+# A commit range touching none of them (docs, .changes/, other workflows)
+# cuts no automatic release. Test-only paths leave the binary identical and
+# never count: any path under a tests/ or test/ directory (the changelog
+# gate's rule in changelog-fragment.yml), plus in-tree Rust test modules
+# (`tests.rs`, `*_tests.rs`).
+TEST_ONLY = re.compile(r"/tests?/|(^|/)tests\.rs$|_tests\.rs$")
+SHIPPED_PREFIXES = (
+    "crates/",
+    "vendor/",
+    "prime-agent-runtime/",
+    "skills/",
+    "scripts/release/",
+    "scripts/prime-switch",
+)
+SHIPPED_FILES = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "install-rust.sh",
+    "install.ps1",
+    ".github/workflows/fork-release.yml",
+)
+
+
+def workspace_version(cargo_toml):
+    text = read_utf8(pathlib.Path(cargo_toml))
+    cargo = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
+    if cargo is None:
+        sys.exit(f"{cargo_toml}: no workspace version")
+    return cargo.group(1)
+
+
+def fork_tag_key(tag, suffix):
+    """The (major, minor, patch, N) order of a fork tag, or None for any
+    other tag (official releases, other suffixes)."""
+    match = re.fullmatch(FORK_TAG, tag)
+    if match is None or match.group(4) != suffix:
+        return None
+    return tuple(int(match.group(index)) for index in (1, 2, 3, 5))
+
+
+def plan_tag(tags, suffix, version, release_tag=None):
+    """The release tag and the fork release before it ("" for the first).
+
+    Without `release_tag`, the next tag for `version`: N is one past the
+    highest N already tagged on that version (gaps are never refilled), or 1
+    for a version with no fork release yet."""
+    keyed = sorted(
+        (key, tag) for tag in tags if (key := fork_tag_key(tag, suffix)) is not None
+    )
+    if release_tag is None:
+        major, minor, patch = (int(part) for part in version.split("."))
+        same_version = [key[3] for key, _tag in keyed if key[:3] == (major, minor, patch)]
+        release_tag = f"v{version}-{suffix}.{max(same_version, default=0) + 1}"
+    release_key = fork_tag_key(release_tag, suffix)
+    if release_key is None:
+        sys.exit(f"tag {release_tag}: a fork release tag is vX.Y.Z-{suffix}.N")
+    earlier = [tag for key, tag in keyed if key < release_key]
+    return release_tag, earlier[-1] if earlier else ""
+
+
+def shipped_changes(paths):
+    """The changed paths a fork release ships, in input order."""
+    return [
+        path
+        for path in paths
+        if (path.startswith(SHIPPED_PREFIXES) or path in SHIPPED_FILES)
+        and TEST_ONLY.search(path) is None
+    ]
+
+
 def cmd_version(args):
     tag = args.tag
-    match = re.fullmatch(r"v([0-9]+\.[0-9]+\.[0-9]+)-([a-z0-9]+)\.([0-9]+)", tag)
-    if match is None or match.group(2) != args.suffix:
+    match = re.fullmatch(FORK_TAG, tag)
+    if match is None or match.group(4) != args.suffix:
         sys.exit(f"tag {tag}: a fork release tag is vX.Y.Z-{args.suffix}.N")
-    text = read_utf8(pathlib.Path(args.cargo_toml))
-    cargo = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
-    if cargo is None or cargo.group(1) != match.group(1):
-        found = cargo.group(1) if cargo else "none"
+    found = workspace_version(args.cargo_toml)
+    if found != ".".join(match.group(index) for index in (1, 2, 3)):
         sys.exit(f"tag {tag}: X.Y.Z must be the workspace version (Cargo.toml: {found})")
     print(tag[1:])
+
+
+def cmd_next_tag(args):
+    tags = sys.stdin.read().split()
+    tag, previous = plan_tag(
+        tags, args.suffix, workspace_version(args.cargo_toml), args.release_tag
+    )
+    print(f"tag={tag}")
+    print(f"previous={previous}")
+
+
+def cmd_should_release(_args):
+    paths = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
+    shipped = shipped_changes(paths)
+    if shipped:
+        print(f"{len(shipped)} of {len(paths)} changed paths are shipped code, e.g. {shipped[0]}",
+              file=sys.stderr)
+    else:
+        print(f"none of the {len(paths)} changed paths is shipped code: no release",
+              file=sys.stderr)
+    print(f"release={'true' if shipped else 'false'}")
 
 
 def cmd_channel(args):
@@ -170,6 +272,12 @@ def main():
     version.add_argument("--tag", required=True)
     version.add_argument("--suffix", required=True)
     version.add_argument("--cargo-toml", required=True)
+    next_tag = sub.add_parser("next-tag")
+    next_tag.add_argument("--suffix", required=True)
+    next_tag.add_argument("--cargo-toml", required=True)
+    next_tag.add_argument("--release-tag",
+                          help="the release's own tag (a pushed or dispatched one); default: the next one")
+    sub.add_parser("should-release")
     channel = sub.add_parser("channel")
     channel.add_argument("--manifest", required=True)
     channel.add_argument("--version", required=True)
@@ -186,7 +294,13 @@ def main():
                         help="the command the installers create instead of prime-agent (e.g. prime)")
     render.add_argument("--out-dir", required=True)
     args = parser.parse_args()
-    {"version": cmd_version, "channel": cmd_channel, "render": cmd_render}[args.command](args)
+    {
+        "version": cmd_version,
+        "next-tag": cmd_next_tag,
+        "should-release": cmd_should_release,
+        "channel": cmd_channel,
+        "render": cmd_render,
+    }[args.command](args)
 
 
 if __name__ == "__main__":

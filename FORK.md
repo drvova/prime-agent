@@ -163,21 +163,35 @@ official `release.yml` never matches these tags (see
    enable button). Under **Settings → Actions → General → Workflow
    permissions**, the default read permission is enough, because the publish
    job asks for `contents: write` itself.
-2. From an up-to-date `main`:
+2. Releases are **automatic**: when the `ci` workflow passes for a push to
+   `main` (every merge), `fork-release` cuts the next tag for the commit CI
+   tested. `N` is one more than the highest `N` already tagged on the
+   `Cargo.toml` version, or `1` after a version bump. It releases only if
+   shipped code changed since the previous fork release: `crates/`,
+   `vendor/`, `prime-agent-runtime/`, `skills/`, `Cargo.toml`, `Cargo.lock`,
+   the installers, `scripts/prime-switch*`, `scripts/release/` or
+   `fork-release.yml` itself. Test-only paths (`tests/` and `test/`
+   directories, `tests.rs`, `*_tests.rs`) do not count. A merge that only
+   touches tests, docs, `.changes/` or other workflows ends green with a "no release" line in the `tag-check`
+   log. Merges that land close together release in order, one at a time.
+
+   The manual ways still work. Push a tag from an up-to-date `main`:
 
    ```sh
-   git tag v0.10.3-drvova.1
-   git push origin v0.10.3-drvova.1
+   git tag v0.10.3-drvova.3
+   git push origin v0.10.3-drvova.3
    ```
 
-   Or, without pushing a tag: **Actions → fork-release → Run workflow**, on
-   `main`, with the tag to create (for example `v0.10.3-drvova.1`). The
-   workflow checks the tag is new and matches `Cargo.toml`, builds the
-   dispatched `main` commit, and the publish job creates the tag there.
+   Or use **Actions → fork-release → Run workflow**, on `main`, with the tag
+   to create (for example `v0.10.3-drvova.3`). The workflow checks the tag
+   is new and matches `Cargo.toml`, builds the dispatched `main` commit, and
+   the publish job creates the tag there. Either way, the next automatic
+   release counts on from the highest tag.
 3. `.github/workflows/fork-release.yml` builds linux x64/arm64 and Windows
    x64 (no macOS: GitHub never assigned this repository a macOS runner). It packages them with the official release
    scripts, merges them with `release.yml`'s own promote steps, and publishes
-   the GitHub Release (marked latest). The release carries the tarballs,
+   the GitHub Release (marked latest). Its notes list the merged PRs since
+   the previous fork release. The release carries the tarballs,
    `SHA256SUMS`, `latest.json`, `stable`, `install.sh`, `install.ps1`,
    `prime-switch` and `prime-switch.ps1`.
 4. Check it: `curl -fsSL .../releases/latest/download/stable` prints the

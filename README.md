@@ -53,6 +53,22 @@ It installs side by side with the official `prime-agent` and never touches it. R
 
 Prime Intellect's own CLI is also called `prime`. The installer never replaces it. If it's already in `~/.local/bin`, the installer puts the fork's `prime` in `~/.local/share/prime-agent-fork/bin` and tells you which `prime` comes first on PATH.
 
+### Releases
+
+Every release is listed at [github.com/drvova/prime-agent/releases](https://github.com/drvova/prime-agent/releases). Releases are tagged `vX.Y.Z-drvova.N` and published automatically when CI passes on `main` and the shipped code changed. The commands above always install the latest release.
+
+To install a specific release, set `PRIME_AGENT_VERSION` to its version (the tag without the leading `v`):
+
+```bash
+curl -fsSL https://github.com/drvova/prime-agent/releases/latest/download/install.sh | PRIME_AGENT_VERSION=0.10.3-drvova.2 sh
+```
+
+```powershell
+$env:PRIME_AGENT_VERSION = "0.10.3-drvova.2"; irm https://github.com/drvova/prime-agent/releases/latest/download/install.ps1 | iex
+```
+
+Run `prime update` to move to the latest release, or `prime update --rollback` to go back to the version you had before.
+
 Prime Agent is an open-source coding and research agent for general and long-running work. It is designed around two core abstractions:
 
 - The **[Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm)** treats context as variables (*prompt-as-a-variable*) and tools like recursive subagents as function calls (*programmatic tool /sub-agent calling*) inside a persistent REPL.
