@@ -209,6 +209,10 @@ pub const TOOL_CATEGORIES: &[&str] = &[
     "read", "write", "edit", "bash", "grep", "find", "ls", "ipython", "mcp", "custom", "unknown",
 ];
 
+/// How a provider auth descriptor resolved the session's request
+/// credentials (`agent session ended` `auth_strategy`).
+pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "unknown"];
+
 pub const TERMINAL_OUTCOMES: &[&str] = &[
     "success",
     "error",
@@ -701,6 +705,15 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("web_search_keyless_count", optional(count())),
         ("web_search_result_count", optional(count())),
         ("web_search_max_ms", optional(duration())),
+        // Provider auth descriptors (strategy and counters only: never a
+        // provider, URL, account, or token).
+        (
+            "auth_strategy",
+            optional(enum_rule(AUTH_STRATEGIES, "unknown")),
+        ),
+        ("auth_token_exchange_count", optional(count())),
+        ("auth_refresh_failed_count", optional(count())),
+        ("auth_rejected_retry_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),

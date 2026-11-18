@@ -181,3 +181,88 @@ For per-model early compaction, use the existing provider-scoped
 
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
+
+### Provider auth descriptors
+
+A `models.json` provider entry can declare how the provider authenticates with an
+optional `auth` block. Without one, the provider keeps its usual API key (stored,
+environment, or the entry's `apiKey`). Two strategies exist:
+
+- `"api-key"`: the usual key. Use it to add a `sessionHeader` only.
+- `"token-exchange"`: before inference calls, Prime Agent trades long-lived
+  credentials from `auth.json` for a short-lived token at `tokenUrl`, and caches the
+  token until shortly before it expires.
+
+```json
+{
+  "providers": {
+    "example-gateway": {
+      "baseUrl": "https://gateway.example.com/v1",
+      "api": "openai-completions",
+      "auth": {
+        "strategy": "token-exchange",
+        "tokenUrl": "https://auth.example.com/v1/token",
+        "method": "POST",
+        "requestHeaders": { "x-account": "{{accountId}}" },
+        "requestBody": {
+          "refresh_token": "{{refresh}}",
+          "account": "{{accountId}}",
+          "org": "{{orgId}}"
+        },
+        "tokenPath": "/access_token",
+        "refreshPath": "/refresh_token",
+        "expiresInPath": "/expires_in",
+        "header": { "name": "Authorization", "prefix": "Bearer " },
+        "sessionHeader": "x-example-session",
+        "timeoutMs": 10000
+      },
+      "models": [{ "id": "example-model" }]
+    }
+  }
+}
+```
+
+The long-lived credentials live in `auth.json` under the same provider id:
+
+```json
+{
+  "example-gateway": {
+    "type": "token_exchange",
+    "refresh": "<long-lived refresh credential>",
+    "accountId": "acc_123",
+    "orgId": "org_456"
+  }
+}
+```
+
+Fields:
+
+- `tokenUrl` (required for `token-exchange`): must use `https`; plain `http` is
+  accepted only for loopback hosts.
+- `method`: `POST` (default), `PUT`, or `GET` (a `GET` carries no body).
+- `requestHeaders` / `requestBody`: templates for the token request only. The
+  placeholders are the stored credential fields `{{refresh}}`, `{{accountId}}`, and
+  `{{orgId}}`; nothing else (such as environment variables) renders. The body is JSON,
+  or form-encoded with `"requestEncoding": "form"` (string values only).
+- `tokenPath`: a JSON pointer to the token in the response.
+- `refreshPath` (optional): a JSON pointer to a rotated refresh credential in the
+  response. For providers that issue a new refresh credential on every exchange and
+  invalidate the old one: a non-empty string there replaces the stored `refresh` in
+  `auth.json`, together with the new token. Without it, or when the response has no
+  value there, the stored `refresh` is kept.
+- `expiresAtPath` or `expiresInPath` (at most one): a JSON pointer to an absolute
+  expiry (values at or above 10^12 are epoch milliseconds, smaller values epoch
+  seconds) or to a lifetime in seconds. With neither, the token serves until the
+  provider rejects it.
+- `header`: how the token is attached (default `Authorization` with prefix
+  `Bearer `). The token also fills the provider's own key slot.
+- `sessionHeader` (any strategy): a header that carries the conversation's session id,
+  the same on every request of one conversation.
+- `timeoutMs`: the token request deadline, 1 to 60000 (default 10000).
+
+The exchange runs only before inference calls, never at startup. Concurrent sessions
+(including subagent workers) share one exchange per provider and account. When the
+provider answers 401, the cached token is dropped and the call is retried once with a
+fresh token; a second 401 is reported. A 429 reports the provider's reset time
+(`Retry-After` or `x-ratelimit-reset*`) under the usual retry policy. An unknown field
+or a malformed block is a `models.json` load error that names the provider.

@@ -8,8 +8,11 @@ use pa_types::ai::{
     CompatKind, Model, ModelCompat, ModelThinkingLevel, OpenAiResponsesCompat, ThinkingLevelMap,
 };
 
+use crate::auth::descriptor::{AuthStrategy, ProviderAuthDescriptor};
 use crate::auth::manager::AuthStorage;
-use crate::auth::types::{AuthCredential, PRIME_INFERENCE_PROVIDER_ID};
+use crate::auth::resolver::{AuthCounter, AuthResolveContext, ProviderAuthResolver, StaticKey};
+use crate::auth::token_exchange::TokenExchange;
+use crate::auth::types::{AuthCredential, AuthSource, PRIME_INFERENCE_PROVIDER_ID};
 
 use super::catalog_chain;
 use super::custom::{apply_model_override, load_custom_models, merge_compat, CustomModelsResult};
@@ -85,6 +88,8 @@ pub struct ModelRegistry {
     models: Vec<Model>,
     load_error: Option<String>,
     provider_request_configs: HashMap<String, ProviderRequestConfig>,
+    /// The models.json provider `auth` descriptors (validated at load).
+    provider_auth: HashMap<String, ProviderAuthDescriptor>,
     model_request_headers: HashMap<String, BTreeMap<String, String>>,
     /// TS `xaiModelSources`: every xAI model id's configured
     /// (pre-adaptation) model, re-recorded at every load. The per-call
@@ -176,6 +181,7 @@ impl ModelRegistry {
             models: Vec::new(),
             load_error: None,
             provider_request_configs: HashMap::new(),
+            provider_auth: HashMap::new(),
             model_request_headers: HashMap::new(),
             xai_model_sources: HashMap::new(),
             catalog,
@@ -312,6 +318,7 @@ impl ModelRegistry {
 
     pub fn refresh(&mut self) {
         self.provider_request_configs.clear();
+        self.provider_auth.clear();
         self.model_request_headers.clear();
         self.load_error = None;
         self.auth.reload();
@@ -413,6 +420,14 @@ impl ModelRegistry {
                 super::custom::parse_models_config(&super::custom::strip_json_comments(&content))
             {
                 for (provider, provider_config) in config.providers {
+                    // Validated by `load_custom_models` above.
+                    if let Some(descriptor) = provider_config
+                        .auth
+                        .as_ref()
+                        .and_then(|block| ProviderAuthDescriptor::parse(&provider, block).ok())
+                    {
+                        self.provider_auth.insert(provider.clone(), descriptor);
+                    }
                     if provider_config.api_key.is_some()
                         || provider_config.headers.is_some()
                         || provider_config.auth_header.is_some()
@@ -578,6 +593,49 @@ impl ModelRegistry {
                 }
             }
         }
+        // The one resolver seam: a provider whose `auth` descriptor declares
+        // `token-exchange` resolves an exchanged token (unless a runtime
+        // `--api-key` override serves); every other provider keeps its
+        // static key, which rides the provider's own key slot unchanged.
+        let descriptor = self.provider_auth.get(&model.provider).cloned();
+        let runtime_override = matches!(
+            &stored.source_token,
+            Some(token) if token.source == AuthSource::Runtime
+        );
+        let resolver = match descriptor.as_ref().map(|descriptor| &descriptor.strategy) {
+            Some(AuthStrategy::TokenExchange(spec)) if !runtime_override => {
+                ProviderAuthResolver::TokenExchange(TokenExchange::new(
+                    std::sync::Arc::clone(spec),
+                    self.auth.storage_backend(),
+                ))
+            }
+            Some(AuthStrategy::TokenExchange(_) | AuthStrategy::ApiKey) | None => {
+                if descriptor.is_some() {
+                    AuthCounter::StaticDescriptorResolve.note();
+                }
+                ProviderAuthResolver::Static(StaticKey::new(api_key))
+            }
+        };
+        let ctx = AuthResolveContext {
+            provider: &model.provider,
+        };
+        let resolution = resolver.resolve_blocking(&ctx);
+        if matches!(resolver, ProviderAuthResolver::TokenExchange(_)) {
+            // The exchange may have written a fresh token: the store's
+            // last-read copy is what a provider rejection invalidates.
+            self.auth.reload();
+        }
+        let resolved_auth = match resolution {
+            Ok(resolved_auth) => resolved_auth,
+            Err(error) => {
+                return ResolvedRequestAuth {
+                    ok: false,
+                    error: Some(error.to_string()),
+                    ..Default::default()
+                }
+            }
+        };
+        let api_key = resolved_auth.api_key;
         // A failed OAuth refresh with nothing else to serve: fail with the re-login sentence.
         if let (None, Some(failure)) = (&api_key, &stored.refresh_failure) {
             return ResolvedRequestAuth {
@@ -659,6 +717,19 @@ impl ModelRegistry {
         }
         if let Some(request_headers) = request_headers {
             headers.extend(request_headers.clone());
+        }
+        // The resolver's own headers are the credential: they win.
+        headers.extend(resolved_auth.headers);
+        // The descriptor's session header carries the harness session id:
+        // pa-ai's request entry fills the template per request, from the
+        // conversation's stable session id (an explicit header wins).
+        if let Some(session_header) = descriptor.and_then(|descriptor| descriptor.session_header) {
+            if !headers
+                .keys()
+                .any(|name| name.eq_ignore_ascii_case(&session_header))
+            {
+                headers.insert(session_header, pa_ai::SESSION_ID_TEMPLATE.to_string());
+            }
         }
         if xai_subscription_serving {
             // TS refuses a custom Authorization header on the subscription

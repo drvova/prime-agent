@@ -141,6 +141,12 @@ pub(crate) struct TelemetryState {
     /// never re-reads and re-parses the settings file.
     recording: bool,
     now: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// The process-wide request-auth resolver counters at the start of the
+    /// session's recorded window: `agent session ended` folds the delta
+    /// (one daemon worker process serves one session). A boundary that
+    /// observes an off period moves it forward, so the off window's
+    /// exchanges never ride a later event.
+    auth_baseline: crate::auth::resolver::AuthMetrics,
 }
 
 /// Is recording on right now? `None` (tests, one-shot paths) is always
@@ -169,9 +175,13 @@ fn sever_off_period_run(state: &mut TelemetryState) {
 /// settings file — the client's flush drops everything queued while the
 /// switch is off, which covers a mid-turn opt-out.
 fn observe_turn_boundary(state: &mut TelemetryState) {
+    let was_recording = state.recording;
     state.recording = recording_on(state);
     if !state.recording {
         sever_off_period_run(state);
+    }
+    if !(was_recording && state.recording) {
+        state.auth_baseline = crate::auth::resolver::AuthMetrics::current();
     }
 }
 
@@ -502,6 +512,7 @@ pub async fn install_session_telemetry(
         telemetry_enabled: wiring.telemetry_enabled.clone(),
         recording: true,
         now,
+        auth_baseline: crate::auth::resolver::AuthMetrics::current(),
     }));
     // The counters arrive already gated: the engine installs the same
     // live switch on them at creation (the MCP and kernel seams count
@@ -703,6 +714,26 @@ impl SessionTelemetry {
             properties.set("retry_count", Value::from(totals.retry_count));
             properties.set("failover_count", Value::from(totals.failover_count));
             properties.set("model_error_count", Value::from(totals.model_error_count));
+            // Sessions whose providers declare no auth descriptor keep their
+            // ended event unchanged.
+            let auth = crate::auth::resolver::AuthMetrics::current().since(state.auth_baseline);
+            if auth.static_descriptor_resolves + auth.token_exchange_resolves > 0 {
+                let strategy = if auth.token_exchange_resolves > 0 {
+                    "token_exchange"
+                } else {
+                    "api_key"
+                };
+                properties.set("auth_strategy", Value::from(strategy));
+                properties.set("auth_token_exchange_count", Value::from(auth.exchanges));
+                properties.set(
+                    "auth_refresh_failed_count",
+                    Value::from(auth.exchange_failures),
+                );
+                properties.set(
+                    "auth_rejected_retry_count",
+                    Value::from(auth.rejected_retries),
+                );
+            }
         }
         self.counters.write_into(&mut properties);
         self.client.track("agent session ended", properties);

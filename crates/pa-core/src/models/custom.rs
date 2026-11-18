@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use pa_types::ai::{Model, ModelCompat, ModelCost, ModelInput};
 use pa_types::JsNumber;
 
+use crate::auth::descriptor::{AuthStrategy, ProviderAuthDescriptor};
+
 /// Strip `//` line comments and trailing commas, leaving strings intact.
 #[must_use]
 pub fn strip_json_comments(input: &str) -> String {
@@ -142,6 +144,10 @@ pub struct ProviderConfig {
     pub headers: Option<BTreeMap<String, String>>,
     pub compat: Option<serde_json::Value>,
     pub auth_header: Option<bool>,
+    /// The provider's auth descriptor (how it authenticates); absent keeps
+    /// the static-key resolution. Validated per provider at load.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<serde_json::Value>,
     pub models: Option<Vec<ModelDefinition>>,
     pub model_overrides: Option<BTreeMap<String, ModelOverride>>,
 }
@@ -194,14 +200,25 @@ pub fn validate_config(
             .model_overrides
             .as_ref()
             .is_some_and(|overrides| !overrides.is_empty());
+        let descriptor = provider_config
+            .auth
+            .as_ref()
+            .map(|block| ProviderAuthDescriptor::parse(provider_name, block))
+            .transpose()?;
+        // A token-exchange provider authenticates from its auth.json
+        // credential, so it needs no `apiKey`.
+        let exchanges_tokens = descriptor.is_some_and(|descriptor| {
+            matches!(descriptor.strategy, AuthStrategy::TokenExchange(_))
+        });
         if models.is_empty() {
             if provider_config.base_url.is_none()
                 && provider_config.headers.is_none()
                 && provider_config.compat.is_none()
+                && provider_config.auth.is_none()
                 && !has_model_overrides
             {
                 return Err(format!(
-                    "Provider {provider_name}: must specify \"baseUrl\", \"headers\", \"compat\", \"modelOverrides\", or \"models\"."
+                    "Provider {provider_name}: must specify \"baseUrl\", \"headers\", \"compat\", \"auth\", \"modelOverrides\", or \"models\"."
                 ));
             }
         } else if !is_built_in {
@@ -210,7 +227,7 @@ pub fn validate_config(
                     "Provider {provider_name}: \"baseUrl\" is required when defining custom models."
                 ));
             }
-            if provider_config.api_key.is_none() {
+            if provider_config.api_key.is_none() && !exchanges_tokens {
                 return Err(format!(
                     "Provider {provider_name}: \"apiKey\" is required when defining custom models."
                 ));

@@ -155,6 +155,22 @@ impl AuthStorage {
                                 refresh_failure: None,
                             };
                         }
+                        // The cached short-lived token while it is fresh;
+                        // the exchange itself runs in the registry's
+                        // token-exchange resolver, which knows the
+                        // provider's descriptor.
+                        AuthCredential::TokenExchange {
+                            access, expires, ..
+                        } => {
+                            return AuthApiKeyResult {
+                                api_key: access
+                                    .clone()
+                                    .filter(|_| expires.is_none_or(|at| now_epoch_ms() < at)),
+                                source_token: Self::token_for(provider_id, &candidate),
+                                credential_type: Some("token_exchange"),
+                                refresh_failure: None,
+                            };
+                        }
                     }
                 }
             }
@@ -271,8 +287,14 @@ impl AuthStorage {
         self.rotate_oauth(provider_id, credential, RefreshTrigger::Expired)
     }
 
-    /// Force-refresh the stored OAuth credential the provider rejected: this
+    /// Force-refresh the stored credential the provider rejected: this
     /// store's last-read copy. A store that holds another credential keeps it.
+    ///
+    /// An exchanged token (`token_exchange`) is not fetched here: its cached
+    /// token is dropped so the retry's resolution refreshes it once,
+    /// single-flighted there. The drop is guarded like the OAuth commit —
+    /// only while the stored entry is still the served credential, so a
+    /// token a peer already refreshed stays and serves the retry.
     ///
     /// # Errors
     ///
@@ -285,9 +307,48 @@ impl AuthStorage {
             Some(credential @ AuthCredential::Oauth { .. }) => self
                 .rotate_oauth(provider_id, credential, RefreshTrigger::Rejected)
                 .map(drop),
-            Some(AuthCredential::ApiKey { .. } | AuthCredential::McpStaticToken { .. }) | None => {
+            Some(AuthCredential::TokenExchange {
+                refresh,
+                account_id,
+                org_id,
+                access: Some(access),
+                expires,
+            }) => {
+                super::super::resolver::AuthCounter::RejectedRetry.note();
+                let invalidated = AuthCredential::TokenExchange {
+                    refresh: refresh.clone(),
+                    account_id: account_id.clone(),
+                    org_id: org_id.clone(),
+                    access: None,
+                    expires: None,
+                };
+                let served = AuthCredential::TokenExchange {
+                    refresh,
+                    account_id,
+                    org_id,
+                    access: Some(access),
+                    expires,
+                };
+                let result = self.storage.with_lock(&mut |current| {
+                    let mut data = parse_storage_data(current.as_deref())?;
+                    if data.credential(provider_id).as_ref() != Some(&served) {
+                        return Ok(((), None));
+                    }
+                    data.insert(provider_id, &invalidated);
+                    Ok(((), Some(serde_json::to_string_pretty(&data.0)?)))
+                });
+                if let Err(error) = result {
+                    self.record_error(&error);
+                }
+                self.reload();
                 Ok(())
             }
+            Some(
+                AuthCredential::ApiKey { .. }
+                | AuthCredential::McpStaticToken { .. }
+                | AuthCredential::TokenExchange { access: None, .. },
+            )
+            | None => Ok(()),
         }
     }
 

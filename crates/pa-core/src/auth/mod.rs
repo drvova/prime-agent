@@ -1,12 +1,15 @@
 //! Auth subsystem: credential storage, resolution priority, stale-marking.
 
+pub(crate) mod descriptor;
 pub(crate) mod manager;
 pub(crate) mod prime_inference;
 pub(crate) mod prime_inference_login;
 pub(crate) mod prime_traces;
 pub(crate) mod provider_oauth;
 pub(crate) mod resolve_config_value;
+pub(crate) mod resolver;
 pub(crate) mod storage;
+pub(crate) mod token_exchange;
 pub(crate) mod types;
 
 pub use manager::{AuthApiKeyResult, AuthStorage, NoOAuth, OAuthIntegration, OAuthRefreshFailure};
