@@ -16,7 +16,7 @@ use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 type Handle = *mut c_void;
 type Hpcon = *mut c_void;
@@ -391,25 +391,6 @@ impl PseudoConsole {
     /// The next output chunk the host rendered, waiting at most `wait`.
     pub fn recv(&self, wait: Duration) -> Option<Vec<u8>> {
         self.output.recv_timeout(wait).ok()
-    }
-
-    /// Whether the child has exited.
-    pub fn exited(&self) -> bool {
-        // SAFETY: the process handle stays open for `self`'s life.
-        unsafe { WaitForSingleObject(self.process, 0) == 0 }
-    }
-
-    /// Wait up to `wait` for the child to exit.
-    pub fn wait_exit(&self, wait: Duration) -> bool {
-        let deadline = Instant::now() + wait;
-        while Instant::now() < deadline {
-            if self.exited() {
-                return true;
-            }
-            // Keep the host's output pipe drained: a full pipe blocks the child.
-            let _ = self.recv(Duration::from_millis(50));
-        }
-        self.exited()
     }
 }
 

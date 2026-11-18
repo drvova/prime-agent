@@ -302,3 +302,46 @@ fn the_deep_battery_stays_off_the_pr_wave() {
         "the deep battery (the multi-hour debug loop) must not bill on every PR: {condition}"
     );
 }
+
+/// The pseudoconsole keyboard battery (`windows_conpty_input_e2e`): the
+/// TUI's keys on both console hosts, the inbox `ConPTY` and the pinned
+/// Windows Terminal host package, plus the Git Bash refusal. The job fetches
+/// the package by version and hash, hands its path to the battery, and runs
+/// the battery locked; the battery keeps defining the tests the job claims.
+#[test]
+fn the_tui_battery_job_drives_the_keyboard_through_both_console_hosts() {
+    let (workflow, _) = workflow_yaml();
+    let runs = step_runs(&job(&workflow, "windows-runtime-tui-battery"));
+    let fetch = runs
+        .iter()
+        .find(|run| run.contains("microsoft.windows.console.conpty"))
+        .expect("the job fetches the Windows Terminal console host");
+    assert!(
+        fetch.contains("$version = '1.25.261109001'")
+            && fetch.contains(
+                "$sha256 = '3d77f535df848e44225c2a8912ac844fecb23f3057732b639f3034b587496f09'"
+            )
+            && fetch.contains("Get-FileHash -Algorithm SHA256")
+            && fetch.contains("PA_CONPTY_DLL="),
+        "the host package is pinned by version and hash and handed to the battery: {fetch}"
+    );
+    let battery = runs
+        .iter()
+        .find(|run| run.contains("--test windows_conpty_input_e2e"))
+        .expect("the job runs the windows_conpty_input_e2e battery");
+    assert!(
+        battery.contains("cargo test --locked -p pa-cli")
+            && battery.contains("PA_CONPTY_DLL is unset"),
+        "the battery runs locked and refuses to skip the package host: {battery}"
+    );
+    let source = fs::read_to_string(
+        repo_root().join("crates/pa-cli/tests/windows_conpty_input_e2e/main.rs"),
+    )
+    .expect("read the keyboard battery source");
+    for test in [
+        "fn prime_tui_keys_act_on_conpty",
+        "fn git_bash_without_conpty_gets_a_clear_message",
+    ] {
+        assert!(source.contains(test), "the keyboard battery defines {test}");
+    }
+}
