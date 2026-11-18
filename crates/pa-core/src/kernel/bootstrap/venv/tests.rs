@@ -1368,7 +1368,11 @@ async fn kernel_ready_does_not_wait_on_the_bytecode_compile() {
     )
     .unwrap();
     set_mode(&python, 0o755);
-    let runtime_identity = hash_runtime_source(&require_runtime_source_dir().unwrap()).unwrap();
+    let runtime_identity = hash_runtime_source(
+        &require_runtime_source_dir().unwrap(),
+        &TreeIdentityCache::in_venv(&venv),
+    )
+    .unwrap();
     write_bootstrap_version(&venv, &runtime_identity, &[]).unwrap();
 
     let resolved = tokio::time::timeout(
