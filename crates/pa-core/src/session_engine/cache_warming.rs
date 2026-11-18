@@ -194,6 +194,9 @@ pub(crate) fn wrap_stream_fn(config: CacheWarmingConfig, inner: StreamFn) -> Str
                     context: context.clone(),
                     options: StreamRequestOptions {
                         max_tokens: Some(1),
+                        // A refresh repeats a settled round: the stream loop
+                        // guard never screens it (it could only void it).
+                        loop_guard: Some(pa_agent::types::LoopGuardLevel::Off),
                         signal: pa_agent::abort::AbortSignal::never(),
                         on_payload: None,
                         on_response: None,

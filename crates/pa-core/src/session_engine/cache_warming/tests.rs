@@ -151,7 +151,12 @@ fn answering_warm_fn(warm_tx: mpsc::UnboundedSender<Instant>) -> StreamFn {
     )));
     let inner = answering_stream_fn(Arc::clone(&seen), answer);
     Arc::new(move |model, context, options| {
-        assert_eq!(options.max_tokens, Some(1), "a refresh asks for one token");
+        // One token, and never screened by the stream loop guard: a refresh
+        // repeats a settled round and must not trip or void it.
+        assert_eq!(
+            (options.max_tokens, options.loop_guard),
+            (Some(1), Some(pa_agent::types::LoopGuardLevel::Off)),
+        );
         warm_tx.send(Instant::now()).unwrap();
         inner(model, context, options)
     })
