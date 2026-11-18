@@ -246,7 +246,7 @@ fn a_ctrl_c_that_closes_settings_never_arms_the_force_quit() {
     }
     harness
         .master
-        .wait_from(mark, b"Type to search", "the settings menu");
+        .wait_from(mark, b"Auto-compact", "the settings menu");
     harness.settle();
 
     // The pair: the first press closes the menu, the second shows the exit hint.

@@ -50,7 +50,7 @@ use skills::{
     file_content_hash, read_python_skill_dependency_names, read_python_skill_project_name,
 };
 pub(crate) use skills::{normalize_python_skills, BootstrapPythonSkill};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use tree_identity::content_reads_for_tests;
 pub(in crate::kernel::bootstrap) use tree_identity::TreeIdentityCache;
 pub(crate) use uv::ensure_uv;

@@ -77,16 +77,25 @@ pub(super) fn reset() {
 
 impl AgentView {
     /// Hold this view's visible-window packs for the next chat run over the same session, keyed
-    /// by the LATEST event sequence the run saw.
+    /// by the LATEST event sequence the run saw and the entries the re-entry's attach replays.
     pub fn stash_layout_handoff(&self, session_id: &str, generation: &str, sequence: u64) {
         if self.layout_width == 0 {
             // A view that never composed a window holds nothing visible
             // to reuse.
             return;
         }
+        // A trailing run summary is this view's own row: the re-entry rebuilds the entries before
+        // it, so neither the key nor the packs count it.
+        let replayed = match self.chat.last() {
+            Some(last) if self.run_summary.as_ref() == Some(last) => self.chat.len() - 1,
+            Some(_) | None => self.chat.len(),
+        };
         let mut packs: std::collections::BTreeMap<usize, HeldSlots> =
             std::collections::BTreeMap::new();
         for section in &self.click.window_sections {
+            if section.entry >= replayed {
+                continue;
+            }
             // A clicked card's slot holds its flipped rows, but the re-entry mounts every card
             // at the level, so its pack must not serve there.
             if self.toggled_cards.contains(&section.entry) {
@@ -113,7 +122,7 @@ impl AgentView {
             session_id: session_id.to_string(),
             generation: generation.to_string(),
             sequence,
-            entry_count: self.chat.len(),
+            entry_count: replayed,
             shape,
             packs: packs.into_iter().collect(),
         });

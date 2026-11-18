@@ -445,6 +445,12 @@ impl AgentSessionEngine {
             return Ok(TurnOnce::Aborted);
         }
         if let Some(error) = admission_error {
+            // A Stop that lands inside the admitted run settles it on the typed abort: the
+            // aborted outcome, never a turn error that fails an active goal (the re-wrap
+            // below drops the type).
+            if pa_agent::abort::is_abort_error(&error) {
+                return Ok(TurnOnce::Aborted);
+            }
             return Err(anyhow::anyhow!("{error:#}"));
         }
         let state = agent.state().await;

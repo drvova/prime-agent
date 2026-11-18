@@ -766,6 +766,12 @@ class DockScreen:
                                 self.unsupported_terminal.append(sequence)
                     elif command == 'q' and intermediate == ' ':
                         pass  # Cursor presentation, not cell geometry.
+                    elif command == 't' and params in ('22;0', '23;0'):
+                        pass  # XTWINOPS title-stack push/pop: no cell effect.
+                    elif command == 'r' and params == '':
+                        # DECSTBM reset to the full screen homes the cursor; a
+                        # partial region would change scrolling and stays unsupported.
+                        self.row = self.col = 0
                     else:
                         self.unsupported_terminal.append(sequence)
                     continue

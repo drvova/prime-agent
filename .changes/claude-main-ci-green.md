@@ -1,0 +1,1 @@
+- Returning to a session from the agents view right after a prompt finished draws it from the previous view again instead of re-rendering the whole window (the run summary line had been stopping that reuse).

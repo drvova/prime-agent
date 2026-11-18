@@ -831,10 +831,12 @@ impl SessionUi {
                 .chat
                 .last()
                 .is_some_and(crate::snapshot::is_superseded_attempt_row);
-            view.push_entry(ChatEntry::Status {
+            let summary = ChatEntry::Status {
                 text,
                 kind: StatusKind::Info,
-            });
+            };
+            view.run_summary = Some(summary.clone());
+            view.push_entry(summary);
             if follows_failed_attempt {
                 self.attempt_summary = Some(AttemptSummary {
                     index: view.chat_len() - 1,
