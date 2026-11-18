@@ -142,8 +142,9 @@ pub fn is_permanent_provider_failure_kind(
         // the first attempt (the disclosure row still fires).
         Some("invalid_request" | "refusal" | "permission" | "safety" | "payment_required") => true,
         // Auth retries once before it can be marked stale; an incomplete
-        // reply retries once before its turn fails.
-        Some("auth" | INCOMPLETE_REPLY_KIND) => retries_performed > 0,
+        // reply, or a stream the loop guard cut, retries once before its
+        // turn fails: a model that loops again is never re-run in a loop.
+        Some("auth" | INCOMPLETE_REPLY_KIND | REPETITION_LOOP_KIND) => retries_performed > 0,
         _ => false,
     }
 }
@@ -151,6 +152,11 @@ pub fn is_permanent_provider_failure_kind(
 /// The `provider_stream_failure` kind of a final reply that cannot end its
 /// turn (see [`incomplete_reply_reason`]). It gets one retry.
 pub const INCOMPLETE_REPLY_KIND: &str = "incomplete_reply";
+
+/// The `provider_stream_failure` kind of a stream the loop guard cut because
+/// the model started repeating itself (pa-ai's `repetition_loop`). It gets
+/// one retry, which carries a nudge (`session_engine::loop_guard`).
+pub const REPETITION_LOOP_KIND: &str = "repetition_loop";
 
 /// Why a final reply cannot end its turn, if it cannot. The agent loop ends
 /// a turn on any reply without a tool call, so a reply cut off at the output

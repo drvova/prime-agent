@@ -13,9 +13,10 @@ use crate::event_stream::{
 use crate::registry::{register_api_provider, unregister_api_providers, Provider};
 use crate::types::{
     done_reason, error_reason, zero_model_cost, AssistantContent, AssistantMessage,
-    AssistantMessageEvent, Context, ErrorStopReason, ImageContent, Message, MessageExt, Model,
-    ModelCost, ModelInput, SimpleStreamOptions, StopReason, StreamOptions, TextContent,
-    ThinkingContent, ToolCall, ToolResultMessage, Usage, UsageCost, UserMessageContent,
+    AssistantMessageEvent, Context, ErrorStopReason, ImageContent, LoopGuardLevel, Message,
+    MessageExt, Model, ModelCost, ModelInput, SimpleStreamOptions, StopReason, StreamOptions,
+    TextContent, ThinkingContent, ToolCall, ToolResultMessage, Usage, UsageCost,
+    UserMessageContent,
 };
 use crate::utils_inner::diagnostics::now_ms;
 use crate::utils_inner::stream_failure::{
@@ -872,6 +873,12 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
         ) -> AssistantMessageEventStream {
             let options = options.map(|simple| simple.base.clone());
             self.stream(model, context, options.as_ref())
+        }
+
+        /// Scripted replies are fixtures, not model output: they stream as written unless a
+        /// request names a level.
+        fn default_loop_guard(&self, _model: &Model) -> LoopGuardLevel {
+            LoopGuardLevel::Off
         }
     }
 

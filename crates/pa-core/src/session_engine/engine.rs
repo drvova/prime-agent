@@ -274,6 +274,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Request timing: the settings half of the flag is read once here
     // (`settings` moves into the loader); the `PI_REQUEST_TIMING` half stays live.
     let request_timing_settings = settings.get_request_timing();
+    // The stream loop guard's level (`loopGuard`), read once like the flag above.
+    let loop_guard_level = settings.get_loop_guard();
     // Captured before `settings` moves into the resource loader: the
     // factory host bridge's preflight facts (the daemon `allowedModels`
     // pin), like the request-timing snapshot above.
@@ -693,8 +695,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // question keeps the pre-semantic fn, so its calls carry no id.
     let timing_stream_fn = super::request_timing::instrument_stream_fn(
         std::sync::Arc::clone(&request_timing_wiring),
-        stream_fn,
+        super::loop_guard::guard_stream_fn(loop_guard_level, stream_fn),
     );
+    // The repeated-tool-call nudge counts into the session telemetry once
+    // it is installed (after the agent exists).
+    let repeat_nudge_telemetry = std::sync::Arc::new(std::sync::OnceLock::new());
     let side_question_stream_fn = std::sync::Arc::clone(&timing_stream_fn);
     let semantic_recorder = config.semantic_edges.take().map(|identity| {
         std::sync::Arc::new(super::semantic_edges::SemanticEdgeRecorder::open(identity))
@@ -749,6 +754,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             }))
         },
         should_stop_before_turn: config.queued_steering_probe.clone(),
+        after_tool_call: (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(
+            || super::loop_guard::repeat_call_nudge(std::sync::Arc::clone(&repeat_nudge_telemetry)),
+        ),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
         ..Default::default()
@@ -911,6 +919,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // telemetry handle (installed once the telemetry composition decided
     // whether this session reports at all).
     if let Some(telemetry) = telemetry.as_ref() {
+        let _ = repeat_nudge_telemetry.set(telemetry.clone());
         session.set_skill_telemetry(telemetry.clone());
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.

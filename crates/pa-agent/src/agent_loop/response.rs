@@ -145,6 +145,8 @@ async fn stream_assistant_response_inner(
         on_payload: None,
         on_response: None,
         headers: None,
+        // The session engine's stream seam sets the level from settings.
+        loop_guard: None,
     };
 
     let mut response = race_with_abort(

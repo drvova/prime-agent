@@ -11,13 +11,13 @@ pub use pa_types::ai::{
     AnthropicMessagesCompat, Api, AssistantContentBlock as AssistantContent, AssistantMessage,
     AssistantMessageDiagnostic, AssistantMessageEvent, CacheControlFormat, CacheRetention,
     CompatKind, Context, DataCollection, DiagnosticCode, DiagnosticErrorInfo, DoneStopReason,
-    ErrorStopReason, ImageContent, KnownApi, KnownProvider, MaxTokensField, Message, Model,
-    ModelCompat, ModelCost, ModelInput, ModelThinkingLevel, NumOrString, OpenAiCompletionsCompat,
-    OpenAiResponsesCompat, OpenRouterMaxPrice, OpenRouterRouting, OpenRouterSort,
-    OpenRouterThreshold, Provider, ProviderResponse, ServiceTier, StopReason, TextContent,
-    TextSignaturePhase, TextSignatureV1, ThinkingBudgets, ThinkingContent, ThinkingFormat,
-    ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolResultMessage, Transport, Usage,
-    UsageCost, UserContent as UserMessageContent, UserContentBlock as UserOrToolContent,
+    ErrorStopReason, ImageContent, KnownApi, KnownProvider, LoopGuardLevel, MaxTokensField,
+    Message, Model, ModelCompat, ModelCost, ModelInput, ModelThinkingLevel, NumOrString,
+    OpenAiCompletionsCompat, OpenAiResponsesCompat, OpenRouterMaxPrice, OpenRouterRouting,
+    OpenRouterSort, OpenRouterThreshold, Provider, ProviderResponse, ServiceTier, StopReason,
+    TextContent, TextSignaturePhase, TextSignatureV1, ThinkingBudgets, ThinkingContent,
+    ThinkingFormat, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolResultMessage, Transport,
+    Usage, UsageCost, UserContent as UserMessageContent, UserContentBlock as UserOrToolContent,
     UserMessage,
 };
 
@@ -80,6 +80,9 @@ pub struct StreamOptions {
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub timeout_ms: Option<u64>,
     pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// The stream loop guard's level for this request; `None` takes the provider's default
+    /// (`Provider::default_loop_guard`: by model family, off for scripted fixtures).
+    pub loop_guard: Option<LoopGuardLevel>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -98,6 +101,7 @@ impl std::fmt::Debug for StreamOptions {
             .field("headers", &self.headers)
             .field("timeout_ms", &self.timeout_ms)
             .field("metadata", &self.metadata)
+            .field("loop_guard", &self.loop_guard)
             .finish()
     }
 }

@@ -2,7 +2,10 @@
 
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::event_stream::AssistantMessageEventStream;
+use crate::loop_guard::{ArmedLoopGuard, StreamLoopGuard};
 use crate::providers::simple_options::default_request_max_tokens;
 use crate::registry::{ensure_builtins, get_api_provider};
 use crate::types::{AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions};
@@ -157,6 +160,27 @@ fn declare_session_identity(options: Option<&mut StreamOptions>) {
     headers.insert(SESSION_ID_HEADER.to_string(), session_id);
 }
 
+/// Arm the stream loop guard for one request: resolve its level (the request's, else the
+/// provider's default for the model), and give the provider a child of the request's abort token, so a trip cuts the
+/// provider request without marking the caller's own signal aborted. `None` when the level
+/// watches nothing.
+fn arm_loop_guard(
+    provider: &dyn crate::registry::Provider,
+    model: &Model,
+    options: &mut StreamOptions,
+) -> Option<ArmedLoopGuard> {
+    let level = options
+        .loop_guard
+        .unwrap_or_else(|| provider.default_loop_guard(model));
+    let guard = StreamLoopGuard::new(level)?;
+    let cancel = options
+        .signal
+        .as_ref()
+        .map_or_else(CancellationToken::new, CancellationToken::child_token);
+    options.signal = Some(cancel.clone());
+    Some(ArmedLoopGuard::new(guard, cancel, model))
+}
+
 /// Start streaming a completion for `model` using provider-native options.
 ///
 /// # Errors
@@ -171,7 +195,15 @@ pub fn stream(
     let mut options = options;
     clamp_output_budget(model, context, options.as_mut());
     declare_session_identity(options.as_mut());
-    Ok(provider.stream(model, context, options.as_ref()))
+    // A request without options carries no abort token to cut, so it streams unguarded.
+    let guard = options
+        .as_mut()
+        .and_then(|options| arm_loop_guard(provider.as_ref(), model, options));
+    let stream = provider.stream(model, context, options.as_ref());
+    if let Some(guard) = guard {
+        stream.arm_loop_guard(guard);
+    }
+    Ok(stream)
 }
 
 /// Await the final assistant message of a provider-native stream.
@@ -208,7 +240,12 @@ pub fn stream_simple(
     let simple = options.get_or_insert_with(SimpleStreamOptions::default);
     clamp_output_budget(model, context, Some(&mut simple.base));
     declare_session_identity(Some(&mut simple.base));
-    Ok(provider.stream_simple(model, context, options.as_ref()))
+    let guard = arm_loop_guard(provider.as_ref(), model, &mut simple.base);
+    let stream = provider.stream_simple(model, context, options.as_ref());
+    if let Some(guard) = guard {
+        stream.arm_loop_guard(guard);
+    }
+    Ok(stream)
 }
 
 /// Await the final assistant message of a simple stream (`completeSimple`).

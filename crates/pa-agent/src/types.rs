@@ -46,6 +46,15 @@ pub enum Transport {
     Auto,
 }
 
+/// The stream loop guard's level for a request (wire names match the shared AI package's).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopGuardLevel {
+    Off,
+    Exact,
+    Semantic,
+}
+
 /// How tool calls from one assistant message are executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolExecutionMode {

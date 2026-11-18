@@ -32,6 +32,7 @@ use serde_json::Value;
 
 use super::auto_retry::AutoRetryEvent;
 use super::error_classify::classify_error_message;
+use super::provider_retry::{provider_stream_failure_kind, REPETITION_LOOP_KIND};
 
 mod track;
 pub use track::{
@@ -298,6 +299,19 @@ struct ActiveRun {
     /// tools by name, every MCP and custom tool folded into `mcp` /
     /// `custom`: no raw tool names leave the machine).
     tool_summary: HashMap<ToolCategory, ToolCategoryStats>,
+    /// The stream loop guard's interventions in the run.
+    loop_guard: LoopGuardCounts,
+}
+
+/// One run's stream loop guard interventions (`session_engine::loop_guard`).
+#[derive(Debug, Default)]
+struct LoopGuardCounts {
+    /// Model calls the guard cut for repeating themselves.
+    trips: u64,
+    /// Retries started after such a cut.
+    retries: u64,
+    /// Tool results that carried the repeated-call nudge.
+    tool_repeat_nudges: u64,
 }
 
 /// One tool category's per-run aggregates.
@@ -627,6 +641,15 @@ impl SessionTelemetry {
                 delay_ms, reason, ..
             } => {
                 run.retry_count += 1;
+                if run
+                    .last_assistant
+                    .as_ref()
+                    .and_then(provider_stream_failure_kind)
+                    .as_deref()
+                    == Some(REPETITION_LOOP_KIND)
+                {
+                    run.loop_guard.retries += 1;
+                }
                 run.retry_wait_ms += *delay_ms;
                 run.retry_pending = true;
                 if matches!(reason, super::auto_retry::RetryStartReason::Backup { .. }) {
@@ -634,6 +657,23 @@ impl SessionTelemetry {
                 }
             }
             AutoRetryEvent::End { .. } => run.retry_pending = false,
+        }
+    }
+
+    /// A tool result carried the loop guard's repeated-call nudge
+    /// (`session_engine::loop_guard`); counts toward the active run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_tool_repeat_nudge(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if let Some(run) = state.active_run.as_mut() {
+            run.loop_guard.tool_repeat_nudges += 1;
         }
     }
 
@@ -877,6 +917,7 @@ fn handle_event(
                 error_category_counts: std::collections::BTreeMap::new(),
                 compaction_duration_ms: 0,
                 tool_summary: HashMap::new(),
+                loop_guard: LoopGuardCounts::default(),
             });
         }
         AgentEvent::MessageStart { message } => {
@@ -962,6 +1003,8 @@ fn handle_event(
                 // message end.
                 resolve_trigger(&mut state, RunTrigger::Continuation);
                 let is_error = assistant.stop_reason == StopReason::Error;
+                let repetition_loop = provider_stream_failure_kind(&assistant).as_deref()
+                    == Some(REPETITION_LOOP_KIND);
                 let category = error_category(Some(&assistant))
                     .as_str()
                     .and_then(|category| {
@@ -983,6 +1026,9 @@ fn handle_event(
                     if is_error {
                         run.usage_complete = false;
                         run.model_error_count += 1;
+                        if repetition_loop {
+                            run.loop_guard.trips += 1;
+                        }
                         if let Some(category) = category {
                             *run.error_category_counts.entry(category).or_default() += 1;
                         }
@@ -1095,6 +1141,15 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     properties.set("compaction_count", Value::from(run.compaction_count));
     properties.set("retry_count", Value::from(run.retry_count));
     properties.set("failover_count", Value::from(run.failover_count));
+    properties.set("loop_guard_trip_count", Value::from(run.loop_guard.trips));
+    properties.set(
+        "loop_guard_retry_count",
+        Value::from(run.loop_guard.retries),
+    );
+    properties.set(
+        "loop_guard_tool_repeat_nudge_count",
+        Value::from(run.loop_guard.tool_repeat_nudges),
+    );
     properties.set(
         "provider_category",
         Value::from(provider_category(

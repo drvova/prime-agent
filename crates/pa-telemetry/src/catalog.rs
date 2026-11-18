@@ -572,6 +572,11 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("compaction_count", optional(count())),
         ("retry_count", optional(count())),
         ("failover_count", optional(count())),
+        // The stream loop guard: model calls cut for repeating themselves,
+        // retries after such a cut, and repeated-tool-call nudges.
+        ("loop_guard_trip_count", optional(count())),
+        ("loop_guard_retry_count", optional(count())),
+        ("loop_guard_tool_repeat_nudge_count", optional(count())),
         (
             "provider_category",
             optional(enum_rule(PROVIDER_CATEGORIES, "custom")),

@@ -828,6 +828,49 @@ async fn retries_fold_into_one_run_that_succeeds() {
     assert!(!all.contains("/home/user/secret"));
 }
 
+/// The stream loop guard's interventions ride the run: a cut stream counts
+/// a trip, the retry after it counts a retry after a trip, and each
+/// repeated-tool-call nudge counts once.
+#[tokio::test]
+async fn loop_guard_interventions_ride_the_run() {
+    let fixture = fixture();
+    let telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    let mut cut = assistant_with_error("Model output started repeating itself");
+    cut.diagnostics = Some(vec![pa_agent::types::AssistantMessageDiagnostic {
+        kind: "provider_stream_failure".to_string(),
+        timestamp: 0,
+        error: None,
+        details: Some(serde_json::json!({ "kind": "repetition_loop" })),
+    }]);
+    emit(
+        &fixture,
+        AgentEvent::MessageStart {
+            message: user_message(),
+        },
+    );
+    attempt(&fixture, cut);
+    retry_start(&telemetry, 1, 10, false);
+    telemetry.note_tool_repeat_nudge();
+    attempt(&fixture, assistant_message());
+    telemetry.end().await.unwrap();
+
+    let runs = event_properties(&fixture.mock, "agent run completed").await;
+    let counts: Vec<&serde_json::Value> = [
+        "loop_guard_trip_count",
+        "loop_guard_retry_count",
+        "loop_guard_tool_repeat_nudge_count",
+    ]
+    .iter()
+    .map(|key| &runs[0][*key])
+    .collect();
+    let one = serde_json::json!(1);
+    assert_eq!(counts, vec![&one, &one, &one]);
+}
+
 /// A turn whose retries are exhausted is one run with the error outcome
 /// of its final attempt.
 #[tokio::test]
