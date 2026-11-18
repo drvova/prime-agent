@@ -70,6 +70,14 @@ impl StoredExchange {
     }
 }
 
+/// One exchange's answer. Holds secrets, so it has no `Debug`.
+struct ExchangedToken {
+    access: String,
+    expires_at: Option<i64>,
+    /// The rotated refresh credential, when the response carries one.
+    refresh: Option<String>,
+}
+
 /// One provider's token-exchange resolver over the shared auth store.
 pub(crate) struct TokenExchange {
     spec: Arc<TokenExchangeSpec>,
@@ -144,10 +152,11 @@ impl TokenExchange {
             .then(|| self.headers_for(access, stored.expires))
     }
 
-    /// Run the declared exchange for `stored`: the token and its expiry.
+    /// Run the declared exchange for `stored`: the token, its expiry, and a
+    /// rotated refresh credential when the descriptor declares one.
     /// Error texts carry no URL, body, header, or credential: only fixed
     /// sentences, field names, and the status code.
-    async fn exchange(&self, stored: &StoredExchange) -> Result<(String, Option<i64>), String> {
+    async fn exchange(&self, stored: &StoredExchange) -> Result<ExchangedToken, String> {
         let StoredExchange {
             refresh,
             account_id,
@@ -245,7 +254,19 @@ impl TokenExchange {
             ExpirySource::InPath(path) => Some(now_epoch_ms() + (number_at(path)? * 1000.0) as i64),
             ExpirySource::Unknown => None,
         };
-        Ok((access.to_string(), expires_at))
+        // A rotated refresh credential replaces the stored one; an absent or
+        // empty value keeps it.
+        let refresh = spec.refresh_path.as_deref().and_then(|path| {
+            body.pointer(path)
+                .and_then(Value::as_str)
+                .filter(|refresh| !refresh.is_empty())
+                .map(str::to_string)
+        });
+        Ok(ExchangedToken {
+            access: access.to_string(),
+            expires_at,
+            refresh,
+        })
     }
 
     /// Persist the fresh token into the credential it was exchanged from,
@@ -305,7 +326,11 @@ impl AuthResolver for TokenExchange {
         if let Some(headers) = self.cached(&stored) {
             return Ok(headers);
         }
-        let (access, expires_at) = match self.exchange(&stored).await {
+        let ExchangedToken {
+            access,
+            expires_at,
+            refresh,
+        } = match self.exchange(&stored).await {
             Ok(token) => {
                 AuthCounter::Exchange.note();
                 token
@@ -319,7 +344,10 @@ impl AuthResolver for TokenExchange {
                 });
             }
         };
+        // The rotated refresh lands in the same guarded write as the token,
+        // still under both locks: a waiter re-reads it, never the spent one.
         let fresh = StoredExchange {
+            refresh: refresh.unwrap_or_else(|| stored.refresh.clone()),
             access: Some(access.clone()),
             expires: expires_at,
             ..stored.clone()

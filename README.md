@@ -210,6 +210,7 @@ environment, or the entry's `apiKey`). Two strategies exist:
           "org": "{{orgId}}"
         },
         "tokenPath": "/access_token",
+        "refreshPath": "/refresh_token",
         "expiresInPath": "/expires_in",
         "header": { "name": "Authorization", "prefix": "Bearer " },
         "sessionHeader": "x-example-session",
@@ -244,6 +245,11 @@ Fields:
   `{{orgId}}`; nothing else (such as environment variables) renders. The body is JSON,
   or form-encoded with `"requestEncoding": "form"` (string values only).
 - `tokenPath`: a JSON pointer to the token in the response.
+- `refreshPath` (optional): a JSON pointer to a rotated refresh credential in the
+  response. For providers that issue a new refresh credential on every exchange and
+  invalidate the old one: a non-empty string there replaces the stored `refresh` in
+  `auth.json`, together with the new token. Without it, or when the response has no
+  value there, the stored `refresh` is kept.
 - `expiresAtPath` or `expiresInPath` (at most one): a JSON pointer to an absolute
   expiry (values at or above 10^12 are epoch milliseconds, smaller values epoch
   seconds) or to a lifetime in seconds. With neither, the token serves until the

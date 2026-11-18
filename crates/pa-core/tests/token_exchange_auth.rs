@@ -48,6 +48,13 @@ enum TokenMode {
     HoldFirst,
     /// Never answer: a token endpoint that hangs.
     Hang,
+    /// Rotate refresh tokens: only the refresh issued last (initially
+    /// `r-long`) is accepted, each exchange answers a new
+    /// `"refresh_token": "r-<n>"`, and a spent one gets a 401.
+    Rotating,
+    /// [`TokenMode::Rotating`] with the first request held like
+    /// [`TokenMode::HoldFirst`].
+    RotatingHoldFirst,
 }
 
 /// The loopback token + inference server.
@@ -63,16 +70,19 @@ impl Server {
         let received: Arc<Mutex<Vec<Received>>> = Arc::default();
         let inference = Arc::new(Mutex::new(VecDeque::from(inference)));
         let log = Arc::clone(&received);
+        let valid_refresh = Arc::new(Mutex::new("r-long".to_string()));
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let log = Arc::clone(&log);
                 let inference = Arc::clone(&inference);
+                let valid_refresh = Arc::clone(&valid_refresh);
                 std::thread::spawn(move || {
                     let Some(request) = read_request(&mut stream) else {
                         return;
                     };
                     let is_token = request.path == "/token";
+                    let sent_refresh = request.body["refresh_token"].clone();
                     log.lock().unwrap().push(request);
                     let response = if is_token {
                         let count = || {
@@ -88,16 +98,37 @@ impl Server {
                             std::thread::sleep(Duration::from_secs(30));
                             return;
                         }
-                        if matches!(token_mode, TokenMode::HoldFirst) && issued == 1 {
+                        if matches!(
+                            token_mode,
+                            TokenMode::HoldFirst | TokenMode::RotatingHoldFirst
+                        ) && issued == 1
+                        {
                             let deadline = Instant::now() + Duration::from_millis(1500);
                             while count() < 2 && Instant::now() < deadline {
                                 std::thread::sleep(Duration::from_millis(10));
                             }
                         }
-                        json_response(
-                            200,
-                            &json!({ "access_token": format!("short-{issued}"), "expires_in": 3600 }),
-                        )
+                        match token_mode {
+                            TokenMode::Rotating | TokenMode::RotatingHoldFirst => {
+                                let mut valid = valid_refresh.lock().unwrap();
+                                if sent_refresh == json!(*valid) {
+                                    *valid = format!("r-{issued}");
+                                    json_response(
+                                        200,
+                                        &json!({ "access_token": format!("short-{issued}"),
+                                            "expires_in": 3600, "refresh_token": *valid }),
+                                    )
+                                } else {
+                                    json_response(401, &json!({ "error": "invalid_grant" }))
+                                }
+                            }
+                            TokenMode::Immediate | TokenMode::HoldFirst | TokenMode::Hang => {
+                                json_response(
+                                    200,
+                                    &json!({ "access_token": format!("short-{issued}"), "expires_in": 3600 }),
+                                )
+                            }
+                        }
                     } else {
                         inference
                             .lock()
@@ -265,6 +296,22 @@ fn resolve(dir: &std::path::Path) -> ResolvedRequestAuth {
     registry.get_api_key_and_headers(&model, model.headers.as_ref())
 }
 
+/// Set one field of the provider's models.json `auth` block.
+fn set_auth_field(dir: &std::path::Path, field: &str, value: Value) {
+    let models_path = dir.join("models.json");
+    let mut models: Value =
+        serde_json::from_str(&std::fs::read_to_string(&models_path).unwrap()).unwrap();
+    models["providers"][PROVIDER]["auth"][field] = value;
+    std::fs::write(&models_path, models.to_string()).unwrap();
+}
+
+/// Force the next resolution to exchange: the provider rejected the token
+/// this store served (the 401 recovery path).
+fn reject_served_token(dir: &std::path::Path) {
+    let mut auth = AuthStorage::create(dir);
+    auth.refresh_rejected_oauth(PROVIDER).unwrap();
+}
+
 fn stored(dir: &std::path::Path) -> Value {
     let auth: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("auth.json")).unwrap()).unwrap();
@@ -386,11 +433,7 @@ fn loading_the_registry_never_exchanges() {
 fn a_hanging_token_endpoint_fails_within_its_deadline() {
     let server = Server::start(TokenMode::Hang, Vec::new());
     let dir = agent_dir(&server);
-    let models_path = dir.path().join("models.json");
-    let mut models: Value =
-        serde_json::from_str(&std::fs::read_to_string(&models_path).unwrap()).unwrap();
-    models["providers"][PROVIDER]["auth"]["timeoutMs"] = json!(300);
-    std::fs::write(&models_path, models.to_string()).unwrap();
+    set_auth_field(dir.path(), "timeoutMs", json!(300));
     let started = Instant::now();
     let resolved = resolve(dir.path());
     assert!(
@@ -479,6 +522,73 @@ fn two_processes_share_one_exchange() {
     assert_eq!(server.requests("/token").len(), 1);
     assert_eq!(parent, served("short-1"));
     assert_eq!(child_key.as_deref(), Some("short-1"));
+}
+
+/// The refresh credential every token request sent, in order.
+fn sent_refreshes(server: &Server) -> Vec<String> {
+    server
+        .requests("/token")
+        .iter()
+        .map(|request| {
+            request.body["refresh_token"]
+                .as_str()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect()
+}
+
+/// A rotating provider accepts only the refresh it issued last: two forced
+/// exchanges in a row both succeed because each stores the rotated refresh
+/// in the same entry as the token.
+#[test]
+fn a_rotated_refresh_is_stored_and_the_next_exchange_sends_it() {
+    let server = Server::start(TokenMode::Rotating, Vec::new());
+    let dir = agent_dir(&server);
+    set_auth_field(dir.path(), "refreshPath", json!("/refresh_token"));
+    assert_eq!(resolve(dir.path()), served("short-1"));
+    reject_served_token(dir.path());
+    assert_eq!(resolve(dir.path()), served("short-2"));
+    assert_eq!(sent_refreshes(&server), vec!["r-long", "r-1"]);
+    assert_eq!(stored(dir.path())["refresh"], json!("r-2"));
+}
+
+/// Two processes racing one rotation never send a spent refresh: the child
+/// exchanges (and rotates) under the cross-process lock while the parent
+/// waits, the parent reuses the child's token, and the parent's next forced
+/// exchange sends the refresh the child stored.
+#[test]
+fn two_processes_racing_a_rotation_never_send_a_spent_refresh() {
+    let server = Server::start(TokenMode::RotatingHoldFirst, Vec::new());
+    let dir = agent_dir(&server);
+    set_auth_field(dir.path(), "refreshPath", json!("/refresh_token"));
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "child_resolver", "--nocapture"])
+        .env(CHILD_ENV, dir.path())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while server.requests("/token").is_empty() {
+        assert!(Instant::now() < deadline, "the child never exchanged");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let parent = resolve(dir.path());
+    let output = child.wait_with_output().unwrap();
+    let child_key = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("CHILD_KEY=").map(str::to_string));
+    reject_served_token(dir.path());
+    let after_rotation = resolve(dir.path());
+    assert_eq!(
+        (parent, child_key, after_rotation),
+        (
+            served("short-1"),
+            Some("short-1".to_string()),
+            served("short-2")
+        )
+    );
+    assert_eq!(sent_refreshes(&server), vec!["r-long", "r-1"]);
 }
 
 /// The daemon's live-auth stream over one shared registry, and the auth

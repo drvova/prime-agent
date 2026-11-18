@@ -73,6 +73,8 @@ pub(crate) struct ProviderAuthConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) token_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) refresh_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expires_at_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) expires_in_path: Option<String>,
@@ -111,6 +113,9 @@ pub(crate) struct TokenExchangeSpec {
     pub(crate) request_body: Option<ExchangeBody>,
     /// JSON pointer to the token in the response.
     pub(crate) token_path: String,
+    /// JSON pointer to a rotated refresh credential in the response; a
+    /// non-empty string there replaces the stored `refresh`.
+    pub(crate) refresh_path: Option<String>,
     pub(crate) expiry: ExpirySource,
     pub(crate) header_name: String,
     pub(crate) header_prefix: String,
@@ -258,6 +263,7 @@ impl ProviderAuthDescriptor {
                             ("requestBody", config.request_body.is_some()),
                             ("requestEncoding", config.request_encoding.is_some()),
                             ("tokenPath", config.token_path.is_some()),
+                            ("refreshPath", config.refresh_path.is_some()),
                             ("expiresAtPath", config.expires_at_path.is_some()),
                             ("expiresInPath", config.expires_in_path.is_some()),
                             ("header", config.header.is_some()),
@@ -284,6 +290,11 @@ impl ProviderAuthDescriptor {
                                 .as_deref()
                                 .ok_or("\"tokenPath\" is required for \"token-exchange\"")?,
                         )?;
+                        let refresh_path = config
+                            .refresh_path
+                            .as_deref()
+                            .map(|path| valid_pointer("refreshPath", path))
+                            .transpose()?;
                         let expiry =
                             match (&config.expires_at_path, &config.expires_in_path) {
                                 (Some(_), Some(_)) => return Err(
@@ -355,6 +366,7 @@ impl ProviderAuthDescriptor {
                             request_headers,
                             request_body,
                             token_path,
+                            refresh_path,
                             expiry,
                             header_name,
                             header_prefix,
@@ -387,6 +399,7 @@ mod tests {
             "requestBody": { "refresh_token": "{{refresh}}", "account": "{{accountId}}", "org": "{{orgId}}" },
             "requestEncoding": "json",
             "tokenPath": "/access_token",
+            "refreshPath": "/refresh_token",
             "expiresInPath": "/expires_in",
             "header": { "name": "Authorization", "prefix": "Bearer " },
             "sessionHeader": "x-example-session",
@@ -408,6 +421,7 @@ mod tests {
                         "refresh_token": "{{refresh}}", "account": "{{accountId}}", "org": "{{orgId}}"
                     }))),
                     token_path: "/access_token".to_string(),
+                    refresh_path: Some("/refresh_token".to_string()),
                     expiry: ExpirySource::InPath("/expires_in".to_string()),
                     header_name: "Authorization".to_string(),
                     header_prefix: "Bearer ".to_string(),
@@ -432,7 +446,7 @@ mod tests {
         assert_eq!(
             errors,
             vec![
-                "Provider acme: invalid \"auth\": unknown field `colour`, expected one of `strategy`, `tokenUrl`, `method`, `requestHeaders`, `requestBody`, `requestEncoding`, `tokenPath`, `expiresAtPath`, `expiresInPath`, `header`, `sessionHeader`, `timeoutMs`".to_string(),
+                "Provider acme: invalid \"auth\": unknown field `colour`, expected one of `strategy`, `tokenUrl`, `method`, `requestHeaders`, `requestBody`, `requestEncoding`, `tokenPath`, `refreshPath`, `expiresAtPath`, `expiresInPath`, `header`, `sessionHeader`, `timeoutMs`".to_string(),
                 "Provider acme: invalid \"auth\": \"tokenUrl\" must use https (plain http only for loopback hosts)".to_string(),
                 "Provider acme: invalid \"auth\": unknown template placeholder \"{{HOME}}\" (use {{refresh}}, {{accountId}}, or {{orgId}})".to_string(),
             ]
