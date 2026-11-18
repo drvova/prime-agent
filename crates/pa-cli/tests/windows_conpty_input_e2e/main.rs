@@ -8,13 +8,19 @@
 )]
 #![cfg(windows)]
 
-//! DIAGNOSTIC (temporary): what the console delivers on a pseudoconsole.
+//! The interactive TUI's keyboard on a Windows pseudoconsole. The test plays
+//! the terminal emulator (`conpty.rs`) through two console hosts, the inbox
+//! `ConPTY` and the Windows Terminal host package, each with the console's
+//! native input mode and with `ENABLE_VIRTUAL_TERMINAL_INPUT` inherited from
+//! a parent: keys act, VT the host relays is decoded or consumed, and no
+//! escape text reaches the composer. A last test covers Git Bash's mintty
+//! without `ConPTY`, whose MSYS pty stdin the TUI cannot read.
 
 mod conpty;
 #[path = "../support/mod.rs"]
 mod support;
 
-use std::io::Write;
+use std::os::windows::io::{FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,120 +28,80 @@ use std::time::{Duration, Instant};
 use conpty::{Host, PseudoConsole};
 use serde_json::{json, Map};
 
-const PROBE_LOG_ENV: &str = "PA_CONPTY_PROBE_LOG";
-const PROBE_VT_INPUT_ENV: &str = "PA_CONPTY_PROBE_VT_INPUT";
+/// Set on the launcher child: the daemon socket the launched TUI attaches to.
+const VT_INPUT_LAUNCH_ENV: &str = "PA_CONPTY_VT_INPUT_LAUNCH";
+/// `wincon.h` `ENABLE_VIRTUAL_TERMINAL_INPUT`.
+const ENABLE_VIRTUAL_TERMINAL_INPUT: u32 = 0x0200;
 
-mod console {
+mod win32 {
     #![allow(non_snake_case)]
     use std::ffi::c_void;
     pub type Handle = *mut c_void;
+    /// `winbase.h` `STD_INPUT_HANDLE`.
+    pub const STD_INPUT_HANDLE: i32 = -10;
+    /// `winbase.h` `PIPE_ACCESS_DUPLEX`.
+    pub const PIPE_ACCESS_DUPLEX: u32 = 0x3;
+    /// `winnt.h` `GENERIC_READ | GENERIC_WRITE`.
+    pub const GENERIC_READ_WRITE: u32 = 0x8000_0000 | 0x4000_0000;
+    /// `fileapi.h` `OPEN_EXISTING`.
+    pub const OPEN_EXISTING: u32 = 3;
+    pub const INVALID_HANDLE_VALUE: Handle = -1isize as Handle;
     extern "system" {
         pub fn GetStdHandle(which: i32) -> Handle;
         pub fn GetConsoleMode(handle: Handle, mode: *mut u32) -> i32;
         pub fn SetConsoleMode(handle: Handle, mode: u32) -> i32;
-        pub fn ReadConsoleInputW(
-            handle: Handle,
-            buffer: *mut InputRecord,
-            len: u32,
-            read: *mut u32,
-        ) -> i32;
-        pub fn WaitForSingleObject(handle: Handle, millis: u32) -> u32;
-    }
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    pub struct InputRecord {
-        pub event_type: u16,
-        pub _pad: u16,
-        pub key_down: i32,
-        pub repeat: u16,
-        pub vk: u16,
-        pub scan: u16,
-        pub uchar: u16,
-        pub control: u32,
+        pub fn CreateNamedPipeW(
+            name: *const u16,
+            open_mode: u32,
+            pipe_mode: u32,
+            max_instances: u32,
+            out_size: u32,
+            in_size: u32,
+            timeout: u32,
+            attributes: *const c_void,
+        ) -> Handle;
+        pub fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            attributes: *const c_void,
+            disposition: u32,
+            flags: u32,
+            template: Handle,
+        ) -> Handle;
     }
 }
 
-/// The probe child: raw console records, logged one per line.
+/// The launcher child: a parent that leaves `ENABLE_VIRTUAL_TERMINAL_INPUT`
+/// on in the console it shares (PowerShell, Node CLIs and MSYS programs can),
+/// then runs the TUI in that console, as a shell would.
 #[test]
-fn conpty_probe_child_mode() {
-    let Ok(log) = std::env::var(PROBE_LOG_ENV) else {
+fn conpty_vt_input_launcher_child_mode() {
+    let Ok(socket) = std::env::var(VT_INPUT_LAUNCH_ENV) else {
         return;
     };
-    let mut log = std::fs::File::create(log).expect("probe log");
-    // SAFETY: console handle queries and mode writes on this process's own console.
+    // SAFETY: a mode read and write on this process's own console input.
     unsafe {
-        let input = console::GetStdHandle(-10);
-        let output = console::GetStdHandle(-11);
+        let input = win32::GetStdHandle(win32::STD_INPUT_HANDLE);
         let mut mode = 0u32;
-        console::GetConsoleMode(input, &raw mut mode);
-        writeln!(log, "initial input mode {mode:#x}").ok();
-        let mut out_mode = 0u32;
-        console::GetConsoleMode(output, &raw mut out_mode);
-        writeln!(log, "initial output mode {out_mode:#x}").ok();
-        if std::env::var(PROBE_VT_INPUT_ENV).is_ok() {
-            mode |= 0x200;
-        }
-        // crossterm's raw mode: line, echo and processed input off.
-        mode &= !(0x1 | 0x2 | 0x4);
-        console::SetConsoleMode(input, mode);
-        console::SetConsoleMode(output, out_mode | 0x4);
-        let mut now_mode = 0u32;
-        console::GetConsoleMode(input, &raw mut now_mode);
-        writeln!(log, "raw input mode {now_mode:#x}").ok();
-        let mut stdout = std::io::stdout();
-        // The modes the session surface writes on Windows today.
-        stdout
-            .write_all(b"\x1b[?1049h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[>4;0m")
-            .ok();
-        stdout.write_all(b"PROBE-READY\r\n").ok();
-        stdout.flush().ok();
-        let mut phase = 0;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if console::WaitForSingleObject(input, 200) != 0 {
-                continue;
-            }
-            let mut records = [console::InputRecord {
-                event_type: 0,
-                _pad: 0,
-                key_down: 0,
-                repeat: 0,
-                vk: 0,
-                scan: 0,
-                uchar: 0,
-                control: 0,
-            }; 64];
-            let mut read = 0u32;
-            console::ReadConsoleInputW(input, records.as_mut_ptr(), 64, &raw mut read);
-            for record in &records[..read as usize] {
-                if record.event_type == 1 {
-                    let ch = char::from_u32(u32::from(record.uchar)).unwrap_or('?');
-                    writeln!(
-                        log,
-                        "KEY down={} vk={:#x} scan={:#x} uchar={:#x} {:?} ctrl={:#x}",
-                        record.key_down, record.vk, record.scan, record.uchar, ch, record.control
-                    )
-                    .ok();
-                    if record.key_down != 0 && record.uchar == u16::from(b'Z') {
-                        phase += 1;
-                        if phase == 1 {
-                            writeln!(log, "--- queries: DA1, kitty, CPR, DECRQM 2026").ok();
-                            stdout.write_all(b"\x1b[c\x1b[?u\x1b[6n\x1b[?2026$p").ok();
-                            stdout.write_all(b"PROBE-QUERIED\r\n").ok();
-                            stdout.flush().ok();
-                        }
-                    }
-                } else {
-                    writeln!(log, "EVENT type={}", record.event_type).ok();
-                }
-            }
-            if phase >= 2 {
-                break;
-            }
-        }
-        stdout.write_all(b"PROBE-DONE\r\n").ok();
-        stdout.flush().ok();
+        assert_ne!(
+            win32::GetConsoleMode(input, &raw mut mode),
+            0,
+            "console input mode"
+        );
+        assert_ne!(
+            win32::SetConsoleMode(input, mode | ENABLE_VIRTUAL_TERMINAL_INPUT),
+            0,
+            "set VT input"
+        );
     }
+    let status = Command::new(env!("CARGO_BIN_EXE_prime-agent"))
+        .arg("--daemon-socket")
+        .arg(socket)
+        .env_remove(VT_INPUT_LAUNCH_ENV)
+        .status()
+        .expect("run prime-agent");
+    std::process::exit(status.code().unwrap_or(1));
 }
 
 fn hosts() -> Vec<Host> {
@@ -144,6 +110,24 @@ fn hosts() -> Vec<Host> {
         hosts.push(Host::Package(PathBuf::from(dll)));
     }
     hosts
+}
+
+/// The console input mode the TUI starts under.
+#[derive(Clone, Copy)]
+enum InputMode {
+    /// The console's default: native key records.
+    Native,
+    /// `ENABLE_VIRTUAL_TERMINAL_INPUT` left on by the parent process.
+    VtInputInherited,
+}
+
+impl InputMode {
+    fn label(self) -> &'static str {
+        match self {
+            InputMode::Native => "native",
+            InputMode::VtInputInherited => "vt-input-inherited",
+        }
+    }
 }
 
 fn base_env() -> Vec<(String, String)> {
@@ -175,109 +159,9 @@ fn dump(name: &str, text: &str) {
     }
 }
 
-fn drain_until(pty: &PseudoConsole, stream: &mut Vec<u8>, needle: &[u8], wait: Duration) -> bool {
-    let deadline = Instant::now() + wait;
-    loop {
-        if stream.windows(needle.len()).any(|window| window == needle) {
-            return true;
-        }
-        if Instant::now() > deadline {
-            return false;
-        }
-        if let Some(chunk) = pty.recv(Duration::from_millis(50)) {
-            stream.extend_from_slice(&chunk);
-        }
-    }
-}
-
 /// win32-input-mode encoding of one key transition (`CSI Vk;Sc;Uc;Kd;Cs;Rc _`).
 fn win32_key(vk: u16, scan: u16, uchar: u16, down: bool, control: u32) -> Vec<u8> {
     format!("\x1b[{vk};{scan};{uchar};{};{control};1_", u8::from(down)).into_bytes()
-}
-
-#[test]
-fn diagnose_console_records() {
-    for host in hosts() {
-        for vt_input in [false, true] {
-            let dir = tempfile::TempDir::new().expect("temp dir");
-            let log = dir.path().join("probe.log");
-            let mut env = base_env();
-            env.push((PROBE_LOG_ENV.to_string(), log.display().to_string()));
-            if vt_input {
-                env.push((PROBE_VT_INPUT_ENV.to_string(), "1".to_string()));
-            }
-            let exe = std::env::current_exe().expect("test binary");
-            let command = format!(
-                "\"{}\" --exact conpty_probe_child_mode --nocapture --test-threads=1",
-                exe.display()
-            );
-            let pty = PseudoConsole::spawn(&host, &command, &env, dir.path(), 100, 30);
-            let mut stream = Vec::new();
-            let ready = drain_until(&pty, &mut stream, b"PROBE-READY", Duration::from_secs(30));
-            let mut sent = Vec::new();
-            if ready {
-                let inputs: Vec<(&str, Vec<u8>)> = vec![
-                    ("plain a", b"a".to_vec()),
-                    ("vt left", b"\x1b[D".to_vec()),
-                    ("vt shift+enter csi-u", b"\x1b[13;2u".to_vec()),
-                    ("vt shift+enter modifyOtherKeys", b"\x1b[27;2;13~".to_vec()),
-                    ("bracketed paste", b"\x1b[200~hi\x1b[201~".to_vec()),
-                    ("sgr mouse", b"\x1b[<35;5;5M".to_vec()),
-                    ("cr", b"\r".to_vec()),
-                    ("ctrl+c", b"\x03".to_vec()),
-                    (
-                        "win32 b",
-                        [
-                            win32_key(0x42, 0x30, 0x62, true, 0),
-                            win32_key(0x42, 0x30, 0x62, false, 0),
-                        ]
-                        .concat(),
-                    ),
-                    (
-                        "win32 shift+enter",
-                        [
-                            win32_key(0x10, 0x2a, 0, true, 0x10),
-                            win32_key(0x0d, 0x1c, 0x0d, true, 0x10),
-                            win32_key(0x0d, 0x1c, 0x0d, false, 0x10),
-                            win32_key(0x10, 0x2a, 0, false, 0),
-                        ]
-                        .concat(),
-                    ),
-                    ("lone esc", b"\x1b".to_vec()),
-                    ("end marker", b"Z".to_vec()),
-                ];
-                for (label, bytes) in inputs {
-                    sent.push(label);
-                    pty.send(&bytes);
-                    // Diagnostic pacing only: each input lands as its own write.
-                    std::thread::sleep(Duration::from_millis(150));
-                }
-                let queried =
-                    drain_until(&pty, &mut stream, b"PROBE-QUERIED", Duration::from_secs(10));
-                if queried {
-                    // A real terminal answers DA1; the host may answer itself.
-                    pty.send(b"\x1b[?61;4c");
-                    std::thread::sleep(Duration::from_millis(300));
-                    pty.send(b"Z");
-                }
-                drain_until(&pty, &mut stream, b"PROBE-DONE", Duration::from_secs(10));
-                pty.wait_exit(Duration::from_secs(10));
-            }
-            let records = std::fs::read_to_string(&log).unwrap_or_else(|e| format!("no log: {e}"));
-            let name = format!(
-                "probe-{}-{}",
-                host.label(),
-                if vt_input { "vtinput" } else { "native" }
-            );
-            dump(
-                &name,
-                &format!(
-                    "ready={ready} sent={sent:?}\n--- records\n{records}\n--- host output\n{}",
-                    visible(&stream)
-                ),
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,6 +666,9 @@ impl Key {
     }
 }
 
+/// What a leaked VT sequence looks like once its ESC is gone: the arrow, the
+/// CSI-u and modifyOtherKeys keys, paste markers, the win32-input-mode tail,
+/// mouse reports and device-attribute replies.
 const ESCAPE_TEXT: &[&str] = &[
     "[D", "[?", "[<", "200~", "201~", ";2u", "13;2", ";1_", ";0_", "[27;", "\u{2190}",
 ];
@@ -790,114 +677,233 @@ const ESCAPE_TEXT: &[&str] = &[
 fn prime_tui_keys_act_on_conpty() {
     let mut failures = Vec::new();
     for host in hosts() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let root = dir.path().to_path_buf();
-        let agent_dir = root.join("agent");
-        let session_dir = agent_dir.join("sessions");
-        let cwd = root.join("project");
-        std::fs::create_dir_all(&session_dir).expect("sessions dir");
-        std::fs::create_dir_all(&cwd).expect("project dir");
-        pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
-            .set_onboarding_shown(true)
-            .expect("onboarding flag");
-        let script = root.join("script.json");
-        std::fs::write(
-            &script,
-            json!({ "responses": ["conpty scripted reply"] }).to_string(),
-        )
-        .expect("script");
-        let supervisor = spawn_supervisor(&agent_dir);
-        let mut env = base_env();
-        for (key, value) in [
-            (
-                "PRIME_AGENT_CODING_AGENT_DIR",
-                agent_dir.display().to_string(),
-            ),
-            ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
-            ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
-            ("PI_OFFLINE", "1".to_string()),
-            ("DO_NOT_TRACK", "1".to_string()),
-        ] {
-            env.push((key.to_string(), value));
+        for input_mode in [InputMode::Native, InputMode::VtInputInherited] {
+            let scenario = format!("{}-{}", host.label(), input_mode.label());
+            failures.extend(run_tui_scenario(&host, input_mode, &scenario));
         }
-        let command = format!(
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+/// One TUI run on `host` under `input_mode`; returns the failed checks.
+fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<String> {
+    let mut failures = Vec::new();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let agent_dir = root.join("agent");
+    let session_dir = agent_dir.join("sessions");
+    let cwd = root.join("project");
+    std::fs::create_dir_all(&session_dir).expect("sessions dir");
+    std::fs::create_dir_all(&cwd).expect("project dir");
+    pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
+        .set_onboarding_shown(true)
+        .expect("onboarding flag");
+    let script = root.join("script.json");
+    std::fs::write(
+        &script,
+        json!({ "responses": ["conpty scripted reply"] }).to_string(),
+    )
+    .expect("script");
+    let supervisor = spawn_supervisor(&agent_dir);
+    let mut env = base_env();
+    for (key, value) in [
+        (
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            agent_dir.display().to_string(),
+        ),
+        ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
+        ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
+        ("PI_OFFLINE", "1".to_string()),
+        ("DO_NOT_TRACK", "1".to_string()),
+    ] {
+        env.push((key.to_string(), value));
+    }
+    let command = match input_mode {
+        InputMode::Native => format!(
             "\"{}\" --daemon-socket \"{}\"",
             env!("CARGO_BIN_EXE_prime-agent"),
             supervisor.socket.display()
+        ),
+        InputMode::VtInputInherited => {
+            env.push((
+                VT_INPUT_LAUNCH_ENV.to_string(),
+                supervisor.socket.display().to_string(),
+            ));
+            format!(
+                "\"{}\" --exact conpty_vt_input_launcher_child_mode --nocapture --test-threads=1",
+                std::env::current_exe().expect("test binary").display()
+            )
+        }
+    };
+    let pty = PseudoConsole::spawn(host, &command, &env, &cwd, 100, 30);
+    let mut term = Terminal::new(pty, 100, 30);
+    let mut log = Vec::new();
+    let mut check = |term: &mut Terminal, label: &str, ok: bool| {
+        log.push(format!("{label}: {}", if ok { "ok" } else { "FAILED" }));
+        if !ok {
+            failures.push(format!("[{scenario}] {label}\n{}", term.screen.text()));
+        }
+    };
+    let started = term.wait_for("prime", Duration::from_secs(60));
+    check(&mut term, "startup chrome", started);
+    term.settle(Duration::from_millis(500));
+    term.type_text("qzx");
+    let typed = term.wait_for("qzx", Duration::from_secs(30));
+    check(&mut term, "typing echoes", typed);
+    term.key(Key::Left);
+    term.key(Key::Left);
+    term.type_text("K");
+    let moved = term.wait_for("qKzx", Duration::from_secs(10));
+    check(&mut term, "left arrow moves the caret", moved);
+    term.key(Key::ShiftEnter);
+    term.type_text("yy");
+    let newline = term.wait_for("yy", Duration::from_secs(10));
+    check(&mut term, "shift+enter then text", newline);
+    // A terminal without win32-input-mode sends Shift+Enter as CSI-u; the
+    // package host relays what it cannot translate one vk=0 record per
+    // character (the inbox host drops it). Either way it must not type.
+    term.pty.send(b"\x1b[13;2u");
+    term.type_text("ww");
+    let relayed = term.wait_for("ww", Duration::from_secs(10));
+    check(&mut term, "a relayed CSI-u key then text", relayed);
+    // The session enables SGR mouse tracking; a hover report is decoded or
+    // consumed, never typed.
+    term.pty.send(b"\x1b[<35;5;5M");
+    term.type_text("mm");
+    let hovered = term.wait_for("mm", Duration::from_secs(10));
+    check(&mut term, "a mouse report then text", hovered);
+    term.paste("pa\r\nste");
+    let pasted = term.wait_for("ste", Duration::from_secs(10));
+    check(&mut term, "paste lands", pasted);
+    term.settle(Duration::from_millis(500));
+    let screen = term.screen.text();
+    let leaked: Vec<&str> = ESCAPE_TEXT
+        .iter()
+        .copied()
+        .filter(|needle| screen.contains(needle))
+        .collect();
+    check(
+        &mut term,
+        &format!("no escape text ({leaked:?})"),
+        leaked.is_empty(),
+    );
+    term.key(Key::Escape);
+    let cleared = term.wait_gone("qKzx", Duration::from_secs(10));
+    check(&mut term, "escape clears the draft", cleared);
+    term.type_text("abc");
+    let retyped = term.wait_for("abc", Duration::from_secs(10));
+    check(&mut term, "retype", retyped);
+    term.key(Key::CtrlC);
+    let ctrl_c = term.wait_gone("abc", Duration::from_secs(10));
+    check(&mut term, "ctrl+c clears the draft", ctrl_c);
+    term.type_text("hello");
+    term.key(Key::Enter);
+    let replied = term.wait_for("conpty scripted reply", Duration::from_secs(60));
+    check(&mut term, "enter submits", replied);
+    term.settle(Duration::from_millis(500));
+    dump(
+        &format!("tui-{scenario}"),
+        &format!(
+            "win32_input={} bracketed_paste={} kitty_depth={} answered={:?}\n{}\n--- screen\n{}\n--- host output\n{}",
+            term.win32_input,
+            term.bracketed_paste,
+            term.kitty_depth,
+            term.queries_answered,
+            log.join("\n"),
+            term.screen.text(),
+            visible(&term.stream)
+        ),
+    );
+    drop(term);
+    drop(supervisor);
+    failures
+}
+
+/// Git Bash's mintty without `ConPTY` hands the program an MSYS pty pipe, which
+/// `IsTerminal` reports as a terminal while the console the TUI reads keys
+/// from never receives one. The interactive mode refuses with the remedy
+/// instead of starting a TUI that cannot be typed into.
+#[test]
+fn git_bash_without_conpty_gets_a_clear_message() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).expect("agent dir");
+    // The pipe name shape msys-2.0.dll gives a pty's slave side.
+    let name: Vec<u16> = format!(
+        r"\\.\pipe\msys-0123456789abcdef-pty0-from-master-{}",
+        std::process::id()
+    )
+    .encode_utf16()
+    .chain(std::iter::once(0))
+    .collect();
+    // SAFETY: a named pipe and its client end, both owned below.
+    let (server, client) = unsafe {
+        let server = win32::CreateNamedPipeW(
+            name.as_ptr(),
+            win32::PIPE_ACCESS_DUPLEX,
+            0,
+            1,
+            4096,
+            4096,
+            0,
+            std::ptr::null(),
         );
-        let pty = PseudoConsole::spawn(&host, &command, &env, &cwd, 100, 30);
-        let mut term = Terminal::new(pty, 100, 30);
-        let mut log = Vec::new();
-        let mut check = |term: &mut Terminal, label: &str, ok: bool| {
-            log.push(format!("{label}: {}", if ok { "ok" } else { "FAILED" }));
-            if !ok {
-                failures.push(format!(
-                    "[{}] {label}\n{}",
-                    host.label(),
-                    term.screen.text()
-                ));
-            }
-        };
-        let started = term.wait_for("prime", Duration::from_secs(60));
-        check(&mut term, "startup chrome", started);
-        term.settle(Duration::from_millis(500));
-        term.type_text("qzx");
-        let typed = term.wait_for("qzx", Duration::from_secs(30));
-        check(&mut term, "typing echoes", typed);
-        term.key(Key::Left);
-        term.key(Key::Left);
-        term.type_text("K");
-        let moved = term.wait_for("qKzx", Duration::from_secs(10));
-        check(&mut term, "left arrow moves the caret", moved);
-        term.key(Key::ShiftEnter);
-        term.type_text("yy");
-        let newline = term.wait_for("yy", Duration::from_secs(10));
-        check(&mut term, "shift+enter then text", newline);
-        term.paste("pa\r\nste");
-        let pasted = term.wait_for("ste", Duration::from_secs(10));
-        check(&mut term, "paste lands", pasted);
-        term.settle(Duration::from_millis(500));
-        let screen = term.screen.text();
-        let leaked: Vec<&str> = ESCAPE_TEXT
-            .iter()
-            .copied()
-            .filter(|needle| screen.contains(needle))
-            .collect();
-        check(
-            &mut term,
-            &format!("no escape text ({leaked:?})"),
-            leaked.is_empty(),
+        assert_ne!(server, win32::INVALID_HANDLE_VALUE, "create the pty pipe");
+        let client = win32::CreateFileW(
+            name.as_ptr(),
+            win32::GENERIC_READ_WRITE,
+            0,
+            std::ptr::null(),
+            win32::OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
         );
-        term.key(Key::Escape);
-        let cleared = term.wait_gone("qKzx", Duration::from_secs(10));
-        check(&mut term, "escape clears the draft", cleared);
-        term.type_text("abc");
-        let retyped = term.wait_for("abc", Duration::from_secs(10));
-        check(&mut term, "retype", retyped);
-        term.key(Key::CtrlC);
-        let ctrl_c = term.wait_gone("abc", Duration::from_secs(10));
-        check(&mut term, "ctrl+c clears the draft", ctrl_c);
-        term.type_text("hello");
-        term.key(Key::Enter);
-        let replied = term.wait_for("conpty scripted reply", Duration::from_secs(60));
-        check(&mut term, "enter submits", replied);
-        term.settle(Duration::from_millis(500));
-        let name = format!("tui-{}", host.label());
-        dump(
-            &name,
-            &format!(
-                "win32_input={} bracketed_paste={} kitty_depth={} answered={:?}\n{}\n--- screen\n{}\n--- host output\n{}",
-                term.win32_input,
-                term.bracketed_paste,
-                term.kitty_depth,
-                term.queries_answered,
-                log.join("\n"),
-                term.screen.text(),
-                visible(&term.stream)
-            ),
-        );
-        drop(term);
-        drop(supervisor);
-    }
-    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+        assert_ne!(client, win32::INVALID_HANDLE_VALUE, "open the pty pipe");
+        (
+            OwnedHandle::from_raw_handle(server),
+            OwnedHandle::from_raw_handle(client),
+        )
+    };
+    let mut child = Command::new(env!("CARGO_BIN_EXE_prime-agent"))
+        .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        .env("PI_OFFLINE", "1")
+        .stdin(Stdio::from(client))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run prime-agent");
+    let mut stderr_pipe = child.stderr.take().expect("stderr pipe");
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr_pipe, &mut text);
+        let _ = stderr_tx.send(text);
+    });
+    // Bounded: a build without the refusal starts a TUI that never exits.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll prime-agent") {
+            break Some(status);
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::park_timeout(Duration::from_millis(50));
+    };
+    drop(server);
+    // A process the TUI spawned can hold the pipe open past the kill.
+    let stderr = stderr_rx
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap_or_else(|_| "<stderr still open>".to_string());
+    assert_eq!(
+        status.and_then(|status| status.code()),
+        Some(1),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("winpty prime-agent") && stderr.contains("MSYS=enable_pcon"),
+        "stderr: {stderr}"
+    );
 }
