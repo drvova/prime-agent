@@ -169,7 +169,8 @@ fn record_content_read_for_tests(root: &Path) {
         .push(root.to_path_buf());
 }
 
-#[cfg(test)]
+/// Read by the unix-only stat-fingerprint test (its interpreter fixture is a shell script).
+#[cfg(all(test, unix))]
 pub(super) fn content_reads_for_tests(root: &Path) -> usize {
     CONTENT_READS
         .lock()
