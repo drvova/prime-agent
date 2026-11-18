@@ -458,7 +458,7 @@ mod tests {
 
     #[test]
     fn live_background_bash_holds_the_goal_continuation_until_it_settles() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &serde_json::json!({ "responses": [{"text": "warm ok"}, {"text": "turn reply"}] }),
             u64::MAX,
         );

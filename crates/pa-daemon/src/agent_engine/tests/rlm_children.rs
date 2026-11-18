@@ -251,7 +251,7 @@ fn release_settled_child_kernel_defers_to_scheduled_jobs_and_fires_the_release_p
     let _faux = FAUX_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (engine, _dir) = faux_engine_with_settings(&serde_json::json!({ "responses": [] }), 1);
+    let (_dir, engine) = faux_engine_with_settings(&serde_json::json!({ "responses": [] }), 1);
     let engine = std::sync::Arc::new(engine);
     engine
         .ensure_core_session(&engine.resolve_model().expect("faux model"))

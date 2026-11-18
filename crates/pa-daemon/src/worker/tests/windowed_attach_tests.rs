@@ -715,8 +715,12 @@ async fn branched_worker() -> (tempfile::TempDir, std::sync::Arc<Worker>) {
 
 #[tokio::test]
 async fn anchored_backfill_rejects_other_client_branch_navigation() {
+    // Every scenario's dir outlives the loop: the create path's fire-and-forget
+    // catalog refresh only runs when a later scenario yields, and it would
+    // re-create a dropped dir's `agent/auth.json`.
+    let mut dirs = Vec::new();
     for target in ["sibling", "m0000300"] {
-        let (_dir, worker) = branched_worker().await;
+        let (dir, worker) = branched_worker().await;
         let data = attach(&worker, TUI_CAPABILITIES).await;
         let snapshot = &data["snapshot"];
         let leaf = snapshot["state"]["leafId"].as_str().expect("attached leaf");
@@ -746,6 +750,7 @@ async fn anchored_backfill_rejects_other_client_branch_navigation() {
             current,
             "legacy full reads remain available"
         );
+        dirs.push(dir);
     }
 }
 

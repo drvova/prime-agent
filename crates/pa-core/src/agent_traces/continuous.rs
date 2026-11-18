@@ -258,6 +258,7 @@ impl ContinuousTraceUpload {
 }
 
 fn mark_pending(agent_dir: &Path, session_file: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(agent_trace_outbox_dir(agent_dir))?;
     let primary = agent_trace_outbox_entry_path(agent_dir, session_file);
     let mutation = outbox_mutation_lock(&primary)?;
     // Never wait behind a pruner or cursor writer on the host thread. A stable
@@ -271,7 +272,6 @@ fn mark_pending(agent_dir: &Path, session_file: &Path) -> std::io::Result<()> {
     if entry.exists() {
         return Ok(());
     }
-    std::fs::create_dir_all(agent_trace_outbox_dir(agent_dir))?;
     // Publish a complete record without replacing a racing successful cursor.
     let temp = entry.with_extension(format!(
         "{}.{}.tmp",

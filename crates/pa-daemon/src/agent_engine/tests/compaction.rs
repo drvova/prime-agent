@@ -12,7 +12,7 @@ const FAUX_REQUEST_BUDGET: u64 = 16_384;
 /// sits halfway between a baseline turn and the baseline plus the big prompt.
 #[test]
 fn threshold_crossing_auto_compacts_with_the_event_pair() {
-    let (probe, _probe_dir) = faux_engine_with_settings(
+    let (_probe_dir, probe) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
     );
@@ -37,7 +37,7 @@ fn threshold_crossing_auto_compacts_with_the_event_pair() {
     // The headroom sits between the two turns' usage (the f14 battery
     // shape: reserveTokens so exactly the seeded crossing fires).
     let headroom = baseline + big_tokens / 2;
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -433,7 +433,7 @@ fn mirror_telemetry_properties(
 )]
 fn threshold_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
-    let (probe, _probe_dir) = faux_engine_with_settings(
+    let (_probe_dir, probe) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
     );
@@ -451,7 +451,7 @@ fn threshold_compaction_counts_into_the_run_telemetry() {
     let big_prompt = format!("seed turn {} crossing", "x".repeat(48_000));
     let big_tokens = (48_000 + "seed turn  crossing".len() as u64).div_ceil(4);
     let headroom = baseline + big_tokens / 2;
-    let (engine, dir) = faux_engine_with_settings(
+    let (dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -494,7 +494,7 @@ fn requested_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
     // A tiny reserve keeps the threshold arm silent (TS reserve 1 means
     // the context must nearly fill the window).
-    let (engine, dir) = faux_engine_with_settings(
+    let (dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -551,7 +551,7 @@ fn requested_compaction_counts_into_the_run_telemetry() {
 )]
 fn manual_wire_compaction_counts_into_the_run_telemetry() {
     let _telemetry = super::telemetry_opt_in();
-    let (engine, dir) = faux_engine_with_settings(
+    let (dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -652,7 +652,7 @@ fn outcome_row_and_end_event(
 
 #[test]
 fn threshold_skip_records_the_durable_outcome_row() {
-    let (probe, _probe_dir) = faux_engine_with_settings(
+    let (_probe_dir, probe) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
     );
@@ -672,7 +672,7 @@ fn threshold_skip_records_the_durable_outcome_row() {
     let big_prompt = format!("seed turn {} crossing", "x".repeat(48_000));
     let big_tokens = (48_000 + "seed turn  crossing".len() as u64).div_ceil(4);
     let headroom = baseline + big_tokens / 2;
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "crossing reply"}] }),
         128_000u64
             .saturating_sub(FAUX_REQUEST_BUDGET + headroom)
@@ -774,7 +774,7 @@ fn requested_compaction_skip_records_the_durable_outcome_row() {
 
 #[test]
 fn threshold_compaction_aborted_mid_run_records_the_cancelled_outcome() {
-    let (probe, _probe_dir) = faux_engine_with_settings(
+    let (_probe_dir, probe) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "seed reply"}] }),
         1,
     );
@@ -792,7 +792,7 @@ fn threshold_compaction_aborted_mid_run_records_the_cancelled_outcome() {
     let big_prompt = format!("seed turn {} crossing", "x".repeat(48_000));
     let big_tokens = (48_000 + "seed turn  crossing".len() as u64).div_ceil(4);
     let headroom = baseline + big_tokens / 2;
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -851,7 +851,7 @@ fn threshold_compaction_aborted_mid_run_records_the_cancelled_outcome() {
 fn requested_compaction_aborted_mid_run_records_the_cancelled_outcome() {
     // A tiny reserve keeps the threshold check silent while the
     // 10-token keep-recent budget leaves the turns summarizable.
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": [
                 {"text": "seed reply"},
@@ -1088,7 +1088,7 @@ fn compact_session_command_emits_the_result_on_success() {
 
 #[test]
 fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &json!({
             "responses": [
                 {"text":"seed reply"},
@@ -1129,7 +1129,7 @@ fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
 #[test]
 fn failed_mid_run_compaction_resumes_without_retrying_each_tool_round() {
     let tool_turn = json!({"content":[{"type":"text","text":"x".repeat(80_000)}, {"type":"toolCall","id":"synthetic-call","name":"synthetic_missing_tool","arguments":{}}]});
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &json!({
             "responses": [
                 {"text":"seed reply"}, tool_turn,
@@ -1198,7 +1198,7 @@ fn a_not_due_recheck_keeps_threshold_checks_armed() {
 
 #[test]
 fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
-    let (engine, dir) = faux_engine_with_settings(
+    let (dir, engine) = faux_engine_with_settings(
         &serde_json::json!({
             "responses": vec![serde_json::json!({"text": "short response"}); 80],
         }),

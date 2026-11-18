@@ -93,7 +93,7 @@ impl Drop for TelemetryOptIn {
 pub(crate) fn faux_engine_with_settings(
     script: &serde_json::Value,
     reserve_tokens: u64,
-) -> (std::sync::Arc<AgentSessionEngine>, tempfile::TempDir) {
+) -> (tempfile::TempDir, std::sync::Arc<AgentSessionEngine>) {
     let dir = tempfile::TempDir::new().unwrap();
     write_compaction_settings(dir.path(), reserve_tokens);
     let engine = AgentSessionEngine::new(AgentEngineConfig {
@@ -116,7 +116,7 @@ pub(crate) fn faux_engine_with_settings(
     // The worker registers the engine's own arc: the live-auth resolver
     // upgrades it per provider call.
     engine.register_arc();
-    (engine, dir)
+    (dir, engine)
 }
 
 /// The goal-admission collector: installs the turn-end seam (probe +

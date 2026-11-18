@@ -153,7 +153,8 @@ impl Inner {
 
     /// Tear the child down: stop timers, fail pending work, close pipes, kill
     /// the process, and reap any `bash()` process groups it journaled.
-    pub(crate) fn cleanup_resources(&self, kill_signal: Signal) {
+    /// Returns the pid it signaled, when one still named our child.
+    pub(crate) fn cleanup_resources(&self, kill_signal: Signal) -> Option<i32> {
         let had_background_work = {
             let mut g = lock(&self.guarded);
             g.lifecycle.invalidate_starts();
@@ -198,9 +199,32 @@ impl Inner {
             if pid > 0 {
                 orphan_journal::reap_kernel_orphan_processes(pid);
             }
+            return (pid > 0 && signaled).then_some(pid);
         }
+        None
     }
 }
+
+/// After a SIGKILL, wait (bounded) until the kernel stops running, on a plain
+/// thread only. The kill is asynchronous: until the process is gone it can
+/// still finish a snapshot write, whose `makedirs` re-creates an artifact dir
+/// its owner removes next. A zombie writes nothing. Inside a runtime the wait
+/// would block an executor thread, so async callers keep the fire-and-forget
+/// kill they had.
+pub(super) fn await_killed_exit(pid: i32) {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return;
+    }
+    let deadline = std::time::Instant::now() + KILLED_KERNEL_EXIT_BOUND;
+    while std::time::Instant::now() < deadline
+        && pa_types::platform::process::is_process_alive(pid.unsigned_abs()).unwrap_or(false)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+/// How long [`await_killed_exit`] waits for a `SIGKILL`ed kernel to stop running.
+const KILLED_KERNEL_EXIT_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 fn kill_process(pid: i32, signal: Signal) -> bool {
     crate::platform::process::kill_pid(pid, signal)
