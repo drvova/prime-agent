@@ -710,6 +710,12 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("context_thinned_result_count", optional(count())),
         ("context_thinned_chars_saved", optional(tokens())),
         ("context_thinned_tokens_saved", optional(tokens())),
+        // Prompt-cache warming and savings: request counts and estimated
+        // dollars only (never a prompt, model, or provider).
+        ("cache_warm_sent_count", optional(count())),
+        ("cache_warm_skipped_count", optional(count())),
+        ("cache_warm_cost_usd", optional(cost())),
+        ("cache_savings_usd", optional(cost())),
         // Provider auth descriptors (strategy and counters only: never a
         // provider, URL, account, or token).
         (

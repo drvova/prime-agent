@@ -74,6 +74,11 @@ pub struct StreamOptions {
     pub transport: Option<Transport>,
     pub service_tier: Option<ServiceTier>,
     pub cache_retention: Option<CacheRetention>,
+    /// Byte length of the system prompt's cache-stable prefix (the static layers shared across
+    /// sessions). Providers that place explicit cache markers send the prefix and the rest of the
+    /// system prompt as two blocks, each with its own marker; the concatenated text is unchanged.
+    /// `None`, or a value that is not a char boundary inside the prompt, keeps one system block.
+    pub cached_system_prefix_len: Option<usize>,
     pub session_id: Option<String>,
     pub on_payload: Option<OnPayloadHook>,
     pub on_response: Option<OnResponseHook>,
@@ -92,6 +97,7 @@ impl std::fmt::Debug for StreamOptions {
             .field("transport", &self.transport)
             .field("service_tier", &self.service_tier)
             .field("cache_retention", &self.cache_retention)
+            .field("cached_system_prefix_len", &self.cached_system_prefix_len)
             .field("session_id", &self.session_id)
             .field("on_payload", &self.on_payload.is_some())
             .field("on_response", &self.on_response.is_some())

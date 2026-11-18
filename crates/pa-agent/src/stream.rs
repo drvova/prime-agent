@@ -142,6 +142,13 @@ pub struct StreamRequestOptions {
     pub transport: Option<crate::types::Transport>,
     /// The requested provider service tier; `None` means no tier request.
     pub service_tier: Option<crate::types::ServiceTier>,
+    /// The requested prompt-cache lifetime; `None` leaves it to the
+    /// provider (its environment override, then its default).
+    pub cache_retention: Option<crate::types::CacheRetention>,
+    /// Byte length of the system prompt's cache-stable prefix; providers
+    /// with explicit cache markers mark it as its own block. `None` keeps
+    /// the system prompt one block.
+    pub cached_system_prefix_len: Option<usize>,
     pub api_key: Option<String>,
     pub signal: crate::abort::AbortSignal,
     pub on_payload: Option<OnPayloadHook>,
@@ -160,6 +167,8 @@ impl std::fmt::Debug for StreamRequestOptions {
             .field("session_id", &self.session_id)
             .field("transport", &self.transport)
             .field("service_tier", &self.service_tier)
+            .field("cache_retention", &self.cache_retention)
+            .field("cached_system_prefix_len", &self.cached_system_prefix_len)
             .field("api_key", &self.api_key.as_ref().map(|_| "<set>"))
             .field("signal", &self.signal)
             .field("on_payload", &self.on_payload.is_some())
@@ -178,6 +187,8 @@ impl Default for StreamRequestOptions {
             session_id: None,
             transport: None,
             service_tier: None,
+            cache_retention: None,
+            cached_system_prefix_len: None,
             api_key: None,
             signal: crate::abort::AbortSignal::never(),
             on_payload: None,

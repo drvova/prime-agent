@@ -526,9 +526,12 @@ async fn run_stream(
         "messages".into(),
         json!(convert_messages(context, model, cache_retention)),
     );
-    if let Some(system) =
-        build_system_prompt_blocks(context.system_prompt.as_deref(), model, cache_retention)
-    {
+    if let Some(system) = build_system_prompt_blocks(
+        context.system_prompt.as_deref(),
+        options.base.cached_system_prefix_len,
+        model,
+        cache_retention,
+    ) {
         command_input.insert("system".into(), json!(system));
     }
     if !inference_config.is_empty() {

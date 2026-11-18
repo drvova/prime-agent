@@ -273,6 +273,33 @@ pub struct TelemetrySettings {
     pub local_mirror: Option<bool>,
 }
 
+/// `cacheRetention`: the prompt-cache lifetime requested from providers with
+/// explicit cache markers. `short` (the default) is the provider's default
+/// lifetime (five minutes on Anthropic, writes at 1.25x input); `long` asks
+/// for the extended one (one hour, writes at 2x input). The
+/// `PI_CACHE_RETENTION` environment variable overrides it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheRetentionSetting {
+    Short,
+    Long,
+}
+
+/// `cacheWarming`: when a session keeps its prompt cache alive by re-sending
+/// its last request (one output token) shortly before the cache entry
+/// expires, and only when the expected saving clears the policy threshold.
+/// `active` (the default) warms while the next request is near-certain: a
+/// tool, a background `bash()` job, or a subagent is still running, or a
+/// subagent waits on its parent. `idle` also warms an idle session, weighted
+/// by the low chance of a next turn. `off` never warms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CacheWarmingSetting {
+    Off,
+    Active,
+    Idle,
+}
+
 /// The default time limit for user `python_repl` cells: 60 seconds.
 pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
 
@@ -366,6 +393,8 @@ pub struct Settings {
     /// Log per-request provider timing phases to the diagnostic log
     /// (unset means OFF, exactly the TS default).
     pub request_timing: Option<bool>,
+    pub cache_retention: Option<CacheRetentionSetting>,
+    pub cache_warming: Option<CacheWarmingSetting>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
