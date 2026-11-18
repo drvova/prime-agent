@@ -172,6 +172,20 @@ pub enum Transport {
     Auto,
 }
 
+/// How closely the stream loop guard watches a model's streamed text and
+/// thinking for runaway repetition (the `loopGuard.sensitivity` setting's
+/// resolved value; absent means the model family's default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopGuardLevel {
+    /// The guard does not watch the stream.
+    Off,
+    /// Exact back-to-back cycles at the end of the stream.
+    Exact,
+    /// Exact cycles plus near-duplicate and stalled paragraphs.
+    Semantic,
+}
+
 /// TS `ServiceTier = "auto" | "default" | "flex" | "scale" | "priority" | null`.
 /// The wire value can be absent or an explicit null, both mapping to `None`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

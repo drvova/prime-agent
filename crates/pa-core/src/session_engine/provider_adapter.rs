@@ -286,6 +286,8 @@ pub fn stream_once(
             },
             metadata: None,
             timeout_ms: None,
+            // The session's `loopGuard` setting, set at the engine's stream seam.
+            loop_guard: options.loop_guard.as_ref().and_then(json_round_trip),
         },
         reasoning: Some(model_thinking_level(options.reasoning)),
         thinking_budgets: None,

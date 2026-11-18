@@ -32,6 +32,9 @@ pub enum StreamFailureKind {
     /// mid-block, no stop signal, no error frame (the connection just
     /// ends). Transient by nature — the same request can be re-issued.
     StreamDrop,
+    /// The stream loop guard cut a stream that began repeating itself
+    /// (`crate::loop_guard`). The same request may succeed on a re-issue, so it retries once.
+    RepetitionLoop,
     Unknown,
 }
 
@@ -484,6 +487,10 @@ const KIND_MESSAGES: &[(StreamFailureKind, &str)] = &[
     (
         StreamFailureKind::StreamDrop,
         "Provider dropped the response stream",
+    ),
+    (
+        StreamFailureKind::RepetitionLoop,
+        "Model output started repeating itself",
     ),
     (StreamFailureKind::Unknown, "Provider stream failed"),
 ];

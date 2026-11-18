@@ -61,6 +61,7 @@ pub fn build_base_options(
         headers: base.headers,
         timeout_ms: base.timeout_ms,
         metadata: base.metadata,
+        loop_guard: base.loop_guard,
     }
 }
 

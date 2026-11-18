@@ -156,6 +156,8 @@ pub struct StreamRequestOptions {
     /// Extra request headers (TS `SimpleStreamOptions.headers`), merged
     /// over the provider's auth-resolved headers at the adapter seam.
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The stream loop guard's level; `None` leaves it to the provider's default for the model.
+    pub loop_guard: Option<crate::types::LoopGuardLevel>,
 }
 
 impl std::fmt::Debug for StreamRequestOptions {
@@ -174,6 +176,7 @@ impl std::fmt::Debug for StreamRequestOptions {
             .field("on_payload", &self.on_payload.is_some())
             .field("on_response", &self.on_response.is_some())
             .field("headers", &self.headers)
+            .field("loop_guard", &self.loop_guard)
             .finish()
     }
 }
@@ -194,6 +197,7 @@ impl Default for StreamRequestOptions {
             on_payload: None,
             on_response: None,
             headers: None,
+            loop_guard: None,
         }
     }
 }

@@ -189,6 +189,30 @@ pub struct RetrySettings {
     pub provider: Option<ProviderRetrySettings>,
 }
 
+/// `loopGuard`: the stream loop guard, which cuts a model stream that starts repeating itself
+/// and nudges a model that re-runs the same tool call round after round.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopGuardSettings {
+    /// Unset means on.
+    pub enabled: Option<bool>,
+    /// Unset means `auto`.
+    pub sensitivity: Option<LoopGuardSensitivity>,
+}
+
+/// How closely the loop guard watches streamed output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LoopGuardSensitivity {
+    /// The model family's default: off for Claude, `semantic` for the Gemini, `DeepSeek` and
+    /// Grok families, `exact` for every other model.
+    Auto,
+    /// Exact back-to-back repeats only.
+    Exact,
+    /// Exact repeats plus near-duplicate and stalled paragraphs.
+    Semantic,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalSettings {
@@ -395,6 +419,8 @@ pub struct Settings {
     pub request_timing: Option<bool>,
     pub cache_retention: Option<CacheRetentionSetting>,
     pub cache_warming: Option<CacheWarmingSetting>,
+    /// The stream loop guard (unset means on, at each model family's default sensitivity).
+    pub loop_guard: Option<LoopGuardSettings>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
