@@ -789,7 +789,10 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         leaked.is_empty(),
     );
     term.key(Key::Escape);
-    let cleared = term.wait_gone("qKzx", Duration::from_secs(10));
+    // The draft is multi-line by now and the composer shows its tail, so the
+    // pasted tail before the caret (`ste` + `zx`) is the line that must go;
+    // `qKzx` may already be scrolled out of view.
+    let cleared = term.wait_gone("stezx", Duration::from_secs(10));
     check(&mut term, "escape clears the draft", cleared);
     term.type_text("abc");
     let retyped = term.wait_for("abc", Duration::from_secs(10));
