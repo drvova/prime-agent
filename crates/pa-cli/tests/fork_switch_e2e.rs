@@ -653,7 +653,7 @@ fn fork_tags_never_match_the_official_release_filters() {
 }
 
 /// The fork release cuts itself after a green `ci` run on a push to main,
-/// and builds the commit that run tested (workflow_run.head_sha, carried as
+/// and builds the commit that run tested (`workflow_run.head_sha`, carried as
 /// tag-check's `sha`), never main's tip at the time the release starts.
 #[test]
 fn the_fork_workflow_releases_after_green_ci_on_main() {
