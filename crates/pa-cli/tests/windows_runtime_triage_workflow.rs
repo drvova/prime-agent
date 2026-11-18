@@ -305,7 +305,8 @@ fn the_deep_battery_stays_off_the_pr_wave() {
 
 /// The pseudoconsole keyboard battery (`windows_conpty_input_e2e`): the
 /// TUI's keys on both console hosts, the inbox `ConPTY` and the pinned
-/// Windows Terminal host package, plus the Git Bash refusal. The job fetches
+/// Windows Terminal host package, the Git Bash refusal, and the launch that
+/// must open no console windows. The job fetches
 /// the package by version and hash, hands its path to the battery, and runs
 /// the battery locked; the battery keeps defining the tests the job claims.
 #[test]
@@ -325,6 +326,17 @@ fn the_tui_battery_job_drives_the_keyboard_through_both_console_hosts() {
             && fetch.contains("PA_CONPTY_DLL="),
         "the host package is pinned by version and hash and handed to the battery: {fetch}"
     );
+    // The console-window check boots the kernel from a fresh venv: uv is
+    // installed before the battery runs.
+    let uv = runs
+        .iter()
+        .position(|run| run.contains("python -m pip install uv"))
+        .expect("the job installs uv for the kernel bootstrap");
+    let keyboard = runs
+        .iter()
+        .position(|run| run.contains("--test windows_conpty_input_e2e"))
+        .expect("the job runs the windows_conpty_input_e2e battery");
+    assert!(uv < keyboard, "uv is installed before the battery runs");
     let battery = runs
         .iter()
         .find(|run| run.contains("--test windows_conpty_input_e2e"))
@@ -341,6 +353,7 @@ fn the_tui_battery_job_drives_the_keyboard_through_both_console_hosts() {
     for test in [
         "fn prime_tui_keys_act_on_conpty",
         "fn git_bash_without_conpty_gets_a_clear_message",
+        "fn background_children_open_no_console_windows",
     ] {
         assert!(source.contains(test), "the keyboard battery defines {test}");
     }
