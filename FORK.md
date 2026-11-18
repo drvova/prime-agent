@@ -8,7 +8,8 @@ it. `prime-switch` picks which of the two `prime-agent` runs.
 
 ## Install
 
-Install the fork build (macOS, Linux x64/arm64, Git Bash on Windows):
+Install the fork build (Linux x64/arm64, Git Bash on Windows). macOS builds are
+not published yet:
 
 ```sh
 curl -fsSL https://github.com/drvova/prime-agent/releases/latest/download/install.sh | sh
@@ -118,8 +119,8 @@ official `release.yml` never matches these tags (see
    `main`, with the tag to create (for example `v0.10.3-drvova.1`). The
    workflow checks the tag is new and matches `Cargo.toml`, builds the
    dispatched `main` commit, and the publish job creates the tag there.
-3. `.github/workflows/fork-release.yml` builds linux x64/arm64, macOS
-   arm64/x64 and Windows x64. It packages them with the official release
+3. `.github/workflows/fork-release.yml` builds linux x64/arm64 and Windows
+   x64 (no macOS: GitHub never assigned this repository a macOS runner). It packages them with the official release
    scripts, merges them with `release.yml`'s own promote steps, and publishes
    the GitHub Release (marked latest). The release carries the tarballs,
    `SHA256SUMS`, `latest.json`, `stable`, `install.sh`, `install.ps1`,
