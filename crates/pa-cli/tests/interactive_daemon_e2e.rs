@@ -335,10 +335,31 @@ fn graceful_shutdown(socket: &Path) -> Option<u32> {
 /// closed and parks the run forever; the wall makes that a failing test.
 const HEADLESS_RUN_BOUND: Duration = Duration::from_secs(300);
 
+/// Strip ambient provider credentials from THIS process, once. The
+/// in-process client forwards its whole environment to the session worker
+/// as the create's `launch_env` (by design: a user's shell keys reach the
+/// daemon), so a stripped supervisor alone does not keep the worker
+/// hermetic: a `GH_TOKEN` exported on the box made GitHub Copilot a
+/// signed-in provider, and its models then ranked above the fixture's.
+fn scrub_ambient_provider_credentials() {
+    static SCRUB: std::sync::Once = std::sync::Once::new();
+    SCRUB.call_once(|| {
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                for var in vars {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+        std::env::remove_var("PRIME_TEAM_ID");
+    });
+}
+
 async fn run_headless_bounded(
     options: pa_tui::interactive::InteractiveOptions,
     plan: pa_tui::interactive::HeadlessPlan,
 ) -> anyhow::Result<pa_tui::interactive::InteractiveOutcome> {
+    scrub_ambient_provider_credentials();
     let started = Instant::now();
     match tokio::time::timeout(
         HEADLESS_RUN_BOUND,
@@ -429,6 +450,7 @@ fn sweep_orphan_test_daemons() {
 
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    scrub_ambient_provider_credentials();
     #[cfg(target_os = "linux")]
     sweep_orphan_test_daemons();
     let socket = dir.join("daemon.sock");
@@ -1410,6 +1432,8 @@ async fn ensure_daemon_running_spawns_supervisor_and_tui_attaches() {
     let _guard = DetachedDaemon {
         socket: socket.clone(),
     };
+    // The spawned daemon inherits this process's env: no ambient provider keys.
+    scrub_ambient_provider_credentials();
     let exe = std::path::PathBuf::from(env!("CARGO_BIN_EXE_prime-agent"));
     pa_cli::ensure_daemon_running_with(&exe, &socket, dir.path())
         .await
