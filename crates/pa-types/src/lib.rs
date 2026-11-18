@@ -14,10 +14,12 @@ pub mod incident;
 pub mod memory_release;
 pub mod platform;
 pub mod provider_usage;
+pub mod question;
 pub mod session;
 pub mod skill_blocks;
 pub mod slash_commands;
 pub mod themes;
+pub mod todo;
 pub mod usage;
 
 use serde::{Deserialize, Serialize};

@@ -27,8 +27,14 @@ impl AgentView {
                 edit: first("app.message.navigateOlder"),
             }
         };
-        let queue_rows = crate::queued::render_queue(&self.theme, &self.queued, &keys, width);
-        let mut lines = queue_rows;
+        // The todo tray tops the dock, above the queued-input strip.
+        let mut lines = crate::todo_panel::render_todo_panel(&self.todos, &self.theme, width);
+        lines.extend(crate::queued::render_queue(
+            &self.theme,
+            &self.queued,
+            &keys,
+            width,
+        ));
         lines.extend(render_prompt_context(
             &self.detail_label(),
             &self.theme,

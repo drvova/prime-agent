@@ -136,6 +136,7 @@ pub(crate) fn attach_capabilities() -> Vec<pa_types::daemon::DaemonClientCapabil
         "elide_snapshot_images".to_string(),
         "windowed_snapshot".to_string(),
         pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY.to_string(),
+        pa_types::question::QUESTIONS_CAPABILITY.to_string(),
     ]
 }
 
@@ -251,6 +252,11 @@ pub(crate) struct SessionUi {
     pending_model_provider: Option<String>,
     pending_thinking_suffix: Option<String>,
     pending_queue: Option<crate::queued::QueuedMessages>,
+    /// The attach snapshot's todo list and open question, mounted with the rebuilt view.
+    pending_interaction: Option<(
+        pa_types::todo::TodoList,
+        Option<pa_types::question::Question>,
+    )>,
     queue_selection: crate::queued::QueueSelection,
     context: Option<crate::chrome::ContextUsage>,
     /// The session's auto-compaction switch: on, the tray gauge ticks the threshold.

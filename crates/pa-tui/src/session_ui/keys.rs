@@ -6,6 +6,7 @@ use super::{
     SessionUi, StatusKind, SubmitBehavior,
 };
 use crate::history_search::HistorySearchAction;
+use crate::question_prompt::QuestionAction;
 
 /// How long the Ctrl+C exit hint arms the second-press exit.
 const CTRL_C_EXIT_HINT_MS: u64 = 2_000;
@@ -490,6 +491,46 @@ impl SessionUi {
             self.track_scroll("follow", view.is_following());
             self.dirty = true;
             return Ok(());
+        }
+        // A kernel question waiting for the user owns the composer's keys; Ctrl+C passes through
+        // to the app below (it interrupts the turn, which withdraws the question).
+        let question_action = view
+            .question
+            .as_mut()
+            .map(|prompt| prompt.handle_key(&id, view.editor.keybindings()));
+        match question_action {
+            Some(QuestionAction::Reply(reply)) => {
+                // The prompt closes at once; the daemon's `question_closed` confirms it.
+                let question_id = view
+                    .question
+                    .take()
+                    .map(|prompt| prompt.question.id)
+                    .unwrap_or_default();
+                let client = self.client.clone();
+                let active_session_id = self.active_session_id.clone();
+                let notes = self.notes.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = client
+                        .request_ok(DaemonCommand::AnswerQuestion {
+                            id: None,
+                            active_session_id,
+                            question_id,
+                            reply,
+                            rest: Map::default(),
+                        })
+                        .await
+                    {
+                        let _ = notes.send(format!("the answer was not delivered: {error:#}"));
+                    }
+                });
+                self.dirty = true;
+                return Ok(());
+            }
+            Some(QuestionAction::Handled) => {
+                self.dirty = true;
+                return Ok(());
+            }
+            Some(QuestionAction::PassThrough) | None => {}
         }
         // The focused (expanded) dock owns these keys; every other key falls through after
         // releasing the focus. Configured bindings match first, so a rebound arrow keeps its

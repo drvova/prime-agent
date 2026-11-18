@@ -81,6 +81,10 @@ pub(super) struct Snapshot {
     pub stats: WindowStats,
     pub first_user: Option<serde_json::Value>,
     pub goal: Option<crate::goals::GoalState>,
+    /// The newest todo list snapshot on the active branch, hydrated from the
+    /// walk like `goal`. Older sidecars predate todo rows: `None`.
+    #[serde(default)]
+    pub todos: Option<pa_types::todo::TodoList>,
     /// Whether the active branch already carries an
     /// [`crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE`] row: the
     /// subscription warning's once-per-session-lifecycle gate, hydrated

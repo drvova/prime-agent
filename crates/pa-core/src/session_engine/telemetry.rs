@@ -28,6 +28,8 @@ use pa_agent::types::{AgentEvent, AssistantMessage, StopReason, Usage};
 use pa_telemetry::{
     base_properties, Properties, RunTrigger, TelemetryClient, TelemetryClientConfig, ToolCategory,
 };
+use pa_types::question::QuestionStatus;
+use pa_types::todo::{TodoList, TodoStatus};
 use serde_json::Value;
 
 use super::auto_retry::AutoRetryEvent;
@@ -377,8 +379,24 @@ struct CounterValues {
     cache_savings_usd: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
+    /// The kernel `todo.*`/`ask(...)` counters, reported by their own
+    /// `agent todos and questions` event.
+    interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+}
+
+/// `agent todos and questions`: lists set, items newly done, and questions by outcome.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+struct InteractionCounts {
+    todo_list_set: u64,
+    todo_item_done: u64,
+    question_asked: u64,
+    question_answered: u64,
+    question_declined: u64,
+    question_timed_out: u64,
+    question_no_user: u64,
+    question_cancelled: u64,
 }
 
 /// One goal verification or budget fact, counted into `agent goal verification`.
@@ -446,6 +464,47 @@ impl SessionCounters {
             values.context_thinned_result_count += stats.thinned_results;
             values.context_thinned_chars_saved += stats.chars_saved;
             values.context_thinned_tokens_saved += stats.tokens_saved();
+        });
+    }
+
+    /// A kernel `todo.set`/`todo.update` committed `next` over `previous`: a set counts once,
+    /// and each item that became `done` counts once (text never uploads).
+    pub fn note_todo_change(&self, previous: &TodoList, next: &TodoList) {
+        let newly_done = next
+            .items
+            .iter()
+            .filter(|item| {
+                item.status == TodoStatus::Done
+                    && !previous
+                        .items
+                        .iter()
+                        .any(|old| old.id == item.id && old.status == TodoStatus::Done)
+            })
+            .count() as u64;
+        let replaced = previous.items.len() != next.items.len()
+            || previous
+                .items
+                .iter()
+                .zip(&next.items)
+                .any(|(old, new)| old.id != new.id || old.text != new.text);
+        self.with(|values| {
+            values.interaction.todo_list_set += u64::from(replaced);
+            values.interaction.todo_item_done += newly_done;
+        });
+    }
+
+    /// A kernel `ask(...)` settled with `status` (the question never uploads).
+    pub fn note_question(&self, status: QuestionStatus) {
+        self.with(|values| {
+            let counts = &mut values.interaction;
+            counts.question_asked += 1;
+            match status {
+                QuestionStatus::Answered => counts.question_answered += 1,
+                QuestionStatus::Declined => counts.question_declined += 1,
+                QuestionStatus::TimedOut => counts.question_timed_out += 1,
+                QuestionStatus::NoUser => counts.question_no_user += 1,
+                QuestionStatus::Cancelled => counts.question_cancelled += 1,
+            }
         });
     }
 
@@ -920,6 +979,30 @@ impl SessionTelemetry {
                     Value::from(auth.rejected_retries),
                 );
             }
+        }
+        // The todo/question adoption rides its own event (the ended event sits at the key
+        // cap); a session that used neither sends none.
+        let interaction = self
+            .counters
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .interaction;
+        if interaction != InteractionCounts::default() {
+            let mut counts = self.session_properties();
+            for (key, value) in [
+                ("todo_list_set_count", interaction.todo_list_set),
+                ("todo_item_done_count", interaction.todo_item_done),
+                ("question_asked_count", interaction.question_asked),
+                ("question_answered_count", interaction.question_answered),
+                ("question_declined_count", interaction.question_declined),
+                ("question_timed_out_count", interaction.question_timed_out),
+                ("question_no_user_count", interaction.question_no_user),
+                ("question_cancelled_count", interaction.question_cancelled),
+            ] {
+                counts.set(key, Value::from(value));
+            }
+            self.client.track("agent todos and questions", counts);
         }
         self.counters.write_into(&mut properties);
         self.client.track("agent session ended", properties);

@@ -166,6 +166,7 @@ pub(crate) async fn build_faux_engine_with(
             rlm_subagent_host,
             rlm_usage_store: None,
             progress_note_emit: None,
+            interaction: None,
             rlm_depth,
             factory_child,
             daemonless: true,

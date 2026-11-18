@@ -339,6 +339,7 @@ async fn measured_goal_run(check: Option<&str>) -> MeasuredRun {
         rlm_subagent_host: None,
         rlm_usage_store: None,
         progress_note_emit: None,
+        interaction: None,
         rlm_depth: None,
         factory_child: false,
         daemonless: true,

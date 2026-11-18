@@ -231,6 +231,9 @@ pub struct AgentSessionEngine {
     /// build; `None` without a worker pump.
     progress_note_emit:
         std::sync::Mutex<Option<pa_core::session_engine::rlm_host::RlmProgressNoteEmit>>,
+    /// The worker's todo/question hub, threaded into every session build
+    /// (each build adopts its branch's todo list); `None` without a worker.
+    interaction_hub: std::sync::Mutex<Option<Arc<pa_core::interaction::InteractionHub>>>,
     /// The attribution producer the children registry's sink last got:
     /// children outlive a rebuild, so their spawn registrations are adopted
     /// forward.
