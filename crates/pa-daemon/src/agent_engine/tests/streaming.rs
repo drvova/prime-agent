@@ -196,7 +196,7 @@ fn agent_engine_streams_updates_and_final_message() {
 #[test]
 fn lazy_build_restores_only_the_pre_admission_prompt_context() {
     let dir = tempfile::TempDir::new().unwrap();
-    let path = dir.path().join("session.jsonl");
+    let path = dir.path().join("sessions").join("session.jsonl");
     let mut store =
         crate::session_store::SessionFile::create(dir.path().to_str().unwrap(), None, 0);
     store.set_path(path.clone());

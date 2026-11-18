@@ -68,9 +68,11 @@ impl SessionEngine for RecordingEngine {
     }
 }
 
+/// A session file under `dir/sessions`: the session artifacts root beside its
+/// dir, so they stay inside `dir`.
 fn written_session_file(dir: &Path, name: &str) -> PathBuf {
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
-    let path = dir.join(name);
+    let path = dir.join("sessions").join(name);
     session.set_path(path.clone());
     session.rewrite().unwrap();
     path
@@ -101,11 +103,8 @@ fn recording_worker(dir: &Path, events: std::sync::Arc<std::sync::Mutex<Vec<Stri
 /// branch context, and the model from different sessions.
 #[tokio::test]
 async fn concurrent_replacements_never_interleave_their_critical_sections() {
-    let dir = std::env::temp_dir().join(format!(
-        "pa-replacement-gate-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     std::fs::create_dir_all(&dir).expect("temp dir");
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let worker = recording_worker(&dir, std::sync::Arc::clone(&events));
@@ -153,8 +152,8 @@ async fn concurrent_replacements_never_interleave_their_critical_sections() {
 /// the failed path's model.
 #[tokio::test]
 async fn a_failed_existing_session_create_never_binds_the_engine() {
-    let dir =
-        std::env::temp_dir().join(format!("pa-create-bind-{}-{}", std::process::id(), line!()));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     std::fs::create_dir_all(&dir).expect("temp dir");
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let worker = recording_worker(&dir, std::sync::Arc::clone(&events));
@@ -195,7 +194,7 @@ async fn a_switched_session_repairs_a_torn_tail_before_its_first_append() {
         .await;
     assert!(created.success, "create failed: {created:?}");
 
-    let path = dir.path().join("torn.jsonl");
+    let path = dir.path().join("sessions").join("torn.jsonl");
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     session.set_path(path.clone());
     session.append_message(&json!({"role":"user","content":"before","timestamp":0}));
@@ -278,7 +277,7 @@ async fn a_resumed_session_repairs_a_non_utf8_torn_tail_before_its_first_append(
     let dir = tempfile::tempdir().unwrap();
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let worker = recording_worker(dir.path(), std::sync::Arc::clone(&events));
-    let path = dir.path().join("resume-torn.jsonl");
+    let path = dir.path().join("sessions").join("resume-torn.jsonl");
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     session.set_path(path.clone());
     session.append_message(&json!({"role":"user","content":"before","timestamp":0}));
@@ -341,7 +340,7 @@ async fn a_symlinked_session_repairs_its_target_and_keeps_the_append_lease() {
     assert!(created.success, "create failed: {created:?}");
 
     let target = written_session_file(dir.path(), "target.jsonl");
-    let alias = dir.path().join("alias.jsonl");
+    let alias = dir.path().join("sessions").join("alias.jsonl");
     std::os::unix::fs::symlink(&target, &alias).unwrap();
     {
         use std::io::Write as _;

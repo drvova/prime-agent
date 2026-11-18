@@ -1272,7 +1272,7 @@ async fn create_state(worker: &crate::worker::Worker, dir: &std::path::Path) -> 
     let created = worker
         .dispatch(
             "create",
-            &json!({ "sessionPath": dir.join("race-session.jsonl"), "cwd": dir }),
+            &json!({ "sessionPath": dir.join("sessions").join("race-session.jsonl"), "cwd": dir }),
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
@@ -1312,6 +1312,10 @@ async fn a_fresh_scoped_create_waits_for_the_private_default() {
 
 #[tokio::test]
 async fn a_fresh_scoped_create_falls_back_with_a_recorded_message() {
+    // Both scenarios' dirs outlive the loop: the create path's fire-and-forget
+    // catalog refresh only runs when the next scenario yields, and it would
+    // re-create a dropped dir's `agent/auth.json`.
+    let mut dirs = Vec::new();
     for no_session in [false, true] {
         let dir = tempfile::TempDir::new().unwrap();
         let worker = private_default_create_worker(dir.path(), Vec::new()).await;
@@ -1319,7 +1323,7 @@ async fn a_fresh_scoped_create_falls_back_with_a_recorded_message() {
         if no_session {
             payload["noSession"] = json!(true);
         } else {
-            payload["sessionPath"] = json!(dir.path().join("race-session.jsonl"));
+            payload["sessionPath"] = json!(dir.path().join("sessions").join("race-session.jsonl"));
         }
         let created = worker.dispatch("create", &payload).await;
         assert!(created.success, "create failed: {created:?}");
@@ -1351,7 +1355,7 @@ async fn a_fresh_scoped_create_falls_back_with_a_recorded_message() {
             "the attach summary delivers the warning to the TUI"
         );
         if no_session {
-            let path = dir.path().join("authorized-session.jsonl");
+            let path = dir.path().join("sessions").join("authorized-session.jsonl");
             let mut target =
                 crate::session_store::SessionFile::create(dir.path().to_str().unwrap(), None, 0);
             target.set_path(path.clone());
@@ -1374,6 +1378,7 @@ async fn a_fresh_scoped_create_falls_back_with_a_recorded_message() {
                 "navigation must not replay the old in-memory warning: {snapshot}"
             );
         }
+        dirs.push(dir);
     }
 }
 

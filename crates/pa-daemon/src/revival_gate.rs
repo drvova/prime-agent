@@ -144,9 +144,9 @@ mod tests {
         }
     }
 
-    fn session_file(state: Option<&str>) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-revival-gate-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    fn session_file(state: Option<&str>) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let mut session = crate::session_store::SessionFile::create("/work", None, 0);
         session.append_message(&serde_json::json!({
             "role": "user", "content": "hi", "timestamp": 1u64
@@ -157,20 +157,20 @@ mod tests {
         let path = dir.join(format!("{}.jsonl", session.session_id()));
         session.set_path(path.clone());
         session.rewrite().unwrap();
-        path
+        (tmp, path)
     }
 
-    fn agent_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-revival-agent-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn agent_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     #[test]
     fn fresh_busy_evidence_passes_the_gate() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         let recorded_at = iso_from_unix_ms(now_ms() - 1_000);
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         assert!(revival_veto(
             &agent_dir,
             &descriptor(Some(&file)),
@@ -182,10 +182,10 @@ mod tests {
 
     #[test]
     fn stale_busy_evidence_vetoes_the_revival() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         // The storm shape: a busy record written five hours before the boot.
         let recorded_at = iso_from_unix_ms(now_ms() - 5 * 60 * 60 * 1000);
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         let veto = revival_veto(
             &agent_dir,
             &descriptor(Some(&file)),
@@ -198,8 +198,8 @@ mod tests {
 
     #[test]
     fn an_unparsable_evidence_timestamp_vetoes_the_revival() {
-        let file = session_file(Some("active"));
-        let agent_dir = agent_dir();
+        let (_tmp, file) = session_file(Some("active"));
+        let (_tmp, agent_dir) = agent_dir();
         let veto = revival_veto(&agent_dir, &descriptor(Some(&file)), false, Some("when?"))
             .expect("uncertainty must not revive");
         assert!(matches!(veto, RevivalVeto::StaleBusyEvidence { .. }));
@@ -207,11 +207,11 @@ mod tests {
 
     #[test]
     fn a_future_dated_evidence_timestamp_vetoes_the_revival() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         // A far-future stamp (clock rollback or a bad write) must not
         // zero the age through saturating_sub: uncertainty never revives.
         let recorded_at = iso_from_unix_ms(now_ms() + 2 * 60 * 60 * 1000);
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         let veto = revival_veto(
             &agent_dir,
             &descriptor(Some(&file)),
@@ -224,11 +224,11 @@ mod tests {
 
     #[test]
     fn evidence_within_the_clock_skew_bound_still_passes() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         // Two daemons on one store can disagree slightly; a stamp within
         // the skew bound is still the fresh proof it claims to be.
         let recorded_at = iso_from_unix_ms(now_ms() + 30 * 1000);
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         assert!(
             revival_veto(
                 &agent_dir,
@@ -243,8 +243,8 @@ mod tests {
 
     #[test]
     fn a_kept_update_row_skips_the_freshness_bound() {
-        let file = session_file(Some("active"));
-        let agent_dir = agent_dir();
+        let (_tmp, file) = session_file(Some("active"));
+        let (_tmp, agent_dir) = agent_dir();
         assert!(
             revival_veto(&agent_dir, &descriptor(Some(&file)), true, None).is_none(),
             "the roster's kept set is the update's own point-in-time intent"
@@ -253,9 +253,9 @@ mod tests {
 
     #[test]
     fn the_give_up_verdict_vetoes_even_fresh_busy_evidence() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         let recorded_at = iso_from_unix_ms(now_ms());
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         let mut descriptor = descriptor(Some(&file));
         descriptor.lifecycle = DaemonWorkerLifecycle::Failed;
         let veto = revival_veto(&agent_dir, &descriptor, false, Some(&recorded_at))
@@ -266,9 +266,9 @@ mod tests {
     #[test]
     fn the_archived_belt_vetoes_even_fresh_busy_evidence() {
         // The zombie shape: a stopped session whose journal still holds a busy record.
-        let file = session_file(Some("archived"));
+        let (_tmp, file) = session_file(Some("archived"));
         let recorded_at = iso_from_unix_ms(now_ms());
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         let veto = revival_veto(
             &agent_dir,
             &descriptor(Some(&file)),
@@ -283,8 +283,8 @@ mod tests {
     fn the_archived_belt_vetoes_a_kept_update_row() {
         // A stop that landed during the update window is durable intent:
         // the roster's kept set cannot override it.
-        let file = session_file(Some("archived"));
-        let agent_dir = agent_dir();
+        let (_tmp, file) = session_file(Some("archived"));
+        let (_tmp, agent_dir) = agent_dir();
         let veto = revival_veto(&agent_dir, &descriptor(Some(&file)), true, None)
             .expect("the belt must veto");
         assert!(matches!(veto, RevivalVeto::SessionArchived));
@@ -292,9 +292,9 @@ mod tests {
 
     #[test]
     fn a_live_foreign_lease_vetoes_the_revival() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         let recorded_at = iso_from_unix_ms(now_ms());
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         // A live lease written the way another daemon's worker writes it
         // (this test process holds it): the file is owned elsewhere.
         std::env::set_var(crate::lease::SESSION_LEASES_ENABLED_ENV, "1");
@@ -313,9 +313,9 @@ mod tests {
 
     #[test]
     fn a_released_lease_does_not_veto() {
-        let file = session_file(Some("active"));
+        let (_tmp, file) = session_file(Some("active"));
         let recorded_at = iso_from_unix_ms(now_ms());
-        let agent_dir = agent_dir();
+        let (_tmp, agent_dir) = agent_dir();
         // A lease whose owner is long dead is stale ownership, not a live
         // one: the gate must not park genuinely interrupted work behind a
         // dead holder's record.

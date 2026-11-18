@@ -8,7 +8,7 @@ async fn the_waiting_prompt_resolves_only_after_the_turn_settles() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["settled reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     let (done_tx, mut done_rx) = oneshot::channel();
     let core = std::sync::Arc::clone(&runner.core);
     let turn = tokio::spawn(async move {
@@ -54,7 +54,11 @@ async fn the_waiting_prompt_resolves_only_after_the_turn_settles() {
 /// A turn runner whose roster pushes ship to a live supervisor link
 /// (the burst runner keeps them disabled). Unix only.
 #[cfg(unix)]
-fn live_feed_runner(engine: Arc<dyn SessionEngine>, socket: std::path::PathBuf) -> TurnRunner {
+fn live_feed_runner(
+    engine: Arc<dyn SessionEngine>,
+    socket: std::path::PathBuf,
+    scratch: &std::path::Path,
+) -> TurnRunner {
     let core = Arc::new(Mutex::new(SessionCore::test_core(None, "/tmp".to_string())));
     let user_bash = Arc::new(crate::user_bash::UserBash::new());
     let events = Arc::new(EventPump::new());
@@ -82,7 +86,7 @@ fn live_feed_runner(engine: Arc<dyn SessionEngine>, socket: std::path::PathBuf) 
         roster_pushes,
         user_bash: std::sync::Arc::new(crate::user_bash::UserBash::new()),
         passivation: crate::worker::turn::PassivationContext {
-            agent_dir: std::path::PathBuf::from("/tmp"),
+            agent_dir: scratch.to_path_buf(),
             link: Arc::new(crate::supervisor_link::SupervisorLink::new(
                 std::path::PathBuf::from("/nonexistent-supervisor.sock"),
             )),
@@ -90,7 +94,7 @@ fn live_feed_runner(engine: Arc<dyn SessionEngine>, socket: std::path::PathBuf) 
         },
         herdr: std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default())),
         checkpoints: Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
-            std::env::temp_dir(),
+            scratch.to_path_buf(),
         )),
     }
 }
@@ -119,7 +123,7 @@ async fn roster_feed_publishes_live_tool_activity() {
         }))
         .unwrap_or_default(),
     );
-    let runner = live_feed_runner(Arc::clone(&engine), socket);
+    let runner = live_feed_runner(Arc::clone(&engine), socket, dir.path());
     // The pickup's busy flip (the run loop's arm before `run_turn`).
     runner.core.lock().unwrap().busy = true;
     runner

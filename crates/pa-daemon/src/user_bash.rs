@@ -952,10 +952,10 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker(cwd: &std::path::Path) -> Arc<Worker> {
+    async fn created_worker(cwd: &std::path::Path) -> (tempfile::TempDir, Arc<Worker>) {
         std::fs::create_dir_all(cwd).unwrap();
-        let dir = std::env::temp_dir().join(format!("pa-worker-bash-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -975,7 +975,7 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     fn bash_rows(worker: &Worker) -> Vec<Value> {
@@ -999,7 +999,7 @@ mod tests {
     #[tokio::test]
     async fn execute_bash_and_wait_matches_the_ts_result_shape() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let response = worker
             .dispatch(
                 "execute_bash_and_wait",
@@ -1052,7 +1052,7 @@ mod tests {
     #[tokio::test]
     async fn characters_split_across_reads_decode_intact() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         // 1,500 seven-byte lines cross an 8 KiB read without reaching either output cap.
         let response = worker
             .dispatch(
@@ -1075,7 +1075,7 @@ mod tests {
     #[tokio::test]
     async fn a_signal_death_reports_128_plus_the_signal() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         for (command, code) in [
             ("kill -TERM $$", 143),
             ("kill -KILL $$", 137),
@@ -1142,7 +1142,7 @@ mod tests {
     #[tokio::test]
     async fn an_awaited_bash_run_reports_running_to_the_connection_state() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let runner = std::sync::Arc::clone(&worker);
         let run = tokio::spawn(async move {
             runner
@@ -1188,7 +1188,7 @@ mod tests {
     #[tokio::test]
     async fn execute_bash_claims_the_slot_and_aborts() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let response = worker
             .dispatch(
                 "execute_bash",
@@ -1352,7 +1352,7 @@ mod tests {
     #[tokio::test]
     async fn abort_bash_kills_the_commands_child_processes() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let mut events = worker.events.subscribe();
         let mut child = ForkedChild::start(&worker, cwd.path(), &mut events).await;
         let aborted = worker
@@ -1377,7 +1377,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_kills_the_running_commands_child_processes() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let mut events = worker.events.subscribe();
         let mut child = ForkedChild::start(&worker, cwd.path(), &mut events).await;
         let stopped = worker.dispatch("shutdown", &json!({})).await;
@@ -1395,7 +1395,7 @@ mod tests {
     #[tokio::test]
     async fn a_backgrounded_process_does_not_hold_the_run_open() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let settled = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             worker.dispatch(
@@ -1431,7 +1431,7 @@ mod tests {
     #[tokio::test]
     async fn transient_execute_bash_records_nothing() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let response = worker
             .dispatch(
                 "execute_bash",
@@ -1466,7 +1466,7 @@ mod tests {
     #[tokio::test]
     async fn execute_bash_and_wait_refuses_a_missing_cwd() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         {
             let mut core = worker.core.lock().unwrap();
             core.cwd = "/nonexistent-bash-cwd".to_string();
@@ -1532,7 +1532,7 @@ mod tests {
     #[tokio::test]
     async fn the_shutdown_gate_cannot_close_between_a_streamed_claim_and_its_registration() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
 
         // Gate shut: the admission's own re-check rejects, nothing claims.
         worker.core.lock().unwrap().shutdown_requested = true;
@@ -1575,7 +1575,7 @@ mod tests {
     #[tokio::test]
     async fn the_shutdown_gate_cannot_close_between_an_awaited_admission_and_its_registration() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
 
         // Gate shut: the admission's own re-check rejects, nothing registers.
         worker.core.lock().unwrap().shutdown_requested = true;
@@ -1618,7 +1618,7 @@ mod tests {
     #[tokio::test]
     async fn the_close_abort_cancels_an_admitted_awaited_run_and_settles_after_it() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         let awaited = worker.admit_awaited_bash().expect("gate open");
         assert!(worker.user_bash.is_running());
         let settle = tokio::spawn({
@@ -1646,7 +1646,7 @@ mod tests {
     #[tokio::test]
     async fn an_awaited_dispatch_against_a_closing_gate_records_no_row() {
         let cwd = tempfile::tempdir().expect("tempdir");
-        let worker = created_worker(cwd.path()).await;
+        let (_tmp, worker) = created_worker(cwd.path()).await;
         worker.core.lock().unwrap().shutdown_requested = true;
         let response = worker
             .dispatch(

@@ -36,9 +36,9 @@ async fn created_worker_at(root: &std::path::Path, session_file: &std::path::Pat
     worker
 }
 
-async fn created_worker() -> Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-worker-sg-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = crate::worker::WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: std::path::PathBuf::new(),
@@ -58,13 +58,13 @@ async fn created_worker() -> Arc<Worker> {
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
-    worker
+    (tmp, worker)
 }
 
 /// `heartbeat` is present and null (no cron store on this worker).
 #[tokio::test]
 async fn get_connection_state_matches_the_ts_shape() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_connection_state",
@@ -122,7 +122,7 @@ async fn get_connection_state_matches_the_ts_shape() {
 
 #[tokio::test]
 async fn get_rlm_children_carries_the_sequence() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_rlm_children",
@@ -147,7 +147,7 @@ async fn get_rlm_children_carries_the_sequence() {
 /// Child attributions move the split between `ownUsage` and `totalUsage`.
 #[tokio::test]
 async fn get_context_tree_matches_the_ts_root_node() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_context_tree",
@@ -187,7 +187,9 @@ async fn get_context_tree_matches_the_ts_root_node() {
 /// carries the attributed child spend (input 52898, cost $0.0089957).
 #[tokio::test]
 async fn get_context_tree_folds_the_captured_attributions() {
-    let root = std::env::temp_dir().join(format!("pa-worker-af-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    // One level in: the session artifacts root beside the session file's dir.
+    let root = tmp.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/attribution-fold-captured.jsonl");
@@ -241,7 +243,9 @@ async fn get_context_tree_folds_the_captured_attributions() {
 /// switch's cache-write burst (the cost blocks are `calculate_cost` records).
 #[tokio::test]
 async fn get_context_tree_breaks_own_usage_down_by_model() {
-    let root = std::env::temp_dir().join(format!("pa-worker-bm-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    // One level in: the session artifacts root beside the session file's dir.
+    let root = tmp.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     let session_file = root.join("switched.jsonl");
     let usage = |input: u64,
@@ -331,7 +335,9 @@ async fn get_context_tree_breaks_own_usage_down_by_model() {
 /// and the display degrades to the plain totals instead of overstating the node.
 #[tokio::test]
 async fn get_context_tree_omits_the_breakdown_when_an_attribution_exceeds_its_bucket() {
-    let root = std::env::temp_dir().join(format!("pa-worker-bmx-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    // One level in: the session artifacts root beside the session file's dir.
+    let root = tmp.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     let session_file = root.join("clamped.jsonl");
     let usage = |input: u64, output: u64, total: u64| {
@@ -389,7 +395,9 @@ async fn get_context_tree_omits_the_breakdown_when_an_attribution_exceeds_its_bu
 /// stays served.
 #[tokio::test]
 async fn get_context_tree_keeps_the_breakdown_when_an_attribution_fits_its_bucket() {
-    let root = std::env::temp_dir().join(format!("pa-worker-bmf-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    // One level in: the session artifacts root beside the session file's dir.
+    let root = tmp.path().join("work");
     std::fs::create_dir_all(&root).unwrap();
     let session_file = root.join("fits.jsonl");
     let usage = |input: u64, output: u64, total: u64| {
@@ -443,7 +451,8 @@ async fn get_context_tree_keeps_the_breakdown_when_an_attribution_fits_its_bucke
 /// restart-orphaned subagents all appear, with real usage and grandchildren.
 #[tokio::test]
 async fn get_context_tree_lists_persisted_children() {
-    let root = std::env::temp_dir().join(format!("pa-worker-ct-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
     let agent_dir = root.join("agent");
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
@@ -561,7 +570,7 @@ async fn get_context_tree_lists_persisted_children() {
 
 #[tokio::test]
 async fn commands_and_resources_match_the_empty_loader_shape() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_commands",
@@ -585,7 +594,7 @@ async fn commands_and_resources_match_the_empty_loader_shape() {
 
 #[tokio::test]
 async fn get_session_context_matches_the_ts_context_shape() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_session_context",
@@ -633,7 +642,7 @@ async fn get_session_context_matches_the_ts_context_shape() {
 /// key omitted, like the TS `undefined` field).
 #[tokio::test]
 async fn system_prompt_and_tool_definition_match_the_ts_shapes() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_system_prompt",
@@ -667,7 +676,7 @@ async fn system_prompt_and_tool_definition_match_the_ts_shapes() {
 
 #[tokio::test]
 async fn rlm_max_depth_status_matches_the_ts_shape() {
-    let worker = created_worker().await;
+    let (_tmp, worker) = created_worker().await;
     let response = worker
         .dispatch(
             "get_rlm_max_depth_status",

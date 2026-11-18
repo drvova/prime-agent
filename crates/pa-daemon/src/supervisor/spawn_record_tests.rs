@@ -11,9 +11,12 @@ use super::*;
 /// tempdir whose descriptor dir is the probe's drain root, with the
 /// launch-probe budget pinned to 1 ms. No live worker ever answers —
 /// the launch fails at the probe, after the spawn record served.
-fn spawn_record_witness(tag: &str) -> (Arc<Supervisor>, std::path::PathBuf) {
-    let dir = std::env::temp_dir().join(format!("pa-spawnrec-{tag}-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn spawn_record_witness(tag: &str) -> (tempfile::TempDir, Arc<Supervisor>, std::path::PathBuf) {
+    let tmp = tempfile::Builder::new()
+        .prefix(&format!("pa-spawnrec-{tag}-"))
+        .tempdir()
+        .unwrap();
+    let dir = tmp.path().to_path_buf();
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let supervisor = Arc::new(
@@ -24,7 +27,7 @@ fn spawn_record_witness(tag: &str) -> (Arc<Supervisor>, std::path::PathBuf) {
         .expect("supervisor"),
     );
     supervisor.pin_worker_connect_budget_for_tests(Duration::from_millis(1));
-    (supervisor, dir)
+    (tmp, supervisor, dir)
 }
 
 /// A known-resident registration refreshes the resident's descriptor in
@@ -33,8 +36,8 @@ fn spawn_record_witness(tag: &str) -> (Arc<Supervisor>, std::path::PathBuf) {
 /// write.
 #[tokio::test]
 async fn a_known_resident_registration_writes_nothing_to_disk() {
-    let dir = std::env::temp_dir().join(format!("pa-regskip-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
     let supervisor = Arc::new(
@@ -125,7 +128,7 @@ async fn a_known_resident_registration_writes_nothing_to_disk() {
 /// spawn record served.
 #[tokio::test]
 async fn a_relaunch_spawn_record_serves_the_durable_persist() {
-    let (supervisor, dir) = spawn_record_witness("relaunch");
+    let (_tmp, supervisor, dir) = spawn_record_witness("relaunch");
     let descriptor_path = dir.join("w-relaunch.json");
     let descriptor: DaemonWorkerDescriptor = serde_json::from_value(serde_json::json!({
         "version": 2,
@@ -224,7 +227,7 @@ async fn a_relaunch_spawn_record_serves_the_durable_persist() {
 /// later, at the connect probe, with no spawn record behind it.
 #[tokio::test]
 async fn a_spawn_record_persist_failure_kills_the_child_and_fails_the_launch() {
-    let (supervisor, dir) = spawn_record_witness("persistfail");
+    let (_tmp, supervisor, dir) = spawn_record_witness("persistfail");
     let descriptor_path = dir.join("w-persistfail.json");
     // The spawn record's destination is occupied: the atomic persist fails.
     std::fs::create_dir(&descriptor_path).unwrap();
@@ -277,7 +280,7 @@ async fn a_spawn_record_persist_failure_kills_the_child_and_fails_the_launch() {
 /// the spawn record served.
 #[tokio::test]
 async fn a_fresh_create_spawn_record_keeps_the_unsynced_shape() {
-    let (supervisor, dir) = spawn_record_witness("freshcreate");
+    let (_tmp, supervisor, dir) = spawn_record_witness("freshcreate");
     let create = DaemonCommand::Create {
         id: None,
         session_path: Some(dir.join("s.jsonl").to_string_lossy().to_string()),

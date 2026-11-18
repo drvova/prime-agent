@@ -593,15 +593,15 @@ mod tests {
         }
     }
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-sw-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
         let created = worker
             .dispatch("create", &json!({ "noSession": true, "cwd": dir }))
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     /// The connection state carries the settings-seeded defaults: service tier "default"
@@ -609,7 +609,7 @@ mod tests {
     /// follow-up "one-at-a-time".
     #[tokio::test]
     async fn connection_state_seeds_the_settings_switches() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "get_connection_state",
@@ -662,8 +662,8 @@ mod tests {
 
     #[tokio::test]
     async fn cycle_model_on_a_non_switching_engine_fails_like_set_model() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-cm2-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         models_fixture(&dir, 2);
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
         let created = worker
@@ -686,8 +686,8 @@ mod tests {
 
     #[tokio::test]
     async fn cycle_model_refuses_models_outside_the_allowlist() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-cm3-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         models_fixture(&dir, 2);
         std::fs::create_dir_all(dir.join("agent")).unwrap();
         std::fs::write(
@@ -734,8 +734,8 @@ mod tests {
 
     #[tokio::test]
     async fn create_resolves_the_models_scope_for_the_session() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-scope-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         models_fixture(&dir, 2);
         // The real engine (no script) resolves the model against the registry.
         let mut config = worker_config(&dir);
@@ -819,16 +819,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_fresh_scoped_create_persists_the_scoped_startup_pick_in_its_file() {
-        let dir =
-            std::env::temp_dir().join(format!("pa-worker-scope-file-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         models_fixture(&dir, 2);
         let mut config = worker_config(&dir);
         config.script = None;
         let worker = Arc::new(Worker::new(config, None));
         // A session path that does NOT exist yet: a post-create existence check would see the
         // file this create just wrote.
-        let session_path = dir.join("fresh-scoped-session.jsonl");
+        let session_path = dir.join("sessions").join("fresh-scoped-session.jsonl");
         let created = worker
             .dispatch(
                 "create",
@@ -869,7 +868,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_scoped_models_stores_and_validates() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let scoped = json!([
             { "model": { "provider": "prime-inference", "id": "mock-1" } },
             {
@@ -907,7 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn cycle_thinking_level_without_reasoning_answers_null() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "cycle_thinking_level",
@@ -922,7 +921,7 @@ mod tests {
     /// `default` in the active state.
     #[tokio::test]
     async fn set_service_tier_records_the_durable_row() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let tier_rows = |worker: &Worker| {
             worker
                 .core
@@ -998,7 +997,7 @@ mod tests {
     /// On the scripted engine (no model) the restored preference re-clamps the tier to `default`.
     #[tokio::test]
     async fn replacement_reseed_restores_the_tier_preference() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         worker.reseed_service_tier_for_replacement();
         let (preference, active) = {
             let core = worker.core.lock().unwrap();
@@ -1031,7 +1030,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_transport_persists_the_setting() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-tr-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(dir.join("agent")).unwrap();
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
         let created = worker
@@ -1061,7 +1061,7 @@ mod tests {
 
     #[tokio::test]
     async fn queue_mode_switches_update_the_state() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         for (command, field) in [
             ("set_steering_mode", "steeringMode"),
             ("set_follow_up_mode", "followUpMode"),
@@ -1099,7 +1099,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_auto_retry_persists_the_toggle() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-ar-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(dir.join("agent")).unwrap();
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
         let created = worker
@@ -1120,7 +1121,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_auto_compaction_persists_the_toggle() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-ac-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(dir.join("agent")).unwrap();
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
         let created = worker
@@ -1254,8 +1256,8 @@ mod tests {
 
     #[tokio::test]
     async fn set_auto_compaction_fails_without_flipping_on_a_failed_save() {
-        let dir = std::env::temp_dir().join(format!("pa-worker-acf-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         // A file where the agent dir would be: the settings save cannot create agent/settings.json.
         std::fs::write(dir.join("agent"), b"not a directory").unwrap();
         let worker = Arc::new(Worker::new(worker_config(&dir), None));
@@ -1284,7 +1286,7 @@ mod tests {
 
     #[tokio::test]
     async fn abort_retry_answers_success() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "abort_retry",

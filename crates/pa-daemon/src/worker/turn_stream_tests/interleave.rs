@@ -291,7 +291,7 @@ fn interleave_runner(
     let dir = tempfile::TempDir::new().expect("runner dir");
     let agent_dir = dir.path().join("agent");
     passivation_settings(&agent_dir, &json!(1));
-    let mut runner = burst_runner(Arc::clone(engine) as Arc<dyn SessionEngine>);
+    let (_tmp, mut runner) = burst_runner(Arc::clone(engine) as Arc<dyn SessionEngine>);
     {
         let mut core = runner.core.lock().unwrap();
         core.cwd = dir.path().to_string_lossy().to_string();

@@ -80,7 +80,7 @@ async fn the_idle_park_releases_a_parent_owned_childs_kernel_only() {
     async fn park_with(depth: u32, attached: bool, compacting: bool) -> ParkedProbe {
         let releases = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let fired = std::sync::Arc::new(tokio::sync::Notify::new());
-        let runner = burst_runner(Arc::new(ReleaseCountingEngine {
+        let (_tmp, runner) = burst_runner(Arc::new(ReleaseCountingEngine {
             releases: std::sync::Arc::clone(&releases),
             fired: std::sync::Arc::clone(&fired),
         }));
@@ -197,7 +197,7 @@ impl SessionEngine for AdmitProbeEngine {
 #[tokio::test]
 async fn compacting_window_parks_a_cleared_suspension_until_it_ends() {
     let engine = Arc::new(AdmitProbeEngine::default());
-    let runner = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
     let (done_tx, mut done_rx) = oneshot::channel();
     {
         // The mid-compaction shape: the suspension is clear while the
@@ -283,7 +283,7 @@ async fn idle_passivation_window_arms_only_for_idle_unattached_sessions() {
     let agent_dir = dir.path().join("agent");
     passivation_settings(&agent_dir, &serde_json::json!(1));
     let engine = Arc::new(ScriptedEngine::default());
-    let mut runner = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
+    let (_tmp, mut runner) = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
     // The shared PassivationContext with a live settings dir.
     runner.passivation.agent_dir = agent_dir.clone();
 
@@ -332,7 +332,7 @@ async fn idle_passivation_refuses_while_the_lanes_hold_undelivered_input() {
     let agent_dir = dir.path().join("agent");
     passivation_settings(&agent_dir, &serde_json::json!(1));
     let engine = Arc::new(ScriptedEngine::default());
-    let mut runner = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
+    let (_tmp, mut runner) = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
     runner.passivation.agent_dir = agent_dir;
     {
         let mut core = runner.core.lock().unwrap();
@@ -403,7 +403,7 @@ async fn idle_passivation_fire_rechecks_the_fresh_state_and_reports_the_threshol
     let agent_dir = dir.path().join("agent");
     passivation_settings(&agent_dir, &serde_json::json!(1));
     let engine = Arc::new(ScriptedEngine::default());
-    let mut runner = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
+    let (_tmp, mut runner) = burst_runner(Arc::clone(&engine) as Arc<dyn SessionEngine>);
     runner.passivation.agent_dir = agent_dir;
     {
         let mut core = runner.core.lock().unwrap();

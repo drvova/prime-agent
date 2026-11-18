@@ -317,12 +317,18 @@ pub(crate) fn assert_cancelled_end_event(
     );
 }
 
-/// A driver loop test harness: faux script + collected events.
+/// A driver loop test harness: faux script + collected events. The temp
+/// dir rides back with the engine: a caller that keeps driving it (a
+/// rebuild re-reads auth and telemetry state) must hold the dir until then.
 #[cfg(test)]
 fn run_prompts(
     script: &serde_json::Value,
     prompts: &[&str],
-) -> (std::sync::Arc<AgentSessionEngine>, Vec<EngineEvent>) {
+) -> (
+    tempfile::TempDir,
+    std::sync::Arc<AgentSessionEngine>,
+    Vec<EngineEvent>,
+) {
     let dir = tempfile::TempDir::new().unwrap();
     let engine = AgentSessionEngine::new(AgentEngineConfig {
         cwd: dir.path().to_path_buf(),
@@ -362,7 +368,7 @@ fn run_prompts(
             },
         );
     }
-    (engine, events)
+    (dir, engine, events)
 }
 
 /// The user rows emitted by one run (message texts in order).

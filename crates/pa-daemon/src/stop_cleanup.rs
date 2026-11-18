@@ -467,13 +467,10 @@ mod tests {
     use pa_core::cron::AgentCronJob;
     use std::io::Write;
 
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("pa-stop-cleanup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        (tmp, dir)
     }
 
     fn write_session(dir: &Path, name: Option<&str>) -> (String, PathBuf) {
@@ -531,7 +528,7 @@ mod tests {
 
     #[test]
     fn finalize_cancels_the_tree_and_archives_the_root() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -594,7 +591,7 @@ mod tests {
 
     #[test]
     fn finalize_skips_a_tree_a_live_worker_covers() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
         let sessions_dir = agent_dir.join("sessions");
@@ -619,7 +616,7 @@ mod tests {
 
     #[test]
     fn capture_reads_the_frozen_transcript_before_any_sweep() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -707,7 +704,7 @@ mod tests {
     /// own snapshot, and an aggregate would double count it.
     #[test]
     fn capture_is_own_only_never_the_attribution_aggregate() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -783,7 +780,7 @@ mod tests {
 
     #[test]
     fn capture_skips_live_children_and_plain_kills() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -815,7 +812,7 @@ mod tests {
 
     #[test]
     fn capture_with_no_child_id_amends_every_tombstoned_edge() {
-        let root = temp_dir();
+        let (_tmp, root) = temp_dir();
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();

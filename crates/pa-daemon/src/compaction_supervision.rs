@@ -701,8 +701,8 @@ mod tests {
 
     #[test]
     fn journal_survives_restart_until_consumed_or_cleared() {
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("compaction-supervision.jsonl");
         {
             let mut journal = TerminalCompactionJournal::open(&path).unwrap();
@@ -755,8 +755,8 @@ mod tests {
 
     #[test]
     fn a_manual_declaration_never_displaces_a_pending_record() {
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("compaction-supervision.jsonl");
         let record = |reason: &str| TerminalCompactionRecord {
             version: 1,
@@ -811,8 +811,8 @@ mod tests {
 
     #[test]
     fn a_failed_durable_write_stays_retryable_until_the_replay() {
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("compaction-supervision.jsonl");
         let record = || TerminalCompactionRecord {
             version: 1,
@@ -854,7 +854,8 @@ mod tests {
 
     #[test]
     fn terminal_journal_read_failure_stops_recovery() {
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("unreadable.jsonl");
         std::fs::create_dir_all(&path).unwrap();
         let sentinel = path.join("preserve");
@@ -867,8 +868,8 @@ mod tests {
 
     #[test]
     fn terminal_journal_open_heals_torn_utf8_tail() {
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("compaction-supervision.jsonl");
         let mut torn: Vec<u8> = br#"{"version":1,"type":"terminal_compaction","activeSessionId":"session-a","sessionFile":"/sessions/a.jsonl","reason":"threshold","declaredAt":"2026-09-23T00:00:00Z"}"#.to_vec();
         torn.push(b'\n');
@@ -903,8 +904,8 @@ mod tests {
     #[test]
     fn corrupt_complete_terminal_identifiers_are_preserved_before_recovery_fails() {
         for newline_terminated in [true, false] {
-            let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-            std::fs::create_dir_all(&dir).unwrap();
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().to_path_buf();
             let path = dir.join("compaction-supervision.jsonl");
             let mut journal = TerminalCompactionJournal::open(&path).unwrap();
             journal
@@ -940,8 +941,8 @@ mod tests {
     #[test]
     fn a_competing_terminal_writer_cannot_replace_an_active_append() {
         use std::io::Write;
-        let dir = std::env::temp_dir().join(format!("pa-comp-sup-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let path = dir.join("compaction-supervision.jsonl");
         let first = TerminalCompactionRecord {
             version: 1,
@@ -988,8 +989,9 @@ mod tests {
     #[tokio::test]
     async fn a_competing_supervisor_does_not_heal_before_socket_admission() {
         use std::io::Write;
-        let dir = std::path::PathBuf::from("/tmp").join(format!("pa-c-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Under /tmp: the dir holds a bound socket (SUN_LEN).
+        let tmp = tempfile::tempdir_in("/tmp").unwrap();
+        let dir = tmp.path().to_path_buf();
         let options = crate::supervisor::SupervisorOptions {
             socket_path: dir.join("supervisor.sock"),
             agent_dir: dir.join("agent"),

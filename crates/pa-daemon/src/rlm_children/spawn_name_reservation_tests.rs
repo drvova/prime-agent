@@ -126,11 +126,10 @@ async fn sessions_with_gated_supervisor(
     verdict_rx: mpsc::UnboundedReceiver<bool>,
     rename_seen_tx: mpsc::UnboundedSender<Value>,
     rename_verdict_rx: Option<mpsc::UnboundedReceiver<()>>,
-) -> SupervisorChildSessions {
-    let socket = std::env::temp_dir().join(format!(
-        "pa-rlm-gate-{}.sock",
-        uuid::Uuid::new_v4().simple()
-    ));
+) -> (tempfile::TempDir, SupervisorChildSessions) {
+    // Under /tmp: the dir holds the fake supervisor's socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let socket = tmp.path().join("pa-rlm-gate.sock");
     spawn_gated_supervisor(
         socket.clone(),
         create_seen_tx,
@@ -142,20 +141,23 @@ async fn sessions_with_gated_supervisor(
     let link = Arc::new(crate::supervisor_link::SupervisorLink::new(socket));
     let sessions = SupervisorChildSessions::new(
         link,
-        std::env::temp_dir(),
+        tmp.path().to_path_buf(),
         "parent-live".to_string(),
         std::sync::Arc::new(crate::model_allowlist::ModelRefusalTelemetry::new(
-            std::env::temp_dir(),
+            tmp.path().to_path_buf(),
             /*telemetry_disabled*/ true,
         )),
         String::new(),
     );
     sessions.set_identity(ParentIdentity {
         model: Some("mock/mock-1".to_string()),
-        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
+        cwd: Some(tmp.path().to_string_lossy().to_string()),
+        // A durable parent id roots the child session dirs in the agent dir
+        // (the temp dir) instead of the process-wide temp dir.
+        session_id: Some("parent-file".to_string()),
         ..ParentIdentity::with_default_depth()
     });
-    sessions
+    (tmp, sessions)
 }
 
 fn spawn_request(name: &str, prompt: &str) -> RlmSpawnRequest {
@@ -177,7 +179,7 @@ async fn holds_a_spawn_name_reservation_until_admission_settles_then_frees_it() 
     let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, _rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (_tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
     let unavailable = "Agent name \"slow-worker\" is unavailable: an agent of that name already exists at depth 1 under this parent";
 
@@ -220,7 +222,7 @@ async fn a_cancelled_spawn_admission_frees_the_reserved_name() {
     let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, _rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (_tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
 
     // The spawn parks inside its create admission.
@@ -257,7 +259,7 @@ async fn a_failed_admission_frees_the_reserved_name() {
     let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, _rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (_tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
 
     let spawned = tokio::spawn(sessions.spawn(spawn_request("doomed", "kernel startup failed")));
@@ -291,7 +293,7 @@ async fn rename_resolves_child_targets_by_id_only() {
     let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, _rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (_tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
     let spawned = tokio::spawn(sessions.spawn(spawn_request("worker-a", "a named child")));
     create_seen_rx
@@ -329,7 +331,7 @@ async fn parent_rename_forwards_and_reseeds_the_record_name() {
     let (create_seen_tx, mut create_seen_rx) = mpsc::unbounded_channel();
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, mut rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (_tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
     let spawned = tokio::spawn(sessions.spawn(spawn_request("worker-a", "a named child")));
     create_seen_rx
@@ -384,11 +386,11 @@ async fn self_rename_targets_the_caller_without_the_parent_marker() {
     let (create_seen_tx, _create_seen_rx) = mpsc::unbounded_channel();
     let (_verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, mut rename_seen_rx) = mpsc::unbounded_channel();
-    let sessions =
+    let (tmp, sessions) =
         sessions_with_gated_supervisor(create_seen_tx, verdict_rx, rename_seen_tx, None).await;
     sessions.set_identity(ParentIdentity {
         model: Some("mock/mock-1".to_string()),
-        cwd: Some(std::env::temp_dir().to_string_lossy().to_string()),
+        cwd: Some(tmp.path().to_string_lossy().to_string()),
         session_id: Some("parent-file".to_string()),
         ..ParentIdentity::with_default_depth()
     });
@@ -421,7 +423,7 @@ async fn concurrent_parent_renames_keep_the_last_applied_name() {
     let (verdict_tx, verdict_rx) = mpsc::unbounded_channel();
     let (rename_seen_tx, mut rename_seen_rx) = mpsc::unbounded_channel();
     let (rename_verdict_tx, rename_verdict_rx) = mpsc::unbounded_channel();
-    let sessions = sessions_with_gated_supervisor(
+    let (_tmp, sessions) = sessions_with_gated_supervisor(
         create_seen_tx,
         verdict_rx,
         rename_seen_tx,

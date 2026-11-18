@@ -72,7 +72,7 @@ mod resume_settings_tests {
     #[tokio::test]
     async fn compacted_create_restores_settings_and_honors_explicit_overrides() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("resume.jsonl");
+        let path = dir.path().join("sessions").join("resume.jsonl");
         let mut file = SessionFile::create("/tmp", None, 0);
         file.set_path(path.clone());
         file.append_model_change("old", "superseded");
@@ -187,7 +187,7 @@ mod resume_settings_tests {
     #[tokio::test]
     async fn create_backfills_the_default_tier_when_the_resumed_file_has_none() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("no-tier.jsonl");
+        let path = dir.path().join("sessions").join("no-tier.jsonl");
         let mut file = SessionFile::create("/tmp", None, 0);
         file.set_path(path.clone());
         file.append_entry(

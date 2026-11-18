@@ -3,10 +3,13 @@
 use super::*;
 use crate::session_usage::SessionUsageSummary;
 
-fn temp_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pa-ledger-{name}-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::Builder::new()
+        .prefix(&format!("pa-ledger-{name}-"))
+        .tempdir()
+        .unwrap();
+    let dir = tmp.path().to_path_buf();
+    (tmp, dir)
 }
 
 fn ledger_for(dir: &Path) -> RlmSpawnLedger {
@@ -20,7 +23,7 @@ fn ledger_over(agent_dir: &Path, sessions_dir: &Path) -> RlmSpawnLedger {
 
 #[test]
 fn legacy_registry_probe_reads_the_header_line_bounded() {
-    let dir = temp_dir("legacy-bounded");
+    let (_tmp, dir) = temp_dir("legacy-bounded");
     let parent = dir.join("p.jsonl");
     let mut content = json!({"type": "session", "id": "p1"}).to_string();
     content.push('\n');
@@ -47,7 +50,7 @@ fn legacy_registry_probe_reads_the_header_line_bounded() {
 
 #[test]
 fn legacy_registry_probe_resolves_a_readable_header_over_a_corrupt_tail() {
-    let dir = temp_dir("legacy-corrupt-tail");
+    let (_tmp, dir) = temp_dir("legacy-corrupt-tail");
     let parent = dir.join("p.jsonl");
     let mut bytes = json!({"type": "session", "id": "p1"})
         .to_string()
@@ -66,7 +69,7 @@ fn legacy_registry_probe_resolves_a_readable_header_over_a_corrupt_tail() {
 
 #[test]
 fn ledger_path_hashes_the_canonical_sessions_dir() {
-    let dir = temp_dir("path");
+    let (_tmp, dir) = temp_dir("path");
     let a = rlm_ledger_path(&dir, &dir.join("sessions"));
     let b = rlm_ledger_path(&dir, &dir.join("sessions/../sessions"));
     assert_eq!(a, b);
@@ -77,7 +80,7 @@ fn ledger_path_hashes_the_canonical_sessions_dir() {
 
 #[test]
 fn spawn_rename_delete_replay_in_order() {
-    let dir = temp_dir("replay");
+    let (_tmp, dir) = temp_dir("replay");
     let ledger = ledger_for(&dir);
     let parent = dir.join("parent.jsonl");
     let child = dir.join("child.jsonl");
@@ -118,7 +121,7 @@ fn spawn_rename_delete_replay_in_order() {
 
 #[test]
 fn edge_is_live_reflects_tombstones_and_files() {
-    let dir = temp_dir("liveness");
+    let (_tmp, dir) = temp_dir("liveness");
     let ledger = ledger_for(&dir);
     let parent = dir.join("p.jsonl");
     let child = dir.join("c.jsonl");
@@ -182,7 +185,7 @@ fn edge_is_live_reflects_tombstones_and_files() {
 fn edge_is_live_revalidates_paths_without_a_ledger_append() {
     use std::os::unix::fs::symlink;
 
-    let dir = temp_dir("liveness-retarget");
+    let (_tmp, dir) = temp_dir("liveness-retarget");
     let ledger = ledger_for(&dir);
     let parent = dir.join("p.jsonl");
     let child = dir.join("a.jsonl");
@@ -246,7 +249,7 @@ fn edge_is_live_revalidates_paths_without_a_ledger_append() {
 /// re-lives that edge in place (the fold keeps one edge per key).
 #[test]
 fn a_respawned_child_id_on_a_new_path_is_live_and_the_old_one_is_not() {
-    let dir = temp_dir("respawn");
+    let (_tmp, dir) = temp_dir("respawn");
     let ledger = ledger_for(&dir);
     let parent = dir.join("p.jsonl");
     let a = dir.join("a.jsonl");
@@ -280,7 +283,7 @@ fn a_respawned_child_id_on_a_new_path_is_live_and_the_old_one_is_not() {
 
 #[test]
 fn dead_child_or_parent_drops_from_live_edges() {
-    let dir = temp_dir("live");
+    let (_tmp, dir) = temp_dir("live");
     let ledger = ledger_for(&dir);
     let parent = dir.join("p.jsonl");
     let child = dir.join("c.jsonl");
@@ -306,7 +309,7 @@ fn dead_child_or_parent_drops_from_live_edges() {
 /// edge carries the resolved path; a session with no file anywhere stays dead.
 #[test]
 fn moved_edge_paths_resolve_through_the_session_id() {
-    let agent_dir = temp_dir("agent");
+    let (_tmp, agent_dir) = temp_dir("agent");
     let sessions_dir = agent_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     let ledger = ledger_over(&agent_dir, &sessions_dir);
@@ -365,7 +368,7 @@ fn moved_edge_paths_resolve_through_the_session_id() {
 
 #[test]
 fn the_artifact_index_updates_after_a_new_partition() {
-    let agent_dir = temp_dir("index-partition");
+    let (_tmp, agent_dir) = temp_dir("index-partition");
     let sessions_dir = agent_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     let ledger = ledger_over(&agent_dir, &sessions_dir);
@@ -429,7 +432,7 @@ fn the_artifact_index_updates_after_a_new_partition() {
 /// tombstoned own child is skipped before any resolution.
 #[test]
 fn live_edges_of_parent_bounds_the_liveness_work() {
-    let agent_dir = temp_dir("scoped");
+    let (_tmp, agent_dir) = temp_dir("scoped");
     let sessions_dir = agent_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     let ledger = ledger_over(&agent_dir, &sessions_dir);
@@ -530,7 +533,7 @@ fn live_edges_of_parent_bounds_the_liveness_work() {
 
 #[test]
 fn a_parent_left_in_the_archive_dir_is_a_dead_endpoint_walked_once() {
-    let agent_dir = temp_dir("archive-dead");
+    let (_tmp, agent_dir) = temp_dir("archive-dead");
     let sessions_dir = agent_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     let ledger = ledger_over(&agent_dir, &sessions_dir);
@@ -563,7 +566,7 @@ fn a_parent_left_in_the_archive_dir_is_a_dead_endpoint_walked_once() {
 /// another live file is not the opened parent's.
 #[test]
 fn live_edges_of_parent_follows_a_moved_parent() {
-    let agent_dir = temp_dir("scoped-moved");
+    let (_tmp, agent_dir) = temp_dir("scoped-moved");
     let sessions_dir = agent_dir.join("sessions");
     fs::create_dir_all(&sessions_dir).unwrap();
     let ledger = ledger_over(&agent_dir, &sessions_dir);
@@ -620,7 +623,7 @@ fn live_edges_of_parent_follows_a_moved_parent() {
 
 #[test]
 fn duplicate_child_path_and_bad_spawn_inputs_fail_but_bad_lines_skip() {
-    let dir = temp_dir("dup");
+    let (_tmp, dir) = temp_dir("dup");
     let ledger = ledger_for(&dir);
     let parent = dir.join("p.jsonl");
     let child = dir.join("c.jsonl");
@@ -676,7 +679,7 @@ fn duplicate_child_path_and_bad_spawn_inputs_fail_but_bad_lines_skip() {
 
 #[test]
 fn unknown_op_records_are_skipped_forward_compatible() {
-    let dir = temp_dir("fwd");
+    let (_tmp, dir) = temp_dir("fwd");
     let ledger = ledger_for(&dir);
     let path = ledger.ledger_path().to_path_buf();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -700,7 +703,7 @@ fn unknown_op_records_are_skipped_forward_compatible() {
 
 #[test]
 fn seeds_from_legacy_registries_once_and_atomically() {
-    let dir = temp_dir("seed");
+    let (_tmp, dir) = temp_dir("seed");
     let sessions = dir.join("sessions");
     let artifacts = dir.join("session-artifacts").join("p1");
     fs::create_dir_all(&sessions).unwrap();
@@ -739,7 +742,7 @@ fn seeds_from_legacy_registries_once_and_atomically() {
 
 #[test]
 fn display_entries_round_trip_and_tombstones_stick() {
-    let dir = temp_dir("display");
+    let (_tmp, dir) = temp_dir("display");
     let child_dir = dir.join("sub-1");
     fs::create_dir_all(&child_dir).unwrap();
     let entry = RlmSubagentDisplayEntry {
@@ -767,7 +770,7 @@ fn display_entries_round_trip_and_tombstones_stick() {
 
 #[test]
 fn display_entry_file_is_owner_only() {
-    let dir = temp_dir("display-mode");
+    let (_tmp, dir) = temp_dir("display-mode");
     let child_dir = dir.join("sub-1");
     fs::create_dir_all(&child_dir).unwrap();
     let entry = RlmSubagentDisplayEntry {
@@ -830,7 +833,7 @@ fn assistant_usage_row(id: &str, cost: f64) -> String {
 /// and survives an idempotent re-tombstone until a fresh capture replaces it.
 #[test]
 fn delete_amendment_carries_the_usage_snapshot() {
-    let dir = temp_dir("amendment");
+    let (_tmp, dir) = temp_dir("amendment");
     let ledger = ledger_for(&dir);
     let parent = dir.join("parent.jsonl");
     let child = dir.join("child.jsonl");
@@ -903,7 +906,7 @@ fn delete_amendment_carries_the_usage_snapshot() {
 /// usage cost rides as absent (a bare delete record), so the ledger stays readable.
 #[test]
 fn append_delete_with_usage_sanitizes_a_rejectable_cost() {
-    let dir = temp_dir("usage-neg");
+    let (_tmp, dir) = temp_dir("usage-neg");
     let ledger = ledger_for(&dir);
     let parent = dir.join("parent.jsonl");
     let child = dir.join("child.jsonl");
@@ -952,7 +955,7 @@ fn append_delete_with_usage_sanitizes_a_rejectable_cost() {
 
 #[test]
 fn tombstone_child_path_with_usage_snapshots_every_edge() {
-    let dir = temp_dir("path-usage");
+    let (_tmp, dir) = temp_dir("path-usage");
     let ledger = ledger_for(&dir);
     let parent = dir.join("parent.jsonl");
     let child = dir.join("child.jsonl");
@@ -997,7 +1000,7 @@ fn tombstone_child_path_with_usage_snapshots_every_edge() {
 /// aggregate would double count the grandchild.
 #[test]
 fn bucket_folds_own_snapshots_post_order_without_double_counting() {
-    let dir = temp_dir("bucket-fixture");
+    let (_tmp, dir) = temp_dir("bucket-fixture");
     let ledger = ledger_for(&dir);
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1104,7 +1107,7 @@ fn bucket_folds_own_snapshots_post_order_without_double_counting() {
 /// (billing both would double the spend); once it is gone the documented historical gap bills zero.
 #[test]
 fn bucket_legacy_tombstones_fall_back_then_gap_to_zero() {
-    let dir = temp_dir("bucket-legacy");
+    let (_tmp, dir) = temp_dir("bucket-legacy");
     let ledger = ledger_for(&dir);
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1160,7 +1163,7 @@ fn bucket_legacy_tombstones_fall_back_then_gap_to_zero() {
 /// flat-dir tests above pin that half).
 #[test]
 fn bucket_bills_tombstoned_children_without_catalog_rows() {
-    let dir = temp_dir("bucket-no-row");
+    let (_tmp, dir) = temp_dir("bucket-no-row");
     let ledger = ledger_for(&dir);
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1266,7 +1269,7 @@ fn bucket_bills_tombstoned_children_without_catalog_rows() {
 /// one child path billed to two parents would double the spend.
 #[test]
 fn bucket_claims_each_tombstoned_path_once() {
-    let dir = temp_dir("bucket-claim");
+    let (_tmp, dir) = temp_dir("bucket-claim");
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent_a = sessions.join("pa.jsonl");
@@ -1340,7 +1343,7 @@ fn bucket_claims_each_tombstoned_path_once() {
 /// the new live child's own row carries.
 #[test]
 fn bucket_skips_recreated_live_paths() {
-    let dir = temp_dir("bucket-live");
+    let (_tmp, dir) = temp_dir("bucket-live");
     let ledger = ledger_for(&dir);
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1383,7 +1386,7 @@ fn bucket_skips_recreated_live_paths() {
 
 #[test]
 fn the_bucket_updates_after_an_append_on_the_same_ledger() {
-    let dir = temp_dir("bucket-append");
+    let (_tmp, dir) = temp_dir("bucket-append");
     let ledger = ledger_for(&dir);
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
@@ -1443,7 +1446,7 @@ fn the_bucket_updates_after_an_append_on_the_same_ledger() {
 
 #[test]
 fn a_restored_tombstoned_child_stops_billing_the_parent_without_an_append() {
-    let dir = temp_dir("bucket-restore");
+    let (_tmp, dir) = temp_dir("bucket-restore");
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent = sessions.join("parent.jsonl");
@@ -1490,7 +1493,7 @@ fn a_restored_tombstoned_child_stops_billing_the_parent_without_an_append() {
 
 #[test]
 fn the_artifact_index_rechecks_deleted_and_relocated_transcripts_without_an_append() {
-    let dir = temp_dir("index-disk-change");
+    let (_tmp, dir) = temp_dir("index-disk-change");
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent = sessions.join("parent.jsonl");
@@ -1525,7 +1528,7 @@ fn the_artifact_index_rechecks_deleted_and_relocated_transcripts_without_an_appe
 
 #[test]
 fn artifact_misses_stay_cached_until_a_directory_changes() {
-    let dir = temp_dir("index-negative-cache");
+    let (_tmp, dir) = temp_dir("index-negative-cache");
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent = sessions.join("parent.jsonl");
@@ -1567,7 +1570,7 @@ fn artifact_misses_stay_cached_until_a_directory_changes() {
 
 #[test]
 fn family_edges_track_restore_and_relocation_without_a_ledger_append() {
-    let dir = temp_dir("family-disk-change");
+    let (_tmp, dir) = temp_dir("family-disk-change");
     let sessions = dir.join("sessions");
     fs::create_dir_all(&sessions).unwrap();
     let parent = sessions.join("parent.jsonl");
@@ -1612,7 +1615,7 @@ fn family_edges_track_restore_and_relocation_without_a_ledger_append() {
 #[test]
 fn family_edges_recheck_symlink_targets_without_a_ledger_append() {
     use std::os::unix::fs::symlink;
-    let dir = temp_dir("family-symlink");
+    let (_tmp, dir) = temp_dir("family-symlink");
     let parent = dir.join("parent.jsonl");
     let first = dir.join("first.jsonl");
     let second = dir.join("second.jsonl");

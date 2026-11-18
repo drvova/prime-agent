@@ -648,7 +648,8 @@ mod tests {
     #[allow(clippy::float_cmp)]
     #[test]
     fn deleted_children_keep_their_spend_in_the_context_totals() {
-        let agent_dir = std::env::temp_dir().join(format!("pa-ctx-del-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().to_path_buf();
         let sessions_dir = agent_dir.join("sessions");
         let root_file = sessions_dir.join("01a0root-0000.jsonl");
         write_session(&root_file, "01a0root-0000", 0.5);

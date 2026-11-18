@@ -991,7 +991,7 @@ fn compaction_events(events: &[EngineEvent]) -> Vec<serde_json::Value> {
 
 #[test]
 fn compact_session_command_emits_the_ts_event_pair_on_a_skip() {
-    let (_engine, events) = run_prompts(
+    let (_tmp, _engine, events) = run_prompts(
         &serde_json::json!({ "responses": ["unused"] }),
         &["/compact"],
     );
@@ -1030,7 +1030,7 @@ fn compact_session_command_emits_the_result_on_success() {
     // calls (TS parity), which this single-summary script does not serve.
     let filler = "history ".repeat(6_000); // ~48k chars = ~12k tokens each
     let big_second = format!("second {}", "padded ".repeat(6_000)); // ~10.5k tokens
-    let (_engine, events) = run_prompts(
+    let (_tmp, _engine, events) = run_prompts(
         &serde_json::json!({
             "responses": [
                 { "text": filler },

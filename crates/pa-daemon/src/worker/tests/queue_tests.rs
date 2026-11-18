@@ -160,7 +160,7 @@ fn queue_priority_drains_four_tiers_and_pinned_front() {
 
 #[tokio::test]
 async fn rpc_custom_rows_do_not_gain_human_queue_priority() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let pause = worker.dispatch("acquire_session_input_pause", &json!({
         "activeSessionId": "suspension-session", "leaseKey": "source-test", "clientId": "test"
     })).await;
@@ -217,7 +217,7 @@ async fn rpc_custom_rows_do_not_gain_human_queue_priority() {
 
 #[tokio::test]
 async fn waiting_rpc_prompt_overtakes_background_steer_and_settles() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let pause = worker.dispatch("acquire_session_input_pause", &json!({
         "activeSessionId": "suspension-session", "leaseKey": "priority-test", "clientId": "test"
     })).await;
@@ -274,8 +274,8 @@ async fn waiting_rpc_prompt_overtakes_background_steer_and_settles() {
 
 #[test]
 fn legacy_queue_record_priority_defaults_by_row_and_keeps_order() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let path = dir.join("priority-recovery.jsonl");
     let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
     let machine: crate::journal::WorkerQueueItemRecord = serde_json::from_value(json!({
@@ -310,8 +310,8 @@ fn legacy_queue_record_priority_defaults_by_row_and_keeps_order() {
 
 #[test]
 fn queue_snapshot_round_trips_through_the_recovery_journal() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let journal_path = dir.join("recovery.jsonl");
     let mut journal = WorkerRecoveryJournal::open(&journal_path).unwrap();
     // A parked heartbeat rides the journal with its full delivery row, so a
@@ -389,8 +389,8 @@ fn queue_snapshot_round_trips_through_the_recovery_journal() {
 /// A version-1 queue snapshot (pre-item text lanes a prior binary wrote).
 #[test]
 fn a_version_one_queue_snapshot_restores_as_plain_rows() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let journal_path = dir.join("recovery.jsonl");
     std::fs::write(
         &journal_path,
@@ -414,7 +414,7 @@ fn a_version_one_queue_snapshot_restores_as_plain_rows() {
 /// and injected custom rows never join, and an empty lane arms nothing.
 #[tokio::test]
 async fn forced_batch_arming_classifies_the_visible_plain_rows() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     {
         let mut core = worker.core.lock().unwrap();
         core.steering.push_back(QueuedItem {

@@ -435,14 +435,14 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-ctc-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     fn registry() -> ModelRegistry {
-        let root = dir();
+        let (_tmp, root) = dir();
         pa_core::models::ModelRegistry::create(
             pa_core::auth::AuthStorage::create(&root),
             root.join("models.json"),
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn disk_children_carry_usage_label_status_and_model() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let parent = artifacts.join("01a0parent-0000");
         let child_dir = write_child(&parent, "sub-003f741a", "01a0child-0000", "stop");
@@ -536,7 +536,7 @@ mod tests {
     /// ($0.065 = $0.088 aggregate - $0.023 grandchild).
     #[test]
     fn disk_child_attributes_its_own_spend_to_its_model() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let parent = artifacts.join("01a0parent-0000");
         let child_dir = parent.join("sub-opus-worker");
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     fn walk_lists_sub_dirs_and_skips_ids() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let parent = artifacts.join("01a0parent-0000");
         write_child(&parent, "sub-a", "01a0child-a", "stop");
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn grandchildren_load_from_the_childs_sibling_tree() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let child_dir = write_child(
             &artifacts.join("01a0parent-0000"),
@@ -735,7 +735,7 @@ mod tests {
 
     #[test]
     fn deleted_grandchildren_stay_hidden() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let child_dir = write_child(
             &artifacts.join("01a0parent-0000"),
@@ -777,7 +777,7 @@ mod tests {
 
     #[test]
     fn ghost_gapped_child_files_still_report_usage() {
-        let root = dir();
+        let (_tmp, root) = dir();
         let artifacts = root.join("session-artifacts");
         let child_dir = artifacts.join("01a0parent-0000").join("sub-ghosty");
         std::fs::create_dir_all(&child_dir).unwrap();

@@ -26,9 +26,9 @@ fn missing_or_empty_images_admit_text_only() {
     assert!(parse_prompt_images(&json!({ "images": null })).is_empty());
 }
 
-fn test_worker() -> Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-worker-img-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn test_worker() -> (tempfile::TempDir, Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -40,13 +40,13 @@ fn test_worker() -> Arc<Worker> {
         telemetry_disabled: None,
         script: Some(json!({ "responses": ["ack"] })),
     };
-    Arc::new(Worker::new(config, None))
+    (tmp, Arc::new(Worker::new(config, None)))
 }
 
 /// The attachments ride the queue item into the engine as multimodal user content.
 #[tokio::test]
 async fn prompt_with_images_queues_the_images_with_the_message() {
-    let worker = test_worker();
+    let (_tmp, worker) = test_worker();
     let created = worker
         .dispatch(
             "create",

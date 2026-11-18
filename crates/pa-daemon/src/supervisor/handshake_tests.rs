@@ -356,8 +356,8 @@ async fn a_mid_handshake_registration_cannot_kill_the_handshake() {
 /// routable.
 #[tokio::test]
 async fn a_stale_epoch_never_overwrites_the_installed_channel() {
-    let dir = std::env::temp_dir().join(format!("pa-install-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let descriptor: DaemonWorkerDescriptor = serde_json::from_value(serde_json::json!({
         "version": 2,
         "workerId": "w-install",

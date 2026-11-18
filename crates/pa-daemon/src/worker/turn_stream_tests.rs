@@ -16,7 +16,8 @@ mod park;
 mod queue;
 
 /// A minimal turn runner over a fresh session core: exactly what `run_turn` touches.
-fn burst_runner(engine: Arc<dyn SessionEngine>) -> TurnRunner {
+fn burst_runner(engine: Arc<dyn SessionEngine>) -> (tempfile::TempDir, TurnRunner) {
+    let tmp = tempfile::tempdir().unwrap();
     let core = Arc::new(Mutex::new(SessionCore {
         active_session_id: "burst-session".to_string(),
         generation: "gen".to_string(),
@@ -57,7 +58,7 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> TurnRunner {
         running_admission_ids: std::collections::HashSet::new(),
         tool_use_count: 0,
     }));
-    TurnRunner {
+    let runner = TurnRunner {
         core,
         input_pauses: crate::session_input_pause::InputPauseTable::new(),
         prompt_admissions: crate::prompt_admission::WorkerAdmissions::new(),
@@ -70,7 +71,7 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> TurnRunner {
         roster_pushes: crate::roster_activity::RosterPushQueue::disabled(),
         user_bash: std::sync::Arc::new(crate::user_bash::UserBash::new()),
         passivation: crate::worker::turn::PassivationContext {
-            agent_dir: std::path::PathBuf::from("/tmp"),
+            agent_dir: tmp.path().to_path_buf(),
             link: std::sync::Arc::new(crate::supervisor_link::SupervisorLink::new(
                 std::path::PathBuf::from("/nonexistent-supervisor.sock"),
             )),
@@ -78,13 +79,14 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> TurnRunner {
         },
         herdr: std::sync::Arc::new(std::sync::Mutex::new(crate::herdr::HerdrReporter::default())),
         checkpoints: Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
-            std::env::temp_dir(),
+            tmp.path().to_path_buf(),
         )),
-    }
+    };
+    (tmp, runner)
 }
 
 async fn turn_session_events(engine: Arc<dyn SessionEngine>) -> Vec<Value> {
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     let mut subscription = runner.events.subscribe();
     runner
         .run_turn(
@@ -212,7 +214,7 @@ async fn gate_sighting_events(
         frames,
         ..GateProbeEngine::default()
     });
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.abort_requested = abort_requested;
@@ -320,7 +322,7 @@ async fn a_suppressed_abort_still_ends_the_engine_turn() {
             ..GateProbeEngine::default()
         });
         let dynamic: Arc<dyn SessionEngine> = engine.clone();
-        let runner = burst_runner(Arc::clone(&dynamic));
+        let (_tmp, runner) = burst_runner(Arc::clone(&dynamic));
         {
             let mut core = runner.core.lock().unwrap();
             core.abort_requested = true;
@@ -379,7 +381,7 @@ async fn a_turns_tool_executions_count_onto_the_summary() {
         ],
         ..GateProbeEngine::default()
     });
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     runner
         .run_turn(
             engine,
@@ -488,7 +490,7 @@ async fn model_transitions_reach_the_worker_owned_session_file() {
             frames,
             ..GateProbeEngine::default()
         });
-        let runner = burst_runner(Arc::clone(&engine));
+        let (_tmp, runner) = burst_runner(Arc::clone(&engine));
         let mut store = crate::session_store::SessionFile::create("/fixture", None, 0);
         store.set_path(path.clone());
         store.rewrite().unwrap();
@@ -560,7 +562,7 @@ async fn prompt_restore_boundary_is_supplied_only_for_file_backed_stores() {
             ..GateProbeEngine::default()
         });
         let dynamic: Arc<dyn SessionEngine> = engine.clone();
-        let runner = burst_runner(Arc::clone(&dynamic));
+        let (_tmp, runner) = burst_runner(Arc::clone(&dynamic));
         let mut store = crate::session_store::SessionFile::create("/tmp", None, 0);
         store.append_session_info("prefix");
         assert!(store.leaf_id().is_some(), "in-memory prefixes have IDs too");

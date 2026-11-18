@@ -15,7 +15,7 @@ use pa_types::daemon::agent_roster::AgentRosterStatus;
 /// reseed read the whole family here.
 #[tokio::test]
 async fn subscribe_is_a_pure_in_memory_snapshot() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let agent_dir = dir.join("agent");
     append_family_edge(
@@ -68,7 +68,7 @@ async fn subscribe_is_a_pure_in_memory_snapshot() {
 /// unchanged row.
 #[tokio::test]
 async fn an_identical_rewrite_does_not_broadcast() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let mut events = supervisor.events.subscribe();
     let mut summary = live_child_summary(&root_file, &child_file);
@@ -97,7 +97,7 @@ async fn an_identical_rewrite_does_not_broadcast() {
 /// compares against the last published form, not the first).
 #[tokio::test]
 async fn a_changed_rewrite_broadcasts_and_resets_the_diff_baseline() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let mut events = supervisor.events.subscribe();
     let mut summary = live_child_summary(&root_file, &child_file);
@@ -136,7 +136,7 @@ async fn a_changed_rewrite_broadcasts_and_resets_the_diff_baseline() {
 /// live-runtime fields. One push carries the settled row.
 #[tokio::test]
 async fn stop_passivates_an_anchored_child_preserving_display_fields() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let agent_dir = dir.join("agent");
     append_family_edge(
@@ -181,7 +181,7 @@ async fn stop_passivates_an_anchored_child_preserving_display_fields() {
 /// `thinking_level` e2e's post-stop assertion).
 #[tokio::test]
 async fn passivation_normalizes_the_live_model_descriptor_to_the_durable_pair() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -217,7 +217,7 @@ async fn passivation_normalizes_the_live_model_descriptor_to_the_durable_pair() 
 /// on the parent's row - not through a row anywhere.
 #[tokio::test]
 async fn stop_carries_the_deleted_childs_spend_to_its_parent() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     register_root_worker(&supervisor, "w-root", &root_file).await;
@@ -345,7 +345,7 @@ async fn stop_carries_the_deleted_childs_spend_to_its_parent() {
 /// captured spend in the delete's own push.
 #[tokio::test]
 async fn a_saved_delete_without_a_roster_row_bills_the_parent() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     register_root_worker(&supervisor, "w-root", &root_file).await;
@@ -473,7 +473,7 @@ async fn a_saved_delete_without_a_roster_row_bills_the_parent() {
 /// rows-disappear report), surviving later stops' unowned sweeps.
 #[tokio::test]
 async fn stop_removes_unanchored_children_and_passivates_the_top_level_row() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     let mut events = supervisor.events.subscribe();
@@ -649,7 +649,7 @@ async fn stop_removes_unanchored_children_and_passivates_the_top_level_row() {
 /// anchored seeded row keeps its display.
 #[tokio::test]
 async fn stop_prunes_seeded_rows_of_a_family_that_lost_its_root() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     // The surviving root's family: its seeded child stays anchored
@@ -739,7 +739,7 @@ async fn stop_prunes_seeded_rows_of_a_family_that_lost_its_root() {
 /// family's rows as top-level entries.
 #[tokio::test]
 async fn stop_leaves_the_first_roster_snapshot_clean_behind_hundreds_of_seeded_rows() {
-    let (dir, supervisor, root_file, _child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, _child_file) = roster_fixture().await;
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     register_root_worker(&supervisor, "w-root", &root_file).await;
@@ -866,7 +866,7 @@ fn passivation_keeps_registration_marks_and_strips_live_fields() {
 /// session never renders its stale passive row.
 #[tokio::test]
 async fn a_reregistration_replaces_the_passive_row() {
-    let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+    let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
     register_root_worker(&supervisor, "w-root", &root_file).await;
     let agent_dir = dir.join("agent");
     append_family_edge(

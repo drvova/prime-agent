@@ -66,8 +66,8 @@ async fn kill(worker: &Worker) {
 #[cfg(unix)]
 #[tokio::test]
 async fn an_ended_worker_session_leaves_a_current_info_sidecar() {
-    let dir = std::env::temp_dir().join(format!("pa-sidecar-exit-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let worker = faux_worker(&dir, "sidecar reply");
     let session_file = create_and_prompt(
         &worker,
@@ -90,8 +90,8 @@ async fn an_ended_worker_session_leaves_a_current_info_sidecar() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_reopened_session_ends_with_a_current_info_sidecar() {
-    let dir = std::env::temp_dir().join(format!("pa-sidecar-reopen-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let create = json!({
         "cwd": dir.to_string_lossy(),
         "sessionPath": dir.join("sessions").join("reopen.jsonl").to_string_lossy(),

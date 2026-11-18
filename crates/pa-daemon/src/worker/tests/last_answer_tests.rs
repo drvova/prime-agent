@@ -7,7 +7,7 @@ use super::*;
 
 #[tokio::test]
 async fn get_last_assistant_text_steps_back_over_an_ended_turns_textless_row() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     {
         let mut core = worker.core.lock().unwrap();
         let store = core.store.as_mut().expect("the create opened the store");

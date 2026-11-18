@@ -1085,10 +1085,8 @@ pub(super) mod exit_capture_tests {
     /// after the worker is gone: the newest non-empty assistant text wins.
     #[test]
     fn the_exit_capture_reader_takes_the_last_assistant_row() {
-        let file = std::env::temp_dir().join(format!(
-            "pa-rlm-exit-capture-{}.jsonl",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pa-rlm-exit-capture.jsonl");
         let user_row = r#"{"type":"message","role":"user","content":"the task"}"#;
         std::fs::write(
             &file,
@@ -1104,14 +1102,9 @@ pub(super) mod exit_capture_tests {
         assert_eq!(text, "the final say");
         // A file with no assistant rows (the prompt arm's never-started
         // turn) answers nothing.
-        let bare = std::env::temp_dir().join(format!(
-            "pa-rlm-exit-capture-bare-{}.jsonl",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let bare = tmp.path().join("pa-rlm-exit-capture-bare.jsonl");
         std::fs::write(&bare, format!("{user_row}\n")).expect("write the bare file");
         assert_eq!(last_assistant_text_from_file(&bare.to_string_lossy()), None);
-        let _ = std::fs::remove_file(&file);
-        let _ = std::fs::remove_file(&bare);
     }
 
     /// The retry episode's durable outcome row, as the worker persists it.
@@ -1168,15 +1161,11 @@ pub(super) mod exit_capture_tests {
     }
 
     fn final_turn_error_of(rows: &[String]) -> Option<String> {
-        let file = std::env::temp_dir().join(format!(
-            "pa-rlm-final-turn-{}.jsonl",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("pa-rlm-final-turn.jsonl");
         std::fs::write(&file, format!("{}\n{}\n", task_row(), rows.join("\n")))
             .expect("write the session file");
-        let error = final_turn_error_from_file(&file.to_string_lossy());
-        let _ = std::fs::remove_file(&file);
-        error
+        final_turn_error_from_file(&file.to_string_lossy())
     }
 
     /// #3366: a run whose model calls all failed reads as failed, with the

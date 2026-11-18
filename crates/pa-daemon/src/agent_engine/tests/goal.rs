@@ -9,7 +9,7 @@ fn recovery_rebuild_rehydrates_the_goal_from_the_session_file() {
     // The durable store a killed worker leaves behind: an active goal
     // mid-pursuit with usage and continuation counts on the books.
     let mut store = crate::session_store::SessionFile::create("/tmp", None, 0);
-    let session_path = dir.path().join("session.jsonl");
+    let session_path = dir.path().join("sessions").join("session.jsonl");
     store.set_path(session_path.clone());
     store.append_entry(
         "custom",
@@ -217,7 +217,7 @@ fn recovered_engine_compaction_walk_sees_the_durable_history() {
     // conversation the fresh engine never saw in memory.
     let long = "x".repeat(48_000);
     let mut store = crate::session_store::SessionFile::create("/tmp", None, 0);
-    let session_path = dir.path().join("session.jsonl");
+    let session_path = dir.path().join("sessions").join("session.jsonl");
     store.set_path(session_path.clone());
     store.append_message(&wire_user_message(format!("work turn one {long}")));
     store.append_message(&wire_assistant_message(format!("reply one {long}")));

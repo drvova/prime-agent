@@ -1,9 +1,9 @@
 //! Worker tests.
 use super::*;
 
-async fn snapshot_after_create() -> (Arc<Worker>, DaemonResponse) {
-    let dir = std::env::temp_dir().join(format!("pa-worker-us-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+async fn snapshot_after_create() -> (tempfile::TempDir, Arc<Worker>, DaemonResponse) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -28,12 +28,12 @@ async fn snapshot_after_create() -> (Arc<Worker>, DaemonResponse) {
         .await;
     assert!(created.success, "create must succeed: {created:?}");
     let response = worker.dispatch("update_snapshot", &json!({})).await;
-    (worker, response)
+    (tmp, worker, response)
 }
 
 #[tokio::test]
 async fn queue_action_rows_serve_the_labeled_preview() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     {
         let mut core = worker.core.lock().unwrap();
         core.steering.push_back(QueuedItem {
@@ -91,7 +91,7 @@ async fn queue_action_rows_serve_the_labeled_preview() {
 
 #[tokio::test]
 async fn update_snapshot_reports_the_session_and_flushes_the_journal() {
-    let (worker, response) = snapshot_after_create().await;
+    let (_tmp, worker, response) = snapshot_after_create().await;
     assert!(response.success, "snapshot must succeed: {response:?}");
     let data = response.data.expect("snapshot data");
     // The no-session worker has no durable session file: the active id
@@ -114,7 +114,7 @@ async fn update_snapshot_reports_the_session_and_flushes_the_journal() {
 
 #[tokio::test]
 async fn update_snapshot_reflects_queued_work() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     worker
         .dispatch("steer", &json!({ "message": "finish the build" }))
         .await;
@@ -166,7 +166,7 @@ fn queued_user_item(message: &str) -> QueuedItem {
 /// The rider flags exactly the injected rows (operator 2026-09-25), never a same-text user row.
 #[tokio::test]
 async fn the_action_snapshot_flags_parked_child_status_notices() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     let notice_text =
         "[child-exited: no-reply child:lane]\n\nLast assistant text: done".to_string();
     let failure_text = "[child-failed child:lane]\n\nboom".to_string();
@@ -217,7 +217,7 @@ async fn the_action_snapshot_flags_parked_child_status_notices() {
 
 #[tokio::test]
 async fn a_follow_up_notice_parks_with_typed_provenance() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     let content = "[child-exited: no-reply child:lane]\n\nLast assistant text: done".to_string();
     let nonce = crate::child_status_notices::mint();
     let notice = worker
@@ -281,7 +281,7 @@ async fn a_follow_up_notice_parks_with_typed_provenance() {
 /// The spoof matrix (the operator's anti-spoof mandate).
 #[tokio::test]
 async fn reserved_kind_spoofs_reject_and_lookalikes_park_unflagged() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     let content = "[child-exited: no-reply child:lane]".to_string();
     // No mint: both queue lanes refuse the exact reserved kinds.
     for command in ["steer", "follow_up"] {
@@ -422,7 +422,7 @@ fn the_rider_serializes_only_when_a_notice_is_parked() {
 /// Operator directive 2026-09-28: internal prompts never render as individual queue rows.
 #[tokio::test]
 async fn injected_continuations_mark_their_own_rider_only() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     let continuation = "[goal: continuation]\n\nKeep driving the goal.".to_string();
     {
         let mut core = worker.core.lock().unwrap();
@@ -525,7 +525,7 @@ async fn injected_continuations_mark_their_own_rider_only() {
 /// The rider folds the row, never an omission: the browse affordance keeps the queue inspectable.
 #[tokio::test]
 async fn injected_continuations_still_project_their_lane_text() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     {
         let mut core = worker.core.lock().unwrap();
         core.steering.push_back(QueuedItem {
@@ -558,7 +558,7 @@ async fn injected_continuations_still_project_their_lane_text() {
 /// Operator safeguard: journal restore must preserve the typed provenance.
 #[tokio::test]
 async fn restored_lane_rows_keep_the_child_status_provenance() {
-    let (worker, _) = snapshot_after_create().await;
+    let (_tmp, worker, _) = snapshot_after_create().await;
     let content = "[child-exited: no-reply child:lane]\n\nLast assistant text: done".to_string();
     worker.persist_queue_snapshot(
         "target-session",

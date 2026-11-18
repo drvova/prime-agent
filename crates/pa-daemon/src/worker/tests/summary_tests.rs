@@ -104,8 +104,8 @@ fn summary_lifecycle_is_message_based() {
     );
     busy.busy = true;
     assert_eq!(session_summary(&busy, inputs()).lifecycle, "live");
-    let dir = std::env::temp_dir().join(format!("pa-worker-lc-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     let path = dir.join(crate::session_store::session_file_name(
         session.session_id(),
@@ -160,8 +160,8 @@ fn running_subagents_keep_an_idle_session_working() {
 /// compaction's own call.
 #[test]
 fn live_summary_usage_is_the_catalog_fold() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-usage-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let path = dir.join("live-usage.jsonl");
     let usage = |input: u64, output: u64, cost: f64| {
         json!({
@@ -263,9 +263,10 @@ fn pathless_summary_usage_folds_the_in_memory_entries() {
 /// run-less child's assistant tool calls).
 #[tokio::test]
 async fn a_resumed_sessions_summary_counts_its_persisted_tool_calls() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-tools-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("tool-count.jsonl");
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    let path = dir.join("sessions").join("tool-count.jsonl");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let header = json!({
         "type": "session", "version": 3, "id": "tool-count",
         "timestamp": "2026-01-01T00:00:00.000Z", "cwd": "/tmp",
@@ -331,8 +332,8 @@ fn display_ids_are_twelve_hex() {
 /// The summary carries the live note, and the next run's boundaries clear it.
 #[tokio::test]
 async fn summary_carries_the_live_note_until_the_run_boundaries_clear_it() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-note-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: std::path::PathBuf::new(),

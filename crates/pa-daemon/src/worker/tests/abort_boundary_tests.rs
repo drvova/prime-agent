@@ -3,7 +3,7 @@ use super::*;
 
 #[tokio::test]
 async fn abort_suspends_plain_prompts_until_steer_resumes() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let aborted = worker.dispatch("abort", &json!({})).await;
     assert!(aborted.success, "abort failed: {aborted:?}");
     let rejected = worker
@@ -51,7 +51,7 @@ async fn abort_suspends_plain_prompts_until_steer_resumes() {
 
 #[tokio::test]
 async fn compact_suspends_and_resume_queue_clears() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let compact = worker
         .dispatch(
             "compact",
@@ -87,8 +87,8 @@ async fn compact_suspends_and_resume_queue_clears() {
 /// The interrupt aborts the run AND delivers the parked queue right after the turn settles.
 #[tokio::test]
 async fn abort_and_send_queued_delivers_the_parked_queue_at_the_boundary() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-abort-send-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -249,7 +249,7 @@ async fn abort_and_send_queued_delivers_the_parked_queue_at_the_boundary() {
 
 #[tokio::test]
 async fn abort_and_send_queued_with_an_empty_queue_is_a_plain_abort() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let aborted = worker.dispatch("abort_and_send_queued", &json!({})).await;
     assert!(aborted.success, "abort_and_send_queued failed: {aborted:?}");
     assert_eq!(aborted.command, "abort_and_send_queued");
@@ -269,8 +269,8 @@ async fn abort_and_send_queued_with_an_empty_queue_is_a_plain_abort() {
 /// The sanctioned divergence: the OLDEST queued follow-up starts the next turn after the settle.
 #[tokio::test]
 async fn abort_and_send_queued_with_only_follow_ups_starts_the_oldest() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-abort-fu-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -459,7 +459,7 @@ async fn abort_and_send_queued_with_only_follow_ups_starts_the_oldest() {
 
 #[tokio::test]
 async fn abort_and_clear_queue_suspends_plain_prompts() {
-    let worker = created_dispatch_worker().await;
+    let (_tmp, worker) = created_dispatch_worker().await;
     let cleared = worker.dispatch("abort_and_clear_queue", &json!({})).await;
     assert!(cleared.success, "abort_and_clear_queue failed: {cleared:?}");
     let rejected = worker
@@ -489,8 +489,8 @@ async fn abort_and_clear_queue_suspends_plain_prompts() {
 /// and the settle clears the admission.
 #[tokio::test]
 async fn cancel_owned_admission_aborts_the_running_prompt() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-cancel-owned-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -719,12 +719,13 @@ async fn held_turn_worker(
     name: &str,
     reply: &str,
 ) -> (
+    tempfile::TempDir,
     std::sync::Arc<Worker>,
     std::path::PathBuf,
     std::sync::Arc<tokio::sync::Notify>,
 ) {
-    let dir = std::env::temp_dir().join(format!("pa-worker-abort-am-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -764,7 +765,7 @@ async fn held_turn_worker(
         requested: std::sync::Arc::clone(&requested),
     };
     pa_ai::registry::register_api_provider(std::sync::Arc::new(probe), None);
-    (worker, dir, requested)
+    (tmp, worker, dir, requested)
 }
 
 /// Start the held turn and wait until its provider request is in flight
@@ -839,7 +840,7 @@ async fn agent_message_transcript(worker: &Worker) -> (Option<Value>, Vec<String
 /// (TS's ctrl+c must never strand agent mail behind the suspension).
 #[tokio::test]
 async fn abort_and_send_queued_delivers_the_parked_agent_message() {
-    let (worker, dir, requested) =
+    let (_tmp, worker, dir, requested) =
         held_turn_worker("abort-am-session", "abort-am", "agent message reply").await;
     let mut subscription = worker.events.subscribe();
     start_in_flight_held_turn(
@@ -914,7 +915,7 @@ async fn abort_and_send_queued_delivers_the_parked_agent_message() {
 /// stands, and the pause release delivers the parked agent message.
 #[tokio::test]
 async fn abort_and_send_queued_under_a_held_pause_delivers_on_the_release() {
-    let (worker, dir, requested) =
+    let (_tmp, worker, dir, requested) =
         held_turn_worker("abort-pause-session", "abort-pause", "agent message reply").await;
     start_in_flight_held_turn(
         &worker,

@@ -287,15 +287,16 @@ mod tests {
         );
     }
 
-    fn worker_ticket_supervisor() -> Arc<Supervisor> {
+    fn worker_ticket_supervisor() -> (tempfile::TempDir, Arc<Supervisor>) {
         let dir = tempfile::TempDir::new().unwrap();
-        Arc::new(
+        let supervisor = Arc::new(
             Supervisor::new(crate::supervisor::SupervisorOptions {
                 socket_path: dir.path().join("s.sock"),
                 agent_dir: dir.path().join("agent"),
             })
             .unwrap(),
-        )
+        );
+        (dir, supervisor)
     }
 
     #[tokio::test]
@@ -343,7 +344,7 @@ mod tests {
                 std::path::PathBuf::from("/d.json"),
             )
         };
-        let supervisor = worker_ticket_supervisor();
+        let (_tmp, supervisor) = worker_ticket_supervisor();
         let rejected = supervisor
             .handle_get_worker_peer_transport("t1", "get_worker_peer_transport", "nope", "aaa111")
             .await;

@@ -9,9 +9,9 @@ thread_local! {
 mod refinement_row_tests;
 
 /// A created worker over the scripted engine.
-async fn created_dispatch_worker() -> std::sync::Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-worker-susp-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+async fn created_dispatch_worker() -> (tempfile::TempDir, std::sync::Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: std::path::PathBuf::new(),
@@ -31,7 +31,7 @@ async fn created_dispatch_worker() -> std::sync::Arc<Worker> {
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
-    worker
+    (tmp, worker)
 }
 
 /// The session events seen by an attached client since `mark`, in
@@ -204,7 +204,8 @@ mod warning_marker_tests;
 mod windowed_attach_tests;
 #[tokio::test]
 async fn background_refinement_event_is_fenced_to_its_review_session() {
-    let dir = std::env::temp_dir().join(format!("pa-refine-event-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let worker = Worker::new(
         WorkerConfig {
             socket_path: dir.join("worker.sock"),
@@ -252,7 +253,8 @@ async fn background_refinement_event_is_fenced_to_its_review_session() {
 #[tokio::test]
 async fn a_bill_made_before_a_session_replace_never_lands_in_the_replacement() {
     use pa_core::session_engine::rlm_usage::RlmChildUsageStore as _;
-    let dir = std::env::temp_dir().join(format!("pa-bill-fence-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let worker = Worker::new(
         WorkerConfig {
             socket_path: dir.join("worker.sock"),
