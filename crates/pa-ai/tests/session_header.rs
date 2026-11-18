@@ -4,7 +4,11 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Issue one request against a local capture server and return its wire headers.
-async fn capture(api: &str, session_id: Option<&str>) -> Vec<(String, String)> {
+async fn capture(
+    api: &str,
+    session_id: Option<&str>,
+    headers: Option<std::collections::HashMap<String, String>>,
+) -> Vec<(String, String)> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -43,6 +47,7 @@ async fn capture(api: &str, session_id: Option<&str>) -> Vec<(String, String)> {
     let options = SimpleStreamOptions::from_base(StreamOptions {
         api_key: Some("synthetic-only".into()),
         session_id: session_id.map(str::to_string),
+        headers,
         timeout_ms: Some(5_000),
         ..Default::default()
     });
@@ -70,7 +75,7 @@ async fn session_identity_header_reaches_every_transport() {
         "google-generative-ai",
         "mistral-conversations",
     ] {
-        let headers = capture(api, Some("conversation")).await;
+        let headers = capture(api, Some("conversation"), None).await;
         assert_eq!(
             headers
                 .iter()
@@ -87,10 +92,48 @@ async fn session_identity_header_reaches_every_transport() {
 #[tokio::test]
 async fn session_less_request_carries_no_session_identity_header() {
     for api in ["openai-completions", "openai-responses"] {
-        let headers = capture(api, None).await;
+        let headers = capture(api, None, None).await;
         assert!(
             headers.iter().all(|(name, _)| name != "x-pi-session-id"),
             "{api}: {headers:?}"
+        );
+    }
+}
+
+/// A provider's configured session header (a `{{sessionId}}` caller header) carries the
+/// conversation's session id on every transport, and a session-less request drops it rather than
+/// sending the template.
+#[tokio::test]
+async fn a_templated_session_header_carries_the_session_id() {
+    let templated = || {
+        Some(std::collections::HashMap::from([(
+            "x-acme-session".to_string(),
+            pa_ai::SESSION_ID_TEMPLATE.to_string(),
+        )]))
+    };
+    let session_headers = |headers: Vec<(String, String)>| {
+        headers
+            .into_iter()
+            .filter(|(name, _)| name == "x-acme-session")
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>()
+    };
+    for api in [
+        "openai-completions",
+        "openai-responses",
+        "anthropic-messages",
+        "google-generative-ai",
+        "mistral-conversations",
+    ] {
+        assert_eq!(
+            session_headers(capture(api, Some("conversation"), templated()).await),
+            vec!["conversation".to_string()],
+            "{api}"
+        );
+        assert_eq!(
+            session_headers(capture(api, None, templated()).await),
+            Vec::<String>::new(),
+            "{api}"
         );
     }
 }

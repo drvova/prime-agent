@@ -447,7 +447,25 @@ impl AuthStorage {
             AuthCredential::McpStaticToken { bearer, .. } => {
                 Some(format!("mcp_static_token:{bearer}"))
             }
+            // The long-lived credentials identify the source; the cached
+            // short-lived token rotates under them without changing it.
+            AuthCredential::TokenExchange {
+                refresh,
+                account_id,
+                org_id,
+                ..
+            } => Some(format!(
+                "token_exchange:{refresh} {} {}",
+                account_id.as_deref().unwrap_or_default(),
+                org_id.as_deref().unwrap_or_default()
+            )),
         }
+    }
+
+    /// The backend under this store: a request-auth resolver reads,
+    /// locks, and writes the same document.
+    pub(crate) fn storage_backend(&self) -> Arc<dyn AuthStorageBackend> {
+        Arc::clone(&self.storage)
     }
 
     /// Memo marker for candidates whose value material could not be resolved into a

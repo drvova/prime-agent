@@ -115,14 +115,31 @@ fn clamp_output_budget(model: &Model, context: &Context, options: Option<&mut St
 /// this header.
 const SESSION_ID_HEADER: &str = "X-PI-Session-Id";
 
+/// The caller-header value that stands for the request's session id: a header declared with it
+/// (a provider's configured session header) carries the conversation's session id on every request
+/// and is dropped from a session-less one.
+pub const SESSION_ID_TEMPLATE: &str = "{{sessionId}}";
+
 /// Declare the request's session identity on its caller headers. No session id means no header (a
 /// session-less one-off probe stays bare rather than carrying a fabricated id); an explicit caller
-/// value wins, like every caller header does over the provider's own.
+/// value wins, like every caller header does over the provider's own. Caller headers holding
+/// [`SESSION_ID_TEMPLATE`] carry the same session id, under the provider's own header name.
 fn declare_session_identity(options: Option<&mut StreamOptions>) {
     let Some(options) = options else {
         return;
     };
-    let Some(session_id) = options.session_id.clone() else {
+    let session_id = options.session_id.clone();
+    if let Some(headers) = options.headers.as_mut() {
+        headers.retain(|_, value| value != SESSION_ID_TEMPLATE || session_id.is_some());
+        if let Some(session_id) = &session_id {
+            for value in headers.values_mut() {
+                if value == SESSION_ID_TEMPLATE {
+                    value.clone_from(session_id);
+                }
+            }
+        }
+    }
+    let Some(session_id) = session_id else {
         return;
     };
     let headers = options

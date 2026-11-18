@@ -62,6 +62,17 @@ bundled websearch skill reach. One process-wide engine serves every
 session; credentials resolve per search on the host and never enter the
 kernel; the HTTP client is built on the first search, never at startup.
 
+Provider auth descriptors (`auth/descriptor.rs`, `auth/resolver.rs`,
+`auth/token_exchange.rs`): the optional models.json provider `auth` block,
+validated at load, and the one request-auth seam (`AuthResolver`, crate
+internal) the registry's per-call lookup resolves every inference call
+through — `StaticKey` (today's key, in the provider's own key slot) or
+`TokenExchange` (the auth.json `token_exchange` credential traded for a
+short-lived token at the declared endpoint, cached in the same entry,
+single-flighted per provider and account across threads and processes, and
+invalidated once when the provider rejects it). Resolution runs only on the
+inference path, never at startup.
+
 ## Non-goals
 No provider HTTP (pa-ai), no loop policy (pa-agent), no daemon supervision (pa-daemon), no TUI (pa-tui). No update coordination (the pa-cli coordinator owns the FSM; the update-flow seam here is the daemon-free support layer: `update::version` (semver/channel policy), `update::install` (the managed install-root layout), `update::release` (the channel manifest fetch), `update::download` (sha256-verified archive download + staging)). The package manager installs sources and resolves resource paths only.
 
