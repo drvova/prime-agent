@@ -169,6 +169,9 @@ pub struct AgentView {
     /// How many first-draw windows this view served from an adopted
     /// layout handoff: the verifiers assert the reuse happened.
     pub(crate) handoff_seeds: u32,
+    /// The last run's summary row as pushed: it lives only in this view (an attach rebuild never
+    /// replays it), so a handoff stashed while it ends the transcript keys on the rows before it.
+    pub(crate) run_summary: Option<ChatEntry>,
     /// Entries whose card a click flipped away from the level's
     /// tool-output expansion (see `view/expansion.rs`).
     toggled_cards: std::collections::BTreeSet<usize>,
@@ -421,6 +424,7 @@ impl AgentView {
             sparse_mutation: None,
             pending_handoff: None,
             handoff_seeds: 0,
+            run_summary: None,
             click: click::ClickSurface::default(),
         }
     }
