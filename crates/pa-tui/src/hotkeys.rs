@@ -81,6 +81,10 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let select_doc_start = key_display(kb, "tui.editor.selectDocStart");
     let select_doc_end = key_display(kb, "tui.editor.selectDocEnd");
     let browse_queue_newer = key_display(kb, "app.message.navigateNewer");
+    let usage_refresh = key_display(kb, "app.usage.refresh");
+    let usage_overview = key_display(kb, "app.usage.overview");
+    let select_confirm = key_display(kb, "tui.select.confirm");
+    let select_cancel = key_display(kb, "tui.select.cancel");
 
     let mut hotkeys = format!(
         r"
@@ -163,7 +167,15 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{viewport_follow}` | Scroll to bottom and follow output |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
-| mouse click on link | Open link in browser |"
+| mouse click on link | Open link in browser |
+
+**Usage page (`/usage`)**
+| Key | Action |
+|-----|--------|
+| `{usage_refresh}` | Refresh provider quotas and spend |
+| `{select_confirm}` | Open the details view |
+| `{usage_overview}` | Switch between overview and details |
+| `{select_cancel}` | Back to the overview / close the page |"
     );
     hotkeys
 }

@@ -142,6 +142,9 @@ pub struct ChromeState {
     /// The compact, borderless activity dock under the editor: a live
     /// session always mounts it; `None` means no session owns this view.
     pub activity: Option<ActivityDock>,
+    /// The rate-limit reset chip (`limit resets in 1h 2m`): set while the session's provider
+    /// last answered with a rate limit whose reset is still ahead; `None` renders none.
+    pub reset_chip: Option<String>,
     /// The footer's tok/sec readout: the dim bottom row's text; `None`
     /// renders no row (kept until the first completed response).
     pub speed_text: Option<String>,
@@ -634,7 +637,9 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
 /// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
 /// first and vanishes below six cells, then the tier badge, the subagent depth, the context
 /// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking glyph), the `manage` word
-/// (the `←` stays), the context percent, and the model last. Nothing is cut mid-word.
+/// (the `←` stays), the context percent, the rate-limit reset chip, and the model last. The chip
+/// outlives the context percent: while the provider refuses requests, when it lets them through
+/// again is the tray's one actionable fact. Nothing is cut mid-word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayShrink {
     Full,
@@ -644,10 +649,11 @@ enum TrayShrink {
     NoEffort,
     BareManage,
     NoContext,
+    NoResetChip,
     NoModel,
 }
 
-const TRAY_SHRINK: [TrayShrink; 8] = [
+const TRAY_SHRINK: [TrayShrink; 9] = [
     TrayShrink::Full,
     TrayShrink::NoTier,
     TrayShrink::NoDepth,
@@ -655,6 +661,7 @@ const TRAY_SHRINK: [TrayShrink; 8] = [
     TrayShrink::NoEffort,
     TrayShrink::BareManage,
     TrayShrink::NoContext,
+    TrayShrink::NoResetChip,
     TrayShrink::NoModel,
 ];
 
@@ -761,6 +768,20 @@ fn tray_lanes(
             left.push(Span::styled("  ".to_string(), muted));
             left.push(Span::styled(format!("depth {depth}"), muted));
         }
+    }
+    // The reset chip rides the location lane in the session accent (the gauge's own tone).
+    if let Some(chip) = state
+        .reset_chip
+        .as_ref()
+        .filter(|_| state.tray_override.is_none() && shrink < TrayShrink::NoResetChip)
+    {
+        if !left.is_empty() {
+            left.push(Span::styled("  ".to_string(), muted));
+        }
+        left.push(Span::styled(
+            chip.clone(),
+            session_accent(&state.chat_name, theme),
+        ));
     }
     let mut right: Line = Vec::new();
     let separator = || Span::styled(" \u{00b7} ".to_string(), dim);

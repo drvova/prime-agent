@@ -26,6 +26,7 @@ impl AgentView {
             && self.goal_panel.is_none()
             && self.bash_view.is_none()
             && self.info_panel.is_none()
+            && self.usage_page.is_none()
             && self.tree_selector.is_none()
             && self.fork_selector.is_none()
             && self.share_loader.is_none()
@@ -146,6 +147,21 @@ impl AgentView {
                 self.editor.keybindings(),
                 &self.code_block_indent,
                 info_viewport_rows,
+            ));
+            Some(dock)
+        } else if let Some(page) = self.usage_page.as_mut() {
+            // The page takes the frame down to the transcript's minimum rows.
+            let rows = height.saturating_sub(
+                1 + crate::view::FULLSCREEN_MIN_TRANSCRIPT_ROWS + prompt_context.len(),
+            );
+            let mut dock = prompt_context;
+            dock.extend(page.render(
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                rows,
+                crate::usage_page::now_ms(),
+                &pa_types::platform::local_civil,
             ));
             Some(dock)
         } else {
@@ -347,6 +363,7 @@ impl AgentView {
             || self.goal_panel.is_some()
             || self.bash_view.is_some()
             || self.info_panel.is_some()
+            || self.usage_page.is_some()
             || self.tree_selector.is_some()
             || self.fork_selector.is_some()
             || self.share_loader.is_some()

@@ -117,6 +117,9 @@ pub struct AgentView {
     /// The read-only info panel (operator directive 2026-09-26: the
     /// `/context`-family displays dock instead of flooding the transcript).
     pub info_panel: Option<crate::info_panel::InfoPanel>,
+    /// The `/usage` page: provider quotas and local spend, mounted over the editor dock at
+    /// nearly the full frame height.
+    pub usage_page: Option<crate::usage_page::UsagePage>,
     /// The `terminal.showImages` setting (default true): image blocks
     /// render metadata rows when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
@@ -291,6 +294,7 @@ impl AgentView {
             || self.bash_view.is_some()
             || self.goal_panel.is_some()
             || self.info_panel.is_some()
+            || self.usage_page.is_some()
             || self.fork_selector.is_some()
             || self.confirm.is_some()
             || self.share_loader.is_some()
@@ -381,6 +385,7 @@ impl AgentView {
             side_pane: None,
             settings_menu: None,
             info_panel: None,
+            usage_page: None,
             show_images: true,
             show_hardware_cursor: false,
             splash_suppressed: false,

@@ -974,6 +974,7 @@ impl SessionUi {
             self.working_tokens.settle(usage_output);
             self.working_tokens.run.1 += message["usage"]["totalTokens"].as_u64().unwrap_or(0);
             self.record_speed_sample(message, view);
+            self.observe_rate_limit(message);
         }
         if let Some(text) = blocks.iter().rev().find_map(|block| match block {
             MessageBlock::Text(text) => Some(text.clone()),

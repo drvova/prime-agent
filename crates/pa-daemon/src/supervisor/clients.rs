@@ -1023,6 +1023,11 @@ impl Supervisor {
                 )
                 .await
             }
+            DaemonCommand::GetUsage { .. } => {
+                // `get_usage`: the `/usage` page's quota cards or spend history.
+                self.handle_get_usage(command, &command_id, &type_name)
+                    .await
+            }
             DaemonCommand::ListAgentPeers { .. } => {
                 // `list_agent_peers`: the worker-token-authenticated peer roster.
                 self.handle_list_agent_peers(command, &command_id, &type_name)

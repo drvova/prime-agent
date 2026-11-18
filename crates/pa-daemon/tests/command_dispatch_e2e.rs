@@ -316,7 +316,7 @@ fn info_command(name: &str, session_id: &str) -> Value {
 /// `UI_REQUEST_TIMEOUT_MS` bound, plus the same-route getters it refreshes.
 const MATRIX: &[(&str, &str)] = &[
     ("get_session_stats", "/session"),
-    ("get_context_tree", "/context, /usage"),
+    ("get_context_tree", "/context"),
     ("get_session_context", "wire: get_session_context"),
     ("get_system_prompt", "/system-prompt"),
     ("get_tool_definition", "wire: get_tool_definition"),
