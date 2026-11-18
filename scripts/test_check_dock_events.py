@@ -58,6 +58,12 @@ class CaptureTests(unittest.TestCase):
         screen.feed(b'\x1b[?25l\x1b[?1006h\x1b[?2004h\x1b[2 q\x1b]2;fixture title\x07')
         self.assertEqual(screen.unsupported_terminal, [])
 
+    def test_title_stack_and_full_screen_margin_reset_are_modeled(self):
+        screen = DockScreen(width=20, height=3)
+        screen.feed(b'\x1b[22;0t\x1b[2;3Hab\x1b[rX\x1b[23;0t')
+        self.assertEqual(screen.unsupported_terminal, [])
+        self.assertEqual(screen.text(), 'X\n  ab\n')
+
     def test_alternate_buffer_restores_cells_and_styles(self):
         screen = DockScreen(width=20, height=3)
         screen.feed(b'\x1b[31m1 subagents\x1b[?1049h')
