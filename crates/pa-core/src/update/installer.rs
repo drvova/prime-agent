@@ -43,6 +43,114 @@ pub const OFFICIAL_INSTALLER_URL: &str = "https://app.primeintellect.ai/prime-ag
 /// forwards `install.sh`, so nightly updates fetch it from the base).
 pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 
+/// Where this build's updates come from: the official release channel, or
+/// a distribution build's own releases. A distribution build is stamped at
+/// compile time (the `PRIME_AGENT_DIST_*` variables its release workflow
+/// sets, all four or none), so its `prime-agent update` installs from its
+/// own releases into its own prefix and never reinstalls the official
+/// build; every other build is [`Distribution::Official`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Distribution {
+    Official,
+    Build(DistributionBuild),
+}
+
+/// A distribution build's update source and install location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DistributionBuild {
+    /// The product name the update surfaces print, e.g. "Prime Agent (drvova build)".
+    pub name: &'static str,
+    /// The stable installer script (the official domain's `install.sh` counterpart).
+    pub installer_url: &'static str,
+    /// The base serving the channel pointer and `latest.json`.
+    pub download_base_url: &'static str,
+    /// The default install prefix, relative to the home directory.
+    pub home_prefix: &'static str,
+}
+
+/// The compile-time `PRIME_AGENT_DIST_*` stamp, before validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DistributionStamp {
+    pub name: Option<&'static str>,
+    pub installer_url: Option<&'static str>,
+    pub download_base_url: Option<&'static str>,
+    pub home_prefix: Option<&'static str>,
+}
+
+impl DistributionStamp {
+    /// The distribution the stamp names: none of the variables is the
+    /// official build; all four are a distribution build. A partial stamp
+    /// fails the build (in const evaluation), so a half-stamped binary can
+    /// never fall back to updating from the official channel.
+    ///
+    /// # Panics
+    ///
+    /// Panics (a compile error for the [`BUILD_DISTRIBUTION`] const) when
+    /// the stamp sets some but not all of the four variables.
+    #[must_use]
+    pub const fn resolve(self) -> Distribution {
+        match (
+            self.name,
+            self.installer_url,
+            self.download_base_url,
+            self.home_prefix,
+        ) {
+            (None, None, None, None) => Distribution::Official,
+            (Some(name), Some(installer_url), Some(download_base_url), Some(home_prefix)) => {
+                Distribution::Build(DistributionBuild {
+                    name,
+                    installer_url,
+                    download_base_url,
+                    home_prefix,
+                })
+            }
+            (Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None) => panic!(
+                "a distribution build sets all of PRIME_AGENT_DIST_NAME, \
+                 PRIME_AGENT_DIST_INSTALLER_URL, PRIME_AGENT_DIST_DOWNLOAD_BASE_URL, \
+                 and PRIME_AGENT_DIST_HOME_PREFIX, or none of them"
+            ),
+        }
+    }
+}
+
+/// The distribution this binary was built as.
+pub const BUILD_DISTRIBUTION: Distribution = DistributionStamp {
+    name: option_env!("PRIME_AGENT_DIST_NAME"),
+    installer_url: option_env!("PRIME_AGENT_DIST_INSTALLER_URL"),
+    download_base_url: option_env!("PRIME_AGENT_DIST_DOWNLOAD_BASE_URL"),
+    home_prefix: option_env!("PRIME_AGENT_DIST_HOME_PREFIX"),
+}
+.resolve();
+
+impl Distribution {
+    /// The stable installer script URL.
+    #[must_use]
+    pub const fn installer_url(self) -> &'static str {
+        match self {
+            Self::Official => OFFICIAL_INSTALLER_URL,
+            Self::Build(build) => build.installer_url,
+        }
+    }
+
+    /// The default download base (the channel pointer and manifests).
+    #[must_use]
+    pub const fn download_base_url(self) -> &'static str {
+        match self {
+            Self::Official => DEFAULT_DOWNLOAD_BASE_URL,
+            Self::Build(build) => build.download_base_url,
+        }
+    }
+
+    /// The default install prefix, relative to the home directory.
+    #[must_use]
+    pub const fn home_prefix(self) -> &'static str {
+        match self {
+            Self::Official => ".local",
+            Self::Build(build) => build.home_prefix,
+        }
+    }
+}
+
 /// `install-rust.sh` as this build shipped it. The local operations
 /// (`prime-agent update --rollback` and `--archive`) run this copy: they
 /// need no network, and the script matches the layout this build was
@@ -64,8 +172,9 @@ const SCRIPT_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const LAUNCHER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The installer script URL for an installer channel (`stable` | `beta`):
-/// `<download base>/install-beta.sh` for beta, the official domain's
-/// install endpoint otherwise. `PRIME_AGENT_RUST_INSTALLER_URL` overrides
+/// `<download base>/install-beta.sh` for beta, the build distribution's
+/// stable installer otherwise (the official domain's install endpoint for
+/// the official build). `PRIME_AGENT_RUST_INSTALLER_URL` overrides
 /// both — tests serve their own script, a pinned install can point
 /// elsewhere.
 #[must_use]
@@ -80,7 +189,7 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
             "{}/{BETA_INSTALLER_FILE}",
             download_base_url().trim_end_matches('/')
         ),
-        _ => OFFICIAL_INSTALLER_URL.to_string(),
+        _ => BUILD_DISTRIBUTION.installer_url().to_string(),
     }
 }
 
@@ -91,7 +200,7 @@ pub fn download_base_url() -> String {
     std::env::var(ENV_DOWNLOAD_BASE_URL)
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| DEFAULT_DOWNLOAD_BASE_URL.to_string())
+        .unwrap_or_else(|| BUILD_DISTRIBUTION.download_base_url().to_string())
 }
 
 /// The install prefix the launcher probe reads (`PRIME_AGENT_RUST_PREFIX`,
@@ -108,7 +217,7 @@ pub fn install_prefix() -> PathBuf {
     }
     pa_types::platform::home_dir()
         .unwrap_or_default()
-        .join(".local")
+        .join(BUILD_DISTRIBUTION.home_prefix())
 }
 
 /// The target triple for one platform pair (`std::env::consts`' vocabulary:
@@ -1141,6 +1250,49 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 None => std::env::remove_var(name),
             }
         }
+    }
+
+    /// The default build updates from the official channel; a full
+    /// `PRIME_AGENT_DIST_*` stamp routes the installer, the manifest
+    /// base, and the default prefix to the distribution's own releases.
+    #[test]
+    fn the_build_distribution_defaults_to_official_and_a_stamp_routes_to_the_fork() {
+        assert_eq!(BUILD_DISTRIBUTION, Distribution::Official);
+        assert_eq!(
+            BUILD_DISTRIBUTION.installer_url(),
+            "https://app.primeintellect.ai/prime-agent/install.sh"
+        );
+        assert_eq!(
+            BUILD_DISTRIBUTION.download_base_url(),
+            "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
+        );
+        assert_eq!(BUILD_DISTRIBUTION.home_prefix(), ".local");
+        let releases = "https://github.com/drvova/prime-agent/releases/latest/download";
+        let installer = "https://github.com/drvova/prime-agent/releases/latest/download/install.sh";
+        let fork = DistributionStamp {
+            name: Some("Prime Agent (drvova build)"),
+            installer_url: Some(installer),
+            download_base_url: Some(releases),
+            home_prefix: Some(".local/share/prime-agent-fork"),
+        }
+        .resolve();
+        assert_eq!(
+            fork,
+            Distribution::Build(DistributionBuild {
+                name: "Prime Agent (drvova build)",
+                installer_url: installer,
+                download_base_url: releases,
+                home_prefix: ".local/share/prime-agent-fork",
+            })
+        );
+        assert_eq!(
+            (
+                fork.installer_url(),
+                fork.download_base_url(),
+                fork.home_prefix()
+            ),
+            (installer, releases, ".local/share/prime-agent-fork")
+        );
     }
 
     #[test]

@@ -217,7 +217,7 @@ fn install_ps1_pins_the_download_preferences_around_the_downloads() {
         ("verbose pin", "$VerbosePreference = 'SilentlyContinue'"),
         (
             "payload download",
-            "Save-Release -Uri \"$baseUrl/$releasePrefix/$expectedFile\" -OutFile $tarball",
+            "Save-Release -Uri \"$releaseAssetsUrl/$releasePrefix/$expectedFile\" -OutFile $tarball",
         ),
         ("restore on the failure path too", "} finally {"),
         (
@@ -628,12 +628,13 @@ fn install_ps1_runs_a_step_ledger_and_its_own_download_progress() {
     let block = &text[block_start..block_end];
     assert!(
         block.contains(
-            "Save-Release -Uri \"$baseUrl/$releasePrefix/$expectedFile\" -OutFile $tarball"
+            "Save-Release -Uri \"$releaseAssetsUrl/$releasePrefix/$expectedFile\" -OutFile $tarball"
         ),
         "the payload download must stream through the helper"
     );
     assert!(
-        !block.contains("Invoke-WebRequest -Uri \"$baseUrl/$releasePrefix/$expectedFile\""),
+        !block
+            .contains("Invoke-WebRequest -Uri \"$releaseAssetsUrl/$releasePrefix/$expectedFile\""),
         "the payload download must not be the noisy web cmdlet anymore"
     );
     // The ledger marks the phases (install-rust.sh's step_ok lines).

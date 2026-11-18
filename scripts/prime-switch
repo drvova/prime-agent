@@ -1,0 +1,287 @@
+#!/bin/sh
+# prime-switch — install and switch between the official Prime Agent build
+# and the Prime Agent (drvova build), side by side.
+#
+# THE LAYOUT (nothing here ever writes inside the official install):
+#   official  ~/.local                          (its own installer's prefix:
+#             bin/prime-agent, share/prime-agent/)
+#   fork      ~/.local/share/prime-agent-fork   (bin/prime-agent,
+#             share/prime-agent/, kernel-venv/)
+#   switch    ~/.local/share/prime-switch/bin   (prime-agent: the ACTIVE
+#             build's launcher shim; prime-switch: this script). Put this
+#             directory FIRST on PATH so `prime-agent` runs the active build.
+#
+# Each build's own launcher pins its daemon socket and kernel venv (the
+# fork's launcher: prime-agent-fork-<uid> and <fork prefix>/kernel-venv),
+# so the two never share a live daemon and switching never rebuilds a venv.
+# Sessions, auth.json, and settings in ~/.prime/agent stay shared.
+#
+# Usage: prime-switch <command> [--force]
+#   status                   the active build, both versions and paths
+#   fork | official          make that build the `prime-agent` on PATH
+#   install fork|official    install a missing build (its own installer)
+#   update                   update the active build (`prime-agent update`)
+#   uninstall fork           remove the fork build (official is untouched)
+#   --force                  switch/uninstall even while the other build's
+#                            daemon has sessions mid-turn
+#
+# Environment (tests and custom layouts):
+#   PRIME_SWITCH_HOME, PRIME_SWITCH_OFFICIAL_PREFIX, PRIME_SWITCH_FORK_PREFIX,
+#   PRIME_SWITCH_FORK_RELEASES_URL, PRIME_SWITCH_OFFICIAL_INSTALLER_URL
+set -eu
+
+# Rendered by scripts/release/fork_release.py render (the fork's releases).
+FORK_RELEASES_URL_DEFAULT="https://github.com/drvova/prime-agent/releases/latest/download"
+OFFICIAL_INSTALLER_URL_DEFAULT="https://app.primeintellect.ai/prime-agent/install.sh"
+
+FORK_RELEASES_URL="${PRIME_SWITCH_FORK_RELEASES_URL:-$FORK_RELEASES_URL_DEFAULT}"
+OFFICIAL_INSTALLER_URL="${PRIME_SWITCH_OFFICIAL_INSTALLER_URL:-$OFFICIAL_INSTALLER_URL_DEFAULT}"
+OFFICIAL_PREFIX="${PRIME_SWITCH_OFFICIAL_PREFIX:-$HOME/.local}"
+FORK_PREFIX="${PRIME_SWITCH_FORK_PREFIX:-$HOME/.local/share/prime-agent-fork}"
+SWITCH_HOME="${PRIME_SWITCH_HOME:-$HOME/.local/share/prime-switch}"
+SWITCH_BIN="${SWITCH_HOME}/bin"
+SHIM="${SWITCH_BIN}/prime-agent"
+SHIM_MARK="# prime-agent - active-build shim written by prime-switch"
+
+die() { echo "prime-switch: $1" >&2; exit 1; }
+say() { echo "$1"; }
+changed() { echo "changed: $1"; }
+
+prefix_of() {
+  case "$1" in
+    official) printf '%s' "$OFFICIAL_PREFIX" ;;
+    fork) printf '%s' "$FORK_PREFIX" ;;
+    *) die "unknown build: $1 (fork or official)" ;;
+  esac
+}
+other_of() {
+  case "$1" in
+    official) printf 'fork' ;;
+    fork) printf 'official' ;;
+    *) die "unknown build: $1 (fork or official)" ;;
+  esac
+}
+launcher_of() { printf '%s/bin/prime-agent' "$(prefix_of "$1")"; }
+# A build is installed when its installer's ownership marker and launcher exist.
+is_installed() {
+  [ -x "$(launcher_of "$1")" ] \
+    && [ -f "$(prefix_of "$1")/share/prime-agent/.prime-agent-install" ]
+}
+version_of() {
+  sed -n '2s/^version //p' "$(prefix_of "$1")/share/prime-agent/.prime-agent-install" 2>/dev/null
+}
+active_build() {
+  [ -f "$SHIM" ] || return 0
+  sed -n 's/^# build: //p' "$SHIM" | head -n 1
+}
+
+# The busy check and the clean stop, through the build's OWN launcher (its
+# socket pin): `list --json` answers only while that build's daemon runs;
+# `shutdown --force` is the CLI's scripted, non-interactive stop.
+stop_daemon_of() {
+  sd_build="$1"; sd_force="$2"
+  sd_launcher="$(launcher_of "$sd_build")"
+  is_installed "$sd_build" || return 0
+  if ! sd_sessions="$("$sd_launcher" list --json 2>/dev/null)"; then
+    say "no ${sd_build} daemon is running"
+    return 0
+  fi
+  if printf '%s' "$sd_sessions" | grep -Eq '"isStreaming"[[:space:]]*:[[:space:]]*true|"activity"[[:space:]]*:[[:space:]]*"working"'; then
+    [ "$sd_force" = 1 ] || die "the ${sd_build} daemon has sessions mid-turn; let them finish (${sd_launcher} list) or re-run with --force"
+    say "--force: stopping the ${sd_build} daemon although sessions are mid-turn"
+  fi
+  "$sd_launcher" shutdown --force --json >/dev/null 2>&1 \
+    || die "the ${sd_build} daemon did not stop (${sd_launcher} shutdown --force); stop it by hand and re-run"
+  changed "stopped the ${sd_build} daemon (${sd_launcher} shutdown --force)"
+}
+
+# Write the shim atomically (a temp file in the same dir, then one rename).
+write_shim() {
+  ws_build="$1"
+  mkdir -p "$SWITCH_BIN"
+  ws_target="$(launcher_of "$ws_build")"
+  ws_quoted="$(printf '%s' "$ws_target" | sed "s/'/'\\\\''/g")"
+  ws_body="#!/bin/sh
+${SHIM_MARK}
+# build: ${ws_build}
+exec '${ws_quoted}' \"\$@\""
+  if [ -f "$SHIM" ] && [ "$(cat "$SHIM")" = "$ws_body" ]; then
+    return 1
+  fi
+  ws_tmp="$(mktemp "${SWITCH_BIN}/.prime-agent.XXXXXX")"
+  printf '%s\n' "$ws_body" > "$ws_tmp"
+  chmod 0755 "$ws_tmp"
+  mv -f "$ws_tmp" "$SHIM"
+  return 0
+}
+
+path_hint() {
+  ph_resolved="$(command -v prime-agent 2>/dev/null || true)"
+  if [ "$ph_resolved" != "$SHIM" ]; then
+    say "note: \`prime-agent\` on PATH is ${ph_resolved:-missing}, not the switch shim. Put the shim dir first:"
+    say "  export PATH=\"${SWITCH_BIN}:\$PATH\"   (add it to your shell profile)"
+  fi
+}
+
+# The one shared-state hazard: a models.json provider that authenticates by
+# token exchange (a fork feature) has no apiKey, and the official build's
+# models.json validation rejects the whole file — every custom model drops
+# out there until the entry is removed. auth.json is safe: the official
+# build skips the token_exchange entries it cannot parse and keeps them.
+models_warning() {
+  mw_models="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}/models.json"
+  if [ -f "$mw_models" ] && grep -q 'token-exchange' "$mw_models" 2>/dev/null; then
+    say "warning: ${mw_models} declares a token-exchange provider (a fork-only auth block);"
+    say "  the official build rejects that models.json, so its custom models will not load."
+  fi
+}
+
+# Copy this script into the switch dir (the one-liner runs it from a pipe:
+# then the fork releases' own copy is downloaded).
+ensure_self() {
+  mkdir -p "$SWITCH_BIN"
+  es_dest="${SWITCH_BIN}/prime-switch"
+  es_tmp="$(mktemp "${SWITCH_BIN}/.prime-switch.XXXXXX")"
+  if [ -f "$0" ] && grep -q '^# prime-switch' "$0" 2>/dev/null; then
+    cp "$0" "$es_tmp"
+  else
+    curl -fsSL "${FORK_RELEASES_URL}/prime-switch" -o "$es_tmp" \
+      || { rm -f "$es_tmp"; die "could not download ${FORK_RELEASES_URL}/prime-switch"; }
+  fi
+  chmod 0755 "$es_tmp"
+  if [ -f "$es_dest" ] && cmp -s "$es_tmp" "$es_dest"; then
+    rm -f "$es_tmp"
+  else
+    mv -f "$es_tmp" "$es_dest"
+    changed "installed ${es_dest}"
+  fi
+}
+
+run_installer() {
+  ri_build="$1"
+  case "$ri_build" in
+    official) ri_url="$OFFICIAL_INSTALLER_URL" ;;
+    fork) ri_url="${FORK_RELEASES_URL}/install.sh" ;;
+    *) die "unknown build: $ri_build (fork or official)" ;;
+  esac
+  ri_scratch="$(mktemp -d "${TMPDIR:-/tmp}/prime-switch.XXXXXX")"
+  curl -fsSL "$ri_url" -o "${ri_scratch}/install.sh" \
+    || { rm -rf "$ri_scratch"; die "could not download the ${ri_build} installer from ${ri_url}"; }
+  say "running the ${ri_build} installer from ${ri_url} (prefix $(prefix_of "$ri_build"))"
+  # The other build's knobs must not leak in: each installer reads only
+  # its own rendered defaults plus the prefix named here.
+  ri_status=0
+  (
+    unset PRIME_AGENT_DOWNLOAD_BASE_URL PRIME_AGENT_RELEASE_ASSETS_URL \
+      PRIME_AGENT_VERSION PRIME_AGENT_DAEMON_SOCKET PRIME_AGENT_KERNEL_VENV
+    PRIME_AGENT_RUST_PREFIX="$(prefix_of "$ri_build")"
+    export PRIME_AGENT_RUST_PREFIX
+    sh "${ri_scratch}/install.sh"
+  ) || ri_status=$?
+  rm -rf "$ri_scratch"
+  [ "$ri_status" -eq 0 ] || die "the ${ri_build} installer failed (exit ${ri_status})"
+}
+
+cmd_status() {
+  active="$(active_build)"
+  say "active:   ${active:-none} (${SHIM})"
+  for build in official fork; do
+    if is_installed "$build"; then
+      say "$(printf '%-9s' "${build}:") $(version_of "$build")  $(launcher_of "$build")"
+    else
+      say "$(printf '%-9s' "${build}:") not installed  (prime-switch install ${build})"
+    fi
+  done
+  path_hint
+}
+
+cmd_switch() {
+  build="$1"; force="$2"
+  is_installed "$build" || die "the ${build} build is not installed: run prime-switch install ${build}"
+  if [ "$(active_build)" = "$build" ]; then
+    say "unchanged: ${build} is already active ($(version_of "$build"))"
+    path_hint
+    return 0
+  fi
+  stop_daemon_of "$(other_of "$build")" "$force"
+  write_shim "$build" || true
+  changed "${SHIM} now runs the ${build} build ($(version_of "$build"), $(launcher_of "$build"))"
+  [ "$build" = official ] && models_warning
+  path_hint
+}
+
+cmd_install() {
+  build="$1"
+  ensure_self
+  if is_installed "$build"; then
+    say "unchanged: the ${build} build is already installed ($(version_of "$build")); prime-switch update updates the active build"
+    return 0
+  fi
+  prefix_of "$build" >/dev/null
+  run_installer "$build"
+  is_installed "$build" || die "the ${build} installer finished but $(launcher_of "$build") is missing"
+  changed "installed the ${build} build $(version_of "$build") at $(prefix_of "$build")"
+  say "run \`prime-switch ${build}\` to make it the active prime-agent"
+}
+
+cmd_update() {
+  build="$(active_build)"
+  [ -n "$build" ] || die "no build is active: run prime-switch fork or prime-switch official first"
+  is_installed "$build" || die "the active ${build} build is missing: run prime-switch install ${build}"
+  say "updating the ${build} build: $(launcher_of "$build") update"
+  "$(launcher_of "$build")" update
+}
+
+cmd_uninstall() {
+  build="$1"; force="$2"
+  [ "$build" = fork ] || die "only the fork build is uninstalled here; the official build keeps its own installer's layout"
+  if ! is_installed fork; then
+    say "unchanged: the fork build is not installed"
+    return 0
+  fi
+  # The removal guard: only a marked fork prefix that is neither $HOME, the
+  # official prefix, nor one of their ancestors is ever removed.
+  fork_real="$(cd "$FORK_PREFIX" && pwd -P)"
+  official_real="$(cd "$OFFICIAL_PREFIX" 2>/dev/null && pwd -P || printf '%s' "$OFFICIAL_PREFIX")"
+  home_real="$(cd "$HOME" && pwd -P)"
+  for protected in "$official_real" "$home_real" /; do
+    case "${protected}/" in
+      "${fork_real}/"*) die "refusing to remove ${fork_real}: it contains ${protected}" ;;
+    esac
+  done
+  grep -q '^install-rust.sh channel ' "${fork_real}/share/prime-agent/.prime-agent-install" \
+    || die "refusing to remove ${fork_real}: it carries no installer marker"
+  stop_daemon_of fork "$force"
+  if [ "$(active_build)" = fork ]; then
+    if is_installed official; then
+      write_shim official || true
+      changed "${SHIM} now runs the official build ($(version_of official))"
+    else
+      rm -f "$SHIM"
+      changed "removed ${SHIM} (no build is active)"
+    fi
+  fi
+  rm -rf -- "$fork_real"
+  changed "removed the fork build at ${fork_real}"
+}
+
+command="${1:-status}"
+[ $# -gt 0 ] && shift
+force=0
+target=""
+for arg in "$@"; do
+  case "$arg" in
+    --force) force=1 ;;
+    fork|official) [ -z "$target" ] || die "one build at a time"; target="$arg" ;;
+    *) die "unknown argument: $arg" ;;
+  esac
+done
+case "$command" in
+  status) cmd_status ;;
+  fork|official) cmd_switch "$command" "$force" ;;
+  install) [ -n "$target" ] || die "usage: prime-switch install fork|official"; cmd_install "$target" ;;
+  update) cmd_update ;;
+  uninstall) [ -n "$target" ] || die "usage: prime-switch uninstall fork"; cmd_uninstall "$target" "$force" ;;
+  -h|--help|help) sed -n '2,32p' "$0" 2>/dev/null || echo "prime-switch status|fork|official|install|update|uninstall" ;;
+  *) die "unknown command: ${command} (status, fork, official, install, update, uninstall)" ;;
+esac

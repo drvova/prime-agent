@@ -64,6 +64,15 @@ $ErrorActionPreference = 'Stop'
 # installs out of the box too.
 $DownloadBaseUrlDefault = 'https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev'
 $ReleaseChannelDefault = 'stable'
+# THE DISTRIBUTION KNOBS (install-rust.sh's RELEASE_ASSETS_URL_DEFAULT /
+# PREFIX_DEFAULT / VARIANT_NAME, rendered by scripts/release/fork_release.py
+# for a side-by-side distribution build; the official copy leaves all three
+# empty): the versioned-asset URL (<this>/v<version>/<file>; empty =
+# <base>/releases), the default prefix relative to $HOME (empty = .local),
+# and the variant whose launchers pin their own daemon pipe and kernel venv.
+$ReleaseAssetsUrlDefault = ''
+$PrefixDefault = ''
+$VariantName = ''
 
 # The installer-owned bookkeeping, initialized BEFORE any Fail can run
 # (under `irm | iex` the script scope is the caller's session: ambient
@@ -187,7 +196,11 @@ $baseUrl = if ($env:PRIME_AGENT_DOWNLOAD_BASE_URL) { $env:PRIME_AGENT_DOWNLOAD_B
 $channelRequested = $env:PRIME_AGENT_RELEASE_CHANNEL
 $channel = if ($channelRequested) { $channelRequested } else { $ReleaseChannelDefault }
 $versionPin = $env:PRIME_AGENT_VERSION
-$prefix = if ($env:PRIME_AGENT_RUST_PREFIX) { $env:PRIME_AGENT_RUST_PREFIX } else { Join-Path $HOME '.local' }
+$prefix = if ($env:PRIME_AGENT_RUST_PREFIX) { $env:PRIME_AGENT_RUST_PREFIX } elseif ($PrefixDefault) { Join-Path $HOME $PrefixDefault } else { Join-Path $HOME '.local' }
+if ($VariantName -notmatch '^[a-z0-9-]*$') { Fail "invalid VariantName: $VariantName" }
+# A distribution build's daemon pipe (its launchers pin it; the official
+# build keeps the product's fixed pipe, so the two never share a daemon).
+$variantPipe = if ($VariantName) { "\\.\pipe\prime-agent-$VariantName-daemon" } else { '' }
 
 # THE HTTPS RULE: the channel is served over the R2-backed domain, and a
 # plaintext download base would let a network attacker swap the payload
@@ -203,6 +216,11 @@ if ($baseUrl -notmatch '^https://') {
     }
 }
 $baseUrl = $baseUrl.TrimEnd('/')
+$releaseAssetsUrl = if ($env:PRIME_AGENT_RELEASE_ASSETS_URL) { $env:PRIME_AGENT_RELEASE_ASSETS_URL } elseif ($ReleaseAssetsUrlDefault) { $ReleaseAssetsUrlDefault } else { "$baseUrl/releases" }
+$releaseAssetsUrl = $releaseAssetsUrl.TrimEnd('/')
+if ($releaseAssetsUrl -notmatch '^https://' -and -not $allowHttp) {
+    Fail "the release assets URL must be an https URL: $releaseAssetsUrl"
+}
 if (@('stable', 'beta') -notcontains $channel) { Fail "unknown release channel: $channel (stable or beta)" }
 # The prefix does not need to exist (a fresh Windows profile has no
 # $HOME\.local; the share/bin creation below makes it), but it must name
@@ -341,7 +359,7 @@ if ($versionPin) {
 }
 
 # --- the tarball + SHA256SUMS from the versioned release prefix ----------------
-$releasePrefix = "releases/v$version"
+$releasePrefix = "v$version"
 $download = Join-Path ([IO.Path]::GetTempPath()) ("prime-agent-download-{0}" -f [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $download | Out-Null
 $script:primeAgentInstallScratch = $download
@@ -368,11 +386,11 @@ $ProgressPreference = 'SilentlyContinue'
 $VerbosePreference = 'SilentlyContinue'
 Write-Host "downloading $expectedFile"
 try {
-    Save-Release -Uri "$baseUrl/$releasePrefix/$expectedFile" -OutFile $tarball -Name $expectedFile
-    Invoke-WebRequest -Uri "$baseUrl/$releasePrefix/SHA256SUMS" -OutFile $sumsPath -UseBasicParsing
+    Save-Release -Uri "$releaseAssetsUrl/$releasePrefix/$expectedFile" -OutFile $tarball -Name $expectedFile
+    Invoke-WebRequest -Uri "$releaseAssetsUrl/$releasePrefix/SHA256SUMS" -OutFile $sumsPath -UseBasicParsing
     Write-Host "downloaded: $expectedFile ($([Math]::Round((Get-Item -LiteralPath $tarball).Length / 1MB, 1)) MB)"
 } catch {
-    Fail "could not download $expectedFile from $baseUrl/$releasePrefix/: $($_.Exception.Message)"
+    Fail "could not download $expectedFile from $releaseAssetsUrl/$releasePrefix/: $($_.Exception.Message)"
 } finally {
     $ProgressPreference = $callerProgressPreference
     $VerbosePreference = $callerVerbosePreference
@@ -488,7 +506,15 @@ try {
         # installer's context is the scripted one, so `--force` is the
         # documented non-interactive stop (the daemon's own forced
         # shutdown drains its workers with its internal budgets).
-        & $payloadStopExe shutdown --force *> $null
+        # A distribution build's daemon listens on its own pipe: the stop
+        # must reach that one, never the official daemon.
+        $callerDaemonSocket = $env:PRIME_AGENT_DAEMON_SOCKET
+        if ($variantPipe -and -not $callerDaemonSocket) { $env:PRIME_AGENT_DAEMON_SOCKET = $variantPipe }
+        try {
+            & $payloadStopExe shutdown --force *> $null
+        } finally {
+            $env:PRIME_AGENT_DAEMON_SOCKET = $callerDaemonSocket
+        }
         if ($LASTEXITCODE -eq 0) {
             $script:daemonStopped = $true
         } else {
@@ -562,6 +588,13 @@ rem prime-agent - launcher written by install-rust.sh.
 if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
 "%~dp0..\share\prime-agent\prime-agent.exe" %*
 '@
+        # THE DISTRIBUTION PINS (install-rust.sh parity): the variant's own
+        # kernel venv under the prefix and its own daemon pipe, both
+        # yielding to an explicit env value.
+        $variantVenv = Join-Path ([IO.Path]::GetFullPath($prefix)) 'kernel-venv'
+        if ($VariantName) {
+            $cmdShim = $cmdShim.Replace("%USERPROFILE%\.prime\agent`"`r`n", "%USERPROFILE%\.prime\agent`"`r`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`r`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`r`n").Replace("%USERPROFILE%\.prime\agent`"`n", "%USERPROFILE%\.prime\agent`"`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`n")
+        }
         Set-Content -LiteralPath $launcher -Value $cmdShim
 
         $shBody = @'
@@ -570,6 +603,11 @@ if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%U
 export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}"
 exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
 '@
+        if ($VariantName) {
+            $shVenv = $variantVenv.Replace('\', '/').Replace("'", "'\''")
+            $shPins = "[ -n `"`${PRIME_AGENT_KERNEL_VENV:-}`" ] || PRIME_AGENT_KERNEL_VENV='$shVenv'; export PRIME_AGENT_KERNEL_VENV`n[ -n `"`${PRIME_AGENT_DAEMON_SOCKET:-}`" ] || PRIME_AGENT_DAEMON_SOCKET='$variantPipe'; export PRIME_AGENT_DAEMON_SOCKET`n"
+            $shBody = $shBody.Replace("`r`n", "`n").Replace("/.prime/agent}`"`nexec", "/.prime/agent}`"`n${shPins}exec")
+        }
         # LF endings + no BOM: the sh launcher must stay a POSIX file.
         [IO.File]::WriteAllText($shLauncher, $shBody.Replace("`r`n", "`n"))
 

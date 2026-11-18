@@ -143,6 +143,7 @@ pub fn run(options: &UpdateOptions) -> i32 {
     // fetches from, and the banner must not claim a source the run will
     // not use.
     let channel = requested_installer_channel(options.channel);
+    print_distribution_build();
     println!(
         "Updating to the latest version — fetching the installer from {}:",
         installer::installer_script_url(Some(channel))
@@ -233,6 +234,21 @@ pub fn run_local(prefix: &std::path::Path, archive: Option<&std::path::Path>) ->
     }
 }
 
+/// A distribution build names itself before `update` and `update --check`
+/// (they read its own releases, not the official channel); the official
+/// build prints nothing extra.
+fn print_distribution_build() {
+    match installer::BUILD_DISTRIBUTION {
+        installer::Distribution::Official => {}
+        installer::Distribution::Build(build) => {
+            println!(
+                "Build:    {} (updates from {})",
+                build.name, build.download_base_url
+            );
+        }
+    }
+}
+
 /// Persist an explicit channel switch (`--nightly` / `--stable`) after a
 /// completed update.
 fn save_channel(channel: UpdateChannel) {
@@ -263,6 +279,7 @@ async fn run_check(flag: Option<UpdateChannel>) -> i32 {
     let running = crate::config::version();
     let channel = update_channel(flag);
     let base = installer::download_base_url();
+    print_distribution_build();
     println!("Platform: {target}");
     println!("Running:  {running}");
     println!("Channel:  {}", channel.wire_name());
