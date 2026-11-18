@@ -553,7 +553,12 @@ jobs:
               -o Dir::Cache::archives="${debs}" gcc-mingw-w64-x86-64-win32
             sudo rm -rf "${debs}/partial" "${debs}/lock"
           fi
-          sudo apt-get install -y --no-install-recommends "${debs}"/*.deb
+          # dpkg, not `apt-get install ./*.deb`: apt still fetched the same
+          # 65 MB from the mirror when the archive carried the identical
+          # version, even on a cache hit (run 44400928969, 13m50s at
+          # 78 kB/s). dpkg installs only the cached files and never touches
+          # the network. Their dependencies are all base-image libraries.
+          sudo dpkg -i "${debs}"/*.deb
           x86_64-w64-mingw32-gcc --version
       - name: Save the mingw-w64 .deb cache
         if: steps.mingw-cache.outputs.cache-hit != 'true'
