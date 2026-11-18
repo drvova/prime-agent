@@ -1,8 +1,8 @@
 //! `ReplKernelManager` delegations onto Inner.
 
 use super::{
-    AbortSignal, Arc, ExecuteOptions, Inner, InternalExecuteResult, ReplKernelManager, Request,
-    RestoreResult, SnapshotResult,
+    AbortSignal, Arc, CapturePriority, ExecuteOptions, Inner, InternalExecuteResult,
+    ReplKernelManager, Request, RestoreResult, SnapshotResult,
 };
 
 impl ReplKernelManager {
@@ -33,8 +33,9 @@ impl ReplKernelManager {
         &self,
         timeout: Option<u64>,
         prune: bool,
+        priority: CapturePriority,
     ) -> Option<SnapshotResult> {
-        self.inner.capture_snapshot(timeout, prune).await
+        self.inner.capture_snapshot(timeout, prune, priority).await
     }
 
     pub(crate) async fn perform_restore(&self, protocol_repair: bool) -> Option<RestoreResult> {

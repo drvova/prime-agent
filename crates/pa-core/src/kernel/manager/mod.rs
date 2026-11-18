@@ -32,7 +32,8 @@ use crate::kernel::shared::{
     KERNEL_BUSY_INTERRUPT_INTERVAL_MS, KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS,
     KERNEL_STDERR_LOG_BUDGET_MARKER, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
     MAX_KERNEL_STDERR_CHARS, MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
-    RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, TRANSCRIPT_READ_DISPLAY_MIME,
+    RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, SNAPSHOT_MAX_YIELD_MS,
+    TRANSCRIPT_READ_DISPLAY_MIME,
 };
 use crate::kernel::state_snapshot::{
     RestoreResult, SnapshotResult, SnapshotSkip, DEFAULT_SNAPSHOT_MAX_BYTES,
@@ -287,6 +288,12 @@ struct Guarded {
     /// Bumped by every capture COMMIT: a straggling earlier capture's delayed stat
     /// probe could otherwise pair its stale result lists with the newer capture's files.
     capture_sequence: u64,
+    /// The preemption handle of the debounced auto-snapshot while it is queued or running: the
+    /// next user cell aborts it instead of waiting behind the namespace dump.
+    yielding_snapshot: Option<AbortSignal>,
+    /// When a debounced capture first yielded to a user cell with no commit since: past
+    /// [`SNAPSHOT_MAX_YIELD_MS`] the next debounced capture no longer yields.
+    snapshot_yielded_since: Option<Instant>,
     /// Unattributed stream text that arrived between cells; surfaced on the next execution.
     pending_background_output: String,
     pending_background_output_chars: usize,
@@ -405,6 +412,7 @@ mod teardown;
 
 use lifecycle::{KernelLifecycle, Lifecycle, Starting};
 use requests::{append_truncated, describe_failure, HeadTailBuffer, Signal};
+use snapshot::CapturePriority;
 
 // Public API
 
@@ -428,6 +436,8 @@ impl ReplKernelManager {
                 capture_freshness: None,
                 freshness_epoch: 0,
                 capture_sequence: 0,
+                yielding_snapshot: None,
+                snapshot_yielded_since: None,
                 pending_background_output: String::new(),
                 pending_background_output_chars: 0,
                 pending_background_output_truncated: false,
@@ -782,13 +792,18 @@ impl ReplKernelManager {
     /// `None` when the kernel isn\'t running or no snapshot target was
     /// configured. Never fails on kernel errors; they land in diagnostics.
     pub async fn snapshot_state(&self) -> Option<SnapshotResult> {
-        self.capture_snapshot(None, false).await
+        self.capture_snapshot(None, false, CapturePriority::RunsToCompletion)
+            .await
     }
 
     /// Persist the namespace, then remove variables above the per-variable cap.
     pub async fn prune_oversized_variables(&self) -> Option<SnapshotResult> {
-        self.capture_snapshot(Some(SNAPSHOT_EXECUTION_TIMEOUT_MS), true)
-            .await
+        self.capture_snapshot(
+            Some(SNAPSHOT_EXECUTION_TIMEOUT_MS),
+            true,
+            CapturePriority::RunsToCompletion,
+        )
+        .await
     }
 
     /// Revive a previously snapshotted namespace into the kernel. Call right after `start()` and

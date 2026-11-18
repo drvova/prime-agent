@@ -1,0 +1,1 @@
+- A Python cell you run right after a cell that built a large namespace no longer waits for the background save of that namespace. The save gives way to the cell and finishes afterwards.
