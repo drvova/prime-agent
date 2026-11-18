@@ -71,6 +71,8 @@ pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.prime-agent.agent-
 pub const BASH_ACTIVITY_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-activity+json";
 /// One `bash()` call's command text (capped) and non-blank line count.
 pub const BASH_COMMAND_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-command+json";
+/// One bounded `bash()` await's outcome: `{outcome: "completed" | "yielded"}`.
+pub const BASH_WAIT_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-wait+json";
 /// One `rlm.session.messages` read: `{returned, first, total, roles}`.
 pub const TRANSCRIPT_READ_DISPLAY_MIME: &str = "application/vnd.prime-agent.transcript-read+json";
 /// The kernel host request that reports a background bash completion
@@ -194,6 +196,15 @@ pub struct KernelBashCommands {
     pub lines: usize,
 }
 
+/// The bounded `bash()` awaits one cell ran: how many returned the finished
+/// result inside their wait window, and how many yielded a still-running
+/// snapshot (each yield usually costs the session another model round trip).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KernelBashWaits {
+    pub completed: u64,
+    pub yielded: u64,
+}
+
 /// A kernel error reported by a failed cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelError {
@@ -217,6 +228,8 @@ pub struct ExecuteResult {
     pub sent_agent_messages: Option<Vec<KernelSentAgentMessage>>,
     /// The `bash()` commands this cell started, summarized for display.
     pub bash_commands: Option<KernelBashCommands>,
+    /// The cell's bounded `bash()` await outcomes.
+    pub bash_waits: KernelBashWaits,
     /// The cell's `rlm.session.messages` reads, one display record each.
     pub transcript_reads: Option<Vec<Value>>,
     /// Output that arrived without this cell's id (user threads, other cells' leftovers, raw fd writes).

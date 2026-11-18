@@ -5,8 +5,9 @@ use super::{
     append_truncated, lock, parse_attachment_display, parse_diff_display, parse_sent_agent_message,
     Arc, Event, ExecBuffers, ExecuteStatus, Guarded, Inner, KernelBashCommands, KernelError,
     StreamName, Value, AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME,
-    BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME, DIFF_DISPLAY_MIME,
-    MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, TRANSCRIPT_READ_DISPLAY_MIME,
+    BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME, BASH_WAIT_DISPLAY_MIME,
+    DIFF_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
+    TRANSCRIPT_READ_DISPLAY_MIME,
 };
 
 impl Inner {
@@ -242,6 +243,15 @@ impl Inner {
                     });
                 }
             }
+        }
+        match data
+            .get(BASH_WAIT_DISPLAY_MIME)
+            .and_then(|payload| payload.get("outcome"))
+            .and_then(Value::as_str)
+        {
+            Some("completed") => buffers.bash_waits.completed += 1,
+            Some("yielded") => buffers.bash_waits.yielded += 1,
+            Some(_) | None => {}
         }
     }
 

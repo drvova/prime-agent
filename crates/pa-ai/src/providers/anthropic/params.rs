@@ -39,23 +39,37 @@ pub(crate) fn build_params(
     );
     params.insert("stream".into(), json!(true));
 
-    // For OAuth tokens, we MUST include Claude Code identity.
+    // Cache breakpoints (Anthropic allows four per request; the render order is tools -> system
+    // -> messages, and a marker caches everything before it). The system prompt carries one
+    // marker on its cache-stable static layers and one on its session tail, the last user message
+    // carries the conversation marker, so at most three are placed. Tools render before system,
+    // so the system markers already cover them: the last tool takes a marker only when no system
+    // block follows it. For OAuth tokens the Claude Code identity block leads the system list; a
+    // later system marker covers it too.
+    let mut system: Vec<Value> = Vec::new();
     if is_oauth_token {
-        let mut system = vec![json!({
+        system.push(json!({
             "type": "text",
             "text": "You are Claude Code, Anthropic's official CLI for Claude.",
-        })];
-        if let Some(cache_control) = cache_control {
-            system[0]
-                .as_object_mut()
-                .expect("system entry is an object")
-                .insert("cache_control".into(), cache_control.to_json());
-        }
-        if let Some(system_prompt) = &context.system_prompt {
-            let mut entry = json!({
-                "type": "text",
-                "text": sanitize_surrogates(system_prompt),
-            });
+        }));
+    }
+    if let Some(system_prompt) = &context.system_prompt {
+        // With a cache-stable prefix length inside the prompt (on a char boundary), the static
+        // layers go out as their own block, then the session-specific tail, so a new session that
+        // shares the static layers reads them from the cache instead of writing them again. Only
+        // the block boundary moves: the blocks concatenate to the prompt byte for byte.
+        let split = base.cached_system_prefix_len.filter(|&len| {
+            len > 0 && len < system_prompt.len() && system_prompt.is_char_boundary(len)
+        });
+        let segments: Vec<&str> = match split {
+            Some(len) => {
+                let (static_prefix, tail) = system_prompt.split_at(len);
+                vec![static_prefix, tail]
+            }
+            None => vec![system_prompt.as_str()],
+        };
+        for segment in segments {
+            let mut entry = json!({ "type": "text", "text": sanitize_surrogates(segment) });
             if let Some(cache_control) = cache_control {
                 entry
                     .as_object_mut()
@@ -64,19 +78,19 @@ pub(crate) fn build_params(
             }
             system.push(entry);
         }
+    } else if let (Some(cache_control), Some(identity)) = (cache_control, system.first_mut()) {
+        identity
+            .as_object_mut()
+            .expect("system entry is an object")
+            .insert("cache_control".into(), cache_control.to_json());
+    }
+    let tools_cache_control = if system.is_empty() {
+        cache_control
+    } else {
+        None
+    };
+    if !system.is_empty() {
         params.insert("system".into(), json!(system));
-    } else if let Some(system_prompt) = &context.system_prompt {
-        let mut entry = json!({
-            "type": "text",
-            "text": sanitize_surrogates(system_prompt),
-        });
-        if let Some(cache_control) = cache_control {
-            entry
-                .as_object_mut()
-                .expect("system entry is an object")
-                .insert("cache_control".into(), cache_control.to_json());
-        }
-        params.insert("system".into(), json!([entry]));
     }
 
     // Temperature is incompatible with extended thinking (adaptive or budget-based), and always-on
@@ -97,7 +111,7 @@ pub(crate) fn build_params(
                     tools,
                     is_oauth_token,
                     get_anthropic_compat(model).supports_eager_tool_input_streaming,
-                    cache_control,
+                    tools_cache_control,
                 )),
             );
         }
@@ -219,6 +233,174 @@ mod tests {
                 json!({ "type": "enabled", "budget_tokens": 2048, "display": "summarized" }),
                 serde_json::Value::Null,
             )
+        );
+    }
+}
+
+#[cfg(test)]
+mod cache_breakpoint_tests {
+    use super::build_params;
+    use crate::providers::anthropic::{get_cache_control, AnthropicOptions};
+    use crate::types::{
+        zero_model_cost, CacheRetention, Context, Model, ModelInput, StreamOptions,
+    };
+    use serde_json::{json, Value};
+
+    const STATIC_LAYERS: &str = "# Core harness\n\nUsage rules\n\nGuidelines";
+    const SESSION_TAIL: &str = "\n\nPre-installed Python packages: numpy.\n\ncwd: /tmp/é";
+
+    fn claude() -> Model {
+        Model {
+            id: "claude-sonnet-4-5".into(),
+            name: "Claude Sonnet 4.5".into(),
+            api: "anthropic-messages".into(),
+            provider: "anthropic".into(),
+            base_url: "https://api.anthropic.com".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![ModelInput::Text, ModelInput::Image],
+            cost: zero_model_cost(),
+            context_window: 200_000,
+            max_tokens: 64_000,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+            serving: None,
+        }
+    }
+
+    fn context(last_user_content: &Value) -> Context {
+        serde_json::from_value(json!({
+            "systemPrompt": format!("{STATIC_LAYERS}{SESSION_TAIL}"),
+            "messages": [
+                { "role": "user", "content": "first", "timestamp": 1 },
+                { "role": "user", "content": last_user_content, "timestamp": 2 },
+            ],
+            "tools": [
+                { "name": "bash", "description": "Run a command", "parameters": { "type": "object" } },
+                { "name": "edit", "description": "Edit a file", "parameters": { "type": "object" } },
+            ],
+        }))
+        .expect("context fixture parses")
+    }
+
+    fn params(context: &Context, oauth: bool, thinking: bool, prefix: Option<usize>) -> Value {
+        let model = claude();
+        let (_, cache_control) = get_cache_control(&model, Some(CacheRetention::Short));
+        let options = AnthropicOptions {
+            base: StreamOptions {
+                cached_system_prefix_len: prefix,
+                ..Default::default()
+            },
+            thinking_enabled: Some(thinking),
+            thinking_budget_tokens: thinking.then_some(2048),
+            ..Default::default()
+        };
+        build_params(
+            &model,
+            context,
+            oauth,
+            Some(&options),
+            cache_control.as_ref(),
+        )
+    }
+
+    fn count_markers(value: &Value) -> usize {
+        match value {
+            Value::Object(map) => {
+                usize::from(map.contains_key("cache_control"))
+                    + map.values().map(count_markers).sum::<usize>()
+            }
+            Value::Array(items) => items.iter().map(count_markers).sum(),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => 0,
+        }
+    }
+
+    /// The static layers and the session tail go out as two system blocks, each with its own
+    /// marker, and the text they carry concatenates to the prompt byte for byte.
+    #[test]
+    fn the_static_prefix_is_its_own_cached_system_block() {
+        let context = context(&json!("go"));
+        let params = params(&context, false, false, Some(STATIC_LAYERS.len()));
+        let marker = json!({ "type": "ephemeral" });
+        assert_eq!(
+            params["system"],
+            json!([
+                { "type": "text", "text": STATIC_LAYERS, "cache_control": marker },
+                { "type": "text", "text": SESSION_TAIL, "cache_control": marker },
+            ])
+        );
+        let joined: String = params["system"]
+            .as_array()
+            .expect("system is a list")
+            .iter()
+            .map(|block| block["text"].as_str().expect("text block"))
+            .collect();
+        assert_eq!(Some(joined.as_str()), context.system_prompt.as_deref());
+    }
+
+    /// A boundary that is not a char boundary inside the prompt keeps the single block.
+    #[test]
+    fn an_unusable_boundary_keeps_one_system_block() {
+        let context = context(&json!("go"));
+        let prompt = context.system_prompt.clone().expect("prompt");
+        let inside_e_acute = prompt.len() - 1;
+        for prefix in [None, Some(0), Some(prompt.len()), Some(inside_e_acute)] {
+            let params = params(&context, false, false, prefix);
+            assert_eq!(
+                params["system"],
+                json!([{ "type": "text", "text": prompt, "cache_control": { "type": "ephemeral" } }]),
+                "{prefix:?}"
+            );
+        }
+    }
+
+    /// Anthropic rejects a request with more than four `cache_control` markers. Every request
+    /// shape (tools, OAuth identity, budget thinking, image and text tails, with and without the
+    /// static split) stays within the limit, and the tools are covered by the system markers
+    /// instead of carrying their own.
+    #[test]
+    fn every_request_shape_stays_within_four_breakpoints() {
+        let tails = [
+            json!("go"),
+            json!([{ "type": "image", "data": "aGk=", "mimeType": "image/png" }]),
+            json!([
+                { "type": "text", "text": "look" },
+                { "type": "image", "data": "aGk=", "mimeType": "image/png" },
+            ]),
+        ];
+        for tail in tails {
+            let context = context(&tail);
+            for oauth in [false, true] {
+                for thinking in [false, true] {
+                    for prefix in [None, Some(STATIC_LAYERS.len())] {
+                        let params = params(&context, oauth, thinking, prefix);
+                        let expected = if prefix.is_some() { 3 } else { 2 };
+                        assert_eq!(
+                            (count_markers(&params), count_markers(&params["tools"])),
+                            (expected, 0),
+                            "tail={tail} oauth={oauth} thinking={thinking} prefix={prefix:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // With no system prompt the last tool keeps its marker (nothing after it covers the
+        // tools); an OAuth request's identity block takes it instead.
+        let mut bare = context(&json!("go"));
+        bare.system_prompt = None;
+        assert_eq!(
+            count_markers(&params(&bare, false, false, None)["tools"]),
+            1
+        );
+        let oauth = params(&bare, true, false, None);
+        assert_eq!(
+            (
+                count_markers(&oauth["system"]),
+                count_markers(&oauth["tools"])
+            ),
+            (1, 0)
         );
     }
 }

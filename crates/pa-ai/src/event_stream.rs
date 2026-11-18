@@ -126,10 +126,17 @@ impl SharedState {
 
 struct Shared {
     state: Mutex<SharedState>,
+    /// The stream loop guard the facade armed on this stream, if any. It screens each event on
+    /// the producer side before it is queued (its own lock, so the consumer never waits on it).
+    loop_guard: Mutex<Option<crate::loop_guard::ArmedLoopGuard>>,
 }
 
 impl Shared {
     fn push(&self, event: AssistantMessageEvent) {
+        let event = match self.loop_guard.lock().unwrap().as_mut() {
+            Some(guard) => guard.screen(event),
+            None => event,
+        };
         let mut state = self.state.lock().unwrap();
         if state.done {
             return;
@@ -191,6 +198,7 @@ impl AssistantMessageEventStream {
     pub fn new() -> (AssistantMessageEventWriter, Self) {
         let shared = Arc::new(Shared {
             state: Mutex::new(SharedState::default()),
+            loop_guard: Mutex::new(None),
         });
         (
             AssistantMessageEventWriter {
@@ -261,6 +269,13 @@ impl AssistantMessageEventStream {
                     .expect("event stream resolved without a final message")
             }
         }
+    }
+
+    /// Arm the stream loop guard on this stream: events the provider pushes from here on are
+    /// screened. Armed right after the provider returns the stream; the provider's first events
+    /// may already be queued by then, which only delays a trip, never misjudges one.
+    pub(crate) fn arm_loop_guard(&self, guard: crate::loop_guard::ArmedLoopGuard) {
+        *self.shared.loop_guard.lock().unwrap() = Some(guard);
     }
 
     fn try_result(&self) -> Option<AssistantMessage> {

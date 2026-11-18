@@ -65,6 +65,37 @@ pub struct GoalState {
     pub last_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// Shell command that must exit 0 before a `goal.complete()` claim settles the goal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
+    /// Model verification of a `goal.complete()` claim, run after `check` passes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verify: Option<GoalVerifier>,
+    /// Dollar cap over [`GoalState::cost_used_usd`]; reaching it budget-limits the goal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_cost_usd: Option<f64>,
+    /// Provider cost (`usage.cost.total`) charged to the goal; omitted while zero, so goals
+    /// on unpriced models keep their persisted shape.
+    #[serde(skip_serializing_if = "is_zero_cost")]
+    pub cost_used_usd: f64,
+    /// The last failed verification's compact gap; the next continuation carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification_gap: Option<String>,
+}
+
+/// How a `goal.complete()` claim is verified beyond the optional `check` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalVerifier {
+    /// A read-only judge call over the session's cached prefix that must answer MET and cite
+    /// evidence found in the conversation.
+    Judge,
+}
+
+// serde's `skip_serializing_if` passes the field by reference.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_cost(cost: &f64) -> bool {
+    *cost == 0.0
 }
 
 impl Default for GoalState {
@@ -91,5 +122,10 @@ pub fn empty_goal_state() -> GoalState {
         updated_at: None,
         last_reason: None,
         last_error: None,
+        check: None,
+        verify: None,
+        max_cost_usd: None,
+        cost_used_usd: 0.0,
+        verification_gap: None,
     }
 }

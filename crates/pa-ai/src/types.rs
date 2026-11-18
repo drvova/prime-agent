@@ -11,13 +11,13 @@ pub use pa_types::ai::{
     AnthropicMessagesCompat, Api, AssistantContentBlock as AssistantContent, AssistantMessage,
     AssistantMessageDiagnostic, AssistantMessageEvent, CacheControlFormat, CacheRetention,
     CompatKind, Context, DataCollection, DiagnosticCode, DiagnosticErrorInfo, DoneStopReason,
-    ErrorStopReason, ImageContent, KnownApi, KnownProvider, MaxTokensField, Message, Model,
-    ModelCompat, ModelCost, ModelInput, ModelThinkingLevel, NumOrString, OpenAiCompletionsCompat,
-    OpenAiResponsesCompat, OpenRouterMaxPrice, OpenRouterRouting, OpenRouterSort,
-    OpenRouterThreshold, Provider, ProviderResponse, ServiceTier, StopReason, TextContent,
-    TextSignaturePhase, TextSignatureV1, ThinkingBudgets, ThinkingContent, ThinkingFormat,
-    ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolResultMessage, Transport, Usage,
-    UsageCost, UserContent as UserMessageContent, UserContentBlock as UserOrToolContent,
+    ErrorStopReason, ImageContent, KnownApi, KnownProvider, LoopGuardLevel, MaxTokensField,
+    Message, Model, ModelCompat, ModelCost, ModelInput, ModelThinkingLevel, NumOrString,
+    OpenAiCompletionsCompat, OpenAiResponsesCompat, OpenRouterMaxPrice, OpenRouterRouting,
+    OpenRouterSort, OpenRouterThreshold, Provider, ProviderResponse, ServiceTier, StopReason,
+    TextContent, TextSignaturePhase, TextSignatureV1, ThinkingBudgets, ThinkingContent,
+    ThinkingFormat, ThinkingLevel, ThinkingLevelMap, Tool, ToolCall, ToolResultMessage, Transport,
+    Usage, UsageCost, UserContent as UserMessageContent, UserContentBlock as UserOrToolContent,
     UserMessage,
 };
 
@@ -74,12 +74,20 @@ pub struct StreamOptions {
     pub transport: Option<Transport>,
     pub service_tier: Option<ServiceTier>,
     pub cache_retention: Option<CacheRetention>,
+    /// Byte length of the system prompt's cache-stable prefix (the static layers shared across
+    /// sessions). Providers that place explicit cache markers send the prefix and the rest of the
+    /// system prompt as two blocks, each with its own marker; the concatenated text is unchanged.
+    /// `None`, or a value that is not a char boundary inside the prompt, keeps one system block.
+    pub cached_system_prefix_len: Option<usize>,
     pub session_id: Option<String>,
     pub on_payload: Option<OnPayloadHook>,
     pub on_response: Option<OnResponseHook>,
     pub headers: Option<std::collections::HashMap<String, String>>,
     pub timeout_ms: Option<u64>,
     pub metadata: Option<std::collections::HashMap<String, serde_json::Value>>,
+    /// The stream loop guard's level for this request; `None` takes the provider's default
+    /// (`Provider::default_loop_guard`: by model family, off for scripted fixtures).
+    pub loop_guard: Option<LoopGuardLevel>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -92,12 +100,14 @@ impl std::fmt::Debug for StreamOptions {
             .field("transport", &self.transport)
             .field("service_tier", &self.service_tier)
             .field("cache_retention", &self.cache_retention)
+            .field("cached_system_prefix_len", &self.cached_system_prefix_len)
             .field("session_id", &self.session_id)
             .field("on_payload", &self.on_payload.is_some())
             .field("on_response", &self.on_response.is_some())
             .field("headers", &self.headers)
             .field("timeout_ms", &self.timeout_ms)
             .field("metadata", &self.metadata)
+            .field("loop_guard", &self.loop_guard)
             .finish()
     }
 }

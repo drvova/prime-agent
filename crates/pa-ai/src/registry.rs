@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::event_stream::AssistantMessageEventStream;
-use crate::types::{Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{Context, LoopGuardLevel, Model, SimpleStreamOptions, StreamOptions};
 
 /// A provider implementation for one API.
 pub trait Provider: Send + Sync {
@@ -25,6 +25,15 @@ pub trait Provider: Send + Sync {
         context: &Context,
         options: Option<&SimpleStreamOptions>,
     ) -> AssistantMessageEventStream;
+
+    /// The stream loop guard's level for `model` when a request names none
+    /// (`StreamOptions::loop_guard`). The default follows the model family: off for Claude,
+    /// semantic for the Gemini, `DeepSeek` and Grok families, exact for every other model. A
+    /// provider that replays scripted fixtures rather than model output returns `Off`, so its
+    /// fixtures stream as written.
+    fn default_loop_guard(&self, model: &Model) -> LoopGuardLevel {
+        crate::loop_guard::default_level(&model.id)
+    }
 }
 
 struct RegisteredProvider {

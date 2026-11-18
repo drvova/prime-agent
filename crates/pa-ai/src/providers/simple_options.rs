@@ -54,12 +54,14 @@ pub fn build_base_options(
         transport: base.transport,
         service_tier: base.service_tier,
         cache_retention: base.cache_retention,
+        cached_system_prefix_len: base.cached_system_prefix_len,
         session_id: base.session_id,
         on_payload: base.on_payload,
         on_response: base.on_response,
         headers: base.headers,
         timeout_ms: base.timeout_ms,
         metadata: base.metadata,
+        loop_guard: base.loop_guard,
     }
 }
 

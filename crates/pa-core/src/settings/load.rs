@@ -67,6 +67,9 @@ const KNOWN_FIELDS: &[&str] = &[
     "sessionDir",
     "requestTiming",
     "pythonCellTimeoutMs",
+    "cacheRetention",
+    "cacheWarming",
+    "loopGuard",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust

@@ -1,0 +1,1 @@
+- `await bash(cmd)` now waits up to 10 seconds (set `PRIME_AGENT_BASH_WAIT_MS` to change it) and returns the moment the command finishes, so short builds and tests no longer cost an extra model round trip; `await bash(cmd).wait(seconds)` waits longer, and a still-running command returns a compact tail snapshot.

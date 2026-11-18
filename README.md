@@ -202,6 +202,27 @@ For per-model early compaction, use the existing provider-scoped
 Use the actual model ID for your provider. This sets that model's effective context
 window; it does not change every model's global compaction percentage.
 
+### Prompt cache settings
+
+On providers with explicit cache markers (Anthropic, and Claude on Bedrock), the
+system prompt goes out as two cached blocks: the static layers every session shares,
+then the session-specific tail. A new session or subagent on the same model reads the
+static layers from the cache instead of writing them again.
+
+- `cacheRetention`: `"short"` (default, the provider's five-minute cache) or `"long"`
+  (one hour; cache writes cost 2x input instead of 1.25x). The `PI_CACHE_RETENTION`
+  environment variable (`long` or `short`) overrides the setting.
+- `cacheWarming`: `"active"` (default), `"idle"`, or `"off"`. Shortly before the cache
+  entry expires, a waiting session re-sends its last request with a one-token reply to
+  keep the cache alive, but only when the expected saving is at least $0.05: the cache
+  write the next request avoids, weighted by how likely that request is, minus the
+  refresh's own cache read. `active` warms only while the next request is near-certain:
+  a tool, a background `bash()` job, or a subagent is still running, or a subagent is
+  waiting on its parent. `idle` also warms an idle session, weighted at a 15% chance of
+  a next turn. Warming stops after 60 minutes (30 when nothing is running) or 12
+  refreshes, never delays a real request, and is cancelled the moment one starts.
+  Requests that think on a fixed token budget are never warmed.
+
 ### Provider auth descriptors
 
 A `models.json` provider entry can declare how the provider authenticates with an

@@ -277,6 +277,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Request timing: the settings half of the flag is read once here
     // (`settings` moves into the loader); the `PI_REQUEST_TIMING` half stays live.
     let request_timing_settings = settings.get_request_timing();
+    // The stream loop guard's level (`loopGuard`), read once like the flag above.
+    let loop_guard_level = settings.get_loop_guard();
     // Captured before `settings` moves into the resource loader: the
     // factory host bridge's preflight facts (the daemon `allowedModels`
     // pin), like the request-timing snapshot above.
@@ -284,6 +286,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // Captured before `settings` moves into the resource loader: the
     // default cell time limit (default 60s, `0` disables).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    // The prompt-cache policy (`cacheRetention`, `cacheWarming`).
+    let (cache_retention, cache_warming) =
+        (settings.get_cache_retention(), settings.get_cache_warming());
     let web_search_provider = settings.get_web_search_provider();
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
@@ -585,7 +590,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 &model_prompts.errors,
             ));
     }
-    let system_prompt = crate::prompts::system_prompt::build_system_prompt(
+    let system_prompt_breakdown = crate::prompts::system_prompt::system_prompt_breakdown(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
             custom_prompt: resources.system_prompt.clone(),
             model_prompt_extras: model_prompts.extras.as_deref(),
@@ -616,6 +621,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             ..Default::default()
         },
     );
+    // The static layers' byte span is the cache-stable prefix the cache
+    // seam marks as its own block (shared by every session and subagent on
+    // the same layers and model prompts).
+    let static_system_prefix =
+        system_prompt_breakdown.assembled[..system_prompt_breakdown.cached_prefix_len].to_string();
+    let system_prompt = system_prompt_breakdown.assembled;
 
     // Captured before the digest context moves the local harness dir and
     // the loop wiring moves the session model: the factory host bridge's
@@ -696,10 +707,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // over the timing-instrumented fn (TS `sdk.ts` instruments first, the
     // `AgentSession` constructor wraps semantic edges over it). The side
     // question keeps the pre-semantic fn, so its calls carry no id.
+    // Cache-warming refreshes go out on the raw provider fn: below request
+    // timing and the semantic ledger, so a refresh is neither a timed turn
+    // nor an edge.
+    let warm_stream_fn = std::sync::Arc::clone(&stream_fn);
     let timing_stream_fn = super::request_timing::instrument_stream_fn(
         std::sync::Arc::clone(&request_timing_wiring),
-        stream_fn,
+        super::loop_guard::guard_stream_fn(loop_guard_level, stream_fn),
     );
+    // The repeated-tool-call nudge counts into the session telemetry once
+    // it is installed (after the agent exists).
+    let repeat_nudge_telemetry = std::sync::Arc::new(std::sync::OnceLock::new());
     let side_question_stream_fn = std::sync::Arc::clone(&timing_stream_fn);
     let semantic_recorder = config.semantic_edges.take().map(|identity| {
         std::sync::Arc::new(super::semantic_edges::SemanticEdgeRecorder::open(identity))
@@ -714,6 +732,83 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // transform is built into the agent); weak, so the seam pins nothing.
     let thinning_agent: std::sync::Arc<std::sync::OnceLock<std::sync::Weak<Agent>>> =
         std::sync::Arc::default();
+    // The request view thins aged tool results under context pressure (the
+    // stored transcript stays whole). One transform serves the loop and the
+    // goal judge, so a judge fork sends the view the loop's cache entry holds.
+    let thinning = super::context_thinning::thinning_transform(
+        thinning_settings,
+        {
+            // The window of the model the request goes to: a run's routed
+            // override, else the session model (in-memory reads; the slot
+            // binds once the agent exists).
+            let slot = std::sync::Arc::clone(&thinning_agent);
+            std::sync::Arc::new(move || {
+                let slot = std::sync::Arc::clone(&slot);
+                Box::pin(async move {
+                    let Some(agent) = slot.get().and_then(std::sync::Weak::upgrade) else {
+                        return model_context_window;
+                    };
+                    match agent.model_override() {
+                        Some(routed) => routed.model.context_window,
+                        None => agent.state().await.model.context_window,
+                    }
+                })
+            })
+        },
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
+                as super::context_thinning::ThinningObserver
+        }),
+    );
+    // The goal judge forks the session's requests outside the cache seam;
+    // it takes the same cache hints so its system blocks match the loop's.
+    let judge_stream_fn = super::cache_warming::with_cache_hints(
+        cache_retention,
+        static_system_prefix.clone(),
+        std::sync::Arc::clone(&side_question_stream_fn),
+    );
+    // The prompt-cache seam goes outermost: it disarms the session's cache
+    // warmer before any real request is dispatched. Its pending-work probe
+    // holds the kernel and the subagent host weakly (the engine owns both).
+    let agent_stream_fn = super::cache_warming::wrap_stream_fn(
+        super::cache_warming::CacheWarmingConfig {
+            mode: cache_warming,
+            retention: cache_retention,
+            static_prefix: static_system_prefix,
+            role: if config.rlm_depth.unwrap_or(0) == 0 {
+                super::cache_warming::SessionRole::Root
+            } else {
+                super::cache_warming::SessionRole::Subagent
+            },
+            pending_work: {
+                let provisioner = Arc::downgrade(&provisioner);
+                let subagent_host = config.rlm_subagent_host.as_ref().map(Arc::downgrade);
+                Arc::new(move || {
+                    let provisioner = provisioner.clone();
+                    let subagent_host = subagent_host.clone();
+                    Box::pin(async move {
+                        let background_bash = provisioner
+                            .upgrade()
+                            .and_then(|provisioner| provisioner.manager())
+                            .is_some_and(|manager| manager.has_background_work());
+                        if background_bash {
+                            return true;
+                        }
+                        let Some(host) = subagent_host.and_then(|host| host.upgrade()) else {
+                            return false;
+                        };
+                        host.list_subagents().await.is_ok_and(|children| {
+                            children.iter().any(|child| child.status == "running")
+                        })
+                    })
+                })
+            },
+            counters: std::sync::Arc::clone(&session_counters),
+            warm_stream_fn,
+        },
+        agent_stream_fn,
+    );
     let agent = Agent::new(AgentOptions {
         // Every request in the session carries this identity: providers key prompt caching
         // (`prompt_cache_key`), session headers, and WebSocket/`previous_response_id` reuse on it
@@ -739,32 +834,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // the turn's dispatch moment around it.
         transform_context: Some(super::request_timing::instrument_transform_context(
             std::sync::Arc::clone(&request_timing_wiring),
-            super::context_thinning::thinning_transform(
-                thinning_settings,
-                {
-                    // The window of the model the request goes to: a run's
-                    // routed override, else the session model (in-memory
-                    // reads; the slot binds once the agent exists).
-                    let slot = std::sync::Arc::clone(&thinning_agent);
-                    std::sync::Arc::new(move || {
-                        let slot = std::sync::Arc::clone(&slot);
-                        Box::pin(async move {
-                            let Some(agent) = slot.get().and_then(std::sync::Weak::upgrade) else {
-                                return model_context_window;
-                            };
-                            match agent.model_override() {
-                                Some(routed) => routed.model.context_window,
-                                None => agent.state().await.model.context_window,
-                            }
-                        })
-                    })
-                },
-                config.telemetry.is_some().then(|| {
-                    let counters = std::sync::Arc::clone(&session_counters);
-                    std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
-                        as super::context_thinning::ThinningObserver
-                }),
-            ),
+            std::sync::Arc::clone(&thinning),
         )),
         should_stop_after_turn: {
             let steering = config.queued_steering_probe.take();
@@ -784,6 +854,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             }))
         },
         should_stop_before_turn: config.queued_steering_probe.clone(),
+        after_tool_call: (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(
+            || super::loop_guard::repeat_call_nudge(std::sync::Arc::clone(&repeat_nudge_telemetry)),
+        ),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,
         ..Default::default()
@@ -809,6 +882,24 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 recorder: std::sync::Arc::clone(recorder),
             });
     }
+    // Goal verification: facts count into the session counters, and `verify="judge"` forks this
+    // agent's conversation (pre-semantic stream fn with the session's cache hints, the loop's own
+    // thinning and conversion) so the judge reads the main loop's cached prefix. Weak agent: the
+    // kernel's handlers reach the judge.
+    let _ = wiring
+        .runtime
+        .goal_telemetry()
+        .set(std::sync::Arc::clone(&session_counters));
+    wiring
+        .runtime
+        .goal_verifier()
+        .bind_judge(super::goal_judge::GoalJudge::new(
+            Arc::downgrade(&agent),
+            judge_stream_fn,
+            thinning,
+            super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
+            wiring.rlm_usage.store(),
+        ));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),
@@ -947,6 +1038,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // telemetry handle (installed once the telemetry composition decided
     // whether this session reports at all).
     if let Some(telemetry) = telemetry.as_ref() {
+        let _ = repeat_nudge_telemetry.set(telemetry.clone());
         session.set_skill_telemetry(telemetry.clone());
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.

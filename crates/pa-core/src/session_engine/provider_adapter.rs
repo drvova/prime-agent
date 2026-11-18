@@ -256,7 +256,15 @@ pub fn stream_once(
             // session's Codex socket and its continuation) carries it through.
             transport: options.transport.as_ref().and_then(json_round_trip),
             service_tier,
-            cache_retention: None,
+            // The session engine's cache seam resolves both per request
+            // (`cacheRetention` setting under the `PI_CACHE_RETENTION` env
+            // override; the prompt's static-layer length).
+            cache_retention: options.cache_retention.map(|retention| match retention {
+                pa_agent::types::CacheRetention::None => pa_types::ai::CacheRetention::None,
+                pa_agent::types::CacheRetention::Short => pa_types::ai::CacheRetention::Short,
+                pa_agent::types::CacheRetention::Long => pa_types::ai::CacheRetention::Long,
+            }),
+            cached_system_prefix_len: options.cached_system_prefix_len,
             session_id: options.session_id.clone(),
             // The loop-level request hooks cross the crate boundary here: the payload
             // hook may replace the wire payload, the response hook observes headers.
@@ -278,6 +286,8 @@ pub fn stream_once(
             },
             metadata: None,
             timeout_ms: None,
+            // The session's `loopGuard` setting, set at the engine's stream seam.
+            loop_guard: options.loop_guard.as_ref().and_then(json_round_trip),
         },
         reasoning: Some(model_thinking_level(options.reasoning)),
         thinking_budgets: None,

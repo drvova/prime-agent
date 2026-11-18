@@ -137,6 +137,10 @@ async fn stream_assistant_response_inner(
         session_id: config.session_id.clone(),
         transport: config.transport,
         service_tier: config.service_tier,
+        // The session engine's cache seam sets both per request at the
+        // `StreamFn` boundary (it owns the prompt's static/dynamic split).
+        cache_retention: None,
+        cached_system_prefix_len: None,
         api_key: resolved_api_key,
         signal: signal.cloned().unwrap_or_default(),
         // The TS loop config's `onPayload`/`onResponse` ride every stream
@@ -145,6 +149,8 @@ async fn stream_assistant_response_inner(
         on_payload: None,
         on_response: None,
         headers: None,
+        // The session engine's stream seam sets the level from settings.
+        loop_guard: None,
     };
 
     let mut response = race_with_abort(

@@ -581,7 +581,8 @@ fn bounded_await_contract_renders_in_daemon_and_daemonless_sessions() {
         let prompt = system_prompt_breakdown(&options).assembled;
         assert!(
             prompt.contains("`r.running` is True")
-                && prompt.contains("`r.exit_code` is None"),
+                && prompt.contains("`r.exit_code` is None")
+                && prompt.contains("`await bash(cmd).wait(seconds)`"),
             "daemonless={daemonless}: the prompt must carry the bounded-await result contract: {prompt}"
         );
     }

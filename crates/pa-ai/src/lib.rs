@@ -16,6 +16,7 @@ pub mod registry;
 pub mod types;
 
 mod event_stream;
+mod loop_guard;
 mod providers;
 mod stream;
 

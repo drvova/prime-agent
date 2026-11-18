@@ -150,23 +150,44 @@ fn create_image_block(mime_type: &str, data: &str) -> Value {
     })
 }
 
+/// The Converse `system` list. With caching on, a cache point follows the system text; with a
+/// cache-stable prefix length inside the prompt (on a char boundary), the static layers get their
+/// own cache point before the session-specific tail, so a new session that shares them reads them
+/// from the cache. Only the block boundary moves: the text blocks concatenate to the prompt. With
+/// the last user message's cache point that is at most three of the four Bedrock allows.
 pub fn build_system_prompt(
     system_prompt: Option<&str>,
+    cached_prefix_len: Option<usize>,
     model: &Model,
     cache_retention: CacheRetention,
 ) -> Option<Vec<Value>> {
     let system_prompt = system_prompt?;
-    let mut blocks = vec![json!({ "text": sanitize_surrogates(system_prompt) })];
-
-    if cache_retention != CacheRetention::None && supports_prompt_caching(model) {
+    let caching = cache_retention != CacheRetention::None && supports_prompt_caching(model);
+    let cache_point = || {
         let mut cache_point = Map::new();
         cache_point.insert("type".into(), json!("default"));
         if cache_retention == CacheRetention::Long {
             cache_point.insert("ttl".into(), json!("1h"));
         }
-        blocks.push(json!({ "cachePoint": Value::Object(cache_point) }));
+        json!({ "cachePoint": Value::Object(cache_point) })
+    };
+    let split = cached_prefix_len
+        .filter(|&len| caching && len > 0 && len < system_prompt.len())
+        .filter(|&len| system_prompt.is_char_boundary(len));
+    let mut blocks = Vec::new();
+    let tail = match split {
+        Some(len) => {
+            let (static_prefix, tail) = system_prompt.split_at(len);
+            blocks.push(json!({ "text": sanitize_surrogates(static_prefix) }));
+            blocks.push(cache_point());
+            tail
+        }
+        None => system_prompt,
+    };
+    blocks.push(json!({ "text": sanitize_surrogates(tail) }));
+    if caching {
+        blocks.push(cache_point());
     }
-
     Some(blocks)
 }
 
@@ -543,6 +564,63 @@ mod prompt_caching_gate_tests {
         ] {
             assert!(!supports_prompt_caching(&model_with_id(id)), "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod system_prompt_tests {
+    use serde_json::json;
+
+    use super::build_system_prompt;
+    use crate::types::{CacheRetention, Model};
+
+    fn claude() -> Model {
+        Model {
+            id: "us.anthropic.claude-opus-5-5-v1".into(),
+            name: "Claude Opus 5.5".into(),
+            api: crate::providers::bedrock::API_BEDROCK_CONVERSE_STREAM.to_string(),
+            provider: "amazon-bedrock".into(),
+            base_url: "https://bedrock-runtime.us-west-2.amazonaws.com".into(),
+            reasoning: true,
+            thinking_level_map: None,
+            input: vec![crate::types::ModelInput::Text],
+            cost: crate::types::zero_model_cost(),
+            context_window: 200_000,
+            max_tokens: 8192,
+            max_tokens_explicit: false,
+            featured: None,
+            headers: None,
+            compat: None,
+            serving: None,
+        }
+    }
+
+    /// The static layers get their own cache point ahead of the session tail; the text blocks
+    /// concatenate to the prompt.
+    #[test]
+    fn the_static_prefix_gets_its_own_cache_point() {
+        let prompt = "static layers\n\nsession tail";
+        let blocks = build_system_prompt(
+            Some(prompt),
+            Some("static layers".len()),
+            &claude(),
+            CacheRetention::Long,
+        );
+        let point = json!({ "cachePoint": { "type": "default", "ttl": "1h" } });
+        assert_eq!(
+            blocks,
+            Some(vec![
+                json!({ "text": "static layers" }),
+                point.clone(),
+                json!({ "text": "\n\nsession tail" }),
+                point,
+            ])
+        );
+        // Caching off: one plain text block, whatever the boundary.
+        assert_eq!(
+            build_system_prompt(Some(prompt), Some(6), &claude(), CacheRetention::None),
+            Some(vec![json!({ "text": prompt })])
+        );
     }
 }
 
