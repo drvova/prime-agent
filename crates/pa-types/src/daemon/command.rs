@@ -816,6 +816,18 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// `get_usage`: one half of the `/usage` page, served by the supervisor (no session
+    /// selector): the provider quota windows or the local spend history.
+    GetUsage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        section: crate::provider_usage::UsageSection,
+        /// Bypass the quota cache (the page's refresh key); ignored for `spend`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        force_refresh: Option<bool>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     CronList {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

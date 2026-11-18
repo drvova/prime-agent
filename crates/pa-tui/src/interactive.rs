@@ -303,6 +303,14 @@ pub trait InteractionTelemetry: Send + Sync {
         toggles: u64,
         outcome: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One `/usage` page run ended (`tui usage page closed`): how each half landed, the card
+    /// count, whether the details view opened, the refreshes, and the tray reset chips shown since
+    /// the last close — primitives only, never an
+    /// account, an amount, or a URL.
+    fn usage_page_closed(
+        &self,
+        summary: crate::usage_page::UsagePageSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
     /// of the cell and the command count — primitives only, never command

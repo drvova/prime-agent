@@ -625,7 +625,7 @@ impl SessionUi {
                     }
                 }
             }
-            // `/context` (and its `/usage` alias): the agent tree with token/cost columns and
+            // `/context`: the agent tree with token/cost columns and
             // context utilization. The optional `all` argument is a deliberate TS delta (TS takes
             // none): past the row budget the default view collapses to the highest-usage agents;
             // `all` renders the whole tree.
@@ -835,6 +835,16 @@ impl SessionUi {
                     return Ok(());
                 }
                 self.open_heartbeats_view(view);
+            }
+            // `/usage`: the provider quota page; it opens at once and fills in.
+            "usage" => {
+                if !resolved.args.is_empty() {
+                    view.editor
+                        .set_text(&format!("/{} {}", resolved.original_name, resolved.args));
+                    self.error_row("Usage: /usage", view);
+                    return Ok(());
+                }
+                self.open_usage_page(view);
             }
             other => {
                 self.note(

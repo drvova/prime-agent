@@ -20,6 +20,7 @@ mod sessions_fork;
 mod settings;
 mod share;
 mod stream;
+mod usage;
 mod window;
 pub(crate) use window::TranscriptPageNote;
 
@@ -54,6 +55,7 @@ pub(crate) use stream::resume_hint_from_stats;
 use stream::streaming_tray_hint;
 use stream::LoaderTokenTracker;
 use stream::SpeedStats;
+pub(crate) use usage::UsageUpdate;
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -340,6 +342,17 @@ pub(crate) struct SessionUi {
     stats_updates: mpsc::UnboundedSender<StatsUpdate>,
     /// The newest issued stats refresh; an older reply is dropped on arrival.
     stats_generation: u64,
+    /// The `/usage` page's reply channel (see `spawn_usage_fetches`).
+    usage_updates: mpsc::UnboundedSender<UsageUpdate>,
+    /// The newest issued `/usage` fetch; the open page drops an older generation's halves.
+    usage_generation: u64,
+    /// The last fetched `/usage` halves: a reopened page shows them while it refreshes.
+    usage_quotas: Option<pa_types::provider_usage::QuotaReport>,
+    usage_spend: Option<pa_types::provider_usage::SpendHistory>,
+    /// The tray reset chip's source: the session's last rate-limited response.
+    rate_limit_reset: Option<usage::RateLimitReset>,
+    /// Reset chips shown since the last `/usage` close (its adoption event carries the count).
+    reset_chips_shown: u64,
     /// The last `factory_activity` graph reply (the dock count's cache and
     /// the page open's mount, the `bash_activities` pattern): the
     /// always-on 2s poll keeps it current whether or not the page is

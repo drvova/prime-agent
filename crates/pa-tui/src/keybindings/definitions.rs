@@ -427,6 +427,14 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
             "Unfold tree branch or move down"
         ),
     ),
+    (
+        "app.usage.refresh",
+        def!(&["r"], "Usage page: refresh provider quotas and spend"),
+    ),
+    (
+        "app.usage.overview",
+        def!(&["tab"], "Usage page: switch between overview and details"),
+    ),
     ("app.tree.editLabel", def!(&["shift+l"], "Edit tree label")),
     (
         "app.tree.toggleLabelTimestamp",

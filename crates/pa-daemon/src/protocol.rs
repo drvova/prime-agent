@@ -100,6 +100,7 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "get_model_catalog",
     "get_available_models",
     "get_queue",
+    "get_usage",
     "mutate_queued_message",
     "clear_queue",
     "abort_and_clear_queue",
@@ -924,6 +925,7 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         // Control-plane commands carry no session selector.
         DaemonCommand::List { .. }
         | DaemonCommand::ListAgentPeers { .. }
+        | DaemonCommand::GetUsage { .. }
         | DaemonCommand::GetWorkerPeerTransport { .. }
         | DaemonCommand::RosterSubscribe { .. }
         | DaemonCommand::WorkerIdlePassivation { .. }
@@ -1011,6 +1013,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::GetModelCatalog { .. } => "get_model_catalog",
         DaemonCommand::GetAvailableModels { .. } => "get_available_models",
         DaemonCommand::GetQueue { .. } => "get_queue",
+        DaemonCommand::GetUsage { .. } => "get_usage",
         DaemonCommand::MutateQueuedMessage { .. } => "mutate_queued_message",
         DaemonCommand::ClearQueue { .. } => "clear_queue",
         DaemonCommand::AbortAndClearQueue { .. } => "abort_and_clear_queue",
