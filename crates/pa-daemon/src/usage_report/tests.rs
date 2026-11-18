@@ -58,7 +58,7 @@ fn totals(input: u64, output: u64, cost: f64, requests: u64) -> SpendTotals {
 
 /// Today, ten days back, and forty days back land in their spans; a rewritten assistant row
 /// counts once at its last write; a child-attribution row adds nothing (the child's own file
-/// bills it); a compaction's summarizer call bills; a 429 surfaces its reset.
+/// bills it); a compaction's summarizer call bills; a 429 surfaces its `x-ratelimit-reset`.
 #[test]
 fn spend_history_aggregates_days_spans_models_and_rate_limits() {
     let root = tempfile::tempdir().unwrap();
@@ -66,6 +66,22 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
     std::fs::create_dir_all(&folder).unwrap();
     let noon = local_noon(1_795_003_200_000);
     let now = noon + 3_600_000;
+    // The provider layer's own failure record for a 429 carrying only `x-ratelimit-reset`: the
+    // reset the auth resolver's fallback parses is the one the observed card shows.
+    let rate_limit_details =
+        serde_json::to_value(pa_ai::utils::stream_failure::extract_stream_failure_info(
+            &pa_ai::ProviderError::Http(pa_ai::utils::stream_failure::ProviderHttpError {
+                message: "429 Too Many Requests".into(),
+                status: Some(429),
+                body: None,
+                headers: [("x-ratelimit-reset".to_string(), "5400".to_string())].into(),
+                request_id: None,
+                sdk_name: None,
+                retry_after_ms: None,
+                provider_error_type: None,
+            }),
+        ))
+        .unwrap();
     let parent = [
         json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-01-01T00:00:00.000Z", "cwd": "/home/dev/project"}).to_string(),
         assistant("a1", noon - 2 * 3_600_000, "claude-opus", 100, 10, 0.25),
@@ -92,7 +108,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
             "message": {
                 "role": "assistant", "provider": "openai-codex", "model": "gpt-5", "stopReason": "error",
                 "timestamp": noon - 3_600_000,
-                "diagnostics": [{"type": "provider_stream_failure", "details": {"kind": "rate_limit", "status": 429, "retryAfterMs": 5_400_000}}],
+                "diagnostics": [{"type": "provider_stream_failure", "details": rate_limit_details}],
                 "usage": {"input": 0, "output": 0, "cost": {"total": 0}},
             },
         })
