@@ -502,6 +502,9 @@ struct RouteHarness {
     child: Child,
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl RouteHarness {
@@ -531,12 +534,11 @@ impl RouteHarness {
         .expect("open pty");
 
         let child = spawn_child(route, &socket, &pty.slave, known_terminal);
-        // The socket outlives this fn: the child needs it (the tree dies with the child).
-        std::mem::forget(dir);
         RouteHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 

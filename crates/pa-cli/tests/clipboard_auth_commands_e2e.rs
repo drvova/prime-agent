@@ -28,14 +28,48 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        let worker_pids = child_pids_of(self.child.id());
+        // Freeze the whole tree before any kill: a worker's grandchildren (a
+        // kernel bootstrap, a bytecode compile) outlive a worker-only kill and
+        // keep writing into the test's temp dir after its removal. A stopped
+        // process cannot fork, so the walk settles once every member is stopped.
+        let root = self.child.id();
+        unsafe {
+            libc::kill(root as i32, libc::SIGSTOP);
+        }
+        let mut tree = Vec::new();
+        loop {
+            let mut walked = descendants_of(root);
+            walked.sort_unstable();
+            if walked == tree {
+                break;
+            }
+            for &pid in &walked {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGSTOP);
+                }
+            }
+            tree = walked;
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        for pid in worker_pids {
+        for pid in tree {
             kill_worker(pid);
         }
         let _ = std::fs::remove_file(&self.socket);
     }
+}
+
+/// Every process below `root`, following parent links.
+fn descendants_of(root: u32) -> Vec<u32> {
+    let mut tree = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(pid) = frontier.pop() {
+        for child in child_pids_of(pid) {
+            tree.push(child);
+            frontier.push(child);
+        }
+    }
+    tree
 }
 
 fn kill_worker(pid: u32) {
@@ -156,6 +190,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
+        // test's temp dir, which a SIGKILLed worker never cleans up after.
+        .env("TMPDIR", dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(std::fs::File::create(&stderr_path).expect("supervisor stderr"));

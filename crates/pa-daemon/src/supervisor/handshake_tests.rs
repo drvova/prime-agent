@@ -82,8 +82,12 @@ pub(super) async fn answer_supervisor_frame(
 
 #[tokio::test]
 async fn handshake_channel_stays_private_until_auth_answers() {
-    let dir = Path::new("/tmp").join(format!("pa-handshake-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    let tmp = tempfile::Builder::new()
+        .prefix("pa-handshake-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let dir = tmp.path();
     let socket_path = dir.join("worker.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -246,8 +250,12 @@ async fn run_silent_peer_auth(cancel_connect: bool) {
 /// channel), the registration itself succeeds, and the launch completes.
 #[tokio::test]
 async fn a_mid_handshake_registration_cannot_kill_the_handshake() {
-    let dir = Path::new("/tmp").join(format!("pa-wedge-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    let tmp = tempfile::Builder::new()
+        .prefix("pa-wedge-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let dir = tmp.path();
     let socket_path = dir.join("worker.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
@@ -453,8 +461,12 @@ async fn an_ended_connection_never_installs_its_channel() {
 /// cannot outlive the connection it was sent on.
 #[tokio::test]
 async fn a_lost_worker_connection_fails_its_in_flight_route() {
-    let dir = Path::new("/tmp").join(format!("pa-lost-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Short `/tmp` root: the socket paths must fit `SUN_LEN` everywhere.
+    let tmp = tempfile::Builder::new()
+        .prefix("pa-lost-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let dir = tmp.path();
     let socket_path = dir.join("worker.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();

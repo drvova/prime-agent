@@ -67,14 +67,49 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        let worker_pids = child_pids_of(self.child.id());
+        // Freeze the whole tree before any kill: a worker's kernel bootstrap
+        // (`uv pip install`) and bytecode compile are grandchildren that a
+        // worker-only kill orphans, and they kept writing the venv into the
+        // test's temp dir after its removal. A stopped process cannot fork,
+        // so the walk settles once every member is stopped.
+        let root = self.child.id();
+        unsafe {
+            libc::kill(root as i32, libc::SIGSTOP);
+        }
+        let mut tree = Vec::new();
+        loop {
+            let mut walked = descendants_of(root);
+            walked.sort_unstable();
+            if walked == tree {
+                break;
+            }
+            for &pid in &walked {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGSTOP);
+                }
+            }
+            tree = walked;
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
-        for pid in worker_pids {
+        for pid in tree {
             kill_worker(pid);
         }
         let _ = std::fs::remove_file(&self.socket);
     }
+}
+
+/// Every process below `root`, following parent links.
+fn descendants_of(root: u32) -> Vec<u32> {
+    let mut tree = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(pid) = frontier.pop() {
+        for child in child_pids_of(pid) {
+            tree.push(child);
+            frontier.push(child);
+        }
+    }
+    tree
 }
 
 fn kill_worker(pid: u32) {
@@ -213,6 +248,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
         .env("PRIME_AGENT_KERNEL_VENV", dir.join("kernel-venv"))
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
+        // test's temp dir, which a SIGKILLed worker never cleans up after.
+        .env("TMPDIR", dir)
         .env("PI_OFFLINE", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -509,6 +547,15 @@ async fn mcp_view_lists_the_configured_mock_connection() {
     assert!(
         rendered.contains("/mcp is not available in this client yet"),
         "Enter dispatched the login and the logout arm stayed routed:\n{rendered}"
+    );
+    // The teardown reaps the whole tree (the kernel bootstrap included)
+    // before the temp dir drops, so nothing writes into it afterwards.
+    let tree = descendants_of(supervisor.child.id());
+    drop(supervisor);
+    let survivors: Vec<u32> = tree.into_iter().filter(|&pid| process_alive(pid)).collect();
+    assert!(
+        survivors.is_empty(),
+        "processes outlived the teardown: {survivors:?}"
     );
 }
 

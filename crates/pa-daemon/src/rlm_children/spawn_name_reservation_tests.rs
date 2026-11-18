@@ -18,7 +18,11 @@ async fn spawn_gated_supervisor(
     let verdict_rx = std::sync::Arc::new(tokio::sync::Mutex::new(verdict_rx));
     let rename_verdict_rx = rename_verdict_rx.map(|rx| Arc::new(tokio::sync::Mutex::new(rx)));
     let listener = bind_transport(&socket).await.unwrap();
+    // The accept task owns the socket file: the test runtime drops the task
+    // at teardown, which unlinks it (a bare temp-dir socket was left behind).
+    let socket_file = tempfile::TempPath::try_from_path(socket).unwrap();
     tokio::spawn(async move {
+        let _socket_file = socket_file;
         loop {
             let Ok(stream) = listener.accept().await else {
                 return;

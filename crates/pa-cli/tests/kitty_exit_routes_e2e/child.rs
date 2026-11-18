@@ -177,7 +177,6 @@ fn replay_stream() -> pa_tui::session::JsonlSessionStream {
         entries.push('\n');
     }
     std::fs::write(&path, entries).expect("write replay jsonl");
-    std::mem::forget(dir);
     pa_tui::session::JsonlSessionStream::from_path(&path).expect("replay stream")
 }
 

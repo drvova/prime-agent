@@ -77,10 +77,10 @@ fn record_with_file(child_id: &str, session_file: &Path) -> Arc<Mutex<ChildRecor
     }))
 }
 
-fn registry(agent_dir: &Path) -> SupervisorChildSessions {
-    let tmp = tempfile::tempdir().unwrap();
-    let socket = tmp.path().join("supervisor.sock");
-    std::mem::forget(tmp);
+/// The supervisor socket path sits in the caller's temp dir, so the test's
+/// own `TempDir` removes it.
+fn registry(agent_dir: &Path, socket_dir: &Path) -> SupervisorChildSessions {
+    let socket = socket_dir.join("supervisor.sock");
     SupervisorChildSessions::new(
         Arc::new(SupervisorLink::new(socket)),
         agent_dir.to_path_buf(),
@@ -113,7 +113,7 @@ fn child_file(dir: &Path) -> PathBuf {
 async fn emit_reads_once_and_advances_the_cursor() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let sink = Arc::new(CapturingSink::default());
     sessions.set_usage_sink(sink.clone());
     let record = record_with_file("sub-emit1", &file);
@@ -144,7 +144,7 @@ async fn emit_reads_once_and_advances_the_cursor() {
 async fn emit_keeps_the_cursor_until_the_sink_persists() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let sink = Arc::new(CapturingSink::default());
     sessions.set_usage_sink(sink.clone());
     let record = record_with_file("sub-emit5", &file);
@@ -172,7 +172,7 @@ async fn emit_keeps_the_cursor_until_the_sink_persists() {
 async fn forget_replays_the_retained_report_before_unregistering() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let sink = Arc::new(CapturingSink::default());
     sessions.set_usage_sink(sink.clone());
     let record = record_with_file("sub-forget1", &file);
@@ -199,7 +199,7 @@ async fn forget_replays_the_retained_report_before_unregistering() {
 async fn emit_without_a_sink_consumes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let record = record_with_file("sub-emit2", &file);
 
     sessions.inner.emit_child_usage(&record).await;
@@ -209,7 +209,7 @@ async fn emit_without_a_sink_consumes_nothing() {
 #[tokio::test]
 async fn emit_tolerates_missing_and_absent_files() {
     let tmp = tempfile::tempdir().unwrap();
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let sink = Arc::new(CapturingSink::default());
     sessions.set_usage_sink(sink.clone());
     let missing = record_with_file("sub-emit3", &tmp.path().join("absent.jsonl"));
@@ -293,7 +293,7 @@ async fn reseed_lists_live_ledger_children_settled_and_bills_only_after_a_delive
         .join("\n"),
     )
     .unwrap();
-    let sessions = registry(&agent);
+    let sessions = registry(&agent, tmp.path());
     let supervisor_socket = sessions.inner.link.socket_path().clone();
     crate::descriptor::persist_supervisor_config(
         &crate::descriptor::descriptor_dir(&agent, &supervisor_socket)
@@ -414,7 +414,7 @@ async fn canceled_interval_keeps_identity_and_drains_new_rows_before_forget() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(Path::new("/agent"));
+    let sessions = registry(Path::new("/agent"), tmp.path());
     let sink = Arc::new(CancelFirstSink {
         attempts: std::sync::Mutex::new(vec![]),
         started: tokio::sync::Notify::new(),
@@ -480,7 +480,7 @@ async fn canceled_interval_keeps_identity_and_drains_new_rows_before_forget() {
 async fn failed_final_replay_preserves_report_and_registration_for_a_bounded_retry() {
     let tmp = tempfile::tempdir().unwrap();
     let file = child_file(tmp.path());
-    let sessions = registry(tmp.path());
+    let sessions = registry(tmp.path(), tmp.path());
     let sink = Arc::new(CapturingSink::default());
     sessions.set_usage_sink(sink.clone());
     let record = record_with_file("sub-owed-final", &file);

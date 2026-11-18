@@ -260,6 +260,9 @@ struct ExitBackfillHarness {
     child: Child,
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl ExitBackfillHarness {
@@ -281,12 +284,11 @@ impl ExitBackfillHarness {
         .expect("open pty");
 
         let child = spawn_child(&socket, &pty.slave);
-        // The child needs the socket for its lifetime.
-        std::mem::forget(dir);
         ExitBackfillHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 
