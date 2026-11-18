@@ -1278,7 +1278,7 @@ class ReplTest(unittest.TestCase):
                 "rlm._set_completion_notices_wired(True)",
                 "from rlm import bash",
                 "handle = bash('sleep 1.5; printf degraded')",
-                "await handle",
+                "await handle.wait(1)",
                 "handle.pid",
             ]
         )
@@ -1313,7 +1313,7 @@ class ReplTest(unittest.TestCase):
                 "rlm._set_completion_notices_wired(True)",
                 "from rlm import bash",
                 "handle = bash('sleep 1.5; printf persisted', persistent=True)",
-                "snapshot = await handle",
+                "snapshot = await handle.wait(1)",
                 "(snapshot.running, snapshot.handle is handle, handle.pid)",
             ]
         )
@@ -1331,6 +1331,26 @@ class ReplTest(unittest.TestCase):
             },
         )
         reply_ok(repl, request)
+
+    def test_requested_wait_degrades_before_the_cells_time_limit(self):
+        # The host's `timeoutMs` clamps a long requested wait: the await
+        # degrades with headroom instead of the host interrupting the cell.
+        code = "\n".join(
+            [
+                "import rlm, time",
+                "rlm._set_completion_notices_wired(True)",
+                "from rlm import bash",
+                "handle = bash('sleep 8')",
+                "started = time.monotonic()",
+                "snapshot = await handle.wait(60)",
+                "handle.kill(grace=0.1)",
+                "(snapshot.running, round(time.monotonic() - started))",
+            ]
+        )
+        self.repl.send({"type": "execute", "id": "bash-clamp", "code": code, "timeoutMs": 4000})
+        events = self.repl.until_done("bash-clamp")
+        self.assertEqual(one(events, "done")["status"], "ok")
+        self.assertEqual(one(events, "result")["text"], "(True, 2)")
 
     def test_result_read_after_notice_requests_one_withdrawal(self):
         reads = (

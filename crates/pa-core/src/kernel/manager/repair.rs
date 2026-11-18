@@ -150,6 +150,7 @@ impl Inner {
         let result = Box::pin(self.enqueue_request(
             Request::Execute {
                 code: code.to_string(),
+                cell_timeout_ms: None,
             },
             ExecuteOptions {
                 internal: true,

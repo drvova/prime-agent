@@ -56,12 +56,32 @@ _ASYNCIO_WRAPPER_CALLBACKS = {
 }
 
 # Bounded awaits: in sessions whose host registers the bash.completed handler,
-# an await still running after _YIELD_AFTER_SECONDS degrades to returning the
-# live handle instead of blocking (the [bash-done] notice collects it). The
-# kernel bootstrap flips the flag from the host-handler registry — one source
-# of truth; the window stays here, never on the Rust side.
+# an await still running after its wait window degrades to returning the live
+# handle instead of blocking (the [bash-done] notice collects it). The kernel
+# bootstrap flips the flag from the host-handler registry — one source of
+# truth; the window stays here, never on the Rust side.
+#
+# The default window is long enough for a typical build or test run to finish
+# in the same cell (each degrade costs the session a model round trip), and
+# `handle.wait(seconds)` asks for a longer one per await. Every window ends the
+# moment the command does, and is clamped below the cell's own time limit so
+# the await degrades before the host interrupts the cell. The configurable
+# default and the per-call wait follow Nodecode's `yield_time_ms` (MIT).
 _completion_notices_wired = False
-_YIELD_AFTER_SECONDS = 1.0
+_YIELD_AFTER_SECONDS = 10.0
+# Milliseconds; overrides _YIELD_AFTER_SECONDS when set to a number >= 0.
+_WAIT_ENV = "PRIME_AGENT_BASH_WAIT_MS"
+_MAX_WAIT_SECONDS = 600.0
+# Headroom between a degrade and the cell's interrupt: covers the host's clock
+# starting before the kernel read the request, plus the snapshot's own work.
+_CELL_DEADLINE_MARGIN_SECONDS = 2.0
+# A degrade's snapshot carries only the newest output: the model reads it in
+# the cell result, and the full buffer stays on the handle.
+_SNAPSHOT_TAIL_LINES = 20
+_SNAPSHOT_TAIL_CHARS = 2000
+# Display MIME the host counts per cell: one event per bounded await that
+# completed inside its window or degraded to a snapshot (adoption telemetry).
+_BASH_WAIT_MIME = "application/vnd.prime-agent.bash-wait+json"
 
 
 def _set_completion_notices_wired(wired: bool) -> None:
@@ -90,8 +110,9 @@ def _note_degrade(handle: "BashHandle", bound: float) -> None:
     _degrade_hints_written += 1
     sys.stderr.write(
         f"bash: still running after {bound:g}s (pid {handle._pid}); "
-        "returned a snapshot: r.running is True, r.output is the output so "
-        "far, r.handle is the live handle. End the turn — a [bash-done] "
+        "returned a snapshot: r.running is True, r.output is the newest "
+        "output, r.handle is the live handle. Wait longer with "
+        "`await r.handle.wait(seconds)`, or end the turn — a [bash-done] "
         "notification arrives when it finishes.\n"
     )
 
@@ -288,11 +309,13 @@ class BashResult:
 class BashSnapshot:
     """A degraded await's still-running snapshot (`BashHandle.__await__`).
 
-    `r.output`/`r.exit_code` read like a BashResult's — output so far and
-    None while running — and `r.running` is True; `r.handle` is the live
-    handle: collect the final result on the [bash-done] notification or with
-    `await r.handle`. The snapshot itself is not awaitable (that was #3076's
-    rejected wrapper shape).
+    `r.output`/`r.exit_code` read like a BashResult's — the newest output
+    (at most the last _SNAPSHOT_TAIL_LINES lines / _SNAPSHOT_TAIL_CHARS
+    characters) and None while running — and `r.running` is True;
+    `r.duration` is the elapsed time; `r.handle` is the live handle: collect
+    the final result on the [bash-done] notification or with `await r.handle`
+    / `await r.handle.wait(seconds)`. The snapshot itself is not awaitable
+    (that was #3076's rejected wrapper shape).
     """
 
     output: str
@@ -302,11 +325,12 @@ class BashSnapshot:
     handle: "BashHandle"
 
     def __repr__(self) -> str:
-        return (
+        header = (
             f"<BashSnapshot running pid={self.handle._pid} "
-            f"after {self.duration:g}s: collect on the [bash-done] "
-            "notification or await .handle>"
+            f"after {self.duration:.1f}s: collect on the [bash-done] "
+            "notification or await .handle.wait(seconds)>"
         )
+        return f"{header}\n{self.output}" if self.output else header
 
 
 class _BoundedBuffer:
@@ -1060,16 +1084,54 @@ class BashHandle:
             _record_journal(self._pid, active=False)
 
     def __await__(self) -> Generator[Any, None, BashResult | BashSnapshot]:
+        return self._await_within(None)
+
+    def wait(self, seconds: float) -> Awaitable[BashResult | BashSnapshot]:
+        """Await the command for up to `seconds` instead of the default window.
+
+        `await bash(cmd).wait(120)` keeps the one-shot contract of
+        `await bash(cmd)` (kill-on-cancel), and `await h.wait(60)` re-waits a
+        degraded or background handle. It returns the BashResult the moment
+        the command finishes, or a BashSnapshot once the window runs out. The
+        window is capped at _MAX_WAIT_SECONDS and kept below the cell's time
+        limit; sessions without completion notices stay unbounded. Calling
+        wait() is not handle-API use: it does not release the handle.
+        """
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+            raise TypeError("wait() seconds must be a number")
+        if not seconds >= 0:
+            raise ValueError("wait() seconds must be >= 0")
+        return _HandleWait(self, float(seconds))
+
+    def _await_within(
+        self, requested: float | None
+    ) -> Generator[Any, None, BashResult | BashSnapshot]:
         # A handle awaited before any other API use is a one-shot command tied
         # to the await (kill-on-cancel); touching the handle API first marks it
         # as a deliberate background handle whose awaits only wait. Both paths
-        # wait at most the yield window, then degrade to this live handle.
+        # wait at most the window (`requested`, else the default), then
+        # degrade to this live handle.
         try:
             current_task = asyncio.current_task()
         except RuntimeError:
             current_task = None
         creating_cell_waited = _creating_cell_waits_for(self._creating_cell_task, current_task)
-        bound = _YIELD_AFTER_SECONDS if _completion_notices_wired else None
+        bound: float | None = None
+        if _completion_notices_wired:
+            if requested is None:
+                requested = _YIELD_AFTER_SECONDS
+                try:
+                    configured_ms = float(os.environ.get(_WAIT_ENV, ""))
+                except ValueError:
+                    configured_ms = -1.0
+                if configured_ms >= 0:
+                    requested = configured_ms / 1000
+            bound = min(requested, _MAX_WAIT_SECONDS)
+            from . import repl
+
+            cell_remaining = repl.current_cell_remaining_seconds()
+            if cell_remaining is not None:
+                bound = max(0.0, min(bound, cell_remaining - _CELL_DEADLINE_MARGIN_SECONDS))
         owned = not self._released
         wait = self._wait_owned() if owned else self._wait()
         self._released = True
@@ -1095,6 +1157,10 @@ class BashHandle:
                 self._awaited_by_creating_cell = True
             if completed:
                 self._note_result_consumed(current_task)
+        if bound is not None:
+            from . import repl
+
+            repl.emit({_BASH_WAIT_MIME: {"outcome": "yielded" if degraded else "completed"}})
         if degraded:
             _note_degrade(self, cast("float", bound))
             return self._degrade_snapshot()
@@ -1104,8 +1170,9 @@ class BashHandle:
         """Read the internal buffer directly: the public readers count as a
         result read, which would withdraw the [bash-done] notice the degrade
         must keep alive."""
+        tail = "\n".join(self._buffer.text().splitlines()[-_SNAPSHOT_TAIL_LINES:])
         return BashSnapshot(
-            output=self._buffer.text(),
+            output=tail[-_SNAPSHOT_TAIL_CHARS:],
             exit_code=None,
             running=True,
             duration=time.monotonic() - self._started,
@@ -1121,6 +1188,18 @@ class BashHandle:
     def __repr__(self) -> str:
         state = f"exit_code={self._result.exit_code}" if self._result else "running"
         return f"<BashHandle pid={self._pid} {state} command={self.command!r}>"
+
+
+class _HandleWait:
+    """The awaitable `BashHandle.wait(seconds)` returns: one bounded await of
+    its handle, resolved at await time like a bare `await handle`."""
+
+    def __init__(self, handle: BashHandle, seconds: float) -> None:
+        self._handle = handle
+        self._seconds = seconds
+
+    def __await__(self) -> Generator[Any, None, BashResult | BashSnapshot]:
+        return self._handle._await_within(self._seconds)
 
 
 class _OutputFile:
@@ -1313,11 +1392,14 @@ def bash(command: str, persistent: bool = False) -> BashHandle:
     `await bash(cmd)` is a one-shot: cancelling the await (e.g. an interrupt)
     kills the command's process group. In sessions whose host wires completion
     notices (the kernel bootstrap turns the bound on), an await that is still
-    running after 1 second instead DEGRADES: it returns a BashSnapshot
-    (r.running True, r.output the output so far, r.handle the live handle)
-    while the command keeps running, and its [bash-done] notification arrives
-    on completion. In sessions without completion notices every await stays
-    unbounded. `h = bash(cmd)` used as a background handle (any
+    running after its window (10 seconds by default, PRIME_AGENT_BASH_WAIT_MS
+    overrides it; `await bash(cmd).wait(seconds)` asks for up to 600 per
+    await, kept below the cell's time limit) instead DEGRADES: it returns a
+    BashSnapshot (r.running True, r.output the newest output, r.duration the
+    elapsed time, r.handle the live handle) while the command keeps running,
+    and its [bash-done] notification arrives on completion. An await always
+    returns as soon as the command finishes. In sessions without completion
+    notices every await stays unbounded. `h = bash(cmd)` used as a background handle (any
     .pid/.running/.output()/.tail()/.poll()/.kill() access before the first
     await) survives cancellation; awaiting it only waits. Leak
     containment is per-platform: process groups plus the orphan journal on

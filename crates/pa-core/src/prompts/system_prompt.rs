@@ -310,7 +310,7 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     }
     if has_ipython {
         lines.push(
-            "`await bash(cmd)` waits at most 1 second. If the command is still running, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the output so far, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
+            "`await bash(cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `await bash(cmd).wait(seconds)` (up to 600, kept below the cell's `timeout`, so raise `timeout` with it). If the command is still running when the wait runs out, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the newest output, `r.duration` is the elapsed seconds, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
                 .to_string(),
         );
         lines.push(

@@ -10,7 +10,8 @@
 
 //! The cell time limit interrupts a cell that runs past it: the tool result is an
 //! error naming the limit, the turn continues, and the namespace survives. A cell
-//! that ignores the interrupt gets the kernel restarted.
+//! that ignores the interrupt gets the kernel restarted. A long `bash()` wait
+//! inside a limited cell degrades to its snapshot before the limit instead.
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -147,6 +148,13 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
             json!({ "code": "import time\nprint('before')\ntime.sleep(30)", "timeout": 2 }),
         ),
         ("call-3", json!({ "code": "print(x + 1)" })),
+        (
+            "call-wait",
+            json!({
+                "code": "r = await bash('sleep 8').wait(60)\nprint(type(r).__name__, r.running)\nr.handle.kill(grace=0.1)",
+                "timeout": 4,
+            }),
+        ),
         ("call-4", json!({ "code": swallow_interrupt, "timeout": 2 })),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
@@ -191,7 +199,8 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         on_background_work_settled: None,
-        bash_notice_wake: None,
+        // Registers the bash completion notice, which arms the bounded await.
+        bash_notice_wake: Some(std::sync::Arc::new(|| {})),
         queued_goal_context_purge: None,
         queued_steering_probe: None,
         should_stop_after_turn: None,
@@ -224,6 +233,12 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     let (status, text) = tool_result(&entries, "call-3");
     assert_eq!(status, "ok", "{text}");
     assert!(text.contains("42"), "{text}");
+
+    // The host sends the cell's limit with the request, so a wait asked for
+    // past it degrades to the snapshot in time and the cell settles ok.
+    let (status, text) = tool_result(&entries, "call-wait");
+    assert_eq!(status, "ok", "{text}");
+    assert!(text.contains("BashSnapshot True"), "{text}");
 
     // A cell that swallows the interrupt gets the kernel restarted.
     let (status, text) = tool_result(&entries, "call-4");

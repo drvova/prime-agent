@@ -18,6 +18,10 @@ pub const REPL_PROTOCOL_VERSION: u64 = 3;
 pub enum Request {
     Execute {
         code: String,
+        /// The cell's armed time limit ([`crate::kernel::shared::ExecuteOptions::cell_timeout_ms`]),
+        /// sent as `timeoutMs` so the runtime's bounded `bash()` awaits degrade before the
+        /// host interrupts the cell. `None` sends no field: the cell has no limit.
+        cell_timeout_ms: Option<u64>,
     },
     Interrupt,
     HostReply {
@@ -63,7 +67,16 @@ impl Request {
     #[must_use]
     pub fn to_json(&self) -> Value {
         match self {
-            Request::Execute { code } => json!({ "type": "execute", "code": code }),
+            Request::Execute {
+                code,
+                cell_timeout_ms,
+            } => {
+                let mut frame = json!({ "type": "execute", "code": code });
+                if let Some(timeout_ms) = cell_timeout_ms {
+                    frame["timeoutMs"] = json!(timeout_ms);
+                }
+                frame
+            }
             Request::Interrupt => json!({ "type": "interrupt" }),
             Request::HostReply { data } => json!({ "type": "host_reply", "data": data }),
             Request::Snapshot {

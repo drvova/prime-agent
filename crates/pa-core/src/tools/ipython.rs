@@ -65,6 +65,9 @@ pub struct ExecuteResult {
     /// The `bash()` commands this cell started, summarized for display
     /// (`bashCommands` on the tool-result details).
     pub bash_commands: Option<crate::kernel::shared::KernelBashCommands>,
+    /// The cell's bounded `bash()` await outcomes (`bashWaits` on the
+    /// tool-result details when any ran; the run telemetry folds them).
+    pub bash_waits: crate::kernel::shared::KernelBashWaits,
     /// The cell's `rlm.session.messages` reads (`transcriptReads` on the
     /// tool-result details).
     pub transcript_reads: Vec<serde_json::Value>,
@@ -401,6 +404,12 @@ pub async fn execute_ipython(
             "first": bash.first,
             "count": bash.count,
             "lines": bash.lines,
+        });
+    }
+    if r.bash_waits != crate::kernel::shared::KernelBashWaits::default() {
+        details["bashWaits"] = json!({
+            "completed": r.bash_waits.completed,
+            "yielded": r.bash_waits.yielded,
         });
     }
     if !r.transcript_reads.is_empty() {

@@ -5,8 +5,8 @@
 //! the thing under test.
 //!
 //! The mock provider scripts the turn: request 1 calls `python_repl` with a
-//! one-shot `await bash('sleep 5; echo ...')`. The await degrades at the
-//! 1s window: the tool result carries the still-running handle, and the
+//! one-shot `await bash('sleep 5; echo ...').wait(1)`. The await degrades at
+//! its 1s window: the tool result carries the still-running handle, and the
 //! turn settles while the command keeps running. Its `[bash-done ...]`
 //! notice then wakes the idle session. Everything is asserted by transcript
 //! event ORDER, not wall-clock caps.
@@ -145,7 +145,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "type": "function",
                         "function": {
                             "name": "python_repl",
-                            "arguments": "{\"code\": \"from rlm import bash\\nres = await bash('sleep 5; echo BOUNDED_AWAIT_E2E_DONE')\\nres\"}"
+                            "arguments": "{\"code\": \"from rlm import bash\\nres = await bash('sleep 5; echo BOUNDED_AWAIT_E2E_DONE').wait(1)\\nres\"}"
                         }
                     }]
                 }),
