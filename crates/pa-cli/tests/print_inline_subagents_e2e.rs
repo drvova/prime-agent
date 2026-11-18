@@ -927,7 +927,12 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
                 .get("output")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0);
-            input + output
+            // Goal tokens count cache writes like the autonomous budget.
+            let cache_write = usage
+                .get("cacheWrite")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            input + output + cache_write
         })
         .collect();
     // The two spawn-turn assistant rows, then the reply-turn row.
