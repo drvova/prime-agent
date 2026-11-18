@@ -97,6 +97,11 @@ pub struct AgentView {
     /// `ThinkingSelectorComponent` seam): while set, it owns the whole frame
     /// like the model picker.
     pub(crate) choice_picker: Option<crate::choice_picker::ChoicePicker>,
+    /// The session todo list the dock's todo tray renders (`todo_update`).
+    pub(crate) todos: pa_types::todo::TodoList,
+    /// The kernel question waiting for the user (`question_open`): while set,
+    /// its answer prompt replaces the composer.
+    pub(crate) question: Option<crate::question_prompt::QuestionPrompt>,
     pub mcp_view: Option<crate::mcp_view::McpView>,
     /// The factory page: while set, it owns the editor dock like the
     /// inline pickers (one panel per live factory run) — the activity
@@ -266,6 +271,10 @@ impl AgentView {
             picker.paste(text);
             return true;
         }
+        if let Some(prompt) = self.question.as_mut() {
+            prompt.paste(text);
+            return true;
+        }
         if let Some(search) = self.history_search.as_mut() {
             search.paste(text);
             return true;
@@ -377,6 +386,8 @@ impl AgentView {
             auth_panel: None,
             fork_selector: None,
             choice_picker: None,
+            todos: pa_types::todo::TodoList::default(),
+            question: None,
             mcp_view: None,
             factory_view: None,
             heartbeats_picker: None,

@@ -126,6 +126,8 @@ impl Worker {
             session_actions: session_snapshot(core),
             compaction_count: store.map_or(0, |store| store.compaction_count() as u32),
             goal: inputs.goal,
+            todos: inputs.todos,
+            pending_question: inputs.pending_question,
             scoped_models: core.scoped_models.clone(),
             active_tool_names: Vec::new(),
             // TS `createAgentConnectionState` carries `contextUsage:
@@ -485,6 +487,8 @@ pub(crate) struct ConnectionStateInputs {
     available_thinking_levels: Vec<String>,
     is_bash_running: bool,
     goal: Value,
+    todos: Value,
+    pending_question: Value,
     model_context_window: Option<u64>,
 }
 
@@ -522,6 +526,8 @@ impl ConnectionStateInputs {
                 .unwrap_or_else(|| vec!["off".to_string()]),
             is_bash_running: user_bash.is_running(),
             goal: engine.goal_state_value(),
+            todos: engine.todo_list_value(),
+            pending_question: engine.open_question_value(),
             model_context_window: details.model_context_window,
         }
     }

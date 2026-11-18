@@ -159,6 +159,9 @@ pub struct Worker {
     pub(crate) model_catalog_refresh_gate: std::sync::Arc<crate::model_catalog::RefreshGate>,
     recovery: Arc<Mutex<Option<WorkerRecoveryJournal>>>,
     side_questions: crate::side_question::SideQuestionManager,
+    /// The session's todo list and kernel questions (the hub the engine
+    /// builds into every session, plus the attached-client surface).
+    pub(crate) interaction: crate::user_interaction::WorkerInteraction,
     /// Single-use peer-transport grants (worker memory only).
     pub(crate) peer_grants: PeerGrantStore,
     pub(crate) compaction: crate::compaction::CompactionManager,
@@ -387,6 +390,8 @@ impl Worker {
         let checkpoints = Arc::new(crate::workspace_checkpoints::WorkspaceCheckpoints::new(
             config.agent_dir.clone(),
         ));
+        let interaction =
+            crate::user_interaction::WorkerInteraction::new(Arc::clone(&core), Arc::clone(&events));
         let (engine, agent_engine, roster_pushes): (
             std::sync::Arc<dyn SessionEngine>,
             Option<std::sync::Arc<crate::agent_engine::AgentSessionEngine>>,
@@ -463,6 +468,7 @@ impl Worker {
                 // The in-run autonomous continuation seam: the hook holds
                 // itself weakly through the registered arc.
                 concrete.register_arc();
+                concrete.set_interaction_hub(std::sync::Arc::clone(&interaction.hub));
                 concrete
                     .set_rlm_usage_store(std::sync::Arc::new(CoreUsageStore(Arc::clone(&core))));
                 let sink_core = Arc::clone(&core);
@@ -791,6 +797,7 @@ impl Worker {
             ),
             recovery,
             side_questions,
+            interaction,
             peer_grants: PeerGrantStore::new(),
             compaction,
             tree_navigation,

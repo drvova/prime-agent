@@ -186,8 +186,17 @@ prime-agent searches the web natively; no API key is needed. The default `auto` 
 
 - `web.search(query: str, *, provider: str | None = None, num_results: int | None = None, recency: str | None = None, timeout: float | None = None) -> WebSearchResult`: `str(result)` is a readable numbered list (with any synthesized answer and fallback notes); `result.sources` holds `title`, `url`, `snippet`, `published_date`; `result.answer` is set by answer-synthesizing providers. `site:`, `-site:`, `before:`/`after:`, `intitle:`, `filetype:`, quoted phrases, and `OR` in the query are honored. `provider` is `"auto"` or one of `serper`, `eco`, `brave`, `tavily`, `exa`, `kagi`, `perplexity`, `parallel`, `jina`, `firecrawl`, `searxng`, `duckduckgo`, `startpage`, `mojeek`, `ecosia`, `hackernews`, `public`; `recency` is `day`/`week`/`month`/`year`. Raises `RuntimeError` when every provider fails.
 
+## Todos and questions
+
+A session todo list the user sees live; keep one for work with 3+ steps, marking items `in_progress` and `done` as you go. It persists across kernel restarts.
+
+- `todo.set(items: list[str | dict]) -> TodoList`: create or replace (`[]` clears); dict items take `text` and optional `id`, `status` (`pending`/`in_progress`/`done`), `note`
+- `todo.update(id: str, *, status=None, text=None, note=None) -> TodoList`: change one item
+- `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
+- `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, and `web.*` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

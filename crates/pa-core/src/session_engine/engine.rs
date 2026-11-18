@@ -51,6 +51,9 @@ pub struct SessionEngineConfig {
     /// Announces every accepted `rlm.progress.note`; `None` keeps the store
     /// the only surface.
     pub progress_note_emit: Option<super::rlm_host::RlmProgressNoteEmit>,
+    /// The embedding's todo/question hub; `None` keeps the session headless
+    /// (`ask` answers `no_user` at once).
+    pub interaction: Option<Arc<crate::interaction::InteractionHub>>,
     /// The session's depth in the RLM recursion tree (0 for top-level
     /// sessions); gates the `refine.*` host requests.
     pub rlm_depth: Option<u32>,
@@ -258,6 +261,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             subagent_host: config.rlm_subagent_host.clone(),
             usage_store: config.rlm_usage_store.clone(),
             progress_note_emit: config.progress_note_emit.clone(),
+            interaction: config.interaction.clone(),
         },
         config.queued_goal_context_purge.clone(),
         config.cron_store.clone(),
@@ -355,6 +359,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .and_then(|telemetry| telemetry.telemetry_enabled.as_ref())
     {
         session_counters.set_telemetry_enabled(telemetry_switch.enabled.clone());
+    }
+    if config.telemetry.is_some() {
+        wiring
+            .interaction
+            .set_counters(std::sync::Arc::clone(&session_counters));
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.

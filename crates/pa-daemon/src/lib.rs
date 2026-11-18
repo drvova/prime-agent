@@ -122,6 +122,7 @@ pub(crate) mod update_roster;
 pub(crate) mod update_stop;
 pub(crate) mod usage_report;
 pub(crate) mod user_bash;
+pub(crate) mod user_interaction;
 pub mod util;
 pub mod worker;
 pub(crate) mod worker_stderr;

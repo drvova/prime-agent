@@ -52,7 +52,7 @@ _RESULT_TRUNCATION_MARKER = f"\n[... result truncated at {_RESULT_TEXT_CAP} char
 _PAYLOAD_CAP = 16 * 1024 * 1024
 
 # Names the session bootstrap re-creates on every start; never snapshotted.
-_ALWAYS_SKIP = {"rlm", "mcp", "bash", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
+_ALWAYS_SKIP = {"rlm", "mcp", "bash", "todo", "ask", "asyncio", "In", "Out", "get_ipython", "exit", "quit", "open"}
 # IPython-injected names that may appear in a snapshot payload; never restored.
 _RESTORE_SKIP = {"In", "Out", "get_ipython"}
 # The target of the last successful snapshot, remembered so an EOF shutdown
@@ -203,6 +203,18 @@ async def host_request(data: dict[str, Any]) -> dict[str, Any]:
         return await future
     finally:
         _pending_host.pop(rid, None)
+
+
+def host_notify(data: dict[str, Any]) -> None:
+    """Send one typed request to the host without awaiting its reply (the reply is dropped).
+
+    For a withdrawal that must reach the host from an interrupted or cancelled
+    cell, where awaiting a reply is no longer possible.
+    """
+    if _loop is None or _host_closed:
+        return
+    _check_payload("host_request", data)
+    _send({"event": "host_request", "id": os.urandom(16).hex(), "data": data})
 
 
 def _fail_pending_host_requests() -> None:

@@ -1376,6 +1376,25 @@ const WEB_SEARCH_PROVIDER_CHANGED: EventRule = EventRule {
     )],
 };
 
+/// The kernel `todo.*` and `ask(...)` adoption counters for one session (v2), emitted at session
+/// close beside `agent session ended` (which sits at the 128-key cap) when the session used
+/// either. Counts only: never item text, a question, a choice, or an answer.
+const AGENT_TODOS_AND_QUESTIONS: EventRule = EventRule {
+    name: "agent todos and questions",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("todo_list_set_count", required(count())),
+        ("todo_item_done_count", required(count())),
+        ("question_asked_count", required(count())),
+        ("question_answered_count", required(count())),
+        ("question_declined_count", required(count())),
+        ("question_timed_out_count", required(count())),
+        ("question_no_user_count", required(count())),
+        ("question_cancelled_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1399,6 +1418,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &AGENT_TODOS_AND_QUESTIONS,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

@@ -38,6 +38,9 @@ pub struct RlmWiring {
     /// Announces every accepted `rlm.progress.note`; `None` keeps the store
     /// the only surface.
     pub progress_note_emit: Option<super::rlm_host::RlmProgressNoteEmit>,
+    /// The embedding's todo/question hub (the daemon worker's, which reaches attached
+    /// clients); `None` builds a headless one whose `ask` answers `no_user` at once.
+    pub interaction: Option<Arc<crate::interaction::InteractionHub>>,
 }
 
 /// The embedding's cron wiring for the kernel's `rlm_heartbeat.*` host
@@ -90,6 +93,8 @@ pub struct SessionKernelWiring {
     /// The child-usage attribution producer the daemon's children
     /// registry drives after the engine is built.
     pub rlm_usage: Arc<super::rlm_usage::RlmChildUsageAttributions>,
+    /// The session's todo list and open question (`todo.*`, `question.*`).
+    pub interaction: Arc<crate::interaction::InteractionHub>,
 }
 
 /// Build the session runtime and register the `goal.*`, `rlm.*`, and —
@@ -150,9 +155,16 @@ pub fn wire_session_runtime(
         runtime.set_cron_mutation_hook(hook);
     }
     let runtime = Arc::new(runtime);
+    // A rebuilt session adopts its branch's persisted todo list into the
+    // embedding's long-lived hub before the kernel can reach it.
+    let interaction = rlm
+        .interaction
+        .unwrap_or_else(crate::interaction::InteractionHub::headless);
+    interaction.adopt_session(&session);
     let session = Arc::new(tokio::sync::Mutex::new(session));
     let mut handlers = HostRequestHandlers::default();
     runtime.register_host_handlers(session.clone(), &mut handlers);
+    interaction.register_host_handlers(&session, &mut handlers);
     let model_registry = rlm.model_registry.unwrap_or_else(|| {
         let auth = crate::auth::AuthStorage::create(agent_dir);
         Arc::new(crate::models::registry::ModelRegistry::create(
@@ -183,6 +195,7 @@ pub fn wire_session_runtime(
         runtime,
         rlm: rlm_bridge,
         rlm_usage,
+        interaction,
     }
 }
 

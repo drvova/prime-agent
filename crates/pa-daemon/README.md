@@ -255,6 +255,13 @@ changed outside the session, and answers `files: {restored, conflicts}` or
 
 The `/usage` page's supervisor arm (`usage_report.rs`, `get_usage`, no session selector): `quotas` reads the stored subscription credentials through pa-core's auth store and fetches each provider's usage endpoint (pa-ai `quota`) concurrently, each under a bounded timeout, with a per-provider cache (5 min, 30 s for a failed card; `forceRefresh` bypasses it; `PRIME_AGENT_QUOTA_BASE_URL` points every origin at one fixture host for end-to-end runs); `spend` aggregates every session file's billed calls (each assistant row's own usage plus the shared billed-row classifier's rows, never the child-attributed aggregate) by local day and provider/model on the blocking pool, cached per file by length and mtime, plus the latest rate-limited (HTTP 429) response per provider from the stream-failure diagnostics.
 
+Kernel todos and questions (`user_interaction`): the worker's `InteractionSurface` over the
+session core — the hub's events framed as `todo_update`/`question_open`/`question_closed`
+session events, availability as "an attached client declared `user_questions`" (attach records
+it, detach and connection release re-check a waiting question) — and the `answer_question`
+command; a closing session cancels the open question.
+
+
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 

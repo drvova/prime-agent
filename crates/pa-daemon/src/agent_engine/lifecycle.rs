@@ -192,6 +192,7 @@ impl AgentSessionEngine {
             auto_compaction_abort: std::sync::Mutex::new(None),
             compaction_summary_sink: std::sync::Mutex::new(None),
             progress_note_emit: std::sync::Mutex::new(None),
+            interaction_hub: std::sync::Mutex::new(None),
             model_refusal_telemetry,
             semantic_identity: std::sync::Mutex::new(None),
         })
@@ -302,6 +303,24 @@ impl AgentSessionEngine {
             .progress_note_emit
             .lock()
             .expect("progress note emit lock") = Some(emit);
+    }
+
+    /// Installs the worker's todo/question hub, threaded into every session
+    /// build.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the hub slot's mutex is poisoned.
+    pub fn set_interaction_hub(&self, hub: Arc<pa_core::interaction::InteractionHub>) {
+        *self.interaction_hub.lock().expect("interaction hub lock") = Some(hub);
+    }
+
+    /// The installed todo/question hub, if a worker installed one.
+    pub(crate) fn interaction_hub(&self) -> Option<Arc<pa_core::interaction::InteractionHub>> {
+        self.interaction_hub
+            .lock()
+            .expect("interaction hub lock")
+            .clone()
     }
 
     /// The stale-row guard's deferred durable write: the terminal row
@@ -1095,6 +1114,7 @@ impl AgentSessionEngine {
             }),
             rlm_usage_store,
             progress_note_emit,
+            interaction: self.interaction_hub(),
             rlm_depth: Some(self.rlm_depth.load(std::sync::atomic::Ordering::Relaxed)),
             factory_child: self
                 .factory_child

@@ -21,6 +21,7 @@ impl AgentView {
             && self.history_search.is_none()
             && self.choice_picker.is_none()
             && self.mcp_view.is_none()
+            && self.question.is_none()
             && self.factory_view.is_none()
             && self.heartbeats_picker.is_none()
             && self.goal_panel.is_none()
@@ -163,6 +164,13 @@ impl AgentView {
                 crate::usage_page::now_ms(),
                 &pa_types::platform::local_civil,
             ));
+            Some(dock)
+        } else if let Some(prompt) = &self.question {
+            // A kernel question waiting for the user replaces the composer; the todo tray
+            // stays above it.
+            let mut dock = crate::todo_panel::render_todo_panel(&self.todos, &self.theme, width);
+            dock.extend(prompt_context);
+            dock.extend(prompt.render(&self.theme, width, self.editor.keybindings()));
             Some(dock)
         } else {
             None

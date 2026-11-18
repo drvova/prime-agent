@@ -226,6 +226,19 @@ impl SessionManager {
         })
     }
 
+    /// The active branch's newest todo list snapshot (the `todo.*` kernel
+    /// requests' persisted state); `None` when the branch never set one.
+    #[must_use]
+    pub fn active_todo_list(&self) -> Option<pa_types::todo::TodoList> {
+        if let Some(window) = &self.window {
+            return window.todo_list().cloned();
+        }
+        self.active_branch_entries()
+            .iter()
+            .rev()
+            .find_map(|entry| crate::interaction::persisted_todo_list(entry))
+    }
+
     /// The branch's newest un-resumed quota park, reachable without
     /// hydration (newest first): the loaded active branch entries first,
     /// then — for a windowed store — the window's pre-boundary metadata.

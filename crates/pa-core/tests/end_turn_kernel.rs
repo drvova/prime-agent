@@ -197,6 +197,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         rlm_subagent_host: None,
         rlm_usage_store: None,
         progress_note_emit: None,
+        interaction: None,
         rlm_depth: None,
         factory_child: false,
         daemonless: true,

@@ -50,6 +50,12 @@ impl Worker {
                 }
                 self.side_questions.start(payload)
             }
+            "answer_question" => {
+                if let Err(response) = self.require_created("answer_question") {
+                    return response;
+                }
+                self.interaction.handle_answer(payload)
+            }
             "abort_side_question" => {
                 if let Err(response) = self.require_created("abort_side_question") {
                     return response;

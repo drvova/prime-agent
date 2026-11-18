@@ -510,6 +510,17 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// `answer_question`: an interactive client's reply to the session's open kernel question
+    /// (`question_open`); a reply for a question that already settled is ignored.
+    AnswerQuestion {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        question_id: String,
+        reply: crate::question::QuestionReply,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     ExecuteBash {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

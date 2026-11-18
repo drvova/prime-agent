@@ -28,6 +28,15 @@ The slash menu: `autocompleteMaxVisible` rows (default 8), each row the `›` ma
 
 The `/usage` page (`usage_page.rs`, `session_ui/usage.rs`): provider quota cards (bars, `used / limit`, each limit's reset as the local clock plus a countdown, the card's source — `from provider` or `observed on last response`) over the local spend history (today / 7 days / 30 days / all time and a 30-day spark), Enter for the details view (full reset dates, fetch ages, per-model and daily spend). It mounts over the editor dock down to the transcript's minimum rows and opens at once over the last fetched data; the daemon's two `get_usage` halves are spawned requests whose replies land through the run loop's channel, each failing on its own card or section. The countdowns repaint only when their text changes (`UsagePage::next_repaint_at_ms` arms the frame deadline). Narrow rows drop, in order, the reset's clock, the bar, the `resets` wording, then truncate; the spend rows drop calls, then tokens. Keys: `app.usage.refresh` (r), `tui.select.confirm` (details), `app.usage.overview` (Tab), `tui.select.cancel` (back/close). The close emits `tui usage page closed` off the key path. The tray reset chip (`limit resets in 1h 2m`, session accent, on the location lane): a settled assistant frame whose `provider_stream_failure` diagnostic is a rate limit (HTTP 429 / `rate_limit`) with `retryAfterMs` arms it for that provider; a later successful frame or the reset passing clears it; it re-derives before each paint and arms the frame deadline at its next label change. In the tray shrink order it outlives the context percent and drops before the model label. Its appearances fold into the next `tui usage page closed` as `reset_chip_shown_count`.
 
+Kernel todos and questions: the todo tray (`todo_panel`: a `Todo done/total` header and
+status-glyph rows above the queued-input strip, with a stated shrink order for narrow widths)
+and the answer prompt (`question_prompt`: the open `question_open` question replaces the
+composer in the shared menu grammar — radio, checkbox, or text-field rows; arrows/Enter,
+`app.question.toggle` (Space) for multi-select, Esc declines, Ctrl+C interrupts the turn), fed
+by `todo_update`/`question_open`/`question_closed` and the attach snapshot; the client declares
+the `user_questions` capability and answers through `answer_question`.
+
+
 ## Non-goals
 No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the pa-daemon worker. It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
 
