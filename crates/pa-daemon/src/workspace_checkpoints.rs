@@ -350,8 +350,9 @@ impl Store {
             .split(|byte| *byte == 0)
             .filter(|field| !field.is_empty())
             .collect();
-        let pairs = fields.chunks_exact(2);
+        let (pairs, _) = fields.as_chunks::<2>();
         Ok(pairs
+            .iter()
             .map(|pair| {
                 (
                     String::from_utf8_lossy(pair[1]).into_owned(),

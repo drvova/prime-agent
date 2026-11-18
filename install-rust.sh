@@ -160,9 +160,31 @@ set -eu
 # the raw repo copy installs out of the box too.
 DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 RELEASE_CHANNEL_DEFAULT="stable"
+# THE DISTRIBUTION KNOBS (rendered by scripts/release/fork_release.py for a
+# side-by-side distribution build; the official copy leaves all three
+# empty, so its asset URLs, prefix, launcher, and daemon socket are exactly
+# the ones described above):
+#   RELEASE_ASSETS_URL_DEFAULT  where the versioned assets live: the tarball
+#                               and SHA256SUMS come from <this>/v<version>/
+#                               (empty = <base>/releases, the R2 layout;
+#                               GitHub Releases serve .../releases/download)
+#   PREFIX_DEFAULT              the default prefix (empty = ~/.local)
+#   VARIANT_NAME                a distribution's own daemon socket
+#                               (prime-agent-<variant>-<uid>, never the
+#                               official prime-agent-rust-<uid>) and its own
+#                               kernel venv (<prefix>/kernel-venv), both pinned
+#                               by the launcher; empty = the official build
+RELEASE_ASSETS_URL_DEFAULT=""
+PREFIX_DEFAULT=""
+VARIANT_NAME=""
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
-PREFIX="${PRIME_AGENT_RUST_PREFIX:-$HOME/.local}"
+PREFIX="${PRIME_AGENT_RUST_PREFIX:-${PREFIX_DEFAULT:-$HOME/.local}}"
+case "$VARIANT_NAME" in
+  "") DAEMON_SOCKET_DIR_NAME="prime-agent-rust" ;;
+  *[!a-z0-9-]*) echo "install-rust.sh: invalid VARIANT_NAME: ${VARIANT_NAME}" >&2; exit 1 ;;
+  *) DAEMON_SOCKET_DIR_NAME="prime-agent-${VARIANT_NAME}" ;;
+esac
 
 die() { echo "install-rust.sh: $1" >&2; exit 1; }
 
@@ -208,6 +230,9 @@ Environment:
   PRIME_AGENT_DOWNLOAD_BASE_URL  the R2-backed download base (the official
                                  domain by default)
   PRIME_AGENT_RELEASE_CHANNEL    stable | beta (stable by default)
+  PRIME_AGENT_RELEASE_ASSETS_URL where the versioned assets live
+                                 (<url>/v<version>/<file>; default
+                                 <download base>/releases)
   PRIME_AGENT_VERSION            pin an exact version (skips the channel
                                  pointer read; the manifest + SHA256SUMS
                                  checks still run)
@@ -864,6 +889,17 @@ case "$BASE_URL" in
 esac
 fi
 BASE_URL="${BASE_URL%/}"
+RELEASE_ASSETS_URL="${PRIME_AGENT_RELEASE_ASSETS_URL:-${RELEASE_ASSETS_URL_DEFAULT:-${BASE_URL}/releases}}"
+RELEASE_ASSETS_URL="${RELEASE_ASSETS_URL%/}"
+if [ "$MODE" = channel ]; then
+case "$RELEASE_ASSETS_URL" in
+  https://*) ;;
+  *)
+    [ "${PRIME_AGENT_ALLOW_HTTP:-}" = "1" ] \
+      || die "the release assets URL must be an https URL: ${RELEASE_ASSETS_URL}"
+    ;;
+esac
+fi
 
 # The channel pointer's one-line body (empty when the read fails).
 read_channel_version() {
@@ -1512,12 +1548,12 @@ done
 fi
 
 # --- the tarball + SHA256SUMS from the versioned release prefix -------------
-RELEASE_PREFIX="releases/v${VERSION#v}"
+RELEASE_PREFIX="v${VERSION#v}"
 step_start "Downloading"
-fetch "${BASE_URL}/${RELEASE_PREFIX}/${asset_name}" "$dl/${asset_name}" 1800 bar \
-  || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
-fetch "${BASE_URL}/${RELEASE_PREFIX}/SHA256SUMS" "$dl/SHA256SUMS" 30 \
-  || die "could not download ${BASE_URL}/${RELEASE_PREFIX}/SHA256SUMS (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
+fetch "${RELEASE_ASSETS_URL}/${RELEASE_PREFIX}/${asset_name}" "$dl/${asset_name}" 1800 bar \
+  || die "could not download ${RELEASE_ASSETS_URL}/${RELEASE_PREFIX}/${asset_name} (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
+fetch "${RELEASE_ASSETS_URL}/${RELEASE_PREFIX}/SHA256SUMS" "$dl/SHA256SUMS" 30 \
+  || die "could not download ${RELEASE_ASSETS_URL}/${RELEASE_PREFIX}/SHA256SUMS (3 attempts${fetch_error:+, last error: $fetch_error}; check the network and re-run)"
 asset="$dl/${asset_name}"
 step_ok "Downloaded" "$(ui_mb "$(wc -c < "$asset" | tr -d ' ')")"
 
@@ -1532,7 +1568,7 @@ step_ok "Downloaded" "$(ui_mb "$(wc -c < "$asset" | tr -d ' ')")"
 # graduation path in RELEASE_SECURITY.md.)
 step_start "Verifying"
 line="$(grep "  ${asset_name}\$" "$dl/SHA256SUMS" || true)"
-[ -n "$line" ] || die "SHA256SUMS in ${RELEASE_PREFIX} has no line for ${asset_name}"
+[ -n "$line" ] || die "SHA256SUMS in ${RELEASE_ASSETS_URL}/${RELEASE_PREFIX} has no line for ${asset_name}"
 sums_sha="${line%% *}"
 if [ -n "$manifest_sha" ]; then
   [ "$sums_sha" = "$manifest_sha" ] \
@@ -1606,12 +1642,12 @@ ts_stop_refused=""
 ts_stop_rust_stopped=""
 windows_stop_summary=""
 ts_socket="${TMPDIR:-/tmp}/prime-agent-$(id -u)/daemon.sock"
-rust_socket="${TMPDIR:-/tmp}/prime-agent-rust-$(id -u)/daemon.sock"
+rust_socket="${TMPDIR:-/tmp}/${DAEMON_SOCKET_DIR_NAME:-prime-agent-rust}-$(id -u)/daemon.sock"
 # The launcher pins /tmp when the TMPDIR path exceeds the non-Linux
 # 103-byte sun_path limit (pa-daemon socket_dir() owns the rule); the
 # stop probe must look where the launcher actually pinned.
 if [ "$OS" != "Linux" ] && [ "$(printf '%s' "$rust_socket" | wc -c)" -gt 103 ]; then
-  rust_socket="/tmp/prime-agent-rust-$(id -u)/daemon.sock"
+  rust_socket="/tmp/${DAEMON_SOCKET_DIR_NAME:-prime-agent-rust}-$(id -u)/daemon.sock"
 fi
 env_socket="${PRIME_AGENT_DAEMON_SOCKET:-}"
 # THE TILDE EXPANSION (the CLI's own spelling: the products' clients
@@ -2528,7 +2564,13 @@ if [ "$WINDOWS" = "yes" ] \
   # shutdown --force") - the installer's context is the scripted one, so
   # --force is the documented non-interactive stop (the daemon's own forced
   # shutdown drains its workers with its internal budgets).
-  if "${share_dir}/${BINARY_NAME}" shutdown --force >/dev/null 2>&1; then
+  # A distribution build's daemon listens on its own pipe (the launcher's
+  # pin below); the stop must reach that one, never the official daemon.
+  stop_endpoint="${PRIME_AGENT_DAEMON_SOCKET:-}"
+  if [ -z "$stop_endpoint" ] && [ -n "${VARIANT_NAME:-}" ]; then
+    stop_endpoint='\\.\pipe\'"${DAEMON_SOCKET_DIR_NAME}-daemon"
+  fi
+  if PRIME_AGENT_DAEMON_SOCKET="$stop_endpoint" "${share_dir}/${BINARY_NAME}" shutdown --force >/dev/null 2>&1; then
     windows_stop_summary="daemon: stopped cleanly for this update (the forced shutdown request, the scripted non-interactive form)"
     say "the running daemon was shut down (the next invocation boots the new one)"
   else
@@ -2867,6 +2909,31 @@ fi
 exec "$(dirname "$0")/../share/prime-agent/prime-agent" "$@"
 EOF
 fi
+# THE DISTRIBUTION PINS (VARIANT_NAME set): the launcher keeps the official
+# text and gains two pins — its own daemon socket (the official pin's
+# directory renamed, so the two builds never share a live daemon) and its
+# own kernel venv under the prefix (each build's readiness probe matches
+# its own runtime, so switching builds never rebuilds a shared venv). Both
+# honor an explicit env value, like the official pins.
+if [ -n "${VARIANT_NAME:-}" ]; then
+  variant_prefix="$(cd "$PREFIX" && pwd -P)"
+  # The payload is a native Windows exe: it reads the venv path in the
+  # drive spelling (C:/...), never the MSYS one (/c/...).
+  if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
+    variant_prefix="$(cygpath -m "$variant_prefix")"
+  fi
+  variant_venv="$(printf '%s' "${variant_prefix}/kernel-venv" | sed "s/'/'\\\\''/g")"
+  variant_line="[ -n \"\${PRIME_AGENT_KERNEL_VENV:-}\" ] || PRIME_AGENT_KERNEL_VENV='${variant_venv}'; export PRIME_AGENT_KERNEL_VENV"
+  if [ "$WINDOWS" = "yes" ]; then
+    variant_line="${variant_line}
+[ -n \"\${PRIME_AGENT_DAEMON_SOCKET:-}\" ] || PRIME_AGENT_DAEMON_SOCKET='\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon'; export PRIME_AGENT_DAEMON_SOCKET"
+  fi
+  VARIANT_LINE="$variant_line" awk -v from="prime-agent-rust-" -v to="${DAEMON_SOCKET_DIR_NAME}-" '
+    { while ((i = index($0, from)) > 0) { $0 = substr($0, 1, i - 1) to substr($0, i + length(from)) } print }
+    /^export PRIME_AGENT_CODING_AGENT_DIR=/ { print ENVIRON["VARIANT_LINE"] }
+  ' "$launcher_tmp" > "${launcher_tmp}.variant"
+  mv -f "${launcher_tmp}.variant" "$launcher_tmp"
+fi
 chmod 0755 "$launcher_tmp"
 if [ "$preserve_npm_launcher" = yes ]; then
   # Probing the public bridge while it holds its migration lock would
@@ -2904,6 +2971,15 @@ rem prime-agent - launcher written by install-rust.sh.
 if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%USERPROFILE%\.prime\agent"
 "%~dp0..\share\prime-agent\prime-agent.exe" %*
 EOF
+  if [ -n "${VARIANT_NAME:-}" ]; then
+    # The same distribution pins as the sh launcher, in cmd syntax.
+    cmd_venv="$(cygpath -w "${variant_prefix}/kernel-venv" 2>/dev/null || printf '%s' "${variant_prefix}/kernel-venv")"
+    CMD_PINS="if not defined PRIME_AGENT_KERNEL_VENV set \"PRIME_AGENT_KERNEL_VENV=${cmd_venv}\"
+if not defined PRIME_AGENT_DAEMON_SOCKET set \"PRIME_AGENT_DAEMON_SOCKET=\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon\"" \
+      awk '{ print } /^if not defined PRIME_AGENT_CODING_AGENT_DIR / { print ENVIRON["CMD_PINS"] }' \
+      "$cmd_tmp" > "${cmd_tmp}.variant"
+    mv -f "${cmd_tmp}.variant" "$cmd_tmp"
+  fi
   mv -f "$cmd_tmp" "$cmd_launcher"
   # The takeover stands for the .cmd twin too: the preserved aside slot is
   # NOT restored on the success path (the EXIT trap restores only what a
