@@ -1287,3 +1287,61 @@ fn the_tray_degrades_in_its_shrink_order() {
         ]
     );
 }
+
+/// The rate-limit reset chip rides the location lane in the session accent; at narrow widths it
+/// outlives the context percent and drops before the model label.
+#[test]
+fn the_reset_chip_renders_and_drops_before_the_model() {
+    let state = |chip: Option<&str>| ChromeState {
+        show_manage: true,
+        chat_name: "fix-login".to_string(),
+        context: Some(ContextUsage {
+            tokens: 50_000,
+            context_window: 200_000,
+        }),
+        model_id: Some("claude-sonnet-4-5".to_string()),
+        reset_chip: chip.map(str::to_string),
+        ..Default::default()
+    };
+    let row = |chip: Option<&str>, width: usize| {
+        let line = render_tray(&state(chip), &theme(), width);
+        let text: String = line.iter().map(|s| s.content.as_str()).collect();
+        assert!(str_width(&text) <= width, "{width}: {text}");
+        text.chars()
+            .filter(|c| !matches!(c, '\u{2501}' | '\u{2500}' | '\u{2503}'))
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let chip = Some("limit resets in 1h 2m");
+    assert_eq!(
+        [
+            row(None, 80),
+            row(chip, 80),
+            row(None, 44),
+            row(chip, 44),
+            row(chip, 30)
+        ],
+        [
+            "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5",
+            "\u{2190} manage limit resets in 1h 2m 50k/200k 25% \u{b7} claude-sonnet-4-5",
+            "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5",
+            // 44: the `manage` word and the context label go first; the chip stays with the model.
+            "\u{2190} limit resets in 1h 2m claude-sonnet-4-5",
+            // 30: the chip goes before the model.
+            "\u{2190} claude-sonnet-4-5",
+        ]
+        .map(str::to_string)
+    );
+    let line = render_tray(&state(chip), &theme(), 80);
+    let chip_span = line
+        .iter()
+        .find(|span| span.content == "limit resets in 1h 2m")
+        .expect("the chip renders as one span");
+    assert_eq!(
+        chip_span.style,
+        session_accent("fix-login", &theme()),
+        "the chip wears the session accent"
+    );
+}

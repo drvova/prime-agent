@@ -52,7 +52,10 @@ pub enum StoredPrimeTeam {
     Team(PrimeTeamCredential),
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One auth.json credential. `Debug` redacts every secret field (keys,
+/// tokens, refresh values): a credential reaches a log or an error chain
+/// only by its shape.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AuthCredential {
     #[serde(rename = "api_key")]
@@ -118,6 +121,91 @@ pub enum AuthCredential {
         )]
         audience_mode: Option<String>,
     },
+    /// Long-lived credentials a provider's `token-exchange` auth descriptor
+    /// (the models.json provider `auth` block) trades for a short-lived
+    /// token before inference calls. `access`/`expires` cache the last
+    /// exchanged token the way `oauth` persists its access token: both are
+    /// absent until the first exchange and after a provider rejection
+    /// invalidates the cache.
+    #[serde(rename = "token_exchange")]
+    TokenExchange {
+        refresh: String,
+        #[serde(rename = "accountId", default, skip_serializing_if = "Option::is_none")]
+        account_id: Option<String>,
+        #[serde(rename = "orgId", default, skip_serializing_if = "Option::is_none")]
+        org_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        access: Option<String>,
+        /// Epoch milliseconds the cached `access` expires at; `None` serves
+        /// it until the provider rejects it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expires: Option<i64>,
+    },
+}
+
+/// The marker `Debug` prints in place of a secret value.
+const REDACTED: &str = "<redacted>";
+
+impl std::fmt::Debug for AuthCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // An optional secret shows whether it is set, never its value.
+        let optional = |secret: &Option<String>| secret.as_ref().map(|_| REDACTED);
+        match self {
+            AuthCredential::ApiKey { key: _, prime_team } => f
+                .debug_struct("ApiKey")
+                .field("key", &REDACTED)
+                .field("prime_team", prime_team)
+                .finish(),
+            AuthCredential::McpStaticToken {
+                bearer: _,
+                endpoint,
+            } => f
+                .debug_struct("McpStaticToken")
+                .field("bearer", &REDACTED)
+                .field("endpoint", endpoint)
+                .finish(),
+            AuthCredential::Oauth {
+                access: _,
+                refresh,
+                expires,
+                account_id,
+                enterprise_url,
+                endpoint,
+                token_endpoint,
+                client_id,
+                resource,
+                issuer,
+                audience_mode,
+            } => f
+                .debug_struct("Oauth")
+                .field("access", &REDACTED)
+                .field("refresh", &optional(refresh))
+                .field("expires", expires)
+                .field("account_id", account_id)
+                .field("enterprise_url", enterprise_url)
+                .field("endpoint", endpoint)
+                .field("token_endpoint", token_endpoint)
+                .field("client_id", client_id)
+                .field("resource", resource)
+                .field("issuer", issuer)
+                .field("audience_mode", audience_mode)
+                .finish(),
+            AuthCredential::TokenExchange {
+                refresh: _,
+                account_id,
+                org_id,
+                access,
+                expires,
+            } => f
+                .debug_struct("TokenExchange")
+                .field("refresh", &REDACTED)
+                .field("account_id", account_id)
+                .field("org_id", org_id)
+                .field("access", &optional(access))
+                .field("expires", expires)
+                .finish(),
+        }
+    }
 }
 
 impl AuthCredential {
@@ -127,6 +215,7 @@ impl AuthCredential {
             AuthCredential::ApiKey { .. } => "api_key",
             AuthCredential::McpStaticToken { .. } => "mcp_static_token",
             AuthCredential::Oauth { .. } => "oauth",
+            AuthCredential::TokenExchange { .. } => "token_exchange",
         }
     }
 }

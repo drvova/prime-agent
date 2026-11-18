@@ -18,6 +18,7 @@ pub use anthropic::{
     LOGIN_CANCELLED as ANTHROPIC_LOGIN_CANCELLED,
 };
 pub use callback::CodexCallbackServer;
+pub(crate) use github_copilot::COPILOT_CLIENT_HEADERS;
 pub use github_copilot::{
     get_github_copilot_base_url, login_github_copilot, refresh_github_copilot_token,
     CopilotCredentials, LOGIN_CANCELLED as COPILOT_LOGIN_CANCELLED,

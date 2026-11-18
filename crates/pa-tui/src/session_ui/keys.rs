@@ -92,6 +92,7 @@ impl SessionUi {
             || view.goal_panel.is_some()
             || view.bash_view.is_some()
             || view.info_panel.is_some()
+            || view.usage_page.is_some()
             || view.tree_selector.is_some()
             || view.fork_selector.is_some()
             || view.share_loader.is_some()
@@ -418,6 +419,10 @@ impl SessionUi {
         }
         if view.info_panel.is_some() {
             return self.handle_info_panel_key(key, view);
+        }
+        if view.usage_page.is_some() {
+            self.handle_usage_page_key(key, view);
+            return Ok(());
         }
         if view.tree_selector.is_some() {
             return self.handle_tree_selector_key(key, view).await;

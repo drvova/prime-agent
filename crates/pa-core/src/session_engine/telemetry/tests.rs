@@ -110,6 +110,7 @@ fn fixture_with_clock(clock: TestClock) -> Fixture {
         telemetry_enabled: None,
         recording: true,
         now,
+        auth_baseline: crate::auth::resolver::AuthMetrics::current(),
     }));
     Fixture {
         client,
@@ -1247,6 +1248,7 @@ fn fixture_with_switch(telemetry_enabled: Arc<dyn Fn() -> bool + Send + Sync>) -
         telemetry_enabled: Some(RecordingSwitch::test(telemetry_enabled)),
         recording: true,
         now,
+        auth_baseline: crate::auth::resolver::AuthMetrics::current(),
     }));
     Fixture {
         client,

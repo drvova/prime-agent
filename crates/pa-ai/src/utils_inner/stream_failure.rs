@@ -678,8 +678,8 @@ pub fn truncate_raw_payload(raw: &str) -> String {
 }
 
 mod http_retry;
-use http_retry::header_value;
 pub(crate) use http_retry::parse_retry_after_ms;
+use http_retry::{header_value, parse_rate_limit_reset_ms};
 
 struct ExtractedParts {
     info: StreamFailureInfo,
@@ -718,10 +718,17 @@ fn extract_parts_from_http(error: &ProviderHttpError) -> ExtractedParts {
     let header_request_id = header_value(&error.headers, "request-id")
         .or_else(|| header_value(&error.headers, "x-request-id"));
     let request_id = error.request_id.clone().or(header_request_id);
-    // An error-resolved wait (Retry-After vs resets_at maximum) overrides the raw header.
+    // An error-resolved wait (Retry-After vs resets_at maximum) overrides the raw header; a 429
+    // without `Retry-After` falls back to the common `x-ratelimit-reset*` headers, so the retry
+    // policy honors (or parks on) the server's reset instead of guessing.
     let retry_after_ms = error
         .retry_after_ms
-        .or_else(|| parse_retry_after_ms(&error.headers));
+        .or_else(|| parse_retry_after_ms(&error.headers))
+        .or_else(|| {
+            (error.status == Some(429))
+                .then(|| parse_rate_limit_reset_ms(&error.headers))
+                .flatten()
+        });
 
     // The SDK error's own `code` and then its class `name` stand in for the provider error type
     // when the body carries none (TS `extractStreamFailureParts`).

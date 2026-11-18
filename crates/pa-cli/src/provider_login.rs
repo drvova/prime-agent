@@ -122,9 +122,9 @@ fn status_indicator(
     }
     if let Some(credential) = credential {
         let credential_type = match credential {
-            AuthCredential::ApiKey { .. } | AuthCredential::McpStaticToken { .. } => {
-                AuthType::ApiKey
-            }
+            AuthCredential::ApiKey { .. }
+            | AuthCredential::McpStaticToken { .. }
+            | AuthCredential::TokenExchange { .. } => AuthType::ApiKey,
             AuthCredential::Oauth { .. } => AuthType::Oauth,
         };
         return Some(if credential_type == auth_type {
@@ -412,9 +412,9 @@ impl ProviderAuth {
                 continue;
             };
             let auth_type = match credential {
-                AuthCredential::ApiKey { .. } | AuthCredential::McpStaticToken { .. } => {
-                    AuthType::ApiKey
-                }
+                AuthCredential::ApiKey { .. }
+                | AuthCredential::McpStaticToken { .. }
+                | AuthCredential::TokenExchange { .. } => AuthType::ApiKey,
                 AuthCredential::Oauth { .. } => AuthType::Oauth,
             };
             let api_key_label = pa_core::mcp::API_KEY_CREDENTIALS

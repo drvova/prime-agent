@@ -209,6 +209,10 @@ pub const TOOL_CATEGORIES: &[&str] = &[
     "read", "write", "edit", "bash", "grep", "find", "ls", "ipython", "mcp", "custom", "unknown",
 ];
 
+/// How a provider auth descriptor resolved the session's request
+/// credentials (`agent session ended` `auth_strategy`).
+pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "unknown"];
+
 pub const TERMINAL_OUTCOMES: &[&str] = &[
     "success",
     "error",
@@ -701,6 +705,15 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("web_search_keyless_count", optional(count())),
         ("web_search_result_count", optional(count())),
         ("web_search_max_ms", optional(duration())),
+        // Provider auth descriptors (strategy and counters only: never a
+        // provider, URL, account, or token).
+        (
+            "auth_strategy",
+            optional(enum_rule(AUTH_STRATEGIES, "unknown")),
+        ),
+        ("auth_token_exchange_count", optional(count())),
+        ("auth_refresh_failed_count", optional(count())),
+        ("auth_rejected_retry_count", optional(count())),
         ("feature_model_initiated_count", optional(count())),
         ("feature_model_completed_count", optional(count())),
         ("feature_model_failed_count", optional(count())),
@@ -1034,6 +1047,35 @@ const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
+/// history), the card count, whether the details view opened, the refreshes, and the tray's
+/// rate-limit reset chips shown since the last close. Standalone
+/// because `tui exit` sits at the backend's 128-key cap. Never an account, an amount, or a URL.
+const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
+    name: "tui usage page closed",
+    since: 2,
+    properties: &[
+        ("provider_count", required(count())),
+        (
+            "quotas",
+            required(enum_rule(
+                &["loaded", "partial", "failed", "empty", "loading"],
+                "loading",
+            )),
+        ),
+        (
+            "spend",
+            required(enum_rule(
+                &["loaded", "failed", "empty", "loading"],
+                "loading",
+            )),
+        ),
+        ("details_opened", required(boolean())),
+        ("refresh_count", required(count())),
+        ("reset_chip_shown_count", required(count())),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1351,6 +1393,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_EXIT,
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
+        &TUI_USAGE_PAGE_CLOSED,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

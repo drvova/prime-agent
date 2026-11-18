@@ -176,7 +176,9 @@ impl crate::auth::OAuthIntegration for ProviderOAuth {
     fn api_key_for(&self, _provider: &str, credential: &AuthCredential) -> Option<String> {
         match credential {
             AuthCredential::Oauth { access, .. } => Some(access.clone()),
-            AuthCredential::ApiKey { .. } | AuthCredential::McpStaticToken { .. } => None,
+            AuthCredential::ApiKey { .. }
+            | AuthCredential::McpStaticToken { .. }
+            | AuthCredential::TokenExchange { .. } => None,
         }
     }
 

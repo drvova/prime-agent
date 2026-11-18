@@ -1,0 +1,9 @@
+{
+  "copilot_plan": "individual",
+  "quota_reset_date": "2026-12-01",
+  "quota_snapshots": {
+    "chat": { "entitlement": 0, "overage_count": 0, "overage_permitted": false, "percent_remaining": 100, "quota_id": "chat", "quota_remaining": 0, "remaining": 0, "unlimited": true },
+    "completions": { "entitlement": 0, "overage_count": 0, "overage_permitted": false, "percent_remaining": 100, "quota_id": "completions", "quota_remaining": 0, "remaining": 0, "unlimited": true },
+    "premium_interactions": { "entitlement": 300, "overage_count": 0, "overage_permitted": false, "percent_remaining": 70.7, "quota_id": "premium_interactions", "quota_remaining": 212, "remaining": 212, "unlimited": false }
+  }
+}

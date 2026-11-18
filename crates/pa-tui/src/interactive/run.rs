@@ -10,6 +10,7 @@ use super::{
     SESSION_RECONNECT_ATTEMPT_TIMEOUT_S, TELEMETRY_EXIT_TIMEOUT_MS,
 };
 use crate::suspend::SuspendTerminal;
+use crate::usage_page::UsagePage;
 use anyhow::Context;
 
 /// Headless-only bound on the exit gate after [`UiInput::HeadlessDone`]: a settle member that never
@@ -269,6 +270,8 @@ async fn run_interactive_surface(
     // The turn-end stats refresh reports here: the request runs off the loop, so a slow or
     // silent daemon never holds a keystroke or a paint behind it.
     let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsUpdate>();
+    // The `/usage` page's halves land here, never ahead of a frame.
+    let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<crate::session_ui::UsageUpdate>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -408,6 +411,7 @@ async fn run_interactive_surface(
         let thinking_tx = thinking_tx.clone();
         let page_tx = page_tx.clone();
         let stats_tx = stats_tx.clone();
+        let usage_tx = usage_tx.clone();
         let waits_through_update_restart = !matches!(route, SessionOpenRoute::Cli);
         tokio::spawn(async move {
             crate::update_restart_wait::wait_through_update_restart(
@@ -438,6 +442,7 @@ async fn run_interactive_surface(
                     let thinking_tx = thinking_tx.clone();
                     let page_tx = page_tx.clone();
                     let stats_tx = stats_tx.clone();
+                    let usage_tx = usage_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -466,6 +471,7 @@ async fn run_interactive_surface(
                                 commands: commands_tx,
                                 thinking: thinking_tx,
                                 stats: stats_tx,
+                                usage: usage_tx,
                             },
                             page_tx,
                         )
@@ -1399,6 +1405,22 @@ async fn run_interactive_surface(
                 render_deadline = Some(expiry);
             }
         }
+        // An open `/usage` page and the tray's reset chip wake only when a countdown's text
+        // changes: no periodic repaint.
+        let usage_wake = view
+            .usage_page
+            .as_ref()
+            .and_then(UsagePage::repaint_deadline);
+        if let Some(at) = usage_wake
+            .into_iter()
+            .chain(session.reset_chip_deadline(&view))
+            .min()
+        {
+            session.dirty |= at <= Instant::now();
+            if render_deadline.is_none_or(|armed| at < armed) {
+                render_deadline = Some(at);
+            }
+        }
         // The animating loader's next phase boundary: every paint clears
         // the deadline it satisfied, and the boundary is the only wake a
         // quiet turn has between stream events (a running tool, a
@@ -1556,6 +1578,11 @@ async fn run_interactive_surface(
             maybe_stats = stats_rx.recv() => {
                 if let Some(update) = maybe_stats {
                     session.apply_stats_update(update, &mut view);
+                }
+            }
+            maybe_usage = usage_rx.recv() => {
+                if let Some(update) = maybe_usage {
+                    session.apply_usage_update(update, &mut view);
                 }
             }
             maybe_page = page_rx.recv() => {
@@ -1880,6 +1907,7 @@ async fn run_interactive_surface(
         // after the select, right before the paint — because a loop-top refresh goes stale across
         // the select's sleep: the expiry wake would repaint the hint with the pre-sleep value.
         view.chrome.tray_override = session.tray_override(&view);
+        session.refresh_reset_chip(&mut view, crate::usage_page::now_ms());
 
         // The frame gate: at most one render per MIN_RENDER_INTERVAL_MS — every state change inside
         // the window coalesces into the next frame (a stream burst renders at most one frame per

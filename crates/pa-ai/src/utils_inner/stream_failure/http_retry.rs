@@ -48,6 +48,79 @@ pub fn parse_retry_after_ms<S: std::hash::BuildHasher>(
     }
 }
 
+/// The rate-limit reset headers a 429 without `Retry-After` falls back to.
+const RATE_LIMIT_RESET_HEADERS: [&str; 3] = [
+    "x-ratelimit-reset",
+    "x-ratelimit-reset-requests",
+    "x-ratelimit-reset-tokens",
+];
+
+/// Parse the common `x-ratelimit-reset*` headers into a millisecond wait: the latest reset wins
+/// (every exhausted limit must reset before a retry can pass). A value is a duration
+/// (`1m30s`, `250ms`, `6m0s`), plain seconds, or an epoch timestamp (values at or above 10^12 are
+/// epoch milliseconds, at or above 10^9 epoch seconds; the wait is the delta to now).
+#[must_use]
+pub fn parse_rate_limit_reset_ms<S: std::hash::BuildHasher>(
+    headers: &std::collections::HashMap<String, String, S>,
+) -> Option<u64> {
+    RATE_LIMIT_RESET_HEADERS
+        .iter()
+        .filter_map(|name| header_value(headers, name))
+        .filter_map(|raw| {
+            let raw = raw.trim();
+            match raw.parse::<f64>() {
+                Ok(number) if number.is_finite() && number >= 0.0 => {
+                    // Epoch millis fit i64; the max(0) floor keeps the delta non-negative.
+                    #[allow(clippy::cast_possible_wrap)]
+                    let now = now_ms() as i64;
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let wait = if number >= 1e12 {
+                        (number as i64 - now).max(0) as u64
+                    } else if number >= 1e9 {
+                        ((number * 1000.0) as i64 - now).max(0) as u64
+                    } else {
+                        (number * 1000.0) as u64
+                    };
+                    Some(wait)
+                }
+                Ok(_) => None,
+                Err(_) => parse_duration_ms(raw),
+            }
+        })
+        .max()
+}
+
+/// A Go-style duration (`1h2m3.5s`, `250ms`, `6m0s`) in milliseconds.
+fn parse_duration_ms(raw: &str) -> Option<u64> {
+    let mut total = 0.0_f64;
+    let mut rest = raw;
+    if rest.is_empty() {
+        return None;
+    }
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .filter(|&end| end > 0)?;
+        let amount: f64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit_end = rest
+            .find(|c: char| c.is_ascii_digit() || c == '.')
+            .unwrap_or(rest.len());
+        let scale = match &rest[..unit_end] {
+            "h" => 3_600_000.0,
+            "m" => 60_000.0,
+            "s" => 1000.0,
+            "ms" => 1.0,
+            _ => return None,
+        };
+        total += amount * scale;
+        rest = &rest[unit_end..];
+    }
+    // A parsed duration is finite and non-negative; u64 ms is the wait's unit.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some(total as u64)
+}
+
 fn parse_http_date(raw: &str) -> Option<i64> {
     // Minimal IMF-fixdate parser: "Sun, 06 Nov 1994 08:49:37 GMT".
     let parts: Vec<&str> = raw.split_whitespace().collect();

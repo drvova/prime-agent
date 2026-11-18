@@ -13,7 +13,7 @@ pub mod windows_console;
 #[cfg(windows)]
 pub(crate) mod windows_pipe;
 
-pub use clock::local_clock;
+pub use clock::{local_civil, local_clock, LocalCivil};
 pub use dirs::{agent_dir, home_dir};
 pub use identity::socket_identity;
 pub use process::{
