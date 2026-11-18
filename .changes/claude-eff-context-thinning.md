@@ -1,0 +1,1 @@
+- Long sessions replay older large tool results as a short head and tail with a recall pointer once the context passes 65% of the window (`contextThinning` setting), cutting per-turn request size and deferring compaction; `rlm.session.tool_result(id)` reads the full output back.

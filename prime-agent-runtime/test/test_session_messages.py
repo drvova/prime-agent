@@ -104,6 +104,42 @@ class SessionMessagesTest(unittest.TestCase):
         )
         self.assertEqual(reads, [{"returned": 1, "first": 4, "total": 5, "roles": ["*"], "agent": "worker-a"}])
 
+    def test_tool_result_reads_the_host_row_then_pages_the_transcript(self) -> None:
+        loaded = FakeHost({"found": True, "toolName": "python_repl", "isError": False, "text": "full output"})
+
+        text, _ = run(loaded, lambda session: session.tool_result("call-7"))
+
+        self.assertEqual(text, "full output")
+        self.assertEqual(loaded.requests, [("rlm.session.tool_result", {"toolCallId": "call-7"})])
+
+        compacted = {"role": "toolResult", "toolCallId": "call-1", "content": [{"type": "text", "text": "old"}]}
+        newer = {"role": "toolResult", "toolCallId": "call-2", "content": [{"type": "text", "text": "new"}]}
+        replies = iter(
+            [
+                {"found": False},
+                {"messages": [], "total": 2},
+                {"messages": [{"index": 0, "id": "e1", "message": compacted}, {"index": 1, "id": "e2", "message": newer}], "total": 2},
+            ]
+        )
+        requests: list[tuple[str, dict]] = []
+
+        async def paging_host(request_type: str, payload: dict) -> dict:
+            requests.append((request_type, payload))
+            return next(replies)
+
+        with patch.object(rlm_module, "host_request", paging_host):
+            text = asyncio.run(rlm_module.rlm.session.tool_result("call-1"))
+
+        self.assertEqual(text, "old")
+        self.assertEqual(
+            requests,
+            [
+                ("rlm.session.tool_result", {"toolCallId": "call-1"}),
+                ("rlm.session.messages", {"start": 0, "limit": 0, "roles": ["toolResult"]}),
+                ("rlm.session.messages", {"start": 0, "limit": 2, "roles": ["toolResult"]}),
+            ],
+        )
+
     def test_negative_limit_is_rejected(self) -> None:
         host = FakeHost({"messages": [], "total": 0})
 

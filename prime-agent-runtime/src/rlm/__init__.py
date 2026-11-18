@@ -771,6 +771,32 @@ class _RLMSessionNamespace:
         reply = await _read_transcript(0, 0, _roles(role), agent)
         return reply["total"]
 
+    async def tool_result(self, tool_call_id: str) -> str:
+        """Return one tool result's full text by its tool call id.
+
+        This is the recall path a thinned result's pointer names: the request
+        view replays aged results as a head and tail, the stored transcript
+        keeps them whole. A row the host has not loaded (compacted away in a
+        windowed session) is found by paging the transcript's tool results,
+        newest first.
+        """
+        reply = await host_request("rlm.session.tool_result", {"toolCallId": tool_call_id})
+        if reply["found"]:
+            return reply["text"]
+        end = (await _read_transcript(0, 0, ["toolResult"], None))["total"]
+        while end > 0:
+            start = max(0, end - _TOOL_RESULT_PAGE)
+            page = await _read_transcript(start, end - start, ["toolResult"], None)
+            for row in reversed(page["messages"]):
+                if row["message"].get("toolCallId") == tool_call_id:
+                    return _message_text(row["message"])
+            end = start
+        raise KeyError(f"no tool result with id {tool_call_id!r} in this session")
+
+
+# Transcript rows `tool_result` reads per page when it falls back to paging.
+_TOOL_RESULT_PAGE = 50
+
 
 async def _read_transcript(
     start: int, limit: int, roles: list[str], agent: str | RLMSpawnHandle | RLMSubagent | None

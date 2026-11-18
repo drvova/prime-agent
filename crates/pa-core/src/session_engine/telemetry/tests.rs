@@ -606,6 +606,45 @@ async fn web_searches_fold_into_session_ended_without_the_query() {
     assert!(!all.contains("private"));
 }
 
+/// Thinned request views fold into `agent session ended` as counts and
+/// sizes only; the session's sum over every thinning request.
+#[tokio::test]
+async fn context_thinning_folds_into_session_ended() {
+    use crate::session_engine::context_thinning::ThinningStats;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_context_thinning(&ThinningStats {
+        thinned_results: 3,
+        chars_saved: 40_001,
+    });
+    counters.note_context_thinning(&ThinningStats {
+        thinned_results: 5,
+        chars_saved: 60_000,
+    });
+    telemetry.end().await.unwrap();
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    let thinning: serde_json::Map<String, serde_json::Value> = ended
+        .iter()
+        .filter(|(key, _)| key.starts_with("context_thinned"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(thinning),
+        serde_json::json!({
+            "context_thinned_request_count": 2,
+            "context_thinned_result_count": 8,
+            "context_thinned_chars_saved": 100_001,
+            "context_thinned_tokens_saved": 25_001,
+        })
+    );
+}
+
 /// `build_client` reuses the installation id a TS install wrote to
 /// `telemetry.json` (one user across both products) and mirrors events to
 /// the local JSONL file under that id.
