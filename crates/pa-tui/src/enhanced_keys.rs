@@ -269,6 +269,15 @@ pub(crate) fn enable(out: &mut Stdout) -> Result<()> {
     // A new surface mount re-arms probing: the exit standdown covers only the
     // dying surface's window, not every later surface of the same process.
     EXIT_RELEASE.store(false, Ordering::SeqCst);
+    if cfg!(windows) {
+        // The console host turns the terminal's VT input into key records and cannot deliver
+        // what these modes would send back: paste markers arrive stripped (a paste is a record
+        // burst, which the reader's `BurstCoalescer` joins), and a CSI-u key or an unknown reply
+        // arrives as one vk=0 record per character. Native records already carry Shift+Enter's
+        // modifier, so no mode is written and the kitty probe settles unsupported.
+        KITTY_PROBED.store(true, Ordering::SeqCst);
+        return Ok(());
+    }
     if !BRACKETED_PASTE_ACTIVE.swap(true, Ordering::SeqCst) {
         write_all(out, ENABLE_BRACKETED_PASTE)?;
     }
@@ -333,7 +342,8 @@ pub(crate) fn enable(out: &mut Stdout) -> Result<()> {
 
 /// Disable the enhanced-key modes for a surface teardown or suspend.
 pub(crate) fn disable(out: &mut Stdout) -> Result<()> {
-    if !out.is_terminal() {
+    // Windows never enabled a mode (see `enable`).
+    if !out.is_terminal() || cfg!(windows) {
         return Ok(());
     }
     let _modes = lock_modes();
@@ -456,6 +466,10 @@ fn enhanced_keys_active() -> bool {
 /// Disable the keyboard-protocol modes (both `drain` variants disable them
 /// first); bracketed paste stays on — TS `drainInput` leaves it to `stop`.
 fn disable_keyboard_modes(out: &mut Stdout) {
+    // Windows never enabled a mode (see `enable`).
+    if cfg!(windows) {
+        return;
+    }
     let _modes = lock_modes();
     if KITTY_ACTIVE.swap(false, Ordering::SeqCst) {
         let _ = write_all(out, POP_KITTY_FLAGS);
@@ -505,7 +519,8 @@ fn enable_kitty(out: &mut Stdout) {
 /// the relay's accounting keeps the writes; the bare pops are clamped
 /// no-ops at spec depth zero, so a clean terminal sees nothing change.
 pub(crate) fn pop_stale_levels(out: &mut Stdout) {
-    if !out.is_terminal() {
+    // Windows never pushes the flags (see `enable`).
+    if !out.is_terminal() || cfg!(windows) {
         return;
     }
     let _modes = lock_modes();

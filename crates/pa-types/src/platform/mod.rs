@@ -24,4 +24,4 @@ pub use transport::{
     bind_transport, connect_blocking, connect_transport, BlockingTransportStream,
     TransportListener, TransportStream,
 };
-pub use windows_console::{init as console_init, restore as console_restore};
+pub use windows_console::{init as console_init, restore as console_restore, stdin_is_msys_pty};

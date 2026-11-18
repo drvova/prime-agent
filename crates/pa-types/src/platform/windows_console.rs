@@ -27,6 +27,8 @@ mod winapi {
 
     /// `winbase.h` `STD_OUTPUT_HANDLE`: the console output handle.
     const STD_OUTPUT_HANDLE: i32 = -11;
+    /// `winbase.h` `STD_INPUT_HANDLE`: the console input handle.
+    const STD_INPUT_HANDLE: i32 = -10;
     /// `wincon.h` `ENABLE_VIRTUAL_TERMINAL_PROCESSING`: the console's VT
     /// parsing bit (0x4).
     const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
@@ -48,9 +50,14 @@ mod winapi {
         unsafe { GetStdHandle(STD_OUTPUT_HANDLE) }
     }
 
-    /// The output handle's console mode; `None` when the handle is not a
+    /// The process's standard input handle, null when none.
+    pub(crate) fn stdin_handle() -> Handle {
+        unsafe { GetStdHandle(STD_INPUT_HANDLE) }
+    }
+
+    /// The handle's console mode; `None` when the handle is not a
     /// console (a redirect/pipe) - the console gate.
-    pub(crate) fn output_mode(handle: Handle) -> Option<u32> {
+    pub(crate) fn console_mode(handle: Handle) -> Option<u32> {
         let mut mode = 0;
         let ok = unsafe { GetConsoleMode(handle, std::ptr::from_mut(&mut mode)) };
         (ok != 0).then_some(mode)
@@ -81,13 +88,30 @@ pub fn init() {
     #[cfg(windows)]
     {
         let handle = winapi::stdout_handle();
-        let Some(original_mode) = winapi::output_mode(handle) else {
+        let Some(original_mode) = winapi::console_mode(handle) else {
             return;
         };
         let _ = ORIGINAL.set(OriginalConsole {
             output_mode: original_mode,
         });
         let _ = winapi::set_output_mode(handle, original_mode | winapi::enable_vt());
+    }
+}
+
+/// Whether stdin is a terminal the Windows console cannot read: an MSYS or Cygwin pty pipe, which
+/// is what Git Bash's mintty hands a program when it runs without `ConPTY`. `IsTerminal` reports
+/// such a pipe as a terminal, but the TUI reads key records from the console, which mintty never
+/// writes to. Always `false` off Windows.
+#[must_use]
+pub fn stdin_is_msys_pty() -> bool {
+    #[cfg(windows)]
+    {
+        use std::io::IsTerminal;
+        std::io::stdin().is_terminal() && winapi::console_mode(winapi::stdin_handle()).is_none()
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -100,7 +124,7 @@ pub fn restore() {
             return;
         };
         let handle = winapi::stdout_handle();
-        let Some(current) = winapi::output_mode(handle) else {
+        let Some(current) = winapi::console_mode(handle) else {
             return;
         };
         if current & winapi::enable_vt() != 0 && original.output_mode & winapi::enable_vt() == 0 {
@@ -131,7 +155,7 @@ mod windows_tests {
     #[test]
     fn init_preserves_codepages_and_restores_vt() {
         let handle = winapi::stdout_handle();
-        let Some(original_mode) = winapi::output_mode(handle) else {
+        let Some(original_mode) = winapi::console_mode(handle) else {
             // A redirected (non-console) stdout: the gate keeps the
             // codepages untouched - a CI `tee` or a piped run must never
             // flip the host console.
@@ -152,7 +176,7 @@ mod windows_tests {
         init();
         assert_eq!(winapi::output_codepage(), original_output_cp);
         assert_eq!(winapi::input_codepage(), original_input_cp);
-        let mode = winapi::output_mode(handle).expect("the console mode");
+        let mode = winapi::console_mode(handle).expect("the console mode");
         assert_ne!(
             mode & winapi::enable_vt(),
             0,
@@ -170,7 +194,7 @@ mod windows_tests {
             original_input_cp,
             "the input codepage stays unchanged"
         );
-        let back = winapi::output_mode(handle).expect("the console mode");
+        let back = winapi::console_mode(handle).expect("the console mode");
         assert_eq!(
             back & winapi::enable_vt(),
             original_mode & winapi::enable_vt(),
