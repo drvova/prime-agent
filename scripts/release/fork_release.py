@@ -43,8 +43,10 @@ V1_PLATFORMS = {"darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"}
 
 def read_utf8(path):
     """Read a release text file as UTF-8 whatever the platform's locale
-    (a Windows runner defaults to cp1252)."""
-    return pathlib.Path(path).read_bytes().decode("utf-8")
+    (a Windows runner defaults to cp1252), with CRLF folded to LF: a Windows
+    checkout (core.autocrlf) hands the scripts over with CRLF, the render's
+    line anchors expect LF, and the shell installers must ship with LF."""
+    return pathlib.Path(path).read_bytes().decode("utf-8").replace("\r\n", "\n")
 
 
 def write_utf8(path, text):
