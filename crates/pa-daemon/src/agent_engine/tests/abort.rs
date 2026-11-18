@@ -173,7 +173,7 @@ fn abort_in_flight_turn_cancels_a_mid_provider_wait() {
 /// untouched (the next delivery serves it).
 #[test]
 fn abort_racing_the_admission_prefix_settles_the_turn_before_the_provider_call() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": ["raced reply", "next reply"] }),
         1,
     );
@@ -235,7 +235,7 @@ fn abort_racing_the_admission_prefix_settles_the_turn_before_the_provider_call()
 
 #[test]
 fn settled_turn_emits_the_terminal_turn_end_payload() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "settled reply"}] }),
         1,
     );
@@ -275,7 +275,7 @@ fn settled_turn_emits_the_terminal_turn_end_payload() {
 
 #[test]
 fn settled_turn_emits_the_run_agent_end_payload() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "settled reply"}] }),
         1,
     );

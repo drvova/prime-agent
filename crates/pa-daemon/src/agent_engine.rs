@@ -310,3 +310,24 @@ pub struct AgentSessionEngine {
     pub(crate) semantic_identity:
         std::sync::Mutex<Option<pa_core::session_engine::semantic_edges::SemanticEdgeIdentity>>,
 }
+
+/// An engine never leaves its kernel process running past itself. The built
+/// session's kernel manager can outlive the engine through the session's own
+/// reference graph, and a kernel left running then sees stdin close only at
+/// process exit, where its graceful exit flushes a final snapshot into an
+/// artifact dir the engine's owner may already have removed. The kill is
+/// synchronous on a plain thread (the manager waits for the process to stop);
+/// inside a runtime it stays the fire-and-forget kill the async paths use.
+impl Drop for AgentSessionEngine {
+    fn drop(&mut self) {
+        let built = self
+            .session
+            .try_lock()
+            .ok()
+            .and_then(|session| session.as_ref().map(std::sync::Arc::clone));
+        if let Some(provisioner) = built.and_then(|built| built.kernel_provisioner_weak().upgrade())
+        {
+            provisioner.kill();
+        }
+    }
+}

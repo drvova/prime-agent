@@ -572,7 +572,7 @@ async fn a_shutdown_starting_at_the_gate_cancels_the_stop() {
 
 /// A created worker over the plain scripted engine: the register/release
 /// and shutdown/admission seams need the worker's own dispatch surface.
-async fn interleave_worker() -> (Arc<Worker>, tempfile::TempDir) {
+async fn interleave_worker() -> (tempfile::TempDir, Arc<Worker>) {
     let dir = tempfile::TempDir::new().expect("worker dir");
     let config = WorkerConfig {
         socket_path: dir.path().join("worker.sock"),
@@ -593,7 +593,7 @@ async fn interleave_worker() -> (Arc<Worker>, tempfile::TempDir) {
         )
         .await;
     assert!(created.success, "the worker's create failed: {created:?}");
-    (worker, dir)
+    (dir, worker)
 }
 
 /// A bounded state probe (the repo's standard wait shape): poll until the
@@ -641,7 +641,7 @@ async fn wait_for_event(
 /// module docs).
 #[tokio::test]
 async fn the_shutdown_gate_refuses_a_bash_admitted_inside_the_stop() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     // The settle seam: a compaction in flight parks the graceful stop at
     // `await_session_work_settled` — AFTER the admission gate closed and
     // the bash abort ran.
@@ -690,7 +690,7 @@ async fn the_shutdown_gate_refuses_a_bash_admitted_inside_the_stop() {
 /// cancelled, so the worker's exit never leaves the user's process running.
 #[tokio::test]
 async fn a_bash_admitted_before_the_gate_is_aborted_by_the_stop() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     let mut events = worker.events.subscribe();
     let started = worker
         .dispatch("execute_bash", &json!({ "command": "sleep 30" }))
@@ -732,7 +732,7 @@ async fn a_bash_admitted_before_the_gate_is_aborted_by_the_stop() {
 /// verdict).
 #[tokio::test]
 async fn the_close_beats_the_late_attach_registration() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     // THE CLOSE: the attach guard's Drop ran first (the connection's EOF
     // beat the detached handler).
     worker.release_session_attachments("late-conn", true);
@@ -780,7 +780,7 @@ async fn the_close_beats_the_late_attach_registration() {
 /// token-gated verdict must not hold it.
 #[tokio::test]
 async fn a_routed_attach_without_a_token_keeps_the_core_retain() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     let response = worker.handle_attach(&json!({ "clientId": "supervisor-routed" }));
     assert!(response.success, "the routed attach answers: {response:?}");
     assert!(
@@ -800,7 +800,7 @@ async fn a_routed_attach_without_a_token_keeps_the_core_retain() {
 /// both the registry entry and the core hold.
 #[tokio::test]
 async fn the_registration_beats_the_close_and_the_release_frees_the_hold() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     let response = worker.handle_attach(&json!({
         "clientId": "client-1",
         "connectionToken": "conn-1",
@@ -846,7 +846,7 @@ async fn the_registration_beats_the_close_and_the_release_frees_the_hold() {
 /// leak either way).
 #[tokio::test]
 async fn the_detach_is_not_final_the_reattach_registers_and_the_close_releases() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     let attach = worker.handle_attach(&json!({
         "clientId": "client-1",
         "connectionToken": "conn-1",
@@ -889,7 +889,7 @@ async fn the_detach_is_not_final_the_reattach_registers_and_the_close_releases()
 /// id leaves the core only when the LAST live connection holding it goes.
 #[tokio::test]
 async fn a_shared_client_id_survives_one_connection_close_while_the_other_holds() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     let first = worker.handle_attach(&json!({
         "clientId": "shared-client",
         "connectionToken": "conn-a",
@@ -923,7 +923,7 @@ async fn a_shared_client_id_survives_one_connection_close_while_the_other_holds(
 /// rejects its own late registration.
 #[tokio::test]
 async fn the_released_token_set_caps_at_8192() {
-    let (worker, _dir) = interleave_worker().await;
+    let (_dir, worker) = interleave_worker().await;
     for index in 0..8193 {
         worker.release_session_attachments(&format!("cap-{index}"), true);
     }

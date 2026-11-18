@@ -352,11 +352,50 @@ jobs:
       - name: Bootstrap the kernel venv (ready before the kernel e2e units)
         if: steps.selection.outputs.units != '0'
         run: ./target/debug/prime-agent --prime-agent-bootstrap
-      # The real-binary lifecycle checks drive the debug binary through owned
-      # daemons, PTYs and loopback providers only. One leg is enough.
+      - name: Run this shard's test subset
+        run: |
+          python3 scripts/ci_test_shard.py --shard ${{ matrix.shard }} --total ${{ env.SHARD_COUNT }}             --crates "${{ needs.changes.outputs.crates }}"             --manifest "$RUNNER_TEMP/shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json"
+      - name: Upload the shard manifest (always — the summary audits it)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
+
+  # The real-binary lifecycle checks drive the debug binary through owned
+  # daemons, PTYs and loopback providers only. They used to run in front of
+  # shard 1's test subset, which made shard 1 the wave's longest leg (about
+  # 10 min against a 4-9 min spread; the checks took 2.5 min of that). As
+  # their own job they run beside the shards. The setup is the shard's:
+  # the same bins build, the same shared dependency cache (restore only,
+  # the shards own the save), the same kernel venv bootstrap.
+  lifecycle:
+    name: rust lifecycle checks
+    needs: trust
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    if: needs.trust.result == 'success' && needs.trust.outputs.allowed == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e # 1.98.1 action pin; the SHA selects the toolchain
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: test-shards
+          save-if: false
+      - name: Install uv (the kernel venv bootstrap below uses it)
+        run: |
+          python3 -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build the workspace bins (the binaries the checks drive)
+        if: hashFiles('scripts/check_*.py') != ''
+        run: cargo build --locked --workspace --bins --examples
+      - name: Bootstrap the kernel venv
+        if: hashFiles('scripts/check_*.py') != ''
+        run: ./target/debug/prime-agent --prime-agent-bootstrap
       - name: Run the rust lifecycle checks
-        id: lifecycle_checks
-        if: matrix.shard == 1 && steps.selection.outputs.units != '0' && hashFiles('scripts/check_*.py') != ''
+        if: hashFiles('scripts/check_*.py') != ''
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/lifecycle-check-receipts"
@@ -380,22 +419,12 @@ jobs:
           done
           exit "${check_status}"
       - name: Upload the lifecycle check receipts
-        if: always() && matrix.shard == 1 && steps.selection.outputs.units != '0' && hashFiles('scripts/check_*.py') != ''
+        if: always() && hashFiles('scripts/check_*.py') != ''
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: lifecycle-check-receipts-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/lifecycle-check-receipts/
           if-no-files-found: error
-      - name: Run this shard's test subset
-        if: ${{ !cancelled() && (success() || steps.lifecycle_checks.outcome == 'failure') }}
-        run: |
-          python3 scripts/ci_test_shard.py --shard ${{ matrix.shard }} --total ${{ env.SHARD_COUNT }}             --crates "${{ needs.changes.outputs.crates }}"             --manifest "$RUNNER_TEMP/shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json"
-      - name: Upload the shard manifest (always — the summary audits it)
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json
 
   # The aggregate: audits the partition (same enumeration everywhere,
   # disjoint shards, every assigned unit executed — coverage can never
@@ -484,8 +513,59 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
           components: clippy
+      # The mingw-w64 cross gcc comes from a .deb cache. The runner's ubuntu
+      # archive mirror served these packages at ~100 kB/s: on run 44390136031
+      # the 115 MB fetch took 18m37s of the job's 21m. So the .debs are cached
+      # under the package version the image's apt lists name, and only a
+      # cache miss (a new listed version) downloads them. Only the
+      # win32-thread compiler is installed. It is the x86_64-w64-mingw32-gcc
+      # alternative the old gcc-mingw-w64-x86-64 metapackage already selected
+      # (priority win32 > posix), so ring's C sees the same compiler. The
+      # posix-thread twin was half the download and never ran.
+      - name: Resolve the mingw-w64 package version (the .deb cache key)
+        id: mingw
+        run: |
+          set -euo pipefail
+          candidate() {
+            apt-cache policy gcc-mingw-w64-x86-64-win32 | sed -n 's/^ *Candidate: //p'
+          }
+          version="$(candidate)"
+          if [ -z "${version}" ] || [ "${version}" = "(none)" ]; then
+            sudo apt-get update
+            version="$(candidate)"
+          fi
+          test -n "${version}" && test "${version}" != "(none)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Restore the mingw-w64 .deb cache
+        id: mingw-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/mingw-debs
+          key: mingw-w64-debs-ubuntu-24.04-${{ steps.mingw.outputs.version }}
       - name: Install the mingw-w64 cross toolchain (ring C for the target)
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+        run: |
+          set -euo pipefail
+          debs="${HOME}/mingw-debs"
+          if [ "${{ steps.mingw-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+            mkdir -p "${debs}/partial"
+            sudo apt-get install -y --no-install-recommends --download-only \
+              -o Dir::Cache::archives="${debs}" gcc-mingw-w64-x86-64-win32
+            sudo rm -rf "${debs}/partial" "${debs}/lock"
+          fi
+          # dpkg, not `apt-get install ./*.deb`: apt still fetched the same
+          # 65 MB from the mirror when the archive carried the identical
+          # version, even on a cache hit (run 44400928969, 13m50s at
+          # 78 kB/s). dpkg installs only the cached files and never touches
+          # the network. Their dependencies are all base-image libraries.
+          sudo dpkg -i "${debs}"/*.deb
+          x86_64-w64-mingw32-gcc --version
+      - name: Save the mingw-w64 .deb cache
+        if: steps.mingw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/mingw-debs
+          key: mingw-w64-debs-ubuntu-24.04-${{ steps.mingw.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: windows-cross
@@ -524,6 +604,7 @@ jobs:
         clippy-test,
         test-shard,
         test-summary,
+        lifecycle,
         runtime,
         windows-cross,
         deny,

@@ -92,3 +92,26 @@ records; the timeout applies only when the buffer is empty. Upstream crossterm h
 record. The inbox console also uses those records for pasted characters absent from the active
 keyboard layout. Report the character as a press, like the surrogate path, so consumers that drop
 key releases retain it. Ordinary key-up records still report releases.
+
+# Relayed VT input and an inherited VT input mode on Windows (2026-11-18)
+
+Two Windows-only changes, found with the pseudoconsole battery
+(`crates/pa-cli/tests/windows_conpty_input_e2e`, CI run 44388625008):
+
+* `src/event/sys/windows/parse.rs`: a key record whose `uChar` is `0x1b` and whose virtual key has
+  no mapping here (the console host uses vk=0) now reports `KeyCode::Esc`. A console host relays VT
+  input it cannot translate as one such record per character: the inbox ConPTY delivers its own
+  DA1 and CPR replies this way (`vk=0 uchar=0x1b`, `[`, `?`, `1`, `;`, `0`, `c`), and the Windows
+  Terminal host package delivers a CSI-u key (`ESC [ 1 3 ; 2 u`) the same way. The control-code
+  arm looked the character up through `ToUnicodeEx`, which maps vk=0 to nothing, so the ESC
+  vanished and the rest of the sequence reached the application as typed text. As `Esc`, the app's
+  sequence guard (`crates/pa-tui/src/sequence_guard.rs`) reassembles the sequence and decodes or
+  consumes it. Test: `a_vk0_escape_record_is_the_esc_key`.
+* `src/terminal/sys/windows.rs`: `enable_raw_mode` also clears `ENABLE_VIRTUAL_TERMINAL_INPUT`
+  when the console has it on, and `disable_raw_mode` turns it back on. A parent process can leave
+  that mode set in the console it shares with the app; the console then delivers every keystroke
+  as vk=0 records carrying VT bytes (Left is `ESC`, `[`, `D`), which this reader does not parse.
+  Upstream keeps the bit.
+
+Neither can be tested in place on Linux (both are `cfg(windows)`); the parse test runs from a
+copy as described above on a Windows host, and the battery covers both on the CI runner.
