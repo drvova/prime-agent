@@ -114,6 +114,10 @@ official `release.yml` never matches these tags (see
    git push origin v0.10.3-drvova.1
    ```
 
+   Or, without pushing a tag: **Actions → fork-release → Run workflow**, on
+   `main`, with the tag to create (for example `v0.10.3-drvova.1`). The
+   workflow checks the tag is new and matches `Cargo.toml`, builds the
+   dispatched `main` commit, and the publish job creates the tag there.
 3. `.github/workflows/fork-release.yml` builds linux x64/arm64, macOS
    arm64/x64 and Windows x64. It packages them with the official release
    scripts, merges them with `release.yml`'s own promote steps, and publishes

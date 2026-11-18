@@ -30,6 +30,15 @@ on:
   push:
     tags:
       - "v[0-9]+.[0-9]+.[0-9]+-drvova.[0-9]+"
+  # The same release, started from the Actions tab (or the API) on main: the
+  # publish job creates the tag at the dispatched commit, so cutting a release
+  # needs no tag push.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Fork tag to create and publish, e.g. v0.10.3-drvova.1 (vX.Y.Z must match Cargo.toml)"
+        required: true
+        type: string
 
 permissions: {}
 
@@ -40,7 +49,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  RELEASE_VERSION: ${{ github.ref_name }}
+  # The release tag: the pushed tag, or the dispatch input.
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   PRIME_AGENT_DIST_NAME: Prime Agent (drvova build)
   PRIME_AGENT_DIST_INSTALLER_URL: https://github.com/${{ github.repository }}/releases/latest/download/install.sh
   PRIME_AGENT_DIST_DOWNLOAD_BASE_URL: https://github.com/${{ github.repository }}/releases/latest/download
@@ -63,9 +74,24 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ref is not a tag"; exit 1; }
+          case "${GITHUB_EVENT_NAME}" in
+            push)
+              [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ref is not a tag"; exit 1; }
+              ;;
+            workflow_dispatch)
+              # A dispatched release is cut from main only, under a tag that
+              # does not exist yet (the publish job creates it).
+              [[ "${GITHUB_REF}" == "refs/heads/main" ]] || { echo "dispatch a release from main, not ${GITHUB_REF}"; exit 1; }
+              if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" >/dev/null; then
+                echo "tag ${RELEASE_TAG} already exists: push it to rebuild, or dispatch a new tag"; exit 1
+              fi
+              ;;
+            *)
+              echo "unexpected event ${GITHUB_EVENT_NAME}"; exit 1
+              ;;
+          esac
           version="$(python3 scripts/release/fork_release.py version \
-            --tag "${GITHUB_REF_NAME}" --suffix drvova --cargo-toml Cargo.toml)"
+            --tag "${RELEASE_TAG}" --suffix drvova --cargo-toml Cargo.toml)"
           echo "fork release ${version}"
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
 
@@ -428,8 +454,15 @@ jobs:
 
           Switch between the official build and this one with prime-switch (see FORK.md).
           NOTES
-          gh release create "${GITHUB_REF_NAME}" \
-            --verify-tag \
+          # A pushed tag must already exist; a dispatch creates it at the
+          # dispatched commit.
+          case "${GITHUB_EVENT_NAME}" in
+            push) tag_source=(--verify-tag) ;;
+            workflow_dispatch) tag_source=(--target "${GITHUB_SHA}") ;;
+            *) echo "unexpected event ${GITHUB_EVENT_NAME}"; exit 1 ;;
+          esac
+          gh release create "${RELEASE_TAG}" \
+            "${tag_source[@]}" \
             --title "Prime Agent (drvova build) ${VERSION}" \
             --notes-file "${RUNNER_TEMP}/notes.md" \
             --latest \
