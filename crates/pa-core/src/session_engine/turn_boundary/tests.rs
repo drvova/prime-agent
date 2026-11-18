@@ -79,7 +79,7 @@ fn assistant_entry(text: &str) -> SessionMessage {
 
 /// A persisted session manager with a small conversation to summarize
 /// (`end_with_compaction` flips it into the `already compacted` shape).
-fn session_with_history(end_with_compaction: bool) -> SessionManager {
+fn session_with_history(end_with_compaction: bool) -> (tempfile::TempDir, SessionManager) {
     let dir = tempfile::TempDir::new().unwrap();
     let session_dir = dir.path().join("session");
     std::fs::create_dir_all(&session_dir).unwrap();
@@ -105,7 +105,7 @@ fn session_with_history(end_with_compaction: bool) -> SessionManager {
             })
             .unwrap();
     }
-    session
+    (dir, session)
 }
 
 impl SessionManager {
@@ -205,7 +205,8 @@ async fn compact_run_validates_and_reports_no_active_turn() {
         "no active turn; compaction can only be requested while a turn is running"
     );
     // An idle agent answers the same way, and status stays clear.
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some("s".to_string()),
@@ -235,14 +236,13 @@ async fn compact_run_validates_and_reports_no_active_turn() {
 
 #[tokio::test]
 async fn compact_run_prepare_skips_report_the_ts_reasons() {
+    let (_compacted_tmp, compacted) = session_with_history(true);
+    let (_fresh_tmp, fresh) = session_with_history(false);
     for (case, expected) in [
         // A branch ending in a compaction has nothing new to summarize.
-        (session_with_history(true), "already compacted"),
+        (compacted, "already compacted"),
         // A fresh session has no summarizable history.
-        (
-            session_with_history(false).without_history(),
-            "session is too short to compact",
-        ),
+        (fresh.without_history(), "session is too short to compact"),
     ] {
         // A fresh request cell per case: the runtime binds once.
         let requests = Arc::new(TurnBoundaryRequests::new());
@@ -285,7 +285,8 @@ async fn compact_run_prepare_skips_report_the_ts_reasons() {
 async fn compact_run_schedules_inside_a_tool_call_and_status_sees_it() {
     let requests = Arc::new(TurnBoundaryRequests::new());
     let handlers = registered(&requests);
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let provider = Arc::new(ScriptedProvider::new(agent_model()));
     provider.push_tool_call_turn(None, vec![("call-1", "probe", json!({}))]);
     provider.push_text_turn("done");
@@ -345,7 +346,8 @@ async fn compact_run_schedules_inside_a_tool_call_and_status_sees_it() {
 async fn refine_run_and_status_round_trip_inside_a_tool_call() {
     let requests = Arc::new(TurnBoundaryRequests::new());
     let handlers = registered(&requests);
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let provider = Arc::new(ScriptedProvider::new(agent_model()));
     provider.push_tool_call_turn(None, vec![("call-1", "probe", json!({}))]);
     provider.push_text_turn("done");
@@ -429,9 +431,10 @@ async fn disabled_refine_run_reports_refusal_and_does_not_schedule() {
         stream_fn: Some(provider.stream_fn()),
         ..Default::default()
     }));
+    let (_session_tmp, session) = session_with_history(false);
     requests.bind(TurnBoundaryRuntime {
         agent: Arc::clone(&agent),
-        session: Arc::new(Mutex::new(session_with_history(false))),
+        session: Arc::new(Mutex::new(session)),
         context_window: Some(100_000),
         model_info: model_info(),
     });
@@ -483,7 +486,8 @@ async fn refine_run_validates_and_merges_into_a_pending_request() {
     // Merge semantics through the real handler path: two `refine.run` calls inside one
     // turn — the second without instructions keeps the first ones and ORs the global
     // flag (TS merge).
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let provider = Arc::new(ScriptedProvider::new(agent_model()));
     provider.push_tool_call_turn(None, vec![("call-1", "probe-a", json!({}))]);
     provider.push_tool_call_turn(None, vec![("call-2", "probe-b", json!({}))]);
@@ -535,7 +539,8 @@ async fn refine_run_validates_and_merges_into_a_pending_request() {
 async fn clear_pending_drops_scheduled_requests() {
     let requests = Arc::new(TurnBoundaryRequests::new());
     registered(&requests);
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let provider = Arc::new(ScriptedProvider::new(agent_model()));
     provider.push_tool_call_turn(None, vec![("call-1", "probe", json!({}))]);
     provider.push_text_turn("done");
@@ -576,7 +581,8 @@ async fn clear_pending_drops_scheduled_requests() {
 async fn compact_run_merges_instructions_into_a_pending_request() {
     let requests = Arc::new(TurnBoundaryRequests::new());
     registered(&requests);
-    let session = Arc::new(Mutex::new(session_with_history(false)));
+    let (_session_tmp, session) = session_with_history(false);
+    let session = Arc::new(Mutex::new(session));
     let provider = Arc::new(ScriptedProvider::new(agent_model()));
     provider.push_tool_call_turn(None, vec![("call-1", "probe-a", json!({}))]);
     provider.push_tool_call_turn(None, vec![("call-2", "probe-b", json!({}))]);
@@ -654,7 +660,7 @@ fn context_usage_anchors_on_the_last_valid_assistant_usage() {
 
 #[test]
 fn context_usage_after_a_compaction_without_post_usage_is_null_tokens() {
-    let mut session = session_with_history(false);
+    let (_tmp, mut session) = session_with_history(false);
     let first_kept = session.get_all_entries()[1]
         .id()
         .unwrap_or_default()

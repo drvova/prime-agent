@@ -22,13 +22,13 @@ fn session_rows_with_reverted_terminal(session: &mut SessionManager) -> GoalStat
     state
 }
 
-fn persisted_session() -> SessionManager {
+fn persisted_session() -> (tempfile::TempDir, SessionManager) {
     let dir = tempfile::TempDir::new().unwrap();
     let session_dir = dir.path().join("session");
     std::fs::create_dir_all(&session_dir).unwrap();
     let mut session = SessionManager::in_memory(dir.path());
     session.materialize_session_file(Some(session_dir));
-    session
+    (dir, session)
 }
 
 /// A failed provider turn in the pa-agent wire shape, carrying the
@@ -191,7 +191,7 @@ async fn compacted_goal_restore_and_mutation_do_not_hydrate_history() {
 
 #[test]
 fn start_resume_pause_lifecycle() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     assert_eq!(driver.state(), &empty_goal_state());
     let goal = driver
@@ -231,7 +231,7 @@ fn start_resume_pause_lifecycle() {
 
 #[test]
 fn usage_accounting_and_budget_limit() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", Some(100)).unwrap();
     assert_eq!(
@@ -273,7 +273,7 @@ fn usage_accounting_and_budget_limit() {
 /// resume; a call billed during the pause does not.
 #[test]
 fn a_pause_keeps_the_calls_billed_while_the_goal_ran() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     let bill = driver.billed_row_recorder();
     driver.start(&mut session, "work", Some(1_000)).unwrap();
@@ -290,7 +290,7 @@ fn a_pause_keeps_the_calls_billed_while_the_goal_ran() {
 #[test]
 fn terminal_messages_fail_or_keep_the_goal() {
     use pa_types::ai::StopReason;
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     driver
@@ -313,7 +313,7 @@ fn terminal_messages_fail_or_keep_the_goal() {
 
 #[test]
 fn continuations_increment() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let first = driver
@@ -349,7 +349,7 @@ fn continuations_increment() {
 
 #[test]
 fn the_mint_refuses_and_finishes_on_an_errored_turn() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -378,7 +378,7 @@ fn the_mint_refuses_and_finishes_on_an_errored_turn() {
 /// A rate-limited corpse never triggers the hard finish; it counts toward the no-output backoff.
 #[test]
 fn a_rate_limited_turn_keeps_the_goal_alive() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -413,7 +413,7 @@ fn a_rate_limited_turn_keeps_the_goal_alive() {
 
 #[test]
 fn no_output_turns_count_to_the_cap_and_backoff() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -483,7 +483,7 @@ fn no_output_turns_count_to_the_cap_and_backoff() {
 /// Only a turn the goal's own lifetime produced (timestamp after `created_at`) can judge it.
 #[test]
 fn a_stale_pre_goal_corpse_never_finishes_the_new_goal() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -511,7 +511,7 @@ fn a_stale_pre_goal_corpse_never_finishes_the_new_goal() {
 
 #[test]
 fn a_replacement_goal_starts_with_a_fresh_streak() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "first", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -551,7 +551,7 @@ fn a_replacement_goal_starts_with_a_fresh_streak() {
 
 #[test]
 fn rate_limit_and_empty_text_corpses_and_the_examined_gate() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -610,7 +610,7 @@ fn rate_limit_and_empty_text_corpses_and_the_examined_gate() {
 /// ruling) — NOT a total order across settle paths: the kill is UNCONDITIONAL.
 #[test]
 fn a_terminal_error_sharing_the_millisecond_still_refuses() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -642,7 +642,7 @@ fn a_terminal_error_sharing_the_millisecond_still_refuses() {
     );
     // An EARLIER-millisecond terminal error on a fresh goal refuses
     // too (the wall clock is not monotonic across settle paths).
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -672,7 +672,7 @@ fn a_terminal_error_sharing_the_millisecond_still_refuses() {
 /// STRICTLY later turn — and a parked refusal clears an earlier strike's window.
 #[test]
 fn a_same_ms_pre_goal_corpse_never_judges_the_new_goal() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -708,7 +708,7 @@ fn a_same_ms_pre_goal_corpse_never_judges_the_new_goal() {
 
 #[test]
 fn a_parked_refusal_clears_an_earlier_strikes_window() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -747,7 +747,7 @@ fn a_parked_refusal_clears_an_earlier_strikes_window() {
 /// it admits exactly one wake per strike.
 #[test]
 fn the_print_wake_take_yields_an_overdue_window_once() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -771,7 +771,7 @@ fn the_print_wake_take_yields_an_overdue_window_once() {
 
 #[test]
 fn the_rate_limit_refusal_sticks_across_reconsults() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -805,7 +805,7 @@ fn the_rate_limit_refusal_sticks_across_reconsults() {
 
 #[test]
 fn a_restored_goal_at_the_cap_finishes_at_the_first_consult() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
@@ -835,7 +835,7 @@ fn a_restored_goal_at_the_cap_finishes_at_the_first_consult() {
 
 #[test]
 fn load_persisted_adopts_the_stale_active_failure() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     // The corpse message persists after the newest goal row: the
@@ -859,7 +859,7 @@ fn load_persisted_adopts_the_stale_active_failure() {
     );
     // The rate-limit corpse is the park's pause: the goal
     // resurrects.
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     driver
@@ -878,7 +878,7 @@ fn load_persisted_adopts_the_stale_active_failure() {
         GoalStatus::Active
     );
     // A settled terminal row is the newest row: no stale adoption.
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     driver
@@ -896,7 +896,7 @@ fn load_persisted_adopts_the_stale_active_failure() {
 
 #[test]
 fn owed_continuation_defers_and_delivers_once() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     assert!(!driver.owes_continuation());
@@ -937,7 +937,7 @@ fn owed_continuation_defers_and_delivers_once() {
 
 #[test]
 fn rollback_continuation_mint_restores_the_count() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     assert!(driver
@@ -962,7 +962,7 @@ fn rollback_continuation_mint_restores_the_count() {
 
 #[test]
 fn resume_resolves_the_existing_goal() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "ship it", None).unwrap();
     driver.pause(&mut session, "Paused by user").unwrap();
@@ -972,7 +972,7 @@ fn resume_resolves_the_existing_goal() {
     assert_eq!(driver.state().objective.as_deref(), Some("ship it"));
     assert_eq!(driver.state().status, GoalStatus::Active);
     assert!(driver.state().last_reason.is_none());
-    let mut limited = persisted_session();
+    let (_tmp, mut limited) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut limited, "ship it", Some(100)).unwrap();
     driver
@@ -1024,7 +1024,7 @@ fn restore_persisted_adopts_the_state_without_rewriting_it() {
     });
     assert!(!limited.owns_continuation_wakeup());
     assert!(limited.active_objective().is_none());
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::restore_persisted(GoalState {
         active: true,
         status: GoalStatus::Active,
@@ -1041,12 +1041,12 @@ fn restore_persisted_adopts_the_state_without_rewriting_it() {
 
 #[test]
 fn branch_seedable_rules() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     assert!(GoalDriver::is_branch_seedable(&session));
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     assert!(!GoalDriver::is_branch_seedable(&session));
-    let mut other = persisted_session();
+    let (_tmp, mut other) = persisted_session();
     other
         .append_message(pa_types::session::AgentMessage::User(
             pa_types::ai::UserMessage {
@@ -1070,7 +1070,7 @@ fn append_goal_row(session: &mut SessionManager, state: &GoalState) {
 
 #[test]
 fn same_timeline_reload_never_regresses_the_same_goal() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "do work", None).unwrap();
     let goal_id = driver.state().goal_id.clone();
@@ -1108,7 +1108,7 @@ fn same_timeline_reload_never_regresses_the_same_goal() {
 
 #[test]
 fn same_timeline_reload_keeps_a_fired_budget_gate() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "do work", Some(100)).unwrap();
     let goal_id = driver.state().goal_id.clone();
@@ -1142,7 +1142,7 @@ fn same_timeline_reload_keeps_a_fired_budget_gate() {
 /// rule (the clamp is same-goal only).
 #[test]
 fn same_timeline_reload_adopts_a_different_goal_faithfully() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "first goal", None).unwrap();
     assert_eq!(
@@ -1193,7 +1193,7 @@ fn same_timeline_reload_adopts_a_different_goal_faithfully() {
 
 #[test]
 fn reload_skips_invalid_rows() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "do work", None).unwrap();
 
@@ -1211,7 +1211,7 @@ fn reload_skips_invalid_rows() {
     assert_eq!(driver.state().status, GoalStatus::Active);
     assert!(driver.state().goal_id.is_some());
 
-    let mut fresh = persisted_session();
+    let (_tmp, mut fresh) = persisted_session();
     fresh
         .append_message(pa_types::session::AgentMessage::User(
             pa_types::ai::UserMessage {
@@ -1229,7 +1229,7 @@ fn reload_skips_invalid_rows() {
 /// ago reads ~2 hours, and no accounting write compounds it.
 #[test]
 fn creation_based_timer_reads_the_goals_age() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver
         .start(&mut session, "make the visualizer", None)
@@ -1277,7 +1277,7 @@ fn creation_based_timer_reads_the_goals_age() {
 /// operator's ruling).
 #[test]
 fn paused_goal_reads_its_age() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "ship it", None).unwrap();
     driver.pause(&mut session, "Paused by user").unwrap();
@@ -1303,7 +1303,7 @@ fn paused_goal_reads_its_age() {
 
 #[test]
 fn rows_without_created_at_backfill_from_updated_at() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let legacy = GoalState {
         active: true,
         status: GoalStatus::Active,
@@ -1329,7 +1329,7 @@ fn rows_without_created_at_backfill_from_updated_at() {
         "a legacy 1h-old goal reads ~1h, got {}",
         elapsed.time_used_seconds
     );
-    let mut fresh = persisted_session();
+    let (_tmp, mut fresh) = persisted_session();
     fresh
         .append_message(pa_types::session::AgentMessage::User(
             pa_types::ai::UserMessage {
@@ -1344,7 +1344,7 @@ fn rows_without_created_at_backfill_from_updated_at() {
 
 #[test]
 fn pending_continuation_never_re_arms() {
-    let mut session = persisted_session();
+    let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     assert!(driver
