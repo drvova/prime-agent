@@ -731,3 +731,217 @@ async fn a_session_and_two_subagents_write_the_static_layers_once() {
         );
     }
 }
+
+/// The bodies the real Anthropic request builder produced for one engine
+/// session, and a signal per one-token refresh.
+struct RecordedSession {
+    engine: crate::session_engine::engine::SessionEngine,
+    bodies: Arc<Mutex<Vec<Value>>>,
+    refreshes: mpsc::UnboundedReceiver<()>,
+    _dir: tempfile::TempDir,
+}
+
+/// An engine subagent session (its settled turns warm while it waits on the
+/// parent) resumed over 17 tool rounds of 4,000 chars in a 20k window, so
+/// context thinning applies. Its provider records each request body built by
+/// the real Anthropic builder (the loopback endpoint refuses the connection
+/// afterwards) and answers from a script: a refresh reads the cache, every
+/// other call answers `NOT MET` text (a plain reply to the main loop).
+async fn recorded_thinning_session() -> RecordedSession {
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    std::fs::create_dir_all(&agent_dir).unwrap();
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        json!({ "compaction": { "enabled": false } }).to_string(),
+    )
+    .unwrap();
+    let ai_model: pa_types::ai::Model = serde_json::from_value(json!({
+        "id": "claude-opus-5-5", "name": "Claude Opus 5.5", "api": "anthropic-messages",
+        "provider": "anthropic", "baseUrl": "http://127.0.0.1:9", "reasoning": false,
+        "input": ["text"],
+        "cost": { "input": 5000.0, "output": 25.0, "cacheRead": 500.0, "cacheWrite": 6250.0 },
+        "contextWindow": 20_000, "maxTokens": 4096,
+    }))
+    .expect("model fixture");
+    let model: Model = crate::session_engine::provider_adapter::json_round_trip(&ai_model)
+        .expect("model round trip");
+    let mut manager = crate::session::manager::SessionManager::in_memory(dir.path());
+    let mut history =
+        vec![json!({ "role": "user", "content": "fix the failing build", "timestamp": 1 })];
+    for round in 0..17 {
+        let call = format!("call-{round}");
+        let output: String = (0..)
+            .map(|line| format!("[{round}] line {line}: value={}\n", line * 7 + round))
+            .take(400)
+            .collect::<String>()
+            .chars()
+            .take(4_000)
+            .collect();
+        history.push(json!({
+            "role": "assistant",
+            "content": [{ "type": "toolCall", "id": call, "name": "python_repl", "arguments": { "code": "run()" } }],
+            "api": "anthropic-messages", "provider": "anthropic", "model": "claude-opus-5-5",
+            "usage": {}, "stopReason": "toolUse", "timestamp": 2,
+        }));
+        history.push(json!({
+            "role": "toolResult", "toolCallId": call, "toolName": "python_repl",
+            "content": [{ "type": "text", "text": output }], "isError": false, "timestamp": 3,
+        }));
+    }
+    for message in history {
+        // Through the loop's message type, which fills the usage defaults.
+        let message: pa_agent::types::AgentMessage =
+            serde_json::from_value(message).expect("history row");
+        manager
+            .append_message(serde_json::from_value(serde_json::to_value(message).unwrap()).unwrap())
+            .unwrap();
+    }
+
+    let bodies: Arc<Mutex<Vec<Value>>> = Arc::default();
+    let (refresh_tx, refreshes) = mpsc::unbounded_channel();
+    let builder = crate::session_engine::provider_adapter::real_stream_fn(
+        Some("sk-ant-api-loopback".into()),
+        ai_model,
+    );
+    let recorded = Arc::clone(&bodies);
+    let provider: StreamFn = Arc::new(move |model, context, mut options| {
+        let builder = Arc::clone(&builder);
+        let recorded = Arc::clone(&recorded);
+        let refresh_tx = refresh_tx.clone();
+        Box::pin(async move {
+            let refresh = options.max_tokens == Some(1);
+            let (body_tx, mut body_rx) = mpsc::unbounded_channel::<Value>();
+            let seam = options.on_payload.take();
+            options.on_payload = Some(Arc::new(move |payload: Value, model: &Model| {
+                let next = seam.as_ref().and_then(|hook| hook(payload.clone(), model));
+                body_tx.send(next.clone().unwrap_or(payload)).ok();
+                next
+            }));
+            drop(builder(model, context, options).await);
+            let body = body_rx.recv().await.expect("the request body was built");
+            recorded.lock().unwrap().push(body);
+            let reply: AssistantMessage = serde_json::from_value(if refresh {
+                json!({ "content": [], "usage": { "cacheRead": 1_000, "output": 1 }, "stopReason": "length" })
+            } else {
+                json!({
+                    "content": [{ "type": "text", "text": "VERDICT: NOT MET\nGAP: more work" }],
+                    "usage": { "cacheWrite": 1_000 }, "stopReason": "stop",
+                })
+            })
+            .expect("scripted reply");
+            if refresh {
+                refresh_tx.send(()).ok();
+            }
+            let (handle, stream) = event_stream();
+            handle.push(AssistantMessageEvent::Done {
+                reason: reply.stop_reason,
+                message: reply.clone(),
+            });
+            handle.end(Some(reply));
+            Ok(Box::new(stream) as Box<dyn pa_agent::stream::ModelStream>)
+        })
+    });
+    let engine = crate::session_engine::engine::create_session(
+        crate::session_engine::engine::SessionEngineConfig {
+            cwd: dir.path().to_path_buf(),
+            agent_dir,
+            model: Some(model),
+            stream_fn: Some(provider),
+            session_manager: Some(manager),
+            daemonless: true,
+            rlm_depth: Some(1),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    RecordedSession {
+        engine,
+        bodies,
+        refreshes,
+        _dir: dir,
+    }
+}
+
+impl RecordedSession {
+    async fn turn(&self, text: &str) {
+        self.engine
+            .session
+            .prompt(text, crate::session_engine::PromptOptions::default())
+            .await
+            .unwrap();
+        self.engine.session.agent().wait_for_idle().await;
+    }
+
+    /// The recorded body whose last message carries `marker`.
+    fn body_ending_with(&self, marker: &str) -> Value {
+        self.bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|body| {
+                body["messages"]
+                    .as_array()
+                    .and_then(|messages| messages.last())
+                    .is_some_and(|last| last.to_string().contains(marker))
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("no request ends with {marker:?}"))
+    }
+}
+
+/// A body's cacheable blocks (tools, system, messages) without their markers.
+fn prefix_blocks(body: &Value) -> Vec<String> {
+    render_blocks(body)
+        .into_iter()
+        .map(|(block, _marked)| block)
+        .collect()
+}
+
+/// Thinning x cache warming: the refresh re-sends the thinned request the
+/// last real turn sent, byte for byte but for its one-token cap, and the next
+/// real turn's request extends it, so the refresh keeps alive the entry that
+/// turn reads.
+#[tokio::test]
+async fn a_refresh_resends_the_thinned_request_the_next_turn_extends() {
+    let mut session = recorded_thinning_session().await;
+    session.turn("continue").await;
+    tokio::time::pause();
+    tokio::time::timeout(Duration::from_secs(600), session.refreshes.recv())
+        .await
+        .expect("a refresh while the subagent waits on its parent")
+        .expect("refresh signal");
+    tokio::time::resume();
+    session.turn("next").await;
+
+    let sent = session.body_ending_with("continue");
+    let mut refresh = session
+        .bodies
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|body| body["max_tokens"] == json!(1))
+        .cloned()
+        .expect("the refresh body");
+    assert!(
+        sent.to_string().contains("thinned from the request"),
+        "the real request was thinned"
+    );
+    // Thinning rewrites message bodies only: the split system blocks and the
+    // last user turn carry the markers, within Anthropic's four.
+    assert_eq!(
+        render_blocks(&sent)
+            .iter()
+            .filter(|(_block, marked)| *marked)
+            .count(),
+        3
+    );
+    refresh["max_tokens"] = sent["max_tokens"].clone();
+    assert_eq!(refresh, sent);
+    let (sent, next) = (
+        prefix_blocks(&sent),
+        prefix_blocks(&session.body_ending_with("next")),
+    );
+    assert_eq!(next[..sent.len()], sent[..]);
+}
