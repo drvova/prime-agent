@@ -38,7 +38,7 @@ impl Drop for TraceEnv {
     }
 }
 
-fn env_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

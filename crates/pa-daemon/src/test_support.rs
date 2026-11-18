@@ -9,6 +9,44 @@
 #[cfg(test)]
 pub(crate) static TELEMETRY_ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// Strip ambient provider credentials from the test process, once. The
+/// daemon resolves auth from process env (`AuthStorage::create`), so a box
+/// exporting `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` or `GH_TOKEN` made
+/// Amazon Bedrock and GitHub Copilot available providers, and tests pinning
+/// the fixture provider's resolution and catalog saw them instead. Removal
+/// only, never restored; it holds the trace tests' env lock so a live
+/// `trace_test_env` guard (which saves and restores `PRIME_API_KEY`) cannot
+/// put a key back afterwards.
+#[cfg(test)]
+pub(crate) fn scrub_ambient_provider_credentials() {
+    static SCRUB: std::sync::Once = std::sync::Once::new();
+    SCRUB.call_once(|| {
+        let _trace_env = crate::trace_test_env::env_lock();
+        for provider in pa_ai::models_generated::get_providers() {
+            if let Some(vars) = pa_ai::env_api_keys::get_api_key_env_vars(provider) {
+                for var in vars {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+        // The ambient sources outside the key-var table (`get_env_api_key`'s
+        // Bedrock and Vertex arms).
+        for var in [
+            "AWS_PROFILE",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+            "AWS_WEB_IDENTITY_TOKEN_FILE",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+            "PRIME_TEAM_ID",
+        ] {
+            std::env::remove_var(var);
+        }
+    });
+}
+
 /// Write a harness store holding one factory spec per id (plus a memory, which never counts as a
 /// spec) — the on-disk shape the kernel's harness writes.
 #[cfg(test)]
