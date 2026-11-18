@@ -8,7 +8,7 @@ use super::retirement::{FinishStep, Retirement, RetirementEvent, RetirementInten
 use super::run_state::{RunEvent, RunState, RunVerdict};
 use super::{
     bail, json, rlm_child_label, Arc, ChildCloseReason, ChildRecord, Context, DaemonCommand,
-    DeletedChild, Map, Mutex, Result, SupervisorChildSessionsInner, KILL_TIMEOUT_MS,
+    DeletedChild, Kickoff, Map, Mutex, Result, SupervisorChildSessionsInner, KILL_TIMEOUT_MS,
 };
 
 use pa_core::session_engine::semantic_edges::ChildCancelledReason;
@@ -610,6 +610,7 @@ fn ledger_child_records(
             notice_delivered: true,
             factory: edge.factory.is_some(),
             prompt_admitted: true,
+            kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
             retirement: Retirement::live(),
             usage_registration_forgotten: false,
             session_file: Some(edge.child),
