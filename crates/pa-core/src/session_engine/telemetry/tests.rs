@@ -503,6 +503,40 @@ async fn tool_calls_fold_into_run_aggregates() {
     assert!(!all.contains("private-extension-tool"));
 }
 
+/// Each `python_repl` result's `bashWaits` details fold into the run as two
+/// primitive counters: awaits that finished inside their wait window vs
+/// awaits that yielded a still-running snapshot.
+#[tokio::test]
+async fn bash_wait_outcomes_fold_into_run_counters() {
+    let fixture = fixture();
+    emit(&fixture, AgentEvent::AgentStart);
+    for (completed, yielded) in [(1, 0), (2, 1)] {
+        let (tool_start, mut tool_end) = tool_execution_event("python_repl", false);
+        if let AgentEvent::ToolExecutionEnd { result, .. } = &mut tool_end {
+            result.details =
+                serde_json::json!({ "bashWaits": { "completed": completed, "yielded": yielded } });
+        }
+        emit(&fixture, tool_start);
+        emit(&fixture, tool_end);
+    }
+    emit(&fixture, message_end_event(assistant_message()));
+    emit(
+        &fixture,
+        AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        },
+    );
+    emit(&fixture, AgentEvent::AgentStart);
+    let runs = event_properties(&fixture.mock, "agent run completed").await;
+    assert_eq!(
+        (
+            &runs[0]["bash_wait_completed_count"],
+            &runs[0]["bash_wait_yielded_count"]
+        ),
+        (&serde_json::json!(3), &serde_json::json!(1))
+    );
+}
+
 /// Skills, RLM child usage, MCP connector use, kernel boots, and feature
 /// outcomes count into `agent session ended` instead of their own events.
 #[tokio::test]
@@ -865,6 +899,49 @@ async fn retries_fold_into_one_run_that_succeeds() {
     let all = serde_json::to_string(&fixture.mock.events()).unwrap();
     assert!(!all.contains("API Error"));
     assert!(!all.contains("/home/user/secret"));
+}
+
+/// The stream loop guard's interventions ride the run: a cut stream counts
+/// a trip, the retry after it counts a retry after a trip, and each
+/// repeated-tool-call nudge counts once.
+#[tokio::test]
+async fn loop_guard_interventions_ride_the_run() {
+    let fixture = fixture();
+    let telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    let mut cut = assistant_with_error("Model output started repeating itself");
+    cut.diagnostics = Some(vec![pa_agent::types::AssistantMessageDiagnostic {
+        kind: "provider_stream_failure".to_string(),
+        timestamp: 0,
+        error: None,
+        details: Some(serde_json::json!({ "kind": "repetition_loop" })),
+    }]);
+    emit(
+        &fixture,
+        AgentEvent::MessageStart {
+            message: user_message(),
+        },
+    );
+    attempt(&fixture, cut);
+    retry_start(&telemetry, 1, 10, false);
+    telemetry.note_tool_repeat_nudge();
+    attempt(&fixture, assistant_message());
+    telemetry.end().await.unwrap();
+
+    let runs = event_properties(&fixture.mock, "agent run completed").await;
+    let counts: Vec<&serde_json::Value> = [
+        "loop_guard_trip_count",
+        "loop_guard_retry_count",
+        "loop_guard_tool_repeat_nudge_count",
+    ]
+    .iter()
+    .map(|key| &runs[0][*key])
+    .collect();
+    let one = serde_json::json!(1);
+    assert_eq!(counts, vec![&one, &one, &one]);
 }
 
 /// A turn whose retries are exhausted is one run with the error outcome
@@ -1576,4 +1653,54 @@ async fn a_run_active_when_telemetry_turns_off_is_severed_not_merged() {
         serde_json::json!(0),
         "the off-period tool end never counts"
     );
+}
+
+/// Goal verification and budget facts ride their own `agent goal verification` event at session
+/// end (never new keys on `agent session ended`, which sits at the 128-key cap).
+#[tokio::test]
+async fn goal_verification_facts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        GoalTelemetryFact::CheckRun,
+        GoalTelemetryFact::CheckFailed,
+        GoalTelemetryFact::CheckSkipped,
+        GoalTelemetryFact::CheckRun,
+        GoalTelemetryFact::JudgeCall,
+        GoalTelemetryFact::JudgeNotMet,
+        GoalTelemetryFact::CostBudgetStop,
+    ] {
+        counters.note_goal(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent goal verification"]
+    );
+    let goal = &event_properties(&fixture.mock, "agent goal verification").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = goal
+        .iter()
+        .filter(|(key, _)| key.starts_with("goal_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "goal_check_run_count": 2,
+            "goal_check_failed_count": 1,
+            "goal_check_skipped_count": 1,
+            "goal_judge_call_count": 1,
+            "goal_judge_not_met_count": 1,
+            "goal_token_budget_stop_count": 0,
+            "goal_cost_budget_stop_count": 1,
+        })
+    );
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert!(ended.keys().all(|key| !key.starts_with("goal_")));
 }

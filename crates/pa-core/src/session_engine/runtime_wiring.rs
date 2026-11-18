@@ -458,6 +458,7 @@ fn convert_execute_result(
         diffs: result.diffs.unwrap_or_default(),
         sent_agent_messages: result.sent_agent_messages.unwrap_or_default(),
         bash_commands: result.bash_commands,
+        bash_waits: result.bash_waits,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
         timed_out_after_ms: result.timed_out_after_ms,
         ended_turn: result.ended_turn,

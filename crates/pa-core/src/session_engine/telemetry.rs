@@ -34,6 +34,7 @@ use serde_json::Value;
 
 use super::auto_retry::AutoRetryEvent;
 use super::error_classify::classify_error_message;
+use super::provider_retry::{provider_stream_failure_kind, REPETITION_LOOP_KIND};
 
 mod track;
 pub use track::{
@@ -300,6 +301,23 @@ struct ActiveRun {
     /// tools by name, every MCP and custom tool folded into `mcp` /
     /// `custom`: no raw tool names leave the machine).
     tool_summary: HashMap<ToolCategory, ToolCategoryStats>,
+    /// The run's bounded `bash()` awaits, folded from each `python_repl`
+    /// result's `bashWaits` details: finished inside the wait window vs
+    /// yielded a still-running snapshot.
+    bash_waits: crate::kernel::shared::KernelBashWaits,
+    /// The stream loop guard's interventions in the run.
+    loop_guard: LoopGuardCounts,
+}
+
+/// One run's stream loop guard interventions (`session_engine::loop_guard`).
+#[derive(Debug, Default)]
+struct LoopGuardCounts {
+    /// Model calls the guard cut for repeating themselves.
+    trips: u64,
+    /// Retries started after such a cut.
+    retries: u64,
+    /// Tool results that carried the repeated-call nudge.
+    tool_repeat_nudges: u64,
 }
 
 /// One tool category's per-run aggregates.
@@ -353,11 +371,19 @@ struct CounterValues {
     context_thinned_result_count: u64,
     context_thinned_chars_saved: u64,
     context_thinned_tokens_saved: u64,
+    cache_warm_sent_count: u64,
+    cache_warm_skipped_count: u64,
+    cache_warm_cost_usd: f64,
+    /// Net prompt-cache saving over the session's real requests: what the
+    /// cache reads saved against uncached input, less the write premium.
+    cache_savings_usd: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
     /// The kernel `todo.*`/`ask(...)` counters, reported by their own
     /// `agent todos and questions` event.
     interaction: InteractionCounts,
+    /// The `agent goal verification` counters.
+    goal: GoalVerificationCounts,
 }
 
 /// `agent todos and questions`: lists set, items newly done, and questions by outcome.
@@ -371,6 +397,36 @@ struct InteractionCounts {
     question_timed_out: u64,
     question_no_user: u64,
     question_cancelled: u64,
+}
+
+/// One goal verification or budget fact, counted into `agent goal verification`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTelemetryFact {
+    /// A `check` command ran.
+    CheckRun,
+    /// A `check` command ran and failed.
+    CheckFailed,
+    /// A failed `check` was not rerun over an unchanged workspace.
+    CheckSkipped,
+    /// A judge call ran.
+    JudgeCall,
+    /// A judge answered NOT MET (or cited no verifiable evidence).
+    JudgeNotMet,
+    /// The token budget stopped the goal.
+    TokenBudgetStop,
+    /// The dollar cap stopped the goal.
+    CostBudgetStop,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GoalVerificationCounts {
+    check_runs: u64,
+    check_failures: u64,
+    check_skips: u64,
+    judge_calls: u64,
+    judge_not_met: u64,
+    token_budget_stops: u64,
+    cost_budget_stops: u64,
 }
 
 impl SessionCounters {
@@ -452,6 +508,23 @@ impl SessionCounters {
         });
     }
 
+    /// One goal verification or budget fact (counts only: never a command or judge text).
+    pub fn note_goal(&self, fact: GoalTelemetryFact) {
+        self.with(|values| {
+            let counts = &mut values.goal;
+            let counter = match fact {
+                GoalTelemetryFact::CheckRun => &mut counts.check_runs,
+                GoalTelemetryFact::CheckFailed => &mut counts.check_failures,
+                GoalTelemetryFact::CheckSkipped => &mut counts.check_skips,
+                GoalTelemetryFact::JudgeCall => &mut counts.judge_calls,
+                GoalTelemetryFact::JudgeNotMet => &mut counts.judge_not_met,
+                GoalTelemetryFact::TokenBudgetStop => &mut counts.token_budget_stops,
+                GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
+            };
+            *counter += 1;
+        });
+    }
+
     /// An MCP connector call (the server name never uploads).
     pub fn note_mcp_connector_use(&self) {
         self.with(|values| values.mcp_connector_use_count += 1);
@@ -497,7 +570,31 @@ impl SessionCounters {
         });
     }
 
-    fn write_into(&self, properties: &mut Properties) {
+    /// One cache-warming refresh went out and answered, costing `cost_usd`.
+    pub(crate) fn note_cache_warm_sent(&self, cost_usd: f64) {
+        self.with(|values| {
+            values.cache_warm_sent_count += 1;
+            if cost_usd.is_finite() && cost_usd > 0.0 {
+                values.cache_warm_cost_usd += cost_usd;
+            }
+        });
+    }
+
+    /// An armed cache warmer stopped without sending (the saving no longer
+    /// cleared the threshold, a cap was reached, or its refresh failed).
+    pub(crate) fn note_cache_warm_skipped(&self) {
+        self.with(|values| values.cache_warm_skipped_count += 1);
+    }
+
+    /// One real request's prompt-cache saving in dollars (negative when its
+    /// cache writes cost more than its reads saved).
+    pub(crate) fn note_cache_savings(&self, savings_usd: f64) {
+        if savings_usd.is_finite() {
+            self.with(|values| values.cache_savings_usd += savings_usd);
+        }
+    }
+
+    pub(super) fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
                 ("skill_use_count", values.skill_use_count),
@@ -567,6 +664,29 @@ impl SessionCounters {
                 ] {
                     properties.set(key, Value::from(value));
                 }
+            }
+            // Sessions that never cached or warmed keep their ended event unchanged.
+            if values.cache_warm_sent_count + values.cache_warm_skipped_count > 0
+                || values.cache_savings_usd != 0.0
+            {
+                properties.set(
+                    "cache_warm_sent_count",
+                    Value::from(values.cache_warm_sent_count),
+                );
+                properties.set(
+                    "cache_warm_skipped_count",
+                    Value::from(values.cache_warm_skipped_count),
+                );
+                properties.set(
+                    "cache_warm_cost_usd",
+                    Value::from(values.cache_warm_cost_usd),
+                );
+                // The cost kind is non-negative: a session whose writes outweighed
+                // its reads reports no saving.
+                properties.set(
+                    "cache_savings_usd",
+                    Value::from(values.cache_savings_usd.max(0.0)),
+                );
             }
             for (key, count) in &values.feature_outcomes {
                 properties.set(key, Value::from(*count));
@@ -726,6 +846,15 @@ impl SessionTelemetry {
                 delay_ms, reason, ..
             } => {
                 run.retry_count += 1;
+                if run
+                    .last_assistant
+                    .as_ref()
+                    .and_then(provider_stream_failure_kind)
+                    .as_deref()
+                    == Some(REPETITION_LOOP_KIND)
+                {
+                    run.loop_guard.retries += 1;
+                }
                 run.retry_wait_ms += *delay_ms;
                 run.retry_pending = true;
                 if matches!(reason, super::auto_retry::RetryStartReason::Backup { .. }) {
@@ -733,6 +862,23 @@ impl SessionTelemetry {
                 }
             }
             AutoRetryEvent::End { .. } => run.retry_pending = false,
+        }
+    }
+
+    /// A tool result carried the loop guard's repeated-call nudge
+    /// (`session_engine::loop_guard`); counts toward the active run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_tool_repeat_nudge(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if let Some(run) = state.active_run.as_mut() {
+            run.loop_guard.tool_repeat_nudges += 1;
         }
     }
 
@@ -860,6 +1006,25 @@ impl SessionTelemetry {
         }
         self.counters.write_into(&mut properties);
         self.client.track("agent session ended", properties);
+        // A session whose goals never ran a verifier or hit a budget sends no goal event.
+        let mut goal = GoalVerificationCounts::default();
+        self.counters.with(|values| goal = values.goal);
+        if goal != GoalVerificationCounts::default() {
+            let mut goal_properties = self.session_properties();
+            for (key, value) in [
+                ("goal_check_run_count", goal.check_runs),
+                ("goal_check_failed_count", goal.check_failures),
+                ("goal_check_skipped_count", goal.check_skips),
+                ("goal_judge_call_count", goal.judge_calls),
+                ("goal_judge_not_met_count", goal.judge_not_met),
+                ("goal_token_budget_stop_count", goal.token_budget_stops),
+                ("goal_cost_budget_stop_count", goal.cost_budget_stops),
+            ] {
+                goal_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent goal verification", goal_properties);
+        }
         self.client.flush().await
     }
 
@@ -1000,6 +1165,8 @@ fn handle_event(
                 error_category_counts: std::collections::BTreeMap::new(),
                 compaction_duration_ms: 0,
                 tool_summary: HashMap::new(),
+                bash_waits: crate::kernel::shared::KernelBashWaits::default(),
+                loop_guard: LoopGuardCounts::default(),
             });
         }
         AgentEvent::MessageStart { message } => {
@@ -1085,6 +1252,8 @@ fn handle_event(
                 // message end.
                 resolve_trigger(&mut state, RunTrigger::Continuation);
                 let is_error = assistant.stop_reason == StopReason::Error;
+                let repetition_loop = provider_stream_failure_kind(&assistant).as_deref()
+                    == Some(REPETITION_LOOP_KIND);
                 let category = error_category(Some(&assistant))
                     .as_str()
                     .and_then(|category| {
@@ -1106,6 +1275,9 @@ fn handle_event(
                     if is_error {
                         run.usage_complete = false;
                         run.model_error_count += 1;
+                        if repetition_loop {
+                            run.loop_guard.trips += 1;
+                        }
                         if let Some(category) = category {
                             *run.error_category_counts.entry(category).or_default() += 1;
                         }
@@ -1122,8 +1294,8 @@ fn handle_event(
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
             tool_name,
+            result,
             is_error,
-            ..
         } => {
             let started_at = state.tool_starts.remove(&tool_call_id);
             let duration_ms = started_at.map_or(0, |start| now.saturating_sub(start));
@@ -1139,6 +1311,11 @@ fn handle_event(
                 tool_stats.failures += u64::from(is_error);
                 tool_stats.duration_ms += duration_ms;
                 tool_stats.max_duration_ms = tool_stats.max_duration_ms.max(duration_ms);
+                if let Some(waits) = result.details.get("bashWaits") {
+                    let count = |key: &str| waits.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    run.bash_waits.completed += count("completed");
+                    run.bash_waits.yielded += count("yielded");
+                }
             }
         }
         AgentEvent::AgentEnd { .. } => {
@@ -1218,6 +1395,15 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     properties.set("compaction_count", Value::from(run.compaction_count));
     properties.set("retry_count", Value::from(run.retry_count));
     properties.set("failover_count", Value::from(run.failover_count));
+    properties.set("loop_guard_trip_count", Value::from(run.loop_guard.trips));
+    properties.set(
+        "loop_guard_retry_count",
+        Value::from(run.loop_guard.retries),
+    );
+    properties.set(
+        "loop_guard_tool_repeat_nudge_count",
+        Value::from(run.loop_guard.tool_repeat_nudges),
+    );
     properties.set(
         "provider_category",
         Value::from(provider_category(
@@ -1284,6 +1470,16 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
         opt_value(median(&mut run.model_latencies)),
     );
     properties.set("model_error_count", Value::from(run.model_error_count));
+    if run.bash_waits != crate::kernel::shared::KernelBashWaits::default() {
+        properties.set(
+            "bash_wait_completed_count",
+            Value::from(run.bash_waits.completed),
+        );
+        properties.set(
+            "bash_wait_yielded_count",
+            Value::from(run.bash_waits.yielded),
+        );
+    }
     for (category, count) in &run.error_category_counts {
         properties.set(&format!("error_{category}_count"), Value::from(*count));
     }

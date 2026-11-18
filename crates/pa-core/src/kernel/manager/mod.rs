@@ -23,15 +23,16 @@ use crate::kernel::shared::FACTORY_ACTIVITY_ACTIONS;
 use crate::kernel::shared::{
     parse_attachment_display, parse_diff_display, parse_sent_agent_message, ExecuteOptions,
     ExecuteResult, ExecuteStatus, HostRequestPayload, KernelAttachment, KernelBashCommands,
-    KernelDiffDisplay, KernelError, KernelManagerOptions, KernelSentAgentMessage,
+    KernelBashWaits, KernelDiffDisplay, KernelError, KernelManagerOptions, KernelSentAgentMessage,
     KernelShutdownOptions, LateSentAgentMessageCallback, StreamName, AGENT_MESSAGE_DISPLAY_MIME,
     ATTACHMENT_DISPLAY_MIME, BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME,
-    DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_SNAPSHOT_DEBOUNCE_MS, DIFF_DISPLAY_MIME,
-    END_TURN_REQUEST_TYPE, FACTIVITY_SETTLE_TIMEOUT_MS, FACTIVITY_WATCH_TIMEOUT_MS_CAP,
-    HOST_REQUEST_SHUTDOWN_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS, KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE,
-    KERNEL_BUSY_INTERRUPT_INTERVAL_MS, KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS,
-    KERNEL_STDERR_LOG_BUDGET_MARKER, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
-    MAX_KERNEL_STDERR_CHARS, MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
+    BASH_WAIT_DISPLAY_MIME, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_SNAPSHOT_DEBOUNCE_MS,
+    DIFF_DISPLAY_MIME, END_TURN_REQUEST_TYPE, FACTIVITY_SETTLE_TIMEOUT_MS,
+    FACTIVITY_WATCH_TIMEOUT_MS_CAP, HOST_REQUEST_SHUTDOWN_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS,
+    KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
+    KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, KERNEL_STDERR_LOG_BUDGET_MARKER,
+    MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_KERNEL_STDERR_CHARS,
+    MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
     RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, SNAPSHOT_MAX_YIELD_MS,
     TRANSCRIPT_READ_DISPLAY_MIME,
 };
@@ -86,6 +87,7 @@ struct ExecBuffers {
     attachment_oversized: bool,
     sent_agent_messages: Vec<KernelSentAgentMessage>,
     bash_commands: Option<KernelBashCommands>,
+    bash_waits: KernelBashWaits,
     transcript_reads: Vec<Value>,
     background_output: String,
     background_output_chars: usize,
@@ -131,6 +133,7 @@ impl InternalExecuteResult {
                 attachments: None,
                 sent_agent_messages: None,
                 bash_commands: None,
+                bash_waits: KernelBashWaits::default(),
                 transcript_reads: None,
                 background_output: None,
                 ended_turn: false,
@@ -393,7 +396,9 @@ impl Drop for Inner {
         self.supersede_protocol_repair();
         lock(&self.guarded).lifecycle.transition(Lifecycle::Defunct);
         live_kernels::remove_inner(self);
-        self.cleanup_resources(Signal::Kill);
+        if let Some(pid) = self.cleanup_resources(Signal::Kill) {
+            teardown::await_killed_exit(pid);
+        }
     }
 }
 
@@ -631,9 +636,12 @@ impl ReplKernelManager {
         opts: ExecuteOptions,
         execution_timeout_ms: Option<u64>,
     ) -> anyhow::Result<InternalExecuteResult> {
+        // The same filter the abort watcher applies: zero disables the limit.
+        let cell_timeout_ms = opts.cell_timeout_ms.filter(|ms| *ms > 0);
         self.enqueue_request(
             Request::Execute {
                 code: code.to_string(),
+                cell_timeout_ms,
             },
             opts,
             execution_timeout_ms,
@@ -973,7 +981,9 @@ impl ReplKernelManager {
             .lifecycle
             .transition(Lifecycle::Defunct);
         live_kernels::remove_inner(&self.inner);
-        self.inner.cleanup_resources(Signal::Kill);
+        if let Some(pid) = self.inner.cleanup_resources(Signal::Kill) {
+            teardown::await_killed_exit(pid);
+        }
     }
 
     /// Synchronous best-effort cleanup. Safe to call from drop paths.

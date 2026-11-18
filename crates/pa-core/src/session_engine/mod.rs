@@ -8,6 +8,7 @@ pub mod auto_retry;
 pub mod auxiliary_model;
 pub mod bash_notices;
 pub mod branch_summarization;
+mod cache_warming;
 pub mod compact_session;
 pub mod compaction;
 pub mod compaction_exec;
@@ -20,6 +21,8 @@ pub mod factory_host;
 pub mod goal_boundary;
 pub mod goal_continuation;
 pub mod goal_driver;
+mod goal_judge;
+mod goal_verification;
 pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;
@@ -53,6 +56,7 @@ pub mod turn_boundary;
 
 mod admission;
 mod compaction_arms;
+mod loop_guard;
 mod wiring;
 
 use std::sync::Arc;

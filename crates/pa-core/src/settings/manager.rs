@@ -10,7 +10,8 @@ use super::load::from_value_lenient;
 use super::merge::{deep_merge, migrate};
 use super::storage::{SettingsScope, SettingsStorage};
 use super::types::{
-    QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting, UpdateChannel,
+    CacheRetentionSetting, CacheWarmingSetting, LoopGuardSensitivity, QueueModeSetting, Settings,
+    ThinkingLevelSetting, TransportSetting, UpdateChannel,
 };
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
@@ -882,6 +883,42 @@ impl SettingsManager {
         self.merged.request_timing.unwrap_or(false)
     }
 
+    /// `cacheRetention`: unset means `short`, the provider's default
+    /// lifetime. The `PI_CACHE_RETENTION` env override is applied by the
+    /// session engine, which reads it per request.
+    #[must_use]
+    pub fn get_cache_retention(&self) -> CacheRetentionSetting {
+        self.merged
+            .cache_retention
+            .unwrap_or(CacheRetentionSetting::Short)
+    }
+
+    /// `cacheWarming`: unset means `active` (warm only while the next
+    /// request is near-certain; see [`CacheWarmingSetting`]).
+    #[must_use]
+    pub fn get_cache_warming(&self) -> CacheWarmingSetting {
+        self.merged
+            .cache_warming
+            .unwrap_or(CacheWarmingSetting::Active)
+    }
+
+    /// The stream loop guard's level for this session's requests: `None` leaves each request to
+    /// its model family's default (`loopGuard.sensitivity` unset or `auto`), and a disabled guard
+    /// (`loopGuard.enabled: false`) is `Off`.
+    #[must_use]
+    pub fn get_loop_guard(&self) -> Option<pa_agent::types::LoopGuardLevel> {
+        use pa_agent::types::LoopGuardLevel;
+        let settings = self.merged.loop_guard.as_ref();
+        if settings.and_then(|settings| settings.enabled) == Some(false) {
+            return Some(LoopGuardLevel::Off);
+        }
+        match settings.and_then(|settings| settings.sensitivity) {
+            None | Some(LoopGuardSensitivity::Auto) => None,
+            Some(LoopGuardSensitivity::Exact) => Some(LoopGuardLevel::Exact),
+            Some(LoopGuardSensitivity::Semantic) => Some(LoopGuardLevel::Semantic),
+        }
+    }
+
     #[must_use]
     pub fn get_session_dir(&self) -> Option<std::path::PathBuf> {
         let session_dir = self.merged.session_dir.as_ref()?;
@@ -1091,6 +1128,33 @@ mod tests {
                 .all(|message| message.contains("outside the project root")
                     && !message.contains("failed to parse")),
             "{messages:?}"
+        );
+    }
+
+    /// `loopGuard`: unset or `auto` leaves each request to its model family, `enabled: false`
+    /// switches the guard off whatever the sensitivity, and a named sensitivity applies.
+    #[test]
+    fn the_loop_guard_setting_resolves_to_a_level() {
+        use pa_agent::types::LoopGuardLevel;
+        let levels: Vec<Option<LoopGuardLevel>> = [
+            serde_json::json!({}),
+            serde_json::json!({"loopGuard": {"sensitivity": "auto"}}),
+            serde_json::json!({"loopGuard": {"enabled": false, "sensitivity": "semantic"}}),
+            serde_json::json!({"loopGuard": {"enabled": true, "sensitivity": "exact"}}),
+            serde_json::json!({"loopGuard": {"sensitivity": "semantic"}}),
+        ]
+        .iter()
+        .map(|document| SettingsManager::in_memory(&from_value_lenient(document)).get_loop_guard())
+        .collect();
+        assert_eq!(
+            levels,
+            vec![
+                None,
+                None,
+                Some(LoopGuardLevel::Off),
+                Some(LoopGuardLevel::Exact),
+                Some(LoopGuardLevel::Semantic),
+            ]
         );
     }
 

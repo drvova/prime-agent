@@ -89,9 +89,12 @@ _BACKGROUND_IMPORTS_FORK_WAIT_S = 30.0
 
 
 class _CellExecution:
-    def __init__(self) -> None:
+    def __init__(self, deadline: float | None = None) -> None:
         self.finished = asyncio.Event()
         self.owner: asyncio.Task[Any] | None = None
+        # time.monotonic() at which the host interrupts this cell (its
+        # `timeoutMs`), or None when the host armed no limit.
+        self.deadline = deadline
 
 
 # Asyncio tasks copy cell context at creation, so detached tasks retain their
@@ -178,6 +181,15 @@ def current_cell_completion_context() -> tuple[asyncio.Event, asyncio.Task[Any] 
     if execution is None:
         return None
     return execution.finished, execution.owner
+
+
+def current_cell_remaining_seconds() -> float | None:
+    """Seconds left before the host interrupts the calling cell, or None when
+    the cell has no time limit (or the caller outlived its cell)."""
+    execution = _current_cell_execution.get()
+    if execution is None or execution.deadline is None or execution.finished.is_set():
+        return None
+    return execution.deadline - time.monotonic()
 
 
 def active_cell_task() -> asyncio.Task[Any] | None:
@@ -687,7 +699,15 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
     cell_id = req["id"]
     _cell_counter += 1
     filename = f"<cell-{_cell_counter}>"
-    execution = _CellExecution()
+    # The host's clock started as the request went on the wire, a little
+    # before this read: the deadline errs late, so its readers keep a margin.
+    timeout_ms = req.get("timeoutMs")
+    deadline = (
+        time.monotonic() + timeout_ms / 1000
+        if isinstance(timeout_ms, int) and not isinstance(timeout_ms, bool) and timeout_ms > 0
+        else None
+    )
+    execution = _CellExecution(deadline)
     cell_token = _current_cell.set(cell_id)
     execution_token = _current_cell_execution.set(execution)
     try:

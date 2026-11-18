@@ -13,7 +13,8 @@ use crate::goals::GoalHostResponse;
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::session::manager::SessionManager;
 
-use super::goal_driver::GoalDriver;
+use super::goal_driver::{ClaimSettlement, GoalDriver, GoalTelemetrySlot};
+use super::goal_verification::{GoalClaim, GoalClaimVerifier};
 use super::host_requests::{
     handle_goal_host_request, handle_rlm_heartbeat_host_request, RlmHeartbeatMutationHook,
     SessionBinding,
@@ -36,6 +37,10 @@ pub struct SessionRuntime {
     /// Invoked after a kernel `rlm_heartbeat.*` mutation; `None` when
     /// the embedding owns no scheduler to re-arm.
     cron_mutation_hook: Option<RlmHeartbeatMutationHook>,
+    /// Verifies `goal.complete()` claims on goals created with `check=` / `verify=`.
+    goal_verifier: Arc<GoalClaimVerifier>,
+    /// The session counters goal facts count into, bound by the engine.
+    goal_telemetry: GoalTelemetrySlot,
 }
 
 impl SessionRuntime {
@@ -50,14 +55,33 @@ impl SessionRuntime {
         active_session_id: String,
         binding: SessionBinding,
     ) -> Self {
+        let goal_telemetry = GoalTelemetrySlot::default();
+        let mut driver = GoalDriver::load_persisted(session);
+        driver.set_telemetry_slot(Arc::clone(&goal_telemetry));
+        let goal_verifier = Arc::new(GoalClaimVerifier::new(
+            Arc::new(crate::autonomous::ShellGateRunner::new(binding.cwd.clone())),
+            Arc::clone(&goal_telemetry),
+        ));
         Self {
-            goal_driver: Arc::new(Mutex::new(GoalDriver::load_persisted(session))),
+            goal_driver: Arc::new(Mutex::new(driver)),
             cron_store,
             active_session_id,
             binding,
             goal_complete_purge: None,
             cron_mutation_hook: None,
+            goal_verifier,
+            goal_telemetry,
         }
+    }
+
+    /// The completion-claim verifier (the engine binds its judge).
+    pub(crate) fn goal_verifier(&self) -> &Arc<GoalClaimVerifier> {
+        &self.goal_verifier
+    }
+
+    /// The slot the engine binds the session counters into.
+    pub(crate) fn goal_telemetry(&self) -> &GoalTelemetrySlot {
+        &self.goal_telemetry
     }
 
     /// Set the post-completion purge seam (the daemon worker's queue purge).
@@ -98,6 +122,7 @@ impl SessionRuntime {
         for request_type in ["goal.get", "goal.create", "goal.complete"] {
             let driver = driver.clone();
             let session = goal_session.clone();
+            let verifier = Arc::clone(&self.goal_verifier);
             let purge = if request_type == "goal.complete" {
                 goal_complete_purge.clone()
             } else {
@@ -109,7 +134,50 @@ impl SessionRuntime {
                     let driver = driver.clone();
                     let session = session.clone();
                     let purge = purge.clone();
+                    let verifier = Arc::clone(&verifier);
                     Box::pin(async move {
+                        if request_type == "goal.create"
+                            && payload.data.get("verify").and_then(Value::as_str) == Some("judge")
+                            && !verifier.has_judge()
+                        {
+                            anyhow::bail!(
+                                "goal.create verify=\"judge\" is unavailable in this session"
+                            );
+                        }
+                        let claim = if request_type == "goal.complete" {
+                            GoalClaim::of(driver.lock().await.state())
+                        } else {
+                            None
+                        };
+                        if let Some(claim) = claim {
+                            // Verified without the driver lock: turn-end accounting never
+                            // waits on a running check or judge.
+                            let report = verifier.verify(&claim).await;
+                            let (settlement, response) = {
+                                let mut driver = driver.lock().await;
+                                let mut session = session.lock().await;
+                                let settlement = driver.settle_completion_claim(
+                                    &mut session,
+                                    &claim.goal_id,
+                                    report.gap.clone(),
+                                )?;
+                                let mut response = crate::goals::goal_host_response(
+                                    &driver.state_with_creation_elapsed(),
+                                    true,
+                                );
+                                response.verification = Some(report);
+                                (settlement, response)
+                            };
+                            match settlement {
+                                ClaimSettlement::Completed => {
+                                    if let Some(purge) = purge {
+                                        purge();
+                                    }
+                                }
+                                ClaimSettlement::GapRecorded | ClaimSettlement::Stale => {}
+                            }
+                            return host_ok(&response);
+                        }
                         let response = {
                             let mut driver = driver.lock().await;
                             let mut session = session.lock().await;

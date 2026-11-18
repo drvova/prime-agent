@@ -2,11 +2,15 @@
 
 use std::fmt::{self, Write};
 use std::io::{self};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm_winapi::{Console, ConsoleMode, Coord, Handle, ScreenBuffer, Size};
 use winapi::{
     shared::minwindef::DWORD,
-    um::wincon::{SetConsoleTitleW, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT},
+    um::wincon::{
+        SetConsoleTitleW, ENABLE_ECHO_INPUT, ENABLE_LINE_INPUT, ENABLE_PROCESSED_INPUT,
+        ENABLE_VIRTUAL_TERMINAL_INPUT,
+    },
 };
 
 use crate::{
@@ -16,6 +20,12 @@ use crate::{
 
 /// bits which can't be set in raw mode
 const NOT_RAW_MODE_MASK: DWORD = ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT;
+
+/// Whether `enable_raw_mode` cleared an inherited `ENABLE_VIRTUAL_TERMINAL_INPUT`, so
+/// `disable_raw_mode` hands it back. With that bit on, the console delivers every keystroke as
+/// vk=0 records carrying the VT bytes (an arrow is `ESC`, `[`, `D`), which this reader does not
+/// parse; a parent shell or an earlier program can leave it set.
+static VT_INPUT_CLEARED: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn is_raw_mode_enabled() -> std::io::Result<bool> {
     let console_mode = ConsoleMode::from(Handle::current_in_handle()?);
@@ -33,9 +43,13 @@ pub(crate) fn enable_raw_mode() -> std::io::Result<()> {
 
     let dw_mode = console_mode.mode()?;
 
-    let new_mode = dw_mode & !NOT_RAW_MODE_MASK;
+    let new_mode = dw_mode & !NOT_RAW_MODE_MASK & !ENABLE_VIRTUAL_TERMINAL_INPUT;
 
     console_mode.set_mode(new_mode)?;
+
+    if dw_mode & ENABLE_VIRTUAL_TERMINAL_INPUT != 0 {
+        VT_INPUT_CLEARED.store(true, Ordering::SeqCst);
+    }
 
     Ok(())
 }
@@ -45,7 +59,10 @@ pub(crate) fn disable_raw_mode() -> std::io::Result<()> {
 
     let dw_mode = console_mode.mode()?;
 
-    let new_mode = dw_mode | NOT_RAW_MODE_MASK;
+    let mut new_mode = dw_mode | NOT_RAW_MODE_MASK;
+    if VT_INPUT_CLEARED.swap(false, Ordering::SeqCst) {
+        new_mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+    }
 
     console_mode.set_mode(new_mode)?;
 

@@ -29,12 +29,18 @@ await goal.complete()
   completed or errored goal is replaced by the new one. Only create a goal when
   the user or system/developer instructions explicitly ask for a persistent
   long-running goal; do not infer goals from ordinary tasks. Set `token_budget`
-  only when an explicit token budget is requested.
+  only when an explicit token budget is requested. Keyword options:
+  `check="cargo test -q"` (a shell command that must exit 0 before completion),
+  `verify="judge"` (a read-only judge that must answer MET citing evidence
+  already in the conversation), and `max_cost_usd` (a dollar cap on the
+  goal's provider spend).
 - `await goal.complete()` — mark the existing goal achieved. Use only when the
   objective has actually been achieved and no required work remains; do not
   call it merely because the budget is nearly exhausted or because you are
   stopping work. When the result includes a `completion_budget_report`, report
-  that final usage to the user.
+  that final usage to the user. On a goal with `check`/`verify` the claim is
+  verified first: when `verification["passed"]` is false the goal stays active;
+  close `verification["gap"]` before claiming again.
 
 ## Rules
 

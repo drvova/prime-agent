@@ -9,9 +9,14 @@ pub use driver::{
     AutonomousDriver, AutonomousFollowUp, AutonomousFollowUpFuture, AutonomousStopReason,
     ShellAutonomousDriver,
 };
+pub(crate) use gates::{
+    run_gate_lane, GateLaneMemory, GateLanePolicy, GateOutputCap, GATE_NOT_RERUN_EXIT_TEXT,
+};
 pub use gates::{
     should_autonomously_continue, ChildProcessResult, GateCommandRunner, ShellGateRunner,
 };
+#[cfg(test)]
+pub(crate) use gates::{GateRunFuture, SnapshotFuture};
 
 use std::collections::HashMap;
 

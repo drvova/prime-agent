@@ -154,65 +154,117 @@ async fn run_autonomous_quality_gates(
     gates: &dyn GateCommandRunner,
 ) -> AutonomousGateResult {
     let commands = state.gates.commands.clone();
-    let max_retries = state.gates.max_retries;
-    let gate_timeout_ms = state.gates.timeout_ms;
-    for command in &commands {
-        // A failed gate is not re-run over an unchanged workspace: the
-        // snapshot taken after the failure must differ first.
+    run_gate_lane(
+        &GateLanePolicy {
+            commands: &commands,
+            max_retries: state.gates.max_retries,
+            timeout_ms: state.gates.timeout_ms,
+            output_cap: GateOutputCap::Head(MAX_GATE_OUTPUT_CHARS),
+            unchanged_note: "The autonomous gate was not rerun because the workspace has not changed since this failure. Edit source files, tests, or a blocker artifact before attempting to finish again.",
+        },
+        GateLaneMemory {
+            attempts: &mut state.gate_attempts,
+            last_failure: &mut state.last_gate_failure,
+            last_failure_snapshot: &mut state.last_gate_failure_snapshot,
+        },
+        gates,
+    )
+    .await
+}
+
+/// The exit text of a failed gate that was not rerun over an unchanged workspace.
+pub(crate) const GATE_NOT_RERUN_EXIT_TEXT: &str =
+    "not rerun: workspace unchanged since previous failed gate";
+
+/// How much of a failing gate's output its failure record keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GateOutputCap {
+    /// The first N characters (the autonomous continuation text).
+    Head(usize),
+    /// The last N characters, where test runners print their summary (the goal check gap).
+    Tail(usize),
+}
+
+/// What one gate lane runs and how it reports: the autonomous quality gates and a goal's
+/// `check` are two lanes over the same runner and snapshot dedupe.
+pub(crate) struct GateLanePolicy<'a> {
+    pub(crate) commands: &'a [String],
+    pub(crate) max_retries: u64,
+    pub(crate) timeout_ms: u64,
+    pub(crate) output_cap: GateOutputCap,
+    /// The output recorded for a failure that was not rerun over an unchanged workspace.
+    pub(crate) unchanged_note: &'static str,
+}
+
+/// A lane's failure memory, borrowed from its owner: per-command attempt counters, the last
+/// failure, and the workspace snapshot taken right after it.
+pub(crate) struct GateLaneMemory<'a> {
+    pub(crate) attempts: &'a mut std::collections::HashMap<String, u64>,
+    pub(crate) last_failure: &'a mut Option<AgentAutonomousGateFailure>,
+    pub(crate) last_failure_snapshot: &'a mut Option<GitWorktreeSnapshot>,
+}
+
+/// Run a lane's commands in order; the first failure wins. A failed command is not rerun over an
+/// unchanged workspace: the snapshot taken after the failure must differ first.
+pub(crate) async fn run_gate_lane(
+    policy: &GateLanePolicy<'_>,
+    memory: GateLaneMemory<'_>,
+    gates: &dyn GateCommandRunner,
+) -> AutonomousGateResult {
+    let GateLaneMemory {
+        attempts,
+        last_failure,
+        last_failure_snapshot,
+    } = memory;
+    let max_retries = policy.max_retries;
+    for command in policy.commands {
         let current_snapshot = gates.capture_snapshot().await;
-        let same_failure = state
-            .last_gate_failure
+        let same_failure = last_failure
             .as_ref()
             .is_some_and(|failure| &failure.command == command)
-            && state.last_gate_failure_snapshot.is_some()
-            && snapshots_equal(
-                current_snapshot.as_ref(),
-                state.last_gate_failure_snapshot.as_ref(),
-            );
+            && last_failure_snapshot.is_some()
+            && snapshots_equal(current_snapshot.as_ref(), last_failure_snapshot.as_ref());
         if same_failure {
-            let attempt = state.gate_attempts.get(command).copied().unwrap_or(
-                state
-                    .last_gate_failure
-                    .as_ref()
-                    .map_or(0, |failure| failure.attempt),
-            ) + 1;
-            state.gate_attempts.insert(command.clone(), attempt);
-            let mut failure = state.last_gate_failure.clone().unwrap();
+            let attempt = attempts
+                .get(command)
+                .copied()
+                .unwrap_or(last_failure.as_ref().map_or(0, |failure| failure.attempt))
+                + 1;
+            attempts.insert(command.clone(), attempt);
+            let mut failure = last_failure.clone().unwrap();
             failure.attempt = attempt;
-            failure.exit_text =
-                "not rerun: workspace unchanged since previous failed gate".to_string();
-            failure.output = "The autonomous gate was not rerun because the workspace has not changed since this failure. Edit source files, tests, or a blocker artifact before attempting to finish again.".to_string();
-            state.last_gate_failure = Some(failure);
+            failure.exit_text = GATE_NOT_RERUN_EXIT_TEXT.to_string();
+            failure.output = policy.unchanged_note.to_string();
+            *last_failure = Some(failure);
             return gate_attempt_result(attempt, max_retries);
         }
-        let result = gates.run_gate(command, gate_timeout_ms).await;
+        let result = gates.run_gate(command, policy.timeout_ms).await;
         let Ok(result) = result else {
             // A spawn/IO failure counts as a failed attempt.
-            let attempt = state.gate_attempts.get(command).copied().unwrap_or(0) + 1;
-            state.gate_attempts.insert(command.clone(), attempt);
-            state.last_gate_failure = Some(AgentAutonomousGateFailure {
+            let attempt = attempts.get(command).copied().unwrap_or(0) + 1;
+            attempts.insert(command.clone(), attempt);
+            *last_failure = Some(AgentAutonomousGateFailure {
                 command: command.clone(),
                 attempt,
                 exit_text: "failed to run".to_string(),
                 output: String::new(),
             });
-            state.last_gate_failure_snapshot = None;
+            *last_failure_snapshot = None;
             return gate_attempt_result(attempt, max_retries);
         };
         if result.status == Some(0) && result.error.is_none() && !result.timed_out {
-            state.gate_attempts.insert(command.clone(), 0);
-            if state
-                .last_gate_failure
+            attempts.insert(command.clone(), 0);
+            if last_failure
                 .as_ref()
                 .is_some_and(|failure| &failure.command == command)
             {
-                state.last_gate_failure = None;
-                state.last_gate_failure_snapshot = None;
+                *last_failure = None;
+                *last_failure_snapshot = None;
             }
             continue;
         }
-        let attempt = state.gate_attempts.get(command).copied().unwrap_or(0) + 1;
-        state.gate_attempts.insert(command.clone(), attempt);
+        let attempt = attempts.get(command).copied().unwrap_or(0) + 1;
+        attempts.insert(command.clone(), attempt);
         let output = [result.stdout.clone(), result.stderr.clone()]
             .into_iter()
             .filter(|text| !text.is_empty())
@@ -220,17 +272,17 @@ async fn run_autonomous_quality_gates(
             .join("\n")
             .trim()
             .to_string();
-        state.last_gate_failure = Some(AgentAutonomousGateFailure {
+        *last_failure = Some(AgentAutonomousGateFailure {
             command: command.clone(),
             attempt,
             exit_text: format_process_exit(&result),
-            output: truncate_gate_output(&output, result.output_truncated),
+            output: truncate_gate_output(&output, result.output_truncated, policy.output_cap),
         });
-        state.last_gate_failure_snapshot = gates.capture_snapshot().await;
+        *last_failure_snapshot = gates.capture_snapshot().await;
         return gate_attempt_result(attempt, max_retries);
     }
-    state.last_gate_failure = None;
-    state.last_gate_failure_snapshot = None;
+    *last_failure = None;
+    *last_failure_snapshot = None;
     AutonomousGateResult::Passed
 }
 
@@ -260,12 +312,25 @@ fn format_process_exit(result: &ChildProcessResult) -> String {
     }
 }
 
-fn truncate_gate_output(output: &str, was_truncated: bool) -> String {
-    if output.chars().count() <= MAX_GATE_OUTPUT_CHARS && !was_truncated {
+fn truncate_gate_output(output: &str, was_truncated: bool, cap: GateOutputCap) -> String {
+    let (GateOutputCap::Head(max_chars) | GateOutputCap::Tail(max_chars)) = cap;
+    let chars = output.chars().count();
+    if chars <= max_chars && !was_truncated {
         return output.to_string();
     }
-    let prefix: String = output.chars().take(MAX_GATE_OUTPUT_CHARS).collect();
-    format!("{prefix}\n... [truncated]")
+    match cap {
+        GateOutputCap::Head(_) => {
+            let prefix: String = output.chars().take(max_chars).collect();
+            format!("{prefix}\n... [truncated]")
+        }
+        GateOutputCap::Tail(_) => {
+            let suffix: String = output
+                .chars()
+                .skip(chars.saturating_sub(max_chars))
+                .collect();
+            format!("[truncated] ...\n{suffix}")
+        }
+    }
 }
 
 /// Pathspec entries excluded from gate snapshots: harness workspaces churn

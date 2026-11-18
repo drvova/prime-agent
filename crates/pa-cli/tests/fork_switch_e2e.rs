@@ -652,6 +652,54 @@ fn fork_tags_never_match_the_official_release_filters() {
     }
 }
 
+/// The fork release cuts itself after a green `ci` run on a push to main,
+/// and builds the commit that run tested (workflow_run.head_sha, carried as
+/// tag-check's `sha`), never main's tip at the time the release starts.
+#[test]
+fn the_fork_workflow_releases_after_green_ci_on_main() {
+    let path = repo_root().join(".github/workflows/fork-release.yml");
+    let text = std::fs::read_to_string(&path).expect("read the workflow");
+    let workflow: serde_yaml::Value = serde_yaml::from_str(&text).expect("the workflow parses");
+    let trigger: serde_yaml::Value =
+        serde_yaml::from_str("{workflows: [ci], types: [completed], branches: [main]}")
+            .expect("the expected trigger parses");
+    assert_eq!(workflow["on"]["workflow_run"], trigger);
+    let guard = workflow["jobs"]["tag-check"]["if"]
+        .as_str()
+        .expect("tag-check guard");
+    for condition in [
+        "github.repository == 'drvova/prime-agent'",
+        "github.event.workflow_run.conclusion == 'success'",
+        "github.event.workflow_run.event == 'push'",
+    ] {
+        assert!(guard.contains(condition), "tag-check requires {condition}");
+    }
+    let mut checkouts = Vec::new();
+    for job in ["catalog-ref", "build-gnu", "build-windows", "publish"] {
+        for step in workflow["jobs"][job]["steps"]
+            .as_sequence()
+            .expect("job steps")
+        {
+            if step["uses"]
+                .as_str()
+                .is_some_and(|uses| uses.starts_with("actions/checkout@"))
+            {
+                checkouts.push((job, step["with"]["ref"].as_str().map(str::to_string)));
+            }
+        }
+    }
+    let sha = Some("${{ needs.tag-check.outputs.sha }}".to_string());
+    assert_eq!(
+        checkouts,
+        vec![
+            ("catalog-ref", sha.clone()),
+            ("build-gnu", sha.clone()),
+            ("build-windows", sha.clone()),
+            ("publish", sha)
+        ]
+    );
+}
+
 /// A fork binary bundles install-rust.sh for `update --rollback` and
 /// `--archive`: every build job renders the fork knobs into it BEFORE it
 /// compiles, with the same distribution arguments as the published

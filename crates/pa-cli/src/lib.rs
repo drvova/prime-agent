@@ -84,6 +84,13 @@ pub fn main_with_runtime(args: &[String], runtime: &dyn mode::Runtime) -> i32 {
     }
 }
 
+/// The interactive refusal under Git Bash's mintty without `ConPTY`: its terminal is an MSYS pty
+/// pipe, and the TUI reads keys from the Windows console, which mintty never writes to.
+const MSYS_PTY_MESSAGE: &str = "the interactive mode needs a Windows console, and this terminal \
+    is Git Bash (mintty) without ConPTY. Run `winpty prime-agent`, or turn on ConPTY: set \
+    MSYS=enable_pcon before starting Git Bash, or reinstall Git for Windows with \"Enable \
+    experimental support for pseudo consoles\". Windows Terminal, PowerShell and cmd work as they are.";
+
 fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String> {
     use std::io::IsTerminal;
 
@@ -137,6 +144,9 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     let app_mode = mode::AppMode::resolve(&parsed, std::io::stdin().is_terminal());
+    if app_mode == mode::AppMode::Interactive && pa_types::platform::stdin_is_msys_pty() {
+        return Err(MSYS_PTY_MESSAGE.to_string());
+    }
     // The TUI owns the terminal: structured logs go to stderr only outside it.
     if app_mode != mode::AppMode::Interactive {
         pa_ai::utils::log::install_stderr_log_sink();

@@ -12,6 +12,24 @@
 # prime-switch(.ps1). No R2, no org secrets: the publish job holds only
 # GITHUB_TOKEN with contents: write.
 #
+# THREE TRIGGERS, ONE PATH: a pushed fork tag, a dispatch with a `tag`
+# input, and - the default - automatically after `ci` passes on a push to
+# main. tag-check resolves every trigger to the same outputs (release, tag,
+# version, sha, previous) and every later job reads only those.
+#
+# THE AUTOMATIC RELEASE: when `ci` (ci.yml) completes successfully for a
+# push to main, tag-check plans the next tag (fork_release.py next-tag: N is
+# one past the highest N on Cargo.toml's version, 1 for a new version) and
+# diffs the previous fork release against the commit CI tested
+# (workflow_run.head_sha - NOT github.sha, which is main's tip when the run
+# starts). It releases only when that range changed shipped code
+# (fork_release.py should-release); docs, .changes/ and other-workflow
+# changes end the run green with a "no release" line. Automatic and
+# dispatched runs share the fork-release-auto concurrency group, so two quick
+# merges release in order and the later one plans after the earlier one
+# published; a commit that already carries a fork tag, or that is behind the
+# latest fork release (its ci run finished late), is skipped.
+#
 # THE TAG SCHEME: vX.Y.Z-drvova.N, where X.Y.Z is the workspace version in
 # Cargo.toml (unchanged - the fork stamps its version at packaging time:
 # assemble_artifacts.py writes X.Y.Z-drvova.N into the archive's
@@ -48,19 +66,25 @@ on:
         description: "Fork tag to create and publish, e.g. v0.10.3-drvova.1 (vX.Y.Z must match Cargo.toml)"
         required: true
         type: string
+  # The automatic release: after ci.yml passes on a push to main (tag-check
+  # requires conclusion == success and event == push).
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
 
 permissions: {}
 
+# A pushed tag builds in its own group; automatic and dispatched runs create
+# tags on main and queue in one group, so each plans after the last one
+# published.
 concurrency:
-  group: fork-release-${{ github.ref }}
+  group: ${{ github.event_name == 'push' && format('fork-release-{0}', github.ref) || 'fork-release-auto' }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
-  # The release tag: the pushed tag, or the dispatch input.
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-  RELEASE_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   PRIME_AGENT_DIST_NAME: Prime Agent (drvova build)
   PRIME_AGENT_DIST_INSTALLER_URL: https://github.com/${{ github.repository }}/releases/latest/download/install.sh
   PRIME_AGENT_DIST_DOWNLOAD_BASE_URL: https://github.com/${{ github.repository }}/releases/latest/download
@@ -73,45 +97,96 @@ env:
 
 jobs:
   tag-check:
-    # The fork's own pipeline: the official repository never runs it.
-    if: ${{ github.repository == 'drvova/prime-agent' }}
+    # The fork's own pipeline: the official repository never runs it. An
+    # automatic run starts only after a green ci run for a push to main.
+    if: >-
+      ${{ github.repository == 'drvova/prime-agent' && (github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      previous: ${{ steps.plan.outputs.previous }}
     steps:
+      # The commit to release: the one ci tested for an automatic run, the
+      # tag's commit for a push, main's for a dispatch. Full history and tags
+      # for next-tag and the diff since the previous release.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
-      - name: Validate the fork tag against the workspace version
-        id: version
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+      - name: Plan the release (tag, commit, shipped-code filter)
+        id: plan
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
+          RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          plan=(python3 scripts/release/fork_release.py next-tag --suffix drvova --cargo-toml Cargo.toml)
+          release=true
           case "${GITHUB_EVENT_NAME}" in
             push)
               [[ "${GITHUB_REF_TYPE}" == "tag" ]] || { echo "ref is not a tag"; exit 1; }
+              sha="${GITHUB_SHA}"
+              plan+=(--release-tag "${GITHUB_REF_NAME}")
               ;;
             workflow_dispatch)
               # A dispatched release is cut from main only, under a tag that
               # does not exist yet (the publish job creates it).
               [[ "${GITHUB_REF}" == "refs/heads/main" ]] || { echo "dispatch a release from main, not ${GITHUB_REF}"; exit 1; }
-              if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" >/dev/null; then
-                echo "tag ${RELEASE_TAG} already exists: push it to rebuild, or dispatch a new tag"; exit 1
+              if git ls-remote --exit-code --tags "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${DISPATCH_TAG}" >/dev/null; then
+                echo "tag ${DISPATCH_TAG} already exists: push it to rebuild, or dispatch a new tag"; exit 1
               fi
+              sha="${GITHUB_SHA}"
+              plan+=(--release-tag "${DISPATCH_TAG}")
+              ;;
+            workflow_run)
+              sha="${RUN_HEAD_SHA}"
               ;;
             *)
               echo "unexpected event ${GITHUB_EVENT_NAME}"; exit 1
               ;;
           esac
+          git tag -l > "${RUNNER_TEMP}/tags"
+          "${plan[@]}" < "${RUNNER_TEMP}/tags" > "${RUNNER_TEMP}/plan"
+          tag="$(sed -n 's/^tag=//p' "${RUNNER_TEMP}/plan")"
+          previous="$(sed -n 's/^previous=//p' "${RUNNER_TEMP}/plan")"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_run" && -n "${previous}" ]]; then
+            released="$(git tag --points-at "${sha}" | grep -E -- '-drvova\.[0-9]+$' || true)"
+            if [[ -n "${released}" ]]; then
+              echo "no release: ${sha} is already released as ${released//$'\n'/, }"
+              release=false
+            elif ! git merge-base --is-ancestor "${previous}" "${sha}"; then
+              echo "no release: ${sha} is behind the latest fork release ${previous}"
+              release=false
+            else
+              git diff --no-renames --name-only "${previous}" "${sha}" > "${RUNNER_TEMP}/changed"
+              release="$(python3 scripts/release/fork_release.py should-release < "${RUNNER_TEMP}/changed" | sed -n 's/^release=//p')"
+              [[ "${release}" == "true" ]] || echo "no release: nothing shipped changed since ${previous} (docs, .changes/ or other workflows only)"
+            fi
+          fi
           version="$(python3 scripts/release/fork_release.py version \
-            --tag "${RELEASE_TAG}" --suffix drvova --cargo-toml Cargo.toml)"
-          echo "fork release ${version}"
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+            --tag "${tag}" --suffix drvova --cargo-toml Cargo.toml)"
+          echo "fork release ${version} at ${sha} (previous: ${previous:-none}, release: ${release})"
+          {
+            echo "release=${release}"
+            echo "tag=${tag}"
+            echo "version=${version}"
+            echo "sha=${sha}"
+            echo "previous=${previous}"
+          } >> "${GITHUB_OUTPUT}"
 
   # The prime-agent-catalog commit every build bundles (release.yml's job).
   catalog-ref:
     needs: tag-check
+    # Every later job runs only for a planned release (the build jobs need
+    # this one, so a skipped plan skips them and publish).
+    if: ${{ needs.tag-check.outputs.release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -121,6 +196,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.tag-check.outputs.sha }}
       - name: Resolve prime-agent-catalog main
         id: resolve
         env:
@@ -168,6 +244,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.tag-check.outputs.sha }}
       - name: Trust the mounted checkout for release packaging
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
@@ -273,6 +350,7 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          ref: ${{ needs.tag-check.outputs.sha }}
       - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
         with:
           targets: x86_64-pc-windows-msvc
@@ -342,6 +420,7 @@ jobs:
 
   publish:
     needs: [tag-check, build-gnu, build-windows]
+    if: ${{ needs.tag-check.outputs.release == 'true' }}
     name: publish the GitHub Release
     runs-on: ubuntu-latest
     permissions:
@@ -349,11 +428,17 @@ jobs:
     timeout-minutes: 30
     env:
       VERSION: ${{ needs.tag-check.outputs.version }}
+      RELEASE_TAG: ${{ needs.tag-check.outputs.tag }}
+      RELEASE_SHA: ${{ needs.tag-check.outputs.sha }}
+      PREVIOUS_TAG: ${{ needs.tag-check.outputs.previous }}
     steps:
+      # Full history: the notes list the changes since the previous release.
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           path: source
+          ref: ${{ needs.tag-check.outputs.sha }}
+          fetch-depth: 0
       - name: Download all build artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -414,11 +499,32 @@ jobs:
 
           Prime Intellect's own CLI is also called \`prime\`. The installer never replaces it and tells you which \`prime\` comes first on PATH. See FORK.md for that and for prime-switch.
           NOTES
-          # A pushed tag must already exist; a dispatch creates it at the
-          # dispatched commit.
+          # The first-parent log since the previous fork release: a merged
+          # PR reads as its title and number, a direct commit as its subject.
+          if [[ -n "${PREVIOUS_TAG}" ]]; then
+            git -C source rev-list --first-parent "${PREVIOUS_TAG}..${RELEASE_SHA}" > "${RUNNER_TEMP}/commits"
+            total="$(wc -l < "${RUNNER_TEMP}/commits")"
+            {
+              printf '\n## Changes since %s\n\n' "${PREVIOUS_TAG}"
+              head -n 50 "${RUNNER_TEMP}/commits" | while read -r commit; do
+                subject="$(git -C source log -1 --format=%s "${commit}")"
+                if [[ "${subject}" =~ ^Merge\ pull\ request\ (#[0-9]+) ]]; then
+                  title="$(git -C source log -1 --format=%b "${commit}" | sed -n '/[^[:space:]]/{p;q;}')"
+                  printf -- '- %s (%s)\n' "${title:-${subject}}" "${BASH_REMATCH[1]}"
+                else
+                  printf -- '- %s\n' "${subject}"
+                fi
+              done
+              if (( total > 50 )); then
+                printf -- '- ... and %d more\n' "$(( total - 50 ))"
+              fi
+            } >> "${RUNNER_TEMP}/notes.md"
+          fi
+          # A pushed tag must already exist; a dispatched or automatic run
+          # creates it at the planned commit.
           case "${GITHUB_EVENT_NAME}" in
             push) tag_source=(--verify-tag) ;;
-            workflow_dispatch) tag_source=(--target "${GITHUB_SHA}") ;;
+            workflow_dispatch | workflow_run) tag_source=(--target "${RELEASE_SHA}") ;;
             *) echo "unexpected event ${GITHUB_EVENT_NAME}"; exit 1 ;;
           esac
           gh release create "${RELEASE_TAG}" \
