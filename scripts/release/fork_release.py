@@ -41,12 +41,25 @@ PLATFORMS = ("darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x6
 V1_PLATFORMS = {"darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"}
 
 
+def read_utf8(path):
+    """Read a release text file as UTF-8 whatever the platform's locale
+    (a Windows runner defaults to cp1252)."""
+    return pathlib.Path(path).read_bytes().decode("utf-8")
+
+
+def write_utf8(path, text):
+    """Write a release text file as UTF-8 bytes with the newlines as given
+    (`write_text` would turn LF into CRLF on Windows and break the shell
+    scripts)."""
+    pathlib.Path(path).write_bytes(text.encode("utf-8"))
+
+
 def cmd_version(args):
     tag = args.tag
     match = re.fullmatch(r"v([0-9]+\.[0-9]+\.[0-9]+)-([a-z0-9]+)\.([0-9]+)", tag)
     if match is None or match.group(2) != args.suffix:
         sys.exit(f"tag {tag}: a fork release tag is vX.Y.Z-{args.suffix}.N")
-    text = pathlib.Path(args.cargo_toml).read_text()
+    text = read_utf8(pathlib.Path(args.cargo_toml))
     cargo = re.search(r'^version\s*=\s*"([^"]+)"', text, re.M)
     if cargo is None or cargo.group(1) != match.group(1):
         found = cargo.group(1) if cargo else "none"
@@ -55,7 +68,7 @@ def cmd_version(args):
 
 
 def cmd_channel(args):
-    merged = json.loads(pathlib.Path(args.manifest).read_text())
+    merged = json.loads(read_utf8(pathlib.Path(args.manifest)))
     version = merged["version"].lstrip("v")
     if version != args.version.lstrip("v"):
         sys.exit(f"merged manifest version {merged['version']} != release {args.version}")
@@ -83,8 +96,8 @@ def cmd_channel(args):
     document["binaries_v2"] = rows
     out = pathlib.Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
-    (out / "latest.json").write_text(json.dumps(document, indent=2) + "\n")
-    (out / "stable").write_text(f"{version}\n")
+    write_utf8(out / "latest.json", json.dumps(document, indent=2) + "\n")
+    write_utf8(out / "stable", f"{version}\n")
     print(f"channel: latest.json + stable at {version}, {len(rows)} artifacts")
 
 
@@ -110,7 +123,7 @@ def cmd_render(args):
     for url in (base, assets):
         if re.fullmatch(r"[A-Za-z0-9:/._~%-]+", url) is None:
             sys.exit(f"refusing to render the URL {url!r}")
-    sh = (root / "install-rust.sh").read_text()
+    sh = read_utf8(root / "install-rust.sh")
     for pattern, line in (
         (r"^DOWNLOAD_BASE_URL_DEFAULT=.*$", f'DOWNLOAD_BASE_URL_DEFAULT="{base}"'),
         (r'^RELEASE_ASSETS_URL_DEFAULT=""$', f'RELEASE_ASSETS_URL_DEFAULT="{assets}"'),
@@ -119,8 +132,8 @@ def cmd_render(args):
         (r'^COMMAND_NAME=""$', f'COMMAND_NAME="{args.command_name}"'),
     ):
         sh = render_line(sh, pattern, line, "install.sh")
-    (out / "install.sh").write_text(sh)
-    ps1 = (root / "install.ps1").read_text()
+    write_utf8(out / "install.sh", sh)
+    ps1 = read_utf8(root / "install.ps1")
     windows_prefix = args.home_prefix.replace("/", "\\")
     for pattern, line in (
         (r"^\$DownloadBaseUrlDefault = '.*'$", f"$DownloadBaseUrlDefault = '{base}'"),
@@ -130,21 +143,21 @@ def cmd_render(args):
         (r"^\$CommandName = ''$", f"$CommandName = '{args.command_name}'"),
     ):
         ps1 = render_line(ps1, pattern, line, "install.ps1")
-    (out / "install.ps1").write_text(ps1)
-    switch = (root / "scripts/prime-switch").read_text()
+    write_utf8(out / "install.ps1", ps1)
+    switch = read_utf8(root / "scripts/prime-switch")
     switch = render_line(
         switch, r"^FORK_RELEASES_URL_DEFAULT=.*$", f'FORK_RELEASES_URL_DEFAULT="{base}"', "prime-switch"
     )
-    (out / "prime-switch").write_text(switch)
+    write_utf8(out / "prime-switch", switch)
     (out / "prime-switch").chmod(0o755)
-    switch_ps1 = (root / "scripts/prime-switch.ps1").read_text()
+    switch_ps1 = read_utf8(root / "scripts/prime-switch.ps1")
     switch_ps1 = render_line(
         switch_ps1,
         r"^\$ForkReleasesUrlDefault = '.*'$",
         f"$ForkReleasesUrlDefault = '{base}'",
         "prime-switch.ps1",
     )
-    (out / "prime-switch.ps1").write_text(switch_ps1)
+    write_utf8(out / "prime-switch.ps1", switch_ps1)
     print(f"rendered install.sh, install.ps1, prime-switch, prime-switch.ps1 for {base}")
 
 

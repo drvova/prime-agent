@@ -246,6 +246,12 @@ impl World {
             .args(["--home-prefix", ".local/share/prime-agent-fork"])
             .args(["--variant", "fork", "--command", "prime", "--out-dir"])
             .arg(&latest)
+            // The Windows build job renders under the runner's non-UTF-8
+            // locale (cp1252): render under a non-UTF-8 locale here too, so a
+            // locale-dependent read of the UTF-8 installers fails on Linux.
+            .env("LC_ALL", "C")
+            .env("LANG", "C")
+            .env("PYTHONUTF8", "0")
             .output()
             .expect("run fork_release.py render");
         assert_ok(&output, "fork_release.py render");
