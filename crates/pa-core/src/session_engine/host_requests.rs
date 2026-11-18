@@ -13,7 +13,8 @@ use crate::cron::{AgentCronJob, DeliveryMode, JobStatus};
 use crate::goals::{goal_host_response, GoalHostResponse, GoalState, GoalStatus};
 use crate::session::manager::SessionManager;
 
-use super::goal_driver::GoalDriver;
+use super::goal_driver::{GoalDriver, GoalOptions};
+use crate::goals::GoalVerifier;
 
 /// The `snake_case` heartbeat payload returned to the skill.
 pub fn rlm_heartbeat_host_response(job: &AgentCronJob) -> Value {
@@ -90,7 +91,36 @@ pub fn handle_goal_host_request(
                     Some(budget)
                 }
             };
-            let goal = create_goal_from_host(driver, session, objective, token_budget)?;
+            let check = match record.get("check") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_str().map(str::to_string).ok_or_else(|| {
+                    anyhow::anyhow!("goal.create check must be a string when provided")
+                })?),
+            };
+            let verify = match record.get("verify") {
+                None | Some(Value::Null) => None,
+                Some(value) => match value.as_str() {
+                    Some("judge") => Some(GoalVerifier::Judge),
+                    _ => anyhow::bail!("goal.create verify must be \"judge\" when provided"),
+                },
+            };
+            let max_cost_usd = match record.get("max_cost_usd") {
+                None | Some(Value::Null) => None,
+                Some(value) => Some(value.as_f64().ok_or_else(|| {
+                    anyhow::anyhow!("goal.create max_cost_usd must be a number when provided")
+                })?),
+            };
+            let goal = create_goal_from_host(
+                driver,
+                session,
+                objective,
+                GoalOptions {
+                    token_budget,
+                    check,
+                    verify,
+                    max_cost_usd,
+                },
+            )?;
             Ok(goal_host_response(&goal, false))
         }
         "goal.complete" => {
@@ -105,7 +135,7 @@ fn create_goal_from_host(
     driver: &mut GoalDriver,
     session: &mut SessionManager,
     objective: &str,
-    token_budget: Option<u64>,
+    options: GoalOptions,
 ) -> anyhow::Result<GoalState> {
     match driver.state().status {
         GoalStatus::Active => anyhow::bail!(
@@ -119,7 +149,7 @@ fn create_goal_from_host(
         ),
         // Idle, or a terminal record (complete / error): start fresh.
         GoalStatus::Idle | GoalStatus::Complete | GoalStatus::Error => {
-            driver.start(session, objective, token_budget)
+            driver.start_with_options(session, objective, options)
         }
     }
 }

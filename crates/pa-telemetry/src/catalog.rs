@@ -1387,10 +1387,31 @@ const WEB_SEARCH_PROVIDER_CHANGED: EventRule = EventRule {
     )],
 };
 
+/// Goal verification adoption for one session (v2), emitted at session end beside `agent session
+/// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
+/// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
+/// Standalone because `agent session ended` sits near the backend's 128-key cap. Counts only:
+/// never a command, objective, or judge text.
+const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
+    name: "agent goal verification",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("goal_check_run_count", required(count())),
+        ("goal_check_failed_count", required(count())),
+        ("goal_check_skipped_count", required(count())),
+        ("goal_judge_call_count", required(count())),
+        ("goal_judge_not_met_count", required(count())),
+        ("goal_token_budget_stop_count", required(count())),
+        ("goal_cost_budget_stop_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
     let mut all: Vec<&'static EventRule> = vec![
+        &AGENT_GOAL_VERIFICATION,
         &HARNESS_REFINEMENTS_CHANGED,
         &WEB_SEARCH_PROVIDER_CHANGED,
         &AGENT_STARTED,

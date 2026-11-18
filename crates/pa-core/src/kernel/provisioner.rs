@@ -294,6 +294,13 @@ impl IpythonKernelProvisioner {
         self.inner.options.cell_timeout_ms
     }
 
+    /// The host handlers the kernel reaches (tests call them as a kernel cell would).
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn host_handlers(&self) -> &crate::kernel::shared::HostRequestHandlers {
+        &self.inner.options.host_handlers
+    }
+
     /// The Python skills pre-imported at kernel bootstrap.
     #[cfg(test)]
     #[must_use]

@@ -863,6 +863,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 recorder: std::sync::Arc::clone(recorder),
             });
     }
+    // Goal verification: facts count into the session counters, and `verify="judge"` forks this
+    // agent's conversation (pre-semantic stream fn, the loop's own conversion) so the judge
+    // reads the main loop's cached prefix. Weak agent: the kernel's handlers reach the judge.
+    let _ = wiring
+        .runtime
+        .goal_telemetry()
+        .set(std::sync::Arc::clone(&session_counters));
+    wiring
+        .runtime
+        .goal_verifier()
+        .bind_judge(super::goal_judge::GoalJudge::new(
+            Arc::downgrade(&agent),
+            std::sync::Arc::clone(&side_question_stream_fn),
+            super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
+            wiring.rlm_usage.store(),
+        ));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),

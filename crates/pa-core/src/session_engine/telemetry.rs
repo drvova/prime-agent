@@ -363,6 +363,38 @@ struct CounterValues {
     cache_savings_usd: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
+    /// The `agent goal verification` counters.
+    goal: GoalVerificationCounts,
+}
+
+/// One goal verification or budget fact, counted into `agent goal verification`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTelemetryFact {
+    /// A `check` command ran.
+    CheckRun,
+    /// A `check` command ran and failed.
+    CheckFailed,
+    /// A failed `check` was not rerun over an unchanged workspace.
+    CheckSkipped,
+    /// A judge call ran.
+    JudgeCall,
+    /// A judge answered NOT MET (or cited no verifiable evidence).
+    JudgeNotMet,
+    /// The token budget stopped the goal.
+    TokenBudgetStop,
+    /// The dollar cap stopped the goal.
+    CostBudgetStop,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GoalVerificationCounts {
+    check_runs: u64,
+    check_failures: u64,
+    check_skips: u64,
+    judge_calls: u64,
+    judge_not_met: u64,
+    token_budget_stops: u64,
+    cost_budget_stops: u64,
 }
 
 impl SessionCounters {
@@ -400,6 +432,23 @@ impl SessionCounters {
             values.context_thinned_result_count += stats.thinned_results;
             values.context_thinned_chars_saved += stats.chars_saved;
             values.context_thinned_tokens_saved += stats.tokens_saved();
+        });
+    }
+
+    /// One goal verification or budget fact (counts only: never a command or judge text).
+    pub fn note_goal(&self, fact: GoalTelemetryFact) {
+        self.with(|values| {
+            let counts = &mut values.goal;
+            let counter = match fact {
+                GoalTelemetryFact::CheckRun => &mut counts.check_runs,
+                GoalTelemetryFact::CheckFailed => &mut counts.check_failures,
+                GoalTelemetryFact::CheckSkipped => &mut counts.check_skips,
+                GoalTelemetryFact::JudgeCall => &mut counts.judge_calls,
+                GoalTelemetryFact::JudgeNotMet => &mut counts.judge_not_met,
+                GoalTelemetryFact::TokenBudgetStop => &mut counts.token_budget_stops,
+                GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
+            };
+            *counter += 1;
         });
     }
 
@@ -834,6 +883,25 @@ impl SessionTelemetry {
         }
         self.counters.write_into(&mut properties);
         self.client.track("agent session ended", properties);
+        // A session whose goals never ran a verifier or hit a budget sends no goal event.
+        let mut goal = GoalVerificationCounts::default();
+        self.counters.with(|values| goal = values.goal);
+        if goal != GoalVerificationCounts::default() {
+            let mut goal_properties = self.session_properties();
+            for (key, value) in [
+                ("goal_check_run_count", goal.check_runs),
+                ("goal_check_failed_count", goal.check_failures),
+                ("goal_check_skipped_count", goal.check_skips),
+                ("goal_judge_call_count", goal.judge_calls),
+                ("goal_judge_not_met_count", goal.judge_not_met),
+                ("goal_token_budget_stop_count", goal.token_budget_stops),
+                ("goal_cost_budget_stop_count", goal.cost_budget_stops),
+            ] {
+                goal_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent goal verification", goal_properties);
+        }
         self.client.flush().await
     }
 
