@@ -788,18 +788,30 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         &format!("no escape text ({leaked:?})"),
         leaked.is_empty(),
     );
-    term.key(Key::Escape);
-    // The draft is multi-line by now and the composer shows its tail, so the
-    // pasted tail before the caret (`ste` + `zx`) is the line that must go;
-    // `qKzx` may already be scrolled out of view.
-    let cleared = term.wait_gone("stezx", Duration::from_secs(10));
-    check(&mut term, "escape clears the draft", cleared);
-    term.type_text("abc");
-    let retyped = term.wait_for("abc", Duration::from_secs(10));
-    check(&mut term, "retype", retyped);
+    // Ctrl+C clears an idle draft. The draft is multi-line by now and the
+    // composer shows its tail, so the pasted tail before the caret (`ste` +
+    // `zx`) is the line that must go; `qKzx` may be scrolled out of view.
     term.key(Key::CtrlC);
-    let ctrl_c = term.wait_gone("abc", Duration::from_secs(10));
+    let ctrl_c = term.wait_gone("stezx", Duration::from_secs(10));
     check(&mut term, "ctrl+c clears the draft", ctrl_c);
+    // A lone Esc acts where it is observable: it closes the command menu (on a
+    // draft, one Esc only arms the double-Esc clear). The keys typed after it
+    // must stay plain text, never an Alt chord with the held Esc.
+    term.type_text("/");
+    let menu = term.wait_for("Open settings menu", Duration::from_secs(10));
+    check(&mut term, "slash opens the command menu", menu);
+    term.key(Key::Escape);
+    let closed = term.wait_gone("Open settings menu", Duration::from_secs(10));
+    check(&mut term, "escape closes the menu", closed);
+    term.type_text("abc");
+    let retyped = term.wait_for("no command matches /abc", Duration::from_secs(10));
+    check(&mut term, "typing after escape stays text", retyped);
+    term.key(Key::Escape);
+    let dismissed = term.wait_gone("no command matches", Duration::from_secs(10));
+    check(&mut term, "escape dismisses the no-match row", dismissed);
+    term.key(Key::CtrlC);
+    let cleared = term.wait_gone("/abc", Duration::from_secs(10));
+    check(&mut term, "ctrl+c clears the command", cleared);
     term.type_text("hello");
     term.key(Key::Enter);
     let replied = term.wait_for("conpty scripted reply", Duration::from_secs(60));
