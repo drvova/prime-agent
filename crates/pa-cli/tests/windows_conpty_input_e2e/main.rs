@@ -443,7 +443,7 @@ impl Screen {
                             j += 1;
                         }
                         if let Some(end) = end {
-                            i = end
+                            i = end;
                         } else {
                             self.pending = bytes[i..].to_vec();
                             return;
