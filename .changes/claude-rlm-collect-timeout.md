@@ -1,0 +1,1 @@
+- Fixed `rlm.collect(..., timeout_ms=...)` returning a just-spawned subagent as `running` within milliseconds when called in the same turn that spawned it; it now starts the child's task and waits for it, up to the timeout.
