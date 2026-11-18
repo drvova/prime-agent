@@ -2531,7 +2531,7 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
                 crossterm::event::KeyModifiers::NONE,
             )),
             pa_tui::interactive::HeadlessStep::WaitRender {
-                needle: "mouse click on link".to_string(),
+                needle: "Back to the overview / close the page".to_string(),
                 timeout_ms: 30_000,
             },
             pa_tui::interactive::HeadlessStep::Key(crossterm::event::KeyEvent::new(
@@ -2577,7 +2577,7 @@ async fn tui_renders_and_fires_user_keybindings_from_settings() {
         "the hotkeys panel rendered the guide:\n{rendered}"
     );
     assert!(
-        rendered.contains("mouse click on link"),
+        rendered.contains("Back to the overview / close the page"),
         "the End key jumped the panel to the guide's bottom:\n{rendered}"
     );
     // The removed default key is gone (no other default binding uses ctrl+o).

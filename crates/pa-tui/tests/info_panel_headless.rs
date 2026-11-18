@@ -131,7 +131,7 @@ fn info_commands_open_inline_panels_that_esc_closes_without_transcript_rows() {
         submit("/hotkeys"),
         wait_render("Move cursor / browse history"),
         key(KeyCode::End),
-        wait_render("mouse click on link"),
+        wait_render("Back to the overview / close the page"),
         key(KeyCode::Esc),
         wait_gone(PANEL_HINT),
         // `/list`: the live-sessions listing (the mock answers an empty roster).
@@ -154,7 +154,7 @@ fn info_commands_open_inline_panels_that_esc_closes_without_transcript_rows() {
     );
     // End put the guide's last rows on screen (the first window never shows them).
     assert!(
-        rendered.contains("mouse click on link"),
+        rendered.contains("Back to the overview / close the page"),
         "the End key jumped the panel to the guide's bottom:\n{rendered}"
     );
     // The `?` quick-shortcut guide never mounted anywhere in the run: the `?` press typed editor
