@@ -33,6 +33,26 @@ Prime Agent: A Self-Improving RLM Harness
   </a>
 </p>
 
+## Install (drvova build)
+
+This repository (`drvova/prime-agent`) publishes the Prime Agent (drvova build). Install it from a Linux shell (or Git Bash on Windows):
+
+```bash
+curl -fsSL https://github.com/drvova/prime-agent/releases/latest/download/install.sh | sh
+```
+
+On Windows, from PowerShell:
+
+```powershell
+irm https://github.com/drvova/prime-agent/releases/latest/download/install.ps1 | iex
+```
+
+The command is `prime`. For example, run `prime`, `prime --version` or `prime update`.
+
+It installs side by side with the official `prime-agent` and never touches it. Releases are published for Linux x64/arm64 and Windows x64. macOS builds aren't published, because the release workflow no longer builds them. See [FORK.md](FORK.md) for `prime-switch` and the details.
+
+Prime Intellect's own CLI is also called `prime`. The installer never replaces it. If it's already in `~/.local/bin`, the installer puts the fork's `prime` in `~/.local/share/prime-agent-fork/bin` and tells you which `prime` comes first on PATH.
+
 Prime Agent is an open-source coding and research agent for general and long-running work. It is designed around two core abstractions:
 
 - The **[Recursive Language Model (RLM)](https://www.primeintellect.ai/blog/rlm)** treats context as variables (*prompt-as-a-variable*) and tools like recursive subagents as function calls (*programmatic tool /sub-agent calling*) inside a persistent REPL.

@@ -1,6 +1,6 @@
 //! Command specs and help formatting.
 
-use crate::config::APP_NAME;
+use crate::config::COMMAND_NAME;
 
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
@@ -544,11 +544,11 @@ pub fn format_top_level_help() -> String {
         })
         .collect();
     format!(
-        "{APP_NAME} - AI coding assistant with a Python REPL tool\n\
+        "{COMMAND_NAME} - AI coding assistant with a Python REPL tool\n\
          \n\
          Usage:\n\
-         \x20 {APP_NAME} [options] [@files...] [message...]\n\
-         \x20 {APP_NAME} <command> [args...]\n\
+         \x20 {COMMAND_NAME} [options] [@files...] [message...]\n\
+         \x20 {COMMAND_NAME} <command> [args...]\n\
          \n\
          Options:\n\
          {options}\n\
@@ -556,7 +556,7 @@ pub fn format_top_level_help() -> String {
          Commands:\n\
          {}\n\
          \n\
-         Run \"{APP_NAME} help <command>\" for command details.",
+         Run \"{COMMAND_NAME} help <command>\" for command details.",
         command_lines.join("\n")
     )
 }
@@ -566,7 +566,7 @@ pub fn format_command_help(path: &[&str]) -> Option<String> {
     let spec = get_command_spec(path)?;
     let children = get_child_command_specs(path);
     let mut sections = vec![
-        format!("Usage:\n  {APP_NAME} {}", spec.usage),
+        format!("Usage:\n  {COMMAND_NAME} {}", spec.usage),
         String::new(),
         format!("{}.", spec.summary),
     ];
@@ -601,7 +601,7 @@ pub fn format_command_help(path: &[&str]) -> Option<String> {
         sections.push(String::new());
         sections.push("Examples:".to_string());
         for example in spec.examples {
-            sections.push(format!("  {APP_NAME} {example}"));
+            sections.push(format!("  {COMMAND_NAME} {example}"));
         }
     }
     Some(sections.join("\n"))

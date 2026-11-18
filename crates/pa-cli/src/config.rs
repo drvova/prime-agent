@@ -4,6 +4,13 @@ use std::path::PathBuf;
 
 pub const APP_NAME: &str = "prime-agent";
 
+/// The command users type, as help and usage text show it: [`APP_NAME`], or
+/// a distribution build's own command (e.g. `prime`, the
+/// `PRIME_AGENT_DIST_COMMAND` stamp). Identifiers that other installs and
+/// tools match on (the package source name, daemon discovery) keep
+/// [`APP_NAME`].
+pub const COMMAND_NAME: &str = pa_core::update::installer::BUILD_DISTRIBUTION.command();
+
 pub const CONFIG_DIR_NAME: &str = ".prime/agent";
 
 pub const ENV_AGENT_DIR: &str = "PRIME_AGENT_CODING_AGENT_DIR";

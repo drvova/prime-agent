@@ -19,7 +19,7 @@ Subcommands:
   channel   write latest.json + the `stable` pointer from a merged manifest
             (release.yml's "Merge per-target manifests" output shape)
   render    write install.sh / install.ps1 / prime-switch / prime-switch.ps1
-            with the fork's URLs, prefix, and variant rendered in
+            with the fork's URLs, prefix, variant, and command rendered in
 
 The installers are install-rust.sh and install.ps1 themselves: only their
 publish-rendered default lines change (the same line-anchored render
@@ -102,6 +102,8 @@ def cmd_render(args):
     out.mkdir(parents=True, exist_ok=True)
     if re.fullmatch(r"[a-z0-9-]+", args.variant) is None:
         sys.exit(f"invalid variant {args.variant!r}")
+    if re.fullmatch(r"[a-z0-9-]+", args.command_name) is None or args.command_name == "prime-agent":
+        sys.exit(f"invalid command {args.command_name!r} (the distribution's own command, never prime-agent)")
     if re.fullmatch(r"[A-Za-z0-9._/-]+", args.home_prefix) is None:
         sys.exit(f"invalid home-relative prefix {args.home_prefix!r}")
     base, assets = args.download_base.rstrip("/"), args.assets_url.rstrip("/")
@@ -114,6 +116,7 @@ def cmd_render(args):
         (r'^RELEASE_ASSETS_URL_DEFAULT=""$', f'RELEASE_ASSETS_URL_DEFAULT="{assets}"'),
         (r'^PREFIX_DEFAULT=""$', f'PREFIX_DEFAULT="$HOME/{args.home_prefix}"'),
         (r'^VARIANT_NAME=""$', f'VARIANT_NAME="{args.variant}"'),
+        (r'^COMMAND_NAME=""$', f'COMMAND_NAME="{args.command_name}"'),
     ):
         sh = render_line(sh, pattern, line, "install.sh")
     (out / "install.sh").write_text(sh)
@@ -124,6 +127,7 @@ def cmd_render(args):
         (r"^\$ReleaseAssetsUrlDefault = ''$", f"$ReleaseAssetsUrlDefault = '{assets}'"),
         (r"^\$PrefixDefault = ''$", f"$PrefixDefault = '{windows_prefix}'"),
         (r"^\$VariantName = ''$", f"$VariantName = '{args.variant}'"),
+        (r"^\$CommandName = ''$", f"$CommandName = '{args.command_name}'"),
     ):
         ps1 = render_line(ps1, pattern, line, "install.ps1")
     (out / "install.ps1").write_text(ps1)
@@ -163,6 +167,8 @@ def main():
     render.add_argument("--assets-url", required=True)
     render.add_argument("--home-prefix", required=True)
     render.add_argument("--variant", required=True)
+    render.add_argument("--command", dest="command_name", required=True,
+                        help="the command the installers create instead of prime-agent (e.g. prime)")
     render.add_argument("--out-dir", required=True)
     args = parser.parse_args()
     {"version": cmd_version, "channel": cmd_channel, "render": cmd_render}[args.command](args)

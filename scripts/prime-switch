@@ -1,29 +1,38 @@
 #!/bin/sh
-# prime-switch — install and switch between the official Prime Agent build
+# prime-switch — install, update, and remove the official Prime Agent build
 # and the Prime Agent (drvova build), side by side.
 #
-# THE LAYOUT (nothing here ever writes inside the official install):
-#   official  ~/.local                          (its own installer's prefix:
-#             bin/prime-agent, share/prime-agent/)
-#   fork      ~/.local/share/prime-agent-fork   (bin/prime-agent,
-#             share/prime-agent/, kernel-venv/)
-#   switch    ~/.local/share/prime-switch/bin   (prime-agent: the ACTIVE
-#             build's launcher shim; prime-switch: this script). Put this
-#             directory FIRST on PATH so `prime-agent` runs the active build.
+# THE COMMANDS: the two builds never share a command, so both answer at
+# once and nothing needs switching:
+#   official  `prime-agent`  ~/.local/bin/prime-agent (its own installer's
+#             prefix ~/.local: bin/prime-agent, share/prime-agent/)
+#   fork      `prime`        ~/.local/share/prime-agent-fork/bin/prime
+#             (share/prime-agent/, kernel-venv/), plus ~/.local/bin/prime
+#             when the fork installer found that slot free (a `prime` it
+#             did not write, such as Prime Intellect's own CLI, is never
+#             replaced; then the fork's bin dir has to come first on PATH)
+#   switch    ~/.local/share/prime-switch/bin   (prime-switch: this script)
 #
-# Each build's own launcher pins its daemon socket and kernel venv (the
-# fork's launcher: prime-agent-fork-<uid> and <fork prefix>/kernel-venv),
-# so the two never share a live daemon and switching never rebuilds a venv.
-# Sessions, auth.json, and settings in ~/.prime/agent stay shared.
+# Nothing here ever writes inside the official install. Each build's own
+# launcher pins its daemon socket and kernel venv (the fork's launcher:
+# prime-agent-fork-<uid> and <fork prefix>/kernel-venv), so the two never
+# share a live daemon. Sessions, auth.json, and settings in ~/.prime/agent
+# stay shared.
+#
+# Earlier versions kept a `prime-agent` shim in the switch dir that ran the
+# "active" build. Every command retires that shim (marker-checked), so
+# `prime-agent` is the official build again.
 #
 # Usage: prime-switch <command> [--force]
-#   status                   the active build, both versions and paths
-#   fork | official          make that build the `prime-agent` on PATH
+#   status                   both builds' versions, commands, and launchers
 #   install fork|official    install a missing build (its own installer)
-#   update                   update the active build (`prime-agent update`)
+#   update [fork|official]   update one build, or every installed build
+#                            (each through its own `update`)
 #   uninstall fork           remove the fork build (official is untouched)
-#   --force                  switch/uninstall even while the other build's
-#                            daemon has sessions mid-turn
+#   --force                  uninstall even while the fork daemon has
+#                            sessions mid-turn
+#   fork | official          kept for old scripts: says there is nothing
+#                            to switch
 #
 # Environment (tests and custom layouts):
 #   PRIME_SWITCH_HOME, PRIME_SWITCH_OFFICIAL_PREFIX, PRIME_SWITCH_FORK_PREFIX,
@@ -40,8 +49,13 @@ OFFICIAL_PREFIX="${PRIME_SWITCH_OFFICIAL_PREFIX:-$HOME/.local}"
 FORK_PREFIX="${PRIME_SWITCH_FORK_PREFIX:-$HOME/.local/share/prime-agent-fork}"
 SWITCH_HOME="${PRIME_SWITCH_HOME:-$HOME/.local/share/prime-switch}"
 SWITCH_BIN="${SWITCH_HOME}/bin"
-SHIM="${SWITCH_BIN}/prime-agent"
-SHIM_MARK="# prime-agent - active-build shim written by prime-switch"
+LEGACY_SHIM="${SWITCH_BIN}/prime-agent"
+LEGACY_SHIM_MARK="# prime-agent - active-build shim written by prime-switch"
+# The fork installer's public command (install-rust.sh THE DISTRIBUTION
+# COMMAND): its second line is this marker, its last line execs the fork
+# launcher by absolute path.
+FORK_PUBLIC="${HOME}/.local/bin/prime"
+FORK_PUBLIC_MARK="# prime - public command written by install-rust.sh"
 
 die() { echo "prime-switch: $1" >&2; exit 1; }
 say() { echo "$1"; }
@@ -54,14 +68,24 @@ prefix_of() {
     *) die "unknown build: $1 (fork or official)" ;;
   esac
 }
-other_of() {
+command_of() {
   case "$1" in
-    official) printf 'fork' ;;
-    fork) printf 'official' ;;
+    official) printf 'prime-agent' ;;
+    fork) printf 'prime' ;;
     *) die "unknown build: $1 (fork or official)" ;;
   esac
 }
-launcher_of() { printf '%s/bin/prime-agent' "$(prefix_of "$1")"; }
+# The build's launcher. A fork installed before it had its own command
+# still has only bin/prime-agent: that launcher answers until its next
+# install or update replaces it with bin/prime.
+launcher_of() {
+  lo_bin="$(prefix_of "$1")/bin"
+  if [ "$1" = fork ] && [ ! -x "${lo_bin}/prime" ] && [ -x "${lo_bin}/prime-agent" ]; then
+    printf '%s/prime-agent' "$lo_bin"
+  else
+    printf '%s/%s' "$lo_bin" "$(command_of "$1")"
+  fi
+}
 # A build is installed when its installer's ownership marker and launcher exist.
 is_installed() {
   [ -x "$(launcher_of "$1")" ] \
@@ -70,9 +94,20 @@ is_installed() {
 version_of() {
   sed -n '2s/^version //p' "$(prefix_of "$1")/share/prime-agent/.prime-agent-install" 2>/dev/null
 }
-active_build() {
-  [ -f "$SHIM" ] || return 0
-  sed -n 's/^# build: //p' "$SHIM" | head -n 1
+# True when the fork's public command is the fork installer's own file
+# pointing into the fork prefix named by $1 (its physical path).
+fork_public_is_ours() {
+  [ -f "$FORK_PUBLIC" ] && [ ! -L "$FORK_PUBLIC" ] \
+    && [ "$(sed -n 2p "$FORK_PUBLIC" 2>/dev/null)" = "$FORK_PUBLIC_MARK" ] \
+    && grep -qF "exec '$1/bin/" "$FORK_PUBLIC" 2>/dev/null
+}
+
+# The pre-`prime` shim goes: only the file this script wrote (its marker).
+retire_legacy_shim() {
+  if [ -f "$LEGACY_SHIM" ] && grep -qxF "$LEGACY_SHIM_MARK" "$LEGACY_SHIM" 2>/dev/null; then
+    rm -f "$LEGACY_SHIM"
+    changed "removed the old ${LEGACY_SHIM} shim (\`prime-agent\` runs the official build again; the fork is \`prime\`)"
+  fi
 }
 
 # The busy check and the clean stop, through the build's OWN launcher (its
@@ -95,32 +130,27 @@ stop_daemon_of() {
   changed "stopped the ${sd_build} daemon (${sd_launcher} shutdown --force)"
 }
 
-# Write the shim atomically (a temp file in the same dir, then one rename).
-write_shim() {
-  ws_build="$1"
-  mkdir -p "$SWITCH_BIN"
-  ws_target="$(launcher_of "$ws_build")"
-  ws_quoted="$(printf '%s' "$ws_target" | sed "s/'/'\\\\''/g")"
-  ws_body="#!/bin/sh
-${SHIM_MARK}
-# build: ${ws_build}
-exec '${ws_quoted}' \"\$@\""
-  if [ -f "$SHIM" ] && [ "$(cat "$SHIM")" = "$ws_body" ]; then
-    return 1
-  fi
-  ws_tmp="$(mktemp "${SWITCH_BIN}/.prime-agent.XXXXXX")"
-  printf '%s\n' "$ws_body" > "$ws_tmp"
-  chmod 0755 "$ws_tmp"
-  mv -f "$ws_tmp" "$SHIM"
-  return 0
-}
-
+# Which `prime-agent` and `prime` a shell runs, and whether that is the build
+# the name belongs to.
 path_hint() {
-  ph_resolved="$(command -v prime-agent 2>/dev/null || true)"
-  if [ "$ph_resolved" != "$SHIM" ]; then
-    say "note: \`prime-agent\` on PATH is ${ph_resolved:-missing}, not the switch shim. Put the shim dir first:"
-    say "  export PATH=\"${SWITCH_BIN}:\$PATH\"   (add it to your shell profile)"
-  fi
+  for ph_build in official fork; do
+    ph_command="$(command_of "$ph_build")"
+    ph_resolved="$(command -v "$ph_command" 2>/dev/null || true)"
+    if [ -z "$ph_resolved" ]; then
+      is_installed "$ph_build" && say "note: \`${ph_command}\` is not on PATH; add $(dirname "$(launcher_of "$ph_build")") (or run $(launcher_of "$ph_build"))"
+      continue
+    fi
+    if [ "$ph_resolved" -ef "$(launcher_of "$ph_build")" ]; then
+      continue
+    fi
+    if [ "$ph_build" = fork ] && [ "$ph_resolved" -ef "$FORK_PUBLIC" ] && [ -d "$FORK_PREFIX" ] \
+       && fork_public_is_ours "$(cd "$FORK_PREFIX" && pwd -P)"; then
+      continue
+    fi
+    is_installed "$ph_build" || continue
+    say "note: \`${ph_command}\` on PATH is ${ph_resolved}, not the ${ph_build} build."
+    say "  put $(dirname "$(launcher_of "$ph_build")") first on PATH, or run $(launcher_of "$ph_build")"
+  done
 }
 
 # The one shared-state hazard: a models.json provider that authenticates by
@@ -183,30 +213,20 @@ run_installer() {
 }
 
 cmd_status() {
-  active="$(active_build)"
-  say "active:   ${active:-none} (${SHIM})"
   for build in official fork; do
     if is_installed "$build"; then
-      say "$(printf '%-9s' "${build}:") $(version_of "$build")  $(launcher_of "$build")"
+      say "$(printf '%-9s' "${build}:") $(version_of "$build")  $(command_of "$build")  $(launcher_of "$build")"
     else
       say "$(printf '%-9s' "${build}:") not installed  (prime-switch install ${build})"
     fi
   done
-  path_hint
-}
-
-cmd_switch() {
-  build="$1"; force="$2"
-  is_installed "$build" || die "the ${build} build is not installed: run prime-switch install ${build}"
-  if [ "$(active_build)" = "$build" ]; then
-    say "unchanged: ${build} is already active ($(version_of "$build"))"
-    path_hint
-    return 0
+  if [ -e "$FORK_PUBLIC" ] && is_installed fork; then
+    if fork_public_is_ours "$(cd "$FORK_PREFIX" && pwd -P)"; then
+      say "public:   ${FORK_PUBLIC} runs the fork build"
+    else
+      say "public:   ${FORK_PUBLIC} is not the fork's (another \`prime\`, left untouched)"
+    fi
   fi
-  stop_daemon_of "$(other_of "$build")" "$force"
-  write_shim "$build" || true
-  changed "${SHIM} now runs the ${build} build ($(version_of "$build"), $(launcher_of "$build"))"
-  [ "$build" = official ] && models_warning
   path_hint
 }
 
@@ -214,22 +234,34 @@ cmd_install() {
   build="$1"
   ensure_self
   if is_installed "$build"; then
-    say "unchanged: the ${build} build is already installed ($(version_of "$build")); prime-switch update updates the active build"
+    say "unchanged: the ${build} build is already installed ($(version_of "$build")); prime-switch update ${build} updates it"
     return 0
   fi
   prefix_of "$build" >/dev/null
   run_installer "$build"
   is_installed "$build" || die "the ${build} installer finished but $(launcher_of "$build") is missing"
   changed "installed the ${build} build $(version_of "$build") at $(prefix_of "$build")"
-  say "run \`prime-switch ${build}\` to make it the active prime-agent"
+  say "run \`$(command_of "$build")\` to start the ${build} build"
+  [ "$build" = official ] && models_warning
+  path_hint
 }
 
 cmd_update() {
-  build="$(active_build)"
-  [ -n "$build" ] || die "no build is active: run prime-switch fork or prime-switch official first"
-  is_installed "$build" || die "the active ${build} build is missing: run prime-switch install ${build}"
-  say "updating the ${build} build: $(launcher_of "$build") update"
-  "$(launcher_of "$build")" update
+  update_target="$1"
+  update_status=0
+  updated=""
+  for build in official fork; do
+    [ -z "$update_target" ] || [ "$update_target" = "$build" ] || continue
+    if ! is_installed "$build"; then
+      [ -z "$update_target" ] || die "the ${build} build is not installed: run prime-switch install ${build}"
+      continue
+    fi
+    say "updating the ${build} build: $(launcher_of "$build") update"
+    "$(launcher_of "$build")" update || update_status=$?
+    updated="yes"
+  done
+  [ -n "$updated" ] || die "no build is installed: run prime-switch install fork|official"
+  [ "$update_status" -eq 0 ] || die "an update failed (exit ${update_status})"
 }
 
 cmd_uninstall() {
@@ -252,14 +284,12 @@ cmd_uninstall() {
   grep -q '^install-rust.sh channel ' "${fork_real}/share/prime-agent/.prime-agent-install" \
     || die "refusing to remove ${fork_real}: it carries no installer marker"
   stop_daemon_of fork "$force"
-  if [ "$(active_build)" = fork ]; then
-    if is_installed official; then
-      write_shim official || true
-      changed "${SHIM} now runs the official build ($(version_of official))"
-    else
-      rm -f "$SHIM"
-      changed "removed ${SHIM} (no build is active)"
-    fi
+  # The fork's public command is part of the fork install: it goes only when
+  # it is the fork installer's own file AND runs this fork prefix. Any other
+  # ~/.local/bin/prime (Prime Intellect's CLI) stays exactly as it is.
+  if fork_public_is_ours "$fork_real"; then
+    rm -f "$FORK_PUBLIC"
+    changed "removed ${FORK_PUBLIC}"
   fi
   rm -rf -- "$fork_real"
   changed "removed the fork build at ${fork_real}"
@@ -277,11 +307,18 @@ for arg in "$@"; do
   esac
 done
 case "$command" in
+  -h|--help|help) sed -n '2,39p' "$0" 2>/dev/null || echo "prime-switch status|install|update|uninstall"; exit 0 ;;
+  status|fork|official|install|update|uninstall) retire_legacy_shim ;;
+  *) die "unknown command: ${command} (status, install, update, uninstall)" ;;
+esac
+case "$command" in
   status) cmd_status ;;
-  fork|official) cmd_switch "$command" "$force" ;;
+  fork|official)
+    say "nothing to switch: the fork build is \`prime\` and the official build is \`prime-agent\`;"
+    say "  both answer at once (prime-switch status shows where each one lives)"
+    ;;
   install) [ -n "$target" ] || die "usage: prime-switch install fork|official"; cmd_install "$target" ;;
-  update) cmd_update ;;
+  update) cmd_update "$target" ;;
   uninstall) [ -n "$target" ] || die "usage: prime-switch uninstall fork"; cmd_uninstall "$target" "$force" ;;
-  -h|--help|help) sed -n '2,32p' "$0" 2>/dev/null || echo "prime-switch status|fork|official|install|update|uninstall" ;;
-  *) die "unknown command: ${command} (status, fork, official, install, update, uninstall)" ;;
+  *) die "unknown command: ${command}" ;;
 esac

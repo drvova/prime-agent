@@ -175,6 +175,17 @@ fn publish_release(scratch: &Path, channel_dir: &Path, assets_dir: &Path, versio
     assert_ok(&output, "fork_release.py channel");
 }
 
+/// The sorted file names in `dir`.
+fn dir_entries(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read dir")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
 struct World {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -233,7 +244,7 @@ impl World {
             ])
             .args(["--assets-url", &format!("{base}/gh/releases/download")])
             .args(["--home-prefix", ".local/share/prime-agent-fork"])
-            .args(["--variant", "fork", "--out-dir"])
+            .args(["--variant", "fork", "--command", "prime", "--out-dir"])
             .arg(&latest)
             .output()
             .expect("run fork_release.py render");
@@ -327,13 +338,7 @@ impl World {
     }
 
     fn switch_bin_entries(&self) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(self.switch_bin())
-            .expect("switch bin")
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
+        dir_entries(&self.switch_bin())
     }
 
     /// The logged calls, `version|args|socket|venv` rows.
@@ -347,72 +352,56 @@ impl World {
 }
 
 #[test]
-fn prime_switch_installs_and_switches_side_by_side_builds() {
+fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
     let world = World::new();
     assert_ok(&world.switch(&["install", "official"]), "install official");
     let official = world.official_tree();
+
+    // A pre-`prime` prime-switch left its `prime-agent` shim in the switch
+    // dir: any command retires it, so `prime-agent` falls back to the
+    // official build.
+    let legacy_shim = world.switch_bin().join("prime-agent");
+    write_file(
+        &legacy_shim,
+        b"#!/bin/sh\n# prime-agent - active-build shim written by prime-switch\n# build: fork\nexec '/nonexistent/bin/prime-agent' \"$@\"\n",
+    );
+    make_executable(&legacy_shim);
 
     let installed = assert_ok(&world.switch(&["install", "fork"]), "install fork");
     assert!(
         installed.contains(&format!(
             "changed: installed the fork build {FORK_VERSION} at {}",
             world.fork_prefix().display()
+        )) && installed.contains(&format!(
+            "changed: removed the old {} shim",
+            legacy_shim.display()
         )),
         "{installed}"
     );
+    assert_eq!(world.switch_bin_entries(), vec!["prime-switch"]);
     assert_eq!(
         world.official_tree(),
         official,
         "the fork install leaves the official tree"
     );
-    let fork_launcher = std::fs::read_to_string(world.fork_prefix().join("bin/prime-agent"))
-        .expect("fork launcher");
+    // The fork's launcher is `prime`, never a second `prime-agent`.
+    assert_eq!(dir_entries(&world.fork_prefix().join("bin")), vec!["prime"]);
+    let fork_launcher =
+        std::fs::read_to_string(world.fork_prefix().join("bin/prime")).expect("fork launcher");
     assert!(
         fork_launcher.contains("prime-agent-fork-$(id -u)/daemon.sock")
             && !fork_launcher.contains("prime-agent-rust-"),
         "the fork launcher pins its own daemon socket:\n{fork_launcher}"
     );
-
-    let shim = world.switch_bin().join("prime-agent");
-    let status = assert_ok(&world.switch(&["status"]), "status");
+    // The free ~/.local/bin/prime slot gets the fork's public command.
     assert_eq!(
-        status.lines().take(3).collect::<Vec<_>>(),
-        vec![
-            format!("active:   none ({})", shim.display()),
-            format!(
-                "official: {OFFICIAL_VERSION}  {}",
-                world.home.join(".local/bin/prime-agent").display()
-            ),
-            format!(
-                "fork:     {FORK_VERSION}  {}",
-                world.fork_prefix().join("bin/prime-agent").display()
-            ),
-        ]
+        dir_entries(&world.home.join(".local/bin")),
+        vec!["prime", "prime-agent"]
     );
-
-    // Switch to the fork while the official daemon runs: it is stopped
-    // through the official launcher (its own socket pin), then the shim
-    // runs the fork with the fork's socket and venv pins.
-    write_file(&world.home.join(format!("daemon-{OFFICIAL_VERSION}")), b"");
-    let switched = assert_ok(&world.switch(&["fork"]), "switch to fork");
-    assert!(
-        switched.contains("changed: stopped the official daemon"),
-        "{switched}"
-    );
-    let shutdown: Vec<_> = world
-        .calls()
-        .into_iter()
-        .filter(|call| call[1] == "shutdown --force --json")
-        .collect();
-    assert_eq!(shutdown.len(), 1, "one daemon stop: {shutdown:?}");
-    assert_eq!(shutdown[0][0], OFFICIAL_VERSION);
-    assert!(
-        shutdown[0][2].contains("/prime-agent-rust-"),
-        "{shutdown:?}"
-    );
-    let version = assert_ok(&world.run(&shim, &["--version"]), "the shim runs the fork");
+    let prime = world.home.join(".local/bin/prime");
+    let version = assert_ok(&world.run(&prime, &["--version"]), "prime --version");
     assert_eq!(version.trim(), FORK_VERSION);
-    let last = world.calls().pop().expect("the shim's call");
+    let last = world.calls().pop().expect("the fork's call");
     let venv = world
         .fork_prefix()
         .join("kernel-venv")
@@ -426,69 +415,143 @@ fn prime_switch_installs_and_switches_side_by_side_builds() {
         last[2].contains("/prime-agent-fork-"),
         "fork socket: {last:?}"
     );
-
-    // Idempotent: a repeat changes nothing and leaves no stray files.
-    let shim_bytes = std::fs::read(&shim).expect("shim");
-    let again = assert_ok(&world.switch(&["fork"]), "repeat switch");
-    assert!(
-        again.starts_with("unchanged: fork is already active"),
-        "{again}"
+    let official_launcher = world.home.join(".local/bin/prime-agent");
+    let version = assert_ok(
+        &world.run(&official_launcher, &["--version"]),
+        "prime-agent --version",
     );
-    assert_eq!(std::fs::read(&shim).expect("shim"), shim_bytes);
-    assert_eq!(
-        world.switch_bin_entries(),
-        vec!["prime-agent", "prime-switch"]
-    );
-
-    // A mid-turn fork daemon refuses the switch back unless --force.
-    write_file(&world.home.join(format!("daemon-{FORK_VERSION}")), b"");
-    write_file(&world.home.join(format!("busy-{FORK_VERSION}")), b"");
-    let refused = world.switch(&["official"]);
-    assert!(
-        !refused.status.success(),
-        "a mid-turn daemon refuses the switch"
-    );
-    assert!(
-        String::from_utf8_lossy(&refused.stderr).contains("sessions mid-turn"),
-        "{}",
-        String::from_utf8_lossy(&refused.stderr)
-    );
-    assert_eq!(
-        std::fs::read(&shim).expect("shim"),
-        shim_bytes,
-        "the refusal changed nothing"
-    );
-    let forced = assert_ok(&world.switch(&["official", "--force"]), "forced switch");
-    assert!(
-        forced.contains("changed: stopped the fork daemon"),
-        "{forced}"
-    );
-    let version = assert_ok(&world.run(&shim, &["--version"]), "the shim runs official");
     assert_eq!(version.trim(), OFFICIAL_VERSION);
 
-    // update runs the active build's own `update`.
-    assert_ok(&world.switch(&["update"]), "update");
-    let update = world.calls().pop().expect("the update call");
+    let status = assert_ok(&world.switch(&["status"]), "status");
     assert_eq!(
-        (update[0].as_str(), update[1].as_str()),
-        (OFFICIAL_VERSION, "update")
+        status.lines().take(2).collect::<Vec<_>>(),
+        vec![
+            format!(
+                "official: {OFFICIAL_VERSION}  prime-agent  {}",
+                official_launcher.display()
+            ),
+            format!(
+                "fork:     {FORK_VERSION}  prime  {}",
+                world.fork_prefix().join("bin/prime").display()
+            ),
+        ]
     );
+    // Nothing to switch: both commands answer at once.
+    let switched = assert_ok(&world.switch(&["fork"]), "prime-switch fork");
+    assert!(switched.contains("nothing to switch"), "{switched}");
 
-    let removed = assert_ok(&world.switch(&["uninstall", "fork"]), "uninstall fork");
+    // update runs each installed build's own `update`.
+    assert_ok(&world.switch(&["update"]), "update");
+    let updates: Vec<_> = world
+        .calls()
+        .into_iter()
+        .filter(|call| call[1] == "update")
+        .map(|call| call[0].clone())
+        .collect();
+    assert_eq!(updates, vec![OFFICIAL_VERSION, FORK_VERSION]);
+
+    // A mid-turn fork daemon refuses the uninstall unless --force; the stop
+    // goes through the fork's own launcher (its socket pin).
+    write_file(&world.home.join(format!("daemon-{FORK_VERSION}")), b"");
+    write_file(&world.home.join(format!("busy-{FORK_VERSION}")), b"");
+    let refused = world.switch(&["uninstall", "fork"]);
     assert!(
-        removed.contains("changed: removed the fork build"),
+        !refused.status.success()
+            && String::from_utf8_lossy(&refused.stderr).contains("sessions mid-turn"),
+        "a mid-turn daemon refuses the uninstall: {}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(world.fork_prefix().join("bin/prime").is_file());
+    let removed = assert_ok(
+        &world.switch(&["uninstall", "fork", "--force"]),
+        "uninstall fork",
+    );
+    assert!(
+        removed.contains("changed: stopped the fork daemon")
+            && removed.contains(&format!("changed: removed {}", prime.display()))
+            && removed.contains("changed: removed the fork build"),
         "{removed}"
+    );
+    let shutdown = world
+        .calls()
+        .into_iter()
+        .find(|call| call[1] == "shutdown --force --json")
+        .expect("the fork daemon stop");
+    assert!(
+        shutdown[0] == FORK_VERSION && shutdown[2].contains("/prime-agent-fork-"),
+        "{shutdown:?}"
     );
     assert!(!world.fork_prefix().exists(), "the fork prefix is gone");
     assert_eq!(
-        world.switch_bin_entries(),
-        vec!["prime-agent", "prime-switch"]
+        dir_entries(&world.home.join(".local/bin")),
+        vec!["prime-agent"]
     );
     assert_eq!(
         world.official_tree(),
         official,
         "the official install was never touched"
     );
+}
+
+/// Prime Intellect's own CLI is also `prime`, often in ~/.local/bin: the
+/// fork install never replaces or removes a `prime` it did not write. Its
+/// own `prime` stays in the fork prefix's bin dir, and the install says
+/// which `prime` wins on PATH.
+#[test]
+fn a_foreign_prime_command_is_never_replaced() {
+    let world = World::new();
+    let foreign = world.home.join(".local/bin/prime");
+    let foreign_bytes = b"#!/bin/sh\necho 'the prime CLI'\n";
+    write_file(&foreign, foreign_bytes);
+    make_executable(&foreign);
+
+    let output = world.switch(&["install", "fork"]);
+    assert_ok(&output, "install fork");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("~/.local/bin/prime already exists and was not written by this installer")
+            && stderr.contains(&format!(
+                "export PATH=\"{}:$PATH\"",
+                world.fork_prefix().join("bin").display()
+            )),
+        "the install explains the collision:\n{stderr}"
+    );
+    assert_eq!(
+        std::fs::read(&foreign).expect("foreign prime"),
+        foreign_bytes
+    );
+    let fork_prime = world.fork_prefix().join("bin/prime");
+    let version = assert_ok(&world.run(&fork_prime, &["--version"]), "prime --version");
+    assert_eq!(version.trim(), FORK_VERSION);
+
+    // A re-install (the update path) over a fork installed before it had
+    // its own command retires that era's `prime-agent` launcher and still
+    // leaves the foreign `prime` alone.
+    let old_launcher = world.fork_prefix().join("bin/prime-agent");
+    write_file(
+        &old_launcher,
+        b"#!/bin/sh\n# prime-agent \xe2\x80\x94 launcher written by install-rust.sh.\nexit 1\n",
+    );
+    make_executable(&old_launcher);
+    let installer = world
+        .root
+        .join("www/gh/releases/latest/download/install.sh");
+    assert_ok(
+        &world.run(Path::new("/bin/sh"), &[installer.to_str().expect("utf-8")]),
+        "re-run the fork installer",
+    );
+    assert_eq!(dir_entries(&world.fork_prefix().join("bin")), vec!["prime"]);
+
+    let removed = assert_ok(&world.switch(&["uninstall", "fork"]), "uninstall fork");
+    assert!(
+        removed.contains("changed: removed the fork build"),
+        "{removed}"
+    );
+    assert_eq!(
+        std::fs::read(&foreign).expect("foreign prime"),
+        foreign_bytes
+    );
+    assert_eq!(dir_entries(&world.home.join(".local/bin")), vec!["prime"]);
 }
 
 /// GitHub's tag-filter glob (`*` no slash, `+` one or more of the previous
@@ -581,6 +644,69 @@ fn fork_tags_never_match_the_official_release_filters() {
             "{tag} must not run release.yml"
         );
     }
+}
+
+/// A fork binary bundles install-rust.sh for `update --rollback` and
+/// `--archive`: every build job renders the fork knobs into it BEFORE it
+/// compiles, with the same distribution arguments as the published
+/// install.sh, so a fork rollback never writes an unpinned `prime-agent`
+/// launcher.
+#[test]
+fn the_fork_workflow_bundles_the_published_installer_render() {
+    let path = repo_root().join(".github/workflows/fork-release.yml");
+    let text = std::fs::read_to_string(&path).expect("read the workflow");
+    let workflow: serde_yaml::Value = serde_yaml::from_str(&text).expect("the workflow parses");
+    let distribution = [
+        "--download-base \"${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}\"",
+        "--assets-url \"${FORK_ASSETS_URL}\"",
+        "--home-prefix \"${PRIME_AGENT_DIST_HOME_PREFIX}\"",
+        "--variant \"${FORK_VARIANT}\"",
+        "--command \"${PRIME_AGENT_DIST_COMMAND}\"",
+    ];
+    assert_eq!(
+        workflow["env"]["PRIME_AGENT_DIST_COMMAND"].as_str(),
+        Some("prime")
+    );
+    let mut renders = Vec::new();
+    for job in ["build-gnu", "build-windows", "publish"] {
+        let steps = workflow["jobs"][job]["steps"]
+            .as_sequence()
+            .expect("job steps");
+        let runs: Vec<&str> = steps
+            .iter()
+            .map(|step| step["run"].as_str().unwrap_or_default())
+            .collect();
+        let render = runs
+            .iter()
+            .position(|run| run.contains("fork_release.py render"))
+            .unwrap_or_else(|| panic!("{job} renders the installers"));
+        let joined = runs[render].replace("\\\n", " ");
+        let flattened = joined.split_whitespace().collect::<Vec<_>>().join(" ");
+        renders.push((
+            job,
+            distribution
+                .iter()
+                .all(|argument| flattened.contains(argument)),
+        ));
+        if job != "publish" {
+            let build = runs
+                .iter()
+                .position(|run| run.starts_with("cargo build --release"))
+                .unwrap_or_else(|| panic!("{job} builds"));
+            assert!(
+                render < build && runs[render].contains("install-rust.sh"),
+                "{job} bundles the rendered installer before it compiles"
+            );
+        }
+    }
+    assert_eq!(
+        renders,
+        vec![
+            ("build-gnu", true),
+            ("build-windows", true),
+            ("publish", true)
+        ]
+    );
 }
 
 /// The shipped shell scripts parse (`sh -n`), and shellcheck passes where installed.

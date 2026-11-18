@@ -1,18 +1,24 @@
-# prime-switch.ps1 - install and switch between the official Prime Agent build
+# prime-switch.ps1 - install, update, and remove the official Prime Agent build
 # and the Prime Agent (drvova build), side by side (the Windows twin of
 # scripts/prime-switch; the same commands and the same layout under %USERPROFILE%).
 #
-#   official  $HOME\.local                          (bin\prime-agent.cmd, share\prime-agent\)
-#   fork      $HOME\.local\share\prime-agent-fork   (bin\prime-agent.cmd, share\prime-agent\, kernel-venv\)
-#   switch    $HOME\.local\share\prime-switch\bin   (prime-agent.cmd: the ACTIVE build's shim;
-#             prime-switch.ps1: this script). The first switch puts this dir FIRST on the
-#             user PATH, so `prime-agent` runs the active build in new terminals.
+# THE COMMANDS: the two builds never share a command, so both answer at once and
+# nothing needs switching:
+#   official  `prime-agent`  $HOME\.local\bin\prime-agent.cmd (share\prime-agent\)
+#   fork      `prime`        $HOME\.local\share\prime-agent-fork\bin\prime.cmd
+#             (share\prime-agent\, kernel-venv\); its installer puts that bin dir
+#             on the user PATH and never touches another `prime` (such as Prime
+#             Intellect's own CLI) - whichever comes first on PATH runs
+#   switch    $HOME\.local\share\prime-switch\bin   (prime-switch.ps1: this script)
 #
-# Each build's own launcher pins its daemon pipe and kernel venv, so the two never share
-# a live daemon and switching never rebuilds a venv. ~/.prime/agent stays shared.
+# Each build's own launcher pins its daemon pipe and kernel venv, so the two never
+# share a live daemon. ~/.prime/agent stays shared. Earlier versions kept a
+# prime-agent.cmd shim in the switch dir that ran the "active" build; every command
+# retires that shim (marker-checked), so `prime-agent` is the official build again.
 #
-# Usage: prime-switch.ps1 <status|fork|official|install fork|official|update|uninstall fork> [-Force]
+# Usage: prime-switch.ps1 <status|install fork|official|update [fork|official]|uninstall fork> [-Force]
 #   (from a pipe: & ([scriptblock]::Create((irm <url>/prime-switch.ps1))) install fork)
+#   `fork` / `official` are kept for old scripts and say there is nothing to switch.
 #
 # Environment (tests and custom layouts): PRIME_SWITCH_HOME, PRIME_SWITCH_OFFICIAL_PREFIX,
 # PRIME_SWITCH_FORK_PREFIX, PRIME_SWITCH_FORK_RELEASES_URL, PRIME_SWITCH_OFFICIAL_INSTALLER_URL
@@ -37,10 +43,11 @@ $prefixes = @{
     official = Get-Knob 'PRIME_SWITCH_OFFICIAL_PREFIX' (Join-Path $HOME '.local')
     fork = Get-Knob 'PRIME_SWITCH_FORK_PREFIX' (Join-Path $HOME '.local\share\prime-agent-fork')
 }
+$commands = @{ official = 'prime-agent'; fork = 'prime' }
 $switchHome = Get-Knob 'PRIME_SWITCH_HOME' (Join-Path $HOME '.local\share\prime-switch')
 $switchBin = Join-Path $switchHome 'bin'
-$shim = Join-Path $switchBin 'prime-agent.cmd'
-$shimMark = 'rem prime-agent - active-build shim written by prime-switch'
+$legacyShim = Join-Path $switchBin 'prime-agent.cmd'
+$legacyShimMark = 'rem prime-agent - active-build shim written by prime-switch'
 
 function Fail($message) { throw "prime-switch: $message" }
 function Changed($message) { Write-Host "changed: $message" }
@@ -48,8 +55,16 @@ function Changed($message) { Write-Host "changed: $message" }
 function Assert-Build($build) {
     if (@('fork', 'official') -notcontains $build) { Fail "unknown build: $build (fork or official)" }
 }
-function Get-Other($build) { if ($build -eq 'fork') { 'official' } else { 'fork' } }
-function Get-Launcher($build) { Join-Path (Join-Path $prefixes[$build] 'bin') 'prime-agent.cmd' }
+# The build's launcher. A fork installed before it had its own command still has
+# only bin\prime-agent.cmd: that launcher answers until its next install or update
+# replaces it with bin\prime.cmd.
+function Get-Launcher($build) {
+    $bin = Join-Path $prefixes[$build] 'bin'
+    $launcher = Join-Path $bin "$($commands[$build]).cmd"
+    $legacy = Join-Path $bin 'prime-agent.cmd'
+    if ($build -eq 'fork' -and -not (Test-Path -LiteralPath $launcher -PathType Leaf) -and (Test-Path -LiteralPath $legacy -PathType Leaf)) { return $legacy }
+    return $launcher
+}
 function Get-Marker($build) { Join-Path $prefixes[$build] 'share\prime-agent\.prime-agent-install' }
 function Test-Installed($build) {
     (Test-Path -LiteralPath (Get-Launcher $build) -PathType Leaf) -and (Test-Path -LiteralPath (Get-Marker $build) -PathType Leaf)
@@ -58,10 +73,13 @@ function Get-Version($build) {
     $line = Get-Content -LiteralPath (Get-Marker $build) -ErrorAction SilentlyContinue | Select-Object -Index 1
     if ($line) { $line -replace '^version ', '' } else { '' }
 }
-function Get-Active {
-    if (-not (Test-Path -LiteralPath $shim)) { return '' }
-    $line = Get-Content -LiteralPath $shim | Where-Object { $_ -match '^rem build: ' } | Select-Object -First 1
-    if ($line) { $line -replace '^rem build: ', '' } else { '' }
+
+# The pre-`prime` shim goes: only the file this script wrote (its marker).
+function Remove-LegacyShim {
+    if ((Test-Path -LiteralPath $legacyShim -PathType Leaf) -and ((Get-Content -LiteralPath $legacyShim) -contains $legacyShimMark)) {
+        Remove-Item -LiteralPath $legacyShim -Force
+        Changed "removed the old $legacyShim shim (``prime-agent`` runs the official build again; the fork is ``prime``)"
+    }
 }
 
 # The busy check and the clean stop through the build's OWN launcher (its pipe pin).
@@ -95,44 +113,20 @@ function Stop-DaemonOf($build) {
     Changed "stopped the $build daemon ($launcher shutdown --force)"
 }
 
-# The shim is written to a temp file in the same dir, then renamed over the old one.
-function Write-Shim($build) {
-    New-Item -ItemType Directory -Path $switchBin -Force | Out-Null
-    $body = "@echo off`r`n$shimMark`r`nrem build: $build`r`n`"$(Get-Launcher $build)`" %*`r`n"
-    if ((Test-Path -LiteralPath $shim) -and ([IO.File]::ReadAllText($shim) -eq $body)) { return }
-    $tmp = Join-Path $switchBin (".prime-agent-{0}.cmd" -f [Guid]::NewGuid().ToString('N'))
-    [IO.File]::WriteAllText($tmp, $body)
-    Move-Item -LiteralPath $tmp -Destination $shim -Force
-}
-
-# The first switch puts the shim dir first on the user PATH (kept in the registry kind
-# the value already has, the install.ps1 discipline) and in this session.
-function Set-ShimPathFirst {
-    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
-    try {
-        $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        $entries = @($raw -split ';' | Where-Object { $_ })
-        if ($entries.Count -gt 0 -and $entries[0].TrimEnd('\') -ieq $switchBin.TrimEnd('\')) { return }
-        $kind = if ($raw) { $key.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
-        $rest = @($entries | Where-Object { $_.TrimEnd('\') -ine $switchBin.TrimEnd('\') })
-        $key.SetValue('Path', (@($switchBin) + $rest) -join ';', $kind)
-        $env:PATH = "$switchBin;$env:PATH"
-        Changed "put $switchBin first on the user PATH (open a new terminal to pick it up)"
-        # Tell Explorer the environment changed (install.ps1's broadcast), so
-        # new terminals see the PATH without a re-login; best-effort.
-        try {
-            if (-not ('prime_switch.Win32SendMessage' -as [type])) {
-                Add-Type -Namespace 'prime_switch' -Name 'Win32SendMessage' -MemberDefinition @'
-[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
-public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
-'@
-            }
-            [prime_switch.Win32SendMessage]::SendMessageTimeout([IntPtr]0xffff, 0x001A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]([UIntPtr]::Zero)) | Out-Null
-        } catch {
-            Write-Host 'note: open a new terminal (or sign out and in) to pick up the PATH change'
+# Which `prime-agent` and `prime` a new shell runs, and whether that is the build the
+# name belongs to.
+function Write-PathHint {
+    foreach ($build in 'official', 'fork') {
+        if (-not (Test-Installed $build)) { continue }
+        $name = $commands[$build]
+        $launcher = Get-Launcher $build
+        $resolved = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $resolved) {
+            Write-Host "note: ``$name`` is not on PATH; add $(Split-Path -Parent $launcher) to the user PATH (or run $launcher)"
+        } elseif ((Split-Path -Parent $resolved.Source) -ine (Split-Path -Parent $launcher)) {
+            Write-Host "note: ``$name`` on PATH is $($resolved.Source), not the $build build."
+            Write-Host "  move $(Split-Path -Parent $launcher) before $(Split-Path -Parent $resolved.Source) in the user PATH, or run $launcher"
         }
-    } finally {
-        $key.Dispose()
     }
 }
 
@@ -177,49 +171,57 @@ function Invoke-Installer($build) {
     }
 }
 
+if (@('status', 'fork', 'official', 'install', 'update', 'uninstall') -notcontains $Command) {
+    Fail "unknown command: $Command (status, install, update, uninstall)"
+}
+Remove-LegacyShim
+
 switch ($Command) {
     'status' {
-        $active = Get-Active
-        Write-Host ("active:   {0} ({1})" -f $(if ($active) { $active } else { 'none' }), $shim)
         foreach ($build in 'official', 'fork') {
             if (Test-Installed $build) {
-                Write-Host ("{0,-9} {1}  {2}" -f "${build}:", (Get-Version $build), (Get-Launcher $build))
+                Write-Host ("{0,-9} {1}  {2}  {3}" -f "${build}:", (Get-Version $build), $commands[$build], (Get-Launcher $build))
             } else {
                 Write-Host ("{0,-9} not installed  (prime-switch.ps1 install {1})" -f "${build}:", $build)
             }
         }
+        Write-PathHint
     }
     { $_ -in 'fork', 'official' } {
-        $build = $Command
-        if (-not (Test-Installed $build)) { Fail "the $build build is not installed: run prime-switch.ps1 install $build" }
-        if ((Get-Active) -eq $build) {
-            Write-Host "unchanged: $build is already active ($(Get-Version $build))"
-        } else {
-            Stop-DaemonOf (Get-Other $build)
-            Write-Shim $build
-            Changed "$shim now runs the $build build ($(Get-Version $build), $(Get-Launcher $build))"
-            if ($build -eq 'official') { Write-ModelsWarning }
-        }
-        Set-ShimPathFirst
+        Write-Host 'nothing to switch: the fork build is `prime` and the official build is `prime-agent`;'
+        Write-Host '  both answer at once (prime-switch.ps1 status shows where each one lives)'
     }
     'install' {
         Assert-Build $Build
         Install-Self
         if (Test-Installed $Build) {
-            Write-Host "unchanged: the $Build build is already installed ($(Get-Version $Build)); prime-switch.ps1 update updates the active build"
+            Write-Host "unchanged: the $Build build is already installed ($(Get-Version $Build)); prime-switch.ps1 update $Build updates it"
         } else {
             Invoke-Installer $Build
             if (-not (Test-Installed $Build)) { Fail "the $Build installer finished but $(Get-Launcher $Build) is missing" }
             Changed "installed the $Build build $(Get-Version $Build) at $($prefixes[$Build])"
-            Write-Host "run ``prime-switch.ps1 $Build`` to make it the active prime-agent"
+            Write-Host "run ``$($commands[$Build])`` to start the $Build build (open a new terminal if the installer changed the user PATH)"
+            if ($Build -eq 'official') { Write-ModelsWarning }
+            Write-PathHint
         }
     }
     'update' {
-        $active = Get-Active
-        if (-not $active) { Fail 'no build is active: run prime-switch.ps1 fork or prime-switch.ps1 official first' }
-        Write-Host "updating the $active build: $(Get-Launcher $active) update"
-        & (Get-Launcher $active) update
-        exit $LASTEXITCODE
+        if ($Build) { Assert-Build $Build }
+        $updated = $false
+        $failed = 0
+        foreach ($build in 'official', 'fork') {
+            if ($Build -and $Build -ne $build) { continue }
+            if (-not (Test-Installed $build)) {
+                if ($Build) { Fail "the $build build is not installed: run prime-switch.ps1 install $build" }
+                continue
+            }
+            Write-Host "updating the $build build: $(Get-Launcher $build) update"
+            & (Get-Launcher $build) update
+            if ($LASTEXITCODE -ne 0) { $failed = $LASTEXITCODE }
+            $updated = $true
+        }
+        if (-not $updated) { Fail 'no build is installed: run prime-switch.ps1 install fork|official' }
+        if ($failed -ne 0) { Fail "an update failed (exit $failed)" }
     }
     'uninstall' {
         if ($Build -ne 'fork') { Fail 'only the fork build is uninstalled here; the official build keeps its own installer''s layout' }
@@ -238,18 +240,8 @@ switch ($Command) {
                 Fail "refusing to remove ${forkReal}: it carries no installer marker"
             }
             Stop-DaemonOf 'fork'
-            if ((Get-Active) -eq 'fork') {
-                if (Test-Installed 'official') {
-                    Write-Shim 'official'
-                    Changed "$shim now runs the official build ($(Get-Version 'official'))"
-                } else {
-                    Remove-Item -LiteralPath $shim -Force
-                    Changed "removed $shim (no build is active)"
-                }
-            }
             Remove-Item -LiteralPath $forkReal -Recurse -Force
-            Changed "removed the fork build at $forkReal"
+            Changed "removed the fork build at $forkReal (its bin dir stays on the user PATH until you remove it there)"
         }
     }
-    default { Fail "unknown command: $Command (status, fork, official, install, update, uninstall)" }
 }

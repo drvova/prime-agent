@@ -161,7 +161,7 @@ set -eu
 DOWNLOAD_BASE_URL_DEFAULT="https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
 RELEASE_CHANNEL_DEFAULT="stable"
 # THE DISTRIBUTION KNOBS (rendered by scripts/release/fork_release.py for a
-# side-by-side distribution build; the official copy leaves all three
+# side-by-side distribution build; the official copy leaves all four
 # empty, so its asset URLs, prefix, launcher, and daemon socket are exactly
 # the ones described above):
 #   RELEASE_ASSETS_URL_DEFAULT  where the versioned assets live: the tarball
@@ -174,9 +174,16 @@ RELEASE_CHANNEL_DEFAULT="stable"
 #                               official prime-agent-rust-<uid>) and its own
 #                               kernel venv (<prefix>/kernel-venv), both pinned
 #                               by the launcher; empty = the official build
+#   COMMAND_NAME                the command a distribution build installs
+#                               instead of prime-agent (its launcher is
+#                               $PREFIX/bin/<command>, plus ~/.local/bin/<command>
+#                               when that slot is free; a <command> this
+#                               installer did not write is never replaced);
+#                               empty = prime-agent
 RELEASE_ASSETS_URL_DEFAULT=""
 PREFIX_DEFAULT=""
 VARIANT_NAME=""
+COMMAND_NAME=""
 BASE_URL="${PRIME_AGENT_DOWNLOAD_BASE_URL:-$DOWNLOAD_BASE_URL_DEFAULT}"
 CHANNEL="${PRIME_AGENT_RELEASE_CHANNEL:-$RELEASE_CHANNEL_DEFAULT}"
 PREFIX="${PRIME_AGENT_RUST_PREFIX:-${PREFIX_DEFAULT:-$HOME/.local}}"
@@ -184,6 +191,11 @@ case "$VARIANT_NAME" in
   "") DAEMON_SOCKET_DIR_NAME="prime-agent-rust" ;;
   *[!a-z0-9-]*) echo "install-rust.sh: invalid VARIANT_NAME: ${VARIANT_NAME}" >&2; exit 1 ;;
   *) DAEMON_SOCKET_DIR_NAME="prime-agent-${VARIANT_NAME}" ;;
+esac
+case "$COMMAND_NAME" in
+  "") LAUNCHER_NAME="prime-agent" ;;
+  prime-agent|*[!a-z0-9-]*) echo "install-rust.sh: invalid COMMAND_NAME: ${COMMAND_NAME}" >&2; exit 1 ;;
+  *) LAUNCHER_NAME="$COMMAND_NAME" ;;
 esac
 
 die() { echo "install-rust.sh: $1" >&2; exit 1; }
@@ -1378,13 +1390,32 @@ done
 
 share_dir="${PREFIX}/share/prime-agent"
 bin_dir="${PREFIX}/bin"
-launcher="${bin_dir}/prime-agent"
+launcher="${bin_dir}/${LAUNCHER_NAME}"
 old_layout_dir="${PREFIX}/share/prime-agent-rust"
 legacy_dir="${PREFIX}/share/prime-agent-legacy"
 lock_link="${PREFIX}/share/.prime-agent-install.lock"
 legacy_lock="${PREFIX}/share/.prime-agent-rust-install.lock"
 generations_record="${PREFIX}/share/.prime-agent-install-generations"
 guard_preserved "$share_dir" "$launcher" "$old_layout_dir" "$legacy_dir" "$lock_link"
+
+# THE COMMAND OWNERSHIP RULE (COMMAND_NAME set): a distribution's own
+# command can belong to another product too (Prime Intellect's CLI is also
+# `prime`), so a launcher slot this installer did not write is NEVER moved
+# aside or replaced: the install refuses here, before it changes anything.
+# Only a regular file carrying this installer's launcher marker is ours.
+# (The official prime-agent keeps the keyword takeover below.)
+launcher_slot_owned() {
+  { [ ! -e "$1" ] && [ ! -L "$1" ]; } \
+    || { [ -f "$1" ] && [ ! -L "$1" ] && grep -q 'launcher written by install-rust.sh' "$1" 2>/dev/null; }
+}
+if [ -n "$COMMAND_NAME" ]; then
+  launcher_slot_owned "$launcher" \
+    || die "refusing to replace ${launcher}: this installer did not write it (another ${COMMAND_NAME} command?); move it aside or choose another PRIME_AGENT_RUST_PREFIX, and re-run"
+  if [ "$WINDOWS" = "yes" ]; then
+    launcher_slot_owned "${launcher}.cmd" \
+      || die "refusing to replace ${launcher}.cmd: this installer did not write it; move it aside or choose another PRIME_AGENT_RUST_PREFIX, and re-run"
+  fi
+fi
 
 # --- --rollback: the newest kept generation ------------------------------------
 # The rollback source is the newest generation in the generations record (the
@@ -2619,6 +2650,7 @@ on_exit() {
   fi
   [ -n "$launcher_tmp" ] && rm -f "$launcher_tmp" 2>/dev/null || true
   [ -n "${cmd_tmp:-}" ] && rm -f "$cmd_tmp" 2>/dev/null || true
+  [ -n "${public_tmp:-}" ] && rm -f "$public_tmp" 2>/dev/null || true
   # The extraction stage is disposable on every failed path: a successful
   # publish renamed the stage into ${share_dir}, so the stale path no longer
   # exists and the removal is a no-op there; a rollback publishes the kept
@@ -2955,7 +2987,7 @@ fi
 # above serves Git Bash). The same unowned-file discipline as the sh
 # launcher: a foreign .cmd is preserved aside, never destroyed.
 if [ "$WINDOWS" = "yes" ]; then
-  cmd_launcher="${bin_dir}/prime-agent.cmd"
+  cmd_launcher="${launcher}.cmd"
   if [ -f "$cmd_launcher" ] \
      && ! grep -q 'launcher written by install-rust.sh' "$cmd_launcher" 2>/dev/null; then
     preserved_cmd_path="$(fresh_slot "${bin_dir}/prime-agent.cmd.pre-takeover")"
@@ -3000,6 +3032,60 @@ old_launcher="${bin_dir}/prime-agent-rust"
 if [ -f "$old_launcher" ] && grep -q 'launcher written by install-rust.sh' "$old_launcher" 2>/dev/null; then
   rm -f "$old_launcher"
   say "removed the old ${old_launcher} launcher (the keyword is prime-agent now)"
+fi
+# THE DISTRIBUTION COMMAND (COMMAND_NAME set). The build's launcher is
+# $PREFIX/bin/<command>, so a launcher this script wrote under the
+# prime-agent name in the same prefix (a distribution install from before
+# it had its own command) is retired, marker-checked like the pre-takeover
+# name above: the distribution never answers as prime-agent. Then the
+# public command: on unix a free (or our own) ~/.local/bin/<command> gets a
+# small exec script that runs the launcher by its absolute path (a symlink
+# would not do: the launcher resolves its payload from its own directory).
+# A <command> there that this script did not write (Prime Intellect's own
+# `prime` CLI, typically) is never replaced or removed; the summary says
+# which <command> wins on PATH instead. Windows has no public command: the
+# launcher's own bin dir is the one that goes on PATH.
+public_command=""
+public_command_state=""
+command_dir="$bin_dir"
+if [ -n "$COMMAND_NAME" ]; then
+  for retired_launcher in "${bin_dir}/prime-agent" "${bin_dir}/prime-agent.cmd"; do
+    if [ -f "$retired_launcher" ] && grep -q 'launcher written by install-rust.sh' "$retired_launcher" 2>/dev/null; then
+      rm -f "$retired_launcher"
+      say "removed the old ${retired_launcher} launcher (this build's command is ${COMMAND_NAME} now)"
+    fi
+  done
+  public_dir_real="$(cd "${HOME}/.local/bin" 2>/dev/null && pwd -P || true)"
+  launcher_dir_real="$(cd "$bin_dir" && pwd -P)"
+  if [ "$WINDOWS" != "yes" ] && [ "$public_dir_real" != "$launcher_dir_real" ]; then
+    public_command="${HOME}/.local/bin/${COMMAND_NAME}"
+    public_mark="# ${COMMAND_NAME} - public command written by install-rust.sh"
+    if { [ -e "$public_command" ] || [ -L "$public_command" ]; } \
+       && ! { [ -f "$public_command" ] && [ ! -L "$public_command" ] \
+              && [ "$(sed -n 2p "$public_command" 2>/dev/null)" = "$public_mark" ]; }; then
+      public_command_state="foreign"
+    else
+      guard_preserved "$public_command"
+      mkdir -p "${HOME}/.local/bin"
+      public_quoted="$(printf '%s' "${launcher_dir_real}/${LAUNCHER_NAME}" | sed "s/'/'\\\\''/g")"
+      public_body="#!/bin/sh
+${public_mark}
+# It runs the launcher below; delete this file to give the name back.
+exec '${public_quoted}' \"\$@\""
+      if [ -f "$public_command" ] && [ "$(cat "$public_command")" = "$public_body" ]; then
+        public_command_state="unchanged"
+      else
+        public_tmp="$(mktemp "${HOME}/.local/bin/.${COMMAND_NAME}.XXXXXX")"
+        printf '%s\n' "$public_body" > "$public_tmp"
+        chmod 0755 "$public_tmp"
+        mv -f "$public_tmp" "$public_command"
+        public_tmp=""
+        public_command_state="written"
+        say "wrote ${public_command} (it runs ${launcher_dir_real}/${LAUNCHER_NAME})"
+      fi
+      command_dir="${HOME}/.local/bin"
+    fi
+  fi
 fi
 if [ -n "$rollback_from" ]; then
   step_ok "Restored the previous version" "${VERSION}"
@@ -3234,6 +3320,11 @@ fi
 # every must-do next step as an amber line plus the exact command.
 ui_stop
 say "launcher:  ${launcher}"
+case "$public_command_state" in
+  written|unchanged) say "command:   ${public_command} (runs the launcher)" ;;
+  foreign) say "command:   ${public_command} is not this build's (left untouched)" ;;
+  "") ;;
+esac
 say "payload:   ${share_dir}"
 if [ -d "$old" ] && grep -qxF -- "$old" "$generations_record" 2>/dev/null; then
   say "rollback:  ${old} (the previous payload, one generation; swept on the next install)"
@@ -3275,7 +3366,7 @@ if [ "$ts_stop_rust_stopped" = "yes" ] && [ "$rust_leftover" != "yes" ]; then
 fi
 
 printf '\n' >&2
-printf ' %sDone.%s Run %sprime-agent%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$C_RESET" >&2
+printf ' %sDone.%s Run %s%s%s to start.\n' "$C_BOLD" "$C_RESET" "$C_BOLD" "$LAUNCHER_NAME" "$C_RESET" >&2
 dim "installed to $(tilde "$share_dir") · launcher $(tilde "$launcher")"
 if [ -n "$ts_takeover_from" ]; then
   dim "moved the TypeScript install to $(tilde "$ts_takeover_from") · undo:"
@@ -3339,7 +3430,40 @@ path_check_note() {
     todo "[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';${win_bin_dir}', 'User')"
   fi
 }
-path_check_note "${bin_dir}"
+path_check_note "${command_dir}"
+# THE COMMAND COLLISION NOTE (COMMAND_NAME set): which <command> a fresh
+# shell runs. A foreign ~/.local/bin/<command> stays exactly as it was (see
+# THE DISTRIBUTION COMMAND); the note names both and the PATH order that
+# picks this build. The winner is the first executable <command> on the
+# INCOMING PATH, the same view as the PATH guidance above.
+if [ -n "$COMMAND_NAME" ]; then
+  if [ "$public_command_state" = foreign ]; then
+    printf '\n' >&2
+    note "! $(tilde "$public_command") already exists and was not written by this installer"
+    note "  (it may be Prime Intellect's own ${COMMAND_NAME} CLI); it was left untouched."
+    note "  This build's ${COMMAND_NAME} is ${launcher}. Whichever ${COMMAND_NAME} comes first"
+    note "  on PATH runs; to make it this build, put its directory first (or run it by"
+    note "  its full path):"
+    todo "export PATH=\"${bin_dir}:\$PATH\""
+  fi
+  command_winner=""
+  winner_rest="${incoming_path}:"
+  while [ -n "$winner_rest" ]; do
+    winner_dir="${winner_rest%%:*}"
+    winner_rest="${winner_rest#*:}"
+    [ -n "$winner_dir" ] || winner_dir="."
+    if [ -f "${winner_dir}/${COMMAND_NAME}" ] && [ -x "${winner_dir}/${COMMAND_NAME}" ]; then
+      command_winner="${winner_dir}/${COMMAND_NAME}"
+      break
+    fi
+  done
+  if [ -n "$command_winner" ] && ! [ "$command_winner" -ef "$launcher" ] \
+     && ! { [ "$public_command_state" != foreign ] && [ -n "$public_command" ] && [ "$command_winner" -ef "$public_command" ]; }; then
+    printf '\n' >&2
+    note "! \`${COMMAND_NAME}\` on your PATH runs ${command_winner}, not this build."
+    note "  Put $(tilde "$command_dir") before its directory on PATH, or run ${launcher}."
+  fi
+fi
 if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ] \
    && [ -n "$uv_bin_dir" ] \
    && [ "$uv_bin_dir" != "${bin_dir}" ] \
