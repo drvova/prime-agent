@@ -552,21 +552,14 @@ fn signature_equals(recorded: Option<TraceUploadSignature>, current: TraceUpload
 
 // Separate short mutation leases from delivery leases (which cover network
 // waits). Persist callers only try-lock; cursor/prune work stays in background.
+// The lease never creates the outbox: the writers create it first, and a
+// background pruner over an outbox that vanished (a deleted agent dir) finds
+// nothing to prune instead of re-creating the directory to hold a lock file.
 fn outbox_mutation_lock(entry: &Path) -> std::io::Result<std::fs::File> {
-    let lock = entry.with_extension("mutation-lock");
     let mut options = std::fs::OpenOptions::new();
     options.create(true).read(true).write(true).truncate(false);
     crate::platform::perms::set_private_mode(&mut options);
-    match options.open(&lock) {
-        Ok(file) => Ok(file),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(parent) = lock.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            options.open(lock)
-        }
-        Err(error) => Err(error),
-    }
+    options.open(entry.with_extension("mutation-lock"))
 }
 
 fn record_agent_trace_outbox_upload(

@@ -88,7 +88,11 @@ impl Worker {
         let store = core.store.as_ref();
 
         AgentConnectionState {
-            is_streaming: core.busy,
+            // A run whose `agent_end` already went out is not streaming to a
+            // client, even while the worker settles it (TS `isStreaming`
+            // drops at the agent loop's end): an attach in that window must
+            // not show a turn no later frame closes.
+            is_streaming: core.busy && core.wire_run_open,
             is_compacting: core.compacting,
             active_session_id: Some(core.active_session_id.clone()),
             cwd: core.cwd.clone(),

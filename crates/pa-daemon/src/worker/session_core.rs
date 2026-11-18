@@ -19,6 +19,12 @@ pub(crate) struct SessionCore {
     pub(crate) steering: VecDeque<QueuedItem>,
     pub(crate) follow_up: VecDeque<QueuedItem>,
     pub(crate) busy: bool,
+    /// Whether the last `agent_start`/`agent_end` frame this session sent
+    /// on the wire opened a run. `busy` outlives the run's own `agent_end`
+    /// (the settle work after it emits no frame), so a client attaching in
+    /// that window would read a live turn no later event ever closes; the
+    /// connection state reports streaming only while both hold.
+    pub(crate) wire_run_open: bool,
     pub(crate) created: bool,
     pub(crate) attached_client_ids: Vec<String>,
     pub(crate) abort_requested: bool,
@@ -102,6 +108,16 @@ pub(crate) struct SessionCore {
 }
 
 impl SessionCore {
+    /// Track the run boundary of one outbound session frame (called where
+    /// the frame takes its sequence number, under this lock).
+    pub(crate) fn note_wire_frame(&mut self, event: &Value) {
+        match event.get("type").and_then(Value::as_str) {
+            Some("agent_start") => self.wire_run_open = true,
+            Some("agent_end") => self.wire_run_open = false,
+            _ => {}
+        }
+    }
+
     /// Whether a turn, compaction, or queued action is in flight (TS
     /// `hasOngoingSessionWork`); the supervisor-lost exit waits for it to settle.
     pub(crate) fn has_ongoing_work(&self) -> bool {
@@ -124,6 +140,7 @@ impl SessionCore {
             steering: VecDeque::new(),
             follow_up: VecDeque::new(),
             busy: false,
+            wire_run_open: false,
             created: true,
             attached_client_ids: Vec::new(),
             abort_requested: false,

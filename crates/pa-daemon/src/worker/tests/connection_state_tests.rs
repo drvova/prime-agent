@@ -268,3 +268,31 @@ async fn the_attach_state_carries_the_stats_context_usage() {
         "a model-less session omits the field: {modelless}"
     );
 }
+
+/// The settle window after a run's own `agent_end`: the worker is still busy
+/// (the checkpoint settle and the idle flip follow the frame), but no later
+/// frame tells an attached client the run closed. A client attaching there
+/// must read the run as over, or its turn spinner never stops.
+#[tokio::test]
+async fn a_run_past_its_agent_end_does_not_read_as_streaming_while_it_settles() {
+    let (_tmp, worker) = created_dispatch_worker().await;
+    let streaming = || {
+        let (core, inputs) = worker.connection_state_inputs();
+        Worker::connection_state_locked(&core, inputs).is_streaming
+    };
+    {
+        let mut core = worker.core.lock().unwrap();
+        core.busy = true;
+        core.note_wire_frame(&json!({ "type": "agent_start" }));
+    }
+    assert!(streaming(), "an open run streams");
+    worker
+        .core
+        .lock()
+        .unwrap()
+        .note_wire_frame(&json!({ "type": "agent_end" }));
+    assert!(
+        !streaming(),
+        "the run's agent_end closed it on the wire while the worker settles"
+    );
+}

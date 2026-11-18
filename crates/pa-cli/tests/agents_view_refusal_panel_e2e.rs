@@ -16,6 +16,8 @@
 //! continue path and the take-over kill) visible and wrapped.
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -38,6 +40,8 @@ impl Drop for Daemon {
 
 #[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
         .args(["--mode", "daemon", "--daemon-socket"])

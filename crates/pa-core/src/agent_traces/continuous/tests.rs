@@ -521,6 +521,25 @@ fn persist_racing_a_pruner_retains_a_complete_nonblocking_fallback_marker() {
     assert!(fallback.exists());
 }
 
+/// A background prune over an agent dir that was removed after the entry was
+/// observed (a deleted agent dir, a test's dropped temp dir) finds nothing to
+/// prune; it must not re-create the outbox just to hold its lease.
+#[test]
+fn a_prune_after_the_agent_dir_vanished_recreates_nothing() {
+    let fixture = Fixture::new();
+    let path = fixture.write_session("vanished.jsonl", "gone");
+    mark_pending(&fixture.agent_dir, &path).unwrap();
+    let entry = agent_trace_outbox_entry_path(&fixture.agent_dir, &path);
+    let raw = std::fs::read_to_string(&entry).unwrap();
+    std::fs::remove_dir_all(&fixture.agent_dir).unwrap();
+    prune_entry(&entry, &raw, None);
+    assert!(
+        !fixture.agent_dir.exists(),
+        "the prune re-created {}",
+        fixture.agent_dir.display()
+    );
+}
+
 #[test]
 fn stale_prune_observations_never_remove_a_new_cursor_or_recreated_transcript() {
     let fixture = Fixture::new();

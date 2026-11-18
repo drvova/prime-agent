@@ -989,6 +989,7 @@ impl TurnRunner {
                 }
                 let mut direct_payloads: Vec<Vec<u8>> = Vec::new();
                 for event_json in frames {
+                    core.note_wire_frame(&event_json);
                     let sequence = core.last_event_sequence + 1;
                     core.last_event_sequence = sequence;
                     let meta = create_daemon_event_meta(
@@ -1283,6 +1284,7 @@ impl TurnRunner {
 
     fn emit_turn_event(&self, event: Value) {
         let mut core = self.core.lock().unwrap();
+        core.note_wire_frame(&event);
         let sequence = core.last_event_sequence + 1;
         core.last_event_sequence = sequence;
         let meta = create_daemon_event_meta(

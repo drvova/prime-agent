@@ -444,7 +444,7 @@ mod tests {
     fn faux_engine_with_compaction_settings(
         script: &Value,
         settings: &Value,
-    ) -> (std::sync::Arc<AgentSessionEngine>, tempfile::TempDir) {
+    ) -> (tempfile::TempDir, std::sync::Arc<AgentSessionEngine>) {
         let dir = tempfile::TempDir::new().unwrap();
         let agent_dir = dir.path().join("agent");
         std::fs::create_dir_all(&agent_dir).unwrap();
@@ -469,7 +469,7 @@ mod tests {
         // The worker registers the engine's own arc: the live-auth
         // resolver upgrades it per provider call.
         engine.register_arc();
-        (engine, dir)
+        (dir, engine)
     }
 
     fn compaction_starts(events: &[EngineEvent]) -> Vec<&Value> {
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn overflow_compacts_retries_once_then_reports_the_failure() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn overflow_retry_succeeds_on_the_compacted_context() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn combined_limit_overflow_compacts_and_retries() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -704,7 +704,7 @@ mod tests {
     fn overflow_recovery_skip_surfaces_the_warning_row() {
         // `keepRecentTokens` beyond the whole session: the cut keeps
         // everything, so the compaction has no history to summarize.
-        let (engine, _dir) = faux_engine_with_compaction_settings(
+        let (_dir, engine) = faux_engine_with_compaction_settings(
             &json!({ "responses": [overflow_error(0)] }),
             &json!({ "compaction": { "enabled": true, "reserveTokens": 1, "keepRecentTokens": 100_000 } }),
         );
@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn stale_overflow_error_recovers_before_the_next_prompt() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn non_overflow_error_never_triggers_the_arm() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn overflow_recovery_aborted_mid_run_records_the_cancelled_outcome() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -896,7 +896,7 @@ mod tests {
 
     #[test]
     fn overflow_error_with_compaction_disabled_ends_without_recovery() {
-        let (engine, _dir) = faux_engine_with_compaction_settings(
+        let (_dir, engine) = faux_engine_with_compaction_settings(
             &json!({
                 "responses": [
                     {"text": "seed reply"},

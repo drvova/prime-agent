@@ -7,6 +7,8 @@
 //! runs a shell drops the shell from its dock when the daemon stops the session, instead of
 //! keeping the dead kernel's last list.
 
+mod support;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -53,6 +55,8 @@ fn kernel_python() -> PathBuf {
 // The spawned daemon is killed and reaped by `Supervisor::drop`, which clippy cannot see.
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let socket = dir.join("daemon.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");

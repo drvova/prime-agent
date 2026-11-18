@@ -37,6 +37,8 @@
 //! everything else - the scripted engine, the headless TUI driver, the
 //! store reads - is platform-neutral product code.
 
+mod support;
+
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -124,6 +126,8 @@ fn daemon_endpoint(dir: &Path) -> PathBuf {
 // The supervisor child is killed and reaped by `Supervisor`'s Drop; the lint cannot see past the spawn site.
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let socket = daemon_endpoint(dir);
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
