@@ -740,12 +740,16 @@ impl Editor {
         self.last_action = None;
 
         // A tmux popup can re-encode control bytes inside the paste as
-        // CSI-u Ctrl+letter sequences; decode them before the per-char
-        // filter so newlines survive.
-        let clean = normalize_text(&text_utils::decode_paste_ctrl_sequences(pasted_text));
+        // CSI-u Ctrl+letter sequences; decode them before the escape strip
+        // so newlines survive. Every other escape sequence goes whole, then
+        // line breaks fold to LF and the remaining C0/C1 controls (DEL
+        // included) go: pasted text is only ever text.
+        let clean = normalize_text(&text_utils::strip_escape_sequences(
+            &text_utils::decode_paste_ctrl_sequences(pasted_text),
+        ));
         let filtered_raw: String = clean
             .chars()
-            .filter(|&c| c == '\n' || (c as u32) >= 32)
+            .filter(|&c| c == '\n' || !c.is_control())
             .collect();
         let mut filtered = filtered_raw;
         // A payload that filters to nothing (control-only bytes, empty

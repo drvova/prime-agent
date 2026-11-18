@@ -119,7 +119,7 @@ where
     let thread_waker = waker.clone();
     let handle = std::thread::spawn(move || {
         let mut guard = SequenceGuard::default();
-        let mut coalescer = BurstCoalescer::new(BURST_CONTINUATION);
+        let mut coalescer = BurstCoalescer::new(BURST_CONTINUATION, PASTE_TAIL);
         loop {
             if thread_stop.load(Ordering::Acquire) {
                 // A held burst was read before the stop: deliver it like a drained round.
@@ -206,18 +206,58 @@ where
     });
 }
 
-/// [`forward`] one drained round, then mark its end with [`ReaderInput::ChunkEnd`] when the round
+/// How long after a held burst is released a lone text round still reads as that paste's tail
+/// ([`BurstCoalescer`]): the console pipe can hand a paste's last line break over after the
+/// continuation window closed, and a lone Enter there must stay text. Shorter than a person's
+/// reaction to the pasted text appearing. Windows only, like the window itself.
+const PASTE_TAIL: Duration = if cfg!(windows) {
+    Duration::from_millis(100)
+} else {
+    Duration::ZERO
+};
+
+/// How a ready round reached the forwarder: its origin decides whether its line breaks are text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundOrigin {
+    /// One drain round, passed straight through.
+    Drained,
+    /// Input only a paste produces: a keystroke burst the [`BurstCoalescer`] held across rounds,
+    /// or the keys a write carries after a bracketed paste ended. Its line breaks and tabs are
+    /// pasted text, never Enter or Tab.
+    PasteContinuation,
+}
+
+/// One round ready to forward, in stream order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Round {
+    outputs: Vec<GuardOutput>,
+    origin: RoundOrigin,
+}
+
+impl Round {
+    fn drained(outputs: Vec<GuardOutput>) -> Self {
+        Self {
+            outputs,
+            origin: RoundOrigin::Drained,
+        }
+    }
+
+    fn held(outputs: Vec<GuardOutput>) -> Self {
+        Self {
+            outputs,
+            origin: RoundOrigin::PasteContinuation,
+        }
+    }
+}
+
+/// [`forward`] one ready round, then mark its end with [`ReaderInput::ChunkEnd`] when the round
 /// is a `whole` terminal write (an empty round delivers nothing). Returns `false` when the surface
 /// stopped the reader.
-fn forward_chunk(
-    outputs: Vec<GuardOutput>,
-    whole: bool,
-    on_input: &mut dyn FnMut(ReaderInput) -> bool,
-) -> bool {
-    if outputs.is_empty() {
+fn forward_chunk(round: Round, whole: bool, on_input: &mut dyn FnMut(ReaderInput) -> bool) -> bool {
+    if round.outputs.is_empty() {
         return true;
     }
-    forward(outputs, on_input) && (!whole || on_input(ReaderInput::ChunkEnd))
+    forward(round.outputs, round.origin, on_input) && (!whole || on_input(ReaderInput::ChunkEnd))
 }
 
 /// Holds a marker-less keystroke burst open across drain rounds for [`BURST_CONTINUATION`], so a
@@ -225,19 +265,27 @@ fn forward_chunk(
 /// hold only when it carries two or more text presses and nothing a paste cannot carry: a typed key
 /// is one press per round and passes straight through. Every following plain round within the
 /// window joins the hold and extends it; any other round, or the window expiring, releases the held
-/// rounds as one round, in stream order. A zero window disables the hold.
+/// rounds as one [`RoundOrigin::PasteContinuation`] round, in stream order. A burst its window
+/// released leaves a [`PASTE_TAIL`] in which a single text press opens a hold too. A zero window
+/// disables the hold.
 struct BurstCoalescer {
     window: Duration,
     held: Vec<GuardOutput>,
     deadline: Option<Instant>,
+    /// Until when a lone text round still joins the last released burst.
+    tail: Option<Instant>,
+    /// The [`PASTE_TAIL`] length.
+    tail_length: Duration,
 }
 
 impl BurstCoalescer {
-    fn new(window: Duration) -> Self {
+    fn new(window: Duration, tail_length: Duration) -> Self {
         Self {
             window,
             held: Vec::new(),
             deadline: None,
+            tail: None,
+            tail_length,
         }
     }
 
@@ -248,26 +296,28 @@ impl BurstCoalescer {
     }
 
     /// The held burst as one round once its window has passed.
-    fn flush_expired(&mut self, now: Instant) -> Vec<Vec<GuardOutput>> {
+    fn flush_expired(&mut self, now: Instant) -> Vec<Round> {
         match self.deadline {
             Some(deadline) if now >= deadline => {
                 self.deadline = None;
-                vec![std::mem::take(&mut self.held)]
+                // The tail runs from the window's close, however late the reader observed it.
+                self.tail = Some(deadline + self.tail_length);
+                vec![Round::held(std::mem::take(&mut self.held))]
             }
             Some(_) | None => Vec::new(),
         }
     }
 
     /// The held burst as one round regardless of its window (the reader is stopping).
-    fn take_held(&mut self) -> Vec<Vec<GuardOutput>> {
+    fn take_held(&mut self) -> Vec<Round> {
         match self.deadline.take() {
-            Some(_) => vec![std::mem::take(&mut self.held)],
+            Some(_) => vec![Round::held(std::mem::take(&mut self.held))],
             None => Vec::new(),
         }
     }
 
     /// Take one drained round; returns the rounds now ready to forward, in stream order.
-    fn push_round(&mut self, outputs: Vec<GuardOutput>, now: Instant) -> Vec<Vec<GuardOutput>> {
+    fn push_round(&mut self, outputs: Vec<GuardOutput>, now: Instant) -> Vec<Round> {
         let mut ready = self.flush_expired(now);
         if outputs.is_empty() {
             return ready;
@@ -277,20 +327,27 @@ impl BurstCoalescer {
         let text_presses = burst_text(&outputs)
             .filter(|(text, _)| !text.chars().any(is_control_shortcut))
             .map(|(_, presses)| presses);
+        let in_tail = self.tail.is_some_and(|tail| now < tail);
         if self.deadline.is_some() {
             if text_presses.is_some() {
                 self.held.extend(outputs);
                 self.deadline = Some(now + self.window);
             } else {
                 self.deadline = None;
-                ready.push(std::mem::take(&mut self.held));
-                ready.push(outputs);
+                ready.push(Round::held(std::mem::take(&mut self.held)));
+                ready.push(Round::drained(outputs));
             }
-        } else if !self.window.is_zero() && text_presses.is_some_and(|presses| presses >= 2) {
+        } else if !self.window.is_zero()
+            && text_presses.is_some_and(|presses| presses >= 2 || (in_tail && presses >= 1))
+        {
             self.held = outputs;
             self.deadline = Some(now + self.window);
         } else {
-            ready.push(outputs);
+            // A key a paste cannot carry ends the tail; a release-only round is transparent.
+            if text_presses.is_none() {
+                self.tail = None;
+            }
+            ready.push(Round::drained(outputs));
         }
         ready
     }
@@ -303,7 +360,7 @@ fn is_control_shortcut(c: char) -> bool {
 
 /// [`forward_chunk`] each ready round in order; `false` when the surface stopped the reader.
 fn forward_rounds(
-    rounds: Vec<Vec<GuardOutput>>,
+    rounds: Vec<Round>,
     whole: bool,
     on_input: &mut dyn FnMut(ReaderInput) -> bool,
 ) -> bool {
@@ -332,12 +389,29 @@ fn burst_text(outputs: &[GuardOutput]) -> Option<(String, usize)> {
     Some((text, presses))
 }
 
-/// Deliver one drained round to the surface: a whole-write burst that reconstructs to marker-less
-/// multi-line text coalesces into one [`ReaderInput::BurstPaste`]; everything else passes the TS
-/// dispatch filters and forwards input by input. Returns `false` when the surface stopped the
-/// reader.
-fn forward(outputs: Vec<GuardOutput>, on_input: &mut dyn FnMut(ReaderInput) -> bool) -> bool {
-    if let Some((text, _)) = burst_text(&outputs).filter(|(text, _)| is_raw_multiline_paste(text)) {
+/// Deliver one ready round to the surface: text a paste produced coalesces into one
+/// [`ReaderInput::BurstPaste`] ([`is_pasted_burst`]); everything else passes the TS dispatch
+/// filters and forwards input by input. Returns `false` when the surface stopped the reader.
+fn forward(
+    mut outputs: Vec<GuardOutput>,
+    origin: RoundOrigin,
+    on_input: &mut dyn FnMut(ReaderInput) -> bool,
+) -> bool {
+    // A paste payload carrying its own end marker ends the bracketed paste early (crossterm closes
+    // it at the first marker), and the payload's rest arrives as keys in the same write. A typed
+    // key never shares a write with a paste, so that rest is paste continuation.
+    if let Some(paste_end) = outputs
+        .iter()
+        .rposition(|output| matches!(output, GuardOutput::Event(Event::Paste(_))))
+        .filter(|paste_end| paste_end + 1 < outputs.len())
+    {
+        let rest = outputs.split_off(paste_end + 1);
+        return forward(outputs, origin, on_input)
+            && forward(rest, RoundOrigin::PasteContinuation, on_input);
+    }
+    if let Some((text, _)) =
+        burst_text(&outputs).filter(|(text, presses)| is_pasted_burst(text, *presses, origin))
+    {
         return on_input(ReaderInput::BurstPaste(text));
     }
     // The dispatch filters run after the guard — a reassembled sequence can complete mid-round, and
@@ -658,6 +732,21 @@ fn printable_text(event: &Event) -> Option<String> {
     }
 }
 
+/// Whether a marker-less text burst is a paste, so its line breaks land as text instead of
+/// dispatching Enter (a submit): the TS multi-line shape; a write of two or more presses carrying
+/// an LF (a typed Enter is a lone CR, so a CRLF or LF line break is pasted); or any line break or
+/// tab in [`RoundOrigin::PasteContinuation`] input. A single line plus a lone CR in one write
+/// stays keys off Windows: it is byte-identical to scripted typing (`/exit\r`), and a terminal
+/// with bracketed paste wraps a real paste anyway.
+fn is_pasted_burst(text: &str, presses: usize, origin: RoundOrigin) -> bool {
+    match origin {
+        RoundOrigin::Drained => {
+            is_raw_multiline_paste(text) || (presses >= 2 && text.contains('\n'))
+        }
+        RoundOrigin::PasteContinuation => text.contains(['\r', '\n', '\t']),
+    }
+}
+
 /// TS `isRawMultilinePaste`: the chunk must carry text on both sides of a newline run — a leading
 /// or trailing Enter alone is ordinary key input.
 fn is_raw_multiline_paste(text: &str) -> bool {
@@ -896,7 +985,7 @@ mod tests {
             GuardOutput::Event(key(KeyCode::Enter, KeyModifiers::NONE)),
         ];
         let mut inputs = Vec::new();
-        assert!(forward_chunk(outputs, true, &mut |input| {
+        assert!(forward_chunk(Round::drained(outputs), true, &mut |input| {
             inputs.push(input);
             true
         }));
@@ -914,7 +1003,7 @@ mod tests {
     /// `forward` against a capturing sink (the paste-aware surface).
     fn collect_forwarded(outputs: Vec<GuardOutput>) -> Vec<ReaderInput> {
         let mut inputs = Vec::new();
-        let ok = forward(outputs, &mut |input| {
+        let ok = forward(outputs, RoundOrigin::Drained, &mut |input| {
             inputs.push(input);
             true
         });
@@ -1189,7 +1278,7 @@ mod tests {
     /// reader idles past every deadline. Returns what reached the surface.
     fn drive(window: Duration, rounds: Vec<(u64, Vec<GuardOutput>)>) -> Vec<ReaderInput> {
         let start = Instant::now();
-        let mut coalescer = BurstCoalescer::new(window);
+        let mut coalescer = BurstCoalescer::new(window, WINDOWS_TAIL);
         let mut inputs = Vec::new();
         let mut sink = |input: ReaderInput| {
             inputs.push(input);
@@ -1210,6 +1299,7 @@ mod tests {
     }
 
     const WINDOWS_WINDOW: Duration = Duration::from_millis(30);
+    const WINDOWS_TAIL: Duration = Duration::from_millis(100);
 
     /// Discussions #3690 / #3465: a Windows paste reaches the reader as press+release pairs with
     /// SHIFT on capitals and symbols. The whole paste in one round is one paste, not one message
@@ -1274,6 +1364,31 @@ mod tests {
         );
     }
 
+    /// The paste tail is short: an Enter the user types once the pasted text is up still submits.
+    #[test]
+    fn a_typed_enter_after_a_windows_paste_still_submits() {
+        let _guard = crate::enhanced_keys::TEST_STATE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::enhanced_keys::set_kitty_active_for_tests(false);
+        let [press, release] = windows_key_records('\r');
+        let inputs = drive(
+            WINDOWS_WINDOW,
+            vec![
+                (0, windows_paste("one\rtwo")),
+                (400, vec![press]),
+                (480, vec![release]),
+            ],
+        );
+        assert_eq!(
+            inputs,
+            vec![
+                ReaderInput::BurstPaste("one\rtwo".into()),
+                ReaderInput::Event(key(KeyCode::Enter, KeyModifiers::NONE)),
+            ]
+        );
+    }
+
     /// A terminal without bracketed paste delivers a CRLF-terminated line as one write; a typed
     /// Enter is a lone CR, so the CRLF marks the write as pasted text.
     #[test]
@@ -1314,14 +1429,14 @@ mod tests {
     /// Typing on Windows is one key per round: nothing is held, and Enter dispatches as a key.
     #[test]
     fn typed_windows_keys_pass_straight_through() {
-        let mut coalescer = BurstCoalescer::new(WINDOWS_WINDOW);
+        let mut coalescer = BurstCoalescer::new(WINDOWS_WINDOW, WINDOWS_TAIL);
         let now = Instant::now();
         for c in ['h', 'i', '\r'] {
             let [press, release] = windows_key_records(c);
             for record in [press, release] {
                 assert_eq!(
                     coalescer.push_round(vec![record.clone()], now),
-                    vec![vec![record]]
+                    vec![Round::drained(vec![record])]
                 );
             }
         }
@@ -1351,8 +1466,8 @@ mod tests {
         );
     }
 
-    /// A round that lands after the window closed starts fresh: the earlier burst was already
-    /// complete.
+    /// A round that lands after the window closed starts a burst of its own: the earlier burst was
+    /// already complete, and the later one's line break is still pasted text.
     #[test]
     fn a_round_after_the_window_is_not_joined() {
         let _guard = crate::enhanced_keys::TEST_STATE_LOCK
@@ -1368,8 +1483,7 @@ mod tests {
             vec![
                 ReaderInput::Event(key(KeyCode::Char('o'), KeyModifiers::NONE)),
                 ReaderInput::Event(key(KeyCode::Char('k'), KeyModifiers::NONE)),
-                ReaderInput::Event(key(KeyCode::Enter, KeyModifiers::NONE)),
-                ReaderInput::Event(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+                ReaderInput::BurstPaste("\rx".into()),
             ]
         );
     }
@@ -1385,10 +1499,16 @@ mod tests {
             GuardOutput::Event(key(KeyCode::Enter, KeyModifiers::NONE)),
             GuardOutput::Event(key(KeyCode::Char('z'), KeyModifiers::NONE)),
         ];
-        let mut coalescer = BurstCoalescer::new(Duration::ZERO);
+        let mut coalescer = BurstCoalescer::new(Duration::ZERO, Duration::ZERO);
         let now = Instant::now();
-        assert_eq!(coalescer.push_round(first.clone(), now), vec![first]);
-        assert_eq!(coalescer.push_round(second.clone(), now), vec![second]);
+        assert_eq!(
+            coalescer.push_round(first.clone(), now),
+            vec![Round::drained(first)]
+        );
+        assert_eq!(
+            coalescer.push_round(second.clone(), now),
+            vec![Round::drained(second)]
+        );
         assert_eq!(coalescer.poll_deadline(now), None);
     }
 
@@ -1417,11 +1537,11 @@ mod tests {
     /// A reader stop inside the window hands the held burst over instead of dropping it.
     #[test]
     fn a_stop_takes_the_held_burst() {
-        let mut coalescer = BurstCoalescer::new(WINDOWS_WINDOW);
+        let mut coalescer = BurstCoalescer::new(WINDOWS_WINDOW, WINDOWS_TAIL);
         let now = Instant::now();
         let paste = windows_paste("a\rb");
         assert!(coalescer.push_round(paste.clone(), now).is_empty());
-        assert_eq!(coalescer.take_held(), vec![paste]);
+        assert_eq!(coalescer.take_held(), vec![Round::held(paste)]);
         assert_eq!(coalescer.poll_deadline(now), None);
         assert!(coalescer.take_held().is_empty());
     }
