@@ -417,7 +417,10 @@ fn filter_enhanced_key_events(events: Vec<Event>) -> Vec<Event> {
 /// spans writes), so the repair never steals a real escape press; inactive while the kitty protocol
 /// is active.
 fn merge_legacy_meta_escapes(events: Vec<Event>) -> Vec<Event> {
-    if crate::enhanced_keys::kitty_active() {
+    // Windows reads console records: Alt arrives as a modifier on the native record, and an
+    // `Esc` + `[` run is a VT sequence the console host relayed character by character, which
+    // the guard decodes (the repair would add a phantom ALT to it).
+    if crate::enhanced_keys::kitty_active() || cfg!(windows) {
         return events;
     }
     let mut out: Vec<Event> = Vec::with_capacity(events.len());

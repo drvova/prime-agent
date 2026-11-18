@@ -47,14 +47,46 @@ impl PendingEscape {
     }
 }
 
+/// Where the reader's events come from: it decides what a key release means behind a held `ESC`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EventSource {
+    /// A VT byte stream (Unix ttys): a release is a kitty report and ends the held sequence.
+    VtBytes,
+    /// Windows console input records: the host relays a VT sequence it cannot translate (a DA1 or
+    /// CPR reply, a CSI-u key, a mouse report) as one vk=0 key record per character, each press
+    /// followed by its release on the inbox host. The releases sit between the sequence's bytes,
+    /// so they are dropped while a sequence is held (dispatch drops every release anyway).
+    ConsoleRecords,
+}
+
+/// The event source of the platform this build reads from.
+const PLATFORM_EVENT_SOURCE: EventSource = if cfg!(windows) {
+    EventSource::ConsoleRecords
+} else {
+    EventSource::VtBytes
+};
+
 /// The reader's escape guard: holds committed lone `ESC`s and reassembles the sequences they opened
 /// (see the module docs).
-#[derive(Default)]
 pub(crate) struct SequenceGuard {
+    source: EventSource,
     pending: Option<PendingEscape>,
 }
 
+impl Default for SequenceGuard {
+    fn default() -> Self {
+        Self::new(PLATFORM_EVENT_SOURCE)
+    }
+}
+
 impl SequenceGuard {
+    pub(crate) fn new(source: EventSource) -> Self {
+        Self {
+            source,
+            pending: None,
+        }
+    }
+
     pub(crate) fn feed(&mut self, event: Event, now: Instant) -> Vec<GuardOutput> {
         match self.pending.take() {
             None => match &event {
@@ -77,6 +109,13 @@ impl SequenceGuard {
                     let mut out = pending.flush();
                     out.extend(self.feed(event, now));
                     return out;
+                }
+                let console_release = self.source == EventSource::ConsoleRecords
+                    && matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release);
+                if console_release {
+                    // The release record of the held sequence's last character.
+                    self.pending = Some(pending);
+                    return Vec::new();
                 }
                 let Some(bytes) = continuation_bytes(&event) else {
                     // Not a continuation: the held `ESC` stood alone (or the
