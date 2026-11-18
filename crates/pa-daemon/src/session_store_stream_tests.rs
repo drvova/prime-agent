@@ -32,20 +32,20 @@ fn whole_file_reference(path: &std::path::Path) -> anyhow::Result<Vec<SessionEnt
     Ok(entries)
 }
 
-fn write_session(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "pa-stream-{name}-{}",
-        uuid::Uuid::new_v4().simple()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
+fn write_session(name: &str, bytes: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::Builder::new()
+        .prefix(&format!("pa-stream-{name}-"))
+        .tempdir()
+        .unwrap();
+    let dir = tmp.path().to_path_buf();
     let path = dir.join("session.jsonl");
     let mut file = std::fs::File::create(&path).unwrap();
     file.write_all(bytes).unwrap();
-    path
+    (tmp, path)
 }
 
 fn assert_streamed_equals_reference(name: &str, bytes: &[u8]) {
-    let path = write_session(name, bytes);
+    let (_tmp, path) = write_session(name, bytes);
     let streamed = SessionFile::open(&path).expect("the streamed open succeeds");
     let reference = whole_file_reference(&path).expect("the reference open succeeds");
     let streamed_rows: Vec<String> = streamed
@@ -114,7 +114,7 @@ fn streamed_open_fails_on_invalid_utf8_like_the_whole_file_read() {
     bytes.extend_from_slice(
         b"{\"type\":\"message\",\"id\":\"a\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"\xff\xfe\"}}\n",
     );
-    let path = write_session("invalid-utf8", &bytes);
+    let (_tmp, path) = write_session("invalid-utf8", &bytes);
     assert!(
         SessionFile::open(&path).is_err(),
         "invalid UTF-8 must fail the open, not skip the row"
@@ -124,9 +124,9 @@ fn streamed_open_fails_on_invalid_utf8_like_the_whole_file_read() {
 
 #[test]
 fn streamed_open_keeps_the_empty_and_missing_header_errors() {
-    let empty = write_session("empty", b"");
+    let (_tmp, empty) = write_session("empty", b"");
     assert!(SessionFile::open(&empty).is_err(), "an empty file errors");
-    let wrong_header = write_session(
+    let (_tmp, wrong_header) = write_session(
         "wrong-header",
         b"{\"type\":\"message\",\"id\":\"a\",\"timestamp\":\"2026-01-01T00:00:01Z\",\"message\":{\"role\":\"user\",\"content\":\"no header\"}}\n",
     );

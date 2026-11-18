@@ -311,7 +311,7 @@ mod tests {
 
     /// A persisted bare session with the refine surface forced on: the machine
     /// under test is the trigger bookkeeping, not the engine wiring.
-    async fn session(persisted: bool) -> AgentSession {
+    async fn session(persisted: bool) -> (tempfile::TempDir, AgentSession) {
         let model = faux_model(&[serde_json::json!({"text": "unused"})]);
         let agent_model: pa_agent::types::Model =
             super::super::provider_adapter::json_round_trip(&model)
@@ -337,7 +337,7 @@ mod tests {
             .await
             .unwrap();
         session.set_auto_refine(true, AutoRefineGates::default());
-        session
+        (tmp, session)
     }
 
     fn state(session: &AgentSession) -> (bool, Option<u64>, u32) {
@@ -361,7 +361,7 @@ mod tests {
 
     #[tokio::test]
     async fn arming_requires_the_refine_surface() {
-        let mut session = session(true).await;
+        let (_tmp, mut session) = session(true).await;
         session.set_auto_refine(false, AutoRefineGates::default());
         session.mark_compact_auto_refine_pending();
         assert!(!state(&session).0);
@@ -369,7 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn discard_drops_the_armed_trigger() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         session.mark_compact_auto_refine_pending();
         session.discard_compact_auto_refine();
         assert!(!state(&session).0);
@@ -377,7 +377,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bare_consume_without_a_trigger_is_silent() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         let model = faux_model(&[serde_json::json!({"text": "never served"})]);
         assert!(matches!(
             consume(&session, &model, CompactAutoRefineSurface::Checkpoint).await,
@@ -387,7 +387,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_gates_drop_the_armed_trigger_without_a_review() {
-        let mut session = session(true).await;
+        let (_tmp, mut session) = session(true).await;
         session.set_auto_refine(
             true,
             AutoRefineGates {
@@ -406,7 +406,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_compact_gate_drops_the_armed_trigger_without_a_review() {
-        let mut session = session(true).await;
+        let (_tmp, mut session) = session(true).await;
         session.set_auto_refine(
             true,
             AutoRefineGates {
@@ -425,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_declining_review_stamps_the_cooldown_and_resets_the_counter() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         session.note_settled_turn_since_auto_refine_review();
         session.note_settled_turn_since_auto_refine_review();
         session.mark_compact_auto_refine_pending();
@@ -443,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_review_stamps_the_cooldown() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         session.mark_compact_auto_refine_pending();
         // An unparseable review reply is a failed review.
         let model = faux_model(&[serde_json::json!({"text": "not json"})]);
@@ -460,7 +460,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cooled_down_trigger_stays_armed_at_a_checkpoint_and_drops_at_disposal() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         session.mark_compact_auto_refine_pending();
         let review = r#"{"shouldRefine": false, "rationale": "no"}"#;
         let model = faux_model(&[
@@ -489,7 +489,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_approving_review_runs_the_refinement() {
-        let session = session(true).await;
+        let (_tmp, session) = session(true).await;
         session.note_settled_turn_since_auto_refine_review();
         session.mark_compact_auto_refine_pending();
         let review = r#"{"shouldRefine": true, "rationale": "the turn shows a reusable tactic"}"#;

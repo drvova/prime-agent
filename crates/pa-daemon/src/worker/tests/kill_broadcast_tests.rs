@@ -5,8 +5,8 @@ use super::*;
 /// accounting skips it.
 #[tokio::test]
 async fn aborted_turn_row_broadcasts_and_persists_through_the_worker_gate() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-aborted-row-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -176,8 +176,8 @@ async fn aborted_turn_row_broadcasts_and_persists_through_the_worker_gate() {
 /// revives the session.
 #[tokio::test]
 async fn kill_cancels_the_sessions_scheduled_jobs() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-kill-jobs-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let sessions_dir = dir.join("sessions");
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
@@ -247,8 +247,8 @@ async fn kill_cancels_the_sessions_scheduled_jobs() {
 /// `session_closed` frame.
 #[tokio::test]
 async fn kill_cancels_a_mid_provider_wait_turn_and_surfaces_the_aborted_row() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-kill-path-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -388,9 +388,8 @@ async fn kill_cancels_a_mid_provider_wait_turn_and_surfaces_the_aborted_row() {
 /// stays off the wire and file while `abort` broadcasts it.
 #[tokio::test]
 async fn compact_interrupt_swallows_the_aborted_row() {
-    let dir =
-        std::env::temp_dir().join(format!("pa-worker-compact-abort-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),

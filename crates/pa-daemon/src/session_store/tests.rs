@@ -4,10 +4,10 @@
 use super::*;
 use serde_json::json;
 
-fn temp_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("pa-daemon-test-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    (tmp, dir)
 }
 
 /// The captured-attribution fixture: real devbox session rows (content sanitized,
@@ -18,7 +18,7 @@ fn captured_attribution_fixture() -> PathBuf {
 
 #[test]
 fn bounded_header_matches_the_line_read() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/repo", None, 0);
     session.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     let path = dir.join(session_file_name(session.session_id()));
@@ -34,7 +34,7 @@ fn bounded_header_matches_the_line_read() {
 #[cfg(unix)]
 #[test]
 fn rewrite_keeps_the_transcript_owner_only() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/repo", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -45,7 +45,7 @@ fn rewrite_keeps_the_transcript_owner_only() {
 
 #[test]
 fn bounded_header_rejects_a_non_json_first_line() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("bad.jsonl");
     fs::write(&path, "truncated junk without json\n").unwrap();
     assert_eq!(read_session_header_bounded(&path), None);
@@ -54,7 +54,7 @@ fn bounded_header_rejects_a_non_json_first_line() {
 
 #[test]
 fn bounded_header_refuses_an_over_long_first_line() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     // A cwd long enough to push the serialized header past the 512-byte
     // bound: the bounded read judges nothing; the line read still does.
     let mut session = SessionFile::create(&format!("/repo/{}", "x".repeat(600)), None, 0);
@@ -67,7 +67,7 @@ fn bounded_header_refuses_an_over_long_first_line() {
 
 #[test]
 fn bounded_header_reads_an_unterminated_first_line() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/repo", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -82,7 +82,7 @@ fn bounded_header_reads_an_unterminated_first_line() {
 
 #[test]
 fn bounded_header_strips_a_crlf_line_return() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/repo", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -97,7 +97,7 @@ fn bounded_header_strips_a_crlf_line_return() {
 
 #[test]
 fn bounded_header_treats_an_empty_file_as_headerless() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("empty.jsonl");
     fs::write(&path, "").unwrap();
     assert_eq!(read_session_header_bounded(&path), None);
@@ -271,7 +271,7 @@ fn the_depth_two_chain_reports_the_folded_aggregate() {
 /// however it reopens. A fresh session serves the gate closed.
 #[test]
 fn marking_the_warning_persists_and_both_reopens_hydrate_it() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/repo", None, 0);
     session.append_message(&json!({"role": "user", "content": "hi", "timestamp": 1u64}));
     let path = dir.join(session_file_name(session.session_id()));
@@ -324,7 +324,7 @@ fn marking_the_warning_persists_and_both_reopens_hydrate_it() {
 /// answer with the full scan's).
 #[test]
 fn an_off_branch_marker_never_hydrates_the_full_open_gate() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let row = |id: &str, parent: Option<&str>, message: Value| {
         json!({
             "type": "message", "id": id, "parentId": parent,
@@ -403,7 +403,7 @@ fn an_off_branch_marker_never_hydrates_the_full_open_gate() {
 
 #[test]
 fn creates_and_loads_a_session() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -457,7 +457,7 @@ fn a_cyclic_parent_chain_terminates_the_branch_walk() {
 /// A malformed or empty level never replaces a prior good one.
 #[test]
 fn scan_keeps_the_latest_persisted_thinking_level() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -472,7 +472,7 @@ fn scan_keeps_the_latest_persisted_thinking_level() {
 /// The in-memory index only adopts entries the file accepted.
 #[test]
 fn failed_persist_keeps_the_store_walkable() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let file = dir.join(session_file_name(session.session_id()));
     session.set_path(file.clone());
@@ -520,7 +520,7 @@ fn failed_persist_keeps_the_store_walkable() {
 /// row is recognized wherever it came from; a different disclosure stays distinct.
 #[test]
 fn declaration_stamped_entry_survives_reload_as_the_same_identity() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let file = dir.join(session_file_name(session.session_id()));
     session.set_path(file.clone());
@@ -567,7 +567,7 @@ fn declaration_stamped_entry_survives_reload_as_the_same_identity() {
 /// file predecessor (the writer's leaf at the time).
 #[test]
 fn branch_bridged_bridges_ghost_parent_gaps() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("ghosted.jsonl");
     let content = [
             json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-09-22T00:00:00.000Z", "cwd": "/tmp"}),
@@ -603,7 +603,7 @@ fn branch_bridged_bridges_ghost_parent_gaps() {
 
 #[test]
 fn branch_bridged_skips_abandoned_chains_after_a_persisted_branch_move() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("moved.jsonl");
     let content = [
             json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-09-22T00:00:00.000Z", "cwd": "/tmp"}),
@@ -631,7 +631,7 @@ fn branch_bridged_skips_abandoned_chains_after_a_persisted_branch_move() {
 /// Forked-off entries stay excluded; only a MISSING parent bridges.
 #[test]
 fn branch_bridged_matches_the_strict_walk_on_clean_files() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("clean.jsonl");
     let content = [
             json!({"type": "session", "version": 3, "id": "s1", "timestamp": "2026-09-22T00:00:00.000Z", "cwd": "/tmp"}),
@@ -664,7 +664,7 @@ fn branch_bridged_matches_the_strict_walk_on_clean_files() {
 /// subtracted — `session_usage`'s tests pin the fold, this pins the scan's wiring.
 #[test]
 fn scan_folds_the_saved_row_usage_summary() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -724,7 +724,7 @@ fn scan_folds_the_saved_row_usage_summary() {
 /// TS `JSON.parse` keeps the row, so every present field survives the partial block.
 #[test]
 fn scan_keeps_messages_with_partial_usage_objects() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -753,7 +753,7 @@ fn scan_keeps_messages_with_partial_usage_objects() {
 
 #[test]
 fn scan_omits_usage_without_billable_work() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());
@@ -862,7 +862,7 @@ fn append_cost_does_not_grow_with_the_store() {
 
 #[test]
 fn skips_malformed_lines() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("s.jsonl");
     fs::write(
             &path,
@@ -1032,7 +1032,7 @@ fn session_header_line_leads_with_the_type_tag() {
 #[cfg(unix)] // Windows uses the full reader rather than windowed hydration.
 #[test]
 fn hydrating_full_history_preserves_the_trace_controller() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let path = dir.join("trace-hydration.jsonl");
     let mut original = SessionFile::create(dir.to_str().unwrap(), None, 0);
     original.append_message(&json!({"role":"user", "content":"synthetic", "timestamp":1u64}));
@@ -1055,7 +1055,7 @@ fn hydrating_full_history_preserves_the_trace_controller() {
 
 #[test]
 fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
-    let dir = temp_dir();
+    let (_tmp, dir) = temp_dir();
     let mut session = SessionFile::create("/tmp", None, 0);
     let path = dir.join(session_file_name(session.session_id()));
     session.set_path(path.clone());

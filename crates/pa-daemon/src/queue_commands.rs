@@ -217,9 +217,9 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-qc-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -239,7 +239,7 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     fn lane_texts(worker: &Worker, lane: Lane) -> Vec<String> {
@@ -255,7 +255,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_labeled_preview_row_is_addressed_and_edited_by_its_preview() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         {
             let mut core = worker.core.lock().unwrap();
             core.steering.push_back(crate::worker::QueuedItem {
@@ -309,7 +309,7 @@ mod tests {
     /// still delivers the old injected content; delete still applies.
     #[tokio::test]
     async fn an_injected_heartbeat_row_rejects_replace_but_deletes() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         {
             let mut core = worker.core.lock().unwrap();
             core.steering.push_back(crate::worker::QueuedItem {
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn mutate_delete_moves_and_replaces_match_ts_status_wire() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         worker
             .dispatch(
                 "steer",
@@ -502,7 +502,7 @@ mod tests {
 
     #[tokio::test]
     async fn resume_queue_matches_the_ts_wire_shapes() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker.dispatch("resume_queue", &json!({})).await;
         assert!(!response.success);
         assert_eq!(response.error.as_deref(), Some("No queued work to resume"));
@@ -522,7 +522,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_rejects_the_waiting_caller() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let (done_tx, done_rx) = tokio::sync::oneshot::channel();
         {
             let mut core = worker.core.lock().unwrap();
@@ -567,7 +567,7 @@ mod tests {
     /// byte-identical to the prompt the turn runs on. Move and delete stay applicable.
     #[tokio::test]
     async fn replace_rejects_a_queued_agent_message_delivery() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let delivered = worker
             .dispatch(
                 "worker_deliver_message",
@@ -666,7 +666,7 @@ mod tests {
             ("followUp", "steering", "follow_up", "steer", "steer"),
             ("steering", "followUp", "steer", "follow_up", "follow_up"),
         ] {
-            let worker = created_worker().await;
+            let (_tmp, worker) = created_worker().await;
             worker.core.lock().unwrap().busy = true;
             for (command, payload) in [
                 (target_command, json!({ "message": "earlier" })),

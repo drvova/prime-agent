@@ -4,6 +4,8 @@
 //! survive the same window.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::Write as _;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
@@ -16,8 +18,7 @@ struct WorkerGuard {
 
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -240,7 +241,9 @@ fn the_orphan_exit_preserves_the_session_and_allows_dead_owner_lease_reclaim() {
     let mut worker = spawn_worker_with_window(dir.path(), &supervisor_socket, "4000", None);
     let worker_socket = dir.path().join("worker.sock");
     wait_worker_socket(&worker_socket);
-    let session_file = canonical_dir.join("orphan-lease-session.jsonl");
+    let session_file = canonical_dir
+        .join("sessions")
+        .join("orphan-lease-session.jsonl");
     let mut client = WorkerClient::connect(&worker_socket, "orphan-e2e-bootstrap-token");
     let created = client.request(
         "create",
@@ -297,7 +300,9 @@ fn an_orphaned_worker_waits_for_a_running_user_bash() {
     let mut worker = spawn_worker_with_window(dir.path(), &supervisor_socket, "4000", None);
     let worker_socket = dir.path().join("worker.sock");
     wait_worker_socket(&worker_socket);
-    let session_file = canonical_dir.join("orphan-bash-session.jsonl");
+    let session_file = canonical_dir
+        .join("sessions")
+        .join("orphan-bash-session.jsonl");
     let mut client = WorkerClient::connect(&worker_socket, "orphan-e2e-bootstrap-token");
     let created = client.request(
         "create",
@@ -358,7 +363,9 @@ fn the_orphan_exit_writes_a_current_info_sidecar() {
         spawn_worker_with_window(dir.path(), &supervisor_socket, "4000", Some(&script));
     let worker_socket = dir.path().join("worker.sock");
     wait_worker_socket(&worker_socket);
-    let session_file = canonical_dir.join("orphan-sidecar-session.jsonl");
+    let session_file = canonical_dir
+        .join("sessions")
+        .join("orphan-sidecar-session.jsonl");
     let mut client = WorkerClient::connect(&worker_socket, "orphan-e2e-bootstrap-token");
     let created = client.request(
         "create",

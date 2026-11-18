@@ -152,10 +152,10 @@ fn legacy_read_session_info(path: &Path) -> Option<SessionInfo> {
     })
 }
 
-fn test_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("session-info-fold-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn test_dir() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
+    (tmp, dir)
 }
 
 fn append_rows(path: &Path, rows: &[Value]) {
@@ -175,7 +175,7 @@ fn assert_fold_matches(path: &Path) {
 
 #[test]
 fn streaming_fold_matches_legacy_across_large_file_and_appends() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("session.jsonl");
     append_rows(
         &path,
@@ -225,7 +225,7 @@ fn streaming_fold_matches_legacy_across_large_file_and_appends() {
 
 #[test]
 fn cache_rejects_replacement_and_same_length_in_place_rewrite() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("session.jsonl");
     let replacement = dir.join("replacement.jsonl");
     let header =
@@ -257,7 +257,7 @@ fn cache_rejects_replacement_and_same_length_in_place_rewrite() {
 
 #[test]
 fn untimestamped_fallback_is_not_cached() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("session.jsonl");
     append_rows(
         &path,
@@ -313,7 +313,7 @@ fn captured_fixture_cold_and_warm_timings() {
 
 #[test]
 fn a_torn_trailing_line_folds_once_completed() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("torn.jsonl");
     append_rows(
         &path,
@@ -343,7 +343,7 @@ fn a_torn_trailing_line_folds_once_completed() {
 
 #[test]
 fn a_same_size_rewrite_rescans_from_the_top() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("rewrite.jsonl");
     append_rows(
         &path,
@@ -378,7 +378,7 @@ fn a_same_size_rewrite_rescans_from_the_top() {
 
 #[test]
 fn multi_round_appends_match_the_legacy_fold() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("rounds.jsonl");
     append_rows(
         &path,
@@ -401,7 +401,7 @@ fn multi_round_appends_match_the_legacy_fold() {
 
 #[test]
 fn a_failed_prefix_check_rescans_from_byte_zero() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("grown-rewrite.jsonl");
     append_rows(
         &path,
@@ -458,7 +458,7 @@ fn a_failed_prefix_check_rescans_from_byte_zero() {
 #[cfg(unix)]
 #[test]
 fn a_persisted_scan_state_resumes_like_the_full_fold() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("sidecar.jsonl");
     let usage = |cost: f64| {
         json!({
@@ -545,7 +545,7 @@ fn a_persisted_scan_state_resumes_like_the_full_fold() {
 #[cfg(unix)]
 #[test]
 fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let real_dir = dir.join("real");
     fs::create_dir_all(&real_dir).unwrap();
     std::os::unix::fs::symlink(&real_dir, dir.join("linked")).unwrap();
@@ -588,7 +588,7 @@ fn a_symlinked_lease_release_persists_a_sidecar_the_next_read_serves() {
 
 #[test]
 fn a_valid_unterminated_final_line_folds_into_the_snapshot() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("unterminated.jsonl");
     append_rows(
         &path,
@@ -616,7 +616,7 @@ fn a_valid_unterminated_final_line_folds_into_the_snapshot() {
 
 #[test]
 fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     // Zero-usage sessions: a timestamped user message each (no assistant usage block, so
     // only the count cap can evict; the message also passes the modified_ms > 0 store guard).
     for index in 0..(SESSION_SCAN_MAX_CACHED_STATES + 8) {
@@ -652,7 +652,7 @@ fn zero_usage_states_are_capped_by_count_not_only_the_usage_budget() {
 
 #[test]
 fn scan_cache_recency_tracks_updates_and_removals_without_growth() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let paths: Vec<PathBuf> = (0..3)
         .map(|index| dir.join(format!("lru-{index}.jsonl")))
         .collect();
@@ -698,7 +698,7 @@ fn scan_cache_recency_tracks_updates_and_removals_without_growth() {
 /// header's creation timestamp, never a scan-time `now()`.
 #[test]
 fn no_timestamp_record_modified_is_the_header_time_across_rescans() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("header-only.jsonl");
     append_rows(
         &path,
@@ -730,7 +730,7 @@ fn no_timestamp_record_modified_is_the_header_time_across_rescans() {
 /// TS falls to `stats.mtime` — including after an mtime cache bust — never the scan time.
 #[test]
 fn unparseable_header_modified_falls_back_to_the_file_mtime() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("legacy-header.jsonl");
     append_rows(
         &path,
@@ -754,7 +754,7 @@ fn unparseable_header_modified_falls_back_to_the_file_mtime() {
 
 #[test]
 fn message_timestamps_still_win_over_the_header_fallback() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("live.jsonl");
     append_rows(
         &path,
@@ -779,7 +779,7 @@ fn message_timestamps_still_win_over_the_header_fallback() {
 /// into March (TS `Date.parse` rejects it too).
 #[test]
 fn impossible_calendar_date_header_falls_back_to_the_file_mtime() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("feb-31.jsonl");
     append_rows(
         &path,
@@ -801,7 +801,7 @@ fn impossible_calendar_date_header_falls_back_to_the_file_mtime() {
 /// A durable zero stays distinct from an unavailable value (blank).
 #[test]
 fn epoch_zero_mtime_renders_the_epoch_not_blank() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("epoch.jsonl");
     append_rows(
         &path,
@@ -918,7 +918,7 @@ fn content_borrow_matches_full_parse_across_content_matrix() {
     }
 
     // Fold-level differential over the matrix rows.
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("session.jsonl");
     append_rows(&path, std::slice::from_ref(&header));
     for (entry, _) in &messages {
@@ -931,7 +931,7 @@ fn content_borrow_matches_full_parse_across_content_matrix() {
     assert_eq!(info.first_message, "hello");
 
     // A session whose only user text is empty keeps the no-message label.
-    let empty_dir = test_dir();
+    let (_tmp, empty_dir) = test_dir();
     let empty_path = empty_dir.join("session.jsonl");
     append_rows(
         &empty_path,
@@ -1129,7 +1129,7 @@ fn borrowed_metadata_reads_match_full_parse_across_shape_matrix() {
 
     let header =
         json!({"type":"session","id":"s","timestamp":"2026-09-23T00:00:00.000Z","cwd":"/test"});
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("session.jsonl");
     append_rows(&path, std::slice::from_ref(&header));
     // The abort rows (15-17) end the whole fold on both paths; row 32 (non-object
@@ -1160,7 +1160,7 @@ fn borrowed_metadata_reads_match_full_parse_across_shape_matrix() {
 
     // The abort rows kill the whole file's row on both paths.
     for aborting in [rows[15], rows[16], rows[17]] {
-        let abort_dir = test_dir();
+        let (_tmp, abort_dir) = test_dir();
         let abort_path = abort_dir.join("session.jsonl");
         append_rows(
             &abort_path,
@@ -1181,7 +1181,7 @@ fn borrowed_metadata_reads_match_full_parse_across_shape_matrix() {
 /// file's lease (the daemon catalog's cold read) never persists a sidecar.
 #[test]
 fn a_non_holder_fold_writes_no_sidecar() {
-    let dir = test_dir();
+    let (_tmp, dir) = test_dir();
     let path = dir.join("unleased.jsonl");
     append_rows(
         &path,

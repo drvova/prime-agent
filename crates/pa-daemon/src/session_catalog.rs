@@ -89,10 +89,10 @@ mod tests {
     use crate::session_store::{session_file_name, SessionFile};
     use std::path::PathBuf;
 
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-catalog-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     fn write_session(dir: &Path, cwd: &str, name: Option<&str>) -> (String, PathBuf) {
@@ -111,7 +111,7 @@ mod tests {
 
     #[test]
     fn resolves_by_id_prefix_and_exact_name() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let (id, _path) = write_session(&dir, "/work/a", Some("alpha"));
         let found = resolve_saved_session(&dir, &dir.join("archive"), &id[..8], "/work/a")
             .unwrap()
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn local_scope_wins_and_global_is_the_fallback() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let (id, _path) = write_session(&dir, "/work/a", Some("alpha"));
         // A different cwd still resolves through the global pass.
         let found = resolve_saved_session(&dir, &dir.join("archive"), "alpha", "/work/other")
@@ -143,7 +143,7 @@ mod tests {
 
     #[test]
     fn ambiguous_selectors_carry_the_ts_error() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         write_session(&dir, "/work/a", Some("alpha"));
         write_session(&dir, "/work/a", Some("alpha"));
         let error =
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn a_miss_is_none_not_an_error() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         write_session(&dir, "/work/a", Some("alpha"));
         let found = resolve_saved_session(&dir, &dir.join("archive"), "ghost", "/work/a").unwrap();
         assert!(found.is_none());

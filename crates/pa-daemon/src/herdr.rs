@@ -1186,11 +1186,15 @@ mod tests {
         (reporter, current)
     }
 
-    fn temp_socket(tag: &str) -> std::path::PathBuf {
-        let dir =
-            std::path::Path::new("/tmp").join(format!("pa-herdr-{tag}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("herdr.sock")
+    /// A socket path in its own dir under /tmp (kept short for `SUN_LEN`);
+    /// the dir goes when the returned guard drops.
+    fn temp_socket(tag: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("pa-herdr-{tag}-"))
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = tmp.path().join("herdr.sock");
+        (tmp, socket)
     }
 
     fn pane_env(socket_path: &std::path::Path, pane_id: &str) -> BTreeMap<String, String> {
@@ -1205,7 +1209,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_reporter_publishes_the_wire_contract_states() {
-        let socket_path = temp_socket("wire");
+        let (_tmp, socket_path) = temp_socket("wire");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p1")).unwrap();
         let session_ref = HerdrSessionRef::new(
@@ -1260,7 +1264,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_error_end_holds_then_blocks_with_the_message() {
-        let socket_path = temp_socket("hold");
+        let (_tmp, socket_path) = temp_socket("hold");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p2")).unwrap();
         let (reporter, _generation) =
@@ -1292,7 +1296,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_retry_within_the_grace_keeps_the_pane_working() {
-        let socket_path = temp_socket("retry");
+        let (_tmp, socket_path) = temp_socket("retry");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p3")).unwrap();
         let (reporter, _generation) =
@@ -1330,7 +1334,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_release_is_the_last_write_and_never_reclaims() {
-        let socket_path = temp_socket("release");
+        let (_tmp, socket_path) = temp_socket("release");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p4")).unwrap();
         let (reporter, _generation) =
@@ -1363,7 +1367,7 @@ mod tests {
     /// (idle), never the old blocked/error shape.
     #[tokio::test]
     async fn a_replacement_resets_the_predecessor_failure_state() {
-        let socket_path = temp_socket("reset");
+        let (_tmp, socket_path) = temp_socket("reset");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p6")).unwrap();
         let (reporter, _generation) =
@@ -1417,7 +1421,7 @@ mod tests {
     /// events never reach the wire — only the successor's do.
     #[tokio::test]
     async fn a_stale_generation_reporter_never_writes() {
-        let socket_path = temp_socket("stale");
+        let (_tmp, socket_path) = temp_socket("stale");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p7")).unwrap();
         let (predecessor, generation) = start_reporter(
@@ -1481,7 +1485,7 @@ mod tests {
     /// stall on the timeout.
     #[tokio::test]
     async fn a_stale_release_neither_writes_nor_stalls() {
-        let socket_path = temp_socket("stale-release");
+        let (_tmp, socket_path) = temp_socket("stale-release");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p8")).unwrap();
         let (predecessor, generation) =
@@ -1515,7 +1519,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_pane_socket_fence_decides_by_type_and_owner() {
-        let socket_path = temp_socket("fence");
+        let (_tmp, socket_path) = temp_socket("fence");
         let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
         let own_metadata = std::fs::symlink_metadata(&socket_path).unwrap();
 
@@ -1570,7 +1574,7 @@ mod tests {
         // ever followed the link (or accepted the impostor), the
         // server below would record the report — the assertion watches
         // a real, reachable sink, never a vacuous vector.
-        let dir = temp_socket("not-a-socket");
+        let (_tmp, dir) = temp_socket("not-a-socket");
         let real_socket = dir.with_extension("real.sock");
         let (requests, server) = fake_herdr(&real_socket);
         let impostor = dir.with_extension("impostor");
@@ -1615,7 +1619,7 @@ mod tests {
     /// deduped it away forever — this test fails on that shape.
     #[tokio::test]
     async fn a_state_is_re_sent_after_the_socket_comes_up() {
-        let socket_path = temp_socket("late-boot");
+        let (_tmp, socket_path) = temp_socket("late-boot");
 
         // A full turn happens with the socket MISSING: the fence
         // refuses every send (nothing ever reached the wire, and the
@@ -1691,7 +1695,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_dropped_reporter_stays_silent_without_releasing() {
-        let socket_path = temp_socket("silent");
+        let (_tmp, socket_path) = temp_socket("silent");
         let (requests, server) = fake_herdr(&socket_path);
         let config = HerdrConfig::from_env(&pane_env(&socket_path, "w1:p5")).unwrap();
         let (reporter, generation) = start_reporter(

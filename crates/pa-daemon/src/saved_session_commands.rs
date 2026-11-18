@@ -969,11 +969,13 @@ mod tombstone_usage_tests {
         tombstone_saved_session_delete_captured(agent_dir, sessions_dir, &capture)
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("pa-saved-del-{name}-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("pa-saved-del-{name}-"))
+            .tempdir()
+            .unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     fn write_child_with_usage(dir: &Path) -> PathBuf {
@@ -1008,7 +1010,7 @@ mod tombstone_usage_tests {
     /// transcript is gone (the Rust-side instance of TS #2506's Macroscope race).
     #[test]
     fn saved_session_delete_captures_usage_before_the_unlink() {
-        let root = temp_dir("capture");
+        let (_tmp, root) = temp_dir("capture");
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -1055,7 +1057,7 @@ mod tombstone_usage_tests {
 
     #[test]
     fn top_level_deletes_never_capture() {
-        let root = temp_dir("top-level");
+        let (_tmp, root) = temp_dir("top-level");
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -1077,7 +1079,7 @@ mod tombstone_usage_tests {
     #[cfg(unix)]
     #[test]
     fn symlink_delete_tombstones_the_edge_keyed_at_the_target() {
-        let root = temp_dir("symlink-del");
+        let (_tmp, root) = temp_dir("symlink-del");
         let agent_dir = root.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();

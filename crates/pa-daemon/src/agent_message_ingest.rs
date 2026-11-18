@@ -161,9 +161,9 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-ami-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -183,13 +183,13 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     /// A pause clears queued agent messages but keeps client prompts.
     #[tokio::test]
     async fn status_pause_resume_and_clear_match_ts_shapes() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
 
         let status = worker.dispatch("agent_messages_status", &json!({})).await;
         assert!(status.success);
@@ -275,7 +275,7 @@ mod tests {
 
     #[tokio::test]
     async fn clear_reports_the_follow_up_lane() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let delivered = worker
             .dispatch(
                 "worker_deliver_message",

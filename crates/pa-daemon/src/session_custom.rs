@@ -410,15 +410,15 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
         created_worker_named(Some("custom")).await
     }
 
     /// The worker fixture over an optional create name: a `None` create
     /// leaves the session without a `session_info` name row.
-    async fn created_worker_named(name: Option<&str>) -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-sc-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker_named(name: Option<&str>) -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -437,7 +437,7 @@ mod tests {
         }
         let created = worker.dispatch("create", &create).await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     fn custom_entries(worker: &Worker) -> Vec<(String, Value)> {
@@ -467,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn append_custom_message_records_the_row() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "append_custom_message",
@@ -504,7 +504,7 @@ mod tests {
     /// name, or a rename that keeps the name, leaves none.
     #[tokio::test]
     async fn rename_leaves_a_displayed_notice_only_when_a_name_changed() {
-        let worker = created_worker_named(None).await;
+        let (_tmp, worker) = created_worker_named(None).await;
         // A first name leaves no notice (there was no previous name).
         let response = worker.handle_rename("rename", &json!({ "name": "first" }));
         assert!(response.success, "rename failed: {response:?}");
@@ -553,7 +553,7 @@ mod tests {
     /// replays them first (TS `prefixMessages` order).
     #[tokio::test]
     async fn restore_next_turn_replays_before_the_next_prompt() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "restore_next_turn",
@@ -596,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_actions_restores_and_validates() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let snapshot = |actions: Value| {
             json!({
                 "activeSessionId": "custom-session",
@@ -713,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_actions_keeps_priority_tags_and_source_fallback() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let pause = worker.dispatch("acquire_session_input_pause", &json!({
             "activeSessionId": "custom-session", "leaseKey": "restore-priority", "clientId": "test"
         })).await;
@@ -801,7 +801,7 @@ mod tests {
 
     #[tokio::test]
     async fn restore_actions_refuses_the_reserved_child_status_kinds() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let notice_row = json!({
             "role": "custom",
             "customType": "rlm_child_terminal_notice",
@@ -859,7 +859,7 @@ mod tests {
     /// `heartbeat_prompt` component.
     #[tokio::test]
     async fn restore_actions_restores_the_labeled_preview() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let content = "[heartbeat: every 10m run#0]\n\nnudge the mission";
         let response = worker
             .dispatch(
@@ -1136,7 +1136,7 @@ mod tests {
     /// carries.
     #[tokio::test]
     async fn refine_surfaces_the_engine_failure() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let mut subscription = worker.events.subscribe();
         let response = worker
             .dispatch(
@@ -1169,7 +1169,7 @@ mod tests {
 
     #[tokio::test]
     async fn reload_answers_success() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch("reload", &json!({ "activeSessionId": "custom-session" }))
             .await;

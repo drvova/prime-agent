@@ -6,7 +6,7 @@ use super::*;
 #[tokio::test]
 async fn suspended_runner_parks_a_queued_item_until_resumed() {
     let engine = ScriptedEngine::default();
-    let runner = burst_runner(Arc::new(engine));
+    let (_tmp, runner) = burst_runner(Arc::new(engine));
     let (done_tx, mut done_rx) = oneshot::channel();
     {
         let mut core = runner.core.lock().unwrap();
@@ -148,7 +148,7 @@ async fn steering_mode_all_batches_the_queued_prefix_into_one_turn() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["batched reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.steering_mode = "all".to_string();
@@ -195,7 +195,7 @@ async fn the_default_mode_co_delivers_the_queued_steering_prefix() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["batched reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         assert_eq!(core.steering_mode, "all", "the default is the batched mode");
@@ -243,7 +243,7 @@ async fn one_at_a_time_delivers_each_queued_steer_as_its_own_turn() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["settled reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.steering_mode = "one-at-a-time".to_string();
@@ -284,7 +284,7 @@ async fn forced_batch_delivers_the_armed_prefix_as_one_turn() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["batch reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.steering_mode = "one-at-a-time".to_string();
@@ -334,7 +334,7 @@ async fn mode_all_never_batches_across_policy_classes() {
     let engine: Arc<dyn SessionEngine> = Arc::new(
         ScriptedEngine::from_value(&json!({ "responses": ["lane reply"] })).unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.steering_mode = "all".to_string();
@@ -375,7 +375,7 @@ async fn follow_up_mode_all_batches_the_follow_up_lane() {
         ScriptedEngine::from_value(&json!({ "responses": ["follow-up batch reply"] }))
             .unwrap_or_default(),
     );
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     {
         let mut core = runner.core.lock().unwrap();
         core.follow_up_mode = "all".to_string();
@@ -412,8 +412,8 @@ async fn follow_up_mode_all_batches_the_follow_up_lane() {
 /// Kevin's acceptance case: ALL visible steers send together; the follow-up runs once idle.
 #[tokio::test]
 async fn abort_and_send_queued_delivers_the_steering_batch_then_the_follow_ups() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-abort-send-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -598,8 +598,8 @@ async fn abort_and_send_queued_delivers_the_steering_batch_then_the_follow_ups()
 /// Answers immediately while both the aborted turn and the follow-up's reply are held.
 #[tokio::test]
 async fn abort_and_send_queued_acks_before_the_follow_up_delivery() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-abort-ack-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -841,7 +841,7 @@ impl SessionEngine for NoteWitnessEngine {
 #[tokio::test]
 async fn the_async_completion_notice_delivery_keeps_the_live_note() {
     let engine = Arc::new(NoteWitnessEngine::default());
-    let runner = burst_runner(engine.clone());
+    let (_tmp, runner) = burst_runner(engine.clone());
     // The busy-session row `admit_kernel_notice` queues.
     runner
         .core
@@ -889,7 +889,7 @@ async fn the_async_completion_notice_delivery_keeps_the_live_note() {
 #[tokio::test]
 async fn queued_follow_up_keeps_the_note_until_its_final_end() {
     let engine = Arc::new(NoteWitnessEngine::default());
-    let runner = burst_runner(engine.clone());
+    let (_tmp, runner) = burst_runner(engine.clone());
     runner
         .core
         .lock()
@@ -926,7 +926,7 @@ async fn queued_follow_up_keeps_the_note_until_its_final_end() {
 #[tokio::test]
 async fn withdrawing_follow_up_after_agent_end_clears_the_note_at_settle() {
     let engine = Arc::new(NoteWitnessEngine::default());
-    let runner = burst_runner(engine.clone());
+    let (_tmp, runner) = burst_runner(engine.clone());
     runner
         .core
         .lock()
@@ -1100,7 +1100,7 @@ impl SessionEngine for AbortSwallowedEngine {
 #[tokio::test]
 async fn an_aborted_run_clears_the_note_at_its_idle_settle() {
     let engine = Arc::new(AbortSwallowedEngine::default());
-    let runner = burst_runner(engine.clone());
+    let (_tmp, runner) = burst_runner(engine.clone());
     let core = std::sync::Arc::clone(&runner.core);
     let engine_for_turn = std::sync::Arc::clone(&engine);
     let turn = tokio::spawn(async move {
@@ -1143,7 +1143,7 @@ async fn an_aborted_run_never_exposes_an_idle_summary_with_its_old_note() {
         note: Mutex::new(None),
         clear_gate: Some(Arc::clone(&gate)),
     });
-    let runner = burst_runner(engine.clone());
+    let (_tmp, runner) = burst_runner(engine.clone());
     let core = Arc::clone(&runner.core);
     core.lock().unwrap().busy = true;
     let engine_for_turn = Arc::clone(&engine);

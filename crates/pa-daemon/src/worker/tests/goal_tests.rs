@@ -2,9 +2,11 @@
 use super::*;
 
 /// A scripted goal session's dispatch worker.
-async fn goal_dispatch_worker(goal: serde_json::Value) -> std::sync::Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-worker-goal-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+async fn goal_dispatch_worker(
+    goal: serde_json::Value,
+) -> (tempfile::TempDir, std::sync::Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -27,13 +29,13 @@ async fn goal_dispatch_worker(goal: serde_json::Value) -> std::sync::Arc<Worker>
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
-    worker
+    (tmp, worker)
 }
 
 /// TS `compact()`'s active-goal branch: a successful compact mints the owed continuation.
 #[tokio::test]
 async fn compact_with_active_goal_schedules_the_continue() {
-    let worker = goal_dispatch_worker(json!({
+    let (_tmp, worker) = goal_dispatch_worker(json!({
         "status": "active",
         "objective": "land the post-compact continue",
         "message": "[goal: continuation]\n\nkeep pursuing the goal",
@@ -88,7 +90,7 @@ async fn compact_with_active_goal_schedules_the_continue() {
 
 #[tokio::test]
 async fn compact_with_active_goal_and_parked_work_skips_the_mint() {
-    let worker = goal_dispatch_worker(json!({
+    let (_tmp, worker) = goal_dispatch_worker(json!({
         "status": "active",
         "objective": "land the post-compact continue",
     }))
@@ -146,7 +148,7 @@ async fn compact_with_active_goal_and_parked_work_skips_the_mint() {
 
 #[tokio::test]
 async fn compact_with_paused_goal_never_continues() {
-    let worker = goal_dispatch_worker(json!({
+    let (_tmp, worker) = goal_dispatch_worker(json!({
         "status": "paused",
         "objective": "land the post-compact continue",
     }))
@@ -188,8 +190,8 @@ async fn compact_with_paused_goal_never_continues() {
 /// the faux script into a misleading count mismatch).
 #[tokio::test]
 async fn goal_turn_end_loop_runs_to_completion() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-goal-loop-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -314,8 +316,8 @@ async fn goal_turn_end_loop_runs_to_completion() {
 
 #[tokio::test]
 async fn goal_pause_withdraws_the_queued_continuation() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-goal-pause-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -374,8 +376,9 @@ async fn goal_pause_withdraws_the_queued_continuation() {
 /// file, so the `thread_goal_state` mirror is observable.
 async fn goal_dispatch_worker_with_store(
     goal: serde_json::Value,
-) -> (std::sync::Arc<Worker>, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("pa-worker-goal-{}", uuid::Uuid::new_v4()));
+) -> (tempfile::TempDir, std::sync::Arc<Worker>, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let session_dir = dir.join("sessions");
     std::fs::create_dir_all(&session_dir).unwrap();
     let config = WorkerConfig {
@@ -410,7 +413,7 @@ async fn goal_dispatch_worker_with_store(
         .map(|entry| entry.path())
         .find(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
         .expect("session file created");
-    (worker, file)
+    (tmp, worker, file)
 }
 
 /// The session file's `thread_goal_state` custom rows, in order.
@@ -428,7 +431,7 @@ fn thread_goal_state_rows(path: &std::path::Path) -> Vec<Value> {
 /// The mirror row is what a recovery rebuild replays.
 #[tokio::test]
 async fn goal_update_events_mirror_the_durable_goal_row() {
-    let (worker, file) = goal_dispatch_worker_with_store(json!({
+    let (_tmp, worker, file) = goal_dispatch_worker_with_store(json!({
         "emitUpdateOnPrompt": true,
         "state": {
             "active": true,
@@ -460,7 +463,7 @@ async fn goal_update_events_mirror_the_durable_goal_row() {
 /// The mint persists its row before the `goal_update`, so the count survives a crash.
 #[tokio::test]
 async fn compact_mint_persists_the_goal_state_row() {
-    let (worker, file) = goal_dispatch_worker_with_store(json!({
+    let (_tmp, worker, file) = goal_dispatch_worker_with_store(json!({
         "status": "active",
         "objective": "ship the port",
         "state": {

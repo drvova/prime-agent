@@ -543,8 +543,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn seeded_rows_shape_matches_the_ts_entry() {
-        let dir = std::env::temp_dir().join(format!("pa-seed-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let child = dir.join("sub-9.jsonl");
         // The child file carries the durable display rows the hydration reads.
         std::fs::write(
@@ -603,11 +603,15 @@ pub(crate) mod tests {
 
     /// A temp supervisor home: agent dir, sessions dir, a root
     /// transcript, and a child transcript carrying the durable display rows.
-    pub(crate) async fn roster_fixture() -> (PathBuf, Arc<Supervisor>, PathBuf, PathBuf) {
-        let dir = std::env::temp_dir()
-            .canonicalize()
-            .unwrap()
-            .join(format!("pa-roster-{}", uuid::Uuid::new_v4()));
+    pub(crate) async fn roster_fixture() -> (
+        tempfile::TempDir,
+        PathBuf,
+        Arc<Supervisor>,
+        PathBuf,
+        PathBuf,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
         let agent_dir = dir.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -622,7 +626,7 @@ pub(crate) mod tests {
             })
             .expect("supervisor"),
         );
-        (dir, supervisor, root_file, child_file)
+        (tmp, dir, supervisor, root_file, child_file)
     }
 
     /// A session transcript with the durable display rows.
@@ -777,7 +781,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn boot_seed_hydrates_once_and_publishes_one_update() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         register_root_worker(&supervisor, "w-root", &root_file).await;
         let agent_dir = dir.join("agent");
         append_family_edge(
@@ -818,7 +822,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn boot_seed_skips_rows_the_roster_already_holds() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         register_root_worker(&supervisor, "w-root", &root_file).await;
         let agent_dir = dir.join("agent");
         append_family_edge(
@@ -849,7 +853,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn family_seed_renders_edges_then_hydrates_in_the_background() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         register_root_worker(&supervisor, "w-root", &root_file).await;
         let agent_dir = dir.join("agent");
         append_family_edge(
@@ -902,7 +906,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn hydration_loses_to_a_newer_worker_write() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         register_root_worker(&supervisor, "w-root", &root_file).await;
         let agent_dir = dir.join("agent");
         append_family_edge(
@@ -936,7 +940,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stale_seeded_snapshots_never_publish() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         let agent_dir = dir.join("agent");
         append_family_edge(
             &agent_dir,
@@ -984,7 +988,7 @@ pub(crate) mod tests {
     /// The row is corrupt but present (the liveness walk drops deleted files).
     #[tokio::test]
     async fn an_unhydrated_seeded_row_retries_on_the_next_family_walk() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         let agent_dir = dir.join("agent");
         append_family_edge(
             &agent_dir,
@@ -1038,7 +1042,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn the_registration_seed_publishes_a_late_worker_family() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         register_root_worker(&supervisor, "w-late", &root_file).await;
         let agent_dir = dir.join("agent");
         append_family_edge(
@@ -1083,7 +1087,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stopping_a_childless_root_leaves_the_bucket_and_other_rows_unchanged() {
-        let (dir, supervisor, root_file, child_file) = roster_fixture().await;
+        let (_tmp, dir, supervisor, root_file, child_file) = roster_fixture().await;
         let agent_dir = dir.join("agent");
         let sessions_dir = agent_dir.join("sessions");
         register_root_worker(&supervisor, "w-root", &root_file).await;

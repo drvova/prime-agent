@@ -1,9 +1,9 @@
 //! Agent-message command tests.
 use super::*;
 
-fn test_worker() -> Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-worker-am-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn test_worker() -> (tempfile::TempDir, Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -15,11 +15,11 @@ fn test_worker() -> Arc<Worker> {
         telemetry_disabled: None,
         script: Some(json!({ "responses": ["ack"] })),
     };
-    Arc::new(Worker::new(config, None))
+    (tmp, Arc::new(Worker::new(config, None)))
 }
 
 async fn created_worker() -> Arc<Worker> {
-    let worker = test_worker();
+    let (_tmp, worker) = test_worker();
     let created = worker
         .dispatch(
             "create",
@@ -448,9 +448,9 @@ async fn clear_queue_bounces_recovered_agent_messages_to_their_senders() {
 
 #[cfg(unix)]
 async fn assert_clear_queue_bounces(restore_queue: bool) {
-    let dir =
-        std::path::Path::new("/tmp").join(format!("pa-worker-am-bounce-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Under /tmp: the dir holds a bound socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = tmp.path().to_path_buf();
     let socket = dir.join("supervisor.sock");
     let (sends, _server) = crate::worker::tests::fake_supervisor(&socket);
     let config = WorkerConfig {

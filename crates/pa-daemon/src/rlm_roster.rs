@@ -235,10 +235,13 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-roster-{name}-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::Builder::new()
+            .prefix(&format!("pa-roster-{name}-"))
+            .tempdir()
+            .unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     fn write_session_with_thinking(path: &std::path::Path, id: &str, level: &str) {
@@ -250,7 +253,7 @@ mod tests {
 
     #[test]
     fn passive_child_summary_carries_the_persisted_thinking_level() {
-        let dir = temp_dir("thinking");
+        let (_tmp, dir) = temp_dir("thinking");
         let child = dir.join("sub-tl.jsonl");
         write_session_with_thinking(&child, "sub-tl", "high");
         let info = read_session_info(&child).expect("child info");
@@ -301,7 +304,7 @@ mod tests {
 
     #[test]
     fn passive_child_summary_carries_the_saved_usage_summary() {
-        let dir = temp_dir("usage");
+        let (_tmp, dir) = temp_dir("usage");
         let child = dir.join("sub-usage.jsonl");
         fs::write(
             &child,
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn walks_passive_children_from_saved_and_resident_roots() {
-        let dir = temp_dir("walk");
+        let (_tmp, dir) = temp_dir("walk");
         let sessions = dir.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
         let parent = sessions.join("parent.jsonl");
@@ -450,7 +453,7 @@ mod tests {
 
     #[test]
     fn passive_rows_carry_the_subagent_identity() {
-        let dir = temp_dir("rows");
+        let (_tmp, dir) = temp_dir("rows");
         let sessions = dir.join("sessions");
         fs::create_dir_all(&sessions).unwrap();
         let parent = sessions.join("p.jsonl");

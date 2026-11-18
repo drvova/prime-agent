@@ -10,9 +10,9 @@ use super::*;
 
 /// A created worker carrying one compaction script (the `delayMs`
 /// sleep IS the mid-compaction window).
-async fn compaction_admission_worker(compaction: Value) -> Arc<Worker> {
-    let dir = std::env::temp_dir().join(format!("pa-compacting-gate-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+async fn compaction_admission_worker(compaction: Value) -> (tempfile::TempDir, Arc<Worker>) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: std::path::PathBuf::new(),
@@ -35,7 +35,7 @@ async fn compaction_admission_worker(compaction: Value) -> Arc<Worker> {
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
-    worker
+    (tmp, worker)
 }
 
 /// The session events seen by an attached client, in wire order (one
@@ -100,7 +100,7 @@ async fn wait_for_state(readiness: impl Fn() -> bool) {
 /// the window (the tail wake), `compaction_end` preceding the racing row.
 #[tokio::test]
 async fn steer_mid_compaction_defers_and_delivers_after_the_window() {
-    let worker = compaction_admission_worker(json!({
+    let (_tmp, worker) = compaction_admission_worker(json!({
         "responses": [ { "summary": "racing window summary", "delayMs": 1500 } ],
     }))
     .await;
@@ -208,7 +208,7 @@ async fn steer_mid_compaction_defers_and_delivers_after_the_window() {
 /// With no compaction in flight the same steer and a plain prompt admit as before.
 #[tokio::test]
 async fn idle_sessions_admit_the_steering_and_plain_prompt_classes() {
-    let worker = compaction_admission_worker(json!({})).await;
+    let (_tmp, worker) = compaction_admission_worker(json!({})).await;
     let mut subscription = worker.events.subscribe();
 
     let steered = worker

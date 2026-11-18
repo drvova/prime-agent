@@ -4,6 +4,8 @@
 //! gates pass or a limit is reached.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -19,8 +21,7 @@ struct Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -31,6 +32,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdin(Stdio::null())
@@ -169,11 +173,13 @@ impl Client {
 /// The harness: a supervisor, a faux-scripted session over the real agent engine, and the counter
 /// file.
 struct Harness {
-    dir: tempfile::TempDir,
     _supervisor: Supervisor,
     client: Client,
     session_id: String,
     gate: String,
+    // Last: fields drop in declaration order, so the supervisor is reaped
+    // before the dir it writes into goes.
+    dir: tempfile::TempDir,
 }
 
 fn setup(name: &str, responses: &Value) -> Harness {
@@ -223,11 +229,11 @@ fn setup(name: &str, responses: &Value) -> Harness {
     let attached = client.request("a1");
     assert_eq!(attached["success"], true, "attach failed: {attached}");
     Harness {
-        dir,
         _supervisor: supervisor,
         client,
         session_id,
         gate,
+        dir,
     }
 }
 

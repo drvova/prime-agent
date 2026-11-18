@@ -120,8 +120,8 @@ async fn transcript_texts(worker: &Worker) -> Vec<String> {
 /// and delivers on the navigated-to branch after the flow.
 #[tokio::test]
 async fn a_parked_steer_delivers_only_after_the_navigation() {
-    let dir = std::env::temp_dir().join(format!("pa-nav-pause-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let path = seeded_session(&dir);
     let worker = navigation_worker(&dir, &path).await;
 
@@ -222,5 +222,9 @@ async fn a_parked_steer_delivers_only_after_the_navigation() {
         !texts.iter().any(|text| text.contains("run one")),
         "the abandoned rows must not survive the navigation: {texts:?}"
     );
-    drop(turn);
+    // The steer's own turn is still running: stop the worker and settle the
+    // first turn's task before the temp dir drops, or its writes outlive it.
+    let stopped = worker.dispatch("shutdown", &json!({})).await;
+    assert!(stopped.success, "shutdown failed: {stopped:?}");
+    turn.await.expect("turn task");
 }

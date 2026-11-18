@@ -1,9 +1,12 @@
 use super::*;
 
-fn session_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("pa-windowed-attach-{}", uuid::Uuid::new_v4()));
+/// The fixture's working dir, one level inside the temp dir: the session
+/// artifacts land beside the session file's dir, so they stay inside too.
+fn session_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("work");
     std::fs::create_dir_all(&dir).unwrap();
-    dir
+    (tmp, dir)
 }
 
 fn header_line(id: &str) -> String {
@@ -155,7 +158,7 @@ const TUI_CAPABILITIES: &[&str] = &[
 
 #[tokio::test]
 async fn a_windowed_attach_serves_a_tool_result_safe_tail() {
-    let dir = session_dir();
+    let (_tmp, dir) = session_dir();
     let path = dir.join("windowed-tail.jsonl");
     let mut fixture = Fixture {
         content: header_line("windowed-tail"),
@@ -273,7 +276,7 @@ async fn a_windowed_attach_serves_a_tool_result_safe_tail() {
 
 #[tokio::test]
 async fn pages_continue_into_pre_compaction_history_with_one_summary() {
-    let dir = session_dir();
+    let (_tmp, dir) = session_dir();
     let path = dir.join("windowed-compacted.jsonl");
     let retained = 400usize;
     let post = 200usize;
@@ -390,7 +393,7 @@ async fn pages_continue_into_pre_compaction_history_with_one_summary() {
 /// counting the unloaded prefix; a slice reaching into the prefix hydrates the store.
 #[tokio::test]
 async fn session_messages_hydrate_only_for_the_unloaded_prefix() {
-    let dir = session_dir();
+    let (_tmp, dir) = session_dir();
     let path = dir.join("session-messages.jsonl");
     let mut fixture = Fixture {
         content: header_line("session-messages"),
@@ -489,14 +492,18 @@ async fn session_messages_hydrate_only_for_the_unloaded_prefix() {
 
 #[tokio::test]
 async fn a_windowed_attach_preserves_iso_and_fractional_prompt_times() {
+    // Every scenario's dir outlives the loop: the create path's fire-and-forget
+    // catalog refresh only runs when a later scenario yields, and it would
+    // re-create a dropped dir's `agent/auth.json`.
+    let mut dirs = Vec::new();
     for timestamp in [
         json!(2000.75),
         json!("1970-01-01T00:00:02.000Z"),
         json!("1970-01-01T01:00:02.000+01:00"),
     ] {
         for user_index in [1usize, 599] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("timestamp-tail.jsonl");
+            let (tmp, dir) = session_dir();
+            let path = dir.join("timestamp-tail.jsonl");
             let mut fixture = Fixture {
                 content: header_line("timestamp-tail"),
                 prev: None,
@@ -513,7 +520,7 @@ async fn a_windowed_attach_preserves_iso_and_fractional_prompt_times() {
                 fixture.row(|prev, id| message_row(prev, id, &message));
             }
             std::fs::write(&path, fixture.content).unwrap();
-            let worker = worker_over(dir.path(), &path).await;
+            let worker = worker_over(&dir, &path).await;
             let data = attach(&worker, TUI_CAPABILITIES).await;
             let snapshot = &data["snapshot"];
             assert_eq!(snapshot["historyBeforeEntryId"], json!(row_id(88)));
@@ -521,6 +528,7 @@ async fn a_windowed_attach_preserves_iso_and_fractional_prompt_times() {
                 snapshot["lastUserPromptMs"], 2000,
                 "latest timestamp {timestamp} at index {user_index}"
             );
+            dirs.push(tmp);
         }
     }
 }
@@ -530,7 +538,7 @@ async fn a_windowed_attach_preserves_iso_and_fractional_prompt_times() {
 /// session total.
 #[tokio::test]
 async fn a_chunked_windowed_attach_streams_the_count_it_carries() {
-    let dir = session_dir();
+    let (_tmp, dir) = session_dir();
     let path = dir.join("windowed-chunked.jsonl");
     let mut fixture = Fixture {
         content: header_line("windowed-chunked"),
@@ -599,11 +607,15 @@ async fn a_chunked_windowed_attach_streams_the_count_it_carries() {
 
 #[tokio::test]
 async fn a_windowed_attach_keeps_interleaved_tool_pairs_together() {
+    // Every scenario's dir outlives the loop: the create path's fire-and-forget
+    // catalog refresh only runs when a later scenario yields, and it would
+    // re-create a dropped dir's `agent/auth.json`.
+    let mut dirs = Vec::new();
     for scenario in [0, 1, 2] {
         let crossing = scenario != 0;
         let earlier_id = if scenario == 2 { "boundary" } else { "earlier" };
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("interleaved-tools.jsonl");
+        let (tmp, dir) = session_dir();
+        let path = dir.join("interleaved-tools.jsonl");
         let mut fixture = Fixture {
             content: header_line("interleaved-tools"),
             prev: None,
@@ -648,7 +660,7 @@ async fn a_windowed_attach_keeps_interleaved_tool_pairs_together() {
             fixture.row(|prev, id| message_row(prev, id, &assistant_message("newer history")));
         }
         std::fs::write(&path, fixture.content).unwrap();
-        let worker = worker_over(dir.path(), &path).await;
+        let worker = worker_over(&dir, &path).await;
         let full = full_messages(&worker).await;
         let data = attach(&worker, TUI_CAPABILITIES).await;
         let snapshot = &data["snapshot"];
@@ -674,12 +686,13 @@ async fn a_windowed_attach_keeps_interleaved_tool_pairs_together() {
             json!(full[..20]),
             "the omitted prefix remains available without duplication"
         );
+        dirs.push(tmp);
     }
 }
 
 async fn branched_worker() -> (tempfile::TempDir, std::sync::Arc<Worker>) {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("branched-tail.jsonl");
+    let (tmp, dir) = session_dir();
+    let path = dir.join("branched-tail.jsonl");
     let mut fixture = Fixture {
         content: header_line("branched-tail"),
         prev: None,
@@ -696,8 +709,8 @@ async fn branched_worker() -> (tempfile::TempDir, std::sync::Arc<Worker>) {
         });
     }
     std::fs::write(&path, fixture.content).unwrap();
-    let worker = worker_over(dir.path(), &path).await;
-    (dir, worker)
+    let worker = worker_over(&dir, &path).await;
+    (tmp, worker)
 }
 
 #[tokio::test]

@@ -333,7 +333,20 @@ fn walk_children(
     snapshots: &[Value],
     session_file: Option<&Path>,
 ) -> Result<CachedWalk> {
-    let registry = crate::state_getters::worker_model_registry(agent_dir);
+    // A snapshot of the auth store, never the file-backed store: its first read
+    // initializes a missing `auth.json`, and this walk runs on a blocking thread
+    // nothing awaits, so that write could land in an agent dir being removed
+    // (the worker's teardown). A missing or unreadable store reads as empty;
+    // the walk only needs the registry's context windows.
+    let auth_data = match std::fs::read_to_string(agent_dir.join("auth.json")) {
+        Ok(content) => pa_core::auth::parse_storage_data(Some(&content)).unwrap_or_default(),
+        Err(_) => pa_core::auth::AuthStorageData::default(),
+    };
+    let auth = pa_core::auth::AuthStorage::in_memory(
+        &auth_data,
+        Arc::new(pa_core::auth::ProviderOAuth::new()),
+    );
+    let registry = pa_core::models::ModelRegistry::create(auth, agent_dir.join("models.json"));
     let artifacts_root = crate::context_tree_children::session_artifacts_dir(agent_dir);
     // User-deleted subagents' transcripts stay hidden at every depth and bill
     // through their deleted rows: the ledger keys both by the deleted child's
@@ -648,7 +661,8 @@ mod tests {
     #[allow(clippy::float_cmp)]
     #[test]
     fn deleted_children_keep_their_spend_in_the_context_totals() {
-        let agent_dir = std::env::temp_dir().join(format!("pa-ctx-del-{}", uuid::Uuid::new_v4()));
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().to_path_buf();
         let sessions_dir = agent_dir.join("sessions");
         let root_file = sessions_dir.join("01a0root-0000.jsonl");
         write_session(&root_file, "01a0root-0000", 0.5);
@@ -916,5 +930,21 @@ mod tests {
             json!(0),
             "the fallback node is usage-empty until the walk lands"
         );
+    }
+
+    /// The walk is a background read: over an agent dir with no auth store it
+    /// must not initialize one. It runs on a blocking thread nothing awaits at
+    /// teardown, so a write could land while the dir is being removed.
+    #[test]
+    fn the_walk_never_writes_the_agent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let agent_dir = tmp.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        walk_children(&agent_dir, "session-a", &[], None).unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&agent_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, Vec::<std::ffi::OsString>::new());
     }
 }

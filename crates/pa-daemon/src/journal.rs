@@ -639,15 +639,15 @@ fn parse_snapshot_lane(value: Option<&Value>) -> Vec<WorkerQueueItemRecord> {
 mod tests {
     use super::*;
 
-    fn temp_path(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-daemon-journal-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
+    fn temp_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir.join(name))
     }
 
     #[test]
     fn worker_journal_read_failures_are_not_empty_recovery_state() {
-        let path = temp_path("unreadable.jsonl");
+        let (_tmp, path) = temp_path("unreadable.jsonl");
         fs::create_dir_all(&path).unwrap();
         let sentinel = path.join("preserve");
         fs::write(&sentinel, b"original data").unwrap();
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn worker_journal_keeps_latest_per_session() {
-        let path = temp_path("worker.recovery.jsonl");
+        let (_tmp, path) = temp_path("worker.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record("s1", "sess1", Some("/a.jsonl"), true, "prompt")
@@ -679,7 +679,7 @@ mod tests {
 
     #[test]
     fn worker_journal_interrupted_evidence_tracks_latest_busy() {
-        let path = temp_path("interrupted.recovery.jsonl");
+        let (_tmp, path) = temp_path("interrupted.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record("s1", "sess1", None, false, "shutdown")
@@ -699,8 +699,8 @@ mod tests {
 
     #[test]
     fn worker_journal_batched_checkpoint_matches_sequential_form() {
-        let sequential_path = temp_path("sequential.recovery.jsonl");
-        let batched_path = temp_path("batched.recovery.jsonl");
+        let (_tmp, sequential_path) = temp_path("sequential.recovery.jsonl");
+        let (_tmp, batched_path) = temp_path("batched.recovery.jsonl");
         let mut sequential = WorkerRecoveryJournal::open(&sequential_path).unwrap();
         let mut batched = WorkerRecoveryJournal::open(&batched_path).unwrap();
         let item = WorkerQueueItemRecord {
@@ -802,7 +802,7 @@ mod tests {
 
     #[test]
     fn worker_journal_batched_checkpoint_is_all_or_nothing() {
-        let path = temp_path("allornothing.recovery.jsonl");
+        let (_tmp, path) = temp_path("allornothing.recovery.jsonl");
         fs::write(&path, "").unwrap();
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal.record("s1", "sess1", None, false, "ready").unwrap();
@@ -828,7 +828,7 @@ mod tests {
     /// does the port.
     #[test]
     fn worker_journal_settle_compacts_single_session() {
-        let path = temp_path("settle-compacts.recovery.jsonl");
+        let (_tmp, path) = temp_path("settle-compacts.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record("s1", "sess1", Some("/a.jsonl"), true, "prompt_accepted")
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn worker_journal_batched_settle_compacts_and_restores() {
-        let path = temp_path("batched-settle.recovery.jsonl");
+        let (_tmp, path) = temp_path("batched-settle.recovery.jsonl");
         let item = WorkerQueueItemRecord {
             message: "steer me".to_string(),
             priority: Some(crate::worker::QueuePriority::Human),
@@ -960,7 +960,7 @@ mod tests {
     /// (TS `record` early-returns before its compaction check).
     #[test]
     fn worker_journal_unchanged_verdict_does_not_compact() {
-        let path = temp_path("unchanged-nocompact.recovery.jsonl");
+        let (_tmp, path) = temp_path("unchanged-nocompact.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record_queue_checkpoint(
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn worker_journal_missing_or_unreadable_file_is_not_interrupted() {
-        let path = temp_path("missing.recovery.jsonl");
+        let (_tmp, path) = temp_path("missing.recovery.jsonl");
         assert!(!WorkerRecoveryJournal::read_interrupted(&path));
         std::fs::write(&path, "not json").unwrap();
         assert!(!WorkerRecoveryJournal::read_interrupted(&path));
@@ -997,7 +997,7 @@ mod tests {
 
     #[test]
     fn worker_journal_open_skips_torn_utf8_tail() {
-        let path = temp_path("torn-utf8-tail.recovery.jsonl");
+        let (_tmp, path) = temp_path("torn-utf8-tail.recovery.jsonl");
         let item = WorkerQueueItemRecord {
             message: "steer ünïcode".to_string(),
             priority: Some(crate::worker::QueuePriority::Human),
@@ -1059,7 +1059,7 @@ mod tests {
 
     #[test]
     fn worker_journal_open_heals_torn_ascii_tail() {
-        let path = temp_path("torn-ascii-tail.recovery.jsonl");
+        let (_tmp, path) = temp_path("torn-ascii-tail.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record("s1", "sess1", Some("/a.jsonl"), true, "prompt_accepted")
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn corrupt_complete_queue_bytes_are_preserved_before_recovery_fails() {
         for newline_terminated in [true, false] {
-            let path = temp_path("corrupt-complete-queue.recovery.jsonl");
+            let (_tmp, path) = temp_path("corrupt-complete-queue.recovery.jsonl");
             let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
             let item = WorkerQueueItemRecord {
                 message: "safeXinstruction".to_string(),
@@ -1133,7 +1133,7 @@ mod tests {
     #[test]
     fn corrupt_complete_worker_identifiers_are_preserved_before_recovery_fails() {
         for newline_terminated in [true, false] {
-            let path = temp_path("corrupt-complete-verdict.recovery.jsonl");
+            let (_tmp, path) = temp_path("corrupt-complete-verdict.recovery.jsonl");
             let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
             journal
                 .record("badXsession", "sess1", None, true, "prompt_accepted")
@@ -1161,7 +1161,7 @@ mod tests {
 
     #[test]
     fn a_complete_worker_record_without_newline_survives_healing() {
-        let path = temp_path("complete-eof.recovery.jsonl");
+        let (_tmp, path) = temp_path("complete-eof.recovery.jsonl");
         let mut journal = WorkerRecoveryJournal::open(&path).unwrap();
         journal
             .record("s1", "sess1", None, true, "prompt_accepted")
@@ -1181,7 +1181,7 @@ mod tests {
     #[test]
     fn competing_worker_writers_cannot_replace_an_active_append() {
         for contender in ["open", "settle"] {
-            let path = temp_path("active-append.recovery.jsonl");
+            let (_tmp, path) = temp_path("active-append.recovery.jsonl");
             let mut owner = WorkerRecoveryJournal::open(&path).unwrap();
             owner
                 .record("s1", "sess1", None, true, "prompt_accepted")
@@ -1228,7 +1228,7 @@ mod tests {
     #[test]
     #[allow(clippy::used_underscore_binding)] // Intentionally duplicate the private lifetime guard to model an inherited descriptor.
     fn dropping_a_journal_releases_ownership_while_a_duplicate_handle_survives() {
-        let path = temp_path("duplicate-owner.recovery.jsonl");
+        let (_tmp, path) = temp_path("duplicate-owner.recovery.jsonl");
         let mut owner = WorkerRecoveryJournal::open(&path).unwrap();
         owner
             .record("s1", "sess1", None, true, "prompt_accepted")

@@ -94,6 +94,7 @@ fn the_built_session_carries_the_durable_header_id_across_rebuilds() {
     let durable_id = store.session_id().to_string();
     let path = dir
         .path()
+        .join("sessions")
         .join(crate::session_store::session_file_name(&durable_id));
     store.set_path(path.clone());
     store.rewrite().unwrap();
@@ -199,8 +200,8 @@ fn a_side_question_bills_the_session_it_ran_on() {
 
 #[tokio::test]
 async fn replacement_teardown_retires_the_session_and_the_funnel_adopts_the_branch() {
-    let engine = {
-        let (engine, _events) = tokio::task::spawn_blocking(|| {
+    let (_tmp, engine) = {
+        let (tmp, engine, _events) = tokio::task::spawn_blocking(|| {
             run_prompts(
                 &json!({ "engine": "faux", "responses": [{ "text": "first" }] }),
                 &["hello"],
@@ -208,7 +209,7 @@ async fn replacement_teardown_retires_the_session_and_the_funnel_adopts_the_bran
         })
         .await
         .expect("prompt join");
-        engine
+        (tmp, engine)
     };
     assert!(engine.session.lock().await.is_some());
 
@@ -289,8 +290,8 @@ async fn replacement_teardown_retires_the_session_and_the_funnel_adopts_the_bran
 
 #[tokio::test]
 async fn live_branch_rebuild_reloads_the_goal_state_from_the_moved_branch() {
-    let engine = {
-        let (engine, _events) = tokio::task::spawn_blocking(|| {
+    let (_tmp, engine) = {
+        let (tmp, engine, _events) = tokio::task::spawn_blocking(|| {
             run_prompts(
                 &json!({
                     "engine": "faux",
@@ -301,7 +302,7 @@ async fn live_branch_rebuild_reloads_the_goal_state_from_the_moved_branch() {
         })
         .await
         .expect("prompt join");
-        std::sync::Arc::new(engine)
+        (tmp, std::sync::Arc::new(engine))
     };
     // The goal commands left the paused goal's rows on the live branch.
     assert!(engine.session.lock().await.is_some());

@@ -204,8 +204,8 @@ fn create_config_binds_a_new_child_to_its_parent() {
 
 #[test]
 fn resume_hint_names_a_flushed_session() {
-    let dir = std::env::temp_dir().join("pa-tui-resume-hint-test");
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let file = dir.join("session.jsonl");
     std::fs::write(&file, "{}").unwrap();
     let stats = json!({

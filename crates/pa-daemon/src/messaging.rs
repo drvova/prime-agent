@@ -575,15 +575,16 @@ mod tests {
         )
     }
 
-    fn supervisor() -> Arc<Supervisor> {
+    fn supervisor() -> (tempfile::TempDir, Arc<Supervisor>) {
         let dir = tempfile::TempDir::new().unwrap();
-        Arc::new(
+        let supervisor = Arc::new(
             Supervisor::new(SupervisorOptions {
                 socket_path: dir.path().join("s.sock"),
                 agent_dir: dir.path().join("agent"),
             })
             .unwrap(),
-        )
+        );
+        (dir, supervisor)
     }
 
     fn send_command(target: &str, from: Option<&str>) -> DaemonCommand {
@@ -600,7 +601,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_target_answers_with_the_ts_error() {
-        let supervisor = supervisor();
+        let (_tmp, supervisor) = supervisor();
         let response = supervisor
             .handle_send_message("m1", "cli-1", &send_command("no-such-session", None))
             .await;
@@ -615,7 +616,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_source_fails_like_the_ts_source_lookup() {
-        let supervisor = supervisor();
+        let (_tmp, supervisor) = supervisor();
         supervisor.registry.insert(resident("target-1")).await;
         let response = supervisor
             .handle_send_message("m1", "cli-1", &send_command("target-1", Some("ghost")))
@@ -629,7 +630,7 @@ mod tests {
 
     #[tokio::test]
     async fn self_target_is_refused() {
-        let supervisor = supervisor();
+        let (_tmp, supervisor) = supervisor();
         supervisor.registry.insert(resident("solo-1")).await;
         let response = supervisor
             .handle_send_message("m1", "cli-1", &send_command("solo-1", Some("solo-1")))
@@ -643,7 +644,7 @@ mod tests {
 
     #[tokio::test]
     async fn ambiguous_saved_selector_carries_the_catalog_error() {
-        let supervisor = supervisor();
+        let (_tmp, supervisor) = supervisor();
         let sessions = crate::paths::sessions_dir(&supervisor.options.agent_dir).unwrap();
         std::fs::create_dir_all(&sessions).unwrap();
         for _ in 0..2 {
@@ -684,7 +685,7 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_routes_worker_deliver_message_to_the_target() {
-        let supervisor = supervisor();
+        let (_tmp, supervisor) = supervisor();
         supervisor.registry.insert(resident("target-1")).await;
         let response = supervisor
             .handle_send_message("m1", "cli-1", &send_command("target-1", None))

@@ -196,13 +196,13 @@ mod tests {
     use super::*;
     use crate::kernel::shared::HostRequestPayload;
 
-    fn persisted_session() -> SessionManager {
+    fn persisted_session() -> (tempfile::TempDir, SessionManager) {
         let dir = tempfile::TempDir::new().unwrap();
         let session_dir = dir.path().join("session");
         std::fs::create_dir_all(&session_dir).unwrap();
         let mut session = SessionManager::in_memory(dir.path());
         session.materialize_session_file(Some(session_dir));
-        session
+        (dir, session)
     }
 
     fn payload(data: Value) -> HostRequestPayload {
@@ -212,7 +212,8 @@ mod tests {
     /// The purge seam fires only for `goal.complete`, never on the way in.
     #[tokio::test]
     async fn goal_complete_purge_runs_only_after_goal_complete() {
-        let session = Arc::new(Mutex::new(persisted_session()));
+        let (_session_tmp, session) = persisted_session();
+        let session = Arc::new(Mutex::new(session));
         let dir = tempfile::TempDir::new().unwrap();
         let mut runtime = SessionRuntime::new(
             &*session.lock().await,
@@ -256,7 +257,8 @@ mod tests {
 
     #[tokio::test]
     async fn goal_handlers_round_trip_through_the_registry() {
-        let session = Arc::new(Mutex::new(persisted_session()));
+        let (_session_tmp, session) = persisted_session();
+        let session = Arc::new(Mutex::new(session));
         let dir = tempfile::TempDir::new().unwrap();
         let runtime = SessionRuntime::new(
             &*session.lock().await,
@@ -312,7 +314,8 @@ mod tests {
 
     #[tokio::test]
     async fn heartbeat_handlers_round_trip_through_the_registry() {
-        let session = Arc::new(Mutex::new(persisted_session()));
+        let (_session_tmp, session) = persisted_session();
+        let session = Arc::new(Mutex::new(session));
         let dir = tempfile::TempDir::new().unwrap();
         let runtime = SessionRuntime::new(
             &*session.lock().await,
@@ -360,7 +363,8 @@ mod tests {
     /// Catalog reads announce nothing.
     #[tokio::test]
     async fn rlm_heartbeat_mutations_invoke_the_cron_mutation_hook() {
-        let session = Arc::new(Mutex::new(persisted_session()));
+        let (_session_tmp, session) = persisted_session();
+        let session = Arc::new(Mutex::new(session));
         let dir = tempfile::TempDir::new().unwrap();
         let mut runtime = SessionRuntime::new(
             &*session.lock().await,

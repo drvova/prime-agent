@@ -809,8 +809,8 @@ async fn an_abandoned_updates_failed_relaunch_arms_supervision_again() {
 /// optional wire shape.
 #[test]
 fn saved_session_rows_publish_deleted_descendant_usage() {
-    let dir = std::env::temp_dir().join(format!("pa-saved-dd-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     let path = dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
@@ -848,7 +848,8 @@ fn saved_session_rows_publish_deleted_descendant_usage() {
 /// entries), read from disk without a kernel; a session without any carries no field.
 #[tokio::test]
 async fn saved_session_rows_count_the_sessions_stored_factory_specs() {
-    let root = std::env::temp_dir().join(format!("pa-saved-fs-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
     let sessions = root.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
@@ -897,7 +898,8 @@ async fn saved_session_rows_count_the_sessions_stored_factory_specs() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_saved_session_listing_reads_each_sessions_harness_store_once() {
-    let root = std::env::temp_dir().join(format!("pa-saved-once-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
     let sessions = root.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     let mut counters = Vec::new();
@@ -973,7 +975,8 @@ async fn a_saved_session_listing_reads_each_sessions_harness_store_once() {
 /// session holding specs carries no `factorySpecs`.
 #[tokio::test]
 async fn a_saved_session_listing_skips_stored_factory_specs_while_the_factory_is_off() {
-    let root = std::env::temp_dir().join(format!("pa-saved-off-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
     let sessions = root.join("sessions");
     std::fs::create_dir_all(&sessions).unwrap();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
@@ -1014,8 +1017,8 @@ async fn a_saved_session_listing_skips_stored_factory_specs_while_the_factory_is
 
 #[test]
 fn saved_session_rows_carry_the_persisted_thinking_level() {
-    let dir = std::env::temp_dir().join(format!("pa-saved-tl-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     let path = dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
@@ -1059,8 +1062,8 @@ fn saved_session_rows_carry_the_persisted_thinking_level() {
 /// No billable work stays bare, like TS's undefined serialization.
 #[test]
 fn saved_session_rows_publish_the_own_usage_summary() {
-    let dir = std::env::temp_dir().join(format!("pa-saved-usage-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut session = crate::session_store::SessionFile::create("/tmp", None, 0);
     let path = dir.join(format!("{}.jsonl", session.session_id()));
     session.set_path(path.clone());
@@ -1112,8 +1115,8 @@ fn saved_session_rows_publish_the_own_usage_summary() {
 /// here first, before any client depends on the new shape.
 #[test]
 fn saved_session_rows_match_the_catalog_row_golden() {
-    let dir = std::env::temp_dir().join(format!("pa-saved-golden-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut session =
         crate::session_store::SessionFile::create("/repo", Some("/s/parent.jsonl"), 1);
     // The row's id and created timestamp read from the session header: pin
@@ -1174,8 +1177,8 @@ fn saved_session_rows_match_the_catalog_row_golden() {
 /// non-resident bound session keeps its family edge.
 #[test]
 fn saved_session_summaries_carry_the_parent_binding() {
-    let dir = std::env::temp_dir().join(format!("pa-saved-binding-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let mut bound = crate::session_store::SessionFile::create("/tmp", Some("/s/p.jsonl"), 1);
     let bound_path = dir.join(format!("{}.jsonl", bound.session_id()));
     bound.set_path(bound_path.clone());
@@ -1204,8 +1207,8 @@ fn saved_session_summaries_carry_the_parent_binding() {
 
 #[tokio::test]
 async fn worker_probe_fails_at_the_deadline_and_names_the_worker() {
-    let dir = std::env::temp_dir().join(format!("pa-probe-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let socket = dir.join("never.sock");
     let expired = tokio::time::Instant::now() - Duration::from_millis(1);
     let error = probe_worker_socket("worker-abc", &socket, expired)
@@ -1220,8 +1223,9 @@ async fn worker_probe_fails_at_the_deadline_and_names_the_worker() {
 
 #[tokio::test]
 async fn worker_probe_accepts_a_live_socket() {
-    let dir = Path::new("/tmp").join(format!("pa-probe-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    // Under /tmp: the dir holds a bound socket (SUN_LEN).
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let dir = tmp.path().to_path_buf();
     let socket = dir.join("live.sock");
     let listener = pa_types::platform::transport::bind_transport(&socket)
         .await
@@ -1237,7 +1241,8 @@ async fn worker_probe_accepts_a_live_socket() {
 
 #[tokio::test]
 async fn adoption_settles_then_seeds_the_roster_once() {
-    let dir = std::env::temp_dir().join(format!("pa-adopt-seed-{}", uuid::Uuid::new_v4()));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let agent_dir = dir.join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).unwrap();
@@ -2750,7 +2755,7 @@ proptest! {
 
 #[tokio::test]
 async fn a_restarted_supervisors_registration_seeds_the_roster_family() {
-    let (dir, supervisor, root_file, child_file) =
+    let (_tmp, dir, supervisor, root_file, child_file) =
         crate::supervisor_roster_seed::tests::roster_fixture().await;
     let agent_dir = dir.join("agent");
     crate::supervisor_roster_seed::tests::append_family_edge(

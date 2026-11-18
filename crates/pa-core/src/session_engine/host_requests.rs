@@ -345,13 +345,13 @@ mod tests {
     use crate::cron::store::AgentCronJobStore;
     use crate::session::manager::SessionManager;
 
-    fn persisted_session() -> SessionManager {
+    fn persisted_session() -> (tempfile::TempDir, SessionManager) {
         let dir = tempfile::TempDir::new().unwrap();
         let session_dir = dir.path().join("session");
         std::fs::create_dir_all(&session_dir).unwrap();
         let mut session = SessionManager::in_memory(dir.path());
         session.materialize_session_file(Some(session_dir));
-        session
+        (dir, session)
     }
 
     fn binding() -> SessionBinding {
@@ -362,14 +362,15 @@ mod tests {
         }
     }
 
-    fn heartbeat_store() -> AgentCronJobStore {
+    fn heartbeat_store() -> (tempfile::TempDir, AgentCronJobStore) {
         let dir = tempfile::TempDir::new().unwrap();
-        AgentCronJobStore::new(dir.path().join("jobs.json"))
+        let store = AgentCronJobStore::new(dir.path().join("jobs.json"));
+        (dir, store)
     }
 
     #[test]
     fn goal_host_requests() {
-        let mut session = persisted_session();
+        let (_tmp, mut session) = persisted_session();
         let mut driver = GoalDriver::new();
         let response =
             handle_goal_host_request("goal.get", &json!({}), &mut driver, &mut session).unwrap();
@@ -421,7 +422,7 @@ mod tests {
             .starts_with("Goal achieved."));
         // Completing with no goal errors.
         let mut bare = GoalDriver::new();
-        let mut other_session = persisted_session();
+        let (_tmp, mut other_session) = persisted_session();
         let error =
             handle_goal_host_request("goal.complete", &json!({}), &mut bare, &mut other_session)
                 .unwrap_err();
@@ -437,7 +438,7 @@ mod tests {
 
     #[test]
     fn rlm_heartbeat_host_requests() {
-        let store = heartbeat_store();
+        let (_tmp, store) = heartbeat_store();
         let bind = binding();
         let created = handle_rlm_heartbeat_host_request(
             "rlm_heartbeat.create",

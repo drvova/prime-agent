@@ -21,6 +21,8 @@
 )]
 #![cfg(unix)]
 
+mod common;
+
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -40,8 +42,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -78,6 +79,9 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .env_remove("PRIME_API_KEY")
@@ -407,6 +411,12 @@ fn a_detached_bash_completion_wakes_the_idle_session_across_a_supervisor_restart
     // The supervisor dies hard (kill -9: the worker survives, orphaned) and
     // relaunches over the same socket — the adoption scan re-adopts it.
     drop(client);
+    // Only the supervisor process dies: once it is reaped the guard's tree
+    // teardown finds no descendants, so the orphaned workers live on for the
+    // relaunch to re-adopt; `_orphans` reaps them at teardown.
+    let _orphans = common::Orphans::of(&supervisor.child);
+    let _ = supervisor.child.kill();
+    let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
     let _supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
@@ -470,7 +480,7 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     )
     .expect("write faux script");
 
-    let supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -531,6 +541,12 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     });
 
     drop(client);
+    // Only the supervisor process dies: once it is reaped the guard's tree
+    // teardown finds no descendants, so the orphaned workers live on for the
+    // relaunch to re-adopt; `_orphans` reaps them at teardown.
+    let _orphans = common::Orphans::of(&supervisor.child);
+    let _ = supervisor.child.kill();
+    let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
     let _supervisor = spawn_daemon(&socket, &agent_dir, None);
@@ -588,7 +604,7 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     )
     .expect("write faux script");
 
-    let supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -654,6 +670,12 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     // The supervisor dies hard and relaunches: the wake lane's worker is adopted
     // alive, the killed lane's stop finishes at the boot scan instead of resurrecting.
     drop(client);
+    // Only the supervisor process dies: once it is reaped the guard's tree
+    // teardown finds no descendants, so the orphaned workers live on for the
+    // relaunch to re-adopt; `_orphans` reaps them at teardown.
+    let _orphans = common::Orphans::of(&supervisor.child);
+    let _ = supervisor.child.kill();
+    let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
     let _supervisor = spawn_daemon(&socket, &agent_dir, None);

@@ -448,9 +448,9 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-nav-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -470,12 +470,12 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     #[tokio::test]
     async fn new_session_answers_the_ts_cancelled_shape() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch("new_session", &json!({ "activeSessionId": "nav-session" }))
             .await;
@@ -491,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn switch_session_replaces_the_store_and_fails_on_missing_files() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "switch_session",
@@ -713,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn switch_session_rebinds_the_worker_cwd_and_new_session_keeps_it() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let state = worker
             .dispatch("get_state", &json!({ "activeSessionId": "nav-session" }))
             .await;
@@ -722,7 +722,11 @@ mod tests {
 
         // A target session file recording another existing cwd.
         let target_cwd = tempfile::TempDir::new().expect("target cwd");
-        let target = target_cwd.path().join("switch-target.jsonl");
+        let target = target_cwd
+            .path()
+            .join("sessions")
+            .join("switch-target.jsonl");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(
             &target,
             format!(
@@ -891,7 +895,7 @@ mod tests {
 
     #[tokio::test]
     async fn import_jsonl_answers_the_ts_file_not_found_error() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "import_jsonl",
@@ -915,11 +919,11 @@ mod tests {
     /// The typed issue carries the fallback cwd the client's confirm answers with.
     #[tokio::test]
     async fn import_jsonl_answers_the_ts_missing_cwd_error_info() {
-        let dir = std::env::temp_dir().join(format!("pa-import-cwd-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         // The import copies its input into the live session's directory, so the worker starts on a
         // real file.
-        let live = dir.join("live-session.jsonl");
+        let live = dir.join("sessions").join("live-session.jsonl");
         let mut live_file = SessionFile::create("/tmp", None, 0);
         live_file.set_path(live.clone());
         live_file.rewrite().unwrap();

@@ -217,10 +217,10 @@ mod tests {
     use serde_json::json;
     use std::time::SystemTime;
 
-    fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pa-daemon-scan-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        (tmp, dir)
     }
 
     /// Write one valid session file with `message_count` user/assistant turns
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn rows_match_the_sequential_fold_and_order() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         write_session(&dir, "/repo/a", Some("alpha"), 3);
         write_session(&dir, "/repo/b", None, 1);
         write_session(&dir, "/repo/c", Some("gamma"), 12);
@@ -278,18 +278,19 @@ mod tests {
 
     #[test]
     fn empty_dir_lists_nothing() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         assert!(list_sessions(&dir).is_empty());
     }
 
     #[test]
     fn missing_dir_lists_nothing() {
-        assert!(list_sessions(&temp_dir().join("absent")).is_empty());
+        let (_tmp, dir) = temp_dir();
+        assert!(list_sessions(&dir.join("absent")).is_empty());
     }
 
     #[test]
     fn skips_a_file_whose_first_parseable_line_is_not_the_session_header() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         // A session header preceded by a parseable non-session record: TS marks
         // the file invalid (`acc.invalid`) — skipped even though a header follows.
         let mistyped = dir.join("mistyped.jsonl");
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn still_lists_a_file_with_an_unparseable_first_line_and_a_later_header() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         // TS never invalidates on a parse failure: a truncated or foreign
         // first line must not hide a recoverable session.
         let path = write_session(&dir, "/repo/junk-first", None, 1);
@@ -325,7 +326,7 @@ mod tests {
 
     #[test]
     fn still_lists_a_file_with_a_leading_blank_line() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let path = write_session(&dir, "/repo/blank-first", Some("blank"), 1);
         let content = fs::read_to_string(&path).unwrap();
         fs::write(&path, format!("\n{content}")).unwrap();
@@ -337,7 +338,7 @@ mod tests {
 
     #[test]
     fn still_lists_a_file_with_an_over_long_header_line() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         // A cwd long enough to push the serialized header past the 512-byte
         // bound: the bounded read refuses to judge the line, and the row
         // must still come out exactly as the fold produces it.
@@ -377,7 +378,7 @@ mod tests {
 
     #[test]
     fn list_sessions_with_emits_rows_newest_first_with_scan_counts() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let base = SystemTime::now() - std::time::Duration::from_hours(1);
         for (index, name) in ["old row", "mid row", "new row"].iter().enumerate() {
             let path = write_session(&dir, "/repo/x", Some(name), 1);
@@ -419,7 +420,7 @@ mod tests {
 
     #[test]
     fn list_sessions_with_stops_when_the_consumer_stops() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         write_session(&dir, "/repo/a", Some("first"), 1);
         write_session(&dir, "/repo/b", Some("second"), 1);
         write_session(&dir, "/repo/c", Some("third"), 1);
@@ -435,7 +436,7 @@ mod tests {
 
     #[test]
     fn a_page_cursor_resumes_after_its_file_even_once_that_file_is_deleted() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let base = SystemTime::now() - std::time::Duration::from_hours(1);
         let paths: Vec<PathBuf> = (0..5)
             .map(|index| {
@@ -464,7 +465,7 @@ mod tests {
     }
     #[test]
     fn a_session_modified_between_pages_is_not_skipped() {
-        let dir = temp_dir();
+        let (_tmp, dir) = temp_dir();
         let base = SystemTime::now() - Duration::from_secs(3600);
         let paths: Vec<_> = (0..3)
             .map(|index| {

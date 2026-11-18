@@ -103,9 +103,9 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-rlm-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -125,12 +125,12 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     #[tokio::test]
     async fn cancel_rlm_child_answers_the_ts_cancelled_shape() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "cancel_rlm_child",
@@ -143,7 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_rlm_subagent_answers_the_ts_not_found_shape() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "delete_rlm_subagent",
@@ -156,7 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn set_rlm_max_depth_answers_the_ts_result_shape() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let response = worker
             .dispatch(
                 "set_rlm_max_depth",
@@ -195,7 +195,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_required_fields_fail() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         for command_type in ["cancel_rlm_child", "delete_rlm_subagent"] {
             let response = worker
                 .dispatch(command_type, &json!({ "activeSessionId": "s" }))

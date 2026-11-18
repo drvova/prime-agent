@@ -4,6 +4,8 @@
 //! a `TMPDIR` pointing at a plain file - the real bind path failing).
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -18,8 +20,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -34,6 +35,9 @@ impl DaemonBuilder {
             .arg("supervisor")
             .arg("--socket")
             .arg(socket)
+            // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+            // worker never cleans: keep them in the test's own dir.
+            .env("TMPDIR", socket.parent().expect("socket dir"))
             .arg("--agent-dir")
             .arg(agent_dir)
             .stdout(Stdio::null())

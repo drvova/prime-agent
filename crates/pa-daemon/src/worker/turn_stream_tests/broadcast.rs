@@ -65,7 +65,7 @@ async fn turn_session_events_with_custom_message(
     engine: Arc<dyn SessionEngine>,
     custom_message: Value,
 ) -> Vec<Value> {
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     let mut subscription = runner.events.subscribe();
     runner
         .run_turn(
@@ -146,8 +146,8 @@ async fn an_injected_custom_turn_replaces_the_user_row() {
 
 #[tokio::test]
 async fn a_delivered_agent_message_turn_emits_the_custom_row() {
-    let dir = std::env::temp_dir().join(format!("pa-worker-amw-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
         socket_path: dir.join("worker.sock"),
         supervisor_socket_path: PathBuf::new(),
@@ -197,7 +197,7 @@ async fn a_delivered_agent_message_turn_emits_the_custom_row() {
         .expect("the delivery parked on the steering lane");
     let engine: Arc<dyn SessionEngine> =
         Arc::new(ScriptedEngine::from_value(&json!({ "responses": ["ack"] })).unwrap_or_default());
-    let runner = burst_runner(Arc::clone(&engine));
+    let (_tmp, runner) = burst_runner(Arc::clone(&engine));
     let mut subscription = runner.events.subscribe();
     runner.run_turn(engine, Lane::Steering, vec![item]).await;
     let mut events = Vec::new();
@@ -317,10 +317,8 @@ async fn a_retried_turn_broadcasts_one_agent_end_per_run() {
             })
             .unwrap_or_default()
     }
-    let dir = std::env::temp_dir().join(format!(
-        "pa-worker-agent-end-retry-{}",
-        uuid::Uuid::new_v4()
-    ));
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().to_path_buf();
     std::fs::create_dir_all(dir.join("agent")).unwrap();
     std::fs::write(
         dir.join("agent").join("settings.json"),

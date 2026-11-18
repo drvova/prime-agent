@@ -41,24 +41,29 @@ pub(crate) fn wait_for_payload_files(dir: &Path, count: usize) {
     }
 }
 
-/// Wait until the writer's queue is empty (every reservation released).
+/// Wait until the writer's queue is empty (every reservation released) and
+/// every taken job's write has settled (its retained bytes released after
+/// the write, where the slot releases at the take).
 pub(crate) fn wait_for_drained_queue() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
-        let queued = super::CAPTURE_WRITER
+        let (queued, retained) = super::CAPTURE_WRITER
             .get()
             .and_then(|writer| {
-                writer
-                    .as_ref()
-                    .map(|writer| writer.queued.load(Ordering::Relaxed))
+                writer.as_ref().map(|writer| {
+                    (
+                        writer.queued.load(Ordering::Relaxed),
+                        writer.retained.load(Ordering::Relaxed),
+                    )
+                })
             })
             .expect("the writer is armed");
-        if queued == 0 {
+        if queued == 0 && retained == 0 {
             return;
         }
         assert!(
             std::time::Instant::now() <= deadline,
-            "the writer queue never drained: {queued} jobs remain"
+            "the writer queue never drained: {queued} jobs, {retained} bytes remain"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -426,6 +431,9 @@ fn an_unwritable_target_disables_the_capture_silently() {
     let capture = RequestPayloadCapture::at(&blocker, 64);
     capture.record(&json!({"a": 1}), &agent_model(), Some("sess-timing"), 1);
     capture.record(&json!({"a": 2}), &agent_model(), Some("sess-timing"), 2);
+    // Both writes settle before the temp dir drops: a write the writer
+    // thread still held would re-create `request-payloads` after the drop.
+    wait_for_drained_queue();
     // Nothing can ever appear on the blocker: a failed capture stays
     // silent.
     assert_eq!(

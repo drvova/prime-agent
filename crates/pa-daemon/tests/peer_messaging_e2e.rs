@@ -4,6 +4,8 @@
 //! route plane; a supervisor `kill -9` does not stop messaging.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -20,8 +22,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -57,6 +58,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
@@ -248,12 +252,14 @@ fn messages(client: &mut Client, id: &str, active_session_id: &str) -> String {
 }
 
 struct Messaging {
-    dir: tempfile::TempDir,
     daemon: Daemon,
     socket: PathBuf,
     receipts_dir: PathBuf,
     alpha: Session,
     beta: Session,
+    // Last: fields drop in declaration order, so the supervisor is reaped
+    // before the dir it writes into goes.
+    dir: tempfile::TempDir,
 }
 
 /// The receipt the kernel cell recorded for `index`, or the recorded failure
@@ -535,6 +541,9 @@ fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
         1
     );
 
+    // The workers outlive the kill for the relaunch to re-adopt; the guard
+    // reaps them at teardown, which the new supervisor's tree no longer reaches.
+    let _orphans = common::Orphans::of(&messaging.daemon.child);
     messaging.daemon.child.kill().expect("kill -9 supervisor");
     let _ = messaging.daemon.child.wait();
 

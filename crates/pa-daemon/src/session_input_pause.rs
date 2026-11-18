@@ -260,9 +260,9 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
 
-    async fn created_worker() -> Arc<Worker> {
-        let dir = std::env::temp_dir().join(format!("pa-worker-pause-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+    async fn created_worker() -> (tempfile::TempDir, Arc<Worker>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
         let config = crate::worker::WorkerConfig {
             socket_path: dir.join("worker.sock"),
             supervisor_socket_path: std::path::PathBuf::new(),
@@ -282,12 +282,12 @@ mod tests {
             )
             .await;
         assert!(created.success, "create failed: {created:?}");
-        worker
+        (tmp, worker)
     }
 
     #[tokio::test]
     async fn a_pause_wakes_idle_wait_holding_queued_input() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         {
             let mut core = worker.core.lock().unwrap();
             core.queued_input_suspended = true;
@@ -334,7 +334,7 @@ mod tests {
     /// deduplicates to the same id, a different lease mints a new one.
     #[tokio::test]
     async fn acquire_dedupes_on_the_lease_key() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let first = worker
             .dispatch(
                 "acquire_session_input_pause",
@@ -376,7 +376,7 @@ mod tests {
 
     #[tokio::test]
     async fn release_answers_the_ts_outcome_ladder() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         let acquire = worker
             .dispatch(
                 "acquire_session_input_pause",
@@ -425,7 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_gate_holds_queued_input_until_released() {
-        let worker = created_worker().await;
+        let (_tmp, worker) = created_worker().await;
         worker
             .dispatch(
                 "acquire_session_input_pause",
