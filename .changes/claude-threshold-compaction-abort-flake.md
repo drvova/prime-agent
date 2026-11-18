@@ -1,0 +1,1 @@
+- Fixed an abort sent the moment the compaction loader appeared being ignored, which let the summary run to completion.
