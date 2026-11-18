@@ -45,6 +45,7 @@ fn supervisor_end_to_end_scripted_session_lifecycle() {
             "elide_snapshot_images",
             "windowed_snapshot",
             "message_update_delta",
+            "user_questions",
             "delete_rlm_subagent",
             "heartbeat_catalog",
             "heartbeat_management",
