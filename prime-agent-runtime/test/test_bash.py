@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import io
 import json
 import os
 import resource
+import secrets
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -24,6 +27,8 @@ from rlm import bash
 # The package re-exports the bash() function under the same name, so reach the
 # module through sys.modules for internals.
 bash_module = sys.modules["rlm.bash"]
+# bash() imports _winjob inside its Windows branches; patch the module itself.
+winjob_module = importlib.import_module("rlm._winjob")
 
 
 def _win_spawn(procs=None, resume=True):
@@ -667,7 +672,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         # the same repo-controlled-PATH hole the host-side resolution closed.
         with mock.patch.object(bash_module, "_IS_POSIX", False):
             with mock.patch.object(
-                bash_module.shutil, "which", return_value=r"C:\evil\bash.exe"
+                shutil, "which", return_value=r"C:\evil\bash.exe"
             ) as which:
                 with self.assertRaisesRegex(RuntimeError, "PRIME_AGENT_BASH_SHELL"):
                     bash_module._shell()
@@ -716,7 +721,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
             "if [ -r /proc/$$/cmdline ]; then cat /proc/$$/cmdline; fi\n"
             "printf '\\nafter-sentinel-lookalike\\n'"
         )
-        with mock.patch.object(bash_module.secrets, "token_hex", return_value=token):
+        with mock.patch.object(secrets, "token_hex", return_value=token):
             result = await asyncio.wait_for(bash(command), timeout=5)
         actual_marker = (
             bash_module._COMPLETION_PREFIX + token.encode() + bash_module._COMPLETION_SUFFIX
@@ -779,12 +784,12 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
                 },
             ):
                 with mock.patch.object(bash_module, "_IS_POSIX", False):
-                    with mock.patch.object(bash_module._winjob, "spawn_in_job", _win_spawn()):
-                        with mock.patch.object(bash_module._winjob, "create_job", return_value=7):
+                    with mock.patch.object(winjob_module, "spawn_in_job", _win_spawn()):
+                        with mock.patch.object(winjob_module, "create_job", return_value=7):
                             with mock.patch.object(
-                                bash_module._winjob, "terminate", return_value=True
+                                winjob_module, "terminate", return_value=True
                             ):
-                                with mock.patch.object(bash_module._winjob, "close"):
+                                with mock.patch.object(winjob_module, "close"):
                                     handle = bash("echo hi")
                                     await asyncio.wait_for(handle, timeout=5)
                                     for _ in range(100):
@@ -814,10 +819,10 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", spawn):
+            with mock.patch.object(winjob_module, "spawn_in_job", spawn):
                 with mock.patch.object(bash_module, "_record_journal", journal):
                     with mock.patch.object(
-                        bash_module._winjob,
+                        winjob_module,
                         "create_job",
                         side_effect=lambda: order.append("create_job") or sentinel,
                     ):
@@ -846,9 +851,9 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job") as spawn:
+            with mock.patch.object(winjob_module, "spawn_in_job") as spawn:
                 with mock.patch.object(bash_module, "_record_journal", journal):
-                    with mock.patch.object(bash_module._winjob, "create_job", return_value=None):
+                    with mock.patch.object(winjob_module, "create_job", return_value=None):
                         with self.assertRaisesRegex(RuntimeError, "job containment"):
                             bash("sleep 30")
         # A create_job failure aborts before spawn_in_job: nothing spawned, nothing journaled.
@@ -872,16 +877,16 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
             with mock.patch.object(
-                bash_module._winjob, "spawn_in_job", _win_spawn(spawned, resume=False)
+                winjob_module, "spawn_in_job", _win_spawn(spawned, resume=False)
             ):
                 with mock.patch.object(bash_module, "_record_journal", journal):
                     with mock.patch.object(
-                        bash_module._winjob, "create_job", return_value=sentinel
+                        winjob_module, "create_job", return_value=sentinel
                     ):
                         with mock.patch.object(
-                            bash_module._winjob, "terminate", side_effect=terminate
+                            winjob_module, "terminate", side_effect=terminate
                         ) as term:
-                            with mock.patch.object(bash_module._winjob, "close") as close:
+                            with mock.patch.object(winjob_module, "close") as close:
                                 with self.assertRaisesRegex(RuntimeError, "job containment"):
                                     bash("sleep 30")
         term.assert_called_once_with(sentinel)
@@ -906,15 +911,15 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", _win_spawn(spawned)):
+            with mock.patch.object(winjob_module, "spawn_in_job", _win_spawn(spawned)):
                 with mock.patch.object(bash_module, "_record_journal", journal):
                     with mock.patch.object(
-                        bash_module._winjob, "create_job", return_value=sentinel
+                        winjob_module, "create_job", return_value=sentinel
                     ):
                         with mock.patch.object(
-                            bash_module._winjob, "terminate", side_effect=terminate
+                            winjob_module, "terminate", side_effect=terminate
                         ) as term:
-                            with mock.patch.object(bash_module._winjob, "close") as close:
+                            with mock.patch.object(winjob_module, "close") as close:
                                 with self.assertRaisesRegex(RuntimeError, "journal enrollment"):
                                     bash("sleep 30")
         term.assert_called_once_with(sentinel)
@@ -937,12 +942,12 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", spawn):
+            with mock.patch.object(winjob_module, "spawn_in_job", spawn):
                 with mock.patch.object(bash_module, "_record_journal", journal):
                     with mock.patch.object(
-                        bash_module._winjob, "create_job", return_value=sentinel
+                        winjob_module, "create_job", return_value=sentinel
                     ):
-                        with mock.patch.object(bash_module._winjob, "close") as close:
+                        with mock.patch.object(winjob_module, "close") as close:
                             with self.assertRaises(OSError):
                                 bash("sleep 30")
         close.assert_called_once_with(sentinel)
@@ -976,11 +981,11 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", spawn):
-                with mock.patch.object(bash_module._winjob, "create_job", return_value=777):
-                    with mock.patch.object(bash_module._winjob, "terminate", terminate):
+            with mock.patch.object(winjob_module, "spawn_in_job", spawn):
+                with mock.patch.object(winjob_module, "create_job", return_value=777):
+                    with mock.patch.object(winjob_module, "terminate", terminate):
                         with mock.patch.object(
-                            bash_module._winjob, "close",
+                            winjob_module, "close",
                             side_effect=lambda job: order.append("job-close"),
                         ):
                             with mock.patch.object(bash_module, "_taskkill_tree", taskkill):
@@ -1008,12 +1013,12 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
 
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", spawn):
-                with mock.patch.object(bash_module._winjob, "create_job", return_value=778):
+            with mock.patch.object(winjob_module, "spawn_in_job", spawn):
+                with mock.patch.object(winjob_module, "create_job", return_value=778):
                     with mock.patch.object(
-                        bash_module._winjob, "terminate", side_effect=terminate
+                        winjob_module, "terminate", side_effect=terminate
                     ) as term:
-                        with mock.patch.object(bash_module._winjob, "close"):
+                        with mock.patch.object(winjob_module, "close"):
                             with mock.patch.object(bash_module, "_taskkill_tree") as taskkill:
                                 handle = bash("echo hi")
                                 await asyncio.wait_for(handle, timeout=5)
@@ -1041,7 +1046,7 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
             bash_module._live_handles.add(stale)
         try:
             with mock.patch.object(bash_module, "_IS_POSIX", False):
-                with mock.patch.object(bash_module._winjob, "terminate") as term:
+                with mock.patch.object(winjob_module, "terminate") as term:
                     with mock.patch.object(bash_module, "_taskkill_tree") as taskkill:
                         with mock.patch.object(bash_module, "_record_journal") as journal:
                             bash_module._kill_live_handles()
@@ -1099,13 +1104,13 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         self.enterContext(mock.patch.dict(os.environ, {"PRIME_AGENT_BASH_SHELL": "/bin/sh"}))
         loop = asyncio.get_running_loop()
         with mock.patch.object(bash_module, "_IS_POSIX", False):
-            with mock.patch.object(bash_module._winjob, "spawn_in_job", spawn):
-                with mock.patch.object(bash_module._winjob, "create_job", return_value=900):
+            with mock.patch.object(winjob_module, "spawn_in_job", spawn):
+                with mock.patch.object(winjob_module, "create_job", return_value=900):
                     with mock.patch.object(
-                        bash_module._winjob, "terminate", side_effect=terminate
+                        winjob_module, "terminate", side_effect=terminate
                     ) as term:
                         with mock.patch.object(
-                            bash_module._winjob, "close",
+                            winjob_module, "close",
                             side_effect=lambda job: order.append("abort-jobclose"),
                         ):
                             with mock.patch.object(bash_module, "_record_journal", journal):
@@ -1158,11 +1163,11 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         try:
             with mock.patch.object(bash_module, "_IS_POSIX", False):
                 with mock.patch.object(bash_module, "_taskkill_tree") as taskkill:
-                    with mock.patch.object(bash_module._winjob, "terminate", return_value=True) as term:
-                        with mock.patch.object(bash_module._winjob, "close") as close:
-                            with mock.patch.object(bash_module._winjob, "is_empty", return_value=False):
+                    with mock.patch.object(winjob_module, "terminate", return_value=True) as term:
+                        with mock.patch.object(winjob_module, "close") as close:
+                            with mock.patch.object(winjob_module, "is_empty", return_value=False):
                                 self.assertTrue(handle._group_alive())
-                            with mock.patch.object(bash_module._winjob, "is_empty", return_value=True):
+                            with mock.patch.object(winjob_module, "is_empty", return_value=True):
                                 self.assertFalse(handle._group_alive())
                             handle.kill()
                             term.assert_called_once_with(job)
@@ -1188,8 +1193,8 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         handle._job = job
         try:
             with mock.patch.object(bash_module, "_IS_POSIX", False):
-                with mock.patch.object(bash_module._winjob, "terminate", return_value=False):
-                    with mock.patch.object(bash_module._winjob, "close") as close:
+                with mock.patch.object(winjob_module, "terminate", return_value=False):
+                    with mock.patch.object(winjob_module, "close") as close:
                         with mock.patch.object(
                             bash_module, "_taskkill_tree", return_value=True
                         ) as taskkill:
@@ -1221,8 +1226,8 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         handle._job = 999
         try:
             with mock.patch.object(bash_module, "_IS_POSIX", False):
-                with mock.patch.object(bash_module._winjob, "terminate", return_value=False):
-                    with mock.patch.object(bash_module._winjob, "close"):
+                with mock.patch.object(winjob_module, "terminate", return_value=False):
+                    with mock.patch.object(winjob_module, "close"):
                         with mock.patch.object(
                             bash_module, "_taskkill_tree", return_value=False
                         ):

@@ -7,25 +7,22 @@ import atexit
 import functools
 import json
 import os
-import secrets
 import selectors
-import shutil
 import signal
 import socket
 import struct
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, NoReturn, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
-from . import _winjob
+if TYPE_CHECKING:
+    from . import _winjob
 
 _IS_POSIX = os.name == "posix"
 
@@ -371,6 +368,8 @@ class BashHandle:
     """
 
     def __init__(self, command: str) -> None:
+        import secrets
+
         self.command = command
         self._activity_id = secrets.token_hex(16)
         completion_context = _current_cell_completion_context()
@@ -423,6 +422,8 @@ class BashHandle:
                 os.close(self._status_read)
                 os.close(status_write)
                 raise
+            import secrets
+
             completion_token = secrets.token_hex(32)
             # Halves stop passive echoes; a deliberate forgery freezes only this call while later bytes stay live.
             token_midpoint = len(completion_token) // 2
@@ -436,6 +437,8 @@ class BashHandle:
             )
         else:
             # Windows lacks a foreground-status channel, so its exit drain stays best-effort.
+            from . import _winjob
+
             script = _with_prefix(command)
             self._job = _winjob.create_job()
             if self._job is None:
@@ -539,6 +542,8 @@ class BashHandle:
             with self._kill_lock:
                 if self._reaped:  # re-check: _watch may have reaped while we waited
                     return
+                from . import _winjob
+
                 if self._job is not None and _winjob.terminate(self._job):
                     return
                 # TerminateJobObject failed or reap raced: taskkill fallback.
@@ -697,6 +702,8 @@ class BashHandle:
             # Terminate then close the last handle: kill-on-close reaps
             # stragglers. An unproven terminate falls back to taskkill; if
             # that also fails the record stays active for the host reaper.
+            from . import _winjob
+
             delivered = False
             if self._job is not None:
                 delivered = _winjob.terminate(self._job)
@@ -901,7 +908,7 @@ class BashHandle:
         repl._send(
             {
                 "event": "host_request",
-                "id": uuid.uuid4().hex,
+                "id": os.urandom(16).hex(),
                 "data": {"type": "bash.consumed", "pid": self._pid, "command": command},
             }
         )
@@ -978,6 +985,8 @@ class BashHandle:
 
     def _group_alive(self) -> bool:
         if not _IS_POSIX:
+            from . import _winjob
+
             job = self._job  # snapshot: _watch may clear it concurrently
             if job is not None:
                 # Job accounting sees detached descendants a dead leader hides.
@@ -1015,6 +1024,8 @@ class BashHandle:
             self._status_read = self._wake_read = self._wake_write = -1
             delivered = _signal_group(self._pid, signal.SIGKILL)
         else:
+            from . import _winjob
+
             with self._kill_lock:
                 delivered = False
                 if self._job is not None:
@@ -1367,6 +1378,8 @@ def _shell() -> str:
         )
     # PATH fallback only serves bare/standalone POSIX runtime use: the host
     # always injects PRIME_AGENT_BASH_SHELL (an absolute path) when a shell exists.
+    import shutil
+
     shell = shutil.which("bash")
     return shell or "/bin/sh"
 
@@ -1382,6 +1395,8 @@ def _fence_printf() -> str:
     # the await hanging until the shell dies (wedged behind background jobs). A
     # slash-qualified command name bypasses function and alias lookup for
     # ordinary command names, so resolve printf on the system default utility PATH.
+    import shutil
+
     path = shutil.which("printf", path=os.confstr("CS_PATH") or os.defpath)
     if path and "'" not in path:
         return f"'{path}'"
@@ -1542,6 +1557,8 @@ def _spawn_persistent(command: str) -> PersistentBashHandle:
             "the shell is assigned to the session that started it"
         )
     home = _persistent_home()
+    import secrets
+
     shell_id = secrets.token_hex(16)
     os.makedirs(home, mode=0o700, exist_ok=True)
     shell = _shell()
@@ -1571,6 +1588,8 @@ def _spawn_persistent(command: str) -> PersistentBashHandle:
             "startedAt": started_at, "sessionId": session_id,
         }
         path = _persistent_file(home, shell_id, "json")
+        import tempfile
+
         fd, temp = tempfile.mkstemp(dir=home, suffix=".tmp")
         with open(fd, "w") as f:
             json.dump(record, f)
@@ -1759,6 +1778,8 @@ def _kill_live_handles() -> None:
         if _IS_POSIX:
             delivered = _signal_group(handle._pid, signal.SIGKILL)
         else:
+            from . import _winjob
+
             with handle._kill_lock:
                 if handle._reaped:
                     continue

@@ -10,15 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from .bash import BashHandle, BashResult, BashSnapshot, bash, persistent_shells, _set_completion_notices_wired
-from .factory import (
-    FACTORY_HELP,
-    graph_factory,
-    resume_factory,
-    run_factory,
-    status_factory,
-    stop_factory,
-    watch_factory,
-)
 from .harness import HarnessEntry, HarnessScope, HarnessState, RefinementEvent, get_harness_state
 
 _NOT_CALLABLE_MESSAGE = "'rlm' is not callable; spawn a child with: handle = await rlm.spawn('sub-task', name='worker')"
@@ -663,25 +654,39 @@ class _RLMFactoryNamespace:
     """
 
     async def run(self, spec_id: str, *, name: str | None = None) -> dict[str, Any]:
+        from .factory import run_factory
+
         return await run_factory(spec_id, name=name)
 
     async def status(self, run_id: str) -> dict[str, Any]:
+        from .factory import status_factory
+
         return await status_factory(run_id)
 
     async def stop(self, run_id: str) -> dict[str, Any]:
+        from .factory import stop_factory
+
         return await stop_factory(run_id)
 
     async def resume(self, run_id: str) -> dict[str, Any]:
+        from .factory import resume_factory
+
         return await resume_factory(run_id)
 
     async def graph(self, ref: str | None = None) -> dict[str, Any]:
+        from .factory import graph_factory
+
         return graph_factory(ref)
 
     async def watch(self, run_id: str, timeout: float = 0.0) -> dict[str, Any]:
+        from .factory import watch_factory
+
         return await watch_factory(run_id, timeout)
 
     def help(self) -> str:
         """Return the embedded factory authoring reference and API guide."""
+        from .factory import FACTORY_HELP
+
         return FACTORY_HELP
 
 
@@ -850,6 +855,14 @@ class _NotCallableModule(types.ModuleType):
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(_NOT_CALLABLE_MESSAGE)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        # The import system binds a loaded submodule onto its package. The
+        # factory submodule loads lazily, after `factory` above was bound to
+        # the namespace, so that binding must not replace it.
+        if name == "factory" and isinstance(value, types.ModuleType):
+            return
+        super().__setattr__(name, value)
+
 
 sys.modules[__name__].__class__ = _NotCallableModule
 
@@ -890,6 +903,17 @@ __all__ = [
 # Lazily re-export the MCP base class. Kept lazy so `import rlm` never requires
 # the optional `mcp` SDK — only integration packages that subclass it do.
 _LAZY_MCP = {"McpIntegration", "McpToolError", "NotEnabled"}
+# The factory executor (~5,800 lines) loads on first use, not with the kernel;
+# these names stay importable from `rlm` as before.
+_LAZY_FACTORY = {
+    "FACTORY_HELP",
+    "graph_factory",
+    "resume_factory",
+    "run_factory",
+    "status_factory",
+    "stop_factory",
+    "watch_factory",
+}
 
 
 def __getattr__(name: str) -> Any:  # noqa: D401 - module-level lazy attr hook
@@ -897,4 +921,8 @@ def __getattr__(name: str) -> Any:  # noqa: D401 - module-level lazy attr hook
         from . import mcp_base
 
         return getattr(mcp_base, name)
+    if name in _LAZY_FACTORY:
+        import importlib
+
+        return getattr(importlib.import_module(".factory", __name__), name)
     return getattr(rlm, name)

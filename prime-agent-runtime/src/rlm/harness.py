@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import json
 import math
 import os
@@ -23,10 +24,8 @@ from collections.abc import Iterator
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import uuid4
 from typing import Any, Literal
 
-from .factory import require_factory_enabled, validate_factory_spec
 
 if sys.platform == "darwin":
     import fcntl
@@ -41,7 +40,7 @@ _state_cache: dict[tuple[Path, HarnessScope], "HarnessState"] = {}
 _LOCK_STALE_AFTER = 10.0
 _LOCK_ATTEMPTS = 50
 _LOCK_RETRY_INTERVAL = 0.02
-_PROCESS_TOKEN = uuid4().hex
+_PROCESS_TOKEN = os.urandom(16).hex()
 
 
 def _now() -> str:
@@ -54,13 +53,16 @@ def _slug(raw: str, fallback: str) -> str:
     return (normalized or fallback)[:80]
 
 
-_CJK_TERM_CHARS = re.compile(
-    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af"
-    r"\U00020000-\U0002a6df\U0002a700-\U0002b73f\U0002b740-\U0002b81f"
-    r"\U0002b820-\U0002ceaf\U0002ceb0-\U0002ebef\U0002ebf0-\U0002ee5f"
-    r"\U0002f800-\U0002fa1f\U00030000-\U0003134f\U00031350-\U000323af"
-    r"\U000323b0-\U0003347f]"
-)
+@functools.cache
+def _cjk_term_chars() -> re.Pattern[str]:
+    """The CJK run-break class, compiled on the first query (about 2 ms)."""
+    return re.compile(
+        r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af"
+        r"\U00020000-\U0002a6df\U0002a700-\U0002b73f\U0002b740-\U0002b81f"
+        r"\U0002b820-\U0002ceaf\U0002ceb0-\U0002ebef\U0002ebf0-\U0002ee5f"
+        r"\U0002f800-\U0002fa1f\U00030000-\U0003134f\U00031350-\U000323af"
+        r"\U000323b0-\U0003347f]"
+    )
 
 
 def _harness_query_runs(text: str) -> list[str]:
@@ -76,7 +78,7 @@ def _harness_query_runs(text: str) -> list[str]:
     run_is_cjk = False
     for ch in text:
         if unicodedata.category(ch).startswith("M") or ch.isalnum():
-            ch_is_cjk = bool(_CJK_TERM_CHARS.match(ch))
+            ch_is_cjk = bool(_cjk_term_chars().match(ch))
             if run and ch_is_cjk != run_is_cjk:
                 runs.append("".join(run))
                 run = []
@@ -107,7 +109,7 @@ def _harness_query_terms(query: str) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for run in _harness_query_runs(query.lower()):
-        if _CJK_TERM_CHARS.search(run):
+        if _cjk_term_chars().search(run):
             # Bigrams keep whitespace-free CJK findable without single
             # characters matching too loosely.
             candidates = [run[i : i + 2] for i in range(len(run) - 1)] or [run]
@@ -315,6 +317,8 @@ def _validate_factory_arguments(entry_name: str, arguments: dict[str, Any]) -> N
         raise ValueError(
             f"factory entry {entry_name!r} rejected: factory entries require a dag or machine object in arguments"
         )
+    from .factory import validate_factory_spec
+
     errors = validate_factory_spec(spec)
     if errors:
         raise ValueError(f"factory entry {entry_name!r} rejected: {'; '.join(errors)}")
@@ -368,6 +372,8 @@ def _validate_entry_shape(
         # store an unusable entry that run() later rejects); an update that
         # omits arguments (None) preserves the stored spec and skips
         # validation, exactly like update_skill treats reference.
+        from .factory import require_factory_enabled
+
         require_factory_enabled()
         if arguments is None and existing is None:
             raise ValueError(
@@ -487,7 +493,7 @@ class HarnessState:
             return False
 
     def _acquire_lock_dir(self, lock_path: Path) -> str:
-        owner = f"{os.getpid()} {_PROCESS_TOKEN}.{uuid4().hex}"
+        owner = f"{os.getpid()} {_PROCESS_TOKEN}.{os.urandom(16).hex()}"
         owner_path = lock_path / "owner"
         for _ in range(_LOCK_ATTEMPTS):
             try:
@@ -642,7 +648,7 @@ class HarnessState:
         }
         # Atomic replace on the real file: aliases survive, readers never see a torn file.
         target_path = Path(os.path.realpath(self.file_path))
-        temp_path = target_path.with_name(f"{target_path.name}.{os.getpid()}.{uuid4().hex}.tmp")
+        temp_path = target_path.with_name(f"{target_path.name}.{os.getpid()}.{os.urandom(16).hex()}.tmp")
         try:
             existing_mode = stat.S_IMODE(os.stat(target_path).st_mode)
         except FileNotFoundError:
@@ -1092,6 +1098,8 @@ class HarnessState:
     ) -> HarnessEntry:
         # The opt-in gate precedes the dry run, so a disabled factory
         # refuses with the one disabled message whatever the spec looks like.
+        from .factory import require_factory_enabled, validate_factory_spec
+
         require_factory_enabled()
         # Write-time dry run: an invalid spec (either form) never reaches the
         # store. The spec is deep-copied before storing: mutating the caller's
@@ -1129,6 +1137,8 @@ class HarnessState:
         # The opt-in gate precedes the spec and existence checks, so a
         # disabled factory refuses with the one disabled message whatever the
         # update carries.
+        from .factory import require_factory_enabled, validate_factory_spec
+
         require_factory_enabled()
         # Only validate a spec when one is supplied; omitting both preserves the
         # stored arguments (see _upsert) rather than forcing every title/content

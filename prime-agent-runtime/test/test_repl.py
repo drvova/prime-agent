@@ -3212,6 +3212,7 @@ class OwnerWatchdogTest(unittest.TestCase):
         self.addCleanup(sys.path.remove, SRC)
         import rlm.repl as repl_module
 
+        import ctypes
         from ctypes import wintypes
 
         calls: list[tuple] = []
@@ -3234,7 +3235,7 @@ class OwnerWatchdogTest(unittest.TestCase):
                 self.CloseHandle = FakeFunction("CloseHandle", 1)
 
         k32 = FakeKernel32()
-        with mock.patch.object(repl_module.ctypes, "WinDLL", create=True, return_value=k32):
+        with mock.patch.object(ctypes, "WinDLL", create=True, return_value=k32):
             repl_module._wait_owner_windows(777)
         self.assertEqual(
             calls,
@@ -3253,7 +3254,7 @@ class OwnerWatchdogTest(unittest.TestCase):
 
         calls.clear()
         with mock.patch.object(
-            repl_module.ctypes, "WinDLL", create=True, return_value=FakeKernel32(open_result=0)
+            ctypes, "WinDLL", create=True, return_value=FakeKernel32(open_result=0)
         ):
             repl_module._wait_owner_windows(778)
         self.assertEqual(calls, [("OpenProcess", 0x00100000, False, 778)])
@@ -3300,6 +3301,27 @@ class OwnerExitWaitTest(unittest.TestCase):
         ):
             self.repl_module._wait_owner_posix(self.owner.pid, os.getppid())
         sleep.assert_called_once()
+
+
+
+class StartupImportTest(unittest.TestCase):
+    def test_kernel_start_defers_modules_no_boot_step_needs(self):
+        # Every kernel start imports rlm.repl and rlm.mcp before it can send
+        # `ready`. These modules serve later calls only (the factory executor,
+        # bash() temp files and tokens, Windows job objects, MCP token
+        # hashing), so they load on first use instead.
+        probe = (
+            "import json, sys\n"
+            "import rlm.repl, rlm.mcp\n"
+            "deferred = ['rlm.factory', 'rlm._winjob', 'ctypes', 'uuid', 'platform',"
+            " 'tempfile', 'shutil', 'secrets', 'hashlib']\n"
+            "print(json.dumps(sorted(name for name in deferred if name in sys.modules)))\n"
+        )
+        env = {**os.environ, "PYTHONPATH": SRC + os.pathsep + os.environ.get("PYTHONPATH", "")}
+        out = subprocess.run(
+            [sys.executable, "-P", "-s", "-c", probe], env=env, capture_output=True, text=True, check=True
+        ).stdout
+        self.assertEqual(json.loads(out), [])
 
 
 if __name__ == "__main__":
