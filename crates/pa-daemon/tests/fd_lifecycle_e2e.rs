@@ -22,6 +22,8 @@
 // Every probe reads /proc (fd tables, process state, limits): Linux only.
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
@@ -77,8 +79,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -90,6 +91,9 @@ fn spawn_daemon(mut launcher: Command, socket: &Path, agent_dir: &Path) -> Daemo
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())

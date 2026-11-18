@@ -23,6 +23,8 @@
 )]
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -39,8 +41,7 @@ struct Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -51,6 +52,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdin(Stdio::null())
@@ -227,7 +231,6 @@ impl Client {
 
 struct Harness {
     #[allow(dead_code)]
-    dir: tempfile::TempDir,
     agent_dir: PathBuf,
     session_dir: PathBuf,
     #[allow(dead_code)]
@@ -235,6 +238,9 @@ struct Harness {
     client: Client,
     session_id: String,
     persisted_id: String,
+    // Last: fields drop in declaration order, so the supervisor is reaped
+    // before the dir it writes into goes.
+    dir: tempfile::TempDir,
 }
 
 #[allow(clippy::zombie_processes)]
@@ -311,13 +317,13 @@ fn setup(name: &str) -> Harness {
         .expect("persisted session id")
         .to_string();
     Harness {
-        dir,
         agent_dir,
         session_dir,
         supervisor,
         client,
         session_id,
         persisted_id,
+        dir,
     }
 }
 

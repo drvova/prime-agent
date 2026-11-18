@@ -13,6 +13,8 @@
 // Style gate only, not correctness: the live test is one long scenario.
 #![allow(clippy::too_many_lines)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -46,8 +48,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -84,6 +85,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -188,9 +192,13 @@ fn persistent_python_unit_regressions() {
         return;
     };
     let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime");
+    // The Python cases' scratch dirs (and the detached shells writing into
+    // them) land in a temp dir this test owns, not the shared TMPDIR.
+    let scratch = tempfile::TempDir::new().expect("python scratch dir");
     let output = Command::new(python)
         .current_dir(&runtime)
         .env("PYTHONPATH", runtime.join("src"))
+        .env("TMPDIR", scratch.path())
         .args(["-m", "unittest", "test.test_bash.PersistentBashTest"])
         .output()
         .expect("run persistent-shell Python regressions");

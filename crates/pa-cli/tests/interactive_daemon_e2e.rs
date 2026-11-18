@@ -120,9 +120,10 @@ impl Drop for DetachedDaemon {
         // ABORT the process and orphan every other parallel test's daemons.
         let supervisor_pid = graceful_shutdown(&self.socket);
         if let Some(pid) = supervisor_pid {
-            // Snapshot the supervisor's live worker children before it goes
-            // (they are detached, so they survive its death).
-            let worker_pids = child_pids_of(pid);
+            // Snapshot the supervisor's whole live tree before it goes: the
+            // workers are detached, so they survive its death, and their
+            // kernels survive a worker-only kill.
+            let worker_pids = descendants_of(pid);
             let deadline = Instant::now() + Duration::from_secs(10);
             while process_alive(pid) {
                 if Instant::now() >= deadline {
@@ -139,6 +140,27 @@ impl Drop for DetachedDaemon {
             }
         }
         let _ = std::fs::remove_file(&self.socket);
+        // The spawned daemon inherits this process's TMPDIR, so its workers'
+        // sockets land in the shared socket dir there, and a worker the stop
+        // races out can leave its socket behind. Only this daemon's sockets go
+        // (they share its key prefix), then the dir while empty: `remove_dir`
+        // never takes it from a live daemon.
+        let own = pa_daemon::platform::worker_socket_path(&self.socket, "");
+        let prefix = own
+            .file_name()
+            .map(|name| name.to_string_lossy().trim_end_matches(".sock").to_string());
+        if let (Some(socket_dir), Some(prefix)) = (own.parent(), prefix) {
+            for entry in std::fs::read_dir(socket_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
+                if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+            let _ = std::fs::remove_dir(socket_dir);
+        }
     }
 }
 

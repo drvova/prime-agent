@@ -21,6 +21,8 @@
 )]
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -36,8 +38,7 @@ struct WorkerGuard {
 
 impl Drop for WorkerGuard {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -248,9 +249,11 @@ fn write_padded_session_file(dir: &Path) -> PathBuf {
 
 #[test]
 fn concurrent_creates_join_the_first_create() {
-    let dir =
-        std::env::temp_dir().join(format!("pa-create-join-{}-{}", std::process::id(), line!()));
-    std::fs::create_dir_all(&dir).expect("temp dir");
+    // One level inside the temp dir: the session file's artifacts land
+    // beside `dir`, so they stay inside the guard too.
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dir = tmp.path().join("work");
+    std::fs::create_dir_all(&dir).expect("work dir");
     let socket = dir.join("worker.sock");
     write_models_json(&dir.join("agent"));
     let session_path = write_padded_session_file(&dir);
@@ -319,5 +322,4 @@ fn concurrent_creates_join_the_first_create() {
         state_rows, 1,
         "a joined create marks the session active exactly once"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }

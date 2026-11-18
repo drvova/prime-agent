@@ -4,6 +4,8 @@
 //! surfaced by the heartbeat catalog instead of auto-firing.
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
@@ -31,8 +33,7 @@ impl Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -110,6 +111,9 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         // A resumed worker has no create-config model: it falls back to the

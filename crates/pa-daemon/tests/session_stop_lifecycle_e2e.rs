@@ -23,6 +23,8 @@
 )]
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -41,8 +43,7 @@ struct Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -53,6 +54,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdin(Stdio::null())

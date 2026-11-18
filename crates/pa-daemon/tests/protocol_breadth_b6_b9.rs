@@ -3,6 +3,8 @@
 //! socket and answers the exact TS wire shape (success and error paths).
 #![cfg(unix)]
 
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -20,8 +22,7 @@ struct Daemon {
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        common::reap_tree(&mut self.child);
     }
 }
 
@@ -33,6 +34,9 @@ fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
+        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // worker never cleans: keep them in the test's own dir.
+        .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())
@@ -663,7 +667,10 @@ fn wave_b9_session_navigation_wire_shapes() {
         "File not found: /tmp/no-such-import.jsonl"
     );
 
-    let imported = dir.path().join("imported.jsonl");
+    // One level down: the imported session's artifacts land beside its dir,
+    // inside the temp dir.
+    let imported = dir.path().join("import").join("imported.jsonl");
+    std::fs::create_dir_all(imported.parent().unwrap()).expect("import dir");
     std::fs::write(
         &imported,
         concat!(
