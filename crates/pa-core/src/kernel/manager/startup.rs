@@ -115,6 +115,7 @@ impl Inner {
             crate::kernel::bootstrap::EnsureKernelPythonOptions {
                 python_skills: skills,
                 on_progress: progress,
+                bytecode: crate::kernel::bootstrap::KernelBytecode::CompileInBackground,
             },
             self.options
                 .cwd

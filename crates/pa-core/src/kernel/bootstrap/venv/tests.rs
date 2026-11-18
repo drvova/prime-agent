@@ -1267,3 +1267,62 @@ async fn unwritable_stale_venv_names_the_venv_and_both_env_overrides() {
         "no raw lock-candidate path: {message}"
     );
 }
+
+/// A ready venv without compiled bytecode launches the compile, and the
+/// bootstrap returns without waiting on it. The stub interpreter passes the
+/// runtime probes but never finishes a compile: an awaited compile would
+/// hold the kernel start until the timeout below.
+#[cfg(unix)]
+#[tokio::test]
+async fn kernel_ready_does_not_wait_on_the_bytecode_compile() {
+    let dir = tempfile::tempdir().unwrap();
+    let venv = dir.path().join("kernel-venv");
+    let rlm = venv.join("lib/python3.11/site-packages/rlm");
+    std::fs::create_dir_all(&rlm).unwrap();
+    std::fs::write(rlm.join("__init__.py"), "x = 1\n").unwrap();
+    let pid_file = dir.path().join("compile.pid");
+    let python = venv.join("bin/python");
+    std::fs::create_dir_all(python.parent().unwrap()).unwrap();
+    std::fs::write(
+        &python,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in *compileall*) echo $$ > {}; exec sleep 3600;; esac\nexit 0\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    set_mode(&python, 0o755);
+    let runtime_identity = hash_runtime_source(&require_runtime_source_dir().unwrap()).unwrap();
+    write_bootstrap_version(&venv, &runtime_identity, &[]).unwrap();
+
+    let resolved = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        super::super::ensure_kernel_venv(
+            &EnsureKernelPythonOptions::default(),
+            &[],
+            venv.clone(),
+            None,
+        ),
+    )
+    .await
+    .expect("the bootstrap must not wait on the bytecode compile")
+    .expect("a ready venv yields its python");
+    assert_eq!(resolved, python);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let pid = loop {
+        let recorded = std::fs::read_to_string(&pid_file).unwrap_or_default();
+        if let Ok(pid) = recorded.trim().parse::<i32>() {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ready venv never launched its bytecode compile"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert!(crate::platform::process::kill_pid(
+        pid,
+        crate::platform::process::Signal::Kill
+    ));
+}

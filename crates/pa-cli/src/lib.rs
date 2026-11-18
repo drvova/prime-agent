@@ -335,8 +335,14 @@ fn run_runtime_bootstrap() -> Result<i32, String> {
         .enable_all()
         .build()
         .map_err(|error| error.to_string())?;
+    // The user is already waiting on the installer: compile the venv's
+    // bytecode before returning, so the first session neither pays lazy
+    // compiles nor competes with a background one.
     match runtime.block_on(pa_core::kernel::ensure_kernel_python(
-        pa_core::kernel::EnsureKernelPythonOptions::default(),
+        pa_core::kernel::EnsureKernelPythonOptions {
+            bytecode: pa_core::kernel::KernelBytecode::CompileBeforeReturn,
+            ..Default::default()
+        },
     )) {
         Ok(python) => {
             println!("kernel python: {}", python.display());

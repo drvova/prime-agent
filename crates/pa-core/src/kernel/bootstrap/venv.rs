@@ -17,6 +17,7 @@ use super::{
 
 // The concern children (the flows + the shared record stay in the
 // composition root).
+mod bytecode;
 mod layout;
 mod probe;
 mod runtime_source;
@@ -24,6 +25,8 @@ mod skills;
 mod uv;
 mod version;
 
+pub(crate) use bytecode::compile_venv_bytecode;
+pub use bytecode::KernelBytecode;
 use layout::home_dir;
 pub(crate) use layout::{expand_home, resolve_writable_kernel_venv_dir};
 pub use layout::{kernel_venv_dir, kernel_venv_python};

@@ -1,0 +1,1 @@
+- The Python kernel's first imports after an install or upgrade are faster: once the kernel venv is ready, its bytecode compiles in the background at low priority, without delaying the kernel start (the installer compiles it before it finishes).
