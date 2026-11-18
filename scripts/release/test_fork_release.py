@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Exercise fork_release.py render against a Windows-style (CRLF) checkout."""
+"""Exercise fork_release.py: the automatic release plan (next-tag,
+should-release) and render against a Windows-style (CRLF) checkout."""
 
 from pathlib import Path
 import shutil
@@ -28,6 +29,63 @@ def render(repo_root, out_dir):
          '--out-dir', str(out_dir)],
         capture_output=True, text=True, check=False,
     )
+
+
+def run_script(*args, stdin=''):
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args],
+        input=stdin, capture_output=True, text=True, check=False,
+    )
+
+
+def next_tag(version, tags, *extra):
+    with tempfile.TemporaryDirectory() as scratch:
+        cargo = Path(scratch) / 'Cargo.toml'
+        cargo.write_text(f'[workspace.package]\nversion = "{version}"\n')
+        result = run_script('next-tag', '--suffix', 'drvova', '--cargo-toml', str(cargo), *extra,
+                            stdin='\n'.join(tags) + '\n')
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def should_release(*paths):
+    result = run_script('should-release', stdin=''.join(f'{path}\n' for path in paths))
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+# The tags a fork clone carries: official releases synced from upstream, the
+# fork's own, and an unrelated suffix.
+TAGS = ('v0.10.2', 'v0.10.3', 'v0.10.4-beta.1', 'v0.10.2-drvova.7', 'v0.10.3-drvova.1',
+        'v0.10.3-drvova.4', 'v0.10.3-other.9', 'v0.10.3-drvova.x')
+
+
+class ForkReleasePlanTest(unittest.TestCase):
+    def test_the_first_fork_release_of_a_version_is_n_1(self):
+        self.assertEqual(next_tag('0.10.4', TAGS), 'tag=v0.10.4-drvova.1\nprevious=v0.10.3-drvova.4\n')
+
+    def test_the_next_tag_increments_past_gaps_and_ignores_other_tags(self):
+        self.assertEqual(next_tag('0.10.3', TAGS), 'tag=v0.10.3-drvova.5\nprevious=v0.10.3-drvova.4\n')
+
+    def test_a_repository_without_fork_releases_starts_at_1_with_no_previous(self):
+        self.assertEqual(next_tag('0.10.3', ('v0.10.3',)), 'tag=v0.10.3-drvova.1\nprevious=\n')
+
+    def test_a_pushed_tag_keeps_its_name_and_finds_the_release_before_it(self):
+        self.assertEqual(next_tag('0.10.3', TAGS, '--release-tag', 'v0.10.3-drvova.4'),
+                         'tag=v0.10.3-drvova.4\nprevious=v0.10.3-drvova.1\n')
+
+    def test_docs_changelog_and_other_workflows_cut_no_release(self):
+        self.assertEqual(should_release('FORK.md', 'docs/guide.md', '.changes/x.md',
+                                        '.github/workflows/ci.yml', 'scripts/ci_test_shard.py'),
+                         'release=false\n')
+
+    def test_a_crate_change_cuts_a_release(self):
+        self.assertEqual(should_release('FORK.md', 'crates/pa-core/src/lib.rs'), 'release=true\n')
+
+    def test_the_release_pipeline_and_installers_cut_a_release(self):
+        for path in ('.github/workflows/fork-release.yml', 'install.ps1', 'scripts/prime-switch.ps1',
+                     'scripts/release/fork_release.py', 'Cargo.lock'):
+            self.assertEqual(should_release(path), 'release=true\n', path)
 
 
 class ForkRenderTest(unittest.TestCase):
