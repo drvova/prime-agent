@@ -261,16 +261,13 @@ mod tests {
     /// accent, and the ages read `now`, minutes, and days.
     #[test]
     fn the_query_filters_highlights_and_ages_the_rows() {
-        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10 * 86_400);
+        let now = SystemTime::UNIX_EPOCH + Duration::from_hours(240);
         let kb = KeybindingsManager::default();
         let theme = Theme::builtin("prime", ColorMode::TrueColor);
         let mut search = HistorySearch::new(&[
             entry("fix the parser tests", now - Duration::from_secs(5)),
-            entry("explain the tokenizer", now - Duration::from_secs(32 * 60)),
-            entry(
-                "Parser\nrefactor plan",
-                now - Duration::from_secs(3 * 86_400),
-            ),
+            entry("explain the tokenizer", now - Duration::from_mins(32)),
+            entry("Parser\nrefactor plan", now - Duration::from_hours(72)),
         ]);
         for key in ["p", "a", "r", "s", "e", "r"] {
             assert_eq!(search.handle_key(key, &kb), HistorySearchAction::None);
@@ -297,7 +294,7 @@ mod tests {
             search.handle_key("enter", &kb),
             HistorySearchAction::Select("fix the parser tests".to_string())
         );
-        let unfiltered = HistorySearch::new(&[entry("x", now - Duration::from_secs(32 * 60))]);
+        let unfiltered = HistorySearch::new(&[entry("x", now - Duration::from_mins(32))]);
         assert!(text(&unfiltered.render(&theme, 40, &kb, now)[4]).ends_with("32m"));
     }
 }
