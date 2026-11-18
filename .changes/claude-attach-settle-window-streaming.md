@@ -1,0 +1,1 @@
+- Fixed a session reopened right after a turn ended showing a working spinner that never stopped.
