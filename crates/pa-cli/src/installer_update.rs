@@ -9,6 +9,7 @@
 //! (`client_update.rs`); both consult pa-core's Homebrew detector before
 //! entering the installer funnel.
 
+use crate::config::COMMAND_NAME;
 use pa_core::update::homebrew;
 use pa_core::update::install::current_platform_alias;
 use pa_core::update::installer::{self, InstallerOutput};
@@ -155,11 +156,11 @@ pub fn run(options: &UpdateOptions) -> i32 {
         Ok(installed) => {
             match installed.version {
                 Some(version) => {
-                    println!("updated to {version} — restart prime-agent to run the new build");
+                    println!("updated to {version} — restart {COMMAND_NAME} to run the new build");
                 }
                 None => {
                     println!(
-                        "updated to the latest build — restart prime-agent to run the new build"
+                        "updated to the latest build — restart {COMMAND_NAME} to run the new build"
                     );
                 }
             }
@@ -224,7 +225,7 @@ pub fn run_local(prefix: &std::path::Path, archive: Option<&std::path::Path>) ->
                 "rolled back to"
             };
             let version = installed.version.as_deref().unwrap_or("the previous build");
-            println!("{done} {version} — restart prime-agent to run it");
+            println!("{done} {version} — restart {COMMAND_NAME} to run it");
             0
         }
         Err(failure) => {
@@ -332,12 +333,12 @@ fn check_verdict(
             current_platform_alias()
         );
     }
-    let command = match flag {
-        Some(UpdateChannel::Nightly) => "prime-agent update --nightly",
-        Some(UpdateChannel::Stable) => "prime-agent update --stable",
-        None => "prime-agent update",
+    let channel_flag = match flag {
+        Some(UpdateChannel::Nightly) => " --nightly",
+        Some(UpdateChannel::Stable) => " --stable",
+        None => "",
     };
-    format!("An update is available — run `{command}` to install it.")
+    format!("An update is available — run `{COMMAND_NAME} update{channel_flag}` to install it.")
 }
 
 #[cfg(test)]

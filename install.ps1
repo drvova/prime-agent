@@ -65,14 +65,17 @@ $ErrorActionPreference = 'Stop'
 $DownloadBaseUrlDefault = 'https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev'
 $ReleaseChannelDefault = 'stable'
 # THE DISTRIBUTION KNOBS (install-rust.sh's RELEASE_ASSETS_URL_DEFAULT /
-# PREFIX_DEFAULT / VARIANT_NAME, rendered by scripts/release/fork_release.py
-# for a side-by-side distribution build; the official copy leaves all three
-# empty): the versioned-asset URL (<this>/v<version>/<file>; empty =
-# <base>/releases), the default prefix relative to $HOME (empty = .local),
-# and the variant whose launchers pin their own daemon pipe and kernel venv.
+# PREFIX_DEFAULT / VARIANT_NAME / COMMAND_NAME, rendered by
+# scripts/release/fork_release.py for a side-by-side distribution build; the
+# official copy leaves all four empty): the versioned-asset URL
+# (<this>/v<version>/<file>; empty = <base>/releases), the default prefix
+# relative to $HOME (empty = .local), the variant whose launchers pin their
+# own daemon pipe and kernel venv, and the command its launchers answer as
+# (bin\<command>.cmd + bin\<command>; empty = prime-agent).
 $ReleaseAssetsUrlDefault = ''
 $PrefixDefault = ''
 $VariantName = ''
+$CommandName = ''
 
 # The installer-owned bookkeeping, initialized BEFORE any Fail can run
 # (under `irm | iex` the script scope is the caller's session: ambient
@@ -198,6 +201,10 @@ $channel = if ($channelRequested) { $channelRequested } else { $ReleaseChannelDe
 $versionPin = $env:PRIME_AGENT_VERSION
 $prefix = if ($env:PRIME_AGENT_RUST_PREFIX) { $env:PRIME_AGENT_RUST_PREFIX } elseif ($PrefixDefault) { Join-Path $HOME $PrefixDefault } else { Join-Path $HOME '.local' }
 if ($VariantName -notmatch '^[a-z0-9-]*$') { Fail "invalid VariantName: $VariantName" }
+if ($CommandName -notmatch '^[a-z0-9-]*$' -or $CommandName -eq 'prime-agent') { Fail "invalid CommandName: $CommandName" }
+# The command the launchers answer as: the product keyword, or a
+# distribution build's own (install-rust.sh's LAUNCHER_NAME).
+$launcherName = if ($CommandName) { $CommandName } else { 'prime-agent' }
 # A distribution build's daemon pipe (its launchers pin it; the official
 # build keeps the product's fixed pipe, so the two never share a daemon).
 $variantPipe = if ($VariantName) { "\\.\pipe\prime-agent-$VariantName-daemon" } else { '' }
@@ -435,8 +442,8 @@ $marker = "$channelLine`nversion $version"
 Set-Content -LiteralPath (Join-Path $stage '.prime-agent-install') -Value $marker -Encoding Ascii -NoNewline
 
 # The launcher paths (the section below the publish writes both).
-$launcher = Join-Path $bin 'prime-agent.cmd'
-$shLauncher = Join-Path $bin 'prime-agent'
+$launcher = Join-Path $bin "$launcherName.cmd"
+$shLauncher = Join-Path $bin $launcherName
 
 # --- the publication lock (one writer): a lock DIRECTORY is the atomic
 # --- claim on Windows (mkdir wins exactly once); the holder's pid rides a
@@ -481,6 +488,20 @@ if (Test-Path $share -PathType Container) {
         $rollbackMarker = Join-Path $rollback '.prime-agent-install'
         if (-not (Test-Path $rollbackMarker -PathType Leaf)) {
             Fail "refusing to delete the unmarked rollback directory: $rollback (move it aside and re-run)"
+        }
+    }
+}
+# THE COMMAND OWNERSHIP RULE (install-rust.sh parity; $CommandName set): a
+# distribution's own command can belong to another product too (Prime
+# Intellect's CLI is also `prime`), so a launcher this installer did not
+# write is never preserved aside or replaced: the install refuses here.
+if ($CommandName) {
+    foreach ($slot in @($launcher, $shLauncher)) {
+        if (Test-Path -LiteralPath $slot) {
+            $owned = (Test-Path -LiteralPath $slot -PathType Leaf) -and (((Get-Content -LiteralPath $slot -TotalCount 2) -join ' ') -match 'launcher written by install-rust\.sh')
+            if (-not $owned) {
+                Fail "refusing to replace ${slot}: this installer did not write it (another $CommandName command?); move it aside or choose another PRIME_AGENT_RUST_PREFIX, and re-run"
+            }
         }
     }
 }
@@ -615,6 +636,18 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
         # restore points) sweep away - nothing lingers after a success.
         foreach ($pair in $script:ownedLauncherBackups) {
             Remove-Item -Force $pair[0] -ErrorAction SilentlyContinue
+        }
+        # A distribution build never answers as prime-agent: the launchers
+        # this installer wrote under that name in the same prefix (an
+        # install from before the build had its own command) are retired,
+        # marker-checked (install-rust.sh parity).
+        if ($CommandName) {
+            foreach ($retired in @((Join-Path $bin 'prime-agent.cmd'), (Join-Path $bin 'prime-agent'))) {
+                if ((Test-Path -LiteralPath $retired -PathType Leaf) -and (((Get-Content -LiteralPath $retired -TotalCount 2) -join ' ') -match 'launcher written by install-rust\.sh')) {
+                    Remove-Item -LiteralPath $retired -Force
+                    Write-Host "removed the old $retired launcher (this build's command is $CommandName now)"
+                }
+            }
         }
     } catch {
         # A failed launcher write never leaves the machine without its
@@ -905,6 +938,18 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
         # reloads the environment too).
     }
     Write-Host "PATH: added the missing entries to the user PATH (a new terminal picks them up automatically)"
+}
+
+# THE COMMAND COLLISION NOTE ($CommandName set; install-rust.sh parity): the
+# PATH add above APPENDS this build's bin dir, so another <command> earlier on
+# PATH (Prime Intellect's own `prime` CLI, typically a pip-installed
+# prime.exe) keeps winning. This installer never touches it; it says which
+# one runs and how to change that.
+if ($CommandName) {
+    $winner = Get-Command $CommandName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($winner -and $winner.Source -ne $launcher -and $winner.Source -ne $shLauncher) {
+        Write-Warning "``$CommandName`` on your PATH runs $($winner.Source), not this build; it was left untouched (it may be Prime Intellect's own $CommandName CLI). Whichever $CommandName comes first on PATH runs: to make it this build, move $bin before $(Split-Path -Parent $winner.Source) in your user PATH, or run $launcher by its full path."
+    }
 }
 
 # --- verify: the launcher must answer --version -----------------------------------

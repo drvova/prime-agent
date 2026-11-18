@@ -557,7 +557,7 @@ fn install_rust_sh_honors_the_uv_bin_dir_knob() {
         "the sh's pre-warm PATH prepend must run only when no uv already answers on PATH (never shadow a working system uv)"
     );
     assert!(
-        text.contains("path_check_note \"${bin_dir}\"")
+        text.contains("path_check_note \"${command_dir}\"")
             && text.contains("path_check_note \"${uv_bin_dir}\""),
         "the sh's PATH guidance must cover the custom uv target too (a documented install target must stay discoverable)"
     );

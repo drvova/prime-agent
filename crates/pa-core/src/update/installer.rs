@@ -46,9 +46,10 @@ pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 /// Where this build's updates come from: the official release channel, or
 /// a distribution build's own releases. A distribution build is stamped at
 /// compile time (the `PRIME_AGENT_DIST_*` variables its release workflow
-/// sets, all four or none), so its `prime-agent update` installs from its
-/// own releases into its own prefix and never reinstalls the official
-/// build; every other build is [`Distribution::Official`].
+/// sets, all five or none), so its `update` installs from its own releases
+/// into its own prefix and never reinstalls the official build, and it
+/// answers as its own command; every other build is
+/// [`Distribution::Official`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
     Official,
@@ -66,6 +67,9 @@ pub struct DistributionBuild {
     pub download_base_url: &'static str,
     /// The default install prefix, relative to the home directory.
     pub home_prefix: &'static str,
+    /// The command its installer creates instead of `prime-agent` (the
+    /// launcher `<prefix>/bin/<command>`), e.g. "prime".
+    pub command: &'static str,
 }
 
 /// The compile-time `PRIME_AGENT_DIST_*` stamp, before validation.
@@ -75,18 +79,19 @@ pub struct DistributionStamp {
     pub installer_url: Option<&'static str>,
     pub download_base_url: Option<&'static str>,
     pub home_prefix: Option<&'static str>,
+    pub command: Option<&'static str>,
 }
 
 impl DistributionStamp {
     /// The distribution the stamp names: none of the variables is the
-    /// official build; all four are a distribution build. A partial stamp
+    /// official build; all five are a distribution build. A partial stamp
     /// fails the build (in const evaluation), so a half-stamped binary can
     /// never fall back to updating from the official channel.
     ///
     /// # Panics
     ///
     /// Panics (a compile error for the [`BUILD_DISTRIBUTION`] const) when
-    /// the stamp sets some but not all of the four variables.
+    /// the stamp sets some but not all of the five variables.
     #[must_use]
     pub const fn resolve(self) -> Distribution {
         match (
@@ -94,21 +99,29 @@ impl DistributionStamp {
             self.installer_url,
             self.download_base_url,
             self.home_prefix,
+            self.command,
         ) {
-            (None, None, None, None) => Distribution::Official,
-            (Some(name), Some(installer_url), Some(download_base_url), Some(home_prefix)) => {
-                Distribution::Build(DistributionBuild {
-                    name,
-                    installer_url,
-                    download_base_url,
-                    home_prefix,
-                })
-            }
-            (Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None) => panic!(
-                "a distribution build sets all of PRIME_AGENT_DIST_NAME, \
+            (None, None, None, None, None) => Distribution::Official,
+            (
+                Some(name),
+                Some(installer_url),
+                Some(download_base_url),
+                Some(home_prefix),
+                Some(command),
+            ) => Distribution::Build(DistributionBuild {
+                name,
+                installer_url,
+                download_base_url,
+                home_prefix,
+                command,
+            }),
+            (Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None) => {
+                panic!(
+                    "a distribution build sets all of PRIME_AGENT_DIST_NAME, \
                  PRIME_AGENT_DIST_INSTALLER_URL, PRIME_AGENT_DIST_DOWNLOAD_BASE_URL, \
-                 and PRIME_AGENT_DIST_HOME_PREFIX, or none of them"
-            ),
+                 PRIME_AGENT_DIST_HOME_PREFIX, and PRIME_AGENT_DIST_COMMAND, or none of them"
+                )
+            }
         }
     }
 }
@@ -119,6 +132,7 @@ pub const BUILD_DISTRIBUTION: Distribution = DistributionStamp {
     installer_url: option_env!("PRIME_AGENT_DIST_INSTALLER_URL"),
     download_base_url: option_env!("PRIME_AGENT_DIST_DOWNLOAD_BASE_URL"),
     home_prefix: option_env!("PRIME_AGENT_DIST_HOME_PREFIX"),
+    command: option_env!("PRIME_AGENT_DIST_COMMAND"),
 }
 .resolve();
 
@@ -147,6 +161,16 @@ impl Distribution {
         match self {
             Self::Official => ".local",
             Self::Build(build) => build.home_prefix,
+        }
+    }
+
+    /// The command users type: `prime-agent`, or a distribution build's
+    /// own (its installer's launcher name).
+    #[must_use]
+    pub const fn command(self) -> &'static str {
+        match self {
+            Self::Official => "prime-agent",
+            Self::Build(build) => build.command,
         }
     }
 }
@@ -851,18 +875,19 @@ fn output_tail(captured: &std::process::Output) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
-/// The installed launcher's `--version` answer: the takeover layout's `bin/prime-agent` first, the
-/// pre-takeover `bin/prime-agent-rust` second, and only answers stamped `-continuous.<commit>`
-/// count (the TS product's launcher never matches).
+/// The installed launcher's `--version` answer: the takeover layout's `bin/<command>` first (the
+/// build's [`Distribution::command`]), the pre-takeover `bin/prime-agent-rust` second, and only
+/// answers stamped `-continuous.<commit>` count (the TS product's launcher never matches).
 async fn launcher_version(prefix: &Path) -> Option<String> {
     // The launcher names: the .cmd twin on Windows (the sh-script launcher
     // cannot be exec'd by CreateProcess; Rust runs .cmd through cmd.exe),
     // the sh launcher pair on unix (the pre-takeover name second).
+    let command = BUILD_DISTRIBUTION.command();
     #[cfg(windows)]
-    const LAUNCHER_NAMES: [&str; 2] = ["prime-agent.cmd", "prime-agent"];
+    let launcher_names = [format!("{command}.cmd"), command.to_string()];
     #[cfg(not(windows))]
-    const LAUNCHER_NAMES: [&str; 2] = ["prime-agent", "prime-agent-rust"];
-    for name in LAUNCHER_NAMES {
+    let launcher_names = [command.to_string(), "prime-agent-rust".to_string()];
+    for name in launcher_names {
         let launcher = prefix.join("bin").join(name);
         if !launcher.is_file() {
             continue;
@@ -1267,6 +1292,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             "https://pub-728493de92a943e2a9b2d17b4719f318.r2.dev"
         );
         assert_eq!(BUILD_DISTRIBUTION.home_prefix(), ".local");
+        assert_eq!(BUILD_DISTRIBUTION.command(), "prime-agent");
         let releases = "https://github.com/drvova/prime-agent/releases/latest/download";
         let installer = "https://github.com/drvova/prime-agent/releases/latest/download/install.sh";
         let fork = DistributionStamp {
@@ -1274,6 +1300,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             installer_url: Some(installer),
             download_base_url: Some(releases),
             home_prefix: Some(".local/share/prime-agent-fork"),
+            command: Some("prime"),
         }
         .resolve();
         assert_eq!(
@@ -1283,15 +1310,22 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 installer_url: installer,
                 download_base_url: releases,
                 home_prefix: ".local/share/prime-agent-fork",
+                command: "prime",
             })
         );
         assert_eq!(
             (
                 fork.installer_url(),
                 fork.download_base_url(),
-                fork.home_prefix()
+                fork.home_prefix(),
+                fork.command()
             ),
-            (installer, releases, ".local/share/prime-agent-fork")
+            (
+                installer,
+                releases,
+                ".local/share/prime-agent-fork",
+                "prime"
+            )
         );
     }
 

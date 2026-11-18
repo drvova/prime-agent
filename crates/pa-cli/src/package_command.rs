@@ -3,7 +3,7 @@
 use pa_core::packages::{PackageManager, ProgressEvent, ProgressEventKind, UserOrProject};
 use pa_core::update::version::UpdateChannel;
 
-use crate::config::{get_agent_dir, APP_NAME, CONFIG_DIR_NAME};
+use crate::config::{get_agent_dir, APP_NAME, COMMAND_NAME, CONFIG_DIR_NAME};
 use crate::self_update::SelfUpdateOptions;
 
 use crate::public_command::{
@@ -44,12 +44,12 @@ enum PackageCommand {
 impl PackageCommand {
     fn usage(self) -> String {
         match self {
-            PackageCommand::Install => format!("{APP_NAME} package install <source> [--local]"),
-            PackageCommand::Remove => format!("{APP_NAME} package remove <source> [--local]"),
+            PackageCommand::Install => format!("{COMMAND_NAME} package install <source> [--local]"),
+            PackageCommand::Remove => format!("{COMMAND_NAME} package remove <source> [--local]"),
             PackageCommand::Update => format!(
-                "{APP_NAME} update [--force] [--rollback] [--nightly|--stable] or {APP_NAME} package update [source]"
+                "{COMMAND_NAME} update [--force] [--rollback] [--nightly|--stable] or {COMMAND_NAME} package update [source]"
             ),
-            PackageCommand::List => format!("{APP_NAME} package list"),
+            PackageCommand::List => format!("{COMMAND_NAME} package list"),
         }
     }
 }
@@ -363,13 +363,13 @@ fn print_package_command_help(command: PackageCommand) {
     let usage = command.usage();
     match command {
         PackageCommand::Install => println!(
-            "Usage:\n  {usage}\n\nInstall a package and add it to user settings.\n\nOptions:\n  --local    Unsupported: repository settings cannot activate packages\n\nExamples:\n  {APP_NAME} package install npm:@foo/bar\n  {APP_NAME} package install git:github.com/user/repo\n  {APP_NAME} package install git:git@github.com:user/repo\n  {APP_NAME} package install https://github.com/user/repo\n  {APP_NAME} package install ssh://git@github.com/user/repo\n  {APP_NAME} package install ./local/path\n"
+            "Usage:\n  {usage}\n\nInstall a package and add it to user settings.\n\nOptions:\n  --local    Unsupported: repository settings cannot activate packages\n\nExamples:\n  {COMMAND_NAME} package install npm:@foo/bar\n  {COMMAND_NAME} package install git:github.com/user/repo\n  {COMMAND_NAME} package install git:git@github.com:user/repo\n  {COMMAND_NAME} package install https://github.com/user/repo\n  {COMMAND_NAME} package install ssh://git@github.com/user/repo\n  {COMMAND_NAME} package install ./local/path\n"
         ),
         PackageCommand::Remove => println!(
-            "Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nOptions:\n  --local    Remove from project settings ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {APP_NAME} package remove npm:@foo/bar\n"
+            "Usage:\n  {usage}\n\nRemove a package and its source from settings.\n\nOptions:\n  --local    Remove from project settings ({CONFIG_DIR_NAME}/settings.json)\n\nExamples:\n  {COMMAND_NAME} package remove npm:@foo/bar\n"
         ),
         PackageCommand::Update => println!(
-            "Usage:\n  {usage}\n\nUpdate {APP_NAME} or installed packages.\n\nOptions:\n  --self                  Update {APP_NAME} only\n  --extensions            Update installed packages only\n  --extension <source>    Update one package only\n  --force                 Reinstall {APP_NAME} even if the current version is latest\n  --rollback              Restore the previous compiled release\n  --nightly               Switch updates to the nightly channel (unreleased builds, may be broken)\n  --stable                Return updates to the stable channel\n  --daemon-socket <path>  Restart the daemon listening on this exact socket\n\nCommands:\n  {APP_NAME} update                Update {APP_NAME}\n  {APP_NAME} package update        Update installed packages\n  {APP_NAME} package update <source> Update one package\n"
+            "Usage:\n  {usage}\n\nUpdate {COMMAND_NAME} or installed packages.\n\nOptions:\n  --self                  Update {COMMAND_NAME} only\n  --extensions            Update installed packages only\n  --extension <source>    Update one package only\n  --force                 Reinstall {COMMAND_NAME} even if the current version is latest\n  --rollback              Restore the previous compiled release\n  --nightly               Switch updates to the nightly channel (unreleased builds, may be broken)\n  --stable                Return updates to the stable channel\n  --daemon-socket <path>  Restart the daemon listening on this exact socket\n\nCommands:\n  {COMMAND_NAME} update                Update {COMMAND_NAME}\n  {COMMAND_NAME} package update        Update installed packages\n  {COMMAND_NAME} package update <source> Update one package\n"
         ),
         PackageCommand::List => println!(
             "Usage:\n  {usage}\n\nList active packages from user settings.\n"
@@ -411,7 +411,7 @@ pub fn handle_package_command(args: &[String]) -> PackageCommandOutcome {
         return fail(
             &format!("Unknown option {invalid_option} for \"{command_name}\"."),
             Some(&format!(
-                "Use \"{APP_NAME} --help\" or \"{}\".",
+                "Use \"{COMMAND_NAME} --help\" or \"{}\".",
                 command.usage()
             )),
         );

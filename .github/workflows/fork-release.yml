@@ -21,9 +21,17 @@
 #
 # THE DISTRIBUTION STAMP: the PRIME_AGENT_DIST_* variables below compile
 # into the binary (pa-core update::installer::BUILD_DISTRIBUTION), so a fork
-# binary's `prime-agent update` fetches this repository's install.sh and
+# binary's `prime update` fetches this repository's install.sh and
 # latest.json and installs into ~/.local/share/prime-agent-fork - never the
-# official channel or the official prefix.
+# official channel or the official prefix - and its help and update text
+# name the fork's own command, `prime` (PRIME_AGENT_DIST_COMMAND; the
+# official build keeps `prime-agent`).
+#
+# THE BUNDLED INSTALLER: the binary embeds install-rust.sh for its local
+# `update --rollback` / `--archive` runs, so each build job renders the fork
+# knobs into the checkout's install-rust.sh first (the same render as the
+# published install.sh): a fork rollback republishes the `prime` launcher
+# with its socket and venv pins, never an unpinned `prime-agent` one.
 
 name: fork-release
 
@@ -57,6 +65,11 @@ env:
   PRIME_AGENT_DIST_INSTALLER_URL: https://github.com/${{ github.repository }}/releases/latest/download/install.sh
   PRIME_AGENT_DIST_DOWNLOAD_BASE_URL: https://github.com/${{ github.repository }}/releases/latest/download
   PRIME_AGENT_DIST_HOME_PREFIX: .local/share/prime-agent-fork
+  PRIME_AGENT_DIST_COMMAND: prime
+  # fork_release.py render's distribution arguments, shared by the bundled
+  # render (build jobs) and the published one (publish job).
+  FORK_ASSETS_URL: https://github.com/${{ github.repository }}/releases/download
+  FORK_VARIANT: fork
 
 jobs:
   tag-check:
@@ -163,6 +176,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: fork-${{ matrix.target }}-glibc235
+      - name: Bundle the fork-rendered installer (update --rollback / --archive run it)
+        run: |
+          set -euo pipefail
+          cp install-rust.sh "${RUNNER_TEMP}/install-rust.official.sh"
+          python3 scripts/release/fork_release.py render --repo-root . \
+            --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" --assets-url "${FORK_ASSETS_URL}" \
+            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${FORK_VARIANT}" \
+            --command "${PRIME_AGENT_DIST_COMMAND}" --out-dir "${RUNNER_TEMP}/fork-render"
+          cp "${RUNNER_TEMP}/fork-render/install.sh" install-rust.sh
       - name: Build (release, locked, distribution-stamped)
         run: cargo build --release --locked --target ${{ matrix.target }} -j 4 -p pa-cli --bin prime-agent
       - name: Split the shipped binary + split-debug decoder
@@ -210,6 +232,8 @@ jobs:
           tar -xzf "target/${{ matrix.target }}/dist/prime-agent-${VERSION}-${{ matrix.platform }}.tar.gz" -C "${check}"
           out="$("${check}/prime-agent" --version)"
           [ "${out}" = "${VERSION}" ] || { echo "::error::the package reports '${out}', expected '${VERSION}'"; exit 1; }
+          "${check}/prime-agent" --help | grep -qF "  ${PRIME_AGENT_DIST_COMMAND} [options]" \
+            || { echo "::error::the help does not name the fork's ${PRIME_AGENT_DIST_COMMAND} command"; exit 1; }
           update="$(HOME="${check}/home" PI_OFFLINE=1 "${check}/prime-agent" update --check 2>&1 || true)"
           printf '%s\n' "${update}"
           printf '%s\n' "${update}" | grep -qF "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}/latest.json" \
@@ -217,9 +241,11 @@ jobs:
       - name: Verify fresh channel install and reinstall
         run: |
           set -euo pipefail
+          # The official installer (the checkout's copy carries the fork
+          # render now): the archive installs through the shared layout.
           python3 scripts/release/test_channel_install.py \
             --archive "target/${{ matrix.target }}/dist/prime-agent-${VERSION}-${{ matrix.platform }}.tar.gz" \
-            --installer install-rust.sh \
+            --installer "${RUNNER_TEMP}/install-rust.official.sh" \
             --report "target/${{ matrix.target }}/dist/channel-install.json"
       - name: Upload artifacts
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -256,6 +282,15 @@ jobs:
       - name: Resolve the Python interpreter
         shell: bash
         run: echo "PY=$(command -v python3 || command -v python)" >> "$GITHUB_ENV"
+      - name: Bundle the fork-rendered installer (update --rollback / --archive run it)
+        shell: bash
+        run: |
+          set -euo pipefail
+          "${PY}" scripts/release/fork_release.py render --repo-root . \
+            --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" --assets-url "${FORK_ASSETS_URL}" \
+            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${FORK_VARIANT}" \
+            --command "${PRIME_AGENT_DIST_COMMAND}" --out-dir "${RUNNER_TEMP}/fork-render"
+          cp "${RUNNER_TEMP}/fork-render/install.sh" install-rust.sh
       - name: Build (release, locked, static CRT, distribution-stamped)
         env:
           RUSTFLAGS: -C target-feature=+crt-static
@@ -289,6 +324,8 @@ jobs:
           tar -xzf "target/x86_64-pc-windows-msvc/dist/prime-agent-${VERSION}-win32-x64.tar.gz" -C "${check}"
           out="$("${check}/prime-agent.exe" --version | tr -d '\r')"
           [ "${out}" = "${VERSION}" ] || { echo "::error::the package reports '${out}', expected '${VERSION}'"; exit 1; }
+          "${check}/prime-agent.exe" --help | tr -d '\r' | grep -qF "  ${PRIME_AGENT_DIST_COMMAND} [options]" \
+            || { echo "::error::the help does not name the fork's ${PRIME_AGENT_DIST_COMMAND} command"; exit 1; }
           update="$(USERPROFILE="$(cygpath -w "${check}")" HOME="${check}" PI_OFFLINE=1 "${check}/prime-agent.exe" update --check 2>&1 || true)"
           printf '%s\n' "${update}"
           printf '%s\n' "${update}" | grep -qF "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}/latest.json" \
@@ -348,9 +385,10 @@ jobs:
           python3 source/scripts/release/fork_release.py render \
             --repo-root source \
             --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" \
-            --assets-url "https://github.com/${GITHUB_REPOSITORY}/releases/download" \
+            --assets-url "${FORK_ASSETS_URL}" \
             --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" \
-            --variant fork \
+            --variant "${FORK_VARIANT}" \
+            --command "${PRIME_AGENT_DIST_COMMAND}" \
             --out-dir release-out
           sh -n release-out/install.sh
           sh -n release-out/prime-switch
@@ -364,9 +402,9 @@ jobs:
         run: |
           set -euo pipefail
           cat > "${RUNNER_TEMP}/notes.md" <<NOTES
-          Prime Agent (drvova build) ${VERSION}.
+          Prime Agent (drvova build) ${VERSION}. Its command is \`prime\`: \`prime\`, \`prime --version\`, \`prime update\`.
 
-          Install side by side with the official build (prefix ~/.local/share/prime-agent-fork):
+          It installs side by side with the official \`prime-agent\` and never touches it (prefix ~/.local/share/prime-agent-fork):
 
               curl -fsSL https://github.com/${GH_REPO}/releases/latest/download/install.sh | sh
 
@@ -374,7 +412,7 @@ jobs:
 
               irm https://github.com/${GH_REPO}/releases/latest/download/install.ps1 | iex
 
-          Switch between the official build and this one with prime-switch (see FORK.md).
+          Prime Intellect's own CLI is also called \`prime\`. The installer never replaces it and tells you which \`prime\` comes first on PATH. See FORK.md for that and for prime-switch.
           NOTES
           # A pushed tag must already exist; a dispatch creates it at the
           # dispatched commit.
