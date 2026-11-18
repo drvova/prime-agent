@@ -170,8 +170,9 @@ official `release.yml` never matches these tags (see
    shipped code changed since the previous fork release: `crates/`,
    `vendor/`, `prime-agent-runtime/`, `skills/`, `Cargo.toml`, `Cargo.lock`,
    the installers, `scripts/prime-switch*`, `scripts/release/` or
-   `fork-release.yml` itself. A merge that only touches docs, `.changes/` or
-   other workflows ends green with a "no release" line in the `tag-check`
+   `fork-release.yml` itself. Test-only paths (`tests/` and `test/`
+   directories, `tests.rs`, `*_tests.rs`) do not count. A merge that only
+   touches tests, docs, `.changes/` or other workflows ends green with a "no release" line in the `tag-check`
    log. Merges that land close together release in order, one at a time.
 
    The manual ways still work. Push a tag from an up-to-date `main`:

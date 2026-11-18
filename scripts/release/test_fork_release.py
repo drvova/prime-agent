@@ -82,6 +82,13 @@ class ForkReleasePlanTest(unittest.TestCase):
     def test_a_crate_change_cuts_a_release(self):
         self.assertEqual(should_release('FORK.md', 'crates/pa-core/src/lib.rs'), 'release=true\n')
 
+    def test_test_only_changes_cut_no_release_until_source_changes_too(self):
+        tests = ('crates/pa-cli/tests/fork_switch_e2e.rs', 'crates/pa-core/src/kernel/tests/mod.rs',
+                 'crates/pa-core/src/session_engine/context_thinning/tests.rs',
+                 'crates/pa-daemon/src/wire_tests.rs', 'prime-agent-runtime/test/test_kernel.py')
+        self.assertEqual(should_release(*tests), 'release=false\n')
+        self.assertEqual(should_release(*tests, 'crates/pa-core/src/lib.rs'), 'release=true\n')
+
     def test_the_release_pipeline_and_installers_cut_a_release(self):
         for path in ('.github/workflows/fork-release.yml', 'install.ps1', 'scripts/prime-switch.ps1',
                      'scripts/release/fork_release.py', 'Cargo.lock'):

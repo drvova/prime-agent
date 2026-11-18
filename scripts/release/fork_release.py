@@ -70,7 +70,11 @@ FORK_TAG = r"v([0-9]+)\.([0-9]+)\.([0-9]+)-([a-z0-9]+)\.([0-9]+)"
 # assemble_artifacts.py stages (prime-agent-runtime/, skills/), the published
 # installers and switchers, the release scripts, and this pipeline itself.
 # A commit range touching none of them (docs, .changes/, other workflows)
-# cuts no automatic release.
+# cuts no automatic release. Test-only paths leave the binary identical and
+# never count: any path under a tests/ or test/ directory (the changelog
+# gate's rule in changelog-fragment.yml), plus in-tree Rust test modules
+# (`tests.rs`, `*_tests.rs`).
+TEST_ONLY = re.compile(r"/tests?/|(^|/)tests\.rs$|_tests\.rs$")
 SHIPPED_PREFIXES = (
     "crates/",
     "vendor/",
@@ -130,7 +134,8 @@ def shipped_changes(paths):
     return [
         path
         for path in paths
-        if path.startswith(SHIPPED_PREFIXES) or path in SHIPPED_FILES
+        if (path.startswith(SHIPPED_PREFIXES) or path in SHIPPED_FILES)
+        and TEST_ONLY.search(path) is None
     ]
 
 
