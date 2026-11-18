@@ -68,6 +68,9 @@ jobs:
   # per run so all targets ship the same catalog revision.
   catalog-ref:
     name: Resolve the bundled catalog commit
+    # The official repository's continuous build: a fork releases through
+    # fork-release.yml, and its macOS jobs never get a runner here.
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,6 +99,9 @@ jobs:
   # anything new. SEAM: pin the advisory-DB snapshot (or vendor it) when
   # the channel goes public.
   deny:
+    # The official repository's continuous build: a fork releases through
+    # fork-release.yml, and its macOS jobs never get a runner here.
+    if: github.repository == 'PrimeIntellect-ai/prime-agent'
     runs-on: ubuntu-latest
     permissions:
       contents: read
