@@ -92,7 +92,11 @@ async fn spawn_fake_supervisor(
             .to_string(),
     );
     let listener = bind_transport(&socket).await.unwrap();
+    // The accept task owns the socket file: the test runtime drops the task
+    // at teardown, which unlinks it (a bare temp-dir socket was left behind).
+    let socket_file = tempfile::TempPath::try_from_path(socket).unwrap();
     tokio::spawn(async move {
+        let _socket_file = socket_file;
         // Shared across link connections: a left worker fails every child
         // read on whichever connection carries it.
         let gone = Arc::new(AtomicBool::new(false));

@@ -240,6 +240,9 @@ struct SuspendHarness {
     /// The mock-supervisor server thread's join handle (it exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
+    /// The socket's temp dir, removed whenever the harness drops (after
+    /// `finish` reaps the child); declared last so it outlives the pty.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl SuspendHarness {
@@ -261,12 +264,11 @@ impl SuspendHarness {
         .expect("open pty");
 
         let child = spawn_child(&socket, &pty.slave, editor);
-        // Leak the socket dir on purpose: the child needs it for the test's lifetime.
-        std::mem::forget(dir);
         SuspendHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 

@@ -204,6 +204,9 @@ struct HandoffHarness {
     /// The mock-supervisor server thread's join handle (exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: PtyReader,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl HandoffHarness {
@@ -225,13 +228,11 @@ impl HandoffHarness {
         .expect("open pty");
 
         let child = spawn_child(&socket, &pty.slave);
-        // Leak the temp dir's socket path on purpose: the child needs it, and the
-        // whole tree dies with the child at teardown.
-        std::mem::forget(dir);
         HandoffHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 

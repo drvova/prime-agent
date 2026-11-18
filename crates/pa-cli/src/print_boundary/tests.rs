@@ -1287,7 +1287,8 @@ async fn requested_refinement_failure_emits_the_refine_failed_event() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     engine
@@ -1330,7 +1331,8 @@ async fn requested_refinement_streams_rows_and_refine_complete() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     engine
@@ -1399,7 +1401,8 @@ async fn compact_trigger_auto_refine_streams_at_the_next_boundary() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     admit_with_harness_dir(
@@ -1487,7 +1490,8 @@ async fn overflow_retry_compact_trigger_streams_the_ts_surface() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     admit_with_harness_dir(
@@ -1555,7 +1559,8 @@ async fn compact_trigger_drains_at_disposal_off_the_stream() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     admit_with_harness_dir(
@@ -1622,7 +1627,8 @@ async fn auto_refine_review_decline_surfaces_nothing() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     admit_with_harness_dir(
@@ -1689,7 +1695,8 @@ async fn auto_refine_disabled_settings_drop_the_trigger() {
         None,
     )
     .await;
-    let global_dir = tempfile::TempDir::new().unwrap().keep();
+    let global_tmp = tempfile::TempDir::new().unwrap();
+    let global_dir = global_tmp.path().to_path_buf();
     let (sink, events) = capture_sink();
     let mut boundary = TurnBoundary::with_sink(true, sink);
     admit_with_harness_dir(

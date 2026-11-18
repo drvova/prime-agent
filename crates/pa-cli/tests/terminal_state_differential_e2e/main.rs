@@ -189,8 +189,10 @@ fn diff_replay_child_mode() {
 }
 
 /// The fixture session the replay child runs: a small transcript with a
-/// URL row (the OSC 8 hyperlink pairs).
-fn write_replay_fixture() -> String {
+/// URL row (the OSC 8 hyperlink pairs). The caller keeps the returned dir
+/// alive past the harness (the child reads the file across the process
+/// boundary), so the dir is removed once the child is reaped.
+fn write_replay_fixture() -> (tempfile::TempDir, String) {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let path = dir.path().join("fixture.jsonl");
     let fixture = concat!(
@@ -200,9 +202,7 @@ fn write_replay_fixture() -> String {
         "\n",
     );
     std::fs::write(&path, fixture).expect("write fixture");
-    // The child reads the file across the process boundary.
-    std::mem::forget(dir);
-    path.display().to_string()
+    (dir, path.display().to_string())
 }
 
 /// Route: the parity exit through the `/exit` slash command.
@@ -228,6 +228,18 @@ fn parity_exit_through_slash_command_restores_every_mode() {
     );
 
     harness.assert_terminal_state_restored("the parity exit (/exit)");
+    // The harness owns the socket dir: its drop (after the reap) removes it.
+    let socket_dir = harness
+        .socket_path
+        .parent()
+        .expect("socket dir")
+        .to_path_buf();
+    drop(harness);
+    assert!(
+        !socket_dir.exists(),
+        "the harness drop left {} behind",
+        socket_dir.display()
+    );
 }
 
 #[test]
@@ -434,7 +446,7 @@ fn the_config_selector_toggle_error_restores_every_mode() {
 #[test]
 fn the_replay_surface_clean_exit_restores_every_mode() {
     let _lock = harness_lock();
-    let fixture = write_replay_fixture();
+    let (_fixture_dir, fixture) = write_replay_fixture();
     let mut harness =
         DifferentialHarness::start(&ChildSpec::new("replay").env(CHILD_FIXTURE_ENV, fixture));
     harness.answer_kitty_query();
@@ -459,7 +471,7 @@ fn the_replay_surface_clean_exit_restores_every_mode() {
 #[test]
 fn the_panic_unwind_restores_every_mode() {
     let _lock = harness_lock();
-    let fixture = write_replay_fixture();
+    let (_fixture_dir, fixture) = write_replay_fixture();
     let mut harness = DifferentialHarness::start(
         &ChildSpec::new("replay")
             .env(CHILD_FIXTURE_ENV, fixture)

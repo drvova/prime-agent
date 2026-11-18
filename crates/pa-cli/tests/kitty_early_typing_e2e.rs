@@ -176,6 +176,9 @@ struct EarlyTypingHarness {
     /// The mock-supervisor server thread's join handle (exits with the child's connection).
     _server: std::thread::JoinHandle<()>,
     master: LedgerReader,
+    /// The socket's temp dir, declared last so it drops after the child is
+    /// reaped and removes the dir on every exit path.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl EarlyTypingHarness {
@@ -197,13 +200,11 @@ impl EarlyTypingHarness {
         .expect("open pty");
 
         let child = spawn_child(&socket, &pty.slave);
-        // Leak the temp dir's socket path on purpose: the child needs it, and
-        // the whole tree dies with the child at teardown.
-        std::mem::forget(dir);
         EarlyTypingHarness {
             child,
             _server: server,
             master: LedgerReader::new(pty.master),
+            _socket_dir: dir,
         }
     }
 

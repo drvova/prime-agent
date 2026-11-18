@@ -269,6 +269,9 @@ struct CursorHarness {
     master: PtyReader,
     /// The byte index where the startup window (through the attach marker) ended.
     startup_end: usize,
+    /// The socket's temp dir, removed whenever the harness drops (after
+    /// `finish` reaps the child); declared last so it outlives the pty.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl CursorHarness {
@@ -290,14 +293,12 @@ impl CursorHarness {
         .expect("open pty");
 
         let child = spawn_child(&socket, &pty.slave);
-        // Leak the temp dir's socket path on purpose: the child needs it, and the
-        // whole tree dies with the child at teardown.
-        std::mem::forget(dir);
         let mut harness = CursorHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
             startup_end: 0,
+            _socket_dir: dir,
         };
         // The startup window ends where the attach marker landed: later windows measure from it.
         harness.wait_from_start("row 0", "the attach snapshot rendered");
