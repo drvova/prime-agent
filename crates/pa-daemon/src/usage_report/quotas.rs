@@ -113,16 +113,21 @@ fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
         let Some(credential) = stored.credential(provider.id()) else {
             continue;
         };
-        let oauth = matches!(credential, AuthCredential::Oauth { .. });
         let credential = match provider {
             QuotaProvider::Anthropic | QuotaProvider::OpenAiCodex => {
-                // A Claude OAuth token pasted into the API-key slot opens the usage route too; a
-                // plain API key has no subscription quota to show.
-                let api_key_is_oauth = match &credential {
-                    AuthCredential::ApiKey { key, .. } => key.starts_with("sk-ant-oat"),
-                    AuthCredential::McpStaticToken { .. } | AuthCredential::Oauth { .. } => false,
+                let usable = match &credential {
+                    AuthCredential::Oauth { .. } => true,
+                    // A Claude OAuth token pasted into the API-key slot opens the usage route
+                    // too; a plain API key has no subscription quota to show.
+                    AuthCredential::ApiKey { key, .. } => {
+                        provider == QuotaProvider::Anthropic && key.starts_with("sk-ant-oat")
+                    }
+                    // A token-exchange sign-in (a models.json `auth` descriptor) has no
+                    // subscription usage endpoint: its card comes from observed rate limits and
+                    // local spend.
+                    AuthCredential::McpStaticToken { .. }
+                    | AuthCredential::TokenExchange { .. } => false,
                 };
-                let usable = oauth || (provider == QuotaProvider::Anthropic && api_key_is_oauth);
                 if !usable {
                     continue;
                 }
@@ -150,9 +155,12 @@ fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
                     token,
                     enterprise_domain: enterprise_url,
                 },
+                // No GitHub OAuth token, so no route to read; a token-exchange sign-in has no
+                // usage endpoint and falls through to observed rate limits and local spend.
                 AuthCredential::Oauth { refresh: None, .. }
                 | AuthCredential::ApiKey { .. }
-                | AuthCredential::McpStaticToken { .. } => continue,
+                | AuthCredential::McpStaticToken { .. }
+                | AuthCredential::TokenExchange { .. } => continue,
             },
         };
         credentials.push(credential);

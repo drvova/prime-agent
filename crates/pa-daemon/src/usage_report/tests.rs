@@ -215,7 +215,8 @@ async fn quota_server() -> String {
     base
 }
 
-/// A hung provider fails only its own card, inside the bound; the others fill in.
+/// A hung provider fails only its own card, inside the bound; the others fill in, and a
+/// token-exchange sign-in gets no provider card.
 #[tokio::test]
 async fn a_hung_provider_fails_its_own_card_within_the_bound() {
     let agent_dir = tempfile::tempdir().unwrap();
@@ -225,6 +226,8 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
             "anthropic": {"type": "oauth", "access": "oat", "refresh": "r", "expires": 9_999_999_999_999_i64},
             "github-copilot": {"type": "oauth", "access": "copilot-api", "refresh": "gho_x", "expires": 9_999_999_999_999_i64},
             "prime-inference": {"type": "api_key", "key": "pi-key"},
+            // A token-exchange sign-in has no usage endpoint: no card, no request.
+            "openai-codex": {"type": "token_exchange", "refresh": "rt", "access": "at"},
         })
         .to_string(),
     )
