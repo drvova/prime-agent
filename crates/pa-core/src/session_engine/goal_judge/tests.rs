@@ -118,6 +118,7 @@ fn fixture(judge_reply: &str) -> Fixture {
     let judge = GoalJudge::new(
         Arc::downgrade(&agent),
         provider.stream_fn(),
+        Arc::new(|messages, _signal| Box::pin(async move { Ok(messages) })),
         convert,
         Arc::new(SessionUsageStore(session)),
     );

@@ -127,6 +127,45 @@ enum TurnState {
     Settled,
 }
 
+/// Set the request's cache hints the caller left unset: the retention (the
+/// env override, else the setting) and the static-prefix boundary when the
+/// system prompt starts with `static_prefix`.
+fn apply_cache_hints(
+    retention: CacheRetentionSetting,
+    static_prefix: &str,
+    context: &LlmContext,
+    options: &mut StreamRequestOptions,
+) {
+    if options.cache_retention.is_none() {
+        options.cache_retention = policy::request_cache_retention(
+            std::env::var(policy::CACHE_RETENTION_ENV).ok().as_deref(),
+            retention,
+        );
+    }
+    if options.cached_system_prefix_len.is_none() && !static_prefix.is_empty() {
+        options.cached_system_prefix_len = context
+            .system_prompt
+            .as_deref()
+            .filter(|prompt| prompt.starts_with(static_prefix))
+            .map(|_| static_prefix.len());
+    }
+}
+
+/// Give a forked request (one that reads the session's cache but is not a
+/// turn of its own, like the goal judge) the session's cache hints, so the
+/// provider renders the same system blocks and markers as the main loop and
+/// the fork reads its cache entry. It neither arms nor cancels the warmer.
+pub(crate) fn with_cache_hints(
+    retention: CacheRetentionSetting,
+    static_prefix: String,
+    inner: StreamFn,
+) -> StreamFn {
+    Arc::new(move |model, context, mut options| {
+        apply_cache_hints(retention, &static_prefix, &context, &mut options);
+        inner(model, context, options)
+    })
+}
+
 /// Wrap the session's agent stream fn with the cache seam. `inner` serves
 /// real requests; refreshes go out on `config.warm_stream_fn`.
 pub(crate) fn wrap_stream_fn(config: CacheWarmingConfig, inner: StreamFn) -> StreamFn {
@@ -142,19 +181,12 @@ pub(crate) fn wrap_stream_fn(config: CacheWarmingConfig, inner: StreamFn) -> Str
             // request has started.
             let generation = shared.begin_real_request();
             let config = &shared.config;
-            if options.cache_retention.is_none() {
-                options.cache_retention = policy::request_cache_retention(
-                    std::env::var(policy::CACHE_RETENTION_ENV).ok().as_deref(),
-                    config.retention,
-                );
-            }
-            if options.cached_system_prefix_len.is_none() && !config.static_prefix.is_empty() {
-                options.cached_system_prefix_len = context
-                    .system_prompt
-                    .as_deref()
-                    .filter(|prompt| prompt.starts_with(config.static_prefix.as_str()))
-                    .map(|_| config.static_prefix.len());
-            }
+            apply_cache_hints(
+                config.retention,
+                &config.static_prefix,
+                &context,
+                &mut options,
+            );
             let replay = match config.mode {
                 CacheWarmingSetting::Off => None,
                 CacheWarmingSetting::Active | CacheWarmingSetting::Idle => Some(WarmReplay {

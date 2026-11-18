@@ -945,3 +945,32 @@ async fn a_refresh_resends_the_thinned_request_the_next_turn_extends() {
     );
     assert_eq!(next[..sent.len()], sent[..]);
 }
+
+/// Thinning x split cache x goal judge: the judge forks the request the main
+/// loop last sent as the provider received it (the thinned view and the
+/// split static/session system blocks), so it reads that request's cache
+/// entry and only the rubric is new.
+#[tokio::test]
+async fn the_goal_judge_extends_the_main_loops_thinned_split_request() {
+    let session = recorded_thinning_session().await;
+    session.turn("continue").await;
+    let handlers = session.engine.provisioner.host_handlers().clone();
+    for (request_type, data) in [
+        (
+            "goal.create",
+            json!({ "objective": "fix the build", "verify": "judge" }),
+        ),
+        ("goal.complete", json!({})),
+    ] {
+        let handler = handlers.get(request_type).unwrap().clone();
+        handler(crate::kernel::shared::HostRequestPayload { data })
+            .await
+            .unwrap();
+    }
+
+    let (sent, judge) = (
+        prefix_blocks(&session.body_ending_with("continue")),
+        prefix_blocks(&session.body_ending_with("<goal_judge>")),
+    );
+    assert_eq!(judge[..sent.len()], sent[..]);
+}

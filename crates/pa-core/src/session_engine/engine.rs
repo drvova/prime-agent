@@ -727,6 +727,42 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // transform is built into the agent); weak, so the seam pins nothing.
     let thinning_agent: std::sync::Arc<std::sync::OnceLock<std::sync::Weak<Agent>>> =
         std::sync::Arc::default();
+    // The request view thins aged tool results under context pressure (the
+    // stored transcript stays whole). One transform serves the loop and the
+    // goal judge, so a judge fork sends the view the loop's cache entry holds.
+    let thinning = super::context_thinning::thinning_transform(
+        thinning_settings,
+        {
+            // The window of the model the request goes to: a run's routed
+            // override, else the session model (in-memory reads; the slot
+            // binds once the agent exists).
+            let slot = std::sync::Arc::clone(&thinning_agent);
+            std::sync::Arc::new(move || {
+                let slot = std::sync::Arc::clone(&slot);
+                Box::pin(async move {
+                    let Some(agent) = slot.get().and_then(std::sync::Weak::upgrade) else {
+                        return model_context_window;
+                    };
+                    match agent.model_override() {
+                        Some(routed) => routed.model.context_window,
+                        None => agent.state().await.model.context_window,
+                    }
+                })
+            })
+        },
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
+                as super::context_thinning::ThinningObserver
+        }),
+    );
+    // The goal judge forks the session's requests outside the cache seam;
+    // it takes the same cache hints so its system blocks match the loop's.
+    let judge_stream_fn = super::cache_warming::with_cache_hints(
+        cache_retention,
+        static_system_prefix.clone(),
+        std::sync::Arc::clone(&side_question_stream_fn),
+    );
     // The prompt-cache seam goes outermost: it disarms the session's cache
     // warmer before any real request is dispatched. Its pending-work probe
     // holds the kernel and the subagent host weakly (the engine owns both).
@@ -793,32 +829,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // the turn's dispatch moment around it.
         transform_context: Some(super::request_timing::instrument_transform_context(
             std::sync::Arc::clone(&request_timing_wiring),
-            super::context_thinning::thinning_transform(
-                thinning_settings,
-                {
-                    // The window of the model the request goes to: a run's
-                    // routed override, else the session model (in-memory
-                    // reads; the slot binds once the agent exists).
-                    let slot = std::sync::Arc::clone(&thinning_agent);
-                    std::sync::Arc::new(move || {
-                        let slot = std::sync::Arc::clone(&slot);
-                        Box::pin(async move {
-                            let Some(agent) = slot.get().and_then(std::sync::Weak::upgrade) else {
-                                return model_context_window;
-                            };
-                            match agent.model_override() {
-                                Some(routed) => routed.model.context_window,
-                                None => agent.state().await.model.context_window,
-                            }
-                        })
-                    })
-                },
-                config.telemetry.is_some().then(|| {
-                    let counters = std::sync::Arc::clone(&session_counters);
-                    std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
-                        as super::context_thinning::ThinningObserver
-                }),
-            ),
+            std::sync::Arc::clone(&thinning),
         )),
         should_stop_after_turn: {
             let steering = config.queued_steering_probe.take();
@@ -864,8 +875,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             });
     }
     // Goal verification: facts count into the session counters, and `verify="judge"` forks this
-    // agent's conversation (pre-semantic stream fn, the loop's own conversion) so the judge
-    // reads the main loop's cached prefix. Weak agent: the kernel's handlers reach the judge.
+    // agent's conversation (pre-semantic stream fn with the session's cache hints, the loop's own
+    // thinning and conversion) so the judge reads the main loop's cached prefix. Weak agent: the
+    // kernel's handlers reach the judge.
     let _ = wiring
         .runtime
         .goal_telemetry()
@@ -875,7 +887,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .goal_verifier()
         .bind_judge(super::goal_judge::GoalJudge::new(
             Arc::downgrade(&agent),
-            std::sync::Arc::clone(&side_question_stream_fn),
+            judge_stream_fn,
+            thinning,
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
             wiring.rlm_usage.store(),
         ));

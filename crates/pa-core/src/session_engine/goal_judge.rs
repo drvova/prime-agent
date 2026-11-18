@@ -12,7 +12,7 @@
 use std::sync::{Arc, Weak};
 
 use pa_agent::agent::Agent;
-use pa_agent::agent_loop::ConvertToLlmFn;
+use pa_agent::agent_loop::{ConvertToLlmFn, TransformContextFn};
 use pa_agent::stream::{LlmContext, StreamFn, StreamRequestOptions, ToolDefinition};
 use pa_agent::types::{
     AgentMessage, AssistantContent, Message, ToolResultContent, UserContent, UserPart,
@@ -49,7 +49,9 @@ pub struct GoalJudge {
     /// The parent's provider function without the semantic-edge wrapper (like side questions):
     /// the judge call carries no request id and leaves the request ledger untouched.
     stream_fn: StreamFn,
-    /// The main loop's message conversion, so the forked prefix serializes identically.
+    /// The main loop's request view (context thinning) and message conversion, so the forked
+    /// prefix serializes identically to what the main loop sent.
+    transform_context: TransformContextFn,
     convert_to_llm: ConvertToLlmFn,
     usage_store: Arc<dyn RlmChildUsageStore>,
 }
@@ -59,12 +61,14 @@ impl GoalJudge {
     pub fn new(
         agent: Weak<Agent>,
         stream_fn: StreamFn,
+        transform_context: TransformContextFn,
         convert_to_llm: ConvertToLlmFn,
         usage_store: Arc<dyn RlmChildUsageStore>,
     ) -> Self {
         Self {
             agent,
             stream_fn,
+            transform_context,
             convert_to_llm,
             usage_store,
         }
@@ -91,6 +95,11 @@ impl GoalJudge {
                 messages.pop();
             }
         }
+        let messages =
+            match (self.transform_context)(messages, pa_agent::abort::AbortSignal::never()).await {
+                Ok(messages) => messages,
+                Err(error) => return not_met(&format!("the judge could not run: {error}")),
+            };
         let llm_messages = match (self.convert_to_llm)(messages).await {
             Ok(llm_messages) => llm_messages,
             Err(error) => return not_met(&format!("the judge could not run: {error}")),
