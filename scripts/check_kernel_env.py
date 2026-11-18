@@ -2,8 +2,11 @@
 """Actual REPL check for bash prefix and Serper wiring.
 
 Only synthetic credentials and loopback provider traffic. The same Python cell
-reads the kernel env and runs the real bash() helper. Windows PYTHONUTF8 is not
-verified by this Linux check; the separate Windows test is cross-compiled.
+reads the kernel env and runs the real bash() helper. Web-search credentials
+resolve on the host per search, so a stored (command) key never rides the
+kernel env and is never run to start a kernel; only the ambient
+SERPER_API_KEY is inherited, verbatim. Windows PYTHONUTF8 is not verified by
+this Linux check; the separate Windows test is cross-compiled.
 """
 import argparse
 import http.server
@@ -33,7 +36,7 @@ CASES = {
     'command_key_and_prefix': {'skill': True, 'ambient': None, 'prefix': 'export PA_PREFIX_SENTINEL=prefix-ran'},
     'ambient_key_wins': {'skill': True, 'ambient': ' ambient-fixture ', 'prefix': ''},
     'no_skill_no_command': {'skill': False, 'ambient': None, 'prefix': ''},
-    'blank_ambient_resolves': {'skill': True, 'ambient': '  ', 'prefix': ''},
+    'blank_ambient_is_inherited': {'skill': True, 'ambient': '  ', 'prefix': ''},
 }
 
 
@@ -83,11 +86,8 @@ def current_probe(requests, phase):
 
 
 def expected(case):
-    key = case['ambient']
-    if case['skill'] and (key is None or not key.strip()):
-        key = 'resolved-fixture-key'
     prefix = case['prefix'] or None
-    return {'serper': key, 'prefix': prefix,
+    return {'serper': case['ambient'], 'prefix': prefix,
             'bash_output': 'prefix-ran' if prefix else 'ABSENT', 'bash_exit': 0}
 
 
@@ -369,8 +369,7 @@ def run_case(binary, name, case, root, observation):
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=active, message='Run the kernel environment fixture cell.')
         observation['probe'] = current_probe(server.requests[name], name)
         assert observation['probe'] == expected(case), (observation['probe'], expected(case))
-        ran = case['skill'] and (case['ambient'] is None or not case['ambient'].strip())
-        assert invoked.exists() == ran, 'credential command ran outside its skill/ambient gate'
+        assert not invoked.exists(), 'a stored credential command ran to start the kernel'
         observation['credential_command_ran'] = invoked.exists()
         assert kernels, 'successful fixture did not capture kernel ownership'
     except BaseException as error:
