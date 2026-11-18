@@ -10,7 +10,8 @@ use super::load::from_value_lenient;
 use super::merge::{deep_merge, migrate};
 use super::storage::{SettingsScope, SettingsStorage};
 use super::types::{
-    QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting, UpdateChannel,
+    CacheRetentionSetting, CacheWarmingSetting, QueueModeSetting, Settings, ThinkingLevelSetting,
+    TransportSetting, UpdateChannel,
 };
 
 pub const RECENT_MODELS_LIMIT: usize = 20;
@@ -880,6 +881,25 @@ impl SettingsManager {
     #[must_use]
     pub fn get_request_timing(&self) -> bool {
         self.merged.request_timing.unwrap_or(false)
+    }
+
+    /// `cacheRetention`: unset means `short`, the provider's default
+    /// lifetime. The `PI_CACHE_RETENTION` env override is applied by the
+    /// session engine, which reads it per request.
+    #[must_use]
+    pub fn get_cache_retention(&self) -> CacheRetentionSetting {
+        self.merged
+            .cache_retention
+            .unwrap_or(CacheRetentionSetting::Short)
+    }
+
+    /// `cacheWarming`: unset means `active` (warm only while the next
+    /// request is near-certain; see [`CacheWarmingSetting`]).
+    #[must_use]
+    pub fn get_cache_warming(&self) -> CacheWarmingSetting {
+        self.merged
+            .cache_warming
+            .unwrap_or(CacheWarmingSetting::Active)
     }
 
     #[must_use]

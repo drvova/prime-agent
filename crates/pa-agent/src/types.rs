@@ -35,6 +35,18 @@ pub enum ServiceTier {
     Priority,
 }
 
+/// The requested prompt-cache lifetime for providers with explicit cache
+/// markers (wire names match the shared AI package's): `short` is the
+/// provider default (five minutes on Anthropic), `long` the extended one
+/// (one hour), `none` places no markers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CacheRetention {
+    None,
+    Short,
+    Long,
+}
+
 /// The requested provider transport (wire names match the shared AI
 /// package's). `None` leaves the choice to the provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

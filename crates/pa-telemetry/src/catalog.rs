@@ -705,6 +705,12 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ("web_search_keyless_count", optional(count())),
         ("web_search_result_count", optional(count())),
         ("web_search_max_ms", optional(duration())),
+        // Prompt-cache warming and savings: request counts and estimated
+        // dollars only (never a prompt, model, or provider).
+        ("cache_warm_sent_count", optional(count())),
+        ("cache_warm_skipped_count", optional(count())),
+        ("cache_warm_cost_usd", optional(cost())),
+        ("cache_savings_usd", optional(cost())),
         // Provider auth descriptors (strategy and counters only: never a
         // provider, URL, account, or token).
         (

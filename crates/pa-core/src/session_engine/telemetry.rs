@@ -345,6 +345,12 @@ struct CounterValues {
     web_search_keyless_count: u64,
     web_search_result_count: u64,
     web_search_max_ms: u64,
+    cache_warm_sent_count: u64,
+    cache_warm_skipped_count: u64,
+    cache_warm_cost_usd: f64,
+    /// Net prompt-cache saving over the session's real requests: what the
+    /// cache reads saved against uncached input, less the write premium.
+    cache_savings_usd: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
 }
@@ -421,7 +427,31 @@ impl SessionCounters {
         });
     }
 
-    fn write_into(&self, properties: &mut Properties) {
+    /// One cache-warming refresh went out and answered, costing `cost_usd`.
+    pub(crate) fn note_cache_warm_sent(&self, cost_usd: f64) {
+        self.with(|values| {
+            values.cache_warm_sent_count += 1;
+            if cost_usd.is_finite() && cost_usd > 0.0 {
+                values.cache_warm_cost_usd += cost_usd;
+            }
+        });
+    }
+
+    /// An armed cache warmer stopped without sending (the saving no longer
+    /// cleared the threshold, a cap was reached, or its refresh failed).
+    pub(crate) fn note_cache_warm_skipped(&self) {
+        self.with(|values| values.cache_warm_skipped_count += 1);
+    }
+
+    /// One real request's prompt-cache saving in dollars (negative when its
+    /// cache writes cost more than its reads saved).
+    pub(crate) fn note_cache_savings(&self, savings_usd: f64) {
+        if savings_usd.is_finite() {
+            self.with(|values| values.cache_savings_usd += savings_usd);
+        }
+    }
+
+    pub(super) fn write_into(&self, properties: &mut Properties) {
         self.with(|values| {
             for (key, value) in [
                 ("skill_use_count", values.skill_use_count),
@@ -468,6 +498,29 @@ impl SessionCounters {
                 ] {
                     properties.set(key, Value::from(value));
                 }
+            }
+            // Sessions that never cached or warmed keep their ended event unchanged.
+            if values.cache_warm_sent_count + values.cache_warm_skipped_count > 0
+                || values.cache_savings_usd != 0.0
+            {
+                properties.set(
+                    "cache_warm_sent_count",
+                    Value::from(values.cache_warm_sent_count),
+                );
+                properties.set(
+                    "cache_warm_skipped_count",
+                    Value::from(values.cache_warm_skipped_count),
+                );
+                properties.set(
+                    "cache_warm_cost_usd",
+                    Value::from(values.cache_warm_cost_usd),
+                );
+                // The cost kind is non-negative: a session whose writes outweighed
+                // its reads reports no saving.
+                properties.set(
+                    "cache_savings_usd",
+                    Value::from(values.cache_savings_usd.max(0.0)),
+                );
             }
             for (key, count) in &values.feature_outcomes {
                 properties.set(key, Value::from(*count));
