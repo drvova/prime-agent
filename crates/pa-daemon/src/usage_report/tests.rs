@@ -127,10 +127,12 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
             let at = noon - back * DAY_MS;
             DailySpend {
                 date: local_date(at),
-                totals: match back {
-                    0 => today,
-                    10 => totals(50, 5, 0.125, 1),
-                    _ => SpendTotals::default(),
+                totals: if back == 0 {
+                    today
+                } else if back == 10 {
+                    totals(50, 5, 0.125, 1)
+                } else {
+                    SpendTotals::default()
                 },
             }
         })

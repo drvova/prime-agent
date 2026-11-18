@@ -184,10 +184,12 @@ fn spend_history() -> SpendHistory {
     let daily = (0..30)
         .map(|index| DailySpend {
             date: format!("2026-11-{:02}", index % 28 + 1),
-            totals: match index {
-                29 => spend_totals(9.5, 2_100, 2),
-                20 => spend_totals(4.75, 900, 1),
-                _ => SpendTotals::default(),
+            totals: if index == 29 {
+                spend_totals(9.5, 2_100, 2)
+            } else if index == 20 {
+                spend_totals(4.75, 900, 1)
+            } else {
+                SpendTotals::default()
             },
         })
         .collect();
