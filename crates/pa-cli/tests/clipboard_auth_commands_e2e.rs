@@ -14,6 +14,8 @@
 //! `/logout`, and `/update` through their composition-root hooks.
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -181,6 +183,8 @@ fn graceful_shutdown(socket: &Path) {
 
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let socket = dir.join("daemon.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");

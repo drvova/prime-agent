@@ -16,6 +16,8 @@
 //! state (no kernel round-trip), and the headless TUI must render it.
 #![cfg(unix)]
 
+mod support;
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -225,6 +227,8 @@ fn graceful_shutdown(socket: &Path) {
 /// fixture, with no ambient credentials.
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let socket = dir.join("daemon.sock");
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");

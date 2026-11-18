@@ -9,6 +9,8 @@
 //! thousands of rows and a compaction, attached headlessly and scrolled to the top.
 #![cfg(unix)]
 
+mod support;
+
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -65,6 +67,8 @@ impl Drop for Supervisor {
 
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(dir: &Path) -> Supervisor {
+    // The in-process client forwards this process's env to the worker.
+    support::scrub_ambient_provider_credentials();
     let socket = dir.join("daemon.sock");
     let mut command = Command::new(env!("CARGO_BIN_EXE_prime-agent"));
     command
