@@ -668,9 +668,10 @@ impl Key {
 
 /// What a leaked VT sequence looks like once its ESC is gone: the arrow, the
 /// CSI-u and modifyOtherKeys keys, paste markers, the win32-input-mode tail,
-/// mouse reports and device-attribute replies.
+/// mouse reports and device-attribute replies. The chrome draws `←` itself
+/// (`← manage`), so the arrow glyph is no evidence of a leak.
 const ESCAPE_TEXT: &[&str] = &[
-    "[D", "[?", "[<", "200~", "201~", ";2u", "13;2", ";1_", ";0_", "[27;", "\u{2190}",
+    "[D", "[?", "[<", "200~", "201~", ";2u", "13;2", ";1_", ";0_", "[27;",
 ];
 
 #[test]

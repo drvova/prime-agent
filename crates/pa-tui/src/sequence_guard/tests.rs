@@ -945,3 +945,37 @@ fn a_split_shift_enter_inserts_a_newline_in_the_editor() {
         "the newline press never submits"
     );
 }
+
+/// The inbox `ConPTY`'s DA1 and CPR replies exactly as the Windows console delivered them (CI run
+/// 44388625008, `probe-inbox-native`): every character, ESC included, one vk=0 press record and
+/// one release record. The replies are consumed whole and a following keystroke still types;
+/// only the trailing releases pass, and dispatch drops those.
+#[test]
+fn console_record_replies_are_consumed_never_typed() {
+    let record = |byte: u8, kind: KeyEventKind| {
+        let code = match byte {
+            0x1b => KeyCode::Esc,
+            _ => KeyCode::Char(char::from(byte)),
+        };
+        Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind))
+    };
+    let mut guard = SequenceGuard::new(EventSource::ConsoleRecords);
+    let mut now = Instant::now();
+    let mut outputs = Vec::new();
+    for &byte in b"\x1b[?1;0c\x1b[2;1Rx" {
+        for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+            outputs.extend(guard.feed(record(byte, kind), now));
+            now += Duration::from_millis(1);
+        }
+    }
+    outputs.extend(guard.flush_expired(now + HOLD));
+    assert_eq!(
+        outputs,
+        vec![
+            GuardOutput::Event(record(b'c', KeyEventKind::Release)),
+            GuardOutput::Event(record(b'R', KeyEventKind::Release)),
+            GuardOutput::Event(record(b'x', KeyEventKind::Press)),
+            GuardOutput::Event(record(b'x', KeyEventKind::Release)),
+        ]
+    );
+}

@@ -256,6 +256,12 @@ fn parse_key_event_record(key_event: &KeyEventRecord) -> Option<WindowsKeyEvent>
         _ => {
             let utf16 = key_event.u_char;
             match utf16 {
+                // An ESC with no key behind it (vk=0, or a vk with no mapping here): the console
+                // host relays VT input it could not translate this way, one character per record
+                // (DA1/CPR replies, CSI-u keys, mouse reports). `ToUnicodeEx` maps vk=0 to nothing,
+                // so without this arm the introducer vanished and the rest of the sequence
+                // arrived as typed characters; as `Esc` the consumer can reassemble it.
+                0x1b => Some(KeyCode::Esc),
                 0x00..=0x1f => {
                     // Some key combinations generate either no u_char value or generate control
                     // codes. To deliver back a KeyCode::Char(...) event we want to know which
@@ -414,5 +420,47 @@ mod tests {
                 KeyEventKind::Release,
             )))
         );
+    }
+
+    /// The inbox ConPTY's DA1 reply as it lands in the input buffer: every character a vk=0 key
+    /// record (press and release), ESC included. The ESC must surface as `Esc` so the consumer
+    /// can reassemble the sequence instead of receiving `[?1;0c` as typed text.
+    #[test]
+    fn a_vk0_escape_record_is_the_esc_key() {
+        let record = |down: bool, unit: u8| KeyEventRecord {
+            key_down: down,
+            repeat_count: 1,
+            virtual_key_code: 0,
+            virtual_scan_code: 0,
+            u_char: u16::from(unit),
+            // ControlKeyState wraps a u32; zero means no modifiers are held.
+            control_key_state: unsafe { std::mem::zeroed() },
+        };
+        let events: Vec<Option<Event>> = b"\x1b[?1;0c"
+            .iter()
+            .flat_map(|&unit| [record(true, unit), record(false, unit)])
+            .map(|record| handle_key_event(record, &mut None))
+            .collect();
+        let expected: Vec<Option<Event>> = [
+            KeyCode::Esc,
+            KeyCode::Char('['),
+            KeyCode::Char('?'),
+            KeyCode::Char('1'),
+            KeyCode::Char(';'),
+            KeyCode::Char('0'),
+            KeyCode::Char('c'),
+        ]
+        .into_iter()
+        .flat_map(|code| {
+            [KeyEventKind::Press, KeyEventKind::Release].map(|kind| {
+                Some(Event::Key(KeyEvent::new_with_kind(
+                    code,
+                    KeyModifiers::NONE,
+                    kind,
+                )))
+            })
+        })
+        .collect();
+        assert_eq!(events, expected);
     }
 }
