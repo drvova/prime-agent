@@ -10,7 +10,8 @@
 
 //! Verifier integration tests for the session-creation kernel prewarm: a main session with the
 //! config flag boots its kernel at creation (so a compaction with no `ipython` use still lands the
-//! `ipython_state` notice); a depth-1 subagent session keeps the lazy first-call start.
+//! `ipython_state` notice); a depth-1 subagent session boots its kernel at creation too, before
+//! its first cell.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -223,12 +224,13 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
     );
 }
 
-/// The TS depth gate: subagent sessions (rlmDepth > 0) keep the lazy
-/// first-call start even when the runtime factory passes
-/// `prewarmIpythonKernel: true` — no boot.
+/// Subagent sessions (rlmDepth > 0) prewarm like top-level ones: the
+/// child's kernel is up before any cell is sent, so its first `python_repl`
+/// call joins a booted kernel instead of paying the cold start after its
+/// first model call.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
-async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
+async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
     let Some(_kernel_python) = kernel_python() else {
         return;
     };
@@ -240,8 +242,6 @@ async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("cwd");
-    let settings = SettingsManager::create(&cwd, &agent_dir);
-    let client = build_client(&settings, &agent_dir);
 
     let faux = faux_session(vec!["ok".to_string()]);
     let engine = create_session(SessionEngineConfig {
@@ -253,12 +253,6 @@ async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
         model: Some(agent_model(&faux.model)),
         stream_fn: Some(faux.stream_fn),
         tools: Vec::new(),
-        telemetry: Some(TelemetryWiring {
-            client: client.clone(),
-            execution_mode: Some("test".to_string()),
-            now: None,
-            telemetry_enabled: None,
-        }),
         rlm_depth: Some(1),
         prewarm_ipython_kernel: Some(true),
         ..Default::default()
@@ -266,33 +260,10 @@ async fn subagent_sessions_stay_lazy_despite_the_prewarm_flag() {
     .await
     .expect("create the subagent session");
 
-    // The depth-1 session still carries the kernel-backed `ipython` tool
-    // (the lazy first-call start, just not prewarmed).
-    let tool_names: Vec<String> = engine
-        .session
-        .agent()
-        .state()
-        .await
-        .tools
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect();
-    assert!(
-        tool_names.iter().any(|name| name == "python_repl"),
-        "the subagent keeps the lazy python_repl tool: {tool_names:?}"
-    );
-
-    // Long enough for a wrongly-fired prewarm to boot and report; the lazy session reports nothing.
-    let deadline = Instant::now() + Duration::from_secs(8);
-    while Instant::now() < deadline {
-        assert!(
-            !engine
-                .kernel_provisioner_weak()
-                .upgrade()
-                .is_some_and(|provisioner| provisioner.has_running_kernel()),
-            "a depth-1 session must not prewarm"
-        );
-        tokio::time::sleep(Duration::from_millis(500)).await;
+    // No prompt and no cell: the boot comes from the creation prewarm alone.
+    wait_for_kernel_boot(&engine).await;
+    if let Some(provisioner) = engine.kernel_provisioner_weak().upgrade() {
+        provisioner.dispose(None).await;
     }
 }
 
