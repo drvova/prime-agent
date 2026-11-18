@@ -13,6 +13,9 @@ use crate::corpus::{self, CacheMode, CorpusOptions, Manifest, Profile};
 
 use super::pty::PtyChild;
 
+/// The python_repl kernel scenarios (daemon wire, no TUI).
+mod kernel;
+
 /// The first paint's needle: the brand splash is the empty chat's header
 /// (the corpus settings keep the TUI out of the first-run flow). Pinned
 /// empirically against the real binary.
@@ -145,8 +148,22 @@ pub(super) fn run(options: &BenchOptions) -> anyhow::Result<BenchResult> {
         &options.corpus,
         Duration::from_secs(options.liveness_secs),
     )?;
-    let runs = sample_runs(&ctx, options.runs, |index| {
-        Ok(launch(&ctx, options.scenario, index)?.0)
+    let runs = sample_runs(&ctx, options.runs, |index| match options.scenario {
+        Scenario::FirstCell | Scenario::SubagentFirstCell | Scenario::PandasImport => {
+            launch_kernel(&ctx, options.scenario, index)
+        }
+        Scenario::ColdStart
+        | Scenario::ColdReady
+        | Scenario::WarmStart
+        | Scenario::WarmReady
+        | Scenario::AgentsView
+        | Scenario::AgentsViewWarm
+        | Scenario::OpenSession
+        | Scenario::SessionSwitch
+        | Scenario::AtCompletion
+        | Scenario::TranscriptPaging
+        | Scenario::TranscriptTop
+        | Scenario::IdleCost => Ok(launch(&ctx, options.scenario, index)?.0),
     })?;
     let result = build_result(&ctx, options.scenario, runs);
     write_result(&result, &options.json)?;
@@ -213,33 +230,28 @@ fn launch(ctx: &RunCtx, scenario: Scenario, run: usize) -> anyhow::Result<(Measu
         Ok((sample, launched))
     })();
     let stopped = stop_daemon(&socket);
-    // Socket closure alone does not reap a daemon we directly spawned.
-    // Keep ownership through shutdown, and fail before the guard's forced
-    // cleanup if it does not exit normally.
-    let exited = if let Some(daemon) = &mut daemon {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(status) = daemon.child.try_wait()? {
-                break if status.success() {
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!("the owned daemon exited with {status}"))
-                };
-            }
-            if Instant::now() >= deadline {
-                break Err(anyhow::anyhow!(
-                    "the owned daemon did not exit after shutdown"
-                ));
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    } else {
-        Ok(())
+    let exited = match &mut daemon {
+        Some(daemon) => daemon.await_exit(),
+        None => Ok(()),
     };
     let result = outcome?;
     stopped?;
     exited.with_context(|| format!("{scenario:?} run {run} daemon cleanup"))?;
     Ok(result)
+}
+
+/// The kernel scenarios' launch: an owned daemon, the wire mechanics, and
+/// the same protocol shutdown + exit check as [`launch`].
+fn launch_kernel(ctx: &RunCtx, scenario: Scenario, run: usize) -> anyhow::Result<Measured> {
+    let socket = run_socket(ctx, run);
+    let mut daemon = start_daemon(ctx, &socket)?;
+    let outcome = kernel::measure(ctx, &socket, scenario, run);
+    let stopped = stop_daemon(&socket);
+    let exited = daemon.await_exit();
+    let measured = outcome.with_context(|| format!("{scenario:?} run {run}"))?;
+    stopped?;
+    exited.with_context(|| format!("{scenario:?} run {run} daemon cleanup"))?;
+    Ok(measured)
 }
 
 // The whole-suite driver (`pa-perf run`): generates the cold and warm
@@ -305,6 +317,19 @@ pub(super) fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>
             let launched = Instant::now();
             restore(&cold_ctx)?;
             let (measured, _) = launch(&cold_ctx, scenario, index)?;
+            push(&mut samples, index, scenario, measured);
+            *wall.entry(scenario).or_default() += launched.elapsed();
+        }
+        // The kernel scenarios drive the daemon wire (no TUI); the cold
+        // corpus only supplies the isolated agent dir and project cwd.
+        for scenario in [
+            Scenario::FirstCell,
+            Scenario::SubagentFirstCell,
+            Scenario::PandasImport,
+        ] {
+            let launched = Instant::now();
+            restore(&cold_ctx)?;
+            let measured = launch_kernel(&cold_ctx, scenario, index)?;
             push(&mut samples, index, scenario, measured);
             *wall.entry(scenario).or_default() += launched.elapsed();
         }
@@ -391,7 +416,10 @@ fn corpus_for<'a>(scenario: Scenario, cold: &'a RunCtx, warm: &'a RunCtx) -> &'a
         | Scenario::AtCompletion
         | Scenario::TranscriptPaging
         | Scenario::TranscriptTop
-        | Scenario::IdleCost => cold,
+        | Scenario::IdleCost
+        | Scenario::FirstCell
+        | Scenario::SubagentFirstCell
+        | Scenario::PandasImport => cold,
     }
 }
 
@@ -492,6 +520,9 @@ fn post_launch(
         ),
         Scenario::ColdReady | Scenario::WarmReady => {
             Ok(Measured::single(launch.ready.unwrap_or(launch.first)))
+        }
+        Scenario::FirstCell | Scenario::SubagentFirstCell | Scenario::PandasImport => {
+            anyhow::bail!("{scenario:?} runs over the daemon wire (launch_kernel), not the TUI")
         }
     }
 }
@@ -804,6 +835,24 @@ struct DaemonChild {
 }
 
 impl DaemonChild {
+    /// Socket closure alone does not reap a daemon we directly spawned.
+    /// Keep ownership through shutdown, and fail before the guard's forced
+    /// cleanup if it does not exit normally.
+    fn await_exit(&mut self) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                anyhow::ensure!(status.success(), "the owned daemon exited with {status}");
+                return Ok(());
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "the owned daemon did not exit after shutdown"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn wait_until_ready(mut self, socket: &Path, deadline: Instant) -> anyhow::Result<Self> {
         loop {
             if let Some(status) = self.child.try_wait()? {
@@ -1020,6 +1069,17 @@ fn needle_of(scenario: Scenario, ctx: &RunCtx) -> String {
             "CPU ms of the owned daemon, its descendants, and the TUI over a {}s idle window after ready",
             IDLE_WINDOW.as_secs()
         ),
+        Scenario::FirstCell => {
+            "the create command -> the first python_repl result event (faux-scripted cell)"
+                .to_string()
+        }
+        Scenario::SubagentFirstCell => {
+            "the parent cell's rlm.spawn -> the child's first cell end (in-kernel wall clocks)"
+                .to_string()
+        }
+        Scenario::PandasImport => {
+            "the first `import pandas` cell after a warm-up cell: start -> result event".to_string()
+        }
     }
 }
 
