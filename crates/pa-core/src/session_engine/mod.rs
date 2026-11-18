@@ -19,6 +19,8 @@ pub mod factory_host;
 pub mod goal_boundary;
 pub mod goal_continuation;
 pub mod goal_driver;
+mod goal_judge;
+mod goal_verification;
 pub mod harness_digest;
 pub mod headless;
 pub mod host_requests;

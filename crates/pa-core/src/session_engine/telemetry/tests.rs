@@ -1538,3 +1538,53 @@ async fn a_run_active_when_telemetry_turns_off_is_severed_not_merged() {
         "the off-period tool end never counts"
     );
 }
+
+/// Goal verification and budget facts ride their own `agent goal verification` event at session
+/// end (never new keys on `agent session ended`, which sits at the 128-key cap).
+#[tokio::test]
+async fn goal_verification_facts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        GoalTelemetryFact::CheckRun,
+        GoalTelemetryFact::CheckFailed,
+        GoalTelemetryFact::CheckSkipped,
+        GoalTelemetryFact::CheckRun,
+        GoalTelemetryFact::JudgeCall,
+        GoalTelemetryFact::JudgeNotMet,
+        GoalTelemetryFact::CostBudgetStop,
+    ] {
+        counters.note_goal(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent goal verification"]
+    );
+    let goal = &event_properties(&fixture.mock, "agent goal verification").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = goal
+        .iter()
+        .filter(|(key, _)| key.starts_with("goal_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "goal_check_run_count": 2,
+            "goal_check_failed_count": 1,
+            "goal_check_skipped_count": 1,
+            "goal_judge_call_count": 1,
+            "goal_judge_not_met_count": 1,
+            "goal_token_budget_stop_count": 0,
+            "goal_cost_budget_stop_count": 1,
+        })
+    );
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert!(ended.keys().all(|key| !key.starts_with("goal_")));
+}

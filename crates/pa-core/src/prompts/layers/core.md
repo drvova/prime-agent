@@ -154,9 +154,9 @@ prime-agent compacts automatically when there is only a given number of tokens l
 
 In goal mode prime-agent helps an agent stay on track until a task is fully finished, and handles interruptions and other issues. Goals can be user- or agent-created.
 
-- `goal.create(objective: str, token_budget: int | None = None) -> dict`: create goal and return goal state
+- `goal.create(objective: str, token_budget: int | None = None, *, check: str | None = None, verify: Literal["judge"] | None = None, max_cost_usd: float | None = None) -> dict`: create goal and return goal state; `check` is a shell command that must exit 0 before completion; `verify="judge"` adds a read-only judge that must answer MET citing evidence already in context (a `path:line` or verbatim command output); `max_cost_usd` caps the goal's dollar spend
 - `goal.get() -> dict`: get goal status (only one goal can be active at a time)
-- `goal.complete() -> dict`: mark goal as completed and get final goal status
+- `goal.complete() -> dict`: mark goal as completed and get final goal status; with `check`/`verify` the claim is verified first, and on failure the goal stays active and `verification["gap"]` (also sent with the next continuation) names what remains
 
 ## Heartbeat
 

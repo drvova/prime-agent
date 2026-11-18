@@ -1004,6 +1004,7 @@ fn restore_persisted_adopts_the_state_without_rewriting_it() {
         updated_at: Some(2),
         last_reason: None,
         last_error: None,
+        ..crate::goals::empty_goal_state()
     };
     let driver = GoalDriver::restore_persisted(state);
     assert_eq!(driver.state().status, GoalStatus::Active);
@@ -1418,4 +1419,81 @@ fn pending_continuation_never_re_arms() {
         .is_some());
     driver.clear(&mut session).unwrap();
     assert!(!driver.pending_continuation());
+}
+
+/// A usage row with cache traffic and a dollar cost.
+fn priced_usage(input: u64, output: u64, cache_write: u64, cost: f64) -> pa_types::ai::Usage {
+    pa_types::ai::Usage {
+        input,
+        output,
+        cache_read: 5_000,
+        cache_write,
+        total_tokens: input + output + cache_write + 5_000,
+        cost: pa_types::ai::UsageCost {
+            total: cost.into(),
+            ..Default::default()
+        },
+    }
+}
+
+/// The goal budget charges cache writes on the turn's own usage and on billed rows alike (as
+/// the autonomous budget does); cache reads never charge.
+#[test]
+fn goal_tokens_count_cache_writes_on_turns_and_billed_rows() {
+    let (_tmp, mut session) = persisted_session();
+    let mut driver = GoalDriver::new();
+    let bill = driver.billed_row_recorder();
+    driver.start(&mut session, "work", Some(100_000)).unwrap();
+    bill(&priced_usage(10, 5, 200, 0.0));
+    driver
+        .record_assistant_usage(&mut session, "a1", &priced_usage(30, 10, 400, 0.0))
+        .unwrap();
+    assert_eq!(driver.state().tokens_used, (10 + 5 + 200) + (30 + 10 + 400));
+}
+
+/// A dollar cap budget-limits the goal once `usage.cost.total` reaches it, even with tokens to
+/// spare; billed rows charge dollars too.
+#[test]
+fn the_dollar_cap_stops_the_goal() {
+    let (_tmp, mut session) = persisted_session();
+    let mut driver = GoalDriver::new();
+    let bill = driver.billed_row_recorder();
+    driver
+        .start_with_options(
+            &mut session,
+            "work",
+            GoalOptions {
+                max_cost_usd: Some(0.5),
+                ..GoalOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        driver
+            .record_assistant_usage(&mut session, "a1", &priced_usage(10, 10, 0, 0.2))
+            .unwrap(),
+        UsageOutcome::Accounted
+    );
+    bill(&priced_usage(10, 10, 0, 0.1));
+    assert_eq!(
+        driver
+            .record_assistant_usage(&mut session, "a2", &priced_usage(10, 10, 0, 0.25))
+            .unwrap(),
+        UsageOutcome::BudgetReached
+    );
+    assert_eq!(
+        (
+            driver.state().status,
+            driver.state().last_reason.as_deref(),
+            (driver.state().cost_used_usd * 100.0).round() / 100.0
+        ),
+        (
+            GoalStatus::BudgetLimited,
+            Some("Reached $0.5 goal cost cap"),
+            0.55
+        )
+    );
+    // A capped goal cannot resume past its cap.
+    assert!(driver.resume(&mut session).unwrap().is_none());
+    assert_eq!(driver.state().status, GoalStatus::BudgetLimited);
 }
