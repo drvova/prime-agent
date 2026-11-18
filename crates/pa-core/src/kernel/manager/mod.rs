@@ -393,7 +393,9 @@ impl Drop for Inner {
         self.supersede_protocol_repair();
         lock(&self.guarded).lifecycle.transition(Lifecycle::Defunct);
         live_kernels::remove_inner(self);
-        self.cleanup_resources(Signal::Kill);
+        if let Some(pid) = self.cleanup_resources(Signal::Kill) {
+            teardown::await_killed_exit(pid);
+        }
     }
 }
 
@@ -973,7 +975,9 @@ impl ReplKernelManager {
             .lifecycle
             .transition(Lifecycle::Defunct);
         live_kernels::remove_inner(&self.inner);
-        self.inner.cleanup_resources(Signal::Kill);
+        if let Some(pid) = self.inner.cleanup_resources(Signal::Kill) {
+            teardown::await_killed_exit(pid);
+        }
     }
 
     /// Synchronous best-effort cleanup. Safe to call from drop paths.

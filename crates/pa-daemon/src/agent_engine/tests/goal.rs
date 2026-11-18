@@ -287,7 +287,7 @@ fn recovered_engine_compaction_walk_sees_the_durable_history() {
 
 #[test]
 fn post_compaction_goal_continuation_mint() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "goal turn reply"}] }),
         1,
     );
@@ -381,7 +381,7 @@ fn post_compaction_goal_continuation_mint() {
 /// armed flag behind and the settle sites deliver a second one.
 #[test]
 fn post_compaction_mint_delivers_the_armed_deferral_once() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "goal turn reply"}] }),
         1,
     );
@@ -549,7 +549,7 @@ fn goal_turn_end_mints_the_loop_until_the_goal_completes() {
 
 #[test]
 fn paused_goal_mints_no_turn_end_continuation() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [
             {"text": "start turn reply"},
             {"text": "paused turn reply"},
@@ -587,7 +587,7 @@ fn paused_goal_mints_no_turn_end_continuation() {
 
 #[test]
 fn budget_exhausted_stops_with_the_ts_budget_steer() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "crossing turn reply"}] }),
         1,
     );
@@ -644,7 +644,7 @@ fn budget_exhausted_stops_with_the_ts_budget_steer() {
 
 #[test]
 fn queued_input_defers_the_turn_end_mint() {
-    let (engine, _engine_dir) = faux_engine_with_settings(
+    let (_engine_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "first"}, {"text": "second"}] }),
         1,
     );
@@ -789,7 +789,7 @@ fn engine_session_entries(engine: &AgentSessionEngine) -> Vec<pa_types::session:
 
 #[test]
 fn injected_custom_turn_holds_one_representation() {
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "notice acknowledged"}] }),
         1,
     );
@@ -884,7 +884,7 @@ fn injected_custom_turn_holds_one_representation() {
 
 #[test]
 fn goal_start_continuation_holds_one_representation() {
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "goal turn reply"}] }),
         1,
     );

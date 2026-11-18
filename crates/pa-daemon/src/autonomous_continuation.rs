@@ -351,7 +351,7 @@ mod tests {
     /// The consult's lost-wakeup guard (Macroscope's #2826 review).
     #[test]
     fn a_handle_settling_between_the_probe_and_the_flag_store_still_wakes() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &serde_json::json!({ "responses": [{"text": "warm ok"}, {"text": "working"}] }),
             u64::MAX,
         );
@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn live_background_bash_holds_the_autonomous_continuation_until_it_settles() {
-        let (engine, _dir) = faux_engine_with_settings(
+        let (_dir, engine) = faux_engine_with_settings(
             &serde_json::json!({ "responses": [{"text": "warm ok"}, {"text": "working"}] }),
             u64::MAX,
         );

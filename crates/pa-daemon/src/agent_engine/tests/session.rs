@@ -143,7 +143,7 @@ fn a_side_question_bills_the_session_it_ran_on() {
     let _faux = FAUX_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &json!({ "responses": [{ "text": "warm ok" }, { "text": "the aside" }] }),
         u64::MAX,
     );
@@ -681,7 +681,7 @@ fn an_injected_custom_row_without_a_timestamp_admits_the_turn() {
     let _faux = FAUX_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (engine, _dir) = faux_engine_with_settings(
+    let (_dir, engine) = faux_engine_with_settings(
         &serde_json::json!({ "responses": [{"text": "notice acknowledged"}] }),
         1,
     );
@@ -813,5 +813,53 @@ fn the_parse_failure_log_line_carries_the_senders_identity_not_the_payload() {
     assert!(
         !line.contains(secret),
         "the raw payload must not ride the log line: {line}"
+    );
+}
+
+/// An engine's kernel process does not outlive the engine: the built session's
+/// kernel manager can stay referenced past the engine, and a kernel left
+/// running then flushes its exit snapshot into an artifact dir the engine's
+/// owner may already have removed. A plain-thread drop kills the kernel and
+/// returns only once it stopped running.
+#[test]
+fn dropping_the_engine_stops_its_kernel_before_the_drop_returns() {
+    let Some(python) = crate::test_support::live_kernel_python() else {
+        return;
+    };
+    let _faux = FAUX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _env = crate::test_support::KernelEnvOverride::apply(&[(
+        "PRIME_AGENT_KERNEL_PYTHON",
+        Some(python.display().to_string()),
+    )]);
+    let (_dir, engine) = faux_engine_with_settings(&json!({ "responses": ["ok"] }), 1);
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(&engine, "build the session".to_string(), &mut events);
+    let pid = {
+        let built = engine
+            .runtime
+            .block_on(engine.session.lock())
+            .clone()
+            .expect("the admitted turn built the session");
+        let provisioner = built
+            .kernel_provisioner_weak()
+            .upgrade()
+            .expect("the session's kernel provisioner");
+        engine
+            .runtime
+            .block_on(provisioner.ensure(None, None))
+            .expect("the kernel started")
+            .process_id()
+            .expect("a running kernel has a pid")
+    };
+    assert!(
+        pa_types::platform::process::is_process_alive(pid.unsigned_abs()).unwrap_or(false),
+        "the kernel runs while the engine lives"
+    );
+    drop(engine);
+    assert!(
+        !pa_types::platform::process::is_process_alive(pid.unsigned_abs()).unwrap_or(true),
+        "kernel {pid} still runs after its engine dropped"
     );
 }

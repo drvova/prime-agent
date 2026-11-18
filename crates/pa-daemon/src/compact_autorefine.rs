@@ -140,14 +140,14 @@ mod tests {
         script: &serde_json::Value,
         reserve_tokens: u64,
         with_session_file: bool,
-    ) -> (std::sync::Arc<AgentSessionEngine>, tempfile::TempDir) {
-        let (engine, dir) = faux_engine_with_settings(script, reserve_tokens);
+    ) -> (tempfile::TempDir, std::sync::Arc<AgentSessionEngine>) {
+        let (dir, engine) = faux_engine_with_settings(script, reserve_tokens);
         if with_session_file {
             let sessions = dir.path().join("sessions");
             std::fs::create_dir_all(&sessions).unwrap();
             engine.set_session_file(sessions.join("trigger-session.jsonl"));
         }
-        (engine, dir)
+        (dir, engine)
     }
 
     fn assistant_texts(events: &[EngineEvent]) -> Vec<String> {
@@ -182,7 +182,7 @@ mod tests {
     /// The reserve headroom between one small turn's usage and a big crossing turn's (the
     /// f14 battery shape): small turns stay below, big turns cross, environment-independently.
     fn crossing_headroom() -> u64 {
-        let (probe, _probe_dir) =
+        let (_probe_dir, probe) =
             faux_engine_with_settings(&json!({ "responses": [{"text": "seed reply"}] }), 1);
         let mut probe_events: Vec<EngineEvent> = Vec::new();
         admit(&probe, "seed turn".to_string(), &mut probe_events);
@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn threshold_compaction_arms_the_review_off_the_turn_path() {
         let headroom = crossing_headroom();
-        let (engine, _dir) = trigger_engine(
+        let (_dir, engine) = trigger_engine(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -257,7 +257,7 @@ mod tests {
     fn the_declining_review_stamps_the_cooldown() {
         // reserve 1: the headroom never crosses, so only the manual
         // compaction runs.
-        let (engine, _dir) = trigger_engine(
+        let (_dir, engine) = trigger_engine(
             &json!({
                 "responses": [
                     {"text": "first reply"},
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn sessions_without_the_refine_surface_never_run_a_review() {
         let headroom = crossing_headroom();
-        let (engine, _dir) = trigger_engine(
+        let (_dir, engine) = trigger_engine(
             &json!({
                 "responses": [
                     {"text": "seed reply"},
@@ -393,7 +393,7 @@ mod tests {
 
     #[test]
     fn manual_compaction_arms_and_consumes_the_round() {
-        let (engine, _dir) = trigger_engine(
+        let (_dir, engine) = trigger_engine(
             &json!({
                 "responses": [
                     {"text": "first reply"},
@@ -462,7 +462,7 @@ mod tests {
             ),
             ("not json", false),
         ] {
-            let (engine, _dir) =
+            let (_dir, engine) =
                 trigger_engine(&json!({ "responses": [{"text": reply}] }), 1, true);
             let (send, receive) = std::sync::mpsc::channel();
             *engine.refinement_completion_sink.lock().unwrap() =

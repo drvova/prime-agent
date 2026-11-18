@@ -1,0 +1,1 @@
+- Fixed a discarded session engine leaving its Python kernel process running until the daemon exited.
