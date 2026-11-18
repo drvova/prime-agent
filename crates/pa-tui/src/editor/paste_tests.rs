@@ -355,3 +355,14 @@ fn a_draft_cleared_into_history_recalls_its_paste_content() {
     let pasted = "line\n".repeat(20);
     assert_eq!(submitted, vec![format!("A{}", pasted.trim_end())]);
 }
+
+/// Pasted terminal noise never reaches the buffer: escape sequences (CSI, OSC, the paste end
+/// marker, 8-bit CSI) go whole, C0/C1 controls and DEL go, and line breaks fold to LF.
+#[test]
+fn a_paste_drops_escape_sequences_and_control_characters() {
+    let mut e = ed();
+    e.handle_paste(
+        "a\x1b[31mred\x1b[0m\x1b]0;title\x07 b\x7f\u{9b}2Jc\u{85}d\x1b[201~\r\ne\x1bOMf\rg",
+    );
+    assert_eq!(e.get_text(), "ared bcd\nef\ng");
+}

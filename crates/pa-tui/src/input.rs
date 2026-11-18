@@ -1243,6 +1243,74 @@ mod tests {
         );
     }
 
+    /// A copied line usually carries its line break: the Windows console delivers it as the line's
+    /// keys plus an Enter in one burst, and that Enter is pasted text, never a submit.
+    #[test]
+    fn a_windows_line_paste_with_a_trailing_line_break_never_submits() {
+        let text = "git status\r";
+        assert_eq!(
+            drive(WINDOWS_WINDOW, vec![(0, windows_paste(text))]),
+            vec![ReaderInput::BurstPaste(text.into())]
+        );
+    }
+
+    /// The console pipe can deliver a paste's last line break alone, after the continuation window
+    /// closed: it still lands in the paste's tail as text.
+    #[test]
+    fn a_windows_paste_whose_last_line_break_lands_late_never_submits() {
+        let inputs = drive(
+            WINDOWS_WINDOW,
+            vec![
+                (0, windows_paste("first line\rsecond")),
+                (60, windows_paste("\r")),
+            ],
+        );
+        assert_eq!(
+            inputs,
+            vec![
+                ReaderInput::BurstPaste("first line\rsecond".into()),
+                ReaderInput::BurstPaste("\r".into()),
+            ]
+        );
+    }
+
+    /// A terminal without bracketed paste delivers a CRLF-terminated line as one write; a typed
+    /// Enter is a lone CR, so the CRLF marks the write as pasted text.
+    #[test]
+    fn a_crlf_terminated_write_is_a_paste_without_bracketed_paste() {
+        let mut outputs: Vec<GuardOutput> = "ls -la"
+            .chars()
+            .map(|c| GuardOutput::Event(key(KeyCode::Char(c), KeyModifiers::NONE)))
+            .collect();
+        outputs.push(GuardOutput::Event(key(KeyCode::Enter, KeyModifiers::NONE)));
+        outputs.push(GuardOutput::Event(key(
+            KeyCode::Char('j'),
+            KeyModifiers::CONTROL,
+        )));
+        assert_eq!(
+            collect_forwarded(outputs),
+            vec![ReaderInput::BurstPaste("ls -la\r\n".into())]
+        );
+    }
+
+    /// A paste payload carrying its own end marker ends the bracketed paste early, and the
+    /// payload's rest arrives as keys in the same write: that rest is pasted text, never a submit.
+    #[test]
+    fn the_rest_of_a_write_after_a_bracketed_paste_is_pasted_text() {
+        let outputs = vec![
+            GuardOutput::Event(Event::Paste("rm -rf build".into())),
+            GuardOutput::Event(key(KeyCode::Enter, KeyModifiers::NONE)),
+            GuardOutput::Event(key(KeyCode::Char('x'), KeyModifiers::NONE)),
+        ];
+        assert_eq!(
+            collect_forwarded(outputs),
+            vec![
+                ReaderInput::Event(Event::Paste("rm -rf build".into())),
+                ReaderInput::BurstPaste("\rx".into()),
+            ]
+        );
+    }
+
     /// Typing on Windows is one key per round: nothing is held, and Enter dispatches as a key.
     #[test]
     fn typed_windows_keys_pass_straight_through() {
