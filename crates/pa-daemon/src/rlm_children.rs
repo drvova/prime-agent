@@ -193,6 +193,9 @@ struct ChildRecord {
     /// The task prompt was admitted; never settle a pre-prompt child (it
     /// is idle with an empty queue by construction).
     prompt_admitted: bool,
+    /// The detached task prompt's progress: a `collect` with a timeout
+    /// releases a held prompt and waits for it to finish.
+    kickoff: Arc<tokio::sync::watch::Sender<Kickoff>>,
     /// The delete or close of this child, kept apart from `run` so a live run
     /// is never faked settled during a delete's kill.
     retirement: Retirement,
@@ -337,6 +340,20 @@ pub struct SupervisorChildSessions {
 pub type DeleteNotifier = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 
 pub(crate) type ChildUpdateSink = std::sync::Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Where a spawned child's detached task prompt stands, as a waiting
+/// `collect` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kickoff {
+    /// Held until the spawning parent turn completes.
+    Held,
+    /// A `collect` with a timeout released the hold: the caller is blocked
+    /// on the child, so holding its task for the turn could only stall.
+    Released,
+    /// The prompt task is done: the worker accepted the task, or the
+    /// task gave up (a failed prompt, a parent close).
+    Finished,
+}
 
 /// The parent worker's turn state as the detached child prompt tasks read it.
 #[derive(Debug, Clone, Copy, Default)]
@@ -741,6 +758,7 @@ impl SupervisorChildSessions {
                 notice_delivered: false,
                 factory: false,
                 prompt_admitted: true,
+                kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
                 retirement: Retirement::live(),
                 usage_registration_forgotten: false,
                 session_file: None,

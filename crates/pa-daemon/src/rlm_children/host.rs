@@ -8,7 +8,7 @@ use super::{
     assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
     resolve_child_cwd, resolve_child_model, rlm_child_label, rlm_depth_limit_error,
     spawn_name_unavailable_error, Arc, ChildCloseReason, ChildObservationSource, ChildRecord,
-    Context, DaemonCommand, Duration, Instant, Mutex, Path, Result, RlmChildResult,
+    Context, DaemonCommand, Duration, Instant, Kickoff, Mutex, Path, Result, RlmChildResult,
     RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
     RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
     SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
@@ -189,6 +189,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     notice_delivered: false,
                     factory: request.factory.is_some(),
                     prompt_admitted: false,
+                    kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Held)),
                     retirement: Retirement::live(),
                     usage_registration_forgotten: false,
                     session_file: created.session_file.clone(),
@@ -262,14 +263,23 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 let turn = *this.parent_turn.borrow();
                 turn.running.then_some(turn.completed)
             };
+            let kickoff = Arc::clone(&record.lock().await.kickoff);
             tokio::spawn(async move {
                 if let Some(generation) = spawning_turn {
-                    watcher_this.wait_turn_done(generation).await;
+                    // A `collect` waiting on this child releases the hold:
+                    // a cell blocked on the child keeps the spawning turn
+                    // from completing.
+                    let mut released = kickoff.subscribe();
+                    tokio::select! {
+                        () = watcher_this.wait_turn_done(generation) => {}
+                        _ = released.wait_for(|kickoff| *kickoff == Kickoff::Released) => {}
+                    }
                 }
                 // The parent closed before the prompt admitted: the
                 // child is closed with it, so the detached task prompt
                 // never fires.
                 if watcher_record.lock().await.retirement.closed_by_parent() {
+                    kickoff.send_replace(Kickoff::Finished);
                     return;
                 }
                 if let Err(error) = watcher_this
@@ -309,12 +319,14 @@ impl RlmSubagentHost for SupervisorChildSessions {
                         watcher_this
                             .settle_failed(&watcher_record, format!("{retry_error:#}"))
                             .await;
+                        kickoff.send_replace(Kickoff::Finished);
                         return;
                     }
                 }
                 // The worker accepted the task: from here an idle read is a
                 // finished run, never the pre-prompt idle worker.
                 watcher_record.lock().await.prompt_admitted = true;
+                kickoff.send_replace(Kickoff::Finished);
                 watcher_this.watch_child_settle(&watcher_record).await;
             });
             Ok(RlmSpawnHandle {
@@ -633,6 +645,28 @@ impl RlmSubagentHost for SupervisorChildSessions {
             let deadline = Instant::now() + Duration::from_millis(timeout_ms);
             let mut results = Vec::with_capacity(records.len());
             for record in &records {
+                if timeout_ms > 0 {
+                    // A task prompt still held for the spawning turn reads
+                    // as an idle pre-prompt worker, so the idle wait below
+                    // would return at once: release the prompt and wait for
+                    // its admission inside the shared budget first.
+                    let kickoff = Arc::clone(&record.lock().await.kickoff);
+                    kickoff.send_if_modified(|kickoff| match kickoff {
+                        Kickoff::Held => {
+                            *kickoff = Kickoff::Released;
+                            true
+                        }
+                        Kickoff::Released | Kickoff::Finished => false,
+                    });
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let mut finished = kickoff.subscribe();
+                    // A timeout yields the current snapshot, never an error.
+                    let _ = tokio::time::timeout(
+                        remaining,
+                        finished.wait_for(|kickoff| *kickoff == Kickoff::Finished),
+                    )
+                    .await;
+                }
                 this.refresh_record(record).await;
                 // A settled child that is busy again runs a follow-up turn:
                 // re-arm usage observation (the task-run watcher retired at
