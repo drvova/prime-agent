@@ -1,0 +1,1 @@
+- The Python kernel now imports the preinstalled packages (pandas, numpy, scipy, requests, and the rest) in the background once it is ready, so the first cell that uses them no longer waits for a cold import. Set `PRIME_AGENT_KERNEL_BACKGROUND_IMPORTS=0` to turn this off.
