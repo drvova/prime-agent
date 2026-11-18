@@ -318,6 +318,15 @@ jobs:
           # ref, and PR-ref entries are the eviction pressure on the
           # release-build caches.
           save-if: ${{ github.event_name == 'push' }}
+      # mold as the system linker (CI only): every shard links the workspace
+      # bins plus one test binary per unit, all with debuginfo. The action
+      # repoints the real /usr/bin/ld at mold, so cc's link step picks it up
+      # with no RUSTFLAGS change. Cargo fingerprints therefore stay the same
+      # and the shared test-shards cache (dependency rlibs, which are never
+      # linked) still hits.
+      - uses: rui314/setup-mold@339e96b4ff1f3bd865856ba4cbbe8818a7acb038 # v1
+        with:
+          mold-version: 2.42.1
       - name: Install uv (the kernel venv bootstrap below uses it)
         run: |
           python3 -m pip install --user uv
@@ -484,8 +493,54 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
           components: clippy
+      # The mingw-w64 cross gcc comes from a .deb cache. The runner's ubuntu
+      # archive mirror served these packages at ~100 kB/s: on run 44390136031
+      # the 115 MB fetch took 18m37s of the job's 21m. So the .debs are cached
+      # under the package version the image's apt lists name, and only a
+      # cache miss (a new listed version) downloads them. Only the
+      # win32-thread compiler is installed. It is the x86_64-w64-mingw32-gcc
+      # alternative the old gcc-mingw-w64-x86-64 metapackage already selected
+      # (priority win32 > posix), so ring's C sees the same compiler. The
+      # posix-thread twin was half the download and never ran.
+      - name: Resolve the mingw-w64 package version (the .deb cache key)
+        id: mingw
+        run: |
+          set -euo pipefail
+          candidate() {
+            apt-cache policy gcc-mingw-w64-x86-64-win32 | sed -n 's/^ *Candidate: //p'
+          }
+          version="$(candidate)"
+          if [ -z "${version}" ] || [ "${version}" = "(none)" ]; then
+            sudo apt-get update
+            version="$(candidate)"
+          fi
+          test -n "${version}" && test "${version}" != "(none)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Restore the mingw-w64 .deb cache
+        id: mingw-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/mingw-debs
+          key: mingw-w64-debs-ubuntu-24.04-${{ steps.mingw.outputs.version }}
       - name: Install the mingw-w64 cross toolchain (ring C for the target)
-        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+        run: |
+          set -euo pipefail
+          debs="${HOME}/mingw-debs"
+          if [ "${{ steps.mingw-cache.outputs.cache-hit }}" != "true" ]; then
+            sudo apt-get update
+            mkdir -p "${debs}/partial"
+            sudo apt-get install -y --no-install-recommends --download-only \
+              -o Dir::Cache::archives="${debs}" gcc-mingw-w64-x86-64-win32
+            sudo rm -rf "${debs}/partial" "${debs}/lock"
+          fi
+          sudo apt-get install -y --no-install-recommends "${debs}"/*.deb
+          x86_64-w64-mingw32-gcc --version
+      - name: Save the mingw-w64 .deb cache
+        if: steps.mingw-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/mingw-debs
+          key: mingw-w64-debs-ubuntu-24.04-${{ steps.mingw.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: windows-cross
