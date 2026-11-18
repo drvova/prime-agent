@@ -425,6 +425,7 @@ pub(crate) fn direct_attach_capabilities() -> Vec<DaemonClientCapability> {
         "elide_snapshot_images".to_string(),
         "windowed_snapshot".to_string(),
         pa_types::daemon::message_delta::MESSAGE_UPDATE_DELTA_CAPABILITY.to_string(),
+        pa_types::question::QUESTIONS_CAPABILITY.to_string(),
     ]
 }
 

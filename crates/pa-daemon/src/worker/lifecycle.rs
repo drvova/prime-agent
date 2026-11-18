@@ -78,6 +78,9 @@ impl Worker {
         self.side_questions
             .abort_all_and_settle(SIDE_QUESTION_SETTLE_TIMEOUT)
             .await;
+        // A kernel question still waiting for a reply settles as cancelled:
+        // no client will answer a closing session.
+        self.interaction.hub.cancel_open_question();
         let interrupted_turn = {
             let mut core = self.core.lock().unwrap();
             // Every explicit cancellation also sets `abort_requested`.

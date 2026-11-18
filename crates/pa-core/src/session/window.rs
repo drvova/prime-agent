@@ -280,6 +280,8 @@ impl WindowedSessionStore {
         let mut compaction_count = 0;
         let mut non_bootstrap = false;
         let mut goal = None;
+        // The newest todo list snapshot on the active branch, hydrated like `goal`.
+        let mut todos = None;
         // The Anthropic subscription warning's once-per-session-lifecycle
         // gate: set when the walk meets the marked-shown custom row (any
         // position on the active branch hydrates it, exactly like `goal`).
@@ -452,6 +454,9 @@ impl WindowedSessionStore {
                     ) || (goal.is_none()
                         && meta.custom_type.as_deref()
                             == Some(crate::goals::GOAL_STATE_CUSTOM_TYPE))
+                        || (todos.is_none()
+                            && meta.custom_type.as_deref()
+                                == Some(pa_types::todo::TODO_LIST_CUSTOM_TYPE))
                         || (!anthropic_warning_shown
                             && meta.custom_type.as_deref()
                                 == Some(crate::session::ANTHROPIC_WARNING_SHOWN_CUSTOM_TYPE))))
@@ -466,6 +471,11 @@ impl WindowedSessionStore {
             if on_path {
                 if goal.is_none() {
                     goal = entry.as_ref().and_then(valid_goal);
+                }
+                if todos.is_none() {
+                    todos = entry
+                        .as_ref()
+                        .and_then(crate::interaction::persisted_todo_list);
                 }
                 if !anthropic_warning_shown {
                     anthropic_warning_shown = entry.as_ref().is_some_and(valid_warning_shown);
@@ -593,6 +603,7 @@ impl WindowedSessionStore {
             stats: older_path_stats.clone(),
             first_user: first_user_message.clone(),
             goal,
+            todos,
             anthropic_warning_shown,
             non_bootstrap,
             retained_whole_file: !window_done,
@@ -765,6 +776,11 @@ impl WindowedSessionStore {
     #[must_use]
     pub fn goal_state(&self) -> Option<&crate::goals::GoalState> {
         self.snapshot.goal.as_ref()
+    }
+    /// The newest todo list snapshot on the active branch.
+    #[must_use]
+    pub fn todo_list(&self) -> Option<&pa_types::todo::TodoList> {
+        self.snapshot.todos.as_ref()
     }
     /// Whether the active branch already carries the Anthropic subscription
     /// warning's shown marker (the once-per-session-lifecycle gate's
@@ -982,6 +998,9 @@ pub(super) fn update_snapshot(snapshot: &mut Snapshot, entry: &FileEntry) {
     }
     if let Some(goal) = valid_goal(entry) {
         snapshot.goal = Some(goal);
+    }
+    if let Some(todos) = crate::interaction::persisted_todo_list(entry) {
+        snapshot.todos = Some(todos);
     }
     // A live append of the warning marker folds into the retained window's
     // snapshot the same way, so the sidecar the next reload serves stays

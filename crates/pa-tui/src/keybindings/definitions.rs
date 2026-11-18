@@ -387,6 +387,13 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["space"], "Reply to selected agent"),
     ),
     (
+        "app.question.toggle",
+        def!(
+            &["space"],
+            "Toggle the selected choice of an agent question"
+        ),
+    ),
+    (
         "app.agents.new",
         def!(&["ctrl+n"], "Start a new session from the agents view"),
     ),

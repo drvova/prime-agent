@@ -724,6 +724,31 @@ impl SessionUi {
             TurnUpdate::GoalUpdate(goal) => {
                 self.apply_goal_update(goal, view);
             }
+            TurnUpdate::TodoUpdate(todos) => {
+                view.todos = todos;
+                self.dirty = true;
+            }
+            TurnUpdate::QuestionOpen(question) => {
+                view.question = Some(crate::question_prompt::QuestionPrompt::new(question));
+                // The turn is blocked on the user, not working: the loader says so.
+                if let Some(working) = view.working.as_mut() {
+                    working.message = Some("Waiting for your answer".to_string());
+                }
+                self.dirty = true;
+            }
+            TurnUpdate::QuestionClosed { question_id } => {
+                if view
+                    .question
+                    .as_ref()
+                    .is_some_and(|prompt| prompt.question.id == question_id)
+                {
+                    view.question = None;
+                }
+                if let Some(working) = view.working.as_mut() {
+                    working.message = None;
+                }
+                self.dirty = true;
+            }
             TurnUpdate::BashStart {
                 command,
                 exclude_from_context,

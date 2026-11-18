@@ -154,6 +154,8 @@ const INTERNAL_HOST_REQUESTS: &[&str] = &[
     "bash.consumed",
     // The factory module reports run milestones; the model never calls it.
     "factory.progress",
+    // The kernel's `ask` withdraws its own question when its cell is interrupted.
+    "question.cancel",
 ];
 
 /// Map one registered host-request type to the prompt token that documents
@@ -166,6 +168,7 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
         match request {
             "rlm.run" => "rlm.spawn",
             "rlm.progress.note" => "rlm.progress_note",
+            "question.ask" => "ask",
             "agent_observe.list" | "agent_message.list_agents" => "agent_observe.list_agents",
             "agent_observe.get" => "agent_observe.get_agent",
             "agent_observe.recent" => "agent_observe.recent_messages",

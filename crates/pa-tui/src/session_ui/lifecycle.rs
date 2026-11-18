@@ -114,6 +114,7 @@ impl SessionUi {
             pending_model_provider: None,
             pending_thinking_suffix: None,
             pending_queue: None,
+            pending_interaction: None,
             queue_selection: crate::queued::QueueSelection::default(),
             context: None,
             // The settings default: on until the attach state says otherwise.
@@ -521,6 +522,7 @@ impl SessionUi {
         self.pending_snapshot = Some(reconstructed.chat);
         self.loader_anchor_ms = reconstructed.last_user_prompt_ms;
         self.goal_view.seed(reconstructed.goal.unwrap_or_default());
+        self.pending_interaction = Some((reconstructed.todos, reconstructed.question));
         // The resynced state owns the loader: a turn still live behind the
         // re-attach keeps the spinner, one that died with the old link does not.
         let streaming = attach.snapshot.get("state").is_some_and(|state| {
@@ -671,6 +673,10 @@ impl SessionUi {
         // The completion menu's model-scoped choices follow the rebuilt model and level.
         self.update_model_eligibility_filters(view);
         view.queued = self.pending_queue.take().unwrap_or_default();
+        // The todo tray and an open question follow the attached session.
+        let (todos, question) = self.pending_interaction.take().unwrap_or_default();
+        view.todos = todos;
+        view.question = question.map(crate::question_prompt::QuestionPrompt::new);
         // Any browse selection belonged to the previous queue and drops.
         let _ = self.queue_selection.reset();
         view.queue_selected = None;

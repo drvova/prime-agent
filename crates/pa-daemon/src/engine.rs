@@ -43,6 +43,18 @@ pub trait SessionEngine: Send + Sync {
         serde_json::to_value(pa_core::goals::empty_goal_state()).unwrap_or(Value::Null)
     }
 
+    /// The session todo list as the wire `TodoList` value; `null` for
+    /// engines without one.
+    fn todo_list_value(&self) -> Value {
+        Value::Null
+    }
+
+    /// The kernel question waiting for a reply as the wire `Question`
+    /// value; `null` when none is open or the engine has no questions.
+    fn open_question_value(&self) -> Value {
+        Value::Null
+    }
+
     /// Purge the queued goal-context turns: withdraw minted continuations
     /// waiting to run; engines without a queue do nothing.
     fn purge_queued_goal_contexts(&self) {}

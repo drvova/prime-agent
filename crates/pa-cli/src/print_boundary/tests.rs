@@ -127,6 +127,7 @@ async fn faux_engine_with_telemetry(
         rlm_subagent_host: None,
         rlm_usage_store: None,
         progress_note_emit: None,
+        interaction: None,
         rlm_depth: None,
         factory_child: false,
         daemonless: true,

@@ -43,6 +43,9 @@ try:
     bash = _prime_agent_rlm_module.bash
     import rlm.mcp as mcp
     import rlm.web as web
+    import rlm.todo as todo
+    import rlm.ask as _prime_agent_ask_module
+    ask = _prime_agent_ask_module.ask
 ";
 
 /// One line inside the bootstrap's try block, emitted only when the host

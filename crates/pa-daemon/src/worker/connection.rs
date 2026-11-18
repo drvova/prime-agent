@@ -915,6 +915,12 @@ impl Worker {
         let generation = core.generation.clone();
         let active_session_id = core.active_session_id.clone();
         drop(core);
+        // A client that can answer kernel questions makes the session's user available (the
+        // capability rides `clientCapabilities` on a routed attach).
+        if retained {
+            self.interaction
+                .note_attach(&client_id, &client_capabilities);
+        }
         let replay =
             create_daemon_replay_info(resume_cursor.as_ref(), last_event_sequence, &generation);
         let cursor = json!({ "generation": generation, "sequence": last_event_sequence });
@@ -1074,6 +1080,8 @@ impl Worker {
             }
         }
         drop(core);
+        // A kernel question re-checks whether anyone can still answer it.
+        self.interaction.hub.presence_changed();
         // The runner's park re-arms: the released hold opens the idle
         // passivation's unattached gate for a now-detached child.
         self.work_notify.notify_one();
@@ -1108,6 +1116,7 @@ impl Worker {
             core.attached_client_ids.retain(|id| id != &client_id);
         }
         drop(core);
+        self.interaction.hub.presence_changed();
         // The notify re-arms the runner's idle-passivation window now
         // that the client detached.
         self.work_notify.notify_one();

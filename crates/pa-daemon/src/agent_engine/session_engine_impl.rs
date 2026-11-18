@@ -59,6 +59,19 @@ impl SessionEngine for AgentSessionEngine {
         })
     }
 
+    fn todo_list_value(&self) -> Value {
+        self.interaction_hub()
+            .and_then(|hub| serde_json::to_value(hub.todos()).ok())
+            .unwrap_or(Value::Null)
+    }
+
+    fn open_question_value(&self) -> Value {
+        self.interaction_hub()
+            .and_then(|hub| hub.open_question())
+            .and_then(|question| serde_json::to_value(question).ok())
+            .unwrap_or(Value::Null)
+    }
+
     fn goal_state_value(&self) -> Value {
         if let Some(goal) = self.current_goal_state() {
             return serde_json::to_value(&goal).unwrap_or(Value::Null);

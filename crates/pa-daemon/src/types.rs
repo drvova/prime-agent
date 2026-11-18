@@ -235,6 +235,12 @@ pub struct AgentConnectionState {
     pub session_actions: SessionActionSnapshot,
     pub compaction_count: u32,
     pub goal: Value,
+    /// The session todo list (`null` for engines without one).
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub todos: Value,
+    /// The kernel question waiting for a reply, if any.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub pending_question: Value,
     #[serde(default)]
     pub scoped_models: Vec<Value>,
     #[serde(default)]

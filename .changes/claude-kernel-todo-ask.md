@@ -1,0 +1,1 @@
+- Added session todo lists (`todo.set/update/get`) and user questions (`await ask(...)`) to the Python kernel: the todo list shows live in a tray above the composer and survives restarts, and questions open an inline prompt (arrows/Enter, Space for multi-select, typed text, Esc to decline) or return `no_user` at once when nobody can answer.

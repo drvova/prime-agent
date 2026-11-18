@@ -104,6 +104,13 @@ pub enum TurnUpdate {
     /// `goal_update`: the raw wire `goal` payload (the session view
     /// owns rendering).
     GoalUpdate(Value),
+    /// `todo_update`: the session todo list changed.
+    TodoUpdate(pa_types::todo::TodoList),
+    /// `question_open`: a kernel question waits for the user.
+    QuestionOpen(pa_types::question::Question),
+    /// `question_closed`: the question settled (answered here or elsewhere, timed out,
+    /// withdrawn).
+    QuestionClosed { question_id: String },
     /// `session_action_update`: the queue projection changed. `starting`
     /// carries the picked-up prompt still preparing (TS #2063); the
     /// `rlm_child_status`/`injected_prompts` riders are Rust-native
@@ -337,6 +344,22 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
         "goal_update" => Some(TurnUpdate::GoalUpdate(
             event.get("goal").cloned().unwrap_or(Value::Null),
         )),
+        "todo_update" => event
+            .get("todos")
+            .cloned()
+            .and_then(|todos| serde_json::from_value(todos).ok())
+            .map(TurnUpdate::TodoUpdate),
+        "question_open" => event
+            .get("question")
+            .cloned()
+            .and_then(|question| serde_json::from_value(question).ok())
+            .map(TurnUpdate::QuestionOpen),
+        "question_closed" => event
+            .get("questionId")
+            .and_then(Value::as_str)
+            .map(|question_id| TurnUpdate::QuestionClosed {
+                question_id: question_id.to_string(),
+            }),
         "session_action_update" => {
             let actions = event.get("actions").cloned().unwrap_or(Value::Null);
             Some(TurnUpdate::QueueUpdated {

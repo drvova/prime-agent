@@ -64,6 +64,10 @@ pub struct Reconstructed {
     /// The session's goal state (`state.goal`), when the snapshot
     /// reports one.
     pub goal: Option<pa_types::goal::GoalState>,
+    /// The session todo list (`state.todos`); empty when the snapshot has none.
+    pub todos: pa_types::todo::TodoList,
+    /// The kernel question waiting for the user (`state.pendingQuestion`).
+    pub question: Option<pa_types::question::Question>,
     pub last_event_sequence: u64,
     /// Whether the attach supplied the resume cursor (sequence AND
     /// generation): the handoff refuses to key on the collapsed
@@ -374,6 +378,13 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
     let goal = state
         .and_then(|state| state.get("goal"))
         .and_then(|goal| serde_json::from_value::<pa_types::goal::GoalState>(goal.clone()).ok());
+    let todos = state
+        .and_then(|state| state.get("todos"))
+        .and_then(|todos| serde_json::from_value(todos.clone()).ok())
+        .unwrap_or_default();
+    let question = state
+        .and_then(|state| state.get("pendingQuestion"))
+        .and_then(|question| serde_json::from_value(question.clone()).ok());
     let actions = state.and_then(|state| state.get("sessionActions")).cloned();
     let queued = crate::queued::QueuedMessages {
         steering: actions
@@ -434,6 +445,8 @@ pub fn reconstruct(attach: &AttachData) -> Reconstructed {
         session_id,
         event_generation,
         goal,
+        todos,
+        question,
         last_event_sequence,
         cursor_present,
         queued,
