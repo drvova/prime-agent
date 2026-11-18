@@ -1,7 +1,8 @@
 # Fork release pipeline: Prime Agent (drvova build) on GitHub Releases.
 #
-# A vX.Y.Z-drvova.N tag on drvova/prime-agent builds the same five targets
-# release.yml ships, packages them with the same scripts
+# A vX.Y.Z-drvova.N tag on drvova/prime-agent builds release.yml's Linux
+# (x64, arm64) and Windows (x64) targets. macOS is not built: GitHub never
+# assigned this repository a macOS runner. It packages them with the same scripts
 # (scripts/release/split_debug.py, bundle_catalog.py, assemble_artifacts.py,
 # the install-cargo-about action), merges them with release.yml's OWN
 # promote steps (extracted from release.yml at run time, so the merged
@@ -230,88 +231,6 @@ jobs:
             target/${{ matrix.target }}/dist/manifest.json
           if-no-files-found: error
 
-  # release.yml's build-darwin job: both arches on the Apple-silicon pool
-  # (x86_64 cross-compiled, livechecked under Rosetta 2). The fork runs on
-  # the macos-latest Apple-silicon label: the first fork release's macos-15
-  # jobs were cancelled twice after 15 minutes without ever getting a runner.
-  build-darwin:
-    needs: [tag-check, catalog-ref]
-    name: build-${{ matrix.target }}
-    runs-on: macos-latest
-    permissions:
-      contents: read
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            platform: darwin-arm64
-          - target: x86_64-apple-darwin
-            platform: darwin-x64
-    env:
-      COPYFILE_DISABLE: "1"
-      VERSION: ${{ needs.tag-check.outputs.version }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@ce678459e9fc7500d337468f904b95f1b5c10b5e
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          key: fork-${{ matrix.target }}
-      - name: Build (release, locked, distribution-stamped)
-        run: cargo build --release --locked --target ${{ matrix.target }} -j 4 -p pa-cli --bin prime-agent
-      - name: Generate bundled catalog assets (live catalog)
-        env:
-          CATALOG_REF: ${{ needs.catalog-ref.outputs.sha }}
-        run: |
-          set -euo pipefail
-          python3 scripts/release/bundle_catalog.py generate --network \
-            --catalog-ref "${CATALOG_REF}" --out "target/${{ matrix.target }}/catalog-assets"
-      - name: Install cargo-about (renders the archive's third-party notices)
-        uses: ./.github/actions/install-cargo-about
-      - name: Assemble tarball + checksums + manifest
-        run: |
-          set -euo pipefail
-          python3 scripts/release/assemble_artifacts.py \
-            --repo-root . \
-            --version "${VERSION}" \
-            --target "${{ matrix.target }}" \
-            --binary "target/${{ matrix.target }}/release/prime-agent" \
-            --catalog-assets "target/${{ matrix.target }}/catalog-assets" \
-            --out-dir "target/${{ matrix.target }}/dist"
-      - name: "Livecheck gate: the packaged build reports the fork version and updates from the fork"
-        run: |
-          set -euo pipefail
-          check="$(mktemp -d)"
-          tar -xzf "target/${{ matrix.target }}/dist/prime-agent-${VERSION}-${{ matrix.platform }}.tar.gz" -C "${check}"
-          out="$("${check}/prime-agent" --version)"
-          [ "${out}" = "${VERSION}" ] || { echo "::error::the package reports '${out}', expected '${VERSION}'"; exit 1; }
-          update="$(HOME="${check}/home" PI_OFFLINE=1 "${check}/prime-agent" update --check 2>&1 || true)"
-          printf '%s\n' "${update}"
-          printf '%s\n' "${update}" | grep -qF "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}/latest.json" \
-            || { echo "::error::update --check does not read the fork channel"; exit 1; }
-      - name: Verify fresh channel install and reinstall
-        if: matrix.target != 'x86_64-apple-darwin'
-        run: |
-          set -euo pipefail
-          python3 scripts/release/test_channel_install.py \
-            --archive "target/${{ matrix.target }}/dist/prime-agent-${VERSION}-${{ matrix.platform }}.tar.gz" \
-            --installer install-rust.sh \
-            --report "target/${{ matrix.target }}/dist/channel-install.json"
-      - name: Upload artifacts
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
-        with:
-          name: artifacts-${{ matrix.target }}
-          path: |
-            target/${{ matrix.target }}/dist/prime-agent-*
-            target/${{ matrix.target }}/dist/SHA256SUMS
-            target/${{ matrix.target }}/dist/manifest.json
-          if-no-files-found: error
-
   # release.yml's build-windows job on the GitHub-hosted windows-latest
   # image: the static VC runtime (RUSTFLAGS +crt-static) and the same
   # assemble step; install.ps1 extracts this archive's prime-agent.exe.
@@ -385,7 +304,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [tag-check, build-gnu, build-darwin, build-windows]
+    needs: [tag-check, build-gnu, build-windows]
     name: publish the GitHub Release
     runs-on: ubuntu-latest
     permissions:
@@ -424,7 +343,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 source/scripts/release/fork_release.py channel \
-            --manifest release-out/manifest.json --version "${VERSION}" --out-dir release-out
+            --manifest release-out/manifest.json --version "${VERSION}" \
+            --platforms linux-arm64,linux-x64,win32-x64 --out-dir release-out
           python3 source/scripts/release/fork_release.py render \
             --repo-root source \
             --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" \
