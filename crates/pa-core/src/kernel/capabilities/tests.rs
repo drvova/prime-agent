@@ -7,13 +7,15 @@ use std::path::Path;
 use super::{capabilities, CapabilityManifest, MANIFESTS};
 
 /// Session-scoped catalog events that are not a kernel capability's standalone adoption event:
-/// the session lifecycle, and goal verification (`goal` is an executable skill).
+/// the session lifecycle, goal verification (`goal` is an executable skill), and agent messaging
+/// (the `agent-message` skill).
 const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent started",
     "agent run completed",
     "agent session ended",
     "session archived",
     "agent goal verification",
+    "agent messages",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {

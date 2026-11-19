@@ -1987,6 +1987,37 @@ async fn usage_reads_ride_their_own_event() {
     );
 }
 
+/// Rate-limited `agent_message.send` deliveries ride their own `agent messages` event at session
+/// end (a count, never a target or a body), and a session never throttled sends none.
+#[tokio::test]
+async fn agent_message_throttles_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_agent_message_throttled(1);
+    counters.note_agent_message_throttled(3);
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent messages"]
+    );
+    let messages = &event_properties(&fixture.mock, "agent messages").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = messages
+        .iter()
+        .filter(|(key, _)| key.starts_with("agent_message_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({"agent_message_throttled_count": 4})
+    );
+}
+
 /// Kernel `rlm.abort` calls ride their own `agent rlm child abort` event at session end (counts
 /// by outcome, never a child id), and a session that never aborted sends none.
 #[tokio::test]

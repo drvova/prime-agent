@@ -56,5 +56,8 @@ if child is not None:
 - Reach is limited to parent, siblings, and direct children; relay through an
   intermediate child instead of messaging grandchildren or cousins directly.
 - Sender identity is daemon-derived and cannot be spoofed from Python.
-- The daemon enforces message size, rate, and pending-queue limits before
-  accepting delivery.
+- Each sending session may burst 3 deliveries, then 1 per second; a broadcast
+  spends one per recipient. Over budget, `send` raises `RuntimeError` ending in
+  `retry after <ms> ms`, and a broadcast's refused entries carry the `error` and
+  a `retryAfterMs` hint. The daemon enforces message size and pending-queue
+  limits before accepting delivery.

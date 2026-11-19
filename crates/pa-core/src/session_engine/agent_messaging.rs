@@ -386,6 +386,23 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
     controller: std::sync::Arc<C>,
     handlers: &mut HostRequestHandlers,
 ) {
+    register_agent_message_host_handlers_with_clock(
+        controller,
+        handlers,
+        std::sync::Arc::new(std::time::Instant::now),
+    );
+}
+
+/// [`register_agent_message_host_handlers`] over an explicit rate-bucket clock. The bucket is
+/// this registration's: one per sending session, every delivery attempt takes one token.
+pub(crate) fn register_agent_message_host_handlers_with_clock<
+    C: AgentMessageController + 'static,
+>(
+    controller: std::sync::Arc<C>,
+    handlers: &mut HostRequestHandlers,
+    clock: AgentMessageClock,
+) {
+    let limiter = std::sync::Arc::new(AgentMessageRateLimiter::new(clock));
     handlers.register(
         "agent_message.list_agents",
         host_handler(|_payload| {
@@ -400,6 +417,7 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
         "agent_message.send",
         host_handler(move |payload| {
             let controller = controller.clone();
+            let limiter = limiter.clone();
             Box::pin(async move {
                 let data = payload.data;
                 let Some(message) = data.get("message").and_then(Value::as_str) else {
@@ -426,6 +444,16 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
                     let family = controller.family().await?;
                     let mut receipts = Vec::with_capacity(family.len());
                     for member in family {
+                        // One token per recipient: a throttled recipient settles with the
+                        // retry hint instead of a delivery.
+                        if let Err(throttled) = limiter.acquire() {
+                            receipts.push(json!({
+                                "target": member.id,
+                                "error": throttled.to_string(),
+                                RETRY_AFTER_MS_FIELD: throttled.retry_after_ms,
+                            }));
+                            continue;
+                        }
                         let result = controller
                             .send_agent_message(AgentMessageSendInput {
                                 target: member.id.clone(),
@@ -513,6 +541,7 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
                         ))
                     }
                 };
+                limiter.acquire()?;
                 let receipt = controller
                     .send_agent_message(AgentMessageSendInput {
                         target: member.id.clone(),
@@ -525,6 +554,10 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
         }),
     );
 }
+
+mod rate_limit;
+pub(crate) use rate_limit::observe_agent_message_throttles;
+use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIELD};
 
 // The observe half lives in the child module; the pub use re-exports keep
 // every external agent_messaging:: path stable.
