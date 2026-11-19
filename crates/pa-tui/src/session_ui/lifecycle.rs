@@ -1076,6 +1076,85 @@ mod backfill_tests {
         .expect("mock session open and both panel opens complete within ten seconds");
     }
 
+    /// The live context reading a turn's message events carry moves the footer as it lands:
+    /// the settled prompt's reading before the reply, the `~` estimate while it streams, and the
+    /// reply's measured usage (with its cache hit) once it settles, with no stats fetch between.
+    #[tokio::test]
+    async fn the_footer_follows_the_turns_live_context_readings() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("live-context.sock");
+            let (mut session, server) = mock_session(&socket, mpsc::unbounded_channel().0).await;
+            let mut view = AgentView::new(crate::theme::Theme::builtin(
+                "prime",
+                crate::theme::ColorMode::TrueColor,
+            ));
+            let reply = json!({
+                "role": "assistant", "provider": "faux", "model": "faux-1",
+                "content": [{ "type": "text", "text": "partial" }], "timestamp": 2,
+            });
+            let frames = [
+                json!({
+                    "type": "message_end",
+                    "message": { "role": "user", "content": "look", "timestamp": 1 },
+                    "contextUsage": {
+                        "tokens": 10_000, "contextWindow": 200_000, "percent": 5.0,
+                        "lastRequest": { "input": 100, "cacheRead": 900, "cacheWrite": 0 },
+                    },
+                }),
+                json!({
+                    "type": "message_update",
+                    "message": reply,
+                    "assistantMessageEvent": { "type": "text_delta", "delta": "partial" },
+                    "contextUsage": {
+                        "tokens": 12_000, "contextWindow": 200_000, "percent": 6.0,
+                        "estimated": true,
+                        "lastRequest": { "input": 100, "cacheRead": 900, "cacheWrite": 0 },
+                    },
+                }),
+                json!({
+                    "type": "message_end",
+                    "message": reply,
+                    "contextUsage": {
+                        "tokens": 14_000, "contextWindow": 200_000, "percent": 7.0,
+                        "lastRequest": { "input": 300, "cacheRead": 12_000, "cacheWrite": 0 },
+                    },
+                }),
+            ];
+            let mut footers = Vec::new();
+            for (sequence, event) in (1..).zip(frames) {
+                session.apply_client_event(
+                    crate::daemon_client::DaemonClientEvent::SessionEvent {
+                        active_session_id: "s1".to_string(),
+                        event,
+                        meta_sequence: sequence,
+                    },
+                    &mut view,
+                );
+                // The context lane alone, at the width of its widest label.
+                let tray = crate::chrome::ChromeState {
+                    context: view.chrome.context,
+                    ..Default::default()
+                };
+                let line = crate::chrome::render_tray(&tray, &view.theme, 24);
+                let text: String = line.iter().map(|span| span.content.as_str()).collect();
+                footers.push(text.trim_start().to_string());
+            }
+            assert_eq!(
+                footers,
+                [
+                    "10k/200k 5% \u{b7} cache 90%",
+                    "~12k/200k 6% \u{b7} cache 90%",
+                    "14k/200k 7% \u{b7} cache 98%",
+                ]
+            );
+            drop(session);
+            server.abort();
+        })
+        .await
+        .expect("mock session open and the live readings complete within ten seconds");
+    }
+
     /// Every successful attach clears an expired re-attach window's failure: the flag is
     /// per-connection, so a recovered connection must not keep refusing submits.
     #[tokio::test]

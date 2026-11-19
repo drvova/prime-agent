@@ -590,10 +590,6 @@ impl SessionEngine for AgentSessionEngine {
         }))
     }
 
-    fn is_quota_parked(&self) -> bool {
-        AgentSessionEngine::is_quota_parked(self)
-    }
-
     fn has_running_subagents(&self) -> bool {
         self.children
             .as_ref()

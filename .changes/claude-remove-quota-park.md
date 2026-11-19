@@ -1,0 +1,1 @@
+- When a provider reports your quota or usage limit is exhausted, the turn now fails at once with the provider's own error instead of pausing the session until the reset and resuming it on its own; a goal stops on that error like on any other. The `retry.provider.waitForUsage` settings block is no longer used (existing settings files still load).
