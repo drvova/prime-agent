@@ -382,6 +382,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         wiring
             .interaction
             .set_counters(std::sync::Arc::clone(&session_counters));
+        // `agent_message.send` (registered by the embedding): telemetry counts the deliveries
+        // the per-sender rate bucket refused (never a target or a body).
+        let counters = std::sync::Arc::clone(&session_counters);
+        super::agent_messaging::observe_agent_message_throttles(
+            &mut handlers,
+            std::sync::Arc::new(move |count| counters.note_agent_message_throttled(count)),
+        );
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.

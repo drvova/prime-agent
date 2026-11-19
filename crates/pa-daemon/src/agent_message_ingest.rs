@@ -1,7 +1,7 @@
 //! The agent-message ingestion surface: the worker arms for
 //! `agent_messages_status`/`_pause`/`_resume`/`_clear`, plus the paused
-//! delivery gate. Deliberate deviation from TS: no per-sender rate bucket
-//! (the daemon's queue capacity bound is the enforced limit).
+//! delivery gate. The per-sender rate bucket the status reports is enforced
+//! on the sending side, in pa-core's `agent_message.send` handler.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -43,8 +43,7 @@ impl Default for AgentMessageIngest {
 }
 
 impl Worker {
-    /// The safety-status wire object (see the module note for the rate-limiter
-    /// deviation).
+    /// The safety-status wire object.
     fn agent_message_safety_status(&self) -> Value {
         json!({
             "paused": self.agent_messages.paused(),
