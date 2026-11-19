@@ -220,7 +220,7 @@ impl AdmissionService {
     }
 
     /// The learned state per key (tests compare it whole across a restart).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn learned(&self) -> Vec<(AdmissionKey, LearnedState)> {
         self.pool.learned()
     }
