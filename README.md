@@ -243,12 +243,15 @@ static layers from the cache instead of writing them again.
 
 A `models.json` provider entry can declare how the provider authenticates with an
 optional `auth` block. Without one, the provider keeps its usual API key (stored,
-environment, or the entry's `apiKey`). Two strategies exist:
+environment, or the entry's `apiKey`). Three strategies exist:
 
 - `"api-key"`: the usual key. Use it to add a `sessionHeader` only.
 - `"token-exchange"`: before inference calls, Prime Agent trades long-lived
   credentials from `auth.json` for a short-lived token at `tokenUrl`, and caches the
   token until shortly before it expires.
+- `"oauth"`: you sign in once in the browser (or with a device code), and Prime
+  Agent refreshes the access token before it expires. See
+  [OAuth sign-in](#oauth-sign-in) below.
 
 ```json
 {
@@ -323,3 +326,72 @@ provider answers 401, the cached token is dropped and the call is retried once w
 fresh token; a second 401 is reported. A 429 reports the provider's reset time
 (`Retry-After` or `x-ratelimit-reset*`) under the usual retry policy. An unknown field
 or a malformed block is a `models.json` load error that names the provider.
+
+#### OAuth sign-in
+
+The `"oauth"` strategy lets any OAuth 2.0 provider sign in through the browser, with
+no provider-specific code:
+
+```json
+{
+  "providers": {
+    "example-gateway": {
+      "baseUrl": "https://gateway.example.com/v1",
+      "api": "openai-completions",
+      "auth": {
+        "strategy": "oauth",
+        "authorizationUrl": "https://auth.example.com/oauth/authorize",
+        "deviceAuthorizationUrl": "https://auth.example.com/oauth/device/code",
+        "tokenUrl": "https://auth.example.com/oauth/token",
+        "clientId": "prime-agent-cli",
+        "clientSecret": "EXAMPLE_GATEWAY_CLIENT_SECRET",
+        "scopes": ["openid", "offline_access"],
+        "redirect": { "port": 8976, "path": "/callback" },
+        "audience": "https://gateway.example.com",
+        "extraAuthParams": { "prompt": "consent" }
+      },
+      "models": [{ "id": "example-model" }]
+    }
+  }
+}
+```
+
+Sign in with `prime-agent login example-gateway`, or pick the provider in `/login`.
+Prime Agent opens the authorization page in your browser and always prints the URL
+too. The sign-in uses the authorization code flow with PKCE (S256), and the callback
+listens only on `127.0.0.1`. A callback whose `state` does not match is refused, and
+the browser sign-in gives up after five minutes. When the provider has a
+`deviceAuthorizationUrl` and no browser can open here (an SSH session or a host
+without a display), or you pass `--device`, Prime Agent shows a code and a
+verification URL to open on any device, then waits for you to finish there.
+
+The tokens are stored in `auth.json` under the provider id, as an `oauth` credential
+bound to the `tokenUrl` and `clientId` it was issued for. Before an inference call,
+a token that expires within a minute is refreshed with the refresh token. A new
+refresh token from the provider replaces the stored one. Concurrent sessions share
+one refresh. When a refresh fails, the call fails with
+`Sign in again: prime-agent login <provider>`. When the provider answers 401, the
+token is refreshed once and the call is retried. `prime-agent logout <provider>`
+removes the stored credential.
+
+Fields:
+
+- `authorizationUrl` (browser sign-in) and/or `deviceAuthorizationUrl` (device
+  code): at least one is required. Each must use `https`; plain `http` is accepted
+  only for loopback hosts.
+- `tokenUrl` (required): the token endpoint for the code exchange, the device poll,
+  and the refresh. Same `https` rule.
+- `clientId` (required) and `clientSecret` (optional). The secret is a config value:
+  an environment variable name, a `!command`, or a literal. It is resolved only when a
+  token request is sent, and it is sent as `client_secret` in the form body.
+- `scopes`: a list of scopes, sent space-separated.
+- `redirect`: the loopback callback's `port` (default: a free port in 53700-53709) and
+  `path` (default `/callback`). The redirect URI is `http://127.0.0.1:<port><path>`.
+  Register it with the provider.
+- `audience` and `extraAuthParams`: extra authorization (and device authorization)
+  request parameters. `extraAuthParams` cannot set the parameters the sign-in sets
+  itself (`state`, `redirect_uri`, `scope`, and so on).
+- `tokenPath` (default `/access_token`), `refreshPath` (default `/refresh_token`),
+  and `expiresInPath` (default `/expires_in`, optional in the response) or
+  `expiresAtPath`: JSON pointers into the token response, as for `token-exchange`.
+- `header`, `sessionHeader`, and `timeoutMs`: as for `token-exchange`.

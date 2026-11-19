@@ -1010,7 +1010,8 @@ print(json.dumps({"closure": sorted(closure), "violations": violations}))
             && report.closure.contains(&"rlm.usage".to_string())
             && report.closure.contains(&"rlm.settings".to_string())
             && report.closure.contains(&"rlm.model".to_string())
-            && report.closure.contains(&"rlm.resource_reload".to_string()),
+            && report.closure.contains(&"rlm.resource_reload".to_string())
+            && report.closure.contains(&"rlm.agent_dir".to_string()),
         "the frozen closure seed is wrong: {report:?}"
     );
     assert!(
