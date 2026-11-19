@@ -15,7 +15,8 @@ Call directly from the kernel:
 Use exact old/new strings. If the text contains triple double quotes, use
 triple single-quoted variables (`old = '''...'''`) or build `old`/`new` from
 inspected file slices. Returns a short confirmation; raises if `old_str` is
-missing or matches more than once (widen the snippet to make it unique).
+missing (the error shows where it diverges from the file) or matches more than
+once (widen the snippet to make it unique).
 
 Or from a shell cell:
 

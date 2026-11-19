@@ -167,7 +167,16 @@ impl InteractionHub {
         }
     }
 
-    fn counters(&self) -> Option<&Arc<SessionCounters>> {
+    /// Ask the user a host-initiated question (a confirmation a kernel request needs) through
+    /// the same single open-question slot and surfaces as the kernel's `ask`.
+    pub(crate) async fn ask(
+        &self,
+        question: Question,
+    ) -> anyhow::Result<(QuestionStatus, Vec<String>)> {
+        question::ask(self, question).await
+    }
+
+    pub(crate) fn counters(&self) -> Option<&Arc<SessionCounters>> {
         self.counters.get()
     }
 }

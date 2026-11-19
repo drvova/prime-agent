@@ -77,7 +77,7 @@ pub(super) fn register(hub: &Arc<InteractionHub>, handlers: &mut HostRequestHand
 
 /// Open `question`, wait for it to settle, and announce the close.
 #[tracing::instrument(skip_all, fields(kind = ?question.kind))]
-async fn ask(
+pub(super) async fn ask(
     hub: &InteractionHub,
     question: Question,
 ) -> anyhow::Result<(QuestionStatus, Vec<String>)> {

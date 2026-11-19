@@ -212,6 +212,14 @@ Schedule a prompt to run in this session later ("check CI in 30 minutes", "rerun
 - `schedule.list(*, include_inactive: bool = False) -> list[ScheduledJob]`: soonest first; `ScheduledJob(id, prompt, kind, schedule, status, next_run_at, last_run_at, run_count, label, last_error, created_at)`, `kind` is `once`/`interval`/`cron`
 - `schedule.cancel(id: str) -> ScheduledJob`: cancel one of your jobs
 
+## Workspace checkpoints
+
+Snapshot the workspace before a risky multi-file change, so it can be undone. Checkpoints live in prime-agent's own shadow store (the one `/undo` uses), never in the project's git history, and belong to this session. They need the prime-agent daemon; headless runs raise `RuntimeError`.
+
+- `checkpoint.create(label: str = "") -> Checkpoint`: snapshot the files now; `Checkpoint(id, label, created_at)`
+- `checkpoint.list() -> list[Checkpoint]`: this session's checkpoints, oldest first
+- `checkpoint.restore(id: str) -> RestoreResult`: put the files back to a checkpoint of this session. Off unless the user set `replCanRestoreCheckpoints` (raises `PermissionError` otherwise); the user is always asked to confirm the listed changes first. `result.status` is `restored`, `declined` (keep the files; do not retry), or `no_user` (nobody could confirm; nothing changed); `result.restored` counts the paths written or removed
+
 ## Todos and questions
 
 A session todo list the user sees live; keep one for work with 3+ steps, marking items `in_progress` and `done` as you go. It persists across kernel restarts.
@@ -220,6 +228,12 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 - `todo.update(id: str, *, status=None, text=None, note=None) -> TodoList`: change one item
 - `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
 - `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
+
+## Usage and quotas
+
+Read-only, for budgeting long runs: check before expensive work and back off before a quota runs out.
+
+- `usage.get(*, refresh: bool = False) -> Usage`: `str(usage)` summarizes it; `usage.cost` holds `Cost(total, own, subagents)` in USD (`subagents` is your children's rolled-up spend); `usage.tokens` holds `Tokens(input, output, cache_read, cache_write, total)`; `usage.quotas` lists `ProviderQuota(provider, plan, state, windows, resets_at, error)` for each signed-in subscription provider, `state` being `windows`, `rate_limited`, or `failed`, with `QuotaWindow(label, used, limit, unit, resets_at)` (`unit` is `percent`/`requests`, `resets_at` a UTC datetime, `window.used_fraction`). Quota cards are cached for a few minutes; `refresh=True` re-reads them. `usage.quotas_unavailable` says why `quotas` is empty when no daemon serves the session.
 
 ## Notifications and effort
 
@@ -230,4 +244,4 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, `model.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, `model.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

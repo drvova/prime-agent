@@ -469,6 +469,13 @@ impl Worker {
                 // itself weakly through the registered arc.
                 concrete.register_arc();
                 concrete.set_interaction_hub(std::sync::Arc::clone(&interaction.hub));
+                concrete.set_workspace_checkpoints(std::sync::Arc::new(
+                    crate::workspace_checkpoints::ReplCheckpoints::new(
+                        Arc::clone(&checkpoints),
+                        Arc::clone(&core),
+                        config.agent_dir.clone(),
+                    ),
+                ));
                 concrete
                     .set_rlm_usage_store(std::sync::Arc::new(CoreUsageStore(Arc::clone(&core))));
                 let sink_core = Arc::clone(&core);
