@@ -11,7 +11,9 @@ mod tests;
 
 use std::fmt::Write as _;
 
-use pa_types::context_breakdown::{CategoryUsage, ContextBreakdown, ContextCategories};
+use pa_types::context_breakdown::{
+    CategoryUsage, ContextBreakdown, ContextCategories, RequestCache,
+};
 
 use crate::chrome::{format_token_count, ChromeState, ContextReading};
 use crate::keybindings::KeybindingsManager;
@@ -169,6 +171,14 @@ fn category_rows(categories: &ContextCategories) -> Vec<CategoryRow> {
         .filter(|(always, row)| *always || row.usage.items > 0)
         .map(|(_, row)| row)
         .collect()
+}
+
+/// The prompt-cache hit rate in percent: the share of the prompt read from the cache,
+/// `cache_read / (input + cache_read + cache_write)`. `None` for an empty prompt. The context
+/// window's cache section and the run summary row's `N% cached` share this one definition.
+pub(crate) fn cache_hit_percent(prompt: RequestCache) -> Option<f64> {
+    let total = prompt.input + prompt.cache_read + prompt.cache_write;
+    (total > 0).then(|| prompt.cache_read as f64 / total as f64 * 100.0)
 }
 
 fn money(cost: f64) -> String {
@@ -549,33 +559,29 @@ impl ContextView {
             let cache = &reply.cache;
             rows.push(Vec::new());
             rows.push(heading(theme, width, "Prompt cache"));
-            let prompt = cache.input + cache.cache_read + cache.cache_write;
-            if prompt == 0 {
+            let totals = RequestCache {
+                input: cache.input,
+                cache_read: cache.cache_read,
+                cache_write: cache.cache_write,
+            };
+            if let Some(hit) = cache_hit_percent(totals) {
+                let mut text = format!(
+                    "read {} \u{b7} write {} \u{b7} fresh {} \u{b7} hit {hit:.0}%",
+                    format_token_count(cache.cache_read),
+                    format_token_count(cache.cache_write),
+                    format_token_count(cache.input),
+                );
+                if let Some(last) = cache.last_request.and_then(cache_hit_percent) {
+                    let _ = write!(text, " (last {last:.0}%)");
+                }
+                rows.extend(note(theme, width, ThemeColor::Text, &text));
+            } else {
                 rows.extend(note(
                     theme,
                     width,
                     ThemeColor::Dim,
                     "No prompt tokens billed yet.",
                 ));
-            } else {
-                let mut text = format!(
-                    "read {} \u{b7} write {} \u{b7} fresh {} \u{b7} hit {:.0}%",
-                    format_token_count(cache.cache_read),
-                    format_token_count(cache.cache_write),
-                    format_token_count(cache.input),
-                    cache.cache_read as f64 / prompt as f64 * 100.0
-                );
-                if let Some(last) = cache.last_request {
-                    let last_prompt = last.input + last.cache_read + last.cache_write;
-                    if last_prompt > 0 {
-                        let _ = write!(
-                            text,
-                            " (last {:.0}%)",
-                            last.cache_read as f64 / last_prompt as f64 * 100.0
-                        );
-                    }
-                }
-                rows.extend(note(theme, width, ThemeColor::Text, &text));
             }
             rows.push(Vec::new());
             rows.push(heading(theme, width, "Compaction"));
