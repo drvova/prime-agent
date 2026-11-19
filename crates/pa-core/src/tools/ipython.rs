@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS;
-
 mod diff;
 use crate::tools::tool_definition::{
     AbortSignal, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolExecutionResult,
@@ -259,8 +257,7 @@ pub fn ipython_tool_schema() -> serde_json::Value {
             "timeout": {
                 "type": "integer",
                 "description": format!(
-                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default {} unless the user configured otherwise, max {PYTHON_REPL_TIMEOUT_MAX_S}.",
-                    DEFAULT_PYTHON_CELL_TIMEOUT_MS / 1000
+                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default: a window learned from this project's recent cells unless the user configured one, max {PYTHON_REPL_TIMEOUT_MAX_S}."
                 )
             }
         }

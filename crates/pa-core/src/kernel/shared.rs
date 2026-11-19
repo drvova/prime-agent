@@ -128,16 +128,21 @@ pub type StreamCallback = Arc<dyn Fn(&str, StreamName) + Send + Sync>;
 /// resume.
 pub type BackgroundWorkSettledCallback = Arc<dyn Fn() + Send + Sync>;
 
-/// One step in a backgrounded cell's life, for adoption counts (never code,
-/// output, or an id).
+/// One step in a backgrounded cell's life, for adoption counts and the learned
+/// cell window (never code, output, or an id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundCellFact {
     /// A cell outlived its yield window and continued in the background.
     Backgrounded,
-    /// A backgrounded cell ended with a value.
-    EndedOk,
-    /// A backgrounded cell ended with an exception.
-    EndedWithError,
+    /// A backgrounded cell ended with a value, this long after it started
+    /// (`None` when its start was not seen).
+    EndedOk {
+        ran_for: Option<std::time::Duration>,
+    },
+    /// A backgrounded cell ended with an exception, this long after it started.
+    EndedWithError {
+        ran_for: Option<std::time::Duration>,
+    },
     /// A backgrounded cell was interrupted.
     Interrupted,
 }

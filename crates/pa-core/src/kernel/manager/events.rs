@@ -47,9 +47,16 @@ impl Inner {
                             } else if g.background_jobs.get(activity_id) == Some(&(pid as i32)) {
                                 g.background_jobs.remove(activity_id);
                                 if cell {
+                                    let ran_for = obj
+                                        .get("cell")
+                                        .and_then(Value::as_str)
+                                        .and_then(|cell| g.background_cell_starts.remove(cell))
+                                        .map(|started| started.elapsed());
                                     ended = match obj.get("status").and_then(Value::as_str) {
-                                        Some("ok") => Some(BackgroundCellFact::EndedOk),
-                                        Some("error") => Some(BackgroundCellFact::EndedWithError),
+                                        Some("ok") => Some(BackgroundCellFact::EndedOk { ran_for }),
+                                        Some("error") => {
+                                            Some(BackgroundCellFact::EndedWithError { ran_for })
+                                        }
                                         Some("interrupted") => {
                                             Some(BackgroundCellFact::Interrupted)
                                         }
@@ -150,13 +157,15 @@ impl Inner {
                             // The cell runs on past its yield window: the
                             // request settled ok, its end comes as a notice.
                             self.note_background_cell(BackgroundCellFact::Backgrounded);
-                            buffers.backgrounded_cell = Some(
-                                fields
-                                    .get("cell")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or(&id)
-                                    .to_string(),
-                            );
+                            let cell = fields
+                                .get("cell")
+                                .and_then(Value::as_str)
+                                .unwrap_or(&id)
+                                .to_string();
+                            lock(&self.guarded)
+                                .background_cell_starts
+                                .insert(cell.clone(), execution.started);
+                            buffers.backgrounded_cell = Some(cell);
                         }
                         if !matches!(status, "ok" | "backgrounded")
                             && buffers.status == ExecuteStatus::Ok

@@ -1,0 +1,1 @@
+- A `python_repl` cell's background window is now learned per project instead of a fixed 60 seconds: about 1.5 times the recent 90th-percentile cell time, between 10 seconds and 10 minutes, so a stuck cell in a fast project returns sooner and routine long builds finish inside the call. The model's `timeout` and a `pythonCellTimeoutMs` you set still win.

@@ -1583,6 +1583,24 @@ const AGENT_RESPONSES_TRANSPORT: EventRule = EventRule {
     ],
 };
 
+/// Background endpoint discovery in the session's worker (v2), emitted at session end beside
+/// `agent session ended` only when discovery probed or moved an endpoint: zero-cost probes sent,
+/// probes that found the Responses route or its WebSocket mode, endpoints whose built-in models
+/// moved from Chat Completions to the Responses wire, and moved endpoints demoted after the route
+/// failed. Counts only: never a host or a URL.
+const AGENT_ENDPOINT_DISCOVERY: EventRule = EventRule {
+    name: "agent endpoint discovery",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("endpoint_probe_count", required(count())),
+        ("endpoint_found_responses_count", required(count())),
+        ("endpoint_found_websocket_count", required(count())),
+        ("endpoint_upgrade_count", required(count())),
+        ("endpoint_demotion_count", required(count())),
+    ],
+};
+
 /// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
 /// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
@@ -1706,9 +1724,11 @@ const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
 };
 
 /// Python cells that continued in the background (v2), emitted at session end beside `agent
-/// session ended` (which sits near the backend's 128-key cap) only when a cell outlived its yield
-/// window: cells backgrounded, and how they ended (value, exception, interrupted). Counts only:
-/// never code, output, a value, or a cell id.
+/// session ended` (which sits near the backend's 128-key cap) only when a cell was armed with a
+/// yield window or outlived one: cells backgrounded, how they ended (value, exception,
+/// interrupted), and where each armed window came from (learned from the project's recent cells,
+/// the model's `timeout`, the user's `pythonCellTimeoutMs`, or the cold 60 s default). Counts only:
+/// never code, output, a value, a cell id, or a duration.
 const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     name: "agent repl background cells",
     since: 2,
@@ -1718,6 +1738,10 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
         ("cell_background_ok_count", required(count())),
         ("cell_background_error_count", required(count())),
         ("cell_background_interrupted_count", required(count())),
+        ("cell_window_learned_count", required(count())),
+        ("cell_window_timeout_count", required(count())),
+        ("cell_window_setting_count", required(count())),
+        ("cell_window_default_count", required(count())),
     ],
 };
 
@@ -1837,6 +1861,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
+        &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

@@ -21,7 +21,7 @@
           },
           "timeout": {
             "type": "integer",
-            "description": "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default 60 unless the user configured otherwise, max 600."
+            "description": "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default: a window learned from this project's recent cells unless the user configured one, max 600."
           }
         }
       }

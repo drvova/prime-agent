@@ -18,7 +18,7 @@ use crate::providers::openai_responses_shared::{
 use crate::providers::openai_responses_transport::{
     plan_request, stream_over_websocket, WebSocketOutcome, WebSocketRequest,
 };
-use crate::providers::responses_websocket::TransportPlan;
+use crate::providers::responses_websocket::{demote_responses_route, TransportPlan};
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -356,6 +356,10 @@ async fn run_stream(
     let request_id = response.headers.get("x-request-id").cloned();
 
     if response.status >= 400 {
+        // A learned (or upgraded-to) Responses route that is missing after all is demoted.
+        if matches!(response.status, 404 | 405) {
+            demote_responses_route(&model.base_url);
+        }
         let body = response.read_all_text().await.unwrap_or_default();
         return Err(ProviderError::from_http_status_body(
             response.status,

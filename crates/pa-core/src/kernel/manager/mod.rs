@@ -311,6 +311,9 @@ struct Guarded {
     /// Live background jobs by activity id: a `bash()` handle's pid, or 0
     /// for a backgrounded cell.
     background_jobs: HashMap<String, i32>,
+    /// When each backgrounded cell started, by cell id, so its end reports its
+    /// whole run time.
+    background_cell_starts: HashMap<String, Instant>,
     handled_host_request_ids: (HashSet<String>, VecDeque<String>),
     /// Late agent-message handlers keyed by request id, insertion-ordered with eviction.
     late_handlers: VecDeque<(String, LateSentAgentMessageCallback)>,
@@ -463,6 +466,7 @@ impl ReplKernelManager {
                 protocol_repair: None,
                 kernel_stderr: String::new(),
                 background_jobs: HashMap::new(),
+                background_cell_starts: HashMap::new(),
                 handled_host_request_ids: (HashSet::new(), VecDeque::new()),
                 late_handlers: VecDeque::new(),
                 pending_done_waiters: HashMap::new(),

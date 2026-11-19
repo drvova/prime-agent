@@ -36,7 +36,9 @@ pub mod codex_debug {
 pub mod responses_transport {
     pub use crate::providers::close_session_websockets;
     pub use crate::providers::responses_websocket::{
-        session_counts, set_capability_cache_path, ResponsesTransportCounts,
+        apply_responses_wire_upgrade, discover_endpoints, discovery_counts, learned_endpoint,
+        session_counts, set_capability_cache_path, DiscoveryCounts, DiscoveryTarget, DiscoveryWire,
+        LearnedEndpoint, ResponsesTransportCounts,
     };
 }
 pub use providers::simple_options::{default_request_max_tokens, effective_request_max_tokens};
