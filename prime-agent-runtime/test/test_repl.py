@@ -1217,6 +1217,28 @@ class ReplTest(unittest.TestCase):
         code = "from rlm.repl import host_request\nawait host_request({'type': 'demo', 'blob': 'x' * 17_000_000})"
         self.assertEqual(one(self.repl.execute("hr-big", code), "error")["ename"], "ValueError")
 
+    def test_multi_line_text_results_print_raw_under_a_header(self):
+        # Escaped one-line reprs of multi-line text cost the model a re-read;
+        # it prints the way a file reads. One-line values keep repr.
+        cells = [
+            "'a\\n\\tb \\'q\\''",
+            "'one line\\n'",
+            "from rlm.bash import BashResult\nBashResult(exit_code=0, output='x\\ny\\n', duration=0.5)",
+            "BashResult(exit_code=0, output='single\\n', duration=0.5)",
+        ]
+        results = [
+            one(self.repl.execute(f"text{i}", code), "result")["text"] for i, code in enumerate(cells)
+        ]
+        self.assertEqual(
+            results,
+            [
+                "[text: 2 lines, 8 chars]\na\n\tb 'q'",
+                "'one line\\n'",
+                "[text: 3 lines, 43 chars]\nBashResult(exit_code=0, duration=0.50)\nx\ny\n",
+                "BashResult(exit_code=0, output='single\\n', duration=0.5)",
+            ],
+        )
+
     def test_bash_integration(self):
         events = self.repl.execute(
             "sh1", "from rlm import bash\nresult = await bash('echo repl-bash')\nresult.output.strip()"
