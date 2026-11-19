@@ -1,120 +1,50 @@
-//! Codex WebSocket session state: connection cache, SSE-fallback pinning, debug stats, continuation
-//! bookkeeping, and idle expiry.
-
-use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
-
-use tokio::sync::mpsc;
+//! Codex WebSocket session state: the Codex instance of the shared Responses WebSocket sessions
+//! (connection cache, SSE-fallback pinning, debug stats, continuation bookkeeping, idle expiry).
 
 use serde_json::Value;
 
 use crate::providers::openai_codex_responses::errors::CodexStreamError;
-use crate::providers::openai_codex_responses::websocket::{
-    ContinuationState, WorkerCommand, SESSION_WEBSOCKET_CACHE_TTL_MS,
-};
+use crate::providers::responses_websocket::{ContinuationState, WebSocketSessions};
 
-pub use crate::providers::openai_codex_responses::websocket::WebSocketDebugStats;
+pub use crate::providers::responses_websocket::WebSocketDebugStats;
 
-pub struct CachedConnection {
-    /// Command channel to the connection's worker task.
-    pub worker: mpsc::Sender<WorkerCommand>,
-    pub busy: bool,
-    pub continuation: Option<ContinuationState>,
-    /// Generation counter for pending idle-expiry tasks.
-    pub expiry_generation: u64,
-    /// Unique id of this connection (monotonic).
-    pub connection_id: u64,
-}
+/// The Codex provider's sessions. Codex connections live until idle expiry (no maximum age).
+pub(crate) static CODEX_SESSIONS: WebSocketSessions =
+    WebSocketSessions::new(super::websocket::CODEX_WIRE, None);
 
-#[derive(Default)]
-pub struct SessionState {
-    pub connections: HashMap<String, CachedConnection>,
-    pub stats: HashMap<String, WebSocketDebugStats>,
-    pub sse_fallback_sessions: HashSet<String>,
-}
-
-pub fn session_state() -> &'static Mutex<SessionState> {
-    static STATE: OnceLock<Mutex<SessionState>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(SessionState::default()))
+/// The Codex session state (the transport tests inspect a session's cached connection).
+#[cfg(test)]
+pub fn session_state(
+) -> &'static std::sync::Mutex<crate::providers::responses_websocket::SessionState> {
+    CODEX_SESSIONS.state()
 }
 
 pub fn is_websocket_sse_fallback_active(session_id: Option<&str>) -> bool {
-    match session_id {
-        Some(session_id) => session_state()
-            .lock()
-            .is_ok_and(|state| state.sse_fallback_sessions.contains(session_id)),
-        None => false,
-    }
+    CODEX_SESSIONS.is_sse_fallback_active(session_id)
 }
 
 pub fn record_websocket_sse_fallback(session_id: Option<&str>) {
-    let Some(session_id) = session_id else {
-        return;
-    };
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    let active = state.sse_fallback_sessions.contains(session_id);
-    let session_stats = state.stats.entry(session_id.to_string()).or_default();
-    session_stats.sse_fallbacks += 1;
-    session_stats.websocket_fallback_active = Some(active);
+    CODEX_SESSIONS.record_sse_fallback(session_id);
 }
 
 /// Pins the session to SSE fallback and records the failure in the debug stats.
 pub fn record_websocket_failure(session_id: Option<&str>, error: &CodexStreamError) {
-    let Some(session_id) = session_id else {
-        return;
-    };
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    state.sse_fallback_sessions.insert(session_id.to_string());
-    let session_stats = state.stats.entry(session_id.to_string()).or_default();
-    session_stats.websocket_failures += 1;
-    session_stats.last_websocket_error = Some(error.to_string());
-    session_stats.websocket_fallback_active = Some(true);
+    CODEX_SESSIONS.record_failure(session_id, error);
 }
 
 #[must_use]
 pub fn get_debug_stats(session_id: &str) -> Option<WebSocketDebugStats> {
-    session_state().lock().ok()?.stats.get(session_id).cloned()
+    CODEX_SESSIONS.debug_stats(session_id)
 }
 
 pub fn reset_debug_stats(session_id: Option<&str>) {
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    if let Some(session_id) = session_id {
-        state.stats.remove(session_id);
-        state.sse_fallback_sessions.remove(session_id);
-    } else {
-        state.stats.clear();
-        state.sse_fallback_sessions.clear();
-    }
+    CODEX_SESSIONS.reset_debug_stats(session_id);
 }
 
 /// Close the cached connection for one session or all of them; the agent layer calls it when a
 /// session ends (the TS registers a session resource cleanup).
 pub fn close_websocket_sessions(session_id: Option<&str>) {
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    let entries: Vec<mpsc::Sender<WorkerCommand>> = match session_id {
-        Some(session_id) => state
-            .connections
-            .remove(session_id)
-            .map(|entry| vec![entry.worker])
-            .unwrap_or_default(),
-        None => state
-            .connections
-            .drain()
-            .map(|(_, entry)| entry.worker)
-            .collect(),
-    };
-    for worker in entries {
-        let _ = worker.try_send(WorkerCommand::Close);
-    }
+    CODEX_SESSIONS.close(session_id);
 }
 
 /// Record debug stats for a request (mirrors the stats block in `processWebSocketStream`).
@@ -124,93 +54,18 @@ pub fn record_request_stats(
     use_cached_context: bool,
     request_body: &Value,
 ) {
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    let session_stats = state.stats.entry(session_id.to_string()).or_default();
-    session_stats.requests += 1;
-    if reused {
-        session_stats.connections_reused += 1;
-    } else {
-        session_stats.connections_created += 1;
-    }
-    if use_cached_context {
-        session_stats.cached_context_requests += 1;
-    }
-    if request_body.get("store").and_then(Value::as_bool) == Some(true) {
-        session_stats.store_true_requests += 1;
-    }
-    let input_items = request_body
-        .get("input")
-        .and_then(Value::as_array)
-        .map_or(0, |items| items.len() as u64);
-    session_stats.last_input_items = input_items;
-    if let Some(previous_response_id) = request_body
-        .get("previous_response_id")
-        .and_then(Value::as_str)
-    {
-        session_stats.delta_requests += 1;
-        session_stats.last_delta_input_items = Some(input_items);
-        session_stats.last_previous_response_id = Some(previous_response_id.to_string());
-    } else {
-        session_stats.full_context_requests += 1;
-        session_stats.last_delta_input_items = None;
-        session_stats.last_previous_response_id = None;
-    }
-}
-
-/// Close the cached connection after the TTL if it stayed idle.
-pub fn schedule_session_websocket_expiry(session_id: &str) {
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    let generation = match state.connections.get_mut(session_id) {
-        Some(entry) => {
-            entry.expiry_generation += 1;
-            entry.expiry_generation
-        }
-        None => return,
-    };
-    let session_id = session_id.to_string();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(SESSION_WEBSOCKET_CACHE_TTL_MS)).await;
-        let Ok(mut state) = session_state().lock() else {
-            return;
-        };
-        let Some(entry) = state.connections.get_mut(&session_id) else {
-            return;
-        };
-        if entry.expiry_generation != generation || entry.busy {
-            return;
-        }
-        if let Some(entry) = state.connections.remove(&session_id) {
-            let _ = entry.worker.try_send(WorkerCommand::Close);
-        }
-    });
+    CODEX_SESSIONS.record_request_stats(session_id, reused, use_cached_context, request_body);
 }
 
 /// Take the continuation for `connection_id`, if one is anchored to it (part of
 /// `buildCachedWebSocketRequestBody` in the TS).
 pub fn take_continuation_for(session_id: &str, connection_id: u64) -> Option<ContinuationState> {
-    session_state()
-        .lock()
-        .ok()?
-        .connections
-        .get_mut(session_id)
-        .filter(|entry| entry.connection_id == connection_id)
-        .and_then(|entry| entry.continuation.take())
+    CODEX_SESSIONS.take_continuation_for(session_id, connection_id)
 }
 
 /// Restore (or clear) the continuation after a failed continuation attempt.
 pub fn clear_continuation(session_id: &str, connection_id: u64) {
-    let Ok(mut state) = session_state().lock() else {
-        return;
-    };
-    if let Some(entry) = state.connections.get_mut(session_id) {
-        if entry.connection_id == connection_id {
-            entry.continuation = None;
-        }
-    }
+    CODEX_SESSIONS.clear_continuation(session_id, connection_id);
 }
 
 #[cfg(test)]

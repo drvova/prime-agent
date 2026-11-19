@@ -15,6 +15,10 @@ use crate::providers::openai_responses_shared::{
     ConvertResponsesMessagesOptions, ConvertResponsesToolsOptions, ReasoningSummary,
     ResponsesStreamHooks, OPENAI_TOOL_CALL_PROVIDERS,
 };
+use crate::providers::openai_responses_transport::{
+    plan_request, stream_over_websocket, WebSocketOutcome, WebSocketRequest,
+};
+use crate::providers::responses_websocket::TransportPlan;
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -310,8 +314,24 @@ async fn run_stream(
         }
     }
 
-    let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
     let headers = build_headers(model, &api_key, &options, cache_session_id.as_deref());
+    let hooks = || stream_hooks(model, &options);
+    let plan = plan_request(model, &options.base);
+    if let TransportPlan::WebSocket { probe } = plan {
+        let request = WebSocketRequest {
+            model,
+            options: &options.base,
+            params: &params,
+            headers: &headers,
+            probe,
+            hooks: &hooks,
+        };
+        match stream_over_websocket(&request, output, writer).await? {
+            WebSocketOutcome::Done => return Ok(()),
+            WebSocketOutcome::FallBackToSse => {}
+        }
+    }
+    let url = format!("{}/responses", model.base_url.trim_end_matches('/'));
     let mut response: HttpResponse = send(RequestOptions {
         method: reqwest::Method::POST,
         url,
@@ -348,20 +368,14 @@ async fn run_stream(
         partial: output.clone(),
     });
 
-    let model_id = model.id.clone();
-    let hooks = ResponsesStreamHooks {
-        request_service_tier: options.service_tier,
-        resolve_service_tier: None,
-        apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
-            apply_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
-        })),
-    };
-
     let stream_result: Result<(), ProviderError>;
     {
         let mut processor =
             crate::providers::openai_responses_shared::ResponsesStreamProcessor::new(
-                model, output, writer, hooks,
+                model,
+                output,
+                writer,
+                hooks(),
             );
         // The TS try/catch encloses the streaming section and the abort and stop-reason checks; the
         // catch settles partial tool calls before the error event carries the message.
@@ -422,6 +436,18 @@ async fn run_stream(
     stream_result?;
 
     Ok(())
+}
+
+/// The shared processor's hooks: `OpenAI` service-tier pricing.
+fn stream_hooks(model: &Model, options: &OpenAIResponsesOptions) -> ResponsesStreamHooks {
+    let model_id = model.id.clone();
+    ResponsesStreamHooks {
+        request_service_tier: options.service_tier,
+        resolve_service_tier: None,
+        apply_service_tier_pricing: Some(Box::new(move |usage, service_tier| {
+            apply_service_tier_pricing(usage, service_tier.as_deref(), &model_id);
+        })),
+    }
 }
 
 pub fn stream_simple_openai_responses(
