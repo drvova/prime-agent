@@ -16,7 +16,23 @@ use std::path::Path;
 use pa_core::session::manager::{capture_git_context, SessionManager};
 use pa_types::session::{AgentMessage, FileEntry};
 
+/// Every git process in this binary (the fixture helpers' and `capture_git_context`'s own probes)
+/// reads only the fixture repo's config: no system or global file, and none of the
+/// command-line config the ambient environment injects through `GIT_CONFIG_PARAMETERS` /
+/// `GIT_CONFIG_COUNT`. An ambient `url.<base>.insteadOf` would otherwise rewrite the remote
+/// URLs these tests pin. Set once for this test process, which exists only to run these tests.
+fn isolate_git_config() {
+    static ISOLATED: std::sync::Once = std::sync::Once::new();
+    ISOLATED.call_once(|| {
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::remove_var("GIT_CONFIG_PARAMETERS");
+        std::env::remove_var("GIT_CONFIG_COUNT");
+    });
+}
+
 fn git(cwd: &Path, args: &[&str]) -> String {
+    isolate_git_config();
     let output = std::process::Command::new("git")
         .args(args)
         .current_dir(cwd)
