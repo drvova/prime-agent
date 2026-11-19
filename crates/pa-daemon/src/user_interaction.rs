@@ -310,6 +310,8 @@ mod tests {
             choices: vec!["yes".to_string(), "no".to_string()],
             default: Vec::new(),
             timeout_seconds: None,
+            allow_other: false,
+            expires_at_ms: None,
         };
         worker
             .interaction

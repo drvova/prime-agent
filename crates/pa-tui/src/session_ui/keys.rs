@@ -25,6 +25,53 @@ pub(super) struct SelectionAutoScroll {
 }
 
 impl SessionUi {
+    /// Answer the open kernel question: the panel closes at once (the daemon's
+    /// `question_closed` confirms it) and the reply rides a spawned `answer_question` request,
+    /// off the key path.
+    pub(crate) fn send_question_reply(
+        &mut self,
+        view: &mut AgentView,
+        reply: pa_types::question::QuestionReply,
+    ) {
+        let Some(prompt) = view.question.take() else {
+            return;
+        };
+        match &reply {
+            pa_types::question::QuestionReply::Answered { answer } => {
+                self.todo_question_counts.question_answers += 1;
+                if answer
+                    .iter()
+                    .any(|item| !prompt.question.choices.contains(item))
+                    && prompt.question.kind != pa_types::question::QuestionKind::Text
+                {
+                    self.todo_question_counts.question_other_answers += 1;
+                }
+            }
+            pa_types::question::QuestionReply::Declined => {
+                self.todo_question_counts.question_declines += 1;
+            }
+        }
+        let client = self.client.clone();
+        let active_session_id = self.active_session_id.clone();
+        let notes = self.notes.clone();
+        let question_id = prompt.question.id;
+        tokio::spawn(async move {
+            if let Err(error) = client
+                .request_ok(DaemonCommand::AnswerQuestion {
+                    id: None,
+                    active_session_id,
+                    question_id,
+                    reply,
+                    rest: Map::default(),
+                })
+                .await
+            {
+                let _ = notes.send(format!("the answer was not delivered: {error:#}"));
+            }
+        });
+        self.dirty = true;
+    }
+
     /// The OSC 52 sequences the headless run captured (TS writes them to
     /// stdout; headless verification reads them here).
     pub(crate) fn take_osc_emissions(&mut self) -> Vec<String> {
@@ -545,30 +592,10 @@ impl SessionUi {
             .map(|prompt| prompt.handle_key(&id, view.editor.keybindings()));
         match question_action {
             Some(QuestionAction::Reply(reply)) => {
-                // The prompt closes at once; the daemon's `question_closed` confirms it.
-                let question_id = view
-                    .question
-                    .take()
-                    .map(|prompt| prompt.question.id)
-                    .unwrap_or_default();
-                let client = self.client.clone();
-                let active_session_id = self.active_session_id.clone();
-                let notes = self.notes.clone();
-                tokio::spawn(async move {
-                    if let Err(error) = client
-                        .request_ok(DaemonCommand::AnswerQuestion {
-                            id: None,
-                            active_session_id,
-                            question_id,
-                            reply,
-                            rest: Map::default(),
-                        })
-                        .await
-                    {
-                        let _ = notes.send(format!("the answer was not delivered: {error:#}"));
-                    }
-                });
-                self.dirty = true;
+                if id.len() == 1 && id.as_bytes()[0].is_ascii_digit() {
+                    self.todo_question_counts.question_digit_answers += 1;
+                }
+                self.send_question_reply(view, reply);
                 return Ok(());
             }
             Some(QuestionAction::Handled) => {
@@ -842,6 +869,15 @@ impl SessionUi {
         }
         if view.editor.keybindings().matches(&id, "app.tools.expand") {
             self.cycle_detail(view);
+            return Ok(());
+        }
+        // The todo tray's fold toggle, while the tray shows unfinished items.
+        if view.editor.keybindings().matches(&id, "app.todos.toggle")
+            && view.todos.done_count() < view.todos.items.len()
+        {
+            view.todo_fold = view.todo_fold.toggled();
+            self.todo_question_counts.todo_tray_toggles += 1;
+            self.dirty = true;
             return Ok(());
         }
         if view.editor.keybindings().matches(&id, "app.context.open") {

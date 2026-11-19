@@ -880,6 +880,11 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
         fn default_loop_guard(&self, _model: &Model) -> LoopGuardLevel {
             LoopGuardLevel::Off
         }
+
+        /// Scripted replies have no provider limits to learn or respect.
+        fn paced(&self) -> bool {
+            false
+        }
     }
 
     let api = options.api.unwrap_or_else(|| random_id(DEFAULT_API));

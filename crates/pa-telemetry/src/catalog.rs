@@ -1118,6 +1118,22 @@ const TUI_INLINE_IMAGES_RENDERED: EventRule = EventRule {
     ],
 };
 
+/// One interactive run used the todo tray or the kernel-question panel (v2), emitted at the
+/// run's exit when any count is nonzero. Standalone because `tui exit` sits at the backend's
+/// 128-key cap. Counts only: never item text, a question, a choice, or an answer.
+const TUI_TODOS_AND_QUESTIONS: EventRule = EventRule {
+    name: "tui todos and questions",
+    since: 2,
+    properties: &[
+        ("todo_tray_toggle_count", required(count())),
+        ("question_answer_count", required(count())),
+        ("question_digit_answer_count", required(count())),
+        ("question_other_answer_count", required(count())),
+        ("question_decline_count", required(count())),
+        ("question_click_count", required(count())),
+    ],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1484,6 +1500,23 @@ const AGENT_TODOS_AND_QUESTIONS: EventRule = EventRule {
     ],
 };
 
+/// Provider request admission for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when any request waited for a permit or
+/// a provider pushed back: requests that waited, their summed wait, throttled/overloaded
+/// responses seen, and the adaptive controller's multiplicative decreases. Counts only: never a
+/// provider URL, model, or credential.
+const AGENT_PROVIDER_ADMISSION: EventRule = EventRule {
+    name: "agent provider admission",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("admission_waited_count", required(count())),
+        ("admission_wait_ms", required(duration())),
+        ("provider_throttled_count", required(count())),
+        ("admission_decrease_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1532,6 +1565,56 @@ const AGENT_SESSIONS_IMPORTED: EventRule = EventRule {
             )),
         ),
         ("duration_ms", required(duration())),
+    ],
+};
+
+/// Responses transport adoption for one session (v2), emitted at session end beside `agent session
+/// ended` (which sits at the backend's 128-key cap) only when a request chose a Responses
+/// transport: WebSocket requests (continuation deltas vs full context), SSE fallbacks, dropped
+/// continuations resent in full, the `auto` choice by reason, endpoint capability probes, and
+/// WebSocket requests on providers without the mode. Counts only: never an endpoint or a body.
+const AGENT_RESPONSES_TRANSPORT: EventRule = EventRule {
+    name: "agent responses transport",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("responses_websocket_request_count", required(count())),
+        ("responses_delta_request_count", required(count())),
+        ("responses_full_context_request_count", required(count())),
+        ("responses_sse_fallback_count", required(count())),
+        (
+            "responses_stale_continuation_retry_count",
+            required(count()),
+        ),
+        ("responses_auto_websocket_count", required(count())),
+        ("responses_auto_sse_one_shot_count", required(count())),
+        (
+            "responses_auto_sse_no_websocket_wire_count",
+            required(count()),
+        ),
+        ("responses_auto_sse_unsupported_count", required(count())),
+        ("responses_auto_sse_demoted_count", required(count())),
+        ("responses_probe_count", required(count())),
+        ("responses_probe_failed_count", required(count())),
+        ("responses_websocket_without_wire_count", required(count())),
+    ],
+};
+
+/// Background endpoint discovery in the session's worker (v2), emitted at session end beside
+/// `agent session ended` only when discovery probed or moved an endpoint: zero-cost probes sent,
+/// probes that found the Responses route or its WebSocket mode, endpoints whose built-in models
+/// moved from Chat Completions to the Responses wire, and moved endpoints demoted after the route
+/// failed. Counts only: never a host or a URL.
+const AGENT_ENDPOINT_DISCOVERY: EventRule = EventRule {
+    name: "agent endpoint discovery",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("endpoint_probe_count", required(count())),
+        ("endpoint_found_responses_count", required(count())),
+        ("endpoint_found_websocket_count", required(count())),
+        ("endpoint_upgrade_count", required(count())),
+        ("endpoint_demotion_count", required(count())),
     ],
 };
 
@@ -1658,9 +1741,11 @@ const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
 };
 
 /// Python cells that continued in the background (v2), emitted at session end beside `agent
-/// session ended` (which sits near the backend's 128-key cap) only when a cell outlived its yield
-/// window: cells backgrounded, and how they ended (value, exception, interrupted). Counts only:
-/// never code, output, a value, or a cell id.
+/// session ended` (which sits near the backend's 128-key cap) only when a cell was armed with a
+/// yield window or outlived one: cells backgrounded, how they ended (value, exception,
+/// interrupted), and where each armed window came from (learned from the project's recent cells,
+/// the model's `timeout`, the user's `pythonCellTimeoutMs`, or the cold 60 s default). Counts only:
+/// never code, output, a value, a cell id, or a duration.
 const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     name: "agent repl background cells",
     since: 2,
@@ -1670,6 +1755,10 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
         ("cell_background_ok_count", required(count())),
         ("cell_background_error_count", required(count())),
         ("cell_background_interrupted_count", required(count())),
+        ("cell_window_learned_count", required(count())),
+        ("cell_window_timeout_count", required(count())),
+        ("cell_window_setting_count", required(count())),
+        ("cell_window_default_count", required(count())),
     ],
 };
 
@@ -1773,6 +1862,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
+        &TUI_TODOS_AND_QUESTIONS,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
@@ -1787,6 +1877,9 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
+        &AGENT_RESPONSES_TRANSPORT,
+        &AGENT_PROVIDER_ADMISSION,
+        &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

@@ -276,6 +276,14 @@ reaches the worker's thinking switch through the `model.apply_effort` handler
 path minus the settings default).
 
 
+Daemon-wide provider admission (`provider_admission.rs`): the supervisor owns one shared
+budget (pa-ai's adaptive pool) that every worker takes provider request permits from over the
+supervisor link (`provider_admission_acquire` / `provider_admission_release`, worker-token
+authenticated); a supervisor that does not answer within the bounded poll falls back to the
+worker's local pool. The learned pacing persists to `<agent-dir>/provider-pacing.json`
+(credential hashes only) off the request path and shows read-only on the `/usage` page
+(`QuotaReport::pacing`). A subagent worker's requests run at the `Subagent` class.
+
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 

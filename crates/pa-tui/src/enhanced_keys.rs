@@ -276,6 +276,9 @@ pub(crate) fn enable(out: &mut Stdout) -> Result<()> {
         // arrives as one vk=0 record per character. Native records already carry Shift+Enter's
         // modifier, so no mode is written and the kitty probe settles unsupported.
         KITTY_PROBED.store(true, Ordering::SeqCst);
+        // The inline-image query is answered as one such record run, which the reader's
+        // sequence guard reassembles and records.
+        write_capability_query(out)?;
         return Ok(());
     }
     if !BRACKETED_PASTE_ACTIVE.swap(true, Ordering::SeqCst) {
@@ -287,6 +290,8 @@ pub(crate) fn enable(out: &mut Stdout) -> Result<()> {
     if !crate::altscreen::active() {
         return Ok(());
     }
+    // Ahead of the kitty probe's query, so its answer arrives (and is recorded) first.
+    write_capability_query(out)?;
     match kitty_action(
         KITTY_SUPPORTED.load(Ordering::SeqCst),
         KITTY_PROBED.load(Ordering::SeqCst),
@@ -475,6 +480,19 @@ fn disable_keyboard_modes(out: &mut Stdout) {
         let _ = write_all(out, POP_KITTY_FLAGS);
     }
     let _ = write_all(out, MODIFY_OTHER_KEYS_RESET);
+}
+
+/// The inline-image capability query (once per process; see `inline_image::reports`), only
+/// while raw mode holds: a cooked tty would echo the answer onto the screen instead of handing
+/// it to the reader.
+fn write_capability_query(out: &mut Stdout) -> Result<()> {
+    if !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false) {
+        return Ok(());
+    }
+    match crate::inline_image::reports::take_capability_query() {
+        Some(query) => write_all(out, query),
+        None => Ok(()),
+    }
 }
 
 fn write_all(out: &mut Stdout, sequence: &[u8]) -> Result<()> {

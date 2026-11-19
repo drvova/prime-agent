@@ -1,5 +1,6 @@
-//! The artefacts derived from the capability manifests, and consistency between the manifests and
-//! the hand-written surfaces they describe. The host-request half lives in `tests/prompt_guards.rs`.
+//! The artefacts derived from the capability manifests and doc files, and consistency between them
+//! and the hand-written surfaces they describe. The host-request half lives in
+//! `tests/prompt_guards.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -14,6 +15,12 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent session ended",
     "session archived",
     "agent goal verification",
+    // The provider layer's Responses transport counts (no kernel capability).
+    "agent responses transport",
+    // Provider request admission is engine plumbing, not a kernel capability.
+    "agent provider admission",
+    // The worker's background endpoint discovery (no kernel capability).
+    "agent endpoint discovery",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {
@@ -29,22 +36,60 @@ fn sorted(items: impl IntoIterator<Item = impl Into<String>>) -> Vec<String> {
     items
 }
 
-#[test]
-fn every_manifest_file_is_embedded() {
+/// The capability directory's files, by extension, as file stems.
+fn files_on_disk(extension: &str) -> Vec<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/capabilities");
-    let on_disk = sorted(
+    sorted(
         std::fs::read_dir(&dir)
-            .unwrap_or_else(|error| panic!("read {dir:?}: {error}"))
+            .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
             .map(|entry| entry.expect("directory entry").path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+            .filter(|path| path.extension().is_some_and(|ext| ext == extension))
             .map(|path| {
                 path.file_stem()
                     .expect("file stem")
                     .to_string_lossy()
                     .into_owned()
-            }),
+            })
+            .filter(|stem| stem != "README"),
+    )
+}
+
+/// Every manifest and doc file in the directory is embedded, and each doc file under the manifest
+/// it is named for (`<name>.md` or `<name>.<part>.md`).
+#[test]
+fn every_manifest_and_doc_file_is_embedded() {
+    let misfiled: Vec<&str> = MANIFESTS
+        .iter()
+        .flat_map(|capability| {
+            capability
+                .docs
+                .iter()
+                .map(|(stem, _)| *stem)
+                .filter(|stem| stem.split('.').next() != Some(capability.name))
+        })
+        .collect();
+    assert_eq!(
+        (files_on_disk("toml"), files_on_disk("md"), misfiled),
+        (
+            sorted(MANIFESTS.iter().map(|capability| capability.name)),
+            sorted(
+                MANIFESTS
+                    .iter()
+                    .flat_map(|capability| capability.docs.iter().map(|(stem, _)| *stem))
+            ),
+            Vec::new()
+        )
     );
-    assert_eq!(on_disk, sorted(MANIFESTS.iter().map(|(name, _)| *name)));
+}
+
+/// Every slot of `core.md` resolves and every doc file fills one.
+#[test]
+fn the_core_layer_splices() {
+    if let Err(error) =
+        crate::prompts::layers::splice_core_layer(crate::prompts::layers::CORE_TEMPLATE)
+    {
+        panic!("{error:#}");
+    }
 }
 
 /// The derived runtime-ready probe passes against this checkout's runtime source, and so does the
@@ -127,36 +172,15 @@ fn the_bootstrap_binds_the_manifests_modules() {
     );
 }
 
-/// The core prompt's kernel-implemented list is the manifests' prompt builtins, and its bullet
-/// tokens under those namespaces are exactly the manifests' documented names; each manifest's
-/// host requests surface as names that same manifest documents.
-#[test]
-fn the_core_prompt_names_the_manifests_tools() {
-    let core_layer = crate::prompts::layers::CORE_LAYER;
-    let (_, built_in) = core_layer
-        .split_once("All programmatic tools described above except for ")
-        .expect("the core prompt's kernel-implemented list");
-    let (built_in, _) = built_in
-        .split_once(" are implemented")
-        .expect("the end of the kernel-implemented list");
-    let listed = sorted(
-        built_in
-            .split(", ")
-            .map(|name| name.trim_start_matches("and ").trim_matches('`')),
-    );
-
-    let manifests = manifests();
-    let builtins = sorted(
-        manifests
-            .iter()
-            .flat_map(|manifest| manifest.prompt_builtins.iter().map(String::as_str)),
-    );
-    let namespaces: BTreeSet<&str> = builtins
+/// The bullet tokens of `text` (`- `name(...)`...`) under one of the manifests' builtin
+/// namespaces (`rlm`, `schedule`, `ask`, ...).
+fn namespaced_bullets<'a>(text: &'a str, manifests: &[CapabilityManifest]) -> BTreeSet<&'a str> {
+    let namespaces: BTreeSet<&str> = manifests
         .iter()
+        .flat_map(|manifest| &manifest.prompt_builtins)
         .map(|name| name.trim_end_matches(".*"))
         .collect();
-    let bullets: BTreeSet<&str> = core_layer
-        .lines()
+    text.lines()
         .filter_map(|line| line.trim_start().strip_prefix("- `"))
         .filter_map(|rest| rest.split_once('`').map(|(token, _)| token))
         .filter_map(|token| token.split('(').next())
@@ -168,7 +192,15 @@ fn the_core_prompt_names_the_manifests_tools() {
                 })
         })
         .filter(|token| namespaces.contains(token.split('.').next().unwrap_or_default()))
-        .collect();
+        .collect()
+}
+
+/// The assembled core layer's bullet tokens under the builtin namespaces are exactly the
+/// manifests' documented names, each claimed once; each manifest's host requests surface as names
+/// that same manifest documents.
+#[test]
+fn the_core_prompt_names_the_manifests_tools() {
+    let manifests = manifests();
     let undocumented_requests: Vec<&str> = manifests
         .iter()
         .flat_map(|manifest| {
@@ -181,9 +213,14 @@ fn the_core_prompt_names_the_manifests_tools() {
         .collect();
 
     assert_eq!(
-        (listed, sorted(bullets), undocumented_requests),
         (
-            builtins,
+            sorted(namespaced_bullets(
+                crate::prompts::layers::CORE_LAYER.as_str(),
+                &manifests
+            )),
+            undocumented_requests
+        ),
+        (
             sorted(
                 manifests
                     .iter()
@@ -192,6 +229,28 @@ fn the_core_prompt_names_the_manifests_tools() {
             Vec::new()
         )
     );
+}
+
+/// Each capability's documented names are bulleted in its own doc files, so a capability with
+/// documented names has a doc file and its section documents nothing it does not own.
+#[test]
+fn each_capability_documents_its_own_names() {
+    let parsed = capabilities().expect("every embedded manifest parses");
+    let manifests: Vec<CapabilityManifest> = parsed.values().cloned().collect();
+    let mismatched: Vec<&str> = MANIFESTS
+        .iter()
+        .filter(|capability| {
+            let docs: String = capability.docs.iter().map(|(_, text)| *text).collect();
+            namespaced_bullets(&docs, &manifests)
+                != parsed[capability.name]
+                    .documented
+                    .iter()
+                    .map(String::as_str)
+                    .collect()
+        })
+        .map(|capability| capability.name)
+        .collect();
+    assert_eq!(mismatched, Vec::<&str>::new());
 }
 
 /// Every standalone session-scoped adoption event in the telemetry catalog is claimed by the

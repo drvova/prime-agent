@@ -279,6 +279,10 @@ fn classify(pending: &PendingEscape) -> Vec<GuardOutput> {
     if bytes.starts_with(b"\x1b[") && bytes.ends_with(b"M") {
         return decode_rxvt_report(bytes);
     }
+    // A capability reply (DA1, the cell size) is recorded for the inline images; never input.
+    if crate::inline_image::reports::note_reply(bytes) {
+        return Vec::new();
+    }
     if let Some(event) = classify_key(bytes, pending.first.as_ref()) {
         return vec![GuardOutput::Event(event)];
     }

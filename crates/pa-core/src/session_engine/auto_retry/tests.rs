@@ -379,6 +379,47 @@ async fn a_retry_budget_above_the_episode_ceiling_gives_up_at_the_ceiling() {
     );
 }
 
+/// Throttled retries stay at the first backoff step: the admission controller paces the
+/// provider, so the retry ladder does not back off a second time.
+#[tokio::test]
+async fn throttled_retries_do_not_grow_the_backoff() {
+    let mut script = vec![
+        error_message(Some("rate_limit"), Some(429), None),
+        error_message(Some("overloaded"), Some(529), None),
+        error_message(Some("rate_limit"), Some(429), None),
+        ok_message(),
+    ]
+    .into_iter();
+    let mut waits = Vec::new();
+    run_turn_with_auto_retry(
+        &fast_policy(),
+        0,
+        None,
+        || {
+            let next = script.next().expect("scripted attempt");
+            async move { Ok(next) }
+        },
+        |_| async { Ok(()) },
+        |delay| {
+            waits.push(u64::try_from(delay.as_millis()).unwrap());
+            async { true }
+        },
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    // The first step (5ms) with its +-20% jitter; an exponential ladder reaches 20ms by the third.
+    assert_eq!(
+        waits
+            .iter()
+            .map(|wait| (4..=7).contains(wait))
+            .collect::<Vec<_>>(),
+        vec![true, true, true],
+        "waits: {waits:?}"
+    );
+}
+
 /// A failed turn carrying the `stream_drop` class (the provider ended
 /// the response stream mid-block without a stop signal).
 fn stream_drop_message() -> AssistantMessage {

@@ -75,6 +75,10 @@ pub const BASH_COMMAND_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-co
 pub const BASH_WAIT_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-wait+json";
 /// One `rlm.session.messages` read: `{returned, first, total, roles}`.
 pub const TRANSCRIPT_READ_DISPLAY_MIME: &str = "application/vnd.prime-agent.transcript-read+json";
+/// The todo list a `todo.set`/`todo.update` call left (`{items: [...]}`); the cell keeps its last.
+pub const TODO_DISPLAY_MIME: &str = "application/vnd.prime-agent.todo+json";
+/// One settled `ask(...)`: `{text, status, answer}`; the cell keeps every one, in order.
+pub const QUESTION_DISPLAY_MIME: &str = "application/vnd.prime-agent.question+json";
 /// The kernel host request that reports a background bash completion
 /// (the `[bash-done]` lane). The daemon registers the handler
 /// (`bash_notices`), and the provisioner keys the bounded-await bootstrap
@@ -124,16 +128,21 @@ pub type StreamCallback = Arc<dyn Fn(&str, StreamName) + Send + Sync>;
 /// resume.
 pub type BackgroundWorkSettledCallback = Arc<dyn Fn() + Send + Sync>;
 
-/// One step in a backgrounded cell's life, for adoption counts (never code,
-/// output, or an id).
+/// One step in a backgrounded cell's life, for adoption counts and the learned
+/// cell window (never code, output, or an id).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundCellFact {
     /// A cell outlived its yield window and continued in the background.
     Backgrounded,
-    /// A backgrounded cell ended with a value.
-    EndedOk,
-    /// A backgrounded cell ended with an exception.
-    EndedWithError,
+    /// A backgrounded cell ended with a value, this long after it started
+    /// (`None` when its start was not seen).
+    EndedOk {
+        ran_for: Option<std::time::Duration>,
+    },
+    /// A backgrounded cell ended with an exception, this long after it started.
+    EndedWithError {
+        ran_for: Option<std::time::Duration>,
+    },
     /// A backgrounded cell was interrupted.
     Interrupted,
 }
@@ -249,6 +258,10 @@ pub struct ExecuteResult {
     pub bash_waits: KernelBashWaits,
     /// The cell's `rlm.session.messages` reads, one display record each.
     pub transcript_reads: Option<Vec<Value>>,
+    /// The todo list the cell's last `todo.set`/`todo.update` left.
+    pub todo_list: Option<Value>,
+    /// The cell's settled `ask(...)` questions, one display record each.
+    pub questions: Option<Vec<Value>>,
     /// Output that arrived without this cell's id (user threads, other cells' leftovers, raw fd writes).
     pub background_output: Option<String>,
     /// The cell called the sanctioned `rlm.end_turn()`: the host marked

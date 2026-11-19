@@ -685,8 +685,8 @@ pub fn truncate_raw_payload(raw: &str) -> String {
 }
 
 mod http_retry;
-pub(crate) use http_retry::parse_retry_after_ms;
-use http_retry::{header_value, parse_rate_limit_reset_ms};
+use http_retry::parse_rate_limit_reset_ms;
+pub(crate) use http_retry::{header_value, parse_reset_ms, parse_retry_after_ms};
 
 struct ExtractedParts {
     info: StreamFailureInfo,

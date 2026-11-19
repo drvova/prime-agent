@@ -168,6 +168,7 @@ impl Inner {
             g.mcp_status_waiters.clear();
             let had_background_work = !g.background_jobs.is_empty();
             g.background_jobs.clear();
+            g.background_cell_starts.clear();
             // Stale pre-teardown background output must not surface after a restart.
             g.pending_background_output.clear();
             g.pending_background_output_chars = 0;

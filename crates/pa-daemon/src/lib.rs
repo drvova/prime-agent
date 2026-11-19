@@ -73,6 +73,7 @@ pub(crate) mod persistent_shells;
 pub mod platform;
 pub mod prompt_admission;
 pub mod protocol;
+mod provider_admission;
 pub(crate) mod queue_commands;
 pub(crate) mod recovery_pacing;
 pub mod registration;

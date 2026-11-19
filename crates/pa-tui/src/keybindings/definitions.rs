@@ -391,6 +391,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["space"], "Reply to selected agent"),
     ),
     (
+        "app.todos.toggle",
+        def!(&["alt+t"], "Expand or collapse the todo list"),
+    ),
+    (
         "app.question.toggle",
         def!(
             &["space"],

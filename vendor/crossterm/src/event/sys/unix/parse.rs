@@ -202,6 +202,7 @@ pub(crate) fn parse_csi(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
                         b'~' => return parse_csi_special_key_code(buffer),
                         b'u' => return parse_csi_u_encoded_key_code(buffer),
                         b'R' => return parse_csi_cursor_position(buffer),
+                        b't' => return parse_csi_window_report(buffer),
                         _ => return parse_csi_modifier_key_code(buffer),
                     }
                 }
@@ -301,6 +302,29 @@ fn parse_csi_primary_device_attributes(buffer: &[u8]) -> io::Result<Option<Inter
     crate::terminal::record_device_attributes(sixel);
 
     Ok(Some(InternalEvent::PrimaryDeviceAttributes))
+}
+
+/// Prime Agent patch: a window report (`CSI <kind> ; <a> ; <b> t`) is no input event, so it is
+/// dropped exactly as before (the error clears the parser's buffer); the cell-size form
+/// (`CSI 6 ; height ; width t`, the answer to `CSI 16 t`) is recorded first for
+/// `terminal::reported_cell_pixels`.
+fn parse_csi_window_report(buffer: &[u8]) -> io::Result<Option<InternalEvent>> {
+    // ESC [ 6 ; height ; width t
+    assert!(buffer.starts_with(&[b'\x1B', b'[']));
+    assert!(buffer.ends_with(&[b't']));
+    let report = std::str::from_utf8(&buffer[2..buffer.len() - 1])
+        .map_err(|_| could_not_parse_event_error())?;
+    let mut fields = report.split(';');
+    if fields.next() == Some("6") {
+        let height = fields.next().and_then(|field| field.parse::<u16>().ok());
+        let width = fields.next().and_then(|field| field.parse::<u16>().ok());
+        if let (Some(width), Some(height), None) = (width, height, fields.next()) {
+            if width > 0 && height > 0 {
+                crate::terminal::record_cell_pixels(width, height);
+            }
+        }
+    }
+    Err(could_not_parse_event_error())
 }
 
 fn parse_modifiers(mask: u8) -> KeyModifiers {
@@ -1552,5 +1576,15 @@ mod tests {
                 KeyEventKind::Release,
             )))),
         );
+    }
+
+    #[test]
+    fn a_cell_size_report_is_recorded_and_dropped_like_any_window_report() {
+        // The partial report waits for its final byte; the complete one is no event.
+        assert_eq!(parse_event(b"\x1B[6;20", true).unwrap(), None);
+        assert!(parse_event(b"\x1B[4;540;1200t", false).is_err());
+        assert_eq!(crate::terminal::reported_cell_pixels(), None);
+        assert!(parse_event(b"\x1B[6;20;10t", false).is_err());
+        assert_eq!(crate::terminal::reported_cell_pixels(), Some((10, 20)));
     }
 }

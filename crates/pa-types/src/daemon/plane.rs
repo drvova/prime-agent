@@ -116,6 +116,10 @@ const READ_ONLY_DAEMON_COMMANDS: &[&str] = &[
     "list",
     "list_saved_sessions",
     "list_agent_peers",
+    // Provider permits never mutate daemon state: an update must not fence
+    // a worker's model requests out.
+    "provider_admission_acquire",
+    "provider_admission_release",
     "get_direct_worker_transport",
     "attach",
     "reattach",

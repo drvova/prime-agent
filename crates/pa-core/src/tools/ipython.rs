@@ -10,8 +10,6 @@ use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS;
-
 mod diff;
 use crate::tools::tool_definition::{
     AbortSignal, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolExecutionResult,
@@ -71,6 +69,11 @@ pub struct ExecuteResult {
     /// The cell's `rlm.session.messages` reads (`transcriptReads` on the
     /// tool-result details).
     pub transcript_reads: Vec<serde_json::Value>,
+    /// The todo list the cell's last `todo.set`/`todo.update` left (`todoList` on the
+    /// tool-result details).
+    pub todo_list: Option<serde_json::Value>,
+    /// The cell's settled `ask(...)` questions (`questions` on the tool-result details).
+    pub questions: Vec<serde_json::Value>,
     /// The cell outlived its yield window and continues in the background
     /// under this cell id; its end arrives as a `[cell-done]` notice.
     pub backgrounded_cell: Option<String>,
@@ -254,8 +257,7 @@ pub fn ipython_tool_schema() -> serde_json::Value {
             "timeout": {
                 "type": "integer",
                 "description": format!(
-                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default {} unless the user configured otherwise, max {PYTHON_REPL_TIMEOUT_MAX_S}.",
-                    DEFAULT_PYTHON_CELL_TIMEOUT_MS / 1000
+                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default: a window learned from this project's recent cells unless the user configured one, max {PYTHON_REPL_TIMEOUT_MAX_S}."
                 )
             }
         }
@@ -379,6 +381,12 @@ pub async fn execute_ipython(
     }
     if !r.transcript_reads.is_empty() {
         details["transcriptReads"] = json!(r.transcript_reads);
+    }
+    if let Some(list) = &r.todo_list {
+        details["todoList"] = list.clone();
+    }
+    if !r.questions.is_empty() {
+        details["questions"] = json!(r.questions);
     }
     if let Some(background) = &r.background_output {
         details["backgroundOutput"] = json!(background);

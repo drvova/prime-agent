@@ -1,0 +1,1 @@
+- Inline images draw with the terminal's pixel protocol in more terminals instead of the coarse half-block fallback: Windows Terminal from WSL and as the default terminal, WezTerm on Windows, VS Code's terminal with images enabled, and any terminal whose pty reports no pixel size.

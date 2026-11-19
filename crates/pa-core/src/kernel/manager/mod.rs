@@ -32,9 +32,9 @@ use crate::kernel::shared::{
     KERNEL_ABORT_GRACE_MS, KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, KERNEL_STDERR_LOG_BUDGET_MARKER,
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_KERNEL_STDERR_CHARS,
-    MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
+    MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS, QUESTION_DISPLAY_MIME,
     RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, SNAPSHOT_MAX_YIELD_MS,
-    TRANSCRIPT_READ_DISPLAY_MIME,
+    TODO_DISPLAY_MIME, TRANSCRIPT_READ_DISPLAY_MIME,
 };
 use crate::kernel::state_snapshot::{
     RestoreResult, SnapshotResult, SnapshotSkip, DEFAULT_SNAPSHOT_MAX_BYTES,
@@ -89,6 +89,8 @@ struct ExecBuffers {
     bash_commands: Option<KernelBashCommands>,
     bash_waits: KernelBashWaits,
     transcript_reads: Vec<Value>,
+    todo_list: Option<Value>,
+    questions: Vec<Value>,
     background_output: String,
     background_output_chars: usize,
     background_output_truncated: bool,
@@ -135,6 +137,8 @@ impl InternalExecuteResult {
                 bash_commands: None,
                 bash_waits: KernelBashWaits::default(),
                 transcript_reads: None,
+                todo_list: None,
+                questions: None,
                 background_output: None,
                 ended_turn: false,
                 status: ExecuteStatus::Aborted,
@@ -307,6 +311,9 @@ struct Guarded {
     /// Live background jobs by activity id: a `bash()` handle's pid, or 0
     /// for a backgrounded cell.
     background_jobs: HashMap<String, i32>,
+    /// When each backgrounded cell started, by cell id, so its end reports its
+    /// whole run time.
+    background_cell_starts: HashMap<String, Instant>,
     handled_host_request_ids: (HashSet<String>, VecDeque<String>),
     /// Late agent-message handlers keyed by request id, insertion-ordered with eviction.
     late_handlers: VecDeque<(String, LateSentAgentMessageCallback)>,
@@ -459,6 +466,7 @@ impl ReplKernelManager {
                 protocol_repair: None,
                 kernel_stderr: String::new(),
                 background_jobs: HashMap::new(),
+                background_cell_starts: HashMap::new(),
                 handled_host_request_ids: (HashSet::new(), VecDeque::new()),
                 late_handlers: VecDeque::new(),
                 pending_done_waiters: HashMap::new(),

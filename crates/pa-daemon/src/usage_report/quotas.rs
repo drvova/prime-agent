@@ -283,5 +283,6 @@ pub(crate) async fn quota_report(
     });
     QuotaReport {
         providers: futures::future::join_all(fetches).await,
+        pacing: Vec::new(),
     }
 }

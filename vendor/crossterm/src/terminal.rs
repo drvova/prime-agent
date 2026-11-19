@@ -139,6 +139,30 @@ pub fn reported_sixel_graphics() -> Option<bool> {
     }
 }
 
+/// Prime Agent patch: the character cell size the terminal reported for a `CSI 16 t` query
+/// (`CSI 6 ; height ; width t`), packed `width << 16 | height`; `0` until a reply was parsed.
+static CELL_PIXELS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Record a parsed cell-size reply (the unix event parser calls this).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn record_cell_pixels(width: u16, height: u16) {
+    CELL_PIXELS.store(
+        u32::from(width) << 16 | u32::from(height),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Prime Agent patch: the terminal's reported character cell size in pixels as
+/// `(width, height)`, or `None` while no `CSI 16 t` reply has been parsed (none was requested,
+/// the terminal does not answer it, or this is the Windows console, which never reports
+/// through this parser).
+pub fn reported_cell_pixels() -> Option<(u16, u16)> {
+    match CELL_PIXELS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        packed => Some(((packed >> 16) as u16, (packed & 0xffff) as u16)),
+    }
+}
+
 /// Tells whether the raw mode is enabled.
 ///
 /// Please have a look at the [raw mode](./index.html#raw-mode) section.
