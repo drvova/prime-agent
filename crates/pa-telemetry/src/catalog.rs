@@ -1500,6 +1500,27 @@ const AGENT_FS_SEARCH: EventRule = EventRule {
     ],
 };
 
+/// Kernel anchored (hashline) file reads and edits (`fs.read`/`fs.edit`) adoption for one session
+/// (v2), emitted at session end beside `agent session ended` (which sits near the backend's 128-key
+/// cap) only when the session used them: reads and lines shown, failed reads, patches applied and
+/// the edits in them, patches rejected for stale anchors and the stale anchors, and failed edits.
+/// Counts only: never a path, an anchor, or file content.
+const AGENT_FS_EDIT: EventRule = EventRule {
+    name: "agent fs edit",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("fs_read_count", required(count())),
+        ("fs_read_line_count", required(count())),
+        ("fs_read_failed_count", required(count())),
+        ("fs_edit_count", required(count())),
+        ("fs_edit_op_count", required(count())),
+        ("fs_edit_rejected_count", required(count())),
+        ("fs_edit_stale_anchor_count", required(count())),
+        ("fs_edit_failed_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1528,6 +1549,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
+        &AGENT_FS_EDIT,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
