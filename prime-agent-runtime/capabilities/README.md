@@ -11,14 +11,20 @@ Scope: facts about the capabilities. Non-goals: behavior. The files live outside
 they are neither installed into the kernel venv nor part of the runtime identity hash (which
 covers `pyproject.toml`, `src/rlm/**/*.py`, and `src/rlm/machines/`).
 
-pa-core embeds every file with `include_str!` (`crates/pa-core/src/kernel/capabilities/`), and
-its consistency test fails when a manifest and the host's hand-maintained lists disagree, or
-when a file here is not embedded there.
+pa-core embeds every file with `include_str!` (`crates/pa-core/src/kernel/capabilities/`) and
+derives from them the runtime-ready probe (`core.toml`'s statements first, then every other
+manifest's by file name, each in file order) and the closure freeze's seed. Its tests run the
+derived probe against `src/`, and fail when a manifest disagrees with the hand-written surfaces
+(the bootstrap bindings, the core prompt, the telemetry catalog, the registered host-request
+handlers), or when a file here is not embedded there. `crates/pa-core/tests/prompt_guards.rs`
+maps host requests to prompt tokens from the `[host_requests]` tables.
 
 ## Adding a capability
 
 Add `<name>.toml` here and its `include_str!` line in pa-core's `MANIFESTS`; do not grow a
-shared list in another file. The file name is the capability name.
+shared list in another file. The file name is the capability name. Its `probe` statements may
+use only `inspect`, `rlm`, and the names its own earlier statements bind, since the probe runs
+the manifests in name order.
 
 ## Schema
 

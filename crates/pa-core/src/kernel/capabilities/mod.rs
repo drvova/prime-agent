@@ -3,9 +3,9 @@
 //! records what the host keeps about one capability: its readiness-probe statements, closure
 //! seed, bootstrap binding, prompt names, host requests, and standalone telemetry event.
 //!
-//! Test-only for now: the consistency tests hold the manifests equal to the hand-maintained
-//! lists (the runtime-ready probe, the closure freeze, the bootstrap bindings, the core prompt,
-//! and the telemetry catalog) until those lists derive from them.
+//! The runtime-ready probe and the closure freeze's seed derive from the manifests; the tests hold
+//! the hand-written surfaces (the bootstrap bindings, the core prompt, and the telemetry catalog)
+//! equal to them.
 
 use std::collections::BTreeMap;
 

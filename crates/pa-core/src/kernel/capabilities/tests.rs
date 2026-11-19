@@ -1,13 +1,10 @@
-//! Consistency between the capability manifests and the hand-maintained lists they describe.
-//! The host-request mapping half lives beside its mapping in `tests/prompt_guards.rs`.
+//! The artefacts derived from the capability manifests, and consistency between the manifests and
+//! the hand-written surfaces they describe. The host-request half lives in `tests/prompt_guards.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{capabilities, CapabilityManifest, MANIFESTS};
-
-/// The test source that holds the closure freeze's seed list and its expected-closure chain.
-const VENV_TESTS: &str = include_str!("../bootstrap/venv/tests.rs");
 
 /// Session-scoped catalog events that are not a kernel capability's standalone adoption event:
 /// the session lifecycle, and goal verification (`goal` is an executable skill).
@@ -50,93 +47,56 @@ fn every_manifest_file_is_embedded() {
     assert_eq!(on_disk, sorted(MANIFESTS.iter().map(|(name, _)| *name)));
 }
 
-/// The runtime-ready probe is exactly the manifests' probe statements: the probe's `; `-joined
-/// statements (split outside string literals) as a sorted multiset.
+/// The derived runtime-ready probe passes against this checkout's runtime source, and so does the
+/// core manifest's probe followed by each other manifest's alone: a manifest's statements need only
+/// core's imports and their own, so the derived order never puts a use before its import. Skipped
+/// without a Python that takes `-P` (3.11+), as the probe's own safe-path test is.
 #[test]
-fn the_probe_is_the_manifests_probe_statements() {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut chars = crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK
-        .chars()
-        .peekable();
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (Some(_), '\\') => {
-                current.push(ch);
-                current.extend(chars.next());
-            }
-            (Some(open), _) => {
-                current.push(ch);
-                if ch == open {
-                    quote = None;
-                }
-            }
-            (None, ';') if chars.peek() == Some(&' ') => {
-                chars.next();
-                statements.push(std::mem::take(&mut current));
-            }
-            (None, '"' | '\'') => {
-                quote = Some(ch);
-                current.push(ch);
-            }
-            (None, _) => current.push(ch),
-        }
-    }
-    statements.push(current);
-
-    assert_eq!(
-        sorted(statements),
-        sorted(manifests().into_iter().flat_map(|manifest| manifest.probe))
-    );
-}
-
-/// The live closure freeze seeds from the manifests' seed modules, and its expected-closure chain
-/// (which pins the `rlm.` submodules, not the package root) adds their transitive modules.
-#[test]
-fn the_closure_freeze_seeds_from_the_manifests() {
-    let seed_line = VENV_TESTS
-        .lines()
-        .find_map(|line| line.strip_prefix("seed = ["))
-        .expect("the closure freeze's seed list");
-    let seed = sorted(
-        seed_line
-            .trim_end_matches(']')
-            .split(", ")
-            .map(|module| module.trim_matches('"')),
-    );
-    let chain: BTreeSet<&str> = VENV_TESTS
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .trim_start_matches("&& ")
-                .strip_prefix("report.closure.contains(&\"")
-        })
-        .filter_map(|rest| rest.split_once('"').map(|(module, _)| module))
-        .collect();
-
-    let manifests = manifests();
-    let manifest_seed = sorted(
-        manifests
-            .iter()
-            .filter(|manifest| manifest.closure_seed)
-            .map(|manifest| manifest.module.as_str()),
-    );
-    let manifest_chain: BTreeSet<&str> = manifests
+fn the_derived_probe_passes_against_the_runtime_source() {
+    let Some(python) = ["python3.11", "python3"].into_iter().find(|python| {
+        std::process::Command::new(python)
+            .args(["-P", "-c", "pass"])
+            .status()
+            .is_ok_and(|status| status.success())
+    }) else {
+        eprintln!("no Python 3.11+ found; skipping the derived-probe run");
+        return;
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/src");
+    let passes = |program: &str| {
+        std::process::Command::new(python)
+            .args(["-P", "-s", "-c", program])
+            .env("PYTHONPATH", &source)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let manifests = capabilities().expect("every embedded manifest parses");
+    let core = &manifests["core"].probe;
+    let failing: Vec<&str> = manifests
         .iter()
-        .filter(|manifest| manifest.closure_seed)
-        .map(|manifest| manifest.module.as_str())
-        .chain(
-            manifests
-                .iter()
-                .flat_map(|manifest| manifest.closure_transitive.iter().map(String::as_str)),
-        )
-        .filter(|module| module.starts_with("rlm."))
+        .filter(|(name, manifest)| {
+            **name != "core"
+                && !passes(
+                    &[core.as_slice(), manifest.probe.as_slice()]
+                        .concat()
+                        .join("; "),
+                )
+        })
+        .map(|(name, _)| *name)
         .collect();
-    assert_eq!((seed, chain), (manifest_seed, manifest_chain));
+    assert_eq!(
+        (
+            passes(&crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK),
+            failing
+        ),
+        (true, Vec::new())
+    );
 }
 
-/// The bootstrap binds exactly the manifests' bound modules (`import rlm.<module> as <name>`).
+/// The bootstrap binds exactly the manifests' bound modules (`import rlm.<module> as <name>`), and
+/// each is one its manifest lists among the core prompt's kernel-implemented tools (`<name>.*`), so
+/// a new kernel API ships bound and documented together. `ask` and `notify` are bound as functions
+/// under private module aliases, so they carry no `bound_module`.
 #[test]
 fn the_bootstrap_binds_the_manifests_modules() {
     let code = crate::kernel::bootstrap::build_rlm_bootstrap_code(&[], false);
@@ -146,12 +106,23 @@ fn the_bootstrap_binds_the_manifests_modules() {
             .filter_map(|line| line.split_once(" as ").map(|(_, name)| name))
             .filter(|name| !name.starts_with('_')),
     );
+    let manifests = manifests();
+    let unlisted: Vec<&str> = manifests
+        .iter()
+        .filter_map(|manifest| {
+            let name = manifest.bound_module.as_deref()?;
+            (!manifest.prompt_builtins.contains(&format!("{name}.*"))).then_some(name)
+        })
+        .collect();
     assert_eq!(
-        bound,
-        sorted(
-            manifests()
-                .into_iter()
-                .filter_map(|manifest| manifest.bound_module)
+        (bound, unlisted),
+        (
+            sorted(
+                manifests
+                    .iter()
+                    .filter_map(|manifest| manifest.bound_module.clone())
+            ),
+            Vec::new()
         )
     );
 }
