@@ -1,8 +1,10 @@
 //! The no-cold-start chain and refresh cadence.
 //! Disk cache -> bundled snapshot -> compiled fallback: a user always has
-//! models, offline or not. Resolution returns fresh snapshots: a
+//! models, offline or not. A provider the resolved cache or snapshot does not
+//! carry at all is filled with its compiled rows. Resolution returns fresh snapshots: a
 //! mid-session refresh never retargets the active model.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -16,6 +18,7 @@ use crate::prime_inference::{
 };
 use crate::transports;
 use crate::Model;
+use pa_types::ai::PRIME_INFERENCE_PROVIDER_ID;
 
 /// The provider-model-catalog cache file, beside models.json.
 pub const PROVIDER_CATALOG_CACHE_FILE: &str = "provider-model-catalog.v1.json";
@@ -154,7 +157,7 @@ impl ModelCatalog {
     /// the live Prime Inference snapshot for `credentials` when given.
     /// Never fails; never blocks on the network.
     pub fn resolve(&self, credentials: Option<&PrimeCredentials>) -> Vec<Model> {
-        let base = match self.provider_cache.get(PUBLIC_SCOPE) {
+        let catalog = match self.provider_cache.get(PUBLIC_SCOPE) {
             Some(remote) => {
                 // Step 1: validated last-good cache + the compiled offline
                 // Prime Inference entries (private/live entries come from
@@ -163,18 +166,35 @@ impl ModelCatalog {
                 for model in transports::prime_inference_offline_entries() {
                     models.push(model);
                 }
-                models
+                Some(models)
             }
             // Step 2: packaged bundled snapshot (damaged assets are None).
-            None => match self
+            None => self
                 .bundled
                 .read_models()
-                .and_then(|asset| load_bundled_models(&asset, &self.templates))
-            {
-                Some(bundled) => bundled,
-                // Step 3: compiled fallback.
-                None => self.compiled.as_ref().clone(),
-            },
+                .and_then(|asset| load_bundled_models(&asset, &self.templates)),
+        };
+        let base = match catalog {
+            // The catalog stays authoritative for every provider it carries; a provider it does
+            // not carry at all (a compiled transport the catalog has no rows for yet) resolves
+            // with its compiled rows, whole. Prime Inference is the live-fetch domain and always
+            // carried by the offline entries above, so it is never filled here.
+            Some(mut models) => {
+                let carried: HashSet<String> =
+                    models.iter().map(|model| model.provider.clone()).collect();
+                models.extend(
+                    self.compiled
+                        .iter()
+                        .filter(|model| {
+                            model.provider != PRIME_INFERENCE_PROVIDER_ID
+                                && !carried.contains(&model.provider)
+                        })
+                        .cloned(),
+                );
+                models
+            }
+            // Step 3: compiled fallback.
+            None => self.compiled.as_ref().clone(),
         };
         let live = credentials
             .and_then(|credentials| self.prime_inference.get(&credentials.as_inference()));
@@ -343,12 +363,67 @@ mod tests {
         .unwrap();
         let catalog = ModelCatalog::with_bundled_dir(None, Some(dir.path().into()));
         let models = catalog.resolve(None);
+        // The compiled rows of every provider the asset does not carry (all but anthropic and
+        // prime-inference) fill in beside it.
+        let filled = transports::compiled_models()
+            .iter()
+            .filter(|m| m.provider != "anthropic" && m.provider != "prime-inference")
+            .count();
         assert_eq!(
             models.len(),
-            111,
-            "1 pinned bundled entry + 110 offline prime-inference entries"
+            1 + 110 + filled,
+            "1 pinned bundled entry + 110 offline prime-inference entries + compiled fills"
         );
         assert!(models.iter().any(|m| m.id == "bundled-a"));
+    }
+
+    /// A provider the resolved catalog does not carry at all resolves with its compiled rows; a
+    /// provider the catalog carries keeps exactly the catalog's rows (no compiled row mixes in).
+    #[test]
+    fn compiled_rows_fill_only_providers_the_catalog_lacks() {
+        let compiled = transports::compiled_models();
+        let openai = compiled
+            .iter()
+            .find(|m| m.provider == "openai")
+            .expect("compiled openai");
+        let entry = json!({
+            "id": "catalog-openai",
+            "name": "Catalog OpenAI",
+            "api": openai.api,
+            "provider": openai.provider,
+            "baseUrl": openai.base_url,
+            "reasoning": false,
+            "input": ["text"],
+            "cost": {"input": 1, "output": 2, "cacheRead": 0, "cacheWrite": 0},
+            "contextWindow": 128_000,
+            "maxTokens": 4_096,
+        });
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("models.bundled.json"),
+            serde_json::to_string(&json!({"schemaVersion": 1, "models": [entry.clone()]})).unwrap(),
+        )
+        .unwrap();
+        let catalog = ModelCatalog::with_bundled_dir(None, Some(dir.path().into()));
+        let models = catalog.resolve(None);
+
+        let rows_of = |models: &[Model], provider: &str| -> Vec<Model> {
+            models
+                .iter()
+                .filter(|m| m.provider == provider)
+                .cloned()
+                .collect()
+        };
+        let compiled_together = rows_of(compiled, "together");
+        assert!(
+            !compiled_together.is_empty(),
+            "together ships compiled rows"
+        );
+        assert_eq!(rows_of(&models, "together"), compiled_together);
+
+        let mut catalog_openai: Model = serde_json::from_value(entry).unwrap();
+        catalog_openai.headers.clone_from(&openai.headers);
+        assert_eq!(rows_of(&models, "openai"), vec![catalog_openai]);
     }
 
     #[test]
