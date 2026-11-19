@@ -67,14 +67,14 @@ async fn queue_withdrawals_clear_only_the_last_idle_notes() {
                         4321,
                         "fixture command",
                         0,
-                        pa_core::session_engine::messages::BashOutputTail::Complete(""),
+                        pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
                     ),
                     || false,
                 );
-                withdraw_bash_completion_notice(
+                withdraw_background_completion_notice(
                     &worker.recovery,
                     &worker.core,
-                    &crate::engine::BashConsumedNotice {
+                    &crate::engine::BackgroundJobConsumed::Bash {
                         pid: 4321,
                         command: "fixture command".to_string(),
                     },
@@ -120,13 +120,13 @@ async fn queue_withdrawals_clear_only_the_last_idle_notes() {
     }
 }
 
-/// The quiescence observation's bash lane: no background work counts zero,
-/// an admitted `[bash-done]` notice counts as the pending wake until it is
-/// withdrawn, a plain queued prompt never counts, and the
+/// The quiescence observation's background lane: no background work counts
+/// zero, an admitted `[bash-done]` or `[cell-done]` notice counts as the
+/// pending wake until its own job's withdrawal, a plain queued prompt never counts, and the
 /// `wait_for_headless_completion` answer carries the count as an additive
 /// key next to the TS status.
 #[tokio::test]
-async fn headless_completion_counts_the_bash_lane() {
+async fn headless_completion_counts_the_background_lane() {
     let dir = tempfile::tempdir().unwrap();
     let engine = Arc::new(NoteWitnessEngine::default());
     let mut worker = Worker::new(
@@ -178,7 +178,7 @@ async fn headless_completion_counts_the_bash_lane() {
             4321,
             "fixture command",
             0,
-            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+            pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
         ),
         || false,
     );
@@ -195,10 +195,10 @@ async fn headless_completion_counts_the_bash_lane() {
     );
 
     // The consumed notice withdraws; the bash lane quiets again.
-    withdraw_bash_completion_notice(
+    withdraw_background_completion_notice(
         &worker.recovery,
         &worker.core,
-        &crate::engine::BashConsumedNotice {
+        &crate::engine::BackgroundJobConsumed::Bash {
             pid: 4321,
             command: "fixture command".to_string(),
         },
@@ -209,4 +209,34 @@ async fn headless_completion_counts_the_bash_lane() {
         0,
         "the withdrawn notice must not count as background work"
     );
+
+    // A backgrounded cell's `[cell-done]` notice is the same lane, withdrawn
+    // by its cell id only.
+    admit_kernel_notice(
+        &worker.recovery,
+        &worker.core,
+        &Arc::new(Notify::new()),
+        crate::engine::KernelNotice::cell_completion(
+            "cell-a",
+            pa_core::session_engine::messages::CellEnd::Ok,
+            "'done'",
+            pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
+        ),
+        || false,
+    );
+    for (cell, outstanding) in [("cell-b", 1), ("cell-a", 0)] {
+        withdraw_background_completion_notice(
+            &worker.recovery,
+            &worker.core,
+            &crate::engine::BackgroundJobConsumed::Cell {
+                cell: cell.to_string(),
+            },
+            Some(engine.as_ref()),
+        );
+        assert_eq!(
+            worker.outstanding_background_jobs(),
+            outstanding,
+            "after withdrawing {cell}"
+        );
+    }
 }

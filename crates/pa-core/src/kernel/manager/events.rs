@@ -19,27 +19,35 @@ impl Inner {
                         return;
                     };
                     let activity_id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
-                    let pid = obj.get("pid").and_then(Value::as_i64).unwrap_or_default();
+                    // A detached bash() command carries its pid; a backgrounded
+                    // cell carries its cell id instead (tracked under pid 0).
+                    let cell = obj
+                        .get("cell")
+                        .and_then(Value::as_str)
+                        .is_some_and(|cell| !cell.is_empty());
+                    let pid = if cell {
+                        0
+                    } else {
+                        obj.get("pid").and_then(Value::as_i64).unwrap_or_default()
+                    };
                     let active = obj.get("active").and_then(Value::as_bool);
                     if activity_id.len() == 32
                         && activity_id.chars().all(|c| c.is_ascii_hexdigit())
-                        && pid > 0
+                        && (cell || pid > 0)
                         && matches!(active, Some(true | false))
                     {
                         let mut settled = false;
                         {
                             let mut g = lock(&self.guarded);
                             if active == Some(true) {
-                                g.background_bash_handles
+                                g.background_jobs
                                     .entry(activity_id.to_string())
                                     .or_insert(pid as i32);
-                            } else if g.background_bash_handles.get(activity_id)
-                                == Some(&(pid as i32))
-                            {
-                                g.background_bash_handles.remove(activity_id);
+                            } else if g.background_jobs.get(activity_id) == Some(&(pid as i32)) {
+                                g.background_jobs.remove(activity_id);
                                 // The last live handle settled: the completion notice for it is
                                 // already admitted, so owed continuations may resume.
-                                settled = g.background_bash_handles.is_empty();
+                                settled = g.background_jobs.is_empty();
                             }
                         }
                         if settled {
@@ -395,6 +403,25 @@ mod tests {
             json!({ "id": "a".repeat(32), "pid": 42, "active": false }),
         );
         manager.inner.cleanup_resources(Signal::Term);
+        assert_eq!(fired.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_backgrounded_cell_counts_as_background_work_until_it_ends() {
+        let (fired, on_settled) = settlement_counter();
+        let manager = ReplKernelManager::new(KernelManagerOptions {
+            on_background_work_settled: Some(on_settled),
+            ..Default::default()
+        });
+        let cell =
+            |active: bool| json!({ "id": "c".repeat(32), "cell": "cell-1", "active": active });
+        deliver_activity(&manager, cell(true));
+        assert_eq!(manager.background_job_count(), 1);
+        // A cell activity without its cell id is malformed, like a bash one without a pid.
+        deliver_activity(&manager, json!({ "id": "c".repeat(32), "active": false }));
+        assert_eq!(manager.background_job_count(), 1);
+        deliver_activity(&manager, cell(false));
+        assert_eq!(manager.background_job_count(), 0);
         assert_eq!(fired.load(Ordering::SeqCst), 1);
     }
 

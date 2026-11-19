@@ -324,8 +324,8 @@ impl AgentView {
                     width,
                 )
             }
-            ChatEntry::ShellCompletion(row) => {
-                crate::custom_message::render::render_shell_completion(
+            ChatEntry::BackgroundCompletion(row) => {
+                crate::custom_message::render::render_background_completion(
                     row,
                     detail,
                     &self.theme,

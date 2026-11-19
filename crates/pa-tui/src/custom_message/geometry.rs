@@ -1,5 +1,5 @@
 //! Count custom rows using the same headers and body geometry as rendering.
-use super::{AgentMessageRow, CustomPanelRow, ShellCompletionRow};
+use super::{AgentMessageRow, BackgroundCompletionRow, CustomPanelRow};
 use crate::branch::{branch_block_count, branch_markdown_count};
 use crate::chat::Detail;
 use crate::theme::{Theme, ThemeColor};
@@ -50,8 +50,8 @@ pub(crate) fn agent_message_row_count(
         }
 }
 
-pub(crate) fn shell_completion_row_count(
-    row: &ShellCompletionRow,
+pub(crate) fn background_completion_row_count(
+    row: &BackgroundCompletionRow,
     detail: Detail,
     width: usize,
     leading: bool,

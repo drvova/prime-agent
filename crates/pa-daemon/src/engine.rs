@@ -16,8 +16,8 @@ mod wire;
 pub use scripted::ScriptedEngine;
 pub(crate) use wire::session_wire_value;
 pub use wire::{
-    empty_resource_snapshot, side_question_event_value, AssistantSnapshot, BashConsumedNotice,
-    BashConsumedSink, BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
+    empty_resource_snapshot, side_question_event_value, AssistantSnapshot, BackgroundJobConsumed,
+    BackgroundJobConsumedSink, BranchSummaryOutcome, BranchSummaryRequest, BranchSummaryRun,
     CompactionOutcome, CompactionRequest, CompactionRun, EngineEvent, EngineModelSelection,
     GoalAdmissionSink, GoalContinuation, GoalTurnEndWork, KernelNotice, KernelNoticeSink,
     PromptBatchRow, PromptRequest, RlmSessionIdentity, SavedSessionContext, SemanticSpawnOrigin,

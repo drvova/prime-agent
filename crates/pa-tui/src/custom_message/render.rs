@@ -3,7 +3,8 @@
 //! module; compaction outcomes render through the chat status rows.
 
 use super::{
-    AgentMessageDirection, AgentMessageRow, CustomPanelRow, ShellCompletionRow, AGENT_MESSAGE_LABEL,
+    AgentMessageDirection, AgentMessageRow, BackgroundCompletionRow, BackgroundOutcome,
+    CustomPanelRow, AGENT_MESSAGE_LABEL,
 };
 use crate::chat::Detail;
 use crate::theme::{Theme, ThemeColor};
@@ -143,23 +144,32 @@ pub(crate) fn truncate_text(text: &str, width: usize, ellipsis: &str) -> String 
 
 /// One shell-completion row, standalone form: the header mark, then the
 /// raw content under the branch gutter when expanded.
-pub(crate) fn render_shell_completion(
-    row: &ShellCompletionRow,
+pub(crate) fn render_background_completion(
+    row: &BackgroundCompletionRow,
     detail: Detail,
     theme: &Theme,
     width: usize,
     leading: bool,
 ) -> Vec<Line> {
-    let failed = matches!(row.exit_code, Some(code) if code != 0);
+    let (failed, label) = match &row.outcome {
+        BackgroundOutcome::Shell {
+            exit_code: Some(code),
+            ..
+        } if *code != 0 => (
+            true,
+            format!("Background shell command failed \u{b7} exit {code}"),
+        ),
+        BackgroundOutcome::Shell { .. } => (false, "Background shell command finished".to_string()),
+        BackgroundOutcome::Cell { status } => match status.as_deref() {
+            Some("error") => (true, "Background cell failed".to_string()),
+            Some("interrupted") => (true, "Background cell interrupted".to_string()),
+            Some(_) | None => (false, "Background cell finished".to_string()),
+        },
+    };
     let color = if failed {
         theme.fg_style(ThemeColor::Error)
     } else {
         theme.fg_style(ThemeColor::Muted)
-    };
-    let label = if let (Some(code), true) = (row.exit_code, failed) {
-        format!("Background shell command failed \u{b7} exit {code}")
-    } else {
-        "Background shell command finished".to_string()
     };
     let mark = if failed { "\u{2717}" } else { "\u{2713}" };
     let header = truncate_line(
@@ -324,13 +334,45 @@ mod tests {
     }
 
     #[test]
+    fn cell_completion_rows() {
+        let header = |status: Option<&str>| {
+            let row = BackgroundCompletionRow {
+                outcome: BackgroundOutcome::Cell {
+                    status: status.map(str::to_string),
+                },
+                content: "[cell-done cell:c1 status:ok]".to_string(),
+            };
+            let rows = render_background_completion(&row, Detail::Overview, &theme(), 60, false);
+            (flat(&rows[0]), rows[0][0].style)
+        };
+        let muted = theme().fg_style(ThemeColor::Muted);
+        let error = theme().fg_style(ThemeColor::Error);
+        assert_eq!(
+            [
+                header(Some("ok")),
+                header(Some("error")),
+                header(Some("interrupted")),
+                header(None)
+            ],
+            [
+                (" \u{2713} Background cell finished".to_string(), muted),
+                (" \u{2717} Background cell failed".to_string(), error),
+                (" \u{2717} Background cell interrupted".to_string(), error),
+                (" \u{2713} Background cell finished".to_string(), muted),
+            ]
+        );
+    }
+
+    #[test]
     fn shell_completion_rows() {
-        let ok = ShellCompletionRow {
-            pid: Some(4371),
-            exit_code: Some(0),
+        let ok = BackgroundCompletionRow {
+            outcome: crate::custom_message::BackgroundOutcome::Shell {
+                pid: Some(4371),
+                exit_code: Some(0),
+            },
             content: "[bash-done pid:4371 exit:0]".to_string(),
         };
-        let rows = render_shell_completion(&ok, Detail::Overview, &theme(), 60, true);
+        let rows = render_background_completion(&ok, Detail::Overview, &theme(), 60, true);
         assert!(rows[0].is_empty());
         assert_eq!(
             flat(&rows[1]),
@@ -341,12 +383,14 @@ mod tests {
             theme().fg_style(ThemeColor::Muted),
             "muted when exit 0"
         );
-        let failed = ShellCompletionRow {
-            pid: Some(11),
-            exit_code: Some(2),
+        let failed = BackgroundCompletionRow {
+            outcome: crate::custom_message::BackgroundOutcome::Shell {
+                pid: Some(11),
+                exit_code: Some(2),
+            },
             content: "[bash-done pid:11 exit:2]".to_string(),
         };
-        let rows = render_shell_completion(&failed, Detail::Overview, &theme(), 60, false);
+        let rows = render_background_completion(&failed, Detail::Overview, &theme(), 60, false);
         assert_eq!(rows.len(), 1);
         assert_eq!(
             flat(&rows[0]),
@@ -359,12 +403,14 @@ mod tests {
         );
         // The expanded body is the raw content under the branch gutter: the gutter on
         // the first content row, the four-column continuation on the blank source line.
-        let row = ShellCompletionRow {
-            pid: Some(99),
-            exit_code: Some(0),
+        let row = BackgroundCompletionRow {
+            outcome: crate::custom_message::BackgroundOutcome::Shell {
+                pid: Some(99),
+                exit_code: Some(0),
+            },
             content: "[bash-done pid:99 exit:0]\n\nCommand: \"printf done\"".to_string(),
         };
-        let rows = render_shell_completion(&row, Detail::All, &theme(), 60, true);
+        let rows = render_background_completion(&row, Detail::All, &theme(), 60, true);
         let trimmed: Vec<String> = rows
             .iter()
             .map(|row| flat(row).trim_end().to_string())

@@ -285,7 +285,7 @@ impl AgentView {
             ChatEntry::Tool(_)
                 | ChatEntry::BashExecution(_)
                 | ChatEntry::AgentMessage(_)
-                | ChatEntry::ShellCompletion(_)
+                | ChatEntry::BackgroundCompletion(_)
                 | ChatEntry::CompactionSummary { .. }
                 | ChatEntry::RefinementOutcome(_)
                 | ChatEntry::SkillInvocation(_)

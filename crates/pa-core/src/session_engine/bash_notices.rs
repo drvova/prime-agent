@@ -1,6 +1,8 @@
 //! The kernel notice seam (the TS async-bash-completion wake): the
-//! `bash.completed`/`bash.consumed` notices plus the `factory.progress`
-//! run-milestone notice that rides the same steering delivery. Here live
+//! background-job notices (`bash.completed`/`bash.consumed` for a detached
+//! command, `cell.completed`/`cell.consumed` for a backgrounded cell) plus
+//! the `factory.progress` run-milestone notice that rides the same steering
+//! delivery. Here live
 //! the shared notice types, the TS payload validation, and the
 //! host-handler registration, plus the in-process sinks a daemonless
 //! embedding uses — the notice row steers onto the session's own agent
@@ -15,7 +17,8 @@ use pa_agent::types::AgentMessage;
 use pa_types::session::CustomMessage;
 
 use super::messages::{
-    self, ASYNC_BASH_COMPLETION_CUSTOM_TYPE, ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+    self, CellEnd, ASYNC_BASH_COMPLETION_CUSTOM_TYPE, ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+    ASYNC_CELL_COMPLETION_CUSTOM_TYPE, ASYNC_CELL_COMPLETION_PREVIEW_LABEL,
     FACTORY_PROGRESS_PREVIEW_LABEL,
 };
 use super::{session_message_to_loop, SessionAgentMessage};
@@ -39,7 +42,7 @@ impl KernelNotice {
         pid: u32,
         command: &str,
         exit_code: i64,
-        output: messages::BashOutputTail<'_>,
+        output: messages::BackgroundOutputTail<'_>,
     ) -> Self {
         Self {
             row: messages::create_async_bash_completion_message(
@@ -52,6 +55,26 @@ impl KernelNotice {
             preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
         }
     }
+
+    /// The `[cell-done]` notice for one backgrounded cell that ended.
+    #[must_use]
+    pub fn cell_completion(
+        cell: &str,
+        end: CellEnd,
+        text: &str,
+        output: messages::BackgroundOutputTail<'_>,
+    ) -> Self {
+        Self {
+            row: messages::create_async_cell_completion_message(
+                cell,
+                end,
+                text,
+                output,
+                crate::autonomous::now_millis(),
+            ),
+            preview_label: ASYNC_CELL_COMPLETION_PREVIEW_LABEL,
+        }
+    }
 }
 
 /// The queue-admission seam for one kernel notice (the daemon worker's
@@ -59,27 +82,61 @@ impl KernelNotice {
 /// sinks below steer onto the session's own agent).
 pub type KernelNoticeSink = Arc<dyn Fn(KernelNotice) + Send + Sync>;
 
-/// The kernel read a finished command's result before its notice
-/// delivered (the `bash.consumed` host request): the queued notice is stale.
-#[derive(Debug, Clone)]
-pub struct BashConsumedNotice {
-    pub pid: u32,
-    pub command: String,
+/// The kernel read a finished background job's result before its notice
+/// delivered (`bash.consumed`, `cell.consumed`): the queued notice is stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackgroundJobConsumed {
+    /// A detached `bash()` command, by pid and command (pids alone are reused).
+    Bash { pid: u32, command: String },
+    /// A backgrounded Python cell, by its cell id.
+    Cell { cell: String },
+}
+
+impl BackgroundJobConsumed {
+    /// Whether one queued row (its `customType` and `details`) is this
+    /// job's completion notice.
+    #[must_use]
+    pub fn matches_row(&self, custom_type: Option<&str>, details: &Value) -> bool {
+        match self {
+            Self::Bash { pid, command } => {
+                custom_type == Some(ASYNC_BASH_COMPLETION_CUSTOM_TYPE)
+                    && details.get("pid").and_then(Value::as_u64) == Some(u64::from(*pid))
+                    && details.get("command").and_then(Value::as_str) == Some(command.as_str())
+            }
+            Self::Cell { cell } => {
+                custom_type == Some(ASYNC_CELL_COMPLETION_CUSTOM_TYPE)
+                    && details.get("cell").and_then(Value::as_str) == Some(cell.as_str())
+            }
+        }
+    }
+}
+
+/// Whether a queued row's `customType` is a background job's completion
+/// notice (`[bash-done]` or `[cell-done]`): finished work whose wake is
+/// still pending delivery.
+#[must_use]
+pub fn is_background_completion_type(custom_type: Option<&str>) -> bool {
+    matches!(
+        custom_type,
+        Some(ASYNC_BASH_COMPLETION_CUSTOM_TYPE | ASYNC_CELL_COMPLETION_CUSTOM_TYPE)
+    )
 }
 
 /// The queue-withdrawal seam for one consumed notice.
-pub type BashConsumedSink = Arc<dyn Fn(BashConsumedNotice) + Send + Sync>;
+pub type BackgroundJobConsumedSink = Arc<dyn Fn(BackgroundJobConsumed) + Send + Sync>;
 
 /// The daemonless embedding's wake (TS `resumeIfIdle`): fires after a
 /// notice admits its row, so the embedding resumes the idle run.
 pub type BashNoticeWake = Arc<dyn Fn() + Send + Sync>;
 
-/// The `bash.completed`/`bash.consumed`/`factory.progress` kernel host
-/// handlers (TS `createAsyncBashCompletionHostHandler`,
-/// `createAsyncBashConsumedHostHandler`, `createFactoryProgressHostHandler`).
+/// The `bash.completed`/`bash.consumed`/`cell.completed`/`cell.consumed`/
+/// `factory.progress` kernel host handlers (TS
+/// `createAsyncBashCompletionHostHandler`, `createAsyncBashConsumedHostHandler`,
+/// `createFactoryProgressHostHandler`; the cell pair is the same seam for a
+/// backgrounded cell).
 pub fn register_kernel_notice_host_handlers(
     notice: KernelNoticeSink,
-    consumed: BashConsumedSink,
+    consumed: BackgroundJobConsumedSink,
     handlers: &mut HostRequestHandlers,
 ) {
     let completion = Arc::clone(&notice);
@@ -97,13 +154,36 @@ pub fn register_kernel_notice_host_handlers(
             })
         }),
     );
+    let bash_consumed = Arc::clone(&consumed);
     handlers.register(
         "bash.consumed",
         host_handler(move |payload| {
+            let consumed = bash_consumed.clone();
+            Box::pin(async move {
+                consumed(validate_consumed(&payload.data)?);
+                Ok(serde_json::json!({}))
+            })
+        }),
+    );
+    let cell_completion = Arc::clone(&notice);
+    handlers.register(
+        "cell.completed",
+        host_handler(move |payload| {
+            let completion = cell_completion.clone();
+            Box::pin(async move {
+                completion(validate_cell_completion(&payload.data)?);
+                Ok(serde_json::json!({}))
+            })
+        }),
+    );
+    handlers.register(
+        "cell.consumed",
+        host_handler(move |payload| {
             let consumed = consumed.clone();
             Box::pin(async move {
-                let notice = validate_consumed(&payload.data)?;
-                consumed(notice);
+                consumed(BackgroundJobConsumed::Cell {
+                    cell: cell_id(&payload.data)?,
+                });
                 Ok(serde_json::json!({}))
             })
         }),
@@ -124,31 +204,70 @@ pub fn register_kernel_notice_host_handlers(
 /// integer pid, a non-empty string command, an integer exit code, plus the
 /// kernel's bounded output tail (a string and its `outputTruncated` flag).
 fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
-    let consumed = validate_consumed(data)?;
+    let (pid, command) = bash_job(data)?;
     let exit_code = data
         .get("exitCode")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow::anyhow!("bash.completed exitCode must be an integer"))?;
+    let output = output_tail("bash.completed", data)?;
+    Ok(KernelNotice::bash_completion(
+        pid, &command, exit_code, output,
+    ))
+}
+
+/// The kernel's bounded output tail: a string and its `outputTruncated` flag.
+fn output_tail<'a>(
+    request: &str,
+    data: &'a Value,
+) -> anyhow::Result<messages::BackgroundOutputTail<'a>> {
     let tail = data
         .get("output")
         .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("bash.completed output must be a string"))?;
-    let output = match data.get("outputTruncated").and_then(Value::as_bool) {
-        Some(true) => messages::BashOutputTail::Truncated(tail),
-        Some(false) => messages::BashOutputTail::Complete(tail),
-        None => anyhow::bail!("bash.completed outputTruncated must be a boolean"),
+        .ok_or_else(|| anyhow::anyhow!("{request} output must be a string"))?;
+    match data.get("outputTruncated").and_then(Value::as_bool) {
+        Some(true) => Ok(messages::BackgroundOutputTail::Truncated(tail)),
+        Some(false) => Ok(messages::BackgroundOutputTail::Complete(tail)),
+        None => anyhow::bail!("{request} outputTruncated must be a boolean"),
+    }
+}
+
+/// The `cell.completed` payload (`rlm/cells.py` `_notify_completion`): a
+/// non-empty cell id, the end status, the value or traceback text, and the
+/// bounded output tail.
+fn validate_cell_completion(data: &Value) -> anyhow::Result<KernelNotice> {
+    let cell = cell_id(data)?;
+    let end = match data.get("status").and_then(Value::as_str) {
+        Some("ok") => CellEnd::Ok,
+        Some("error") => CellEnd::Error,
+        Some("interrupted") => CellEnd::Interrupted,
+        _ => anyhow::bail!("cell.completed status must be ok, error or interrupted"),
     };
-    Ok(KernelNotice::bash_completion(
-        consumed.pid,
-        &consumed.command,
-        exit_code,
-        output,
-    ))
+    let text = data
+        .get("text")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("cell.completed text must be a string"))?;
+    let output = output_tail("cell.completed", data)?;
+    Ok(KernelNotice::cell_completion(&cell, end, text, output))
+}
+
+/// A `cell.*` request's non-empty cell id.
+fn cell_id(data: &Value) -> anyhow::Result<String> {
+    data.get("cell")
+        .and_then(Value::as_str)
+        .filter(|cell| !cell.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("cell request cell must be a non-empty string"))
 }
 
 /// TS `createAsyncBashConsumedHostHandler` validation: a positive integer pid and a
 /// non-empty command (pids are reused across handles, so the command disambiguates).
-fn validate_consumed(data: &Value) -> anyhow::Result<BashConsumedNotice> {
+fn validate_consumed(data: &Value) -> anyhow::Result<BackgroundJobConsumed> {
+    let (pid, command) = bash_job(data)?;
+    Ok(BackgroundJobConsumed::Bash { pid, command })
+}
+
+/// A `bash.*` request's job: its positive pid and non-empty command.
+fn bash_job(data: &Value) -> anyhow::Result<(u32, String)> {
     let pid = data
         .get("pid")
         .and_then(Value::as_u64)
@@ -161,7 +280,7 @@ fn validate_consumed(data: &Value) -> anyhow::Result<BashConsumedNotice> {
         .filter(|command| !command.is_empty())
         .ok_or_else(|| anyhow::anyhow!("bash.completed command must be a non-empty string"))?
         .to_string();
-    Ok(BashConsumedNotice { pid, command })
+    Ok((pid, command))
 }
 
 /// The kernel factory executor's milestone payload (`FactoryExecutor._milestone`
@@ -221,7 +340,7 @@ pub fn register_in_process_kernel_notice_handlers(
         notice_wake();
     });
     let consumed_slot = Arc::clone(agent_slot);
-    let consumed: BashConsumedSink = Arc::new(move |notice| {
+    let consumed: BackgroundJobConsumedSink = Arc::new(move |notice| {
         let Some(agent) = bound_agent(&consumed_slot) else {
             return;
         };
@@ -247,24 +366,15 @@ fn bound_agent(slot: &BashNoticeAgentSlot) -> Option<Arc<pa_agent::agent::Agent>
         .and_then(Weak::upgrade)
 }
 
-/// Whether one queued loop row is the completion notice for this
-/// pid+command (the row's details carry both — pids alone are reused).
-fn is_queued_completion_row(row: &AgentMessage, notice: &BashConsumedNotice) -> bool {
+/// Whether one queued loop row is the completion notice of this job.
+fn is_queued_completion_row(row: &AgentMessage, notice: &BackgroundJobConsumed) -> bool {
     let AgentMessage::Custom(custom) = row else {
         return false;
     };
-    custom.payload.get("customType").and_then(Value::as_str)
-        == Some(ASYNC_BASH_COMPLETION_CUSTOM_TYPE)
-        && custom
-            .payload
-            .pointer("/details/pid")
-            .and_then(Value::as_u64)
-            == Some(u64::from(notice.pid))
-        && custom
-            .payload
-            .pointer("/details/command")
-            .and_then(Value::as_str)
-            == Some(notice.command.as_str())
+    notice.matches_row(
+        custom.payload.get("customType").and_then(Value::as_str),
+        custom.payload.get("details").unwrap_or(&Value::Null),
+    )
 }
 
 #[cfg(test)]
@@ -399,6 +509,70 @@ mod tests {
             remaining.len(),
             1,
             "one read withdrew the front-most row; the second identical row stayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cell_completed_queues_the_cell_done_row_and_cell_consumed_withdraws_it() {
+        let (agent, _slot, wakes, handlers) = wired_agent();
+        let completed = handlers
+            .get("cell.completed")
+            .expect("the cell completion handler registered")
+            .clone();
+        let payload = |cell: &str| {
+            serde_json::json!({
+                "type": "cell.completed",
+                "cell": cell,
+                "status": "ok",
+                "output": "after",
+                "outputTruncated": false,
+                "text": "'finished'",
+            })
+        };
+        assert!(
+            dispatch(
+                &completed,
+                serde_json::json!({ "cell": "c1", "status": "done" })
+            )
+            .await
+            .is_err(),
+            "an unknown status is refused"
+        );
+        dispatch(&completed, payload("c1"))
+            .await
+            .expect("the first notice is accepted");
+        dispatch(&completed, payload("c2"))
+            .await
+            .expect("the second notice is accepted");
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+
+        let consumed = handlers
+            .get("cell.consumed")
+            .expect("the cell consumed handler registered")
+            .clone();
+        dispatch(
+            &consumed,
+            serde_json::json!({ "type": "cell.consumed", "cell": "c1" }),
+        )
+        .await
+        .expect("the withdrawal is accepted");
+        let remaining = agent.remove_queued_messages(|_| true);
+        let [AgentMessage::Custom(custom)] = remaining.as_slice() else {
+            panic!("only the other cell's notice stays queued: {remaining:?}");
+        };
+        assert_eq!(
+            (
+                custom.payload.get("customType"),
+                custom.payload.get("content"),
+                custom.payload.get("details"),
+            ),
+            (
+                Some(&serde_json::json!("async_cell_completion")),
+                Some(&serde_json::json!(
+                    "[cell-done cell:c2 status:ok]\n\nValue:\n```\n'finished'\n```\n\nOutput:\n```\nafter\n```"
+                )),
+                Some(&serde_json::json!({ "cell": "c2", "status": "ok" })),
+            )
         );
     }
 

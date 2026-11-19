@@ -238,7 +238,7 @@ impl AgentView {
             // Spacing-driven rows lean on the scan over PRECEDING entries; a preceding mutation
             // propagates through `mark_entry_stale`.
             | ChatEntry::AgentMessage(_)
-            | ChatEntry::ShellCompletion(_)
+            | ChatEntry::BackgroundCompletion(_)
             | ChatEntry::InjectedPrompt(_)
             | ChatEntry::RefinementOutcome(_)
             | ChatEntry::CustomPanel(_) => true,
@@ -277,7 +277,9 @@ impl AgentView {
             ChatEntry::SkillInvocation(_)
             | ChatEntry::SlashCommand { .. }
             | ChatEntry::CompactionSummary { .. } => !first,
-            ChatEntry::AgentMessage(_) | ChatEntry::ShellCompletion(_) | ChatEntry::Tool(_) => {
+            ChatEntry::AgentMessage(_)
+            | ChatEntry::BackgroundCompletion(_)
+            | ChatEntry::Tool(_) => {
                 self.conversation_leading(index, self.entry_detail(index).tool_output_expanded())
             }
             // The bash card's own mount rule (TS `Spacer(1)` unless the

@@ -1,0 +1,1 @@
+- A Python cell that ends in the background now wakes the session with a `[cell-done]` notice carrying its value or error and the tail of its output, shown in the chat as a "Background cell finished" row next to the shell-command ones.

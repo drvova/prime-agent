@@ -304,7 +304,9 @@ struct Guarded {
     flushing_snapshot_for_dispose: bool,
     protocol_repair: Option<Arc<RepairHandle>>,
     kernel_stderr: String,
-    background_bash_handles: HashMap<String, i32>,
+    /// Live background jobs by activity id: a `bash()` handle's pid, or 0
+    /// for a backgrounded cell.
+    background_jobs: HashMap<String, i32>,
     handled_host_request_ids: (HashSet<String>, VecDeque<String>),
     /// Late agent-message handlers keyed by request id, insertion-ordered with eviction.
     late_handlers: VecDeque<(String, LateSentAgentMessageCallback)>,
@@ -449,7 +451,7 @@ impl ReplKernelManager {
                 flushing_snapshot_for_dispose: false,
                 protocol_repair: None,
                 kernel_stderr: String::new(),
-                background_bash_handles: HashMap::new(),
+                background_jobs: HashMap::new(),
                 handled_host_request_ids: (HashSet::new(), VecDeque::new()),
                 late_handlers: VecDeque::new(),
                 pending_done_waiters: HashMap::new(),
@@ -478,19 +480,21 @@ impl ReplKernelManager {
         self.inner.options.session_id.as_deref()
     }
 
-    /// Whether any background `bash()` handle is live: the `> 0` form of
-    /// [`Self::background_bash_handle_count`], read by the CLI's inline
+    /// Whether any background job is live (a detached `bash()` handle or a
+    /// backgrounded cell): the `> 0` form of
+    /// [`Self::background_job_count`], read by the CLI's inline
     /// quiescence drive through `SessionEngine::has_background_bash`.
     #[must_use]
     pub fn has_background_work(&self) -> bool {
-        self.background_bash_handle_count() > 0
+        self.background_job_count() > 0
     }
 
-    /// The number of live background `bash()` handles (the count behind
+    /// The number of live background jobs, `bash()` handles and backgrounded
+    /// cells (the count behind
     /// [`Self::has_background_work`], read by the quiescence observation).
     #[must_use]
-    pub fn background_bash_handle_count(&self) -> usize {
-        lock(&self.inner.guarded).background_bash_handles.len()
+    pub fn background_job_count(&self) -> usize {
+        lock(&self.inner.guarded).background_jobs.len()
     }
 
     /// Process id of the spawned kernel child, when present. Used by tests and

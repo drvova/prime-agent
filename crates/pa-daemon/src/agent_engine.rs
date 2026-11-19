@@ -150,7 +150,8 @@ pub struct AgentSessionEngine {
     /// admit through the steering lane, `bash.consumed` withdraws a completion
     /// row. `None` outside a daemon worker.
     pub(crate) kernel_notice_sink: std::sync::Mutex<Option<crate::engine::KernelNoticeSink>>,
-    pub(crate) bash_consumed_sink: std::sync::Mutex<Option<crate::engine::BashConsumedSink>>,
+    pub(crate) job_consumed_sink:
+        std::sync::Mutex<Option<crate::engine::BackgroundJobConsumedSink>>,
     pub(crate) quota_park: std::sync::Arc<std::sync::Mutex<Option<QuotaParkState>>>,
     /// Whether the settled turn parked: the park's pause, not the goal's death.
     pub(crate) quota_parked_this_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
