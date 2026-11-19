@@ -315,3 +315,48 @@ async fn ask_settles_on_timeout_detach_and_cancel() {
     );
     assert_eq!(hub.open_question(), None);
 }
+
+/// `notify.send` publishes the ping and answers at once whether a user was attached; a headless
+/// hub answers `delivered: false` and a bad level fails before anything is published.
+#[tokio::test]
+async fn notify_publishes_without_waiting_and_reports_delivery() {
+    use pa_types::notification::{KernelNotification, NotificationLevel};
+    let dir = tempfile::TempDir::new().unwrap();
+    let surface = ScriptedSurface::attached();
+    let hub = InteractionHub::with_surface(surface.clone());
+    let (handlers, _session) = handlers_for(&hub, SessionManager::in_memory(dir.path()));
+    assert_eq!(
+        call(
+            &handlers,
+            "notify.send",
+            json!({"message": "  tests pass  ", "level": "success"})
+        )
+        .await,
+        json!({"delivered": true})
+    );
+    assert_eq!(
+        *surface.events.lock().unwrap(),
+        vec![InteractionEvent::Notified(KernelNotification {
+            message: "tests pass".to_string(),
+            level: NotificationLevel::Success,
+        })]
+    );
+    let handler = handlers.get("notify.send").unwrap().clone();
+    let error = handler(HostRequestPayload {
+        data: json!({"message": "x", "level": "loud"}),
+    })
+    .await
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("level must be one of"),
+        "{error}"
+    );
+    assert_eq!(surface.events.lock().unwrap().len(), 1);
+
+    let headless = InteractionHub::headless();
+    let (handlers, _session) = handlers_for(&headless, SessionManager::in_memory(dir.path()));
+    assert_eq!(
+        call(&handlers, "notify.send", json!({"message": "done"})).await,
+        json!({"delivered": false})
+    );
+}

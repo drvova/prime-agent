@@ -70,6 +70,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "cacheRetention",
     "cacheWarming",
     "loopGuard",
+    "replCanChangeEffort",
 ];
 
 /// Extract each known field independently; ignore fields whose JSON type does not match the Rust

@@ -177,6 +177,7 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
             "mcp.begin_login" => "mcp.login",
             // `usage.get()` reads the session half, then the quota half.
             "usage.session" | "usage.quotas" => "usage.get",
+            "notify.send" => "notify",
             other => other,
         }
         .to_string(),

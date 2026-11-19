@@ -38,7 +38,10 @@ and the answer prompt (`question_prompt`: the open `question_open` question repl
 composer in the shared menu grammar — radio, checkbox, or text-field rows; arrows/Enter,
 `app.question.toggle` (Space) for multi-select, Esc declines, Ctrl+C interrupts the turn), fed
 by `todo_update`/`question_open`/`question_closed` and the attach snapshot; the client declares
-the `user_questions` capability and answers through `answer_question`.
+the `user_questions` capability and answers through `answer_question`. A kernel `notify(...)`
+ping (`kernel_notification`) renders as one notice row with its level's mark and asks the
+terminal for attention on the next frame's write (`terminal_attention`: OSC 9 where the user
+turned terminal indicators on with `showTerminalProgress`, else the bell).
 
 
 ## Non-goals
