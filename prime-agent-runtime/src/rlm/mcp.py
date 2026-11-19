@@ -24,6 +24,7 @@ import os
 import re
 import threading
 import time
+import sys
 from contextlib import AsyncExitStack
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
@@ -423,9 +424,8 @@ class _Registry:
         self._shutdown_task: asyncio.Task[None] | None = None
 
     def bind_owner(self) -> asyncio.AbstractEventLoop:
-        loop = asyncio.get_running_loop()
         if self._owner_loop is None:
-            self._owner_loop = loop
+            self._owner_loop = _kernel_main_loop() or asyncio.get_running_loop()
         return self._owner_loop
 
     def _assert_owner(self) -> None:
@@ -562,6 +562,14 @@ class _Registry:
             names = set(self._locks) | set(self._generations)
             await asyncio.gather(*(self._close_name(name) for name in names), return_exceptions=True)
         self._state = "shut_down"
+
+
+def _kernel_main_loop() -> asyncio.AbstractEventLoop | None:
+    """The serving kernel's main loop: cells run on short-lived loops of their
+    own threads, so the registry must never bind one of those."""
+    repl = sys.modules.get("rlm.repl")
+    loop = getattr(repl, "_loop", None) if repl is not None and repl.is_active() else None
+    return loop if isinstance(loop, asyncio.AbstractEventLoop) and not loop.is_closed() else None
 
 
 _registry = _Registry()

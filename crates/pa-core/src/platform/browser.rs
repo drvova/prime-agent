@@ -41,6 +41,22 @@ pub fn open_in_browser(url: &str) {
         .spawn();
 }
 
+/// Whether a browser opened here would reach the user: never over SSH
+/// without a forwarded display, and on Linux/BSD only with a display
+/// (`DISPLAY` or `WAYLAND_DISPLAY`). A sign-in that can choose falls back
+/// to the device-code flow when this is `false`.
+#[must_use]
+pub fn can_open_browser() -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let display = set("DISPLAY") || set("WAYLAND_DISPLAY");
+    let ssh = set("SSH_CONNECTION") || set("SSH_TTY");
+    if cfg!(any(target_os = "macos", windows)) {
+        !ssh || display
+    } else {
+        display
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

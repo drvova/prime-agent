@@ -60,15 +60,22 @@ try:
 const RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE: &str =
     "    _prime_agent_rlm_module._set_completion_notices_wired(True)\n";
 
+/// Where the missing-runtime arm names the kernel venv.
+const KERNEL_VENV_TOKEN: &str = "@KERNEL_VENV@";
+
+/// The missing-runtime arm. [`KERNEL_VENV_TOKEN`] becomes the build's kernel venv dir as a Python
+/// string literal, so the message names the directory this build rebuilds (a distribution
+/// build's own `~/.prime/agent-<variant>/kernel-venv`, or the `PRIME_AGENT_KERNEL_VENV` override).
 const RLM_BOOTSTRAP_RUNTIME_TAIL_CODE: &str = r#"
 except Exception as _prime_agent_rlm_error:
     _PRIME_AGENT_RLM_IMPORT_ERROR = str(_prime_agent_rlm_error)
+    _PRIME_AGENT_KERNEL_VENV = @KERNEL_VENV@
 
     class _PrimeAgentMissingRlm:
         def _raise_missing(self):
             raise RuntimeError(
                 "prime-agent-runtime is not installed in this kernel. "
-                "Remove ~/.prime/agent/kernel-venv so prime-agent can rebuild it, or set "
+                f"Remove {_PRIME_AGENT_KERNEL_VENV} so prime-agent can rebuild it, or set "
                 "PRIME_AGENT_KERNEL_PYTHON to a kernel environment with prime-agent-runtime installed. "
                 f"Import error: {_PRIME_AGENT_RLM_IMPORT_ERROR}"
             )
@@ -127,7 +134,11 @@ else:
     if bash_notices_wired {
         runtime_code.push_str(RLM_BOOTSTRAP_BASH_NOTICES_LINE_CODE);
     }
-    runtime_code.push_str(RLM_BOOTSTRAP_RUNTIME_TAIL_CODE);
+    // A JSON string is a valid Python string literal (the escapes agree).
+    let kernel_venv = serde_json::to_string(&super::kernel_venv_dir().to_string_lossy())
+        .unwrap_or_else(|_| "\"kernel-venv\"".to_string());
+    runtime_code
+        .push_str(&RLM_BOOTSTRAP_RUNTIME_TAIL_CODE.replace(KERNEL_VENV_TOKEN, &kernel_venv));
     let base_code = format!("{RLM_BOOTSTRAP_HEADER_CODE}\n\n{runtime_code}");
     // TS: `[...new Set(pythonSkills.map(...))]` — first-seen order, so the binding loop follows
     // the session's skill discovery order.
@@ -285,6 +296,22 @@ mod tests {
         let code = build_rlm_bootstrap_code(&[], false);
         assert!(code.contains("import rlm as _prime_agent_rlm_module"));
         assert!(!code.contains("_PrimeAgentUnavailableSkill"));
+    }
+
+    /// The missing-runtime message names the kernel venv this build rebuilds (its state layout's
+    /// own dir), never the official `~/.prime/agent/kernel-venv` spelling.
+    #[test]
+    fn the_missing_runtime_message_names_the_builds_kernel_venv() {
+        let code = build_rlm_bootstrap_code(&[], false);
+        let venv =
+            serde_json::to_string(&crate::kernel::bootstrap::kernel_venv_dir().to_string_lossy())
+                .unwrap();
+        assert!(
+            code.contains(&format!("    _PRIME_AGENT_KERNEL_VENV = {venv}\n")),
+            "{code}"
+        );
+        assert!(!code.contains("~/.prime/agent/kernel-venv"), "{code}");
+        assert!(!code.contains(KERNEL_VENV_TOKEN), "{code}");
     }
 
     /// Prompt guard: every kernel module the bootstrap binds is one the core prompt layer names

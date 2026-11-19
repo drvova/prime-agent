@@ -452,7 +452,7 @@ impl SessionUi {
                 let since = self.retry_run_since.unwrap_or_else(std::time::Instant::now);
                 self.start_loader_at(view, since);
             }
-            TurnUpdate::UserMessage(text) => {
+            TurnUpdate::UserMessage { text, images } => {
                 match crate::custom_message::skill_invocation_entries(&text) {
                     Some(entries) => {
                         for entry in entries {
@@ -463,6 +463,7 @@ impl SessionUi {
                     None => view.push_entry(ChatEntry::User {
                         text,
                         sent_at: i64::try_from(crate::agents_view_state::now_ms()).ok(),
+                        images,
                     }),
                 }
             }

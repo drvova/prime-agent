@@ -4893,12 +4893,9 @@ def repo_machines_dir() -> Path:
 
 def user_machines_dir() -> Path:
     """The personal machines directory (``<agent dir>/machines``)."""
-    raw = (
-        _machine_env_dir("PRIME_AGENT_CODING_AGENT_DIR")
-        or _machine_env_dir("PI_CODING_AGENT_DIR")
-        or str(Path.home() / ".prime" / "agent")
-    )
-    return Path(raw).expanduser().resolve() / MACHINES_DIR_NAME
+    from .agent_dir import agent_dir
+
+    return agent_dir() / MACHINES_DIR_NAME
 
 
 def machine_library_dirs(

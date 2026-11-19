@@ -39,8 +39,9 @@ use super::provider_retry::{provider_stream_failure_kind, REPETITION_LOOP_KIND};
 mod track;
 pub use track::{
     track_catalog_refresh, track_compaction_abort_declared, track_daemon_event_summary,
-    track_deleted_child_usage_captured, track_model_refused, track_sessions_imported,
-    track_worker_adoption, track_worker_children_closed,
+    track_deleted_child_usage_captured, track_model_refused, track_provider_oauth_login,
+    track_sessions_imported, track_worker_adoption, track_worker_children_closed,
+    OAuthLoginSurface,
 };
 
 mod classify;
@@ -1211,9 +1212,13 @@ impl SessionTelemetry {
             // Sessions whose providers declare no auth descriptor keep their
             // ended event unchanged.
             let auth = crate::auth::resolver::AuthMetrics::current().since(state.auth_baseline);
-            if auth.static_descriptor_resolves + auth.token_exchange_resolves > 0 {
+            if auth.static_descriptor_resolves + auth.token_exchange_resolves + auth.oauth_resolves
+                > 0
+            {
                 let strategy = if auth.token_exchange_resolves > 0 {
                     "token_exchange"
+                } else if auth.oauth_resolves > 0 {
+                    "oauth"
                 } else {
                     "api_key"
                 };
@@ -1221,7 +1226,7 @@ impl SessionTelemetry {
                 properties.set("auth_token_exchange_count", Value::from(auth.exchanges));
                 properties.set(
                     "auth_refresh_failed_count",
-                    Value::from(auth.exchange_failures),
+                    Value::from(auth.exchange_failures + auth.oauth_refresh_failures),
                 );
                 properties.set(
                     "auth_rejected_retry_count",

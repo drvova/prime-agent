@@ -313,3 +313,45 @@ async fn a_stored_web_search_key_pairs_with_the_logout_row() {
         );
     assert!(auth.logout_options().await.is_empty());
 }
+
+/// A models.json provider whose `auth` descriptor declares `oauth` lists as
+/// a browser sign-in row through the panel, never as an API-key prompt.
+#[tokio::test]
+async fn an_oauth_descriptor_provider_lists_as_a_sign_in_row() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let agent = dir.path().join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::write(
+        agent.join("models.json"),
+        serde_json::json!({ "providers": { "acme": {
+            "baseUrl": "https://api.acme.test/v1",
+            "api": "openai-completions",
+            "auth": {
+                "strategy": "oauth",
+                "authorizationUrl": "https://auth.acme.test/authorize",
+                "tokenUrl": "https://auth.acme.test/token",
+                "clientId": "cli"
+            },
+            "models": [ { "id": "acme-chat" } ]
+        } } })
+        .to_string(),
+    )
+    .expect("models.json");
+    let rows = ProviderAuth::new(dir.path(), agent).login_options().await;
+    let acme: Vec<&ProviderRow> = rows.iter().filter(|row| row.id == "acme").collect();
+    assert_eq!(
+        acme,
+        vec![&ProviderRow {
+            id: "acme".to_string(),
+            name: "acme".to_string(),
+            auth_type: AuthType::Oauth,
+            status: Some(AuthStatusIndicator {
+                style: AuthStatusStyle::Muted,
+                label: "unconfigured".to_string(),
+            }),
+            flow: AuthFlow::TerminalFlow,
+            configured: false,
+            available: true,
+        }]
+    );
+}

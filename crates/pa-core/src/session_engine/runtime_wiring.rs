@@ -276,11 +276,19 @@ pub fn kernel_provisioner(
     on_bootstrap_result: Option<crate::kernel::provisioner::KernelBootstrapResultHandler>,
     ready_gate: Option<crate::kernel::provisioner::KernelReadyGate>,
 ) -> Arc<KernelProvisioner> {
-    let mut env = HashMap::with_capacity(3);
+    let mut env = HashMap::with_capacity(4);
     env.insert(
         "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
         agent_dir.to_string_lossy().to_string(),
     );
+    // A distribution build names its variant, so the runtime's agent-dir fallback (a process
+    // started without the dir above) lands in this build's own `~/.prime/agent-<variant>`.
+    match pa_types::platform::StateLayout::BUILD {
+        pa_types::platform::StateLayout::Official => {}
+        pa_types::platform::StateLayout::Distribution { variant } => {
+            env.insert("PRIME_AGENT_DIST_VARIANT".to_string(), variant.to_string());
+        }
+    }
     // Always set: an unsaved session blanks an inherited id (a run started inside another
     // session's kernel), so its persistent shells never join that session.
     let rlm_session_id = session_artifact_dir
