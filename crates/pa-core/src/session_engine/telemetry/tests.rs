@@ -2114,3 +2114,52 @@ async fn repl_reloads_and_settings_reads_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `mcp.login` outcomes and past-session recall ride their own `agent kernel login and
+/// recall` event at session end (counts only), and a session that used neither sends none.
+#[tokio::test]
+async fn kernel_login_and_recall_ride_their_own_event() {
+    use crate::session_engine::session_search::SessionRecallFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_kernel_mcp_login(Some(true));
+    counters.note_kernel_mcp_login(Some(false));
+    counters.note_kernel_mcp_login(None);
+    for fact in [
+        SessionRecallFact::Searched { hits: 3 },
+        SessionRecallFact::Searched { hits: 0 },
+        SessionRecallFact::Read,
+        SessionRecallFact::Failed,
+    ] {
+        counters.note_session_recall(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent kernel login and recall"]
+    );
+    let recall = &event_properties(&fixture.mock, "agent kernel login and recall").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = recall
+        .iter()
+        .filter(|(key, _)| key.starts_with("kernel_mcp_") || key.starts_with("session_search_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "kernel_mcp_login_count": 1,
+            "kernel_mcp_login_failed_count": 1,
+            "kernel_mcp_login_unavailable_count": 1,
+            "session_search_count": 2,
+            "session_search_hit_count": 3,
+            "session_search_read_count": 1,
+            "session_search_failed_count": 1,
+        })
+    );
+}

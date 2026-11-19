@@ -50,6 +50,7 @@ pub mod runtime_wiring;
 pub mod semantic_edges;
 pub mod session_commands;
 pub mod session_events;
+mod session_search;
 pub mod settings_view;
 pub mod side_question;
 pub mod skills_unavailable_notice;
