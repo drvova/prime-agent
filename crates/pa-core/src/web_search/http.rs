@@ -295,7 +295,11 @@ pub(crate) fn decode_entities(text: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(&rest[..at]);
         let tail = &rest[at..];
-        let Some(end) = tail[..tail.len().min(12)].find(';') else {
+        // Byte search: a char boundary need not fall 12 bytes in.
+        let Some(end) = tail.as_bytes()[..tail.len().min(12)]
+            .iter()
+            .position(|byte| *byte == b';')
+        else {
             out.push('&');
             rest = &tail[1..];
             continue;
@@ -308,6 +312,30 @@ pub(crate) fn decode_entities(text: &str) -> String {
             "quot" => Some('"'),
             "apos" | "#39" => Some('\''),
             "nbsp" => Some(' '),
+            "ndash" => Some('\u{2013}'),
+            "mdash" => Some('\u{2014}'),
+            "hellip" => Some('\u{2026}'),
+            "lsquo" => Some('\u{2018}'),
+            "rsquo" => Some('\u{2019}'),
+            "ldquo" => Some('\u{201c}'),
+            "rdquo" => Some('\u{201d}'),
+            "laquo" => Some('\u{ab}'),
+            "raquo" => Some('\u{bb}'),
+            "middot" => Some('\u{b7}'),
+            "bull" => Some('\u{2022}'),
+            "copy" => Some('\u{a9}'),
+            "reg" => Some('\u{ae}'),
+            "trade" => Some('\u{2122}'),
+            "times" => Some('\u{d7}'),
+            "deg" => Some('\u{b0}'),
+            "sect" => Some('\u{a7}'),
+            "para" => Some('\u{b6}'),
+            "euro" => Some('\u{20ac}'),
+            "larr" => Some('\u{2190}'),
+            "rarr" => Some('\u{2192}'),
+            "le" => Some('\u{2264}'),
+            "ge" => Some('\u{2265}'),
+            "minus" => Some('\u{2212}'),
             numeric => numeric.strip_prefix('#').and_then(|code| {
                 let value = match code.strip_prefix('x') {
                     Some(hex) => u32::from_str_radix(hex, 16).ok(),

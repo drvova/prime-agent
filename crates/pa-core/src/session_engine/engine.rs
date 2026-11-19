@@ -402,6 +402,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `web.read`: the kernel's `web.read(...)` reaches the process-wide
+    // reader; telemetry folds each outcome (never the URL) into the counters.
+    crate::web_read::WebReadHost {
+        engine: crate::web_read::WebReadEngine::shared(),
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |result: &_| {
+                let (outcome, elapsed) = crate::web_read::ReadOutcome::of(result);
+                counters.note_web_read(outcome, elapsed);
+            }) as crate::web_read::ReadObserver
+        }),
+    }
+    .register(&mut handlers);
+    // `fs.grep`/`fs.glob`/`fs.find`: the kernel's native in-process search;
+    // telemetry folds each call (never a pattern or path) into the counters.
+    crate::fs_search::FsSearchHost {
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_fs_search(fact))
+                as crate::fs_search::SearchObserver
+        }),
+    }
+    .register(&mut handlers);
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings
@@ -1104,9 +1127,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
 }
 
 impl SessionEngine {
-    /// After a model switch, the `model.info` handler and the usage
-    /// estimate's context window follow the model the session now runs.
-    pub fn update_model_facts(&self, model: &pa_types::ai::Model) {
+    /// After a model switch, the `model.info` handler, the usage estimate's
+    /// context window, and the system prompt's image-input line follow the
+    /// model the session now runs (the line rides the dynamic tail, so the
+    /// cache-stable static prefix is untouched).
+    pub async fn update_model_facts(&self, model: &pa_types::ai::Model) {
         super::turn_boundary::TurnBoundaryRequests::rebind_model_facts(
             &self.turn_boundary,
             super::turn_boundary::ModelInfo {
@@ -1116,6 +1141,14 @@ impl SessionEngine {
             },
             (model.context_window > 0).then_some(model.context_window),
         );
+        let vision_capable = model.input.contains(&pa_types::ai::ModelInput::Image);
+        self.session
+            .agent()
+            .set_system_prompt(crate::prompts::system_prompt::with_image_input(
+                &self.system_prompt,
+                vision_capable,
+            ))
+            .await;
     }
 
     /// A weak reference for lock-free kernel liveness probes without

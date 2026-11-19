@@ -576,6 +576,7 @@ fn register_find_models(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHost
                         } else {
                             model.name.clone()
                         },
+                        image_input: model.input.contains(&pa_types::ai::ModelInput::Image),
                     })
                     .collect();
                 let matches = find_rlm_model_matches(query, &models, limit as usize);
@@ -1118,7 +1119,7 @@ mod tests {
                         "apiKey": "test-key",
                         "api": "openai-completions",
                         "models": [
-                            { "id": "glm-5.3", "name": "GLM 5.3", "contextWindow": 1000, "maxTokens": 100 },
+                            { "id": "glm-5.3", "name": "GLM 5.3", "input": ["text", "image"], "contextWindow": 1000, "maxTokens": 100 },
                             { "id": "glm-5.3-turbo", "name": "GLM Turbo", "contextWindow": 1000, "maxTokens": 100 }
                         ]
                     }
@@ -1193,6 +1194,7 @@ mod tests {
                 "id": "glm-5.3",
                 "name": "GLM 5.3",
                 "selector": "test-provider/glm-5.3",
+                "image_input": true,
             })
         );
         assert_eq!(models[1]["selector"], "test-provider/glm-5.3-turbo");

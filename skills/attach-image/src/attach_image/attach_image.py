@@ -238,8 +238,11 @@ async def run(*paths: str) -> str:
     if "image" not in info.get("input", []):
         model_id = info.get("id") or "the current model"
         raise RuntimeError(
-            f"{model_id} does not support vision. "
-            "Tell the user to switch to a vision-capable model to load images into context."
+            f"{model_id} does not support vision, so the image cannot be loaded into its context. "
+            "To learn what the image shows, spawn a subagent on a vision-capable model "
+            "(an `await rlm.find_models()` row with `image_input=True`) and ask it to "
+            "`attach_image` the file and describe it; otherwise tell the user to switch to a "
+            "vision-capable model."
         )
 
     # Validate every path before emitting anything, so a later failure never

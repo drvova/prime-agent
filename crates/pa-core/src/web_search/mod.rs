@@ -15,9 +15,9 @@
 
 mod ai_search;
 mod catalog;
-mod dates;
+pub(crate) mod dates;
 mod host;
-mod http;
+pub(crate) mod http;
 mod open_indexes;
 mod query;
 mod scrapers;

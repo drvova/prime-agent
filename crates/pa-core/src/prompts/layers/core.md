@@ -23,7 +23,7 @@ The harness often sends messages to the agent. These are user messages starting 
     - `.output: str`
     - `.duration: float`
 - `edit.run(path: str, old_str: str, new_str: str) -> str`: the primary method for editing files. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`)
-- `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise
+- `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise; the only way to see an image file (a screenshot, diagram, chart, or photo): reading its bytes does not show it
 - `rlm.end_turn()`: async; the sanctioned terminal programmatic call — returns the turn to the user; the turn ends when the batch's end-turn call finishes Ok (any other tool calls in the same message still execute first, one end-turn is enough, no further assistant response follows); background work keeps running after the turn returns, and the remaining jobs' completion notices collect the results; raises where the host does not support it, never a silent no-op
 
 ## Subagents
@@ -64,6 +64,7 @@ The following programmatic tools are available in the REPL for subagent manageme
   - `id: str`
   - `name: str`
   - `selector: str`: the exact string to spawn the model
+  - `image_input: bool`: the model accepts images (`attach_image` works for it)
 
 The following programmatic tools are available in the REPL for a2a communication:
 
@@ -186,6 +187,15 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 prime-agent searches the web natively; no API key is needed. The default `auto` provider uses any keyed provider the user configured, otherwise keyless engines, falling back to the next provider when one fails or finds nothing.
 
 - `web.search(query: str, *, provider: str | None = None, num_results: int | None = None, recency: str | None = None, timeout: float | None = None) -> WebSearchResult`: `str(result)` is a readable numbered list (with any synthesized answer and fallback notes); `result.sources` holds `title`, `url`, `snippet`, `published_date`; `result.answer` is set by answer-synthesizing providers. `site:`, `-site:`, `before:`/`after:`, `intitle:`, `filetype:`, quoted phrases, and `OR` in the query are honored. `provider` is `"auto"` or one of `serper`, `eco`, `brave`, `tavily`, `exa`, `kagi`, `perplexity`, `parallel`, `jina`, `firecrawl`, `searxng`, `duckduckgo`, `startpage`, `mojeek`, `ecosia`, `hackernews`, `public`; `recency` is `day`/`week`/`month`/`year`. Raises `RuntimeError` when every provider fails.
+- `web.read(source: str | WebSearchSource, *, max_chars: int | None = None, section: str | None = None, timeout: float | None = None) -> WebPage`: read a URL (or a search source, a `page.links` entry, a citation) as markdown; prefer it over fetching with `bash`. arXiv papers, GitHub files/READMEs/issues/PRs, and Stack Exchange questions (with voted answers) come from their structured sources; HTML is made readable; PDFs split into `## Page N {#page=N}` sections. `str(page)` is the readable rendering; `page.markdown`, `page.title`, `page.final_url`, `page.outline` (`WebHeading(level, text, anchor, url)`), and `page.links` (`WebLink(text, url)`) let you cite (`heading.url` or `final_url#anchor`), follow (`await web.read(link)`), and quote. A long page is cut at `max_chars` (default 20000) with a note: read one span with `section=<outline anchor or heading text>`, or `section="L10-L40"` for a code view.
+
+## File search
+
+prime-agent searches files natively, in process, with ripgrep's own engine: regex syntax, `.gitignore`/`.ignore` rules, globs, and file types behave as in `rg`, identically on Linux, macOS, and Windows, with no `rg`, `grep`, or `find` needed. Prefer these over running `rg`/`grep`/`find` through `bash`: results are structured, capped, and paths print relative to the REPL's working directory with `/`.
+
+- `fs.grep(pattern: str, path: str = ".", *, glob: str | list[str] | None = None, type: str | list[str] | None = None, case: str = "sensitive", literal: bool = False, word: bool = False, multiline: bool = False, context: int = 0, before: int | None = None, after: int | None = None, hidden: bool = False, gitignore: bool = True, max_results: int = 100, max_per_file: int | None = None, max_columns: int = 300) -> GrepResult`: `str(result)` is ripgrep-style (`path` then `line:text`, context as `line-text`); `result.matches` holds `GrepMatch(path, line, column, text, before, after)`; `result.truncated` means more matches exist. `glob` takes `rg -g` globs (`"*.rs"`, `"!target/**"`), `type` takes `rg -t` names (`"rust"`, `"py"`), `case` is `sensitive`/`insensitive`/`smart`.
+- `fs.glob(pattern: str, path: str = ".", *, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: paths matching a `pathlib`-style glob (`"**/*.rs"`); `listing.paths`, `listing.entries` (`FsEntry(path, kind, size)`).
+- `fs.find(name: str | None = None, path: str = ".", *, kind: str | None = None, ignore_case: bool = False, max_depth: int | None = None, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: entries whose file name matches a glob (`"Cargo.toml"`, `"*.md"`), like `find -name`; `kind` is `file`/`dir`/`symlink`.
 
 ## Todos and questions
 
@@ -200,4 +210,4 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

@@ -1704,3 +1704,118 @@ async fn goal_verification_facts_ride_their_own_event() {
     let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
     assert!(ended.keys().all(|key| !key.starts_with("goal_")));
 }
+
+/// Kernel `web.read` outcomes ride their own `agent web reads` event at session end (counts by
+/// kind, never a URL), and a session that read nothing sends none.
+#[tokio::test]
+async fn web_reads_ride_their_own_event() {
+    use crate::web_read::{ReadKind, ReadOutcome};
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for (outcome, ms) in [
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Site,
+                truncated: false,
+            },
+            120,
+        ),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Pdf,
+                truncated: true,
+            },
+            900,
+        ),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Page,
+                truncated: false,
+            },
+            40,
+        ),
+        (ReadOutcome::Failed, 300),
+    ] {
+        counters.note_web_read(outcome, std::time::Duration::from_millis(ms));
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent web reads"]
+    );
+    let reads = &event_properties(&fixture.mock, "agent web reads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reads
+        .iter()
+        .filter(|(key, _)| key.starts_with("web_read_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "web_read_count": 4,
+            "web_read_failed_count": 1,
+            "web_read_site_count": 1,
+            "web_read_pdf_count": 1,
+            "web_read_page_count": 1,
+            "web_read_truncated_count": 1,
+            "web_read_max_ms": 900,
+        })
+    );
+}
+
+/// Kernel `fs.*` searches ride their own `agent fs search` event at session end (counts by
+/// operation, never a pattern or path), and a session that never searched sends none.
+#[tokio::test]
+async fn fs_searches_ride_their_own_event() {
+    use crate::fs_search::{FsOperation, SearchFact};
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for (operation, results, truncated, ms) in [
+        (FsOperation::Grep, Some(12), false, 30),
+        (FsOperation::Grep, Some(100), true, 250),
+        (FsOperation::Glob, Some(7), false, 5),
+        (FsOperation::Find, None, false, 1),
+    ] {
+        counters.note_fs_search(SearchFact {
+            operation,
+            results,
+            truncated,
+            elapsed: std::time::Duration::from_millis(ms),
+        });
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent fs search"]
+    );
+    let search = &event_properties(&fixture.mock, "agent fs search").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = search
+        .iter()
+        .filter(|(key, _)| key.starts_with("fs_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "fs_grep_count": 2,
+            "fs_glob_count": 1,
+            "fs_find_count": 1,
+            "fs_search_failed_count": 1,
+            "fs_search_truncated_count": 1,
+            "fs_search_result_count": 119,
+            "fs_search_max_ms": 250,
+        })
+    );
+}

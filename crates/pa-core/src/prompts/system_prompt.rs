@@ -281,16 +281,36 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
         format!("Conversation log: {messages_path}"),
     ];
     match options.vision_capable {
-        Some(true) => lines.push(
-            "Image input: this model can see images; `attach_image` loads them into context."
-                .to_string(),
-        ),
-        Some(false) => lines.push(
-            "Image input: this model cannot see images; `attach_image` errors for it.".to_string(),
-        ),
+        Some(true) => lines.push(IMAGE_INPUT_SEEN.to_string()),
+        Some(false) => lines.push(IMAGE_INPUT_UNSEEN.to_string()),
         None => {}
     }
     lines.join("\n")
+}
+
+/// The environment line of a session whose model accepts image input.
+const IMAGE_INPUT_SEEN: &str = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `attach_image(path)`: reading its bytes with `open()` or `bash` does not show it to you.";
+/// The environment line of a session whose model is text-only.
+const IMAGE_INPUT_UNSEEN: &str =
+    "Image input: this model cannot see images; `attach_image` errors for it.";
+
+/// `prompt` with its environment image-input line stating `vision_capable`:
+/// a model switch or failover changes what the session model can see, and
+/// a stale line keeps a vision model from ever calling `attach_image` (or
+/// sends a text-only one into its refusal). The environment section follows
+/// the project context, so the last occurrence is the line; a prompt without
+/// it (a custom `--system-prompt`) comes back unchanged.
+#[must_use]
+pub(crate) fn with_image_input(prompt: &str, vision_capable: bool) -> String {
+    let (stale, current) = if vision_capable {
+        (IMAGE_INPUT_UNSEEN, IMAGE_INPUT_SEEN)
+    } else {
+        (IMAGE_INPUT_SEEN, IMAGE_INPUT_UNSEEN)
+    };
+    match prompt.rfind(stale) {
+        Some(at) => format!("{}{current}{}", &prompt[..at], &prompt[at + stale.len()..]),
+        None => prompt.to_string(),
+    }
 }
 
 fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -> String {

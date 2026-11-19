@@ -1,0 +1,1 @@
+- The Python REPL can now search files natively on every platform, Windows included, with no `rg`, `grep` or `find` installed: `fs.grep(pattern, path, glob=, type=, context=)` uses ripgrep's own engine (regex, `.gitignore`-aware, file types) and returns structured matches with line, column and context, and `fs.glob("**/*.rs")` and `fs.find("Cargo.toml")` list paths.
