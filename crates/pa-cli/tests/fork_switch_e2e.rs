@@ -6,8 +6,8 @@
 //! `install-rust.sh`), switches between them both ways, stops the other
 //! build's daemon through its own launcher, refuses a mid-turn daemon
 //! without `--force`, and never touches the official install. The payloads
-//! are stub scripts that log each call with the launcher's daemon-socket
-//! and kernel-venv pins, so the pins are observed, not assumed.
+//! are stub scripts that log each call with the launcher's daemon-socket,
+//! kernel-venv, and agent-dir pins, so the pins are observed, not assumed.
 #![cfg(unix)]
 // too_many_lines: the switch walkthrough is one ordered scenario (each step
 // depends on the state the previous one left), the sibling e2e files' style.
@@ -109,14 +109,14 @@ fn serve_dir(root: PathBuf) -> String {
     format!("http://{address}")
 }
 
-/// The stub payload: it logs `version|args|socket pin|venv pin` and plays
+/// The stub payload: it logs `version|args|socket pin|venv pin|agent dir pin` and plays
 /// the daemon commands the switch drives (`list` answers only while
 /// `$HOME/daemon-<version>` exists; `busy-<version>` marks a mid-turn
 /// session; `shutdown` stops it).
 fn stub_payload(version: &str) -> String {
     format!(
         r#"#!/bin/sh
-printf '%s|%s|%s|%s\n' '{version}' "$*" "${{PRIME_AGENT_DAEMON_SOCKET:-}}" "${{PRIME_AGENT_KERNEL_VENV:-}}" >> "$HOME/calls.log"
+printf '%s|%s|%s|%s|%s\n' '{version}' "$*" "${{PRIME_AGENT_DAEMON_SOCKET:-}}" "${{PRIME_AGENT_KERNEL_VENV:-}}" "${{PRIME_AGENT_CODING_AGENT_DIR:-}}" >> "$HOME/calls.log"
 case "$1" in
   list)
     [ -f "$HOME/daemon-{version}" ] || {{ echo 'Error: no daemon' >&2; exit 1; }}
@@ -347,7 +347,7 @@ impl World {
         dir_entries(&self.switch_bin())
     }
 
-    /// The logged calls, `version|args|socket|venv` rows.
+    /// The logged calls, `version|args|socket|venv|agent dir` rows.
     fn calls(&self) -> Vec<Vec<String>> {
         std::fs::read_to_string(self.home.join("calls.log"))
             .unwrap_or_default()
@@ -413,9 +413,22 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
         .join("kernel-venv")
         .display()
         .to_string();
+    // The fork's own agent dir: it never lists or resumes the sessions the
+    // official build (and the TypeScript product) keep in ~/.prime/agent.
+    let fork_agent_dir = world.home.join(".prime/agent-fork").display().to_string();
     assert_eq!(
-        (last[0].as_str(), last[1].as_str(), last[3].as_str()),
-        (FORK_VERSION, "--version", venv.as_str())
+        (
+            last[0].as_str(),
+            last[1].as_str(),
+            last[3].as_str(),
+            last[4].as_str()
+        ),
+        (
+            FORK_VERSION,
+            "--version",
+            venv.as_str(),
+            fork_agent_dir.as_str()
+        )
     );
     assert!(
         last[2].contains("/prime-agent-fork-"),
@@ -427,6 +440,12 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
         "prime-agent --version",
     );
     assert_eq!(version.trim(), OFFICIAL_VERSION);
+    let official_agent_dir = world.home.join(".prime/agent").display().to_string();
+    let last = world.calls().pop().expect("the official call");
+    assert_eq!(
+        (last[0].as_str(), last[4].as_str()),
+        (OFFICIAL_VERSION, official_agent_dir.as_str())
+    );
 
     let status = assert_ok(&world.switch(&["status"]), "status");
     assert_eq!(
@@ -497,6 +516,87 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
         official,
         "the official install was never touched"
     );
+}
+
+/// The TypeScript Prime Agent the user still runs beside the fork: its
+/// daemon on the shared default socket and its global npm package. The
+/// fork's installer is no takeover: the install never stops that daemon and
+/// never uninstalls the package (the official installer retires both).
+#[test]
+fn the_fork_install_leaves_the_typescript_product_running_and_installed() {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    let world = World::new();
+    let npm_root = world.root.join("npm-global");
+    write_file(
+        &npm_root.join("prime-agent/package.json"),
+        br#"{"name": "prime-agent", "version": "0.9.9"}"#,
+    );
+    let npm_log = world.root.join("npm.log");
+    write_file(
+        &world.root.join("shims/npm"),
+        format!(
+            "#!/bin/sh
+[ \"$1\" = root ] && echo '{}' && exit 0
+echo \"$*\" >> '{}'
+exit 0
+",
+            npm_root.display(),
+            npm_log.display()
+        )
+        .as_bytes(),
+    );
+    // The TS daemon: it greets with the TS schema family and answers every
+    // command, logging its type.
+    let uid = std::fs::metadata(&world.root).expect("root").uid();
+    let socket_dir = world.root.join(format!("tmp/prime-agent-{uid}"));
+    std::fs::create_dir_all(&socket_dir).expect("TS socket dir");
+    let listener = UnixListener::bind(socket_dir.join("daemon.sock")).expect("TS daemon socket");
+    let commands = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&commands);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let recorded = Arc::clone(&recorded);
+            std::thread::spawn(move || {
+                let mut writer = stream.try_clone().expect("clone stream");
+                let hello = "{\"type\": \"daemon_hello\", \"schemaId\": \"protocol-7-schema-29-a5c9d20f8b13\"}\n";
+                if writer.write_all(hello.as_bytes()).is_err() {
+                    return;
+                }
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    recorded.lock().expect("commands").push(
+                        envelope["command"]["type"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    let response = serde_json::json!({
+                        "type": "response",
+                        "id": envelope["id"],
+                        "success": true,
+                        "data": {"sessions": []},
+                    });
+                    let _ = writer.write_all(format!("{response}\n").as_bytes());
+                }
+            });
+        }
+    });
+
+    assert_ok(&world.switch(&["install", "fork"]), "install fork");
+    assert_eq!(
+        (
+            commands.lock().expect("commands").clone(),
+            std::fs::read_to_string(&npm_log).unwrap_or_default()
+        ),
+        (Vec::new(), String::new()),
+        "the fork install neither commands the TS daemon nor runs npm uninstall"
+    );
+    assert!(npm_root.join("prime-agent/package.json").is_file());
 }
 
 /// Prime Intellect's own CLI is also `prime`, often in ~/.local/bin: the
@@ -714,12 +814,15 @@ fn the_fork_workflow_bundles_the_published_installer_render() {
         "--download-base \"${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}\"",
         "--assets-url \"${FORK_ASSETS_URL}\"",
         "--home-prefix \"${PRIME_AGENT_DIST_HOME_PREFIX}\"",
-        "--variant \"${FORK_VARIANT}\"",
+        "--variant \"${PRIME_AGENT_DIST_VARIANT}\"",
         "--command \"${PRIME_AGENT_DIST_COMMAND}\"",
     ];
     assert_eq!(
-        workflow["env"]["PRIME_AGENT_DIST_COMMAND"].as_str(),
-        Some("prime")
+        [
+            workflow["env"]["PRIME_AGENT_DIST_COMMAND"].as_str(),
+            workflow["env"]["PRIME_AGENT_DIST_VARIANT"].as_str()
+        ],
+        [Some("prime"), Some("fork")]
     );
     let mut renders = Vec::new();
     for job in ["build-gnu", "build-windows", "publish"] {

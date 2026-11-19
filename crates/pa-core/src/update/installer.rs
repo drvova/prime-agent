@@ -46,9 +46,10 @@ pub const BETA_INSTALLER_FILE: &str = "install-beta.sh";
 /// Where this build's updates come from: the official release channel, or
 /// a distribution build's own releases. A distribution build is stamped at
 /// compile time (the `PRIME_AGENT_DIST_*` variables its release workflow
-/// sets, all five or none), so its `update` installs from its own releases
-/// into its own prefix and never reinstalls the official build, and it
-/// answers as its own command; every other build is
+/// sets, all six or none), so its `update` installs from its own releases
+/// into its own prefix and never reinstalls the official build, it answers
+/// as its own command, and it keeps its own per-user state (the variant's
+/// [`pa_types::platform::StateLayout`]); every other build is
 /// [`Distribution::Official`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
@@ -70,6 +71,11 @@ pub struct DistributionBuild {
     /// The command its installer creates instead of `prime-agent` (the
     /// launcher `<prefix>/bin/<command>`), e.g. "prime".
     pub command: &'static str,
+    /// The variant naming its own per-user state: the agent dir
+    /// `~/.prime/agent-<variant>` and the daemon endpoints
+    /// `prime-agent-<variant>-*` (the installers' launchers pin the same
+    /// names), e.g. "fork".
+    pub variant: &'static str,
 }
 
 /// The compile-time `PRIME_AGENT_DIST_*` stamp, before validation.
@@ -80,18 +86,19 @@ pub struct DistributionStamp {
     pub download_base_url: Option<&'static str>,
     pub home_prefix: Option<&'static str>,
     pub command: Option<&'static str>,
+    pub variant: Option<&'static str>,
 }
 
 impl DistributionStamp {
     /// The distribution the stamp names: none of the variables is the
-    /// official build; all five are a distribution build. A partial stamp
+    /// official build; all six are a distribution build. A partial stamp
     /// fails the build (in const evaluation), so a half-stamped binary can
     /// never fall back to updating from the official channel.
     ///
     /// # Panics
     ///
     /// Panics (a compile error for the [`BUILD_DISTRIBUTION`] const) when
-    /// the stamp sets some but not all of the five variables.
+    /// the stamp sets some but not all of the six variables.
     #[must_use]
     pub const fn resolve(self) -> Distribution {
         match (
@@ -100,26 +107,37 @@ impl DistributionStamp {
             self.download_base_url,
             self.home_prefix,
             self.command,
+            self.variant,
         ) {
-            (None, None, None, None, None) => Distribution::Official,
+            (None, None, None, None, None, None) => Distribution::Official,
             (
                 Some(name),
                 Some(installer_url),
                 Some(download_base_url),
                 Some(home_prefix),
                 Some(command),
+                Some(variant),
             ) => Distribution::Build(DistributionBuild {
                 name,
                 installer_url,
                 download_base_url,
                 home_prefix,
                 command,
+                variant,
             }),
-            (Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None, Some(_) | None) => {
+            (
+                Some(_) | None,
+                Some(_) | None,
+                Some(_) | None,
+                Some(_) | None,
+                Some(_) | None,
+                Some(_) | None,
+            ) => {
                 panic!(
                     "a distribution build sets all of PRIME_AGENT_DIST_NAME, \
                  PRIME_AGENT_DIST_INSTALLER_URL, PRIME_AGENT_DIST_DOWNLOAD_BASE_URL, \
-                 PRIME_AGENT_DIST_HOME_PREFIX, and PRIME_AGENT_DIST_COMMAND, or none of them"
+                 PRIME_AGENT_DIST_HOME_PREFIX, PRIME_AGENT_DIST_COMMAND, and \
+                 PRIME_AGENT_DIST_VARIANT, or none of them"
                 )
             }
         }
@@ -133,6 +151,9 @@ pub const BUILD_DISTRIBUTION: Distribution = DistributionStamp {
     download_base_url: option_env!("PRIME_AGENT_DIST_DOWNLOAD_BASE_URL"),
     home_prefix: option_env!("PRIME_AGENT_DIST_HOME_PREFIX"),
     command: option_env!("PRIME_AGENT_DIST_COMMAND"),
+    // The one read of the variant stamp: pa-types' StateLayout::BUILD (the
+    // agent dir and daemon endpoints) resolves from the same constant.
+    variant: pa_types::platform::dirs::DIST_VARIANT_STAMP,
 }
 .resolve();
 
@@ -1301,6 +1322,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
             download_base_url: Some(releases),
             home_prefix: Some(".local/share/prime-agent-fork"),
             command: Some("prime"),
+            variant: Some("fork"),
         }
         .resolve();
         assert_eq!(
@@ -1311,6 +1333,7 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
                 download_base_url: releases,
                 home_prefix: ".local/share/prime-agent-fork",
                 command: "prime",
+                variant: "fork",
             })
         );
         assert_eq!(

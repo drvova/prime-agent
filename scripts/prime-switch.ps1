@@ -11,8 +11,11 @@
 #             Intellect's own CLI) - whichever comes first on PATH runs
 #   switch    $HOME\.local\share\prime-switch\bin   (prime-switch.ps1: this script)
 #
-# Each build's own launcher pins its daemon pipe and kernel venv, so the two never
-# share a live daemon. ~/.prime/agent stays shared. Earlier versions kept a
+# Each build's own launcher pins its agent dir, daemon pipe, and kernel venv, so the
+# two never share sessions or a live daemon: the official build keeps ~/.prime/agent,
+# the fork keeps its sessions, settings, and logins in ~/.prime/agent-fork (its first
+# run copies the official configuration over once, never the sessions; `uninstall
+# fork` leaves that dir in place). Earlier versions kept a
 # prime-agent.cmd shim in the switch dir that ran the "active" build; every command
 # retires that shim (marker-checked), so `prime-agent` is the official build again.
 #

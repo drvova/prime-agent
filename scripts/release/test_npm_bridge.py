@@ -521,6 +521,7 @@ if [ "$1" = root ]; then echo "$TEST_NPM_ROOT"; else echo uninstall >> "$TEST_UN
                     "primeAgentRustBridge": bridge}))
                 result = subprocess.run(["sh", "-eu"], input='''
 WINDOWS=no
+TS_TAKEOVER=yes
 bin_dir="$TEST_NPM_ROOT"
 launcher="$bin_dir/launcher"
 printf '#!/bin/sh\\nexit 0\\n' > "$launcher"
@@ -572,6 +573,7 @@ class InstallerTakeoverTests(unittest.TestCase):
 bin_dir="$PREFIX/bin"
 launcher="$bin_dir/prime-agent"
 WINDOWS=no
+TS_TAKEOVER=yes
 say() { :; }; note() { :; }; die() { echo "$*" >&2; exit 1; }
 step_start() { :; }; step_ok() { :; }; step_fail() { :; }; todo() { :; }
 ui_stop() { :; }; publish_window_restore() { :; }

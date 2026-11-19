@@ -35,6 +35,9 @@ They install into `~/.local/share/prime-agent-fork` (on Windows
 `%USERPROFILE%\.local\share\prime-agent-fork`) and create the `prime`
 launcher there. They create no `prime-agent` launcher and never write to the
 official build's `~/.local/bin/prime-agent` or `~/.local/share/prime-agent`.
+Unlike the official installer, they don't take over from the TypeScript
+Prime Agent: they never stop its daemon (or the official build's) and never
+uninstall its npm package. The only daemon they stop is the fork's own.
 A fork installed before it had its own command still has a
 `bin/prime-agent` launcher in the fork prefix. The next install or
 `prime-agent update` of the fork replaces it with `bin/prime`.
@@ -110,29 +113,43 @@ Windows has `prime-switch.ps1` with the same commands:
 & ([scriptblock]::Create((irm https://github.com/drvova/prime-agent/releases/latest/download/prime-switch.ps1))) install fork
 ```
 
-## What the two builds share
+## Where each build keeps its data
 
-- **Shared:** `~/.prime/agent`, which holds sessions, `auth.json` and
-  settings. A session started in one build resumes in the other.
+- **The fork has its own data directory: `~/.prime/agent-fork`.** It holds
+  the fork's sessions, settings, `auth.json`, `models.json`, skills, logs,
+  session leases and daemon state. The official build (and the TypeScript
+  Prime Agent) keep theirs in `~/.prime/agent`. So `prime --continue`,
+  `prime --resume` and `/resume` list only the fork's own chats, and the two
+  builds never open, lease or rewrite each other's session files.
+  `PRIME_AGENT_CODING_AGENT_DIR` still overrides the location for either
+  build.
+- **The first run imports your configuration once.** When
+  `~/.prime/agent-fork` doesn't exist yet, the fork copies these from
+  `~/.prime/agent`: `settings.json`, `auth.json`, `models.json`,
+  `keybindings.json`, `mcp-services.json`, `mcp-connections.json`, the
+  global `AGENTS.md`/`CLAUDE.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`, and the
+  `skills/`, `prompts/` and `themes/` folders. You stay logged in. It never
+  copies sessions, session artifacts, leases, logs, the global harness
+  memory, the kernel venv, daemon state or caches. An entry over the
+  import's 32 MB budget is skipped and named. After that the two
+  directories are independent: a login or setting changed in one build
+  doesn't reach the other. To import again, move `~/.prime/agent-fork`
+  aside (it holds the fork's sessions) and start `prime`.
 - **Separate daemon:** the fork's launcher pins its own daemon socket
   (`${TMPDIR:-/tmp}/prime-agent-fork-<uid>/daemon.sock`). On Windows it pins
-  the pipe `\\.\pipe\prime-agent-fork-daemon`. A running official daemon and
-  a fork CLI therefore never talk to each other.
+  the pipe `\\.\pipe\prime-agent-fork-daemon`. The fork binary uses the same
+  names by default, even when started without the launcher. A running
+  official daemon and a fork CLI therefore never talk to each other.
 - **Separate kernel venv:** the fork's launcher sets
   `PRIME_AGENT_KERNEL_VENV=<fork prefix>/kernel-venv`. The fork's Python
   runtime differs from the official one (it adds `rlm.web`, for example), and
   a shared venv would be rebuilt every time you alternated builds.
-- **`auth.json` is safe to share.** The official build reads each entry on
-  its own and skips the fork's `token_exchange` entries. It keeps them in the
-  file when it writes `auth.json` back.
-- **Watch out for `models.json`.** A provider that uses the fork's
-  `auth: { "strategy": "token-exchange" }` block has no `apiKey`. The
-  official build's `models.json` check rejects such a file, and then **none**
-  of your custom models load there. `prime-switch install official` warns
-  when this applies.
-- **Settings:** the official build reads settings field by field. When a
-  value is fork-only, such as `webSearchProvider: "auto"`, it falls back to
-  its own default for that field.
+- **`models.json` from older fork versions.** Before the fork had its own
+  directory, a provider using the fork's
+  `auth: { "strategy": "token-exchange" }` block may have been written to
+  `~/.prime/agent/models.json`. The official build's `models.json` check
+  rejects such a file, and then **none** of your custom models load there.
+  `prime-switch install official` warns when this applies.
 
 ## Updates
 

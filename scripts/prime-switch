@@ -14,10 +14,15 @@
 #   switch    ~/.local/share/prime-switch/bin   (prime-switch: this script)
 #
 # Nothing here ever writes inside the official install. Each build's own
-# launcher pins its daemon socket and kernel venv (the fork's launcher:
-# prime-agent-fork-<uid> and <fork prefix>/kernel-venv), so the two never
-# share a live daemon. Sessions, auth.json, and settings in ~/.prime/agent
-# stay shared.
+# launcher pins its agent dir, daemon socket, and kernel venv (the fork's
+# launcher: ~/.prime/agent-fork, prime-agent-fork-<uid>, and
+# <fork prefix>/kernel-venv), so the two never share sessions or a live
+# daemon. The official build keeps ~/.prime/agent (shared with the
+# TypeScript product); the fork keeps its sessions, settings, and logins in
+# ~/.prime/agent-fork. The fork's first run copies the official
+# configuration over once (settings, auth.json, models.json, keybindings,
+# skills, prompts, themes, MCP config, global AGENTS.md/SYSTEM.md) - never
+# the sessions. `uninstall fork` leaves ~/.prime/agent-fork in place.
 #
 # Earlier versions kept a `prime-agent` shim in the switch dir that ran the
 # "active" build. Every command retires that shim (marker-checked), so
@@ -153,11 +158,14 @@ path_hint() {
   done
 }
 
-# The one shared-state hazard: a models.json provider that authenticates by
-# token exchange (a fork feature) has no apiKey, and the official build's
-# models.json validation rejects the whole file — every custom model drops
-# out there until the entry is removed. auth.json is safe: the official
-# build skips the token_exchange entries it cannot parse and keeps them.
+# The leftover shared-state hazard: a models.json provider that
+# authenticates by token exchange (a fork feature) has no apiKey, and the
+# official build's models.json validation rejects the whole file — every
+# custom model drops out there until the entry is removed. The fork keeps
+# its own models.json now, so only an entry added to the official
+# ~/.prime/agent/models.json (by hand, or by a fork from before it had its
+# own agent dir) still trips it. auth.json is safe: the official build
+# skips the token_exchange entries it cannot parse and keeps them.
 models_warning() {
   mw_models="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prime/agent}/models.json"
   if [ -f "$mw_models" ] && grep -q 'token-exchange' "$mw_models" 2>/dev/null; then

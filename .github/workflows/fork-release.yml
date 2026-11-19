@@ -43,7 +43,10 @@
 # latest.json and installs into ~/.local/share/prime-agent-fork - never the
 # official channel or the official prefix - and its help and update text
 # name the fork's own command, `prime` (PRIME_AGENT_DIST_COMMAND; the
-# official build keeps `prime-agent`).
+# official build keeps `prime-agent`), and it keeps its own data in
+# ~/.prime/agent-fork (PRIME_AGENT_DIST_VARIANT; the official build and the
+# TypeScript product share ~/.prime/agent), so it never lists or resumes
+# their sessions.
 #
 # THE BUNDLED INSTALLER: the binary embeds install-rust.sh for its local
 # `update --rollback` / `--archive` runs, so each build job renders the fork
@@ -90,10 +93,15 @@ env:
   PRIME_AGENT_DIST_DOWNLOAD_BASE_URL: https://github.com/${{ github.repository }}/releases/latest/download
   PRIME_AGENT_DIST_HOME_PREFIX: .local/share/prime-agent-fork
   PRIME_AGENT_DIST_COMMAND: prime
+  # The fork's own per-user state: the agent dir ~/.prime/agent-fork (its
+  # sessions, settings, and logins - never the official ~/.prime/agent the
+  # TypeScript product shares) and the daemon endpoints prime-agent-fork-*.
+  # The binary's default and the rendered launchers' pins (fork_release.py
+  # render --variant) name the same dir and endpoints.
+  PRIME_AGENT_DIST_VARIANT: fork
   # fork_release.py render's distribution arguments, shared by the bundled
   # render (build jobs) and the published one (publish job).
   FORK_ASSETS_URL: https://github.com/${{ github.repository }}/releases/download
-  FORK_VARIANT: fork
 
 jobs:
   tag-check:
@@ -259,7 +267,7 @@ jobs:
           cp install-rust.sh "${RUNNER_TEMP}/install-rust.official.sh"
           python3 scripts/release/fork_release.py render --repo-root . \
             --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" --assets-url "${FORK_ASSETS_URL}" \
-            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${FORK_VARIANT}" \
+            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${PRIME_AGENT_DIST_VARIANT}" \
             --command "${PRIME_AGENT_DIST_COMMAND}" --out-dir "${RUNNER_TEMP}/fork-render"
           cp "${RUNNER_TEMP}/fork-render/install.sh" install-rust.sh
       - name: Build (release, locked, distribution-stamped)
@@ -315,6 +323,17 @@ jobs:
           printf '%s\n' "${update}"
           printf '%s\n' "${update}" | grep -qF "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}/latest.json" \
             || { echo "::error::update --check does not read the fork channel"; exit 1; }
+          # The fork keeps its own agent dir: its first run imports the
+          # official configuration and never a session.
+          data="${check}/data"
+          official="${data}/.prime/agent"
+          own="${data}/.prime/agent-${PRIME_AGENT_DIST_VARIANT}"
+          mkdir -p "${official}/sessions/--repo--"
+          printf '{}\n' > "${official}/settings.json"
+          printf '{}\n' > "${official}/sessions/--repo--/chat.jsonl"
+          env -u PRIME_AGENT_CODING_AGENT_DIR HOME="${data}" PI_OFFLINE=1 "${check}/prime-agent" --version
+          [ -f "${own}/settings.json" ] && [ ! -e "${own}/sessions" ] \
+            || { echo "::error::the fork does not keep its own agent dir at ${own}"; exit 1; }
       - name: Verify fresh channel install and reinstall
         run: |
           set -euo pipefail
@@ -366,7 +385,7 @@ jobs:
           set -euo pipefail
           "${PY}" scripts/release/fork_release.py render --repo-root . \
             --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" --assets-url "${FORK_ASSETS_URL}" \
-            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${FORK_VARIANT}" \
+            --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" --variant "${PRIME_AGENT_DIST_VARIANT}" \
             --command "${PRIME_AGENT_DIST_COMMAND}" --out-dir "${RUNNER_TEMP}/fork-render"
           cp "${RUNNER_TEMP}/fork-render/install.sh" install-rust.sh
       - name: Build (release, locked, static CRT, distribution-stamped)
@@ -472,7 +491,7 @@ jobs:
             --download-base "${PRIME_AGENT_DIST_DOWNLOAD_BASE_URL}" \
             --assets-url "${FORK_ASSETS_URL}" \
             --home-prefix "${PRIME_AGENT_DIST_HOME_PREFIX}" \
-            --variant "${FORK_VARIANT}" \
+            --variant "${PRIME_AGENT_DIST_VARIANT}" \
             --command "${PRIME_AGENT_DIST_COMMAND}" \
             --out-dir release-out
           sh -n release-out/install.sh

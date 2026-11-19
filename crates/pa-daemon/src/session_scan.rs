@@ -245,6 +245,32 @@ mod tests {
         path
     }
 
+    /// The `/resume` picker and `--continue` list this scan over the daemon's
+    /// agent dir: a distribution build's own dir never holds the sessions the
+    /// official products (the TypeScript product included) keep in
+    /// `~/.prime/agent`, so it never lists or reopens them.
+    #[test]
+    fn a_distribution_build_never_lists_the_official_sessions() {
+        use pa_types::platform::StateLayout;
+        let home = tempfile::tempdir().unwrap();
+        let official_sessions = StateLayout::Official
+            .home_agent_dir(home.path())
+            .join("sessions");
+        fs::create_dir_all(&official_sessions).unwrap();
+        let official_chat = write_session(&official_sessions, "/repo", Some("ts chat"), 1);
+        let listed = [
+            StateLayout::Official,
+            StateLayout::Distribution { variant: "fork" },
+        ]
+        .map(|layout| {
+            list_sessions(&layout.home_agent_dir(home.path()).join("sessions"))
+                .into_iter()
+                .map(|info| info.path)
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(listed, [vec![official_chat], Vec::new()]);
+    }
+
     /// The scan this module replaced: sequential folds in directory order, stable-sorted by
     /// mtime. The scan's oracle.
     fn sequential_list_sessions(session_dir: &Path) -> Vec<SessionInfo> {

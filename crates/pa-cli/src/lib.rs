@@ -108,6 +108,45 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         std::env::set_var(crate::config::ENV_OFFLINE, "1");
     }
 
+    // A distribution build keeps its own agent dir; on its first run (before
+    // any command reads or creates it, the installer's bootstrap included)
+    // the dir starts from the official configuration, never its sessions.
+    // The official build returns before any filesystem access.
+    if let Some(home) = pa_types::platform::home_dir() {
+        let agent_dir = crate::config::get_agent_dir();
+        let official = pa_types::platform::StateLayout::Official.home_agent_dir(&home);
+        match pa_core::settings::import_official_config(
+            pa_types::platform::StateLayout::BUILD,
+            &home,
+            &agent_dir,
+        ) {
+            Ok(pa_core::settings::OfficialConfigImport::Imported { copied, skipped }) => {
+                eprintln!(
+                    "{} keeps its own data in {}; imported {} from {} (sessions stay there).",
+                    crate::config::COMMAND_NAME,
+                    agent_dir.display(),
+                    copied.join(", "),
+                    official.display()
+                );
+                if !skipped.is_empty() {
+                    eprintln!(
+                        "Not imported (over the import's size budget; copy by hand if needed): {}",
+                        skipped.join(", ")
+                    );
+                }
+            }
+            Ok(
+                pa_core::settings::OfficialConfigImport::NotApplicable
+                | pa_core::settings::OfficialConfigImport::NothingToImport,
+            ) => {}
+            Err(error) => eprintln!(
+                "Warning: could not import the configuration from {} into {} (retried on the next run): {error}",
+                official.display(),
+                agent_dir.display()
+            ),
+        }
+    }
+
     // Install-time kernel preparation: the installer invokes `--prime-agent-bootstrap`
     // after extracting a release, so the venv is ready before the first session.
     if args.len() == 1 && args[0] == "--prime-agent-bootstrap" {

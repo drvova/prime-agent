@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 
 pub const AGENT_DIR_ENV: &str = "PRIME_AGENT_CODING_AGENT_DIR";
 pub const SESSION_DIR_ENV: &str = "PRIME_AGENT_SESSION_DIR";
-pub const CONFIG_DIR_NAME: &str = ".prime/agent";
 
 /// The home directory for state layout. Unresolvable home is an explicit
 /// error, not a degraded `/tmp` default: the daemon must refuse to start
@@ -39,7 +38,9 @@ pub fn expand_tilde(path: &str) -> Result<PathBuf> {
 }
 
 /// The agent state root: the `PRIME_AGENT_CODING_AGENT_DIR` override when
-/// set (tilde expanded), else `.prime/agent` under the home directory.
+/// set (tilde expanded), else this build's per-user dir under the home
+/// directory (`.prime/agent`, or a distribution build's own,
+/// [`pa_types::platform::StateLayout`]).
 ///
 /// # Errors
 ///
@@ -48,7 +49,7 @@ pub fn expand_tilde(path: &str) -> Result<PathBuf> {
 pub fn agent_dir() -> Result<PathBuf> {
     match std::env::var_os(AGENT_DIR_ENV) {
         Some(dir) if !dir.is_empty() => expand_tilde(&dir.to_string_lossy()),
-        _ => Ok(home_dir()?.join(CONFIG_DIR_NAME)),
+        _ => Ok(pa_types::platform::StateLayout::BUILD.home_agent_dir(&home_dir()?)),
     }
 }
 

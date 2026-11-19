@@ -2,6 +2,7 @@
 //! kernel venv dir, the writable-dir fallback, and the interpreter path.
 
 use super::{anyhow, Path, PathBuf};
+use pa_types::platform::StateLayout;
 
 pub(crate) fn expand_home(path: &str) -> PathBuf {
     if path == "~" {
@@ -17,7 +18,10 @@ pub(super) fn home_dir() -> PathBuf {
     pa_types::platform::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
-/// Directory of the kernel venv, honoring `PRIME_AGENT_KERNEL_VENV`.
+/// Directory of the kernel venv, honoring `PRIME_AGENT_KERNEL_VENV`; else
+/// `kernel-venv` in this build's per-user agent dir (`~/.prime/agent`, or a
+/// distribution build's own, so its runtime never shares a venv with the
+/// official products').
 #[must_use]
 pub fn kernel_venv_dir() -> PathBuf {
     if let Ok(override_dir) = std::env::var("PRIME_AGENT_KERNEL_VENV") {
@@ -25,7 +29,10 @@ pub fn kernel_venv_dir() -> PathBuf {
             return expand_home(&override_dir);
         }
     }
-    home_dir().join(".prime").join("agent").join("kernel-venv")
+    home_dir()
+        .join(".prime")
+        .join(StateLayout::BUILD.agent_dir_leaf())
+        .join("kernel-venv")
 }
 
 fn xdg_kernel_venv_dir() -> PathBuf {
@@ -33,7 +40,10 @@ fn xdg_kernel_venv_dir() -> PathBuf {
         Ok(value) if !value.is_empty() => expand_home(&value),
         _ => home_dir().join(".local").join("share"),
     };
-    data_home.join("prime").join("agent").join("kernel-venv")
+    data_home
+        .join("prime")
+        .join(StateLayout::BUILD.agent_dir_leaf())
+        .join("kernel-venv")
 }
 
 pub(crate) fn resolve_writable_kernel_venv_dir() -> anyhow::Result<PathBuf> {

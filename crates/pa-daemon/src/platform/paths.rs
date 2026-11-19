@@ -1,7 +1,10 @@
 //! Per-OS daemon endpoint naming: Unix socket files under
 //! `<tmpdir>/prime-agent-<uid>/`; Windows named pipes in the `\\.\\pipe\\`
 //! namespace (fixed daemon pipe, hashed worker pipes) - the TS product's
-//! exact split.
+//! exact split. A distribution build names its own endpoints
+//! (`prime-agent-<variant>-<uid>/`, `prime-agent-<variant>-daemon`,
+//! [`pa_types::platform::StateLayout::endpoint_prefix`]), so it never reaches
+//! the official products' daemon.
 use std::path::{Path, PathBuf};
 
 use crate::paths::hash_key;
@@ -18,7 +21,10 @@ pub fn socket_dir() -> PathBuf {
 /// can re-anchor deep paths through /proc; other Unix platforms need a short path.
 #[cfg(unix)]
 fn socket_dir_for(tmp: &Path, uid: u32) -> PathBuf {
-    let name = format!("prime-agent-{uid}");
+    let name = format!(
+        "{}-{uid}",
+        pa_types::platform::StateLayout::BUILD.endpoint_prefix()
+    );
     let dir = tmp.join(&name);
     #[cfg(not(target_os = "linux"))]
     if std::os::unix::net::SocketAddr::from_pathname(
@@ -36,7 +42,10 @@ fn socket_dir_for(tmp: &Path, uid: u32) -> PathBuf {
 #[cfg(not(unix))]
 #[must_use]
 pub fn socket_dir() -> PathBuf {
-    std::env::temp_dir().join("prime-agent-user")
+    std::env::temp_dir().join(format!(
+        "{}-user",
+        pa_types::platform::StateLayout::BUILD.endpoint_prefix()
+    ))
 }
 
 /// Default supervisor endpoint: `daemon.sock` in the socket dir (Unix) or
@@ -50,7 +59,10 @@ pub fn default_daemon_socket_path() -> PathBuf {
 #[cfg(not(unix))]
 #[must_use]
 pub fn default_daemon_socket_path() -> PathBuf {
-    PathBuf::from(r"\\.\pipe\prime-agent-daemon")
+    PathBuf::from(format!(
+        r"\\.\pipe\{}-daemon",
+        pa_types::platform::StateLayout::BUILD.endpoint_prefix()
+    ))
 }
 
 /// Worker endpoint next to the supervisor's: hashed supervisor key plus the
