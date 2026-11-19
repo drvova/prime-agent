@@ -1,0 +1,1 @@
+- Pasting images now works on Windows: Ctrl+V attaches a screenshot or copied image from the clipboard (and pastes the clipboard's text when it holds no image), including in terminals that intercept Ctrl+V, and pasting or dragging an image file path (PNG, JPEG, GIF, WebP) attaches the file. A clipboard with no image, or an image over 20 MB, now shows a notice.

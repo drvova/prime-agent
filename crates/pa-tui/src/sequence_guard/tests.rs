@@ -696,6 +696,49 @@ fn a_split_bracketed_paste_end_marker_is_consumed() {
     assert!(leaks(&outputs).is_empty());
 }
 
+/// A console host relays an empty bracketed paste (a terminal's intercepted Ctrl+V over an
+/// image-only clipboard) as key records: the marker pair is one empty paste, the trigger for the
+/// clipboard-image read; a marker pair with text between stays the text alone.
+#[test]
+fn an_empty_bracketed_paste_is_an_empty_paste_event() {
+    let record = |byte: u8, kind: KeyEventKind| {
+        let code = match byte {
+            0x1b => KeyCode::Esc,
+            _ => KeyCode::Char(char::from(byte)),
+        };
+        Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind))
+    };
+    let presses = |stream: &[u8]| {
+        let mut guard = SequenceGuard::new(EventSource::ConsoleRecords);
+        let mut now = Instant::now();
+        let mut outputs = Vec::new();
+        for &byte in stream {
+            for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+                outputs.extend(guard.feed(record(byte, kind), now));
+                now += Duration::from_millis(1);
+            }
+        }
+        outputs.extend(guard.flush_expired(now + HOLD));
+        // Dispatch drops the release records.
+        outputs.retain(|output| {
+            !matches!(output, GuardOutput::Event(Event::Key(key)) if key.kind == KeyEventKind::Release)
+        });
+        outputs
+    };
+    assert_eq!(
+        [
+            presses(b"\x1b[200~\x1b[201~"),
+            presses(b"\x1b[200~x\x1b[201~"),
+            presses(b"\x1b[201~"),
+        ],
+        [
+            vec![GuardOutput::Event(Event::Paste(String::new()))],
+            vec![GuardOutput::Event(record(b'x', KeyEventKind::Press))],
+            Vec::new(),
+        ]
+    );
+}
+
 // -- the review fixes: expiry, rxvt, keypad CSI-u, UTF-8 ALT ------
 
 /// A continuation arriving after the hold expired is a fresh input, never an Alt combo: the held
