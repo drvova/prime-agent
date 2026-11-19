@@ -1,4 +1,5 @@
-"""Kernel client for Prime Agent's native, in-process file search.
+"""Kernel client for Prime Agent's native, in-process file search and
+anchored (hashline) editing.
 
 ``await fs.grep(pattern)``, ``await fs.glob(pattern)`` and ``await fs.find()``
 send the ``fs.grep``/``fs.glob``/``fs.find`` host requests. The host runs the
@@ -6,6 +7,12 @@ ripgrep library crates in process (regex search, ``.gitignore``-aware walks,
 globs, file types), so they behave the same on Linux, macOS and Windows and
 need no ``rg``, ``grep`` or ``find`` installed. Paths resolve here, against the
 REPL's working directory, and results print them relative to it with ``/``.
+
+``await fs.read(path)`` returns the file's lines tagged with anchors
+(``12:abc|text``: the line number and a hash of the line and its
+neighbours); ``await fs.edit(path, edits)`` edits by pointing at anchors
+instead of retyping old text. If any anchor no longer matches the file, the
+whole patch is rejected (``StaleAnchorsError``) and nothing is written.
 """
 
 from __future__ import annotations
@@ -16,10 +23,26 @@ from typing import Any, Literal
 
 from . import host_request
 
-__all__ = ["FsEntry", "FsListing", "GrepMatch", "GrepResult", "find", "glob", "grep"]
+__all__ = [
+    "AnchoredLine",
+    "EditResult",
+    "FileView",
+    "FsEntry",
+    "FsListing",
+    "GrepMatch",
+    "GrepResult",
+    "StaleAnchor",
+    "StaleAnchorsError",
+    "edit",
+    "find",
+    "glob",
+    "grep",
+    "read",
+]
 
 _CASES = ("sensitive", "insensitive", "smart")
 _KINDS = ("file", "dir", "symlink")
+_ANCHORED_OPS = ("replace", "delete", "insert_after", "insert_before")
 
 
 @dataclass(frozen=True)
@@ -279,3 +302,220 @@ async def find(
     if max_depth is not None:
         payload["maxDepth"] = _count("max_depth", max_depth, minimum=0)
     return _listing(await host_request("fs.find", payload), "fs.find")
+
+
+@dataclass(frozen=True)
+class AnchoredLine:
+    """One line: 1-based ``line``, its ``anchor`` (``"12:abc"``), and ``text``."""
+
+    line: int
+    anchor: str
+    text: str
+
+
+@dataclass(frozen=True)
+class FileView:
+    """A finished ``fs.read``. ``str(view)`` is ``LINE:abc|text`` per line."""
+
+    path: str
+    lines: list[AnchoredLine]
+    total_lines: int
+    start: int
+    end: int
+    truncated: bool
+    line_ends: str = "lf"
+    encoding: str = "utf-8"
+    final_newline: bool = True
+    text: str = ""
+
+    def anchor(self, line: int) -> str:
+        """The anchor of 1-based ``line`` (which this view must show)."""
+        for row in self.lines:
+            if row.line == line:
+                return row.anchor
+        raise KeyError(f"line {line} is not in this view (lines {self.start}-{self.end})")
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __iter__(self):
+        return iter(self.lines)
+
+    def __len__(self) -> int:
+        return len(self.lines)
+
+
+@dataclass(frozen=True)
+class EditResult:
+    """An applied ``fs.edit``. ``hunks`` hold the changed regions with fresh
+    anchors (plus one line of context each side), so the next edit can chain
+    without a re-read; ``str(result)`` renders them."""
+
+    path: str
+    edits: int
+    removed: int
+    added: int
+    total_lines: int
+    hunks: list[list[AnchoredLine]]
+    text: str = ""
+
+    def __str__(self) -> str:
+        return self.text
+
+
+@dataclass(frozen=True)
+class StaleAnchor:
+    """An anchor of edit number ``edit`` (1-based) that no longer matches:
+    ``current`` is the anchor its line has now, None past the file's end."""
+
+    edit: int
+    anchor: str
+    current: str | None
+
+
+class StaleAnchorsError(RuntimeError):
+    """``fs.edit`` rejected the whole patch and wrote nothing: ``stale`` lists
+    the anchors that no longer match, ``lines`` the current lines around them
+    with fresh anchors, and ``str(error)`` is the report."""
+
+    def __init__(self, text: str, stale: list[StaleAnchor], lines: list[AnchoredLine]) -> None:
+        super().__init__(text)
+        self.stale = stale
+        self.lines = lines
+
+
+def _target(path: Any) -> dict[str, str]:
+    if not isinstance(path, (str, os.PathLike)) or not os.fspath(path):
+        raise TypeError("path must be a non-empty str or os.PathLike")
+    return {"path": os.path.abspath(os.path.expanduser(os.fspath(path))), "cwd": os.getcwd()}
+
+
+def _rows(items: Any) -> list[AnchoredLine]:
+    return [
+        AnchoredLine(line=int(item.get("line") or 0), anchor=str(item.get("anchor") or ""), text=str(item.get("text") or ""))
+        for item in items or []
+        if isinstance(item, dict)
+    ]
+
+
+async def read(path: str | os.PathLike[str], *, start: int | None = None, end: int | None = None) -> FileView:
+    """Read a text file with every line tagged by an anchor.
+
+    ``str(view)`` renders ``LINE:abc|text`` rows under a header (``path (lines
+    1-40 of 120)``, plus ``crlf``/``no final newline``/encoding notes). Pass
+    anchors from it to ``fs.edit``. ``start``/``end`` are 1-based and
+    inclusive; at most 2,000 lines are returned unless ``end`` asks for more
+    (``view.truncated`` says lines were left out). Binary files and files in
+    no UTF-8/UTF-16 encoding raise ``RuntimeError``.
+    """
+    payload: dict[str, Any] = _target(path)
+    if start is not None:
+        payload["start"] = _count("start", start, minimum=1)
+    if end is not None:
+        payload["end"] = _count("end", end, minimum=1)
+    reply = await host_request("fs.read", payload)
+    if not isinstance(reply, dict):
+        raise RuntimeError(f"fs.read returned a non-object result: {reply!r}")
+    return FileView(
+        path=str(reply.get("path") or ""),
+        lines=_rows(reply.get("lines")),
+        total_lines=int(reply.get("totalLines") or 0),
+        start=int(reply.get("start") or 0),
+        end=int(reply.get("end") or 0),
+        truncated=bool(reply.get("truncated")),
+        line_ends=str(reply.get("lineEnds") or ""),
+        encoding=str(reply.get("encoding") or ""),
+        final_newline=bool(reply.get("finalNewline")),
+        text=str(reply.get("text") or ""),
+    )
+
+
+def _anchor(value: Any, number: int) -> str:
+    if isinstance(value, AnchoredLine):
+        return value.anchor
+    if isinstance(value, str) and value:
+        return value
+    raise TypeError(f"edit {number}: an anchor is a str like '12:abc' (or an AnchoredLine)")
+
+
+def _wire_edit(edit: Any, number: int) -> dict[str, Any]:
+    if not isinstance(edit, dict):
+        raise TypeError(f"edit {number} must be a dict like {{'replace': '12:abc', 'text': '...'}}")
+    ops = [op for op in (*_ANCHORED_OPS, "append") if op in edit]
+    if len(ops) != 1:
+        raise ValueError(
+            f"edit {number} needs exactly one of replace, delete, insert_after, insert_before, append"
+        )
+    op = ops[0]
+    unknown = set(edit) - {op, "text"}
+    if unknown:
+        raise ValueError(f"edit {number}: unknown keys {sorted(unknown)}")
+    wire: dict[str, Any] = {"op": op}
+    if op == "append":
+        wire["text"] = edit["append"]
+        return wire
+    where = edit[op]
+    if op in ("replace", "delete") and isinstance(where, (list, tuple)):
+        if len(where) != 2:
+            raise ValueError(f"edit {number}: a range is [first_anchor, last_anchor]")
+        wire["anchor"] = _anchor(where[0], number)
+        wire["end"] = _anchor(where[1], number)
+    else:
+        wire["anchor"] = _anchor(where, number)
+    if "text" in edit:
+        text = edit["text"]
+        if not isinstance(text, (str, list, tuple)) or (not isinstance(text, str) and not all(isinstance(line, str) for line in text)):
+            raise TypeError(f"edit {number}: text must be a str or a list of str")
+        wire["text"] = text if isinstance(text, str) else list(text)
+    return wire
+
+
+async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[str, Any]]) -> EditResult:
+    """Apply anchored edits to a text file, all or nothing.
+
+    Each edit is a dict naming one operation and its anchor(s) from
+    ``fs.read`` (or a previous ``fs.edit`` result):
+
+    - ``{"replace": "12:abc", "text": "new line"}``; a range:
+      ``{"replace": ["12:abc", "15:xyz"], "text": "..."}`` (inclusive);
+    - ``{"delete": "12:abc"}`` or ``{"delete": ["12:abc", "15:xyz"]}``;
+    - ``{"insert_after": "12:abc", "text": "..."}``, ``{"insert_before": ...}``;
+    - ``{"append": "text"}`` adds lines at the end (also fills an empty file).
+
+    ``text`` is the new lines (a str, one trailing newline ignored, or a list
+    of str); the file keeps its own line endings, final newline and encoding.
+    All anchors address the file as read: line numbers never shift between
+    the edits of one patch, and no two edits may touch the same lines. If any
+    anchor no longer matches, raises ``StaleAnchorsError`` and writes nothing.
+    The write is atomic (temp file + rename).
+    """
+    items = [edits] if isinstance(edits, dict) else edits
+    if not isinstance(items, (list, tuple)) or not items:
+        raise TypeError("edits must be a non-empty list of edit dicts (or one dict)")
+    payload = {**_target(path), "edits": [_wire_edit(item, number) for number, item in enumerate(items, 1)]}
+    reply = await host_request("fs.edit", payload)
+    if not isinstance(reply, dict):
+        raise RuntimeError(f"fs.edit returned a non-object result: {reply!r}")
+    if not reply.get("applied"):
+        raise StaleAnchorsError(
+            str(reply.get("text") or "fs.edit rejected: stale anchors"),
+            stale=[
+                StaleAnchor(
+                    edit=int(item.get("edit") or 0),
+                    anchor=str(item.get("anchor") or ""),
+                    current=None if item.get("current") is None else str(item["current"]),
+                )
+                for item in reply.get("stale") or []
+                if isinstance(item, dict)
+            ],
+            lines=_rows(reply.get("lines")),
+        )
+    return EditResult(
+        path=str(reply.get("path") or ""),
+        edits=int(reply.get("edits") or 0),
+        removed=int(reply.get("removed") or 0),
+        added=int(reply.get("added") or 0),
+        total_lines=int(reply.get("totalLines") or 0),
+        hunks=[_rows(hunk.get("lines")) for hunk in reply.get("hunks") or [] if isinstance(hunk, dict)],
+        text=str(reply.get("text") or ""),
+    )
