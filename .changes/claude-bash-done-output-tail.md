@@ -1,0 +1,1 @@
+- A background command's `[bash-done]` notice now carries the newest output (up to 20 lines / 2,000 characters, marked when truncated), so the agent reads the result without another round trip.

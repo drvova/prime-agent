@@ -22,7 +22,7 @@ The harness often sends messages to the agent. These are user messages starting 
     - `.exit_code: int`
     - `.output: str`
     - `.duration: float`
-- `edit.run(path: str, old_str: str, new_str: str) -> str`: the primary method for editing files. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`)
+- `edit.run(path: str, old_str: str, new_str: str) -> str`: edits a file by retyping its old text. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`). Prefer `fs.read` + `fs.edit` anchors (File reading and editing, below) for edits made from the REPL: no old text to retype, and a stale file is rejected instead of corrupted
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise; the only way to see an image file (a screenshot, diagram, chart, or photo): reading its bytes does not show it
 - `rlm.end_turn()`: async; the sanctioned terminal programmatic call — returns the turn to the user; the turn ends when the batch's end-turn call finishes Ok (any other tool calls in the same message still execute first, one end-turn is enough, no further assistant response follows); background work keeps running after the turn returns, and the remaining jobs' completion notices collect the results; raises where the host does not support it, never a silent no-op
 
@@ -197,6 +197,13 @@ prime-agent searches files natively, in process, with ripgrep's own engine: rege
 - `fs.glob(pattern: str, path: str = ".", *, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: paths matching a `pathlib`-style glob (`"**/*.rs"`); `listing.paths`, `listing.entries` (`FsEntry(path, kind, size)`).
 - `fs.find(name: str | None = None, path: str = ".", *, kind: str | None = None, ignore_case: bool = False, max_depth: int | None = None, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: entries whose file name matches a glob (`"Cargo.toml"`, `"*.md"`), like `find -name`; `kind` is `file`/`dir`/`symlink`.
 
+## File reading and editing
+
+`fs.read` tags every line with an anchor, `LINE:abc` (line number, then a hash of the line and its neighbours), shown as `12:abc|text`. `fs.edit` edits by pointing at anchors, so old text is never retyped. Prefer them for reading and editing files from the REPL. Every anchor in a patch must still match the file, or the whole patch is rejected (`fs.StaleAnchorsError`, a `RuntimeError`) with the stale anchors and the current lines around them under fresh anchors, and nothing is written; retry from those anchors.
+
+- `fs.read(path: str, *, start: int | None = None, end: int | None = None) -> FileView`: `str(view)` is a header (`path (lines 1-40 of 120)`, plus `crlf`/`no final newline`/encoding notes) and `LINE:abc|text` rows; `view.lines` holds `AnchoredLine(line, anchor, text)`, `view.anchor(n)` gives line n's anchor. `start`/`end` are 1-based, inclusive; at most 2000 lines unless `end` asks for more (`view.truncated`). Binary and non-UTF-8/UTF-16 files raise.
+- `fs.edit(path: str, edits: dict | list[dict]) -> EditResult`: one atomic patch; each edit names one operation: `{"replace": "12:abc", "text": "new"}`, a range `{"replace": ["12:abc", "15:xyz"], "text": ...}` (inclusive), `{"delete": "12:abc"}` or `{"delete": [first, last]}`, `{"insert_after": "12:abc", "text": ...}`, `{"insert_before": ...}`, `{"append": "text"}` (also fills an empty file). `text` is the new lines (a str, or a list of str); line endings, final newline, and encoding stay the file's. All anchors address the file as read (numbers never shift within a patch); edits may not overlap. `str(result)` shows the changed regions under fresh anchors to chain the next edit from; anchors outside them keep their letters, and lines below a change shift by its net line count.
+
 ## Scheduled jobs
 
 Schedule a prompt to run in this session later ("check CI in 30 minutes", "rerun the benchmark nightly"). Jobs persist with the session and the user sees them in `prime-agent schedule list`; you list and cancel only the jobs you created. At most 10 live jobs per session; recurring jobs fire at most every 5 minutes. Without the prime-agent daemon (headless runs) the calls raise `RuntimeError` and nothing is scheduled.
@@ -204,6 +211,14 @@ Schedule a prompt to run in this session later ("check CI in 30 minutes", "rerun
 - `schedule.add(prompt: str, *, at: str | datetime | timedelta | float | None = None, every: str | timedelta | float | None = None, cron: str | None = None, label: str | None = None) -> ScheduledJob`: pass exactly one of `at` (one shot: a datetime, a delay in seconds or `timedelta`, an ISO-8601 string, or `"in 30m"`), `every` (`"30m"`, `"2h"`, `"1d"`), or `cron` (five-field UTC expression or `@daily`); the job runs `prompt` as a new turn when it fires
 - `schedule.list(*, include_inactive: bool = False) -> list[ScheduledJob]`: soonest first; `ScheduledJob(id, prompt, kind, schedule, status, next_run_at, last_run_at, run_count, label, last_error, created_at)`, `kind` is `once`/`interval`/`cron`
 - `schedule.cancel(id: str) -> ScheduledJob`: cancel one of your jobs
+
+## Workspace checkpoints
+
+Snapshot the workspace before a risky multi-file change, so it can be undone. Checkpoints live in prime-agent's own shadow store (the one `/undo` uses), never in the project's git history, and belong to this session. They need the prime-agent daemon; headless runs raise `RuntimeError`.
+
+- `checkpoint.create(label: str = "") -> Checkpoint`: snapshot the files now; `Checkpoint(id, label, created_at)`
+- `checkpoint.list() -> list[Checkpoint]`: this session's checkpoints, oldest first
+- `checkpoint.restore(id: str) -> RestoreResult`: put the files back to a checkpoint of this session. Off unless the user set `replCanRestoreCheckpoints` (raises `PermissionError` otherwise); the user is always asked to confirm the listed changes first. `result.status` is `restored`, `declined` (keep the files; do not retry), or `no_user` (nobody could confirm; nothing changed); `result.restored` counts the paths written or removed
 
 ## Todos and questions
 
@@ -214,8 +229,14 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 - `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
 - `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
 
+## Usage and quotas
+
+Read-only, for budgeting long runs: check before expensive work and back off before a quota runs out.
+
+- `usage.get(*, refresh: bool = False) -> Usage`: `str(usage)` summarizes it; `usage.cost` holds `Cost(total, own, subagents)` in USD (`subagents` is your children's rolled-up spend); `usage.tokens` holds `Tokens(input, output, cache_read, cache_write, total)`; `usage.quotas` lists `ProviderQuota(provider, plan, state, windows, resets_at, error)` for each signed-in subscription provider, `state` being `windows`, `rate_limited`, or `failed`, with `QuotaWindow(label, used, limit, unit, resets_at)` (`unit` is `percent`/`requests`, `resets_at` a UTC datetime, `window.used_fraction`). Quota cards are cached for a few minutes; `refresh=True` re-reads them. `usage.quotas_unavailable` says why `quotas` is empty when no daemon serves the session.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

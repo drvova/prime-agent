@@ -1820,6 +1820,59 @@ async fn fs_searches_ride_their_own_event() {
     );
 }
 
+/// Kernel `fs.read`/`fs.edit` calls ride their own `agent fs edit` event at session end (counts
+/// by outcome, never a path or content), and a session that never used them sends none.
+#[tokio::test]
+async fn fs_edits_ride_their_own_event() {
+    use crate::fs_edit::{EditFact, FsEditOperation};
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        EditFact::Read { lines: 40 },
+        EditFact::Read { lines: 2 },
+        EditFact::Failed {
+            operation: FsEditOperation::Read,
+        },
+        EditFact::Applied { edits: 3 },
+        EditFact::Rejected { stale: 2 },
+        EditFact::Failed {
+            operation: FsEditOperation::Edit,
+        },
+    ] {
+        counters.note_fs_edit(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent fs edit"]
+    );
+    let edits = &event_properties(&fixture.mock, "agent fs edit").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = edits
+        .iter()
+        .filter(|(key, _)| key.starts_with("fs_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "fs_read_count": 2,
+            "fs_read_line_count": 42,
+            "fs_read_failed_count": 1,
+            "fs_edit_count": 1,
+            "fs_edit_op_count": 3,
+            "fs_edit_rejected_count": 1,
+            "fs_edit_stale_anchor_count": 2,
+            "fs_edit_failed_count": 1,
+        })
+    );
+}
+
 /// Kernel `schedule.*` calls ride their own `agent repl schedule` event at session end (counts by
 /// kind, never a prompt or schedule), and a session that never scheduled sends none.
 #[tokio::test]
@@ -1863,5 +1916,84 @@ async fn repl_schedules_ride_their_own_event() {
             "schedule_cancelled_count": 1,
             "schedule_rejected_count": 1,
         })
+    );
+}
+
+/// Kernel `checkpoint.*` calls ride their own `agent repl checkpoint` event at session end
+/// (counts by outcome, never a label or path), and a session that never checkpointed sends none.
+#[tokio::test]
+async fn repl_checkpoints_ride_their_own_event() {
+    use crate::session_engine::checkpoint_host::CheckpointFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        CheckpointFact::Created,
+        CheckpointFact::Created,
+        CheckpointFact::Listed,
+        CheckpointFact::Restored,
+        CheckpointFact::RestoreDeclined,
+        CheckpointFact::RestoreDisabled,
+        CheckpointFact::Failed,
+    ] {
+        counters.note_repl_checkpoint(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl checkpoint"]
+    );
+    let checkpoint = &event_properties(&fixture.mock, "agent repl checkpoint").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = checkpoint
+        .iter()
+        .filter(|(key, _)| key.starts_with("checkpoint_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "checkpoint_created_count": 2,
+            "checkpoint_list_count": 1,
+            "checkpoint_restored_count": 1,
+            "checkpoint_restore_declined_count": 1,
+            "checkpoint_restore_disabled_count": 1,
+            "checkpoint_failed_count": 1,
+        })
+    );
+}
+
+/// Kernel `usage.get()` reads ride their own `agent usage reads` event at session end (a count,
+/// never a cost or a token number), and a session that never read its usage sends none.
+#[tokio::test]
+async fn usage_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_usage_read();
+    counters.note_usage_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent usage reads"]
+    );
+    let reads = &event_properties(&fixture.mock, "agent usage reads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reads
+        .iter()
+        .filter(|(key, _)| key.starts_with("usage_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({"usage_read_count": 2})
     );
 }

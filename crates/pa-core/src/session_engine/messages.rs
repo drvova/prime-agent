@@ -210,19 +210,45 @@ pub fn create_heartbeat_prompt_message(
     }
 }
 
-/// The detached kernel bash completion notice: the `[bash-done pid:N exit:M]` header
-/// plus the JSON-encoded command. A later kernel read that reaches the model first
-/// withdraws it through its details (`bash.consumed`).
+/// The newest output a finished detached command's notice carries (the kernel
+/// bounds it to its snapshot tail limits).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BashOutputTail<'a> {
+    /// The command's whole output.
+    Complete(&'a str),
+    /// Only the newest output; older output was cut.
+    Truncated(&'a str),
+}
+
+/// The detached kernel bash completion notice: the `[bash-done pid:N exit:M]` header,
+/// the JSON-encoded command, and the output tail, so the model reads the result
+/// without spending a round on `await h`. A later kernel read that reaches the
+/// model first withdraws it through its details (`bash.consumed`).
 #[must_use]
 pub fn create_async_bash_completion_message(
     pid: u32,
     command: &str,
     exit_code: i64,
+    output: BashOutputTail<'_>,
     timestamp: u64,
 ) -> pa_types::session::CustomMessage {
     // TS `JSON.stringify(details.command)`: the quoted, escaped command.
     let encoded_command = serde_json::to_string(command).unwrap_or_default();
-    let content = format!("[bash-done pid:{pid} exit:{exit_code}]\n\nCommand: {encoded_command}");
+    let mut content =
+        format!("[bash-done pid:{pid} exit:{exit_code}]\n\nCommand: {encoded_command}");
+    match output {
+        BashOutputTail::Complete("") => content.push_str("\n\nOutput: (none)"),
+        BashOutputTail::Complete(text) => {
+            let _ = write!(content, "\n\nOutput:\n{}", fenced(text));
+        }
+        BashOutputTail::Truncated(text) => {
+            let _ = write!(
+                content,
+                "\n\nOutput (truncated, newest lines only; `await h` on the saved handle for the full output):\n{}",
+                fenced(text)
+            );
+        }
+    }
     pa_types::session::CustomMessage {
         custom_type: ASYNC_BASH_COMPLETION_CUSTOM_TYPE.to_string(),
         content: UserContent::Text(content),
@@ -266,8 +292,21 @@ pub fn create_factory_progress_message(
     }
 }
 
-/// Bash output rendered as a fenced block with a fence longer than any
-/// backtick run inside the output.
+/// Text in a fenced block whose fence is longer than any backtick run inside it.
+fn fenced(text: &str) -> String {
+    let longest = text.match_indices('`').fold(0usize, |longest, (index, _)| {
+        let mut run = 0usize;
+        let mut chars = text[index..].chars();
+        while chars.next() == Some('`') {
+            run += 1;
+        }
+        run.max(longest)
+    });
+    let fence = "`".repeat(longest.max(3).max(longest + 1));
+    format!("{fence}\n{text}\n{fence}")
+}
+
+/// Bash output rendered as a fenced block (see [`fenced`]).
 fn bash_output_to_text(
     output: &str,
     exit_code: Option<i64>,
@@ -275,27 +314,11 @@ fn bash_output_to_text(
     truncated: bool,
     full_output_path: Option<&str>,
 ) -> String {
-    let mut text = String::new();
-    if output.is_empty() {
-        text.push_str("(no output)");
+    let mut text = if output.is_empty() {
+        "(no output)".to_string()
     } else {
-        let longest = output
-            .match_indices('`')
-            .fold(0usize, |longest, (index, _)| {
-                let mut run = 0usize;
-                let mut chars = output[index..].chars();
-                while chars.next() == Some('`') {
-                    run += 1;
-                }
-                run.max(longest)
-            });
-        let fence = "`".repeat(longest.max(3).max(longest + 1));
-        text.push_str(&fence);
-        text.push('\n');
-        text.push_str(output);
-        text.push('\n');
-        text.push_str(&fence);
-    }
+        fenced(output)
+    };
     if cancelled {
         text.push_str("\n\n(command cancelled)");
     } else if let Some(code) = exit_code {
@@ -743,29 +766,48 @@ state
     }
 
     #[test]
-    fn async_bash_completion_message_matches_the_ts_shape() {
-        let message =
-            create_async_bash_completion_message(4321, "sleep 12; echo RW_WAKE_DONE", 0, 1_000);
-        assert_eq!(message.custom_type, "async_bash_completion");
-        assert!(message.display);
-        assert_eq!(message.timestamp, 1_000);
+    fn async_bash_completion_message_carries_the_output_tail() {
+        let message = create_async_bash_completion_message(
+            4321,
+            "sleep 12; echo RW_WAKE_DONE",
+            0,
+            BashOutputTail::Truncated("line 19\nRW_WAKE_DONE"),
+            1_000,
+        );
+        assert_eq!(
+            message,
+            pa_types::session::CustomMessage {
+                custom_type: "async_bash_completion".to_string(),
+                content: UserContent::Text(
+                    "[bash-done pid:4321 exit:0]\n\nCommand: \"sleep 12; echo RW_WAKE_DONE\"\n\n\
+                     Output (truncated, newest lines only; `await h` on the saved handle for the full output):\n\
+                     ```\nline 19\nRW_WAKE_DONE\n```"
+                        .to_string()
+                ),
+                display: true,
+                details: Some(serde_json::json!({
+                    "pid": 4321,
+                    "command": "sleep 12; echo RW_WAKE_DONE",
+                    "exitCode": 0,
+                })),
+                timestamp: 1_000,
+                rest: serde_json::Map::default(),
+            }
+        );
+        let message = create_async_bash_completion_message(
+            11,
+            "echo \"done\" && exit 2",
+            2,
+            BashOutputTail::Complete(""),
+            2_000,
+        );
         assert_eq!(
             message.content,
             UserContent::Text(
-                "[bash-done pid:4321 exit:0]\n\nCommand: \"sleep 12; echo RW_WAKE_DONE\""
+                "[bash-done pid:11 exit:2]\n\nCommand: \"echo \\\"done\\\" && exit 2\"\n\nOutput: (none)"
                     .to_string()
             )
         );
-        let details = message.details.unwrap();
-        assert_eq!(details["pid"], 4321);
-        assert_eq!(details["command"], "sleep 12; echo RW_WAKE_DONE");
-        assert_eq!(details["exitCode"], 0);
-        let message = create_async_bash_completion_message(11, "echo \"done\" && exit 2", 2, 2_000);
-        assert_eq!(message.timestamp, 2_000);
-        assert!(matches!(message.content, UserContent::Text(text)
-            if text.starts_with("[bash-done pid:11 exit:2]\n\nCommand: \"echo \\\"done\\\" && exit 2\"")));
-        let details = message.details.unwrap();
-        assert_eq!(details["exitCode"], 2);
     }
 
     #[test]

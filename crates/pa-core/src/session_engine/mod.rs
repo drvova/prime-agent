@@ -9,6 +9,7 @@ pub mod auxiliary_model;
 pub mod bash_notices;
 pub mod branch_summarization;
 mod cache_warming;
+pub mod checkpoint_host;
 pub mod compact_session;
 pub mod compaction;
 pub mod compaction_exec;
