@@ -101,6 +101,19 @@ impl AuthStorage {
                                 refresh_failure: None,
                             };
                         }
+                        // A descriptor `oauth` sign-in: the fresh access token
+                        // serves; an expired one refreshes in the descriptor's
+                        // resolver (it knows the token endpoint), never here.
+                        AuthCredential::Oauth {
+                            access, expires, ..
+                        } if self.descriptor_oauth_providers.contains(provider_id) => {
+                            return AuthApiKeyResult {
+                                api_key: (now_epoch_ms() < *expires).then(|| access.clone()),
+                                source_token: Self::token_for(provider_id, &candidate),
+                                credential_type: Some("oauth"),
+                                refresh_failure: None,
+                            };
+                        }
                         AuthCredential::Oauth { expires, .. } => {
                             let now_ms = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
@@ -290,9 +303,10 @@ impl AuthStorage {
     /// Force-refresh the stored credential the provider rejected: this
     /// store's last-read copy. A store that holds another credential keeps it.
     ///
-    /// An exchanged token (`token_exchange`) is not fetched here: its cached
-    /// token is dropped so the retry's resolution refreshes it once,
-    /// single-flighted there. The drop is guarded like the OAuth commit —
+    /// An exchanged token (`token_exchange`) or a descriptor `oauth`
+    /// sign-in is not fetched here: its cached token is dropped (or
+    /// expired) so the retry's resolution refreshes it once, single-flighted
+    /// there. The drop is guarded like the OAuth commit —
     /// only while the stored entry is still the served credential, so a
     /// token a peer already refreshed stays and serves the retry.
     ///
@@ -304,6 +318,19 @@ impl AuthStorage {
             return Ok(());
         }
         match self.data.credential(provider_id) {
+            // A descriptor `oauth` sign-in: expire the served access token so
+            // the retry's resolution refreshes it once, single-flighted there.
+            Some(served @ AuthCredential::Oauth { .. })
+                if self.descriptor_oauth_providers.contains(provider_id) =>
+            {
+                super::super::resolver::AuthCounter::RejectedRetry.note();
+                let mut invalidated = served.clone();
+                if let AuthCredential::Oauth { expires, .. } = &mut invalidated {
+                    *expires = 0;
+                }
+                self.invalidate_served(provider_id, &served, &invalidated);
+                Ok(())
+            }
             Some(credential @ AuthCredential::Oauth { .. }) => self
                 .rotate_oauth(provider_id, credential, RefreshTrigger::Rejected)
                 .map(drop),
@@ -329,18 +356,7 @@ impl AuthStorage {
                     access: Some(access),
                     expires,
                 };
-                let result = self.storage.with_lock(&mut |current| {
-                    let mut data = parse_storage_data(current.as_deref())?;
-                    if data.credential(provider_id).as_ref() != Some(&served) {
-                        return Ok(((), None));
-                    }
-                    data.insert(provider_id, &invalidated);
-                    Ok(((), Some(serde_json::to_string_pretty(&data.0)?)))
-                });
-                if let Err(error) = result {
-                    self.record_error(&error);
-                }
-                self.reload();
+                self.invalidate_served(provider_id, &served, &invalidated);
                 Ok(())
             }
             Some(
@@ -350,6 +366,29 @@ impl AuthStorage {
             )
             | None => Ok(()),
         }
+    }
+
+    /// Replace the rejected `served` credential with `invalidated` only
+    /// while the stored entry is still `served`: a token a peer already
+    /// refreshed stays and serves the retry.
+    fn invalidate_served(
+        &mut self,
+        provider_id: &str,
+        served: &AuthCredential,
+        invalidated: &AuthCredential,
+    ) {
+        let result = self.storage.with_lock(&mut |current| {
+            let mut data = parse_storage_data(current.as_deref())?;
+            if data.credential(provider_id).as_ref() != Some(served) {
+                return Ok(((), None));
+            }
+            data.insert(provider_id, invalidated);
+            Ok(((), Some(serde_json::to_string_pretty(&data.0)?)))
+        });
+        if let Err(error) = result {
+            self.record_error(&error);
+        }
+        self.reload();
     }
 
     /// The FETCH and WRITE phases of [`Self::refresh_oauth`].

@@ -1462,6 +1462,41 @@ mod tests {
         );
     }
 
+    /// The kernel learns the session's agent dir and, in a distribution build, the build's
+    /// variant: the runtime's fallback resolves the same layout the host does.
+    #[tokio::test]
+    async fn the_kernel_env_names_the_agent_dir_and_the_builds_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_dir = dir.path().join("agent");
+        let cwd = dir.path().join("project");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        let engine = shell_test_session(cwd, agent_dir.clone()).await.unwrap();
+        let layout_env: std::collections::BTreeMap<&str, &str> = engine
+            .provisioner
+            .inner
+            .options
+            .env
+            .iter()
+            .filter(|(key, _)| {
+                key.starts_with("PRIME_AGENT_CODING") || key.starts_with("PRIME_AGENT_DIST")
+            })
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        let agent_dir = agent_dir.to_string_lossy().to_string();
+        let mut expected = std::collections::BTreeMap::from([(
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            agent_dir.as_str(),
+        )]);
+        match pa_types::platform::StateLayout::BUILD {
+            pa_types::platform::StateLayout::Official => {}
+            pa_types::platform::StateLayout::Distribution { variant } => {
+                expected.insert("PRIME_AGENT_DIST_VARIANT", variant);
+            }
+        }
+        assert_eq!(layout_env, expected);
+    }
+
     #[tokio::test]
     async fn an_unsaved_session_blanks_the_kernel_session_id() {
         let dir = tempfile::tempdir().unwrap();

@@ -340,6 +340,27 @@ impl ProviderAuth {
                 });
             }
 
+            // The models.json providers whose `auth` descriptor declares
+            // `oauth`: browser sign-in rows through the panel (a subscription
+            // id keeps its own row).
+            let oauth_descriptor_ids: Vec<String> =
+                pa_core::auth::oauth_descriptor_providers(&provider.agent_dir)
+                    .into_iter()
+                    .filter(|id| !SUBSCRIPTION_PROVIDERS.iter().any(|(sub, _)| sub == id))
+                    .collect();
+            for id in &oauth_descriptor_ids {
+                let (credential, status) = provider.credential_status(id);
+                rows.push(ProviderRow {
+                    id: id.clone(),
+                    name: display_name(id),
+                    auth_type: AuthType::Oauth,
+                    status: status_indicator(credential.as_ref(), &status, AuthType::Oauth),
+                    flow: AuthFlow::TerminalFlow,
+                    configured: status.configured,
+                    available: true,
+                });
+            }
+
             // The API-key model providers.
             let registry = ModelRegistry::create(
                 provider.auth_storage(),
@@ -358,7 +379,9 @@ impl ProviderAuth {
             providers.sort();
             providers.dedup();
             for provider_id in providers {
-                if !is_api_key_login_provider(&provider_id, &built_in_provider_ids) {
+                if !is_api_key_login_provider(&provider_id, &built_in_provider_ids)
+                    || oauth_descriptor_ids.contains(&provider_id)
+                {
                     continue;
                 }
                 let (credential, status) = provider.credential_status(&provider_id);
@@ -642,6 +665,15 @@ fn login_blocking_on_panel(
                     ))
                 },
             );
+    }
+    // A models.json provider whose `auth` descriptor declares `oauth`.
+    if pa_core::auth::oauth_descriptor_providers(&agent_dir).contains(&provider_row.id) {
+        return crate::descriptor_login::run_panel_sign_in(
+            &agent_dir,
+            &provider_row.id,
+            &provider_row.name,
+            panel,
+        );
     }
     // Any other row answers the silent cancel.
     ProviderAuthOutcome::Cancelled

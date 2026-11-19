@@ -144,6 +144,20 @@ single-flighted per provider and account across threads and processes, and
 invalidated once when the provider rejects it). Resolution runs only on the
 inference path, never at startup.
 
+The `oauth` descriptor strategy (`auth/descriptor_oauth.rs`,
+`auth/descriptor_oauth_login.rs`): `DescriptorOAuth` serves the provider's
+stored `oauth` credential (bound to the descriptor's token endpoint and
+client) and refreshes it before expiry, single-flighted per provider in
+process and across processes, persisting a rotated refresh token in the same
+guarded write; a failed refresh is the "sign in again" error. The sign-in is
+public API for the CLI's `login` command and the `/login` panel:
+`sign_in_with_descriptor` (authorization code + PKCE S256 through the MCP
+loopback callback server bound to 127.0.0.1 with a server-side `state` check,
+or the RFC 8628 device-code flow), `oauth_descriptor_providers`, the
+`OAuthSignInUi` surface trait, and the `SignInFlow`/`SignInTiming`/
+`SignInMethod`/`SignInAttempt`/`SignInError` values. The sign-in never runs
+on a paint path.
+
 Session todos and user questions (`interaction`): the host side of the kernel's `todo.*`
 and `ask(...)` — the `todo.get`/`todo.set`/`todo.update` and `question.ask`/`question.cancel`
 host requests, the todo list persisted as `session_todo_list` custom entries (the branch's

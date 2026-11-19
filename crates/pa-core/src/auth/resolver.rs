@@ -1,14 +1,17 @@
 //! The request-auth resolver seam: the model registry's per-call lookup
 //! resolves every inference call's credential through one [`AuthResolver`]
-//! — [`StaticKey`] (today's key) or
+//! — [`StaticKey`] (today's key),
 //! [`TokenExchange`](super::token_exchange::TokenExchange) (a short-lived
-//! token exchanged from stored long-lived credentials, as a provider's
-//! models.json `auth` descriptor declares).
+//! token exchanged from stored long-lived credentials), or
+//! [`DescriptorOAuth`](super::descriptor_oauth::DescriptorOAuth) (a browser
+//! sign-in's access token, refreshed before it expires), as a provider's
+//! models.json `auth` descriptor declares.
 
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::descriptor_oauth::DescriptorOAuth;
 use super::token_exchange::TokenExchange;
 
 /// What a resolution is for.
@@ -51,6 +54,21 @@ pub(crate) enum AuthResolveError {
     MissingCredential { provider: String },
     /// The exchange (or the store around it) failed.
     Exchange { provider: String, reason: String },
+    /// The descriptor wants an OAuth sign-in, but auth.json holds no
+    /// `oauth` credential for the provider.
+    SignInRequired { provider: String },
+    /// The stored OAuth sign-in cannot serve (its refresh failed, it has no
+    /// refresh token, or it belongs to another endpoint): only a new
+    /// sign-in recovers.
+    SignInAgain { provider: String, reason: String },
+}
+
+/// The command that signs a provider in (the build's own binary name).
+fn login_command(provider: &str) -> String {
+    format!(
+        "{} login {provider}",
+        crate::update::installer::BUILD_DISTRIBUTION.command()
+    )
 }
 
 impl std::fmt::Display for AuthResolveError {
@@ -63,6 +81,16 @@ impl std::fmt::Display for AuthResolveError {
             AuthResolveError::Exchange { provider, reason } => write!(
                 f,
                 "Authentication failed for \"{provider}\": the token exchange failed ({reason}).\n\nUpdate the provider's token_exchange credential in auth.json."
+            ),
+            AuthResolveError::SignInRequired { provider } => write!(
+                f,
+                "Provider \"{provider}\" signs in with OAuth, but no sign-in is stored for it.\n\nSign in: {}",
+                login_command(provider)
+            ),
+            AuthResolveError::SignInAgain { provider, reason } => write!(
+                f,
+                "Authentication failed for \"{provider}\": {reason}.\n\nSign in again: {}",
+                login_command(provider)
             ),
         }
     }
@@ -120,15 +148,16 @@ impl AuthResolver for StaticKey {
 pub(crate) enum ProviderAuthResolver {
     Static(StaticKey),
     TokenExchange(TokenExchange),
+    Oauth(DescriptorOAuth),
 }
 
 impl ProviderAuthResolver {
     /// Resolve from synchronous code: the registry's per-call lookup is
     /// synchronous by contract (the live stream runs it on a blocking thread
     /// raced with the turn's abort). A static key never awaits, so it answers
-    /// inline; a token exchange runs on a dedicated current-thread runtime
-    /// (the OAuth refresh's pattern), which works whether or not the caller
-    /// is inside a runtime.
+    /// inline; a token exchange or an OAuth refresh runs on a dedicated
+    /// current-thread runtime (the subscription OAuth refresh's pattern),
+    /// which works whether or not the caller is inside a runtime.
     ///
     /// # Errors
     ///
@@ -138,29 +167,37 @@ impl ProviderAuthResolver {
         &self,
         ctx: &AuthResolveContext<'_>,
     ) -> Result<AuthHeaders, AuthResolveError> {
-        match self {
-            ProviderAuthResolver::Static(key) => Ok(key.headers()),
-            ProviderAuthResolver::TokenExchange(exchange) => {
-                let failed = |reason: &str| AuthResolveError::Exchange {
-                    provider: ctx.provider.to_string(),
-                    reason: reason.to_string(),
-                };
-                std::thread::scope(|scope| {
-                    std::thread::Builder::new()
-                        .name("request-auth".to_string())
-                        .spawn_scoped(scope, || {
-                            tokio::runtime::Builder::new_current_thread()
-                                .enable_all()
-                                .build()
-                                .map_err(|_| failed("the auth runtime could not start"))?
-                                .block_on(exchange.resolve(ctx))
-                        })
-                        .map_err(|_| failed("the auth thread could not start"))?
-                        .join()
-                        .map_err(|_| failed("the auth thread panicked"))?
-                })
-            }
+        if let ProviderAuthResolver::Static(key) = self {
+            return Ok(key.headers());
         }
+        let failed = |reason: &str| AuthResolveError::Exchange {
+            provider: ctx.provider.to_string(),
+            reason: reason.to_string(),
+        };
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("request-auth".to_string())
+                .spawn_scoped(scope, || {
+                    let runtime = || {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|_| failed("the auth runtime could not start"))
+                    };
+                    match self {
+                        ProviderAuthResolver::Static(key) => Ok(key.headers()),
+                        ProviderAuthResolver::TokenExchange(exchange) => {
+                            runtime()?.block_on(exchange.resolve(ctx))
+                        }
+                        ProviderAuthResolver::Oauth(oauth) => {
+                            runtime()?.block_on(oauth.resolve(ctx))
+                        }
+                    }
+                })
+                .map_err(|_| failed("the auth thread could not start"))?
+                .join()
+                .map_err(|_| failed("the auth thread panicked"))?
+        })
     }
 }
 
@@ -178,11 +215,20 @@ pub(crate) enum AuthCounter {
     /// A provider rejection (401) that invalidated the cached token, forcing
     /// one refresh before the retry.
     RejectedRetry,
+    /// A resolution for a provider whose descriptor declares `oauth`.
+    OAuthResolve,
+    /// A completed OAuth refresh at the token endpoint.
+    OAuthRefresh,
+    /// A failed OAuth refresh (the user must sign in again).
+    OAuthRefreshFailure,
 }
 
 /// The process-wide counters: one daemon worker process serves one session,
 /// so the session telemetry folds the per-session delta.
-static COUNTERS: [AtomicU64; 5] = [
+static COUNTERS: [AtomicU64; 8] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -198,6 +244,9 @@ impl AuthCounter {
             AuthCounter::Exchange => 2,
             AuthCounter::ExchangeFailure => 3,
             AuthCounter::RejectedRetry => 4,
+            AuthCounter::OAuthResolve => 5,
+            AuthCounter::OAuthRefresh => 6,
+            AuthCounter::OAuthRefreshFailure => 7,
         };
         &COUNTERS[index]
     }
@@ -217,6 +266,9 @@ pub(crate) struct AuthMetrics {
     pub(crate) exchanges: u64,
     pub(crate) exchange_failures: u64,
     pub(crate) rejected_retries: u64,
+    pub(crate) oauth_resolves: u64,
+    pub(crate) oauth_refreshes: u64,
+    pub(crate) oauth_refresh_failures: u64,
 }
 
 impl AuthMetrics {
@@ -229,6 +281,9 @@ impl AuthMetrics {
             exchanges: read(AuthCounter::Exchange),
             exchange_failures: read(AuthCounter::ExchangeFailure),
             rejected_retries: read(AuthCounter::RejectedRetry),
+            oauth_resolves: read(AuthCounter::OAuthResolve),
+            oauth_refreshes: read(AuthCounter::OAuthRefresh),
+            oauth_refresh_failures: read(AuthCounter::OAuthRefreshFailure),
         }
     }
 
@@ -249,6 +304,13 @@ impl AuthMetrics {
             rejected_retries: self
                 .rejected_retries
                 .saturating_sub(baseline.rejected_retries),
+            oauth_resolves: self.oauth_resolves.saturating_sub(baseline.oauth_resolves),
+            oauth_refreshes: self
+                .oauth_refreshes
+                .saturating_sub(baseline.oauth_refreshes),
+            oauth_refresh_failures: self
+                .oauth_refresh_failures
+                .saturating_sub(baseline.oauth_refresh_failures),
         }
     }
 }
