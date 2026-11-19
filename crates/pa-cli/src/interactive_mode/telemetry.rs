@@ -414,6 +414,26 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn todos_and_questions(
+        &self,
+        counts: pa_tui::interactive::TodoQuestionCounts,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui inline images rendered`: `tui exit` sits at the backend's 128-key
+        // cap. Counts only.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set(
+                "todo_tray_toggle_count",
+                serde_json::Value::from(counts.todo_tray_toggles),
+            );
+            client.track("tui todos and questions", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn usage_page_closed(
         &self,
         summary: pa_tui::usage_page::UsagePageSummary,

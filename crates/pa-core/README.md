@@ -198,7 +198,9 @@ newest wins; the session window tracks it like the goal state), and one open que
 wait parks on the reply, the timeout, and the embedding's presence notification. The embedding
 supplies the `InteractionSurface` (the daemon worker's attached clients); without one the
 session is headless and `ask` settles as `no_user` at once. Adoption counts ride the
-`agent todos and questions` telemetry event.
+`agent todos and questions` telemetry event. The kernel's `todo.set`/`todo.update` also show the
+new list on the running cell (the `todo` display MIME; the cell keeps its last as the tool
+result's `todoList` detail), so the transcript records each plan change.
 The kernel's `notify(...)` rides the same hub (`notify.send`: an
 `InteractionEvent::Notified` published fire-and-forget, `delivered` answered at once from the
 surface's presence). The opt-in `model.set_effort` (`session_engine::effort_switch`) is gated on

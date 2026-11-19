@@ -477,6 +477,7 @@ fn convert_execute_result(
         bash_commands: result.bash_commands,
         bash_waits: result.bash_waits,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
+        todo_list: result.todo_list,
         backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
     }

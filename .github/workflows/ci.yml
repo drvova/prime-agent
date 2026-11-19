@@ -352,6 +352,11 @@ jobs:
       - name: Bootstrap the kernel venv (ready before the kernel e2e units)
         if: steps.selection.outputs.units != '0'
         run: ./target/debug/prime-agent --prime-agent-bootstrap
+      # The tmux user-level verifiers (pa-cli `*_tmux_e2e`) drive the real binary in a private
+      # tmux server; the runner image may not ship tmux.
+      - name: Ensure tmux (the tmux user-level verifiers drive the binary through it)
+        if: steps.selection.outputs.units != '0'
+        run: command -v tmux || { sudo apt-get update && sudo apt-get install -y tmux; }
       - name: Run this shard's test subset
         run: |
           python3 scripts/ci_test_shard.py --shard ${{ matrix.shard }} --total ${{ env.SHARD_COUNT }}             --crates "${{ needs.changes.outputs.crates }}"             --manifest "$RUNNER_TEMP/shard-manifest-${{ matrix.shard }}-attempt-${{ github.run_attempt }}.json"

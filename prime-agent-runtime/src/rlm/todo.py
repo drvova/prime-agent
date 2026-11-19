@@ -18,6 +18,9 @@ from . import host_request
 __all__ = ["STATUSES", "TodoItem", "TodoList", "get", "set", "update"]
 
 STATUSES = ("pending", "in_progress", "done")
+
+# Display MIME the host keeps (the cell's last list) for the cell card's todo row.
+_TODO_MIME = "application/vnd.prime-agent.todo+json"
 _MARKS = {"pending": "[ ]", "in_progress": "[~]", "done": "[x]"}
 
 
@@ -75,6 +78,16 @@ def _list_from_payload(payload: Any) -> TodoList:
     )
 
 
+def _changed(payload: Any) -> TodoList:
+    """Parse a mutation's reply and show the new list on the running cell's card."""
+    todos = _list_from_payload(payload)
+    from . import repl
+
+    if repl.is_active():
+        repl.emit({_TODO_MIME: payload})
+    return todos
+
+
 def _check_status(status: Any) -> None:
     if status not in STATUSES:
         raise ValueError(f"status must be one of {', '.join(STATUSES)}, got {status!r}")
@@ -104,7 +117,7 @@ async def set(items: Sequence[str | Mapping[str, Any]]) -> TodoList:  # noqa: A0
             payload.append(dict(item))
         else:
             raise TypeError(f"each todo item is a string or a mapping, got {type(item).__name__}")
-    return _list_from_payload(await host_request("todo.set", {"items": payload}))
+    return _changed(await host_request("todo.set", {"items": payload}))
 
 
 async def update(
@@ -127,7 +140,7 @@ async def update(
         payload["text"] = text
     if note is not None:
         payload["note"] = note
-    return _list_from_payload(await host_request("todo.update", payload))
+    return _changed(await host_request("todo.update", payload))
 
 
 async def get() -> TodoList:

@@ -211,6 +211,7 @@ fn layout(
     );
     render_sent_agent_messages(lines, &details, level.tool_output_expanded(), theme, width);
     render_transcript_reads(lines, &details, expanded, theme, width);
+    render_todo_list(lines, &details, theme, width);
     if expanded {
         render_output(card, &details, lines, has_code, show_images, theme, width);
     }
@@ -630,6 +631,30 @@ fn render_transcript_reads(
             truncate_line(&row, width, "\u{2026}")
         });
     }
+}
+
+/// One row for the todo list the cell's `todo.*` calls left, shown collapsed too: the
+/// transcript's record of each plan change (the live list is the dock's tray).
+fn render_todo_list(lines: &mut RowOutput, details: &IpythonDetails, theme: &Theme, width: usize) {
+    let Some(summary) = details
+        .todo_list
+        .as_ref()
+        .and_then(super::ipython_details::todo_list_summary)
+    else {
+        return;
+    };
+    lines.push(|| {
+        let row: Line = vec![
+            Span::raw(" "),
+            Span::styled(
+                "\u{2630} todos".to_string(),
+                theme.fg_style(ThemeColor::Muted),
+            ),
+            Span::styled(" \u{b7} ".to_string(), theme.fg_style(ThemeColor::Dim)),
+            Span::styled(summary, theme.fg_style(ThemeColor::Dim)),
+        ];
+        truncate_line(&row, width, "\u{2026}")
+    });
 }
 
 /// One indented card row (TS `addWrapped`): the first wrapped row carries

@@ -12,6 +12,24 @@ use crate::{Line, Span};
 use ratatui::style::Style;
 
 impl AgentView {
+    /// The todo tray rows (see [`crate::todo_panel`]), its toggle hint naming the effective
+    /// `app.todos.toggle` key.
+    pub(crate) fn render_todo_tray(&self, width: usize) -> Vec<Line> {
+        let toggle_key = self
+            .editor
+            .keybindings()
+            .first_key("app.todos.toggle")
+            .map(|key| crate::keybindings::format_key_text(&key))
+            .unwrap_or_default();
+        crate::todo_panel::render_todo_panel(
+            &self.todos,
+            self.todo_fold,
+            &toggle_key,
+            &self.theme,
+            width,
+        )
+    }
+
     pub fn render_dock(&mut self, width: usize) -> Vec<Line> {
         // The queued-input strip sits directly above the prompt dock rows
         // (TS `queuedMessagesContainer` above the editor).
@@ -28,7 +46,7 @@ impl AgentView {
             }
         };
         // The todo tray tops the dock, above the queued-input strip.
-        let mut lines = crate::todo_panel::render_todo_panel(&self.todos, &self.theme, width);
+        let mut lines = self.render_todo_tray(width);
         lines.extend(crate::queued::render_queue(
             &self.theme,
             &self.queued,

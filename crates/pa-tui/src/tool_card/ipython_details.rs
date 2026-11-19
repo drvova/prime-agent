@@ -19,6 +19,8 @@ pub(crate) struct IpythonDetails {
     pub(crate) sent_agent_messages: Vec<Value>,
     pub(crate) bash_commands: Option<BashCommands>,
     pub(crate) transcript_reads: Vec<TranscriptRead>,
+    /// The todo list the cell's last `todo.set`/`todo.update` left (`todoList`).
+    pub(crate) todo_list: Option<pa_types::todo::TodoList>,
 }
 
 pub(crate) struct IpythonError {
@@ -119,6 +121,28 @@ pub(crate) fn transcript_reads_summary(reads: &[TranscriptRead]) -> Option<Strin
     }
 }
 
+/// The card row for the list a cell's todo calls left: `2/5 · <current item>`, `2/5 · next:
+/// <first pending>` between items, `5/5 · all done` once finished.
+pub(crate) fn todo_list_summary(list: &pa_types::todo::TodoList) -> Option<String> {
+    use pa_types::todo::TodoStatus;
+    if list.items.is_empty() {
+        return Some("cleared".to_string());
+    }
+    let progress = list.progress();
+    let tail = match list.active() {
+        Some(active) => active.text.clone(),
+        None => match list
+            .items
+            .iter()
+            .find(|item| item.status == TodoStatus::Pending)
+        {
+            Some(next) => format!("next: {}", next.text),
+            None => "all done".to_string(),
+        },
+    };
+    Some(format!("{progress} \u{b7} {tail}"))
+}
+
 pub(crate) fn read_error_details(value: &Value) -> Option<IpythonError> {
     let record = value.as_object()?;
     let ename = record.get("ename")?.as_str()?.to_string();
@@ -157,6 +181,7 @@ impl IpythonDetails {
             sent_agent_messages: Vec::new(),
             bash_commands: None,
             transcript_reads: Vec::new(),
+            todo_list: None,
         };
         let Some(record) = details.as_object() else {
             return empty;
@@ -207,6 +232,9 @@ impl IpythonDetails {
                 .and_then(Value::as_array)
                 .map(|reads| reads.iter().filter_map(TranscriptRead::parse).collect())
                 .unwrap_or_default(),
+            todo_list: record
+                .get("todoList")
+                .and_then(|list| serde_json::from_value(list.clone()).ok()),
         }
     }
 }

@@ -1,0 +1,1 @@
+- The todo tray is easier to follow: the current item is highlighted, long lists fold around it with a `+N more` row and expand with Alt+T, a finished list shows one `all done` row until your next message, and each python cell that changes the list records it in the transcript.

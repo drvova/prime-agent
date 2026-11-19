@@ -101,6 +101,9 @@ pub struct AgentView {
     pub(crate) choice_picker: Option<crate::choice_picker::ChoicePicker>,
     /// The session todo list the dock's todo tray renders (`todo_update`).
     pub(crate) todos: pa_types::todo::TodoList,
+    /// Whether the todo tray shows the window around the current item or the whole list
+    /// (`app.todos.toggle`).
+    pub(crate) todo_fold: crate::todo_panel::TodoFold,
     /// The kernel question waiting for the user (`question_open`): while set,
     /// its answer prompt replaces the composer.
     pub(crate) question: Option<crate::question_prompt::QuestionPrompt>,
@@ -397,6 +400,7 @@ impl AgentView {
             fork_selector: None,
             choice_picker: None,
             todos: pa_types::todo::TodoList::default(),
+            todo_fold: crate::todo_panel::TodoFold::default(),
             question: None,
             mcp_view: None,
             factory_view: None,
