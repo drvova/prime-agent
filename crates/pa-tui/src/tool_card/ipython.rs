@@ -212,6 +212,7 @@ fn layout(
     render_sent_agent_messages(lines, &details, level.tool_output_expanded(), theme, width);
     render_transcript_reads(lines, &details, expanded, theme, width);
     render_todo_list(lines, &details, theme, width);
+    render_questions(lines, &details, theme, width);
     if expanded {
         render_output(card, &details, lines, has_code, show_images, theme, width);
     }
@@ -655,6 +656,44 @@ fn render_todo_list(lines: &mut RowOutput, details: &IpythonDetails, theme: &The
         ];
         truncate_line(&row, width, "\u{2026}")
     });
+}
+
+/// One row per settled `ask(...)`, shown collapsed too: the transcript's record of the
+/// question and how the user answered (the live panel is the composer's).
+fn render_questions(lines: &mut RowOutput, details: &IpythonDetails, theme: &Theme, width: usize) {
+    for asked in &details.questions {
+        let answer = asked.answer.join(", ");
+        let (outcome, color) = match asked.status.as_str() {
+            "answered" => (answer, ThemeColor::Success),
+            "timed_out" if !answer.is_empty() => {
+                (format!("timed out \u{b7} {answer}"), ThemeColor::Warning)
+            }
+            "timed_out" => ("timed out".to_string(), ThemeColor::Warning),
+            "no_user" if !answer.is_empty() => {
+                (format!("no one to ask \u{b7} {answer}"), ThemeColor::Dim)
+            }
+            "no_user" => ("no one to ask".to_string(), ThemeColor::Dim),
+            other => (other.to_string(), ThemeColor::Warning),
+        };
+        lines.push(|| {
+            // The answer stays whole; the question gives way when the row runs out.
+            let tail = format!(" \u{2192} {outcome}");
+            let room = width.saturating_sub(3 + str_width(&tail));
+            let text = if room >= 12 {
+                crate::width::truncate_to_width(&asked.text, room, "\u{2026}")
+            } else {
+                asked.text.clone()
+            };
+            let row: Line = vec![
+                Span::raw(" "),
+                Span::styled("? ".to_string(), theme.fg_style(ThemeColor::Accent)),
+                Span::styled(text, theme.fg_style(ThemeColor::Text)),
+                Span::styled(" \u{2192} ".to_string(), theme.fg_style(ThemeColor::Dim)),
+                Span::styled(outcome, theme.fg_style(color)),
+            ];
+            truncate_line(&row, width, "\u{2026}")
+        });
+    }
 }
 
 /// One indented card row (TS `addWrapped`): the first wrapped row carries

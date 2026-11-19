@@ -583,6 +583,61 @@ fn a_todo_change_renders_one_row_on_the_cell_card() {
     }
 }
 
+/// A cell's settled questions record on its card, collapsed or not, one row each: the question
+/// and the answer, or how it settled without one; a long question gives way to the answer.
+#[test]
+fn settled_questions_render_one_row_each_on_the_cell_card() {
+    let asked = |text: &str, status: &str, answer: &[&str]| json!({ "text": text, "status": status, "answer": answer });
+    let card = cell_card(
+        "r = await ask('Which database?', ['sqlite', 'postgres'])",
+        json!({ "status": "ok", "durationMs": 40, "questions": [
+            asked("Which database?", "answered", &["postgres"]),
+            asked("Which checks?", "answered", &["fmt", "my own"]),
+            asked("Proceed?", "timed_out", &["no"]),
+            asked("Name it", "declined", &[]),
+            asked("Ship it?", "no_user", &[]),
+            asked("A question long enough that the row cannot hold it whole", "answered", &["yes"]),
+        ] }),
+        false,
+        false,
+    );
+    let rows: Vec<String> = render(
+        &card,
+        0,
+        Detail::Overview,
+        Detail::Overview,
+        &theme(),
+        48,
+        true,
+    )
+    .iter()
+    .map(text_of)
+    .collect();
+    assert_eq!(
+        rows[1..],
+        [
+            " ? Which database? \u{2192} postgres",
+            " ? Which checks? \u{2192} fmt, my own",
+            " ? Proceed? \u{2192} timed out \u{b7} no",
+            " ? Name it \u{2192} declined",
+            " ? Ship it? \u{2192} no one to ask",
+            " ? A question long enough that the row ca\u{2026} \u{2192} yes",
+        ]
+    );
+    assert_eq!(
+        count(
+            &card,
+            0,
+            Detail::Overview,
+            Detail::Overview,
+            &theme(),
+            48,
+            true
+        ),
+        rows.len()
+    );
+}
+
 #[test]
 fn bash_minority_cell_stays_python() {
     let code = "async def sh(cmd):\n    return await bash(cmd)\nr = await sh(\"ls\")\nprint(r.pid)";

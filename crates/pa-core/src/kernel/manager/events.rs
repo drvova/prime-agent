@@ -6,8 +6,8 @@ use super::{
     Arc, BackgroundCellFact, Event, ExecBuffers, ExecuteStatus, Guarded, Inner, KernelBashCommands,
     KernelError, StreamName, Value, AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME,
     BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME, BASH_WAIT_DISPLAY_MIME,
-    DIFF_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, TODO_DISPLAY_MIME,
-    TRANSCRIPT_READ_DISPLAY_MIME,
+    DIFF_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
+    QUESTION_DISPLAY_MIME, TODO_DISPLAY_MIME, TRANSCRIPT_READ_DISPLAY_MIME,
 };
 
 impl Inner {
@@ -262,6 +262,9 @@ impl Inner {
         }
         if let Some(list) = data.get(TODO_DISPLAY_MIME) {
             buffers.todo_list = Some(list.clone());
+        }
+        if let Some(question) = data.get(QUESTION_DISPLAY_MIME) {
+            buffers.questions.push(question.clone());
         }
         if let Some(payload) = data.get(BASH_COMMAND_DISPLAY_MIME) {
             if let (Some(command), Some(lines)) = (

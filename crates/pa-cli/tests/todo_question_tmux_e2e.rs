@@ -142,7 +142,9 @@ fn start(dir: &Path) -> Pane {
                  open('answer.txt', 'w').write(f'{{r.status}}:{{r.answer}}')"
             )),
             { "text": "asked" },
-            cell("await todo.set([{'text': i.text, 'status': 'done'} for i in (await todo.get()).items])"),
+            cell("await todo.set([{'text': i.text, 'status': 'done'} for i in (await todo.get()).items])\n\
+                  r = await ask('Which checks?', ['fmt', 'clippy'], multi=True)\n\
+                  open('checks.txt', 'w').write(f'{r.status}:{r.answer}')"),
             { "text": "finished" },
             { "text": "you are welcome" },
         ] })
@@ -236,30 +238,55 @@ fn todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard() {
     );
     assert!(expanded.contains("Which database should the cache use?"));
 
-    // Answer by keyboard: the second choice.
-    pane.keys(&["Down"]);
-    pane.keys(&["Enter"]);
-    let answered = pane.wait("the cell's todo row after the answer", |screen| {
-        screen.contains("todos \u{b7} 1/7 \u{b7} Wire the tray") && screen.contains("asked")
-    });
+    // Answer by keyboard: the second choice's digit.
+    assert!(
+        expanded.contains("\u{203a} (\u{2022}) 1. sqlite") && expanded.contains("3. Other\u{2026}"),
+        "numbered rows and the typed-answer row:\n{expanded}"
+    );
+    pane.keys(&["2"]);
+    let answered = pane.wait(
+        "the cell's todo and question rows after the answer",
+        |screen| {
+            screen.contains("todos \u{b7} 1/7 \u{b7} Wire the tray") && screen.contains("asked")
+        },
+    );
     eprintln!("--- after the answer ---\n{answered}");
-    assert!(!answered.contains("Which database should the cache use?"));
+    assert!(
+        answered.contains(" ? Which database should the cache use? \u{2192} postgres"),
+        "the transcript records the question and its answer:\n{answered}"
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("project/answer.txt")).expect("the cell's answer"),
         "answered:postgres",
         "the waiting kernel call received the keyboard answer"
     );
 
-    // The next turn finishes the list: the tray is one summary row...
+    // The next turn finishes the list and asks a multi-choice question: a digit checks a
+    // choice, `Other…` takes a typed answer beside it.
     pane.type_text("finish up");
     pane.keys(&["Enter"]);
-    let finished = pane.wait_for("Todos 7/7 \u{b7} all done");
-    eprintln!("--- finished ---\n{finished}");
+    let multi = pane.wait_for("Which checks?");
+    eprintln!("--- the finished tray over a multi-choice question ---\n{multi}");
     assert_eq!(
-        dock_line(&finished, "  \u{2713} Todos"),
+        dock_line(&multi, "  \u{2713} Todos"),
         Some("  \u{2713} Todos 7/7 \u{b7} all done")
     );
-    pane.wait_for("finished");
+    pane.keys(&["1"]);
+    pane.wait_for("[x] 1. fmt");
+    pane.keys(&["3"]);
+    pane.wait_for("Type your answer");
+    pane.type_text("lint");
+    pane.keys(&["Enter"]);
+    let finished = pane.wait_for("finished");
+    eprintln!("--- finished ---\n{finished}");
+    assert!(
+        finished.contains(" ? Which checks? \u{2192} fmt, lint"),
+        "{finished}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("project/checks.txt")).expect("the cell's answer"),
+        "answered:['fmt', 'lint']"
+    );
 
     // ...and the user's next turn clears it.
     pane.type_text("thanks");

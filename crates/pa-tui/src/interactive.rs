@@ -617,6 +617,15 @@ pub struct InlineImageCounts {
 pub struct TodoQuestionCounts {
     /// `app.todos.toggle` presses that expanded or collapsed the tray.
     pub todo_tray_toggles: u64,
+    /// Questions answered from the panel (any way), and of those, answered with a digit key or
+    /// with typed text through `Other…`.
+    pub question_answers: u64,
+    pub question_digit_answers: u64,
+    pub question_other_answers: u64,
+    /// Questions declined from the panel (Esc).
+    pub question_declines: u64,
+    /// Clicks on the panel's rows.
+    pub question_clicks: u64,
 }
 
 impl TodoQuestionCounts {

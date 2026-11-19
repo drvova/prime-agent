@@ -68,6 +68,20 @@ impl SessionUi {
                     self.dirty = true;
                 }
             }
+            ClickAction::PickQuestionRow(row) => {
+                if let Some(prompt) = view.question.as_mut() {
+                    self.track_click("picker");
+                    self.todo_question_counts.question_clicks += 1;
+                    match prompt.click_row(row) {
+                        crate::question_prompt::QuestionAction::Reply(reply) => {
+                            self.send_question_reply(view, reply);
+                        }
+                        crate::question_prompt::QuestionAction::Handled
+                        | crate::question_prompt::QuestionAction::PassThrough => {}
+                    }
+                    self.dirty = true;
+                }
+            }
             ClickAction::SelectChoiceRow(position) => {
                 if let Some(picker) = view.choice_picker.as_mut() {
                     self.track_click("picker");

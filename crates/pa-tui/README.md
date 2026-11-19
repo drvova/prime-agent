@@ -38,9 +38,15 @@ folds to the window around the current item plus `+N more`, `app.todos.toggle` (
 collapses it; a finished list is one `all done` row that leaves when the user starts the next
 turn; a stated shrink order for narrow widths; the cell card's `☰ todos` row records each change
 from the tool result's `todoList` detail; toggles count into `tui todos and questions`)
-and the answer prompt (`question_prompt`: the open `question_open` question replaces the
-composer in the shared menu grammar — radio, checkbox, or text-field rows; arrows/Enter,
-`app.question.toggle` (Space) for multi-select, Esc declines, Ctrl+C interrupts the turn), fed
+and the answer panel (`question_prompt`: the open `question_open` question replaces the
+composer in the shared menu grammar — numbered radio, checkbox, or text-field rows, an `Other…`
+row opening a typed-answer field when the question allows one (`allowOther`), and the timeout's
+live countdown to the host's `expiresAtMs`; arrows/Enter, the digit row picks (one choice:
+answers; several: toggles), `app.question.toggle` (Space) for multi-select, a click picks a row,
+Esc declines (in the typed field: back to the choices), Ctrl+C interrupts the turn; the cell
+card's `? question → answer` rows record each settled question from the tool result's
+`questions` detail; answers, digit and typed answers, declines, and clicks count into
+`tui todos and questions`), fed
 by `todo_update`/`question_open`/`question_closed` and the attach snapshot; the client declares
 the `user_questions` capability and answers through `answer_question`. A kernel `notify(...)`
 ping (`kernel_notification`) renders as one notice row with its level's mark and asks the

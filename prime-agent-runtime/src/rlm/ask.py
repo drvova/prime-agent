@@ -21,6 +21,9 @@ __all__ = ["AskResult", "ask"]
 
 _STATUSES = ("answered", "declined", "timed_out", "no_user", "cancelled")
 
+# Display MIME the host keeps (every settled question, in order) for the cell card's Q&A rows.
+_QUESTION_MIME = "application/vnd.prime-agent.question+json"
+
 
 @dataclass(frozen=True)
 class AskResult:
@@ -67,6 +70,8 @@ async def ask(
     Args:
         question: What to ask; give the context the user needs to decide.
         choices: Options to pick from (at least two). ``None`` asks for free text.
+            The user may also type an answer of their own instead (with ``multi``,
+            beside the picked choices), so the answer is not always one of them.
         multi: Let the user pick any number of ``choices`` (the answer is a list).
         default: The preselected answer (a string; a list for ``multi``),
             returned as ``answer`` on a timeout or when nobody can answer.
@@ -108,6 +113,10 @@ async def ask(
     if status not in _STATUSES:
         raise RuntimeError(f"ask returned an unexpected result: {reply!r}")
     answer = [str(item) for item in reply.get("answer") or []]
+    from . import repl
+
+    if repl.is_active():
+        repl.emit({_QUESTION_MIME: {"text": question, "status": status, "answer": answer}})
     if multi:
         return AskResult(status=status, answer=answer if answer or status == "answered" else None)
     return AskResult(status=status, answer=answer[0] if answer else None)

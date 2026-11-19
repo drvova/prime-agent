@@ -104,6 +104,19 @@ class AskClientTest(unittest.TestCase):
                 ask_module.AskResult(status="declined", answer=None),
             )
 
+    def test_a_settled_question_is_recorded_on_the_cell_card(self) -> None:
+        from rlm import repl
+
+        host = AsyncMock(return_value={"status": "answered", "answer": ["my own"]})
+        with patch.object(ask_module, "host_request", host), patch.object(repl, "is_active", return_value=True), patch.object(
+            repl, "emit"
+        ) as emit:
+            result = asyncio.run(ask_module.ask("Store?", ["sqlite", "redis"]))
+        self.assertEqual(result, ask_module.AskResult(status="answered", answer="my own"))
+        emit.assert_called_once_with(
+            {ask_module._QUESTION_MIME: {"text": "Store?", "status": "answered", "answer": ["my own"]}}
+        )
+
     def test_an_interrupted_ask_withdraws_the_question(self) -> None:
         host = AsyncMock(side_effect=KeyboardInterrupt)
         sent: list[dict[str, object]] = []

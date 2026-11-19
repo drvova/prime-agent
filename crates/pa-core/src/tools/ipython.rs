@@ -74,6 +74,8 @@ pub struct ExecuteResult {
     /// The todo list the cell's last `todo.set`/`todo.update` left (`todoList` on the
     /// tool-result details).
     pub todo_list: Option<serde_json::Value>,
+    /// The cell's settled `ask(...)` questions (`questions` on the tool-result details).
+    pub questions: Vec<serde_json::Value>,
     /// The cell outlived its yield window and continues in the background
     /// under this cell id; its end arrives as a `[cell-done]` notice.
     pub backgrounded_cell: Option<String>,
@@ -385,6 +387,9 @@ pub async fn execute_ipython(
     }
     if let Some(list) = &r.todo_list {
         details["todoList"] = list.clone();
+    }
+    if !r.questions.is_empty() {
+        details["questions"] = json!(r.questions);
     }
     if let Some(background) = &r.background_output {
         details["backgroundOutput"] = json!(background);
