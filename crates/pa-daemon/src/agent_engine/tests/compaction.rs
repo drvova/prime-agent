@@ -7,6 +7,13 @@ use super::*;
 /// alongside the headroom (the combined input+output ceiling).
 const FAUX_REQUEST_BUDGET: u64 = 16_384;
 
+/// The in-run threshold fixtures' trigger (`128_000 - FAUX_REQUEST_BUDGET -
+/// reserve`): above the seed turn's reading (input + cache write over the
+/// system prompt, 20,689 tokens with the current prompt) and below the
+/// reading after the 80,000-char tool turn (30,605), so only that tool
+/// round crosses it, with room for the prompt to grow.
+const IN_RUN_THRESHOLD: u64 = 25_000;
+
 /// The automatic threshold compaction at the turn boundary. The faux
 /// provider estimates usage from the serialized context, so the headroom
 /// sits halfway between a baseline turn and the baseline plus the big prompt.
@@ -1064,7 +1071,7 @@ fn threshold_crossing_inside_one_run_compacts_before_the_next_model_turn() {
                 {"text":"task finished"}
             ]
         }),
-        128_000 - FAUX_REQUEST_BUDGET - 20_000,
+        128_000 - FAUX_REQUEST_BUDGET - IN_RUN_THRESHOLD,
     );
     let mut events = Vec::new();
     admit(&engine, "seed".into(), &mut events);
@@ -1104,7 +1111,7 @@ fn failed_mid_run_compaction_resumes_without_retrying_each_tool_round() {
                 {"text":"task finished"}
             ]
         }),
-        128_000 - FAUX_REQUEST_BUDGET - 20_000,
+        128_000 - FAUX_REQUEST_BUDGET - IN_RUN_THRESHOLD,
     );
     let mut events = Vec::new();
     admit(&engine, "seed".into(), &mut events);
@@ -1173,14 +1180,14 @@ fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
     // The faux provider's conversation-scoped prompt cache reports a rewritten
     // prompt as both input and cache-write tokens, so the first turn after a
     // compaction reads about twice the retained history (system prompt
-    // included: 42_778 tokens with the current prompt). Keep that doubled
-    // reading below the 44_817 retention floor (10_000 + 2 * 17_408 + 1),
+    // included: 44_958 tokens with the current prompt). Keep that doubled
+    // reading below the 48_913 retention floor (10_000 + 2 * 19_456 + 1),
     // with room for the prompt to grow.
     std::fs::write(
         dir.path().join("agent/settings.json"),
         serde_json::json!({"compaction": {
             "enabled": true, "thresholdPercent": 5,
-            "reserveTokens": 17_408, "keepRecentTokens": 10_000
+            "reserveTokens": 19_456, "keepRecentTokens": 10_000
         }})
         .to_string(),
     )
@@ -1252,7 +1259,7 @@ fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
         session.session.compaction_settings(),
         pa_core::session_engine::compaction::CompactionSettings {
             threshold_percent: 75.0,
-            reserve_tokens: 17_408,
+            reserve_tokens: 19_456,
             keep_recent_tokens: 10_000,
             ..Default::default()
         }
