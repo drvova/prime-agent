@@ -1,0 +1,1 @@
+- `model.info() -> ModelInfo`: `ModelInfo(id, provider, input, context_window, thinking_level)`; `info.selector` is the `provider/id` that `rlm.spawn(model=...)` takes, `info.image_input` whether `attach_image` works
