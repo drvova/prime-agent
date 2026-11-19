@@ -4,7 +4,10 @@
 
 use serde_json::{json, Value};
 
-use pa_types::usage::{calculate_context_tokens, estimate_tokens, valid_assistant_usage};
+use pa_types::context_breakdown::RequestCache;
+use pa_types::usage::{
+    calculate_context_tokens, estimate_tokens, valid_assistant_usage, ContextUsage,
+};
 
 use crate::session_store::{SessionEntry, SessionFile};
 
@@ -91,7 +94,7 @@ pub fn session_stats(store: &SessionFile, context_window: Option<u64>) -> Value 
         "cost": cost,
     });
     if let Some(usage) = context_usage(&branch, &messages, context_window) {
-        stats["contextUsage"] = usage;
+        stats["contextUsage"] = json!(usage);
     }
     stats
 }
@@ -134,7 +137,7 @@ fn kept_region_messages(store: &SessionFile) -> (Vec<&Value>, Option<usize>) {
 pub(crate) fn store_context_usage(
     store: &SessionFile,
     context_window: Option<u64>,
-) -> Option<Value> {
+) -> Option<ContextUsage> {
     let branch = store.branch();
     let messages: Vec<&Value> = branch
         .iter()
@@ -165,7 +168,7 @@ fn context_usage(
     branch: &[&SessionEntry],
     messages: &[&Value],
     context_window: Option<u64>,
-) -> Option<Value> {
+) -> Option<ContextUsage> {
     let context_window = context_window.filter(|window| *window > 0)?;
 
     // The latest compaction entry on the branch, if any (TS `getLatestCompactionEntry`).
@@ -182,17 +185,20 @@ fn context_usage(
         let usable =
             post_compaction_usage.is_some_and(|usage| calculate_context_tokens(&usage) > 0);
         if !usable {
-            return Some(json!({
-                "tokens": Value::Null,
-                "contextWindow": context_window,
-                "percent": Value::Null,
-            }));
+            return Some(ContextUsage {
+                tokens: None,
+                context_window,
+                percent: None,
+                estimated: false,
+                last_request: None,
+            });
         }
     }
 
     // TS `estimateContextTokens`: the last valid assistant usage anchors the
     // estimate; messages after it are added with the chars/4 heuristic.
     let mut tokens = 0u64;
+    let mut last_request = None;
     match messages
         .iter()
         .rposition(|message| valid_assistant_usage(message).is_some())
@@ -200,6 +206,7 @@ fn context_usage(
         Some(last_usage_index) => {
             let usage = valid_assistant_usage(messages[last_usage_index]).expect("checked");
             tokens += calculate_context_tokens(&usage);
+            last_request = serde_json::from_value::<RequestCache>(usage).ok();
             tokens += messages[last_usage_index + 1..]
                 .iter()
                 .map(|message| estimate_tokens(message))
@@ -212,12 +219,36 @@ fn context_usage(
                 .sum::<u64>();
         }
     }
-    let percent = tokens as f64 / context_window as f64 * 100.0;
-    Some(json!({
-        "tokens": tokens,
-        "contextWindow": context_window,
-        "percent": percent,
-    }))
+    Some(ContextUsage {
+        last_request,
+        ..ContextUsage::of(tokens, context_window)
+    })
+}
+
+/// The live context estimate while an assistant reply streams: the prompt the provider already
+/// reported for this request (Anthropic's `message_start` usage), else the last reading (the
+/// settled context plus the estimated rows appended since), plus the streamed output so far by the
+/// chars/4 heuristic. A provider's mid-stream output count is not trusted (Anthropic reports a
+/// placeholder until `message_delta`). A reported prompt also yields this request's cache split.
+/// `None` when neither anchor is known (right after a compaction, before the first reply).
+pub(crate) fn streaming_context_usage(
+    base: Option<&ContextUsage>,
+    partial: &Value,
+) -> Option<ContextUsage> {
+    let base = base?;
+    let reported = partial
+        .get("usage")
+        .and_then(|usage| serde_json::from_value::<RequestCache>(usage.clone()).ok())
+        .filter(|request| request.input + request.cache_read + request.cache_write > 0);
+    let prompt = match reported {
+        Some(request) => request.input + request.cache_read + request.cache_write,
+        None => base.tokens?,
+    };
+    Some(ContextUsage {
+        estimated: true,
+        last_request: reported.or(base.last_request),
+        ..ContextUsage::of(prompt + estimate_tokens(partial), base.context_window)
+    })
 }
 
 /// `totalTokens` when present, else the four-field sum.

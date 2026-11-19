@@ -256,7 +256,7 @@ pub(crate) fn load_context_tree_child_with_path(
         if let Some(usage) =
             store_context_usage(&store, context_window_of(registry, provider, model_id))
         {
-            node["contextUsage"] = usage;
+            node["contextUsage"] = json!(usage);
         }
     }
     if let Some(by_model) = own_usage_by_model {
