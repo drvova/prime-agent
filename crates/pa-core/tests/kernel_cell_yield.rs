@@ -146,10 +146,7 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
     for (call_id, args) in [
         ("call-1", json!({ "code": "x = 41" })),
         ("call-2", json!({ "code": long_cell, "timeout": 1 })),
-        (
-            "call-3",
-            json!({ "code": format!("print(x + 1)\nopen({flag:?}, 'w').close()") }),
-        ),
+        ("call-3", json!({ "code": "print(x + 1)" })),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
             &model,
@@ -225,11 +222,13 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
     assert!(text.starts_with("before\n\n[cell "), "{text}");
     assert!(text.contains("continues in the background"), "{text}");
 
-    // The next cell ran while it did, on the intact namespace (and released it).
+    // The next cell ran while it did, on the intact namespace.
     let (status, text) = tool_result(&entries, "call-3");
     assert_eq!((status.as_str(), text.as_str()), ("ok", "42\n"));
 
-    // Its end wakes the session with the [cell-done] row queued on the agent.
+    // Released after the run ended, its end wakes the session with the
+    // [cell-done] row queued on the agent.
+    std::fs::write(&flag, "").expect("release the cell");
     tokio::time::timeout(std::time::Duration::from_secs(30), notified)
         .await
         .expect("the cell's end must wake the session");
