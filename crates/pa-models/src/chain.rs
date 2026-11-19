@@ -401,7 +401,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("models.bundled.json"),
-            serde_json::to_string(&json!({"schemaVersion": 1, "models": [entry.clone()]})).unwrap(),
+            serde_json::to_string(&json!({"schemaVersion": 1, "models": [entry]})).unwrap(),
         )
         .unwrap();
         let catalog = ModelCatalog::with_bundled_dir(None, Some(dir.path().into()));
