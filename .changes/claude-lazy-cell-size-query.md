@@ -1,0 +1,1 @@
+- The TUI no longer writes a terminal cell-size query at startup: it asks only when an inline image is about to render in a terminal that can draw pixels but has not reported its cell size.
