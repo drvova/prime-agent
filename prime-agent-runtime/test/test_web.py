@@ -58,6 +58,61 @@ class WebSearchClientTest(unittest.TestCase):
         host.assert_not_awaited()
 
 
+_PAGE = {
+    "url": "https://tokio.rs/",
+    "finalUrl": "https://tokio.rs/tokio/tutorial",
+    "title": "Tutorial",
+    "contentType": "text/html",
+    "method": "html",
+    "markdown": "## Setup {#setup}\n\nInstall it.",
+    "outline": [{"level": 2, "text": "Setup", "anchor": "setup", "url": "https://tokio.rs/tokio/tutorial#setup"}],
+    "links": [{"text": "Docs", "url": "https://docs.rs/tokio"}],
+    "section": "setup",
+    "truncated": False,
+    "totalChars": 31,
+    "notes": [],
+    "text": "# Tutorial\nSource: https://tokio.rs/tokio/tutorial (html, section setup)\n\n## Setup {#setup}\n\nInstall it.",
+}
+
+
+class WebReadClientTest(unittest.TestCase):
+    def test_a_search_source_reads_through_the_host_request(self) -> None:
+        host = AsyncMock(return_value=_PAGE)
+        source = web.WebSearchSource("Tokio", "https://tokio.rs/")
+        with patch.object(web, "host_request", host):
+            page = asyncio.run(web.read(source, max_chars=500, section="setup", timeout=5))
+        host.assert_awaited_once_with(
+            "web.read",
+            {"url": "https://tokio.rs/", "maxChars": 500, "section": "setup", "timeoutSeconds": 5},
+        )
+        self.assertEqual(
+            page,
+            web.WebPage(
+                url="https://tokio.rs/",
+                final_url="https://tokio.rs/tokio/tutorial",
+                title="Tutorial",
+                content_type="text/html",
+                method="html",
+                markdown="## Setup {#setup}\n\nInstall it.",
+                outline=[web.WebHeading(2, "Setup", "setup", "https://tokio.rs/tokio/tutorial#setup")],
+                links=[web.WebLink("Docs", "https://docs.rs/tokio")],
+                section="setup",
+                total_chars=31,
+                text=_PAGE["text"],
+            ),
+        )
+        self.assertEqual(str(page), _PAGE["text"])
+
+    def test_invalid_read_arguments_fail_before_the_host(self) -> None:
+        host = AsyncMock()
+        with patch.object(web, "host_request", host):
+            with self.assertRaises(TypeError):
+                asyncio.run(web.read(web.WebHeading(2, "Setup", "setup")))
+            with self.assertRaisesRegex(ValueError, "max_chars"):
+                asyncio.run(web.read("https://tokio.rs/", max_chars=0))
+        host.assert_not_awaited()
+
+
 class WebsearchSkillTest(unittest.TestCase):
     def _module(self):
         spec = importlib.util.spec_from_file_location("websearch_skill_test", SKILL)

@@ -402,6 +402,19 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `web.read`: the kernel's `web.read(...)` reaches the process-wide
+    // reader; telemetry folds each outcome (never the URL) into the counters.
+    crate::web_read::WebReadHost {
+        engine: crate::web_read::WebReadEngine::shared(),
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |result: &_| {
+                let (outcome, elapsed) = crate::web_read::ReadOutcome::of(result);
+                counters.note_web_read(outcome, elapsed);
+            }) as crate::web_read::ReadObserver
+        }),
+    }
+    .register(&mut handlers);
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings
