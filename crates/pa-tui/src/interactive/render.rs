@@ -366,6 +366,11 @@ impl Renderer {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .invalidate();
+                // Nor any picture the overlay drew before the suspend.
+                crate::inline_image::overlay::OVERLAY
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .invalidate();
                 Ok(())
             }
             Renderer::Headless { .. } => Ok(()),

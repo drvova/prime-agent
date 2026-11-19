@@ -1264,3 +1264,142 @@ fn background_children_open_no_console_windows() {
         "the terminal keeps Prime's own title: {titles:?}"
     );
 }
+
+/// What an inline-image sequence looks like printed as text: the kitty APC, the iTerm2 OSC,
+/// a sixel raster header, and the transcript's own row sentinel.
+const IMAGE_ESCAPE_TEXT: &[&str] = &["_Ga=", "1337;File", "\"1;1;", "pa-img"];
+
+/// A pasted image renders inline in the user's row on a Windows pseudoconsole and never as
+/// escape text: through the inbox host (no pixel protocol: the half-block cells) and through
+/// the Windows Terminal host package with `WT_SESSION` set, as Windows Terminal sets it (sixel,
+/// which that host passes through to the terminal).
+#[test]
+fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
+    const LEFT_CTRL: u32 = 0x08;
+    let mut failures = Vec::new();
+    for host in hosts() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let root = dir.path().to_path_buf();
+        let agent_dir = root.join("agent");
+        let session_dir = agent_dir.join("sessions");
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&session_dir).expect("sessions dir");
+        std::fs::create_dir_all(&cwd).expect("project dir");
+        pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
+            .set_onboarding_shown(true)
+            .expect("onboarding flag");
+        let script = root.join("script.json");
+        std::fs::write(
+            &script,
+            json!({ "responses": ["conpty image reply"] }).to_string(),
+        )
+        .expect("script");
+        let image = root.join("clipboard.png");
+        std::fs::write(&image, ONE_PIXEL_PNG).expect("write the clipboard image");
+        let supervisor = spawn_supervisor(&agent_dir);
+        let mut env = base_env();
+        env.retain(|(key, _)| key != "WT_SESSION");
+        for (key, value) in [
+            (
+                "PRIME_AGENT_CODING_AGENT_DIR",
+                agent_dir.display().to_string(),
+            ),
+            ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
+            ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
+            (
+                "PRIME_AGENT_TEST_CLIPBOARD_IMAGE",
+                image.display().to_string(),
+            ),
+            ("PI_OFFLINE", "1".to_string()),
+            ("DO_NOT_TRACK", "1".to_string()),
+        ] {
+            env.push((key.to_string(), value));
+        }
+        let windows_terminal = matches!(host, Host::Package(_));
+        if windows_terminal {
+            env.push((
+                "WT_SESSION".to_string(),
+                "0f1d2c3b-4a59-6877-8695-a4b3c2d1e0f9".to_string(),
+            ));
+        }
+        let command = format!(
+            "\"{}\" --daemon-socket \"{}\"",
+            env!("CARGO_BIN_EXE_prime-agent"),
+            supervisor.socket.display()
+        );
+        let pty = PseudoConsole::spawn(&host, &command, &env, &cwd, 100, 30);
+        let mut term = Terminal::new(pty, 100, 30);
+        let scenario = format!("image-{}", host.label());
+        let mut check = |term: &mut Terminal, label: &str, ok: bool| {
+            if !ok {
+                failures.push(format!("[{scenario}] {label}\n{}", term.screen.text()));
+            }
+        };
+        let started = term.wait_for("prime", Duration::from_secs(60));
+        check(&mut term, "startup chrome", started);
+        term.settle(Duration::from_millis(500));
+        // Ctrl+V reads the clipboard image (the fixture stands in for the clipboard).
+        let ctrl_v = if term.win32_input {
+            [
+                win32_key(0x11, 0x1d, 0, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, false, LEFT_CTRL),
+                win32_key(0x11, 0x1d, 0, false, 0),
+            ]
+            .concat()
+        } else {
+            vec![0x16]
+        };
+        term.pty.send(&ctrl_v);
+        let marker = term.wait_for("[image #1]", Duration::from_secs(30));
+        check(&mut term, "ctrl+v pastes the clipboard image", marker);
+        term.type_text(" describe");
+        let typed = term.wait_for("describe", Duration::from_secs(10));
+        check(&mut term, "the prompt echoes", typed);
+        term.settle(Duration::from_millis(500));
+        term.key(Key::Enter);
+        let replied = term.wait_for("conpty image reply", Duration::from_secs(60));
+        check(&mut term, "enter submits", replied);
+        // The 1x1 image is one half-block cell in the user's row.
+        let picture = term.wait_for("\u{2580}", Duration::from_secs(30));
+        check(&mut term, "the image renders in the user's row", picture);
+        term.settle(Duration::from_millis(500));
+        let screen = term.screen.text();
+        let leaked: Vec<&str> = ESCAPE_TEXT
+            .iter()
+            .chain(IMAGE_ESCAPE_TEXT)
+            .copied()
+            .filter(|needle| screen.contains(needle))
+            .collect();
+        check(
+            &mut term,
+            &format!("no escape text ({leaked:?})"),
+            leaked.is_empty(),
+        );
+        let stream = String::from_utf8_lossy(&term.stream).to_string();
+        let sixel = stream.contains("\x1bP0;1;0q");
+        check(
+            &mut term,
+            &format!(
+                "sixel reaches the terminal exactly under Windows Terminal (sixel={sixel}, wt={windows_terminal})"
+            ),
+            sixel == windows_terminal,
+        );
+        check(
+            &mut term,
+            "no kitty or iTerm2 sequence is ever sent",
+            !stream.contains("\x1b_G") && !stream.contains("\x1b]1337;"),
+        );
+        dump(
+            &format!("image-{}", host.label()),
+            &format!(
+                "--- screen\n{}\n--- host output\n{}",
+                term.screen.text(),
+                visible(&term.stream)
+            ),
+        );
+        drop(term);
+        drop(supervisor);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

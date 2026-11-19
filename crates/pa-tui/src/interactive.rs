@@ -303,6 +303,13 @@ pub trait InteractionTelemetry: Send + Sync {
         toggles: u64,
         outcome: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The run showed inline transcript images (`tui inline images rendered`, emitted at the
+    /// run's exit when any image was shown): the distinct images drawn per protocol and the
+    /// protocol the terminal resolved to — counts only, never image content or dimensions.
+    fn inline_images_rendered(
+        &self,
+        counts: InlineImageCounts,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One `/usage` page run ended (`tui usage page closed`): how each half landed, the card
     /// count, whether the details view opened, the refreshes, and the tray reset chips shown since
     /// the last close — primitives only, never an
@@ -570,6 +577,19 @@ pub struct InteractiveOutcome {
 
 /// Inputs consumed by the UI loop. Terminal keys arrive one event at a time; headless steps
 /// arrive as whole submissions.
+/// One run's inline-image adoption counts (`tui inline images rendered`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineImageCounts {
+    /// The protocol the terminal resolved to: `kitty`, `iterm2`, `sixel`, or `half_block`.
+    pub protocol: &'static str,
+    /// Distinct images drawn through each protocol (the half-block count covers terminals
+    /// without a pixel protocol).
+    pub kitty: u64,
+    pub iterm2: u64,
+    pub sixel: u64,
+    pub half_block: u64,
+}
+
 enum UiInput {
     Key(KeyEvent),
     Paste(String),

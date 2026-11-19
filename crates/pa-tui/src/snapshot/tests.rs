@@ -58,6 +58,10 @@ fn image_only_user_message_shows_the_image_placeholder() {
         vec![ChatEntry::User {
             text: "[image]".to_string(),
             sent_at: None,
+            images: vec![crate::chat::MessageImage {
+                data: std::sync::Arc::from("QUJD"),
+                mime_type: "image/png".to_string(),
+            }],
         }]
     );
 }
@@ -1371,6 +1375,7 @@ fn decodes_block_content() {
         vec![ChatEntry::User {
             text: "hello world".to_string(),
             sent_at: None,
+            images: Vec::new(),
         }]
     );
     let items = message_value_to_entries(&json!({
@@ -1396,7 +1401,13 @@ fn decodes_streamed_events() {
         "message": { "role": "user", "content": "go" },
     }))
     .unwrap();
-    assert_eq!(user, TurnUpdate::UserMessage("go".to_string()));
+    assert_eq!(
+        user,
+        TurnUpdate::UserMessage {
+            text: "go".to_string(),
+            images: Vec::new()
+        }
+    );
     let partial = event_to_update(&json!({
         "type": "message_update",
         "message": { "role": "assistant", "content": "work" },
@@ -1546,6 +1557,7 @@ fn session_command_rows_respect_display_and_shape() {
         vec![ChatEntry::User {
             text: "[Malformed session command message]".to_string(),
             sent_at: None,
+            images: Vec::new(),
         }]
     );
 }

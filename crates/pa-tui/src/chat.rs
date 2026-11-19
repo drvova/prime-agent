@@ -84,8 +84,13 @@ pub enum ChatEntry {
     /// Startup notices, client notes, turn errors.
     Status { text: String, kind: StatusKind },
     /// The user's submitted prompt.
-    /// A user prompt; `sent_at` (epoch ms) renders as the slab's right-aligned clock.
-    User { text: String, sent_at: Option<i64> },
+    /// A user prompt; `sent_at` (epoch ms) renders as the slab's right-aligned clock, and
+    /// `images` (the pasted attachments the message carries) render inline in the slab.
+    User {
+        text: String,
+        sent_at: Option<i64>,
+        images: Vec<MessageImage>,
+    },
     /// A durable session-command echo row (`session_slash_command`):
     /// the command as typed, laid out like a user message.
     SlashCommand { text: String },
@@ -128,7 +133,42 @@ impl ChatEntry {
         ChatEntry::User {
             text: text.into(),
             sent_at: None,
+            images: Vec::new(),
         }
+    }
+}
+
+/// One image a user message carries: its base64 payload (shared, never copied per clone)
+/// and mime type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageImage {
+    pub data: std::sync::Arc<str>,
+    pub mime_type: String,
+}
+
+impl MessageImage {
+    /// The image blocks of a raw message's content (`{type: "image", data, mimeType}` with a
+    /// non-empty payload), in content order.
+    #[must_use]
+    pub fn from_message(message: &serde_json::Value) -> Vec<Self> {
+        message
+            .get("content")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|block| block.get("type").and_then(serde_json::Value::as_str) == Some("image"))
+            .filter_map(|block| {
+                let data = block
+                    .get("data")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|data| !data.is_empty())?;
+                let mime_type = block.get("mimeType").and_then(serde_json::Value::as_str)?;
+                Some(Self {
+                    data: std::sync::Arc::from(data),
+                    mime_type: mime_type.to_string(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -442,6 +482,53 @@ pub(crate) fn render_user_block_with_style(
         crate::osc133::mark_end(last);
     }
     rows
+}
+
+/// The inline rows of a user message's images inside its slab: per image a blank slab row,
+/// then the image's cells (see [`crate::inline_image`]) at the slab's text indent. An image
+/// whose header does not parse adds nothing (the text keeps its `[image #N]` marker).
+pub(crate) fn render_user_images(
+    images: &[MessageImage],
+    theme: &Theme,
+    width: usize,
+) -> Vec<Line> {
+    let bg = theme.bg_style(ThemeBg::UserMessageBg);
+    let mut rows: Vec<Line> = Vec::new();
+    for image in images {
+        let image_rows = crate::inline_image::image_rows(
+            &image.data,
+            &image.mime_type,
+            width.saturating_sub(4).max(1),
+            bg,
+        );
+        if image_rows.is_empty() {
+            continue;
+        }
+        rows.push(vec![Span::styled(" ".repeat(width), bg)]);
+        rows.extend(image_rows.into_iter().map(|row| {
+            let mut line = vec![Span::styled("  ".to_string(), bg)];
+            line.extend(row);
+            pad_to(line, width, bg)
+        }));
+    }
+    rows
+}
+
+/// The row count [`render_user_images`] paints (the count-only geometry pass).
+pub(crate) fn user_images_row_count(images: &[MessageImage], width: usize) -> usize {
+    images
+        .iter()
+        .map(|image| {
+            match crate::inline_image::image_row_count(
+                &image.data,
+                &image.mime_type,
+                width.saturating_sub(4).max(1),
+            ) {
+                0 => 0,
+                rows => rows + 1,
+            }
+        })
+        .sum()
 }
 
 /// One assistant message: a leading spacer when a visible body exists, markdown

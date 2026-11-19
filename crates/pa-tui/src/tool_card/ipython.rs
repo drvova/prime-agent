@@ -211,13 +211,13 @@ fn layout(
     );
     render_sent_agent_messages(lines, &details, level.tool_output_expanded(), theme, width);
     render_transcript_reads(lines, &details, expanded, theme, width);
-    if !expanded {
-        return;
+    if expanded {
+        render_output(card, &details, lines, has_code, show_images, theme, width);
     }
-    render_output(card, &details, lines, has_code, show_images, theme, width);
-    // Image blocks render below the card when shown (TS adds these rows
-    // for every tool shell).
-    lines.images(card.result.as_ref(), show_images, theme);
+    // Image blocks (an `attach_image` cell's pictures) render below the card when shown, the
+    // collapsed card included: the picture is the cell's visible result (TS adds these rows for
+    // every tool shell).
+    lines.images(card.result.as_ref(), show_images, theme, width);
 }
 
 /// The fixed marker + summary line (TS `collapsedLine`).

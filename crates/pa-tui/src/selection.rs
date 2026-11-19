@@ -650,6 +650,7 @@ mod tests {
         v.push_entry(ChatEntry::User {
             text: "select this line".to_string(),
             sent_at: None,
+            images: Vec::new(),
         });
         let frame = v.render_frame(80, 12);
         let row = (1..frame.len())

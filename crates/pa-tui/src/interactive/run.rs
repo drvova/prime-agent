@@ -236,6 +236,9 @@ async fn run_interactive_surface(
         .await
         .with_context(|| "the interactive UI could not attach to the daemon")?;
     let (notes_tx, mut notes_rx) = mpsc::unbounded_channel::<String>();
+    // The inline-image decode worker's completions: each one repaints the frame that waited.
+    let (images_tx, mut images_rx) = mpsc::unbounded_channel::<()>();
+    crate::inline_image::set_waker(images_tx);
     let (compaction_abort_tx, mut compaction_abort_rx) =
         mpsc::unbounded_channel::<crate::session_ui::CompactionAbortNote>();
     let (prompt_tx, mut prompt_rx) =
@@ -1573,6 +1576,10 @@ async fn run_interactive_surface(
                     }
                 }
             }
+            Some(()) = images_rx.recv() => {
+                while images_rx.try_recv().is_ok() {}
+                session.dirty = true;
+            }
             maybe_note = notes_rx.recv() => {
                 if let Some(note) = maybe_note {
                     session.apply_background_note(&note, &mut view);
@@ -2018,10 +2025,21 @@ async fn run_interactive_surface(
     let exit_reason = session.exit_reason();
     let turn_active_at_exit = session.turn_active;
     if let Some(telemetry) = session.telemetry.clone() {
+        let [kitty, iterm2, sixel, half_block] = crate::inline_image::shown_counts();
+        let images = crate::interactive::InlineImageCounts {
+            protocol: crate::inline_image::active_protocol().name(),
+            kitty,
+            iterm2,
+            sixel,
+            half_block,
+        };
         let exit_event = async move {
             let () = telemetry
                 .client_exit(exit_reason, turn_active_at_exit)
                 .await;
+            if images.kitty + images.iterm2 + images.sixel + images.half_block > 0 {
+                let () = telemetry.inline_images_rendered(images).await;
+            }
         };
         if session.open_agents_view {
             tokio::spawn(exit_event);
