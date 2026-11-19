@@ -15,6 +15,7 @@ pub mod compaction;
 pub mod compaction_exec;
 pub mod compaction_trace;
 pub mod compaction_utils;
+pub mod context_breakdown;
 pub mod context_thinning;
 pub mod effort_switch;
 pub mod engine;

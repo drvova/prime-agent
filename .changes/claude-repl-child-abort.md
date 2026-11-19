@@ -1,0 +1,1 @@
+- The Python REPL can now steer a subagent without deleting it: `await rlm.abort(child)` stops that child's current turn and keeps the child, so it can be sent new instructions with `agent_message.send`. Only the session's own children can be aborted.

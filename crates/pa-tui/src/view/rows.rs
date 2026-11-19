@@ -157,6 +157,15 @@ impl AgentView {
                 rows.extend(render_text_rows(text, style, width));
                 rows
             }
+            ChatEntry::RunSummary(row) => {
+                let mut rows = vec![Vec::new()];
+                rows.extend(render_text_rows(
+                    &row.text_at(width),
+                    self.theme.fg_style(ThemeColor::Dim),
+                    width,
+                ));
+                rows
+            }
             ChatEntry::User { text, sent_at } => {
                 let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme);
                 md.code_block_indent.clone_from(&self.code_block_indent);

@@ -714,6 +714,14 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// The context window's details (`pa_types::context_breakdown::ContextBreakdown`).
+    GetContextBreakdown {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     GetCommands {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

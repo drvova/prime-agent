@@ -91,6 +91,9 @@ except Exception as _prime_agent_rlm_error:
         async def delete_subagent(self, target):
             self._raise_missing()
 
+        async def abort(self, target):
+            self._raise_missing()
+
     rlm = _PrimeAgentMissingRlm()
 
     def bash(command, persistent=False):

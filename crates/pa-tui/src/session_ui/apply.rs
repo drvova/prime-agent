@@ -900,14 +900,16 @@ impl SessionUi {
             );
             let text =
                 format!("Worked for {elapsed} \u{b7} {calls} tool call{s} \u{b7} {tokens} tokens");
+            // The cache segment shows only for a run that read from the cache: a provider
+            // without cache support (or a cold cache) reports zero reads, and a figure that
+            // rounds to `0% cached` says nothing either.
+            let cache_hit = crate::context_view::cache_hit_percent(self.working_tokens.run_cache)
+                .filter(|hit| hit.round() >= 1.0);
             let follows_failed_attempt = view
                 .chat
                 .last()
                 .is_some_and(crate::snapshot::is_superseded_attempt_row);
-            let summary = ChatEntry::Status {
-                text,
-                kind: StatusKind::Info,
-            };
+            let summary = ChatEntry::RunSummary(crate::chat::RunSummaryRow { text, cache_hit });
             view.run_summary = Some(summary.clone());
             view.push_entry(summary);
             if follows_failed_attempt {
@@ -1047,7 +1049,12 @@ impl SessionUi {
                 working.thought = None;
             }
             self.working_tokens.settle(usage_output);
-            self.working_tokens.run.1 += message["usage"]["totalTokens"].as_u64().unwrap_or(0);
+            let usage = &message["usage"];
+            self.working_tokens.run.1 += usage["totalTokens"].as_u64().unwrap_or(0);
+            let run_cache = &mut self.working_tokens.run_cache;
+            run_cache.input += usage["input"].as_u64().unwrap_or(0);
+            run_cache.cache_read += usage["cacheRead"].as_u64().unwrap_or(0);
+            run_cache.cache_write += usage["cacheWrite"].as_u64().unwrap_or(0);
             self.record_speed_sample(message, view);
             self.observe_rate_limit(message);
         }

@@ -28,6 +28,7 @@ impl AgentView {
             && self.bash_view.is_none()
             && self.info_panel.is_none()
             && self.usage_page.is_none()
+            && self.context_view.is_none()
             && self.tree_selector.is_none()
             && self.fork_selector.is_none()
             && self.share_loader.is_none()
@@ -165,6 +166,21 @@ impl AgentView {
                 &pa_types::platform::local_civil,
             ));
             Some(dock)
+        } else if let Some(page) = self.context_view.as_mut() {
+            // The window takes the frame down to the transcript's minimum rows, like `/usage`.
+            let rows = height.saturating_sub(
+                1 + crate::view::FULLSCREEN_MIN_TRANSCRIPT_ROWS + prompt_context.len(),
+            );
+            let mut dock = prompt_context;
+            dock.extend(page.render(
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                &self.chrome,
+                rows,
+                crate::usage_page::now_ms(),
+            ));
+            Some(dock)
         } else if let Some(prompt) = &self.question {
             // A kernel question waiting for the user replaces the composer; the todo tray
             // stays above it.
@@ -281,7 +297,11 @@ impl AgentView {
                 // The dock's hover affordance (operator directive 2026-09-29): the hovered
                 // segment or tray hint carries the ONE light band; the focused group's
                 // selection band stays.
-                Some(click::ClickAction::OpenDockGroup(_) | click::ClickAction::OpenAgentsView) => {
+                Some(
+                    click::ClickAction::OpenDockGroup(_)
+                    | click::ClickAction::OpenAgentsView
+                    | click::ClickAction::OpenContextView,
+                ) => {
                     if let Some(region) = self.dock_region_at(row, col) {
                         if let Some(line) = frame.get_mut(row) {
                             self.theme.paint_hover_band(line, region.cols.clone());
@@ -372,6 +392,7 @@ impl AgentView {
             || self.bash_view.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
+            || self.context_view.is_some()
             || self.tree_selector.is_some()
             || self.fork_selector.is_some()
             || self.share_loader.is_some()
