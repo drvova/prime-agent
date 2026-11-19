@@ -1512,6 +1512,21 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A process whose turns never re-opened an idle provider connection sends no re-warm
+        // event (counts only: never an origin).
+        let rewarm = pa_ai::utils::prewarm::take_rewarm_stats();
+        if rewarm != pa_ai::utils::prewarm::RewarmStats::default() {
+            let mut rewarm_properties = self.session_properties();
+            for (key, value) in [
+                ("connection_rewarm_count", rewarm.rewarm_count),
+                ("connection_rewarm_reopened_count", rewarm.reopened_count),
+                ("connection_rewarm_reopened_ms", rewarm.reopened_ms),
+            ] {
+                rewarm_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent connection rewarm", rewarm_properties);
+        }
         // A session whose provider never armed a declared quota fallback sends no fallback
         // event (counts only: never a provider, model, or credential).
         let auth = crate::auth::resolver::AuthMetrics::current().since(

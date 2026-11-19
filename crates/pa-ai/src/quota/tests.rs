@@ -138,6 +138,30 @@ async fn copilot_usage_reads_the_premium_bucket_and_skips_unlimited_ones() {
     assert!(head.contains("authorization: bearer gho_token"), "{head}");
 }
 
+#[tokio::test]
+async fn synthetic_quotas_read_the_subscription_window() {
+    let (base, request) = serve_once(200, include_str!("fixtures/synthetic_quotas.json")).await;
+    let fetched = fetch_synthetic_quota(&ReqwestProviderHttp::new(), &base, "syn_key")
+        .await
+        .unwrap();
+    assert_eq!(
+        fetched,
+        FetchedQuota {
+            plan: None,
+            windows: vec![QuotaWindow {
+                label: "Subscription".into(),
+                used: 42.0,
+                limit: Some(135.0),
+                unit: QuotaUnit::Requests,
+                resets_at_ms: Some(1_795_028_400_402),
+            }],
+        }
+    );
+    let head = request.await.unwrap();
+    assert!(head.starts_with("get /v2/quotas "), "{head}");
+    assert!(head.contains("authorization: bearer syn_key"), "{head}");
+}
+
 /// A rejected sign-in is the card's error text, never the URL or the body.
 #[tokio::test]
 async fn a_rejected_sign_in_is_the_cards_error() {
