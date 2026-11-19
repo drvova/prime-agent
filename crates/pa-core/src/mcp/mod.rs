@@ -284,8 +284,14 @@ pub struct McpManagerOptions {
     pub probe_override: Option<probe::McpEndpointProbe>,
 }
 
+/// The [`McpUsageReporter`] actions `mcp.begin_login` reports: a completed login, a failed
+/// one, and a run with no interactive login wired.
+pub(crate) const LOGIN_ACTION: &str = "login";
+pub(crate) const LOGIN_FAILED_ACTION: &str = "login_failed";
+pub(crate) const LOGIN_UNAVAILABLE_ACTION: &str = "login_unavailable";
+
 /// Telemetry usage reporter: called with `(action, server)` on every successful `mcp.*` host
-/// request; never tool names, arguments, or results.
+/// request and every `mcp.begin_login` outcome; never tool names, arguments, or results.
 pub type McpUsageReporter = std::sync::Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// Host-side MCP manager: auth gating, config resolution, `mcp.*` host
@@ -638,7 +644,7 @@ impl McpManager {
                 manager.usage_report.clone(),
                 manager.acp_servers.clone(),
                 manager.usage_report.clone(),
-                manager.begin_login.clone(),
+                (manager.begin_login.clone(), manager.usage_report.clone()),
             )
         };
         handlers.register(
@@ -741,29 +747,53 @@ impl McpManager {
                 })
             }),
         );
-        // Only expose begin_login when an interactive login is actually wired.
-        if let Some(begin_login) = begin_login {
-            handlers.register(
-                "mcp.begin_login",
-                host_handler(move |payload| {
-                    let begin_login = begin_login.clone();
-                    Box::pin(async move {
-                        let server = payload
-                            .data
-                            .get("server")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string();
-                        if server.is_empty() {
-                            return Err(anyhow::anyhow!("mcp.begin_login requires a server"));
+        // `mcp.begin_login` (the kernel's `mcp.login`): the user's interactive login when the
+        // embedding wired one; otherwise an answer naming the `/mcp login` the user can run.
+        let (begin_login, usage_login) = begin_login;
+        handlers.register(
+            "mcp.begin_login",
+            host_handler(move |payload| {
+                let begin_login = begin_login.clone();
+                let usage_login = usage_login.clone();
+                Box::pin(async move {
+                    let server = payload
+                        .data
+                        .get("server")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if server.is_empty() {
+                        return Err(anyhow::anyhow!("mcp.begin_login requires a server"));
+                    }
+                    let report = |action: &str| {
+                        if let Some(report) = &usage_login {
+                            report(action, &server);
                         }
-                        let mut future = std::pin::Pin::from(begin_login(server));
-                        future.as_mut().await?;
-                        Ok(json!({}))
-                    })
-                }),
-            );
-        }
+                    };
+                    let Some(begin_login) = begin_login else {
+                        report(LOGIN_UNAVAILABLE_ACTION);
+                        return Ok(json!({
+                            "status": "unavailable",
+                            "message": format!(
+                                "interactive login is not available in this run; ask the user \
+                                 to run /mcp login {server} in Prime Agent"
+                            ),
+                        }));
+                    };
+                    let mut future = std::pin::Pin::from(begin_login(server.clone()));
+                    match future.as_mut().await {
+                        Ok(()) => {
+                            report(LOGIN_ACTION);
+                            Ok(json!({ "status": "logged_in" }))
+                        }
+                        Err(error) => {
+                            report(LOGIN_FAILED_ACTION);
+                            Err(error)
+                        }
+                    }
+                })
+            }),
+        );
         let manager = std::sync::Arc::clone(manager);
         let manager_for_plugins = std::sync::Arc::clone(&manager);
         handlers.register(
@@ -1313,7 +1343,19 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "mcp.config requires a server");
-        assert!(handlers.get("mcp.begin_login").is_none());
+        let login = handlers.get("mcp.begin_login").unwrap().clone();
+        assert_eq!(
+            login(crate::kernel::shared::HostRequestPayload {
+                data: json!({ "server": "session-tool" }),
+            })
+            .await
+            .unwrap(),
+            json!({
+                "status": "unavailable",
+                "message": "interactive login is not available in this run; ask the user to run \
+                            /mcp login session-tool in Prime Agent",
+            })
+        );
     }
 
     #[tokio::test]

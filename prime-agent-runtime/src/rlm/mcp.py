@@ -49,6 +49,7 @@ __all__ = [
     "list_connections",
     "list_plugins",
     "list_tools",
+    "login",
     "reload",
     "search_plugins",
     "search_tools",
@@ -637,6 +638,36 @@ async def reload(server: str | None = None) -> None:
     if server is not None:
         _validate_name(server, "server")
     await _dispatch(lambda: _registry.reload(server), timeout=_SHUTDOWN_TIMEOUT + 1)
+
+
+async def login(server: str) -> dict[str, str]:
+    """Start the user's interactive login to an MCP server and wait for it to finish.
+
+    The host opens the server's sign-in for the user (the same flow as
+    ``/mcp login <server>``); the user completes it. Returns ``{"server",
+    "status", "message"}``: ``status`` is ``"logged_in"`` (credentials saved;
+    the server is usable now), ``"unavailable"`` (this run cannot show a login,
+    e.g. headless: ask the user to run ``/mcp login <server>``), or
+    ``"failed"`` (the login did not complete). No credential is ever returned.
+    """
+    _validate_name(server, "server")
+    try:
+        reply = await host_request("mcp.begin_login", {"server": server})
+    except Exception:
+        # Host error text can carry OAuth URLs and parameters: never echoed.
+        return {
+            "server": server,
+            "status": "failed",
+            "message": f"the login did not complete; ask the user to run /mcp login {server} in Prime Agent",
+        }
+    status = reply.get("status") if isinstance(reply, dict) else None
+    if status == "unavailable":
+        return {"server": server, "status": "unavailable", "message": str(reply.get("message", ""))}
+    if status != "logged_in":
+        raise RuntimeError(f"mcp.login returned an unexpected result: {reply!r}")
+    # Drop any connection opened before the credential existed.
+    await reload(server)
+    return {"server": server, "status": "logged_in", "message": f"logged in to {server}"}
 
 
 async def close() -> None:

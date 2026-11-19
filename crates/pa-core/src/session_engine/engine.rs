@@ -380,9 +380,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager
             .lock()
             .unwrap()
-            .set_usage_report(Some(std::sync::Arc::new(move |_action, _server| {
-                counters.note_mcp_connector_use();
-            })));
+            .set_usage_report(Some(std::sync::Arc::new(
+                move |action, _server| match action {
+                    crate::mcp::LOGIN_ACTION => counters.note_kernel_mcp_login(Some(true)),
+                    crate::mcp::LOGIN_FAILED_ACTION => counters.note_kernel_mcp_login(Some(false)),
+                    crate::mcp::LOGIN_UNAVAILABLE_ACTION => counters.note_kernel_mcp_login(None),
+                    _ => counters.note_mcp_connector_use(),
+                },
+            )));
     }
     // The registration takes the shared manager: the inventory handlers
     // serve live views per request.
@@ -425,6 +430,21 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `rlm.session.search`/`rlm.session.saved_messages`: read-only recall over this project's
+    // saved sessions; telemetry folds each call (never a query or a session) into the counters.
+    super::session_search::register(
+        &mut handlers,
+        &wiring.session,
+        config
+            .telemetry
+            .is_some()
+            .then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_session_recall(fact))
+                    as super::session_search::SessionRecallObserver
+            })
+            .as_ref(),
+    );
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings

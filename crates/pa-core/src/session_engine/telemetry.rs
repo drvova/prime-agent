@@ -388,6 +388,22 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
+    /// `agent kernel login and recall`.
+    login_recall: LoginRecallCounts,
+}
+
+/// `agent kernel login and recall`: kernel MCP logins by outcome, and past-session searches,
+/// their hits, transcript reads, and failed recall calls.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct LoginRecallCounts {
+    login_ok: u64,
+    login_failed: u64,
+    login_unavailable: u64,
+    searches: u64,
+    search_hits: u64,
+    reads: u64,
+    recall_failed: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -598,6 +614,34 @@ impl SessionCounters {
             counts.max_ms = counts
                 .max_ms
                 .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
+        });
+    }
+
+    /// One kernel `mcp.login`: `Some(true)` logged in, `Some(false)` failed, `None` unavailable.
+    pub(crate) fn note_kernel_mcp_login(&self, outcome: Option<bool>) {
+        self.with(|values| {
+            let counts = &mut values.login_recall;
+            *match outcome {
+                Some(true) => &mut counts.login_ok,
+                Some(false) => &mut counts.login_failed,
+                None => &mut counts.login_unavailable,
+            } += 1;
+        });
+    }
+
+    /// One kernel past-session recall call (counts only: never a query or a session).
+    pub(crate) fn note_session_recall(&self, fact: super::session_search::SessionRecallFact) {
+        use super::session_search::SessionRecallFact;
+        self.with(|values| {
+            let counts = &mut values.login_recall;
+            match fact {
+                SessionRecallFact::Searched { hits } => {
+                    counts.searches += 1;
+                    counts.search_hits += hits as u64;
+                }
+                SessionRecallFact::Read => counts.reads += 1,
+                SessionRecallFact::Failed => counts.recall_failed += 1,
+            }
         });
     }
 
@@ -1136,6 +1180,29 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that neither logged in nor searched past sessions sends no recall event.
+        let mut login_recall = LoginRecallCounts::default();
+        self.counters
+            .with(|values| login_recall = values.login_recall);
+        if login_recall != LoginRecallCounts::default() {
+            let mut recall_properties = self.session_properties();
+            for (key, value) in [
+                ("kernel_mcp_login_count", login_recall.login_ok),
+                ("kernel_mcp_login_failed_count", login_recall.login_failed),
+                (
+                    "kernel_mcp_login_unavailable_count",
+                    login_recall.login_unavailable,
+                ),
+                ("session_search_count", login_recall.searches),
+                ("session_search_hit_count", login_recall.search_hits),
+                ("session_search_read_count", login_recall.reads),
+                ("session_search_failed_count", login_recall.recall_failed),
+            ] {
+                recall_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent kernel login and recall", recall_properties);
         }
         self.client.flush().await
     }
