@@ -416,7 +416,11 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
-        let max_output_chars = Some(self.output_budget.max_output_chars());
+        // Only a session that keeps cut text tightens the cap: without a
+        // store a tighter cap would destroy more.
+        let max_output_chars = spill
+            .is_some()
+            .then(|| self.output_budget.max_output_chars());
         Box::pin(async move {
             let result = manager
                 .execute(
