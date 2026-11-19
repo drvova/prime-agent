@@ -1,0 +1,1 @@
+- Built-in providers that the downloaded model catalog does not list yet (for example Together AI, Venice AI, Meta Model API or Synthetic) now show their built-in models in the model picker and their `/login` row in normal installs, instead of only when no catalog was available; providers the catalog lists keep exactly the catalog's models.

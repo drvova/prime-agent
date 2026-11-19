@@ -1,0 +1,1 @@
+- Fixed Cloudflare AI Gateway and Workers AI requests going to an unfilled `{CLOUDFLARE_ACCOUNT_ID}`/`{CLOUDFLARE_GATEWAY_ID}` URL: the account and gateway IDs now come from those environment variables, and a missing one fails the request by name.
