@@ -253,6 +253,10 @@ snapshots the files before and after every turn, on the turn's blocking thread;
 `navigate_tree` with `restoreFiles` restores the target's tree after the leaf move, leaving paths
 changed outside the session, and answers `files: {restored, conflicts}` or
 `files: {error}` (omitted without a checkpoint). In-memory sessions and RLM children never checkpoint.
+The kernel's `checkpoint.*` (`workspace_checkpoints/repl.rs`, `ReplCheckpoints`) is the
+worker's `WorkspaceCheckpointController` on the same store: a checkpoint is a captured tree plus a
+row in the session's own `<session>.repl.jsonl`, so ids never cross sessions or mix with the
+rewind records; the restore gate reads `replCanRestoreCheckpoints` from the global settings.
 
 The `/usage` page's supervisor arm (`usage_report.rs`, `get_usage`, no session selector): `quotas` reads the stored subscription credentials through pa-core's auth store and fetches each provider's usage endpoint (pa-ai `quota`) concurrently, each under a bounded timeout, with a per-provider cache (5 min, 30 s for a failed card; `forceRefresh` bypasses it; `PRIME_AGENT_QUOTA_BASE_URL` points every origin at one fixture host for end-to-end runs); `spend` aggregates every session file's billed calls (each assistant row's own usage plus the shared billed-row classifier's rows, never the child-attributed aggregate) by local day and provider/model on the blocking pool, cached per file by length and mtime, plus the latest rate-limited (HTTP 429) response per provider from the stream-failure diagnostics.
 

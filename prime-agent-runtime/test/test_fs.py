@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ntpath
 import os
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -84,6 +85,152 @@ class FsClientTest(unittest.TestCase):
                 asyncio.run(fs.grep("x", case="loud"))
             with self.assertRaisesRegex(ValueError, "kind"):
                 asyncio.run(fs.find(kind="socket"))
+        host.assert_not_awaited()
+
+
+_READ_REPLY = {
+    "path": "src/app.py",
+    "start": 1,
+    "end": 2,
+    "totalLines": 2,
+    "lines": [
+        {"line": 1, "anchor": "1:qwe", "text": "def run():"},
+        {"line": 2, "anchor": "2:rty", "text": "    return 1"},
+    ],
+    "truncated": False,
+    "lineEnds": "crlf",
+    "encoding": "utf-8",
+    "finalNewline": True,
+    "text": "src/app.py (lines 1-2 of 2, crlf)\n1:qwe|def run():\n2:rty|    return 1",
+}
+
+
+class FsHashlineClientTest(unittest.TestCase):
+    def test_read_resolves_the_path_and_parses_anchored_lines(self) -> None:
+        host = AsyncMock(return_value=_READ_REPLY)
+        with patch.object(fs, "host_request", host):
+            view = asyncio.run(fs.read("src/app.py", start=1, end=2))
+        host.assert_awaited_once_with(
+            "fs.read", {"path": os.path.abspath("src/app.py"), "cwd": os.getcwd(), "start": 1, "end": 2}
+        )
+        self.assertEqual(
+            view,
+            fs.FileView(
+                path="src/app.py",
+                lines=[fs.AnchoredLine(1, "1:qwe", "def run():"), fs.AnchoredLine(2, "2:rty", "    return 1")],
+                total_lines=2,
+                start=1,
+                end=2,
+                truncated=False,
+                line_ends="crlf",
+                encoding="utf-8",
+                final_newline=True,
+                text=_READ_REPLY["text"],
+            ),
+        )
+        self.assertEqual((str(view), view.anchor(2)), (_READ_REPLY["text"], "2:rty"))
+
+    def test_edit_sends_wire_edits_and_returns_fresh_anchors(self) -> None:
+        reply = {
+            "applied": True,
+            "path": "src/app.py",
+            "edits": 3,
+            "removed": 1,
+            "added": 3,
+            "totalLines": 4,
+            "hunks": [{"start": 1, "end": 2, "lines": [{"line": 1, "anchor": "1:abc", "text": "x"}]}],
+            "text": "src/app.py: 3 edits applied, -1 +3 lines, 4 total\n1:abc|x",
+        }
+        host = AsyncMock(return_value=reply)
+        line = fs.AnchoredLine(2, "2:rty", "    return 1")
+        with patch.object(fs, "host_request", host):
+            result = asyncio.run(
+                fs.edit(
+                    "src/app.py",
+                    [
+                        {"replace": ["1:qwe", line], "text": ["def run():", "    return 2"]},
+                        {"insert_before": "1:qwe", "text": "# app\n"},
+                        {"append": "run()"},
+                    ],
+                )
+            )
+        host.assert_awaited_once_with(
+            "fs.edit",
+            {
+                "path": os.path.abspath("src/app.py"),
+                "cwd": os.getcwd(),
+                "edits": [
+                    {"op": "replace", "anchor": "1:qwe", "end": "2:rty", "text": ["def run():", "    return 2"]},
+                    {"op": "insert_before", "anchor": "1:qwe", "text": "# app\n"},
+                    {"op": "append", "text": "run()"},
+                ],
+            },
+        )
+        self.assertEqual(
+            result,
+            fs.EditResult(
+                path="src/app.py",
+                edits=3,
+                removed=1,
+                added=3,
+                total_lines=4,
+                hunks=[[fs.AnchoredLine(1, "1:abc", "x")]],
+                text=reply["text"],
+            ),
+        )
+
+    def test_a_stale_patch_raises_with_the_report(self) -> None:
+        reply = {
+            "applied": False,
+            "path": "src/app.py",
+            "stale": [{"edit": 1, "anchor": "2:rty", "current": "2:uio"}, {"edit": 2, "anchor": "9:zzz", "current": None}],
+            "lines": [{"line": 2, "anchor": "2:uio", "text": "    return 3"}],
+            "text": "fs.edit rejected, nothing was written: 2 of 2 anchors in src/app.py no longer match the file.",
+        }
+        with patch.object(fs, "host_request", AsyncMock(return_value=reply)):
+            with self.assertRaises(fs.StaleAnchorsError) as caught:
+                asyncio.run(fs.edit("src/app.py", [{"delete": "2:rty"}, {"insert_after": "9:zzz", "text": "x"}]))
+        error = caught.exception
+        self.assertEqual(
+            (str(error), error.stale, error.lines),
+            (
+                reply["text"],
+                [fs.StaleAnchor(1, "2:rty", "2:uio"), fs.StaleAnchor(2, "9:zzz", None)],
+                [fs.AnchoredLine(2, "2:uio", "    return 3")],
+            ),
+        )
+        self.assertIsInstance(error, RuntimeError)
+
+    def test_a_windows_path_resolves_against_the_kernel_cwd(self) -> None:
+        host = AsyncMock(return_value=_READ_REPLY)
+        with (
+            patch.object(fs, "host_request", host),
+            patch.object(fs.os, "path", ntpath),
+            patch.object(fs.os, "getcwd", return_value="C:\\proj"),
+        ):
+            asyncio.run(fs.read("src\\app.py"))
+            asyncio.run(fs.read("D:\\other\\x.py"))
+        self.assertEqual(
+            [call.args for call in host.await_args_list],
+            [
+                ("fs.read", {"path": "C:\\proj\\src\\app.py", "cwd": "C:\\proj"}),
+                ("fs.read", {"path": "D:\\other\\x.py", "cwd": "C:\\proj"}),
+            ],
+        )
+
+    def test_malformed_edits_fail_before_the_host(self) -> None:
+        host = AsyncMock()
+        with patch.object(fs, "host_request", host):
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                asyncio.run(fs.edit("a.py", [{"replace": "1:abc", "delete": "2:def"}]))
+            with self.assertRaisesRegex(ValueError, "unknown keys"):
+                asyncio.run(fs.edit("a.py", {"replace": "1:abc", "txt": "x"}))
+            with self.assertRaisesRegex(ValueError, "range"):
+                asyncio.run(fs.edit("a.py", {"delete": ["1:abc"]}))
+            with self.assertRaises(TypeError):
+                asyncio.run(fs.edit("a.py", []))
+            with self.assertRaisesRegex(ValueError, "start"):
+                asyncio.run(fs.read("a.py", start=0))
         host.assert_not_awaited()
 
 

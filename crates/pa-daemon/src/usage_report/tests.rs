@@ -300,3 +300,59 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
         }
     );
 }
+
+/// The worker's `usage.quotas` kernel request answers the page's quota cards from the same
+/// fetch, and its reply never carries the stored token.
+#[tokio::test]
+async fn the_kernel_quota_request_answers_the_page_cards_without_the_token() {
+    let agent_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        agent_dir.path().join("auth.json"),
+        json!({
+            "github-copilot": {"type": "oauth", "access": "copilot-api", "refresh": "gho_secret_token", "expires": 9_999_999_999_999_i64},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let config = QuotaFetchConfig {
+        origin_override: Some(quota_server().await),
+        timeout: Duration::from_millis(2_000),
+        http: Arc::new(pa_ai::oauth::ReqwestProviderHttp::new()),
+    };
+    let mut handlers = pa_core::kernel::shared::HostRequestHandlers::default();
+    super::register_quota_host_handler(&mut handlers, agent_dir.path().to_path_buf(), config);
+    let handler = handlers
+        .get(pa_core::usage_host::USAGE_QUOTAS_REQUEST_TYPE)
+        .unwrap()
+        .clone();
+    let reply = handler(pa_core::kernel::shared::HostRequestPayload {
+        data: json!({"refresh": true}),
+    })
+    .await
+    .unwrap();
+    assert!(!reply.to_string().contains("gho_secret_token"), "{reply}");
+    let mut report: QuotaReport = serde_json::from_value(reply).unwrap();
+    for card in &mut report.providers {
+        card.fetched_at_ms = 0;
+    }
+    assert_eq!(
+        report,
+        QuotaReport {
+            providers: vec![ProviderQuota {
+                provider: "github-copilot".into(),
+                plan: Some("business".into()),
+                source: QuotaSource::Provider,
+                fetched_at_ms: 0,
+                state: QuotaState::Windows {
+                    windows: vec![QuotaWindow {
+                        label: "Premium requests".into(),
+                        used: 300.0,
+                        limit: Some(300.0),
+                        unit: QuotaUnit::Requests,
+                        resets_at_ms: Some(1_796_083_200_000),
+                    }],
+                },
+            }],
+        }
+    );
+}

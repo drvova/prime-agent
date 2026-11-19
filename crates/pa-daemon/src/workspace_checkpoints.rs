@@ -8,6 +8,9 @@
 //! `at:<new leaf>` (the conflict baseline and the redo target). A restore writes
 //! only the differing paths and leaves any path changed outside the session.
 //! Every failure degrades to a conversation-only rewind.
+//!
+//! The kernel's `checkpoint.*` snapshots (the `repl` submodule) share the store: their trees
+//! sit in a separate per-session log, so they never mix with the rewind records.
 
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
@@ -22,6 +25,9 @@ use sha2::{Digest, Sha256};
 
 use crate::session_store::SessionEntry;
 use crate::worker::SessionCore;
+
+mod repl;
+pub(crate) use repl::ReplCheckpoints;
 
 /// A git command past this is killed: the workspace is too large to checkpoint.
 const GIT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -193,6 +199,8 @@ struct Store {
     index: PathBuf,
     empty_config: PathBuf,
     map_path: PathBuf,
+    /// The kernel-taken checkpoints of this session (`repl` submodule), one JSON row each.
+    repl_path: PathBuf,
     /// The recorded trees by key, newest row winning; the lock also keeps one
     /// walk of the session index at a time.
     map: Mutex<HashMap<String, String>>,
@@ -235,6 +243,7 @@ impl Store {
             workspace,
             index: sessions.join(format!("{session}.index")),
             empty_config: root.join("empty.gitconfig"),
+            repl_path: sessions.join(format!("{session}.repl.jsonl")),
             map_path,
             map: Mutex::new(map),
         };
