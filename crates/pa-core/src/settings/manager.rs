@@ -752,34 +752,6 @@ impl SettingsManager {
         }
     }
 
-    /// The quota-park policy from settings (`retry.provider.waitForUsage`): the
-    /// park toggle, per-park ceiling (clamped to one week), and per-episode budget.
-    #[must_use]
-    pub fn get_provider_park_policy(
-        &self,
-    ) -> crate::session_engine::provider_park::ProviderParkPolicy {
-        let defaults = crate::session_engine::provider_park::DEFAULT_PROVIDER_PARK_POLICY;
-        let wait = self
-            .merged
-            .retry
-            .as_ref()
-            .and_then(|retry| retry.provider.as_ref())
-            .and_then(|provider| provider.wait_for_usage.as_ref());
-        crate::session_engine::provider_park::ProviderParkPolicy {
-            pause_until_reset: wait
-                .and_then(|wait| wait.pause_until_reset)
-                .unwrap_or(defaults.pause_until_reset),
-            max_pause_ms: wait
-                .and_then(|wait| wait.max_pause_ms)
-                .unwrap_or(defaults.max_pause_ms),
-            max_parks: wait
-                .and_then(|wait| wait.max_parks)
-                .map_or(defaults.max_parks, |parks| {
-                    parks.min(u64::from(u32::MAX)) as u32
-                }),
-        }
-    }
-
     #[must_use]
     pub fn get_rlm_max_depth(&self) -> Option<u64> {
         self.global.rlm_max_depth

@@ -9,8 +9,8 @@ use super::{
     switchable_stream_fn_with_live_auth, AgentEngineConfig, AgentSessionEngine, Arc,
     CoreSessionEngine, EngineModelSelection, HostRequestHandlers, LinkAgentMessageController,
     LinkAgentObserveController, Model, OverflowRecovery, ProducerUsageSink, PromptContextBoundary,
-    ProviderTarget, QuotaParkState, SessionCommandExecution, SessionCommandParams,
-    SessionEngineConfig, SupervisorChildSessions, Value,
+    ProviderTarget, SessionCommandExecution, SessionCommandParams, SessionEngineConfig,
+    SupervisorChildSessions, Value,
 };
 
 /// The instruction the floor appends to a bare skill invocation: ask what
@@ -173,8 +173,6 @@ impl AgentSessionEngine {
             children,
             usage_producer: std::sync::Mutex::new(None),
             rlm_usage_store: std::sync::Mutex::new(None),
-            quota_park: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            quota_parked_this_run: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             autonomous_driver,
             autonomous_driver_default: std::sync::atomic::AtomicBool::new(true),
             held_autonomous_continuation: std::sync::Mutex::new(None),
@@ -611,9 +609,6 @@ impl AgentSessionEngine {
                     .set_messages(messages.iter().filter_map(json_round_trip).collect())
                     .await;
             }
-            // A moved branch restores its own park (the early return would leave the previous
-            // branch's park armed).
-            self.restore_quota_park(built).await;
             self.flush_pending_stale_goal_terminal().await;
             self.finish_prompt_context_adoption(prompt_context_boundary.as_ref());
             return Ok(());
@@ -648,7 +643,6 @@ impl AgentSessionEngine {
                 .set_messages(messages.iter().filter_map(json_round_trip).collect())
                 .await;
         }
-        self.restore_quota_park(built).await;
         // The walk and replay allocated transient trees several times the
         // retained size: release the freed heap.
         pa_types::memory_release::trim_freed_heap();
@@ -668,65 +662,6 @@ impl AgentSessionEngine {
         }
     }
 
-    /// Scan the branch entries for the park this branch ended on and re-arm the live park state.
-    /// A previous build's park is cleared first, so it never survives onto a
-    /// branch that did not park.
-    async fn restore_quota_park(&self, built: &CoreSessionEngine) {
-        *self
-            .quota_park
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        let persistence = built.session.shared_persistence();
-        let manager = persistence.lock().await;
-        let Some(persisted) = manager.latest_quota_park() else {
-            return;
-        };
-        drop(manager);
-        let now_ms = crate::util::now_ms();
-        if persisted.resume_at_ms <= now_ms {
-            // The wake time passed: the durable wake job owns the resume.
-            return;
-        }
-        // A missing wake job is rebuilt and recorded for the next restart;
-        // a user-cancelled one is honored by leaving the session unparked.
-        let job_id = match &persisted.job_id {
-            Some(job_id) if self.quota_wake_job_active(job_id) => persisted.job_id.clone(),
-            Some(job_id)
-                if self.cron_wiring().is_some_and(|wiring| {
-                    wiring.store.list().iter().any(|job| &job.id == job_id)
-                }) =>
-            {
-                return;
-            }
-            Some(_) | None => self.create_quota_resume_job(persisted.resume_at_ms).await,
-        };
-        if job_id != persisted.job_id {
-            // Write through the BUILT session (the installed slot is
-            // still empty). A failed write only logs.
-            if let Err(write_error) = self
-                .append_quota_park_entry(
-                    Some(built.session.shared_persistence()),
-                    persisted.resume_at_ms,
-                    persisted.park_count,
-                    job_id.as_deref(),
-                    None,
-                )
-                .await
-            {
-                eprintln!("pa-daemon: restored quota park entry write failed: {write_error}");
-            }
-        }
-        *self
-            .quota_park
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(QuotaParkState {
-            park_count: persisted.park_count,
-            resume_at_ms: persisted.resume_at_ms,
-            job_id,
-            wake_retries: 0,
-        });
-    }
-
     /// Retire the live runtime so the next demand seam rebuilds a fresh
     /// session against the moved file. The kernel disposes first — it
     /// must not carry the old session's namespace — and the build gate
@@ -739,10 +674,6 @@ impl AgentSessionEngine {
             .prompt_context_boundary
             .lock()
             .expect("prompt context boundary lock") = None;
-        *self
-            .quota_park
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         // The retired session's provider target goes with it: a pre-build demand seam resolves the
         // CURRENT model.
         *self.provider_target.write().expect("provider target lock") = None;

@@ -5,6 +5,10 @@
 //! trailing edge one interval after the last broadcast. Every other frame flushes the parked
 //! update first, so wire order stays identical. The deltas are ADDITIVE, so the parked run merges
 //! delta text; block-end events flush it.
+//!
+//! Each flushed update also carries the live `contextUsage` estimate (the last context reading,
+//! or the request's reported prompt, plus the streamed output so far), computed once per flush,
+//! never per token.
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -59,6 +63,9 @@ struct CoalescerInner {
     /// When the last parked update was broadcast (leading edge, trailing edge, or flushed ahead
     /// of a direct frame); `None` before the turn's first.
     last_flush: Option<Instant>,
+    /// The session's latest context reading (the turn's start, then every settled row): the
+    /// anchor the flushed updates' streaming estimate grows from. `None` without a known window.
+    context: Option<pa_types::usage::ContextUsage>,
 }
 
 impl TurnStreamCoalescer {
@@ -68,6 +75,7 @@ impl TurnStreamCoalescer {
                 pending: None,
                 closed: false,
                 last_flush: None,
+                context: None,
             }),
             session: SessionIdentity {
                 active_session_id,
@@ -167,6 +175,12 @@ impl TurnStreamCoalescer {
         )
     }
 
+    /// Record the session's latest context reading (a settled row's `message_end` carries the
+    /// same value): the next streamed reply's estimate grows from it.
+    pub(crate) fn set_context(&self, reading: Option<pa_types::usage::ContextUsage>) {
+        self.inner.lock().unwrap().context = reading;
+    }
+
     /// End of turn: nothing parked after this point is broadcast (an aborted
     /// turn's stale partial must not appear after its settle events), and
     /// anything still parked is dropped.
@@ -186,10 +200,15 @@ impl TurnStreamCoalescer {
         let Some(message) = pending.message.into_wire() else {
             return;
         };
+        let context =
+            crate::session_stats::streaming_context_usage(inner.context.as_ref(), &message);
         let mut event = json!({
             "type": "message_update",
             "message": message,
         });
+        if let Some(context) = context {
+            event["contextUsage"] = json!(context);
+        }
         if !pending.kind.is_empty() {
             let mut stream_event = json!({ "type": pending.kind });
             if !pending.delta.is_empty() {

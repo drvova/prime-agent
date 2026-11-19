@@ -77,25 +77,6 @@ mod session_engine_impl;
 
 mod turn;
 
-/// The live quota park: parked on a provider-reported usage reset, resumed
-/// by a durable one-shot wake; while parked, no model calls run.
-#[derive(Debug, Clone)]
-pub(crate) struct QuotaParkState {
-    /// Parks consumed in this quota episode; bounded by `max_parks`.
-    pub(crate) park_count: u32,
-    /// Wall-clock wake time for the current park (epoch ms).
-    pub(crate) resume_at_ms: u64,
-    pub(crate) job_id: Option<String>,
-    /// Wake re-arms without a resume; bounded by
-    /// [`QUOTA_WAKE_MAX_RETRIES`].
-    pub(crate) wake_retries: u32,
-}
-
-pub(crate) const QUOTA_WAKE_RETRY_DELAY_MS: u64 = 60_000;
-
-/// A park that can never wake is dropped instead of parked forever.
-pub(crate) const QUOTA_WAKE_MAX_RETRIES: u32 = 3;
-
 /// The session's snapshot-flushing kernel stop as a boxed-future factory.
 pub(crate) type SettledKernelRelease =
     std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
@@ -154,9 +135,6 @@ pub struct AgentSessionEngine {
     pub(crate) kernel_notice_sink: std::sync::Mutex<Option<crate::engine::KernelNoticeSink>>,
     pub(crate) job_consumed_sink:
         std::sync::Mutex<Option<crate::engine::BackgroundJobConsumedSink>>,
-    pub(crate) quota_park: std::sync::Arc<std::sync::Mutex<Option<QuotaParkState>>>,
-    /// Whether the settled turn parked: the park's pause, not the goal's death.
-    pub(crate) quota_parked_this_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The queue delivery modes: seeded from the start config, switched live;
     /// `None` keeps the default ("one-at-a-time").
     queue_modes: std::sync::Mutex<(Option<String>, Option<String>)>,

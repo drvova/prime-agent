@@ -1995,6 +1995,7 @@ fn attach_snapshot_carries_the_tray_context_usage() {
             tokens: 0,
             context_window: 128_000,
             reading: crate::chrome::ContextReading::Unknown,
+            last_request: None,
         })
     );
 

@@ -205,6 +205,7 @@ pub(crate) fn resolve_rows(
     // decode worker can finish between two rows of one image, and a later row's hit would
     // otherwise report the image visible while its first rows painted the reserved blanks.
     let mut missed: Vec<store::RenderKey> = Vec::new();
+    let mut query_requested = false;
     for (index, row) in rows.iter_mut().enumerate() {
         let Some(at) = row
             .iter()
@@ -215,6 +216,11 @@ pub(crate) fn resolve_rows(
         let Some(sentinel) = parse_sentinel(&row[at].content) else {
             continue;
         };
+        // An image is about to render: the moment the lazy capability query is decided.
+        if on_miss == OnMiss::Render && !query_requested {
+            query_requested = true;
+            reports::request_query();
+        }
         let col: usize = row[..at]
             .iter()
             .map(|span| crate::width::str_width(&span.content))

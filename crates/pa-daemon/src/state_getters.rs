@@ -130,7 +130,7 @@ impl Worker {
             tree["model"] = model;
         }
         if let Some(usage) = context_usage {
-            tree["contextUsage"] = usage;
+            tree["contextUsage"] = json!(usage);
         }
         if let Some(by_model) = own_usage_by_model {
             tree["ownUsageByModel"] = json!(by_model);

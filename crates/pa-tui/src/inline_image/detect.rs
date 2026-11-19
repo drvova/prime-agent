@@ -1,6 +1,6 @@
 //! The inline-image protocol choice: which pixel protocol (if any) this terminal renders,
 //! decided from the environment hints the terminal exports and the DA1 reply (requested by the
-//! keyboard probe on a Unix tty, by the capability query on Windows; see [`super::reports`]),
+//! keyboard probe on a Unix tty, by the lazy capability query on Windows; see [`super::reports`]),
 //! and the cell pixel size the payload is scaled to ([`cell_size`]). The half-block cells are always painted as the
 //! base layer, so the choice only decides what draws OVER them: a protocol a terminal ignores
 //! leaves the half-blocks visible, while one it does not parse would print as text — the rule
@@ -26,7 +26,8 @@
 //!   arrive, so the half-blocks are the paint there. That host answers DA1 for itself without
 //!   sixel, while a host that relays the terminal's own answer (Windows Terminal taking a
 //!   console over as the default terminal, which sets no `WT_SESSION`; `WezTerm`'s bundled
-//!   pseudoconsole) lists sixel when the terminal draws it.
+//!   pseudoconsole) lists sixel when the terminal draws it. DA1 is asked when the first image
+//!   is about to render.
 
 use std::sync::OnceLock;
 
@@ -125,8 +126,8 @@ pub(crate) fn select_protocol(
     if platform == Platform::Windows {
         // Windows Terminal's own tabs carry `WT_SESSION`; a console it took over as the default
         // terminal does not, and neither does another host relaying through its pseudoconsole
-        // (WezTerm): their DA1 answer is the signal. The console host answering for itself
-        // lists no sixel.
+        // (WezTerm): their DA1 answer, asked at the first image, is the signal. The console host
+        // answering for itself lists no sixel.
         return if hints.wt_session.is_some() || da1_sixel == Some(true) {
             ImageProtocol::Sixel
         } else {
@@ -286,12 +287,6 @@ fn hinted() -> [ImageProtocol; 2] {
             select_protocol(&hints, PLATFORM, Some(true)),
         ]
     })
-}
-
-/// Whether any terminal answer could still pick a pixel protocol here (not in a multiplexer
-/// pane, not pinned to the half-blocks): the capability query is only worth sending then.
-pub(crate) fn pixel_protocol_possible() -> bool {
-    hinted() != [ImageProtocol::HalfBlock; 2]
 }
 
 /// The process's protocol: the environment-derived choice, upgraded by a DA1 sixel answer and
@@ -615,7 +610,7 @@ mod tests {
             ),
             windows("windows terminal", windows_terminal, None, None),
             // Windows Terminal as the default terminal (a console handoff) sets no WT_SESSION:
-            // its DA1 answer is the signal.
+            // its DA1 answer, asked at the first image, is the signal.
             windows(
                 "windows terminal, default-terminal handoff",
                 TerminalHints::default(),

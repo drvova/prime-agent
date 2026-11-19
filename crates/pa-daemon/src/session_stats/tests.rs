@@ -165,7 +165,10 @@ fn counts_messages_tool_calls_and_tokens() {
         "totalMessages": 3,
         "tokens": { "input": 10, "output": 5, "cacheRead": 0, "cacheWrite": 0, "total": 15 },
         "cost": 0.25,
-        "contextUsage": { "tokens": 129, "contextWindow": 1000, "percent": 12.9 },
+        "contextUsage": {
+            "tokens": 129, "contextWindow": 1000, "percent": 12.9,
+            "lastRequest": { "input": 10, "cacheRead": 0, "cacheWrite": 0 },
+        },
     });
     assert_eq!(stats, expected);
 }
@@ -353,6 +356,7 @@ fn compaction_boundary_serves_the_windowed_reader() {
         "cost": 3.5,
         "contextUsage": {
             "tokens": 3_100, "contextWindow": 1_000, "percent": 310.0,
+            "lastRequest": { "input": 500, "cacheRead": 2_500, "cacheWrite": 0 },
         },
     });
     assert_eq!(session_stats(&full, Some(1_000)), expected);
@@ -397,6 +401,11 @@ fn captured_compaction_boundary_matches_ts_active_stats() {
     for spend in ["tokens", "cost"] {
         active.as_object_mut().expect("stats object").remove(spend);
     }
+    // TS serves no prompt split: the Rust-only `lastRequest` is outside the parity.
+    active["contextUsage"]
+        .as_object_mut()
+        .expect("context usage object")
+        .remove("lastRequest");
     assert_eq!(active, expected);
     assert_eq!(session_stats(&windowed, Some(200_000)), stats);
 }
@@ -480,7 +489,10 @@ fn compaction_boundary_drops_the_pre_cut_ancestry() {
         "cost": 2.125,
         // The strict branch truncates at the ghost parent, so the context estimate anchors on
         // the last row alone.
-        "contextUsage": { "tokens": 15, "contextWindow": 1000, "percent": 1.5 },
+        "contextUsage": {
+            "tokens": 15, "contextWindow": 1000, "percent": 1.5,
+            "lastRequest": { "input": 10, "cacheRead": 0, "cacheWrite": 0 },
+        },
     });
     assert_eq!(session_stats(&full, Some(1000)), expected);
     assert_eq!(session_stats(&windowed, Some(1000)), expected);

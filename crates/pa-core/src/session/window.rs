@@ -340,12 +340,6 @@ impl WindowedSessionStore {
                         | "agent_status"
                         | "git_state"
                         | "child_usage_attributed"
-                ) || matches!(
-                    (meta.kind.as_str(), meta.custom_type.as_deref()),
-                    (
-                        "custom",
-                        Some("provider_quota_park" | "provider_quota_resume")
-                    )
                 ))
             {
                 metadata_entries.push(
@@ -547,16 +541,6 @@ impl WindowedSessionStore {
                         .is_some_and(|id| retained_ids.contains(id)) =>
                 {
                     latest.insert(format!("attribution:{}", value["targetId"]), index);
-                }
-                // Quota-park episodes end on resume rows, so every
-                // park/resume row must survive the keep filter.
-                "custom"
-                    if matches!(
-                        value["customType"].as_str(),
-                        Some("provider_quota_park" | "provider_quota_resume")
-                    ) =>
-                {
-                    keep.insert(index);
                 }
                 _ => {}
             }

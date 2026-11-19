@@ -15,7 +15,6 @@ mod incomplete_reply;
 mod live_auth;
 mod mcp_settings;
 mod model_resolution;
-mod quota_park;
 mod reload;
 mod rlm_children;
 mod saved_context;

@@ -4,6 +4,7 @@
 use crate::width::{line_width, str_width, truncate_line};
 use crate::{Line, Span};
 use ratatui::style::Style;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::theme::{Theme, ThemeBg, ThemeColor};
@@ -283,12 +284,14 @@ impl ActivityDock {
     }
 }
 
-/// Context usage for the tray label (`N/W P%`).
+/// Context usage for the tray label (`N/W P% · cache H%`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextUsage {
     pub tokens: u64,
     pub context_window: u64,
     pub reading: ContextReading,
+    /// The prompt split of the request the reading anchors on: the tray's cache-hit figure.
+    pub last_request: Option<pa_types::context_breakdown::RequestCache>,
 }
 
 /// How current the tray's context usage is.
@@ -303,28 +306,39 @@ pub enum ContextReading {
     /// Nothing measured yet (before the first reply): `tokens` is meaningless; the tray shows
     /// `?/W`.
     Unknown,
+    /// The daemon's live estimate while a reply streams (replaced by the measured reading when
+    /// the reply settles) — the tray marks it `~`.
+    Estimated,
 }
 
 impl ContextUsage {
-    /// The wire shape (TS `SessionStats["contextUsage"]`, served by `get_session_stats` and
-    /// carried by the attach snapshot's state). Unknown or zero tokens with a known window — a
-    /// session right after a compaction, or before its first reply — read as
-    /// [`ContextReading::Unknown`]; only a missing window yields `None`.
+    /// The wire shape ([`pa_types::usage::ContextUsage`], served by `get_session_stats`, carried
+    /// by the attach snapshot's state, and pushed live on the turn's message events). Unknown or
+    /// zero tokens with a known window — a session right after a compaction, or before its first
+    /// reply — read as [`ContextReading::Unknown`]; only a missing window yields `None`.
     #[must_use]
     pub fn from_wire(usage: &Value) -> Option<Self> {
-        let context_window = usage.get("contextWindow").and_then(Value::as_u64)?;
-        let tokens = usage
-            .get("tokens")
-            .and_then(Value::as_u64)
-            .filter(|tokens| *tokens > 0);
+        let usage = pa_types::usage::ContextUsage::deserialize(usage).ok()?;
+        let tokens = usage.tokens.filter(|tokens| *tokens > 0);
         Some(Self {
             tokens: tokens.unwrap_or_default(),
-            context_window,
-            reading: match tokens {
-                Some(_) => ContextReading::Measured,
-                None => ContextReading::Unknown,
+            context_window: usage.context_window,
+            reading: match (tokens, usage.estimated) {
+                (Some(_), false) => ContextReading::Measured,
+                (Some(_), true) => ContextReading::Estimated,
+                (None, _) => ContextReading::Unknown,
             },
+            last_request: usage.last_request,
         })
+    }
+
+    /// The last request's prompt-cache hit rate, in percent: `None` when the provider reported no
+    /// cache fields (nothing read from or written to it) or the prompt was empty.
+    #[must_use]
+    pub fn cache_hit(&self) -> Option<f64> {
+        self.last_request
+            .filter(|request| request.cache_read + request.cache_write > 0)
+            .and_then(crate::context_view::cache_hit_percent)
     }
 
     /// Fold a fresh reading over the last one shown for the SAME session: an unknown reading,
@@ -338,6 +352,7 @@ impl ContextUsage {
                 tokens: previous.tokens,
                 context_window: next.context_window,
                 reading: ContextReading::Stale,
+                last_request: previous.last_request,
             }),
             (None, Some(previous)) => Some(Self {
                 reading: ContextReading::Stale,
@@ -677,7 +692,8 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
 
 /// The tray's shrink order as the width drops. Every step keeps all the previous steps'
 /// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
-/// first and vanishes below six cells, then the tier badge, the subagent depth, the context
+/// first and vanishes below six cells, then the context label's `· cache H%` figure, the tier
+/// badge, the subagent depth, the context
 /// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking
 /// glyph), the `manage` word (the `←` stays), the model, the context percent, and the rate-limit
 /// reset chip last. The context percent outlives the model: a crowded tray (a long model id on a
@@ -687,6 +703,7 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayShrink {
     Full,
+    NoCache,
     NoTier,
     NoDepth,
     PercentOnly,
@@ -697,8 +714,9 @@ enum TrayShrink {
     NoResetChip,
 }
 
-const TRAY_SHRINK: [TrayShrink; 9] = [
+const TRAY_SHRINK: [TrayShrink; 10] = [
     TrayShrink::Full,
+    TrayShrink::NoCache,
     TrayShrink::NoTier,
     TrayShrink::NoDepth,
     TrayShrink::PercentOnly,
@@ -879,11 +897,10 @@ fn tray_lanes(state: &ChromeState, theme: &Theme, shrink: TrayShrink) -> TrayLan
                 };
                 right.push(Span::styled(label, dim));
             }
-            ContextReading::Measured | ContextReading::Stale => {
-                let marker = if context.reading == ContextReading::Stale {
-                    "~"
-                } else {
-                    ""
+            ContextReading::Measured | ContextReading::Stale | ContextReading::Estimated => {
+                let marker = match context.reading {
+                    ContextReading::Stale | ContextReading::Estimated => "~",
+                    ContextReading::Measured | ContextReading::Unknown => "",
                 };
                 if full {
                     right.push(Span::styled(
@@ -901,6 +918,12 @@ fn tray_lanes(state: &ChromeState, theme: &Theme, shrink: TrayShrink) -> TrayLan
                     ));
                 } else {
                     right.push(Span::styled(format!("{:.0}%", context.percent()), dim));
+                }
+                // The last request's prompt-cache hit rides beside the percent, the first
+                // segment to go as the tray narrows.
+                if let Some(hit) = context.cache_hit().filter(|_| shrink < TrayShrink::NoCache) {
+                    right.push(separator());
+                    right.push(Span::styled(format!("cache {hit:.0}%"), dim));
                 }
             }
         }
