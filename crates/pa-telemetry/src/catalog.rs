@@ -1569,6 +1569,22 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Python cells that continued in the background (v2), emitted at session end beside `agent
+/// session ended` (which sits near the backend's 128-key cap) only when a cell outlived its yield
+/// window: cells backgrounded, and how they ended (value, exception, interrupted). Counts only:
+/// never code, output, a value, or a cell id.
+const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
+    name: "agent repl background cells",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("cell_backgrounded_count", required(count())),
+        ("cell_background_ok_count", required(count())),
+        ("cell_background_error_count", required(count())),
+        ("cell_background_interrupted_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1601,6 +1617,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_REPL_BACKGROUND_CELLS,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

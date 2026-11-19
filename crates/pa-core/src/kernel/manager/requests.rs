@@ -315,42 +315,23 @@ impl ReplKernelManager {
             g.active_execution = Some(execution.clone());
         }
 
-        // Abort watcher: on an abort, or when the cell outlives its time limit,
-        // interrupts the kernel out-of-band, then force-aborts after the grace
-        // window if the runtime did not settle the cell. The limit's clock
-        // starts here, as the request goes on the wire (no await separates the
-        // two): queue wait and kernel boot are excluded.
-        let cell_timeout_ms = execution.opts.cell_timeout_ms.filter(|ms| *ms > 0);
-        if execution.opts.signal.is_some() || cell_timeout_ms.is_some() {
-            let signal = execution.opts.signal.clone();
+        // Abort watcher: on an abort, interrupts the kernel out-of-band, then
+        // force-aborts after the grace window if the runtime did not settle
+        // the cell. Time never interrupts a cell: past its yield window it
+        // continues in the background (Nodecode: never killed).
+        if let Some(signal) = execution.opts.signal.clone() {
             // Weak on both sides: a never-fired signal leaves this watcher pending forever, and a
             // strong manager would pin the kernel past the last manager's drop.
             let inner = Arc::downgrade(&self.inner);
             let weak_exec = Arc::downgrade(&execution);
             tokio::spawn(async move {
-                let timed_out_after_ms = tokio::select! {
-                    () = async {
-                        match &signal {
-                            Some(signal) => signal.cancelled().await,
-                            None => std::future::pending().await,
-                        }
-                    } => None,
-                    () = async {
-                        match cell_timeout_ms {
-                            Some(ms) => tokio::time::sleep(Duration::from_millis(ms)).await,
-                            None => std::future::pending().await,
-                        }
-                    } => cell_timeout_ms,
-                };
+                signal.cancelled().await;
                 let Some(execution) = weak_exec.upgrade() else {
                     return;
                 };
                 let Some(inner) = inner.upgrade() else {
                     return;
                 };
-                if timed_out_after_ms.is_some() {
-                    lock(&execution.buffers).timed_out_after_ms = timed_out_after_ms;
-                }
                 // A blocked request write holds the stdin mutex. Do not let an
                 // interrupt queued behind it postpone the force-abort forever.
                 // Dropping the interrupt at this deadline cannot tear its

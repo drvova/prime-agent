@@ -330,13 +330,16 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     }
     if has_ipython {
         lines.push(
-            "`await bash(cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `await bash(cmd).wait(seconds)` (up to 600, kept below the cell's `timeout`, so raise `timeout` with it). If the command is still running when the wait runs out, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the newest output, `r.duration` is the elapsed seconds, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
+            "`await bash(cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `await bash(cmd).wait(seconds)` (up to 600). If the command is still running when the wait runs out, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the newest output, `r.duration` is the elapsed seconds, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
                 .to_string(),
         );
-        lines.push(
+        lines.push(if options.daemonless {
             "Do not run long blocking work in a cell; start long Python work as an asyncio task and check on it in later cells."
-                .to_string(),
-        );
+                .to_string()
+        } else {
+            "A cell still running when its `timeout` passes continues in the background instead of being stopped; do not wait on it: go on with other work or end your turn, and its `[cell-done]` notice brings the result."
+                .to_string()
+        });
     } else {
         lines.push(
             "This session has no Python REPL (`python_repl` tool): the programmatic tools described above are unavailable here."

@@ -955,7 +955,7 @@ def path_of(module, root):
     return None
 
 root = sys.argv[1]
-seed = ["rlm", "rlm.mcp", "rlm.harness", "rlm.bash", "rlm.repl", "rlm.web", "rlm.fs", "rlm.schedule", "rlm.checkpoint", "rlm.todo", "rlm.ask", "rlm.usage"]
+seed = ["rlm", "rlm.mcp", "rlm.harness", "rlm.bash", "rlm.repl", "rlm.web", "rlm.fs", "rlm.schedule", "rlm.checkpoint", "rlm.todo", "rlm.ask", "rlm.usage", "rlm.cells"]
 closure = []
 pending = list(seed)
 violations = []
@@ -1007,7 +1007,8 @@ print(json.dumps({"closure": sorted(closure), "violations": violations}))
             && report.closure.contains(&"rlm.checkpoint".to_string())
             && report.closure.contains(&"rlm.todo".to_string())
             && report.closure.contains(&"rlm.ask".to_string())
-            && report.closure.contains(&"rlm.usage".to_string()),
+            && report.closure.contains(&"rlm.usage".to_string())
+            && report.closure.contains(&"rlm.cells".to_string()),
         "the frozen closure seed is wrong: {report:?}"
     );
     assert!(

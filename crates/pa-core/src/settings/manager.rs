@@ -668,9 +668,9 @@ impl SettingsManager {
         self.merged.recent_models.clone().unwrap_or_default()
     }
 
-    /// The default time limit for user `python_repl` cells, in
+    /// The default yield window for user `python_repl` cells, in
     /// milliseconds (`0` disables; the default is 60s). Daemonless
-    /// sessions never arm it.
+    /// sessions never use it.
     #[must_use]
     pub fn get_python_cell_timeout_ms(&self) -> u64 {
         self.merged

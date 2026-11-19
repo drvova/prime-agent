@@ -396,6 +396,17 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// Cells that continued in the background, reported by `agent repl background cells`.
+    background_cells: BackgroundCellCounts,
+}
+
+/// `agent repl background cells`: cells that outlived their yield window, and how they ended.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BackgroundCellCounts {
+    backgrounded: u64,
+    ended_ok: u64,
+    ended_with_error: u64,
+    interrupted: u64,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -698,6 +709,20 @@ impl SessionCounters {
                 CheckpointFact::RestoreDeclined => &mut counts.restore_declined,
                 CheckpointFact::RestoreDisabled => &mut counts.restore_disabled,
                 CheckpointFact::Failed => &mut counts.failed,
+            } += 1;
+        });
+    }
+
+    /// One step in a backgrounded cell's life (counts only: never code, output, or an id).
+    pub(crate) fn note_background_cell(&self, fact: crate::kernel::shared::BackgroundCellFact) {
+        use crate::kernel::shared::BackgroundCellFact;
+        self.with(|values| {
+            let counts = &mut values.background_cells;
+            *match fact {
+                BackgroundCellFact::Backgrounded => &mut counts.backgrounded,
+                BackgroundCellFact::EndedOk => &mut counts.ended_ok,
+                BackgroundCellFact::EndedWithError => &mut counts.ended_with_error,
+                BackgroundCellFact::Interrupted => &mut counts.interrupted,
             } += 1;
         });
     }
@@ -1312,6 +1337,22 @@ impl SessionTelemetry {
             let mut usage_properties = self.session_properties();
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
+        }
+        // A session whose cells all ended inside their window sends no background-cell event.
+        let mut cells = BackgroundCellCounts::default();
+        self.counters.with(|values| cells = values.background_cells);
+        if cells != BackgroundCellCounts::default() {
+            let mut cell_properties = self.session_properties();
+            for (key, value) in [
+                ("cell_backgrounded_count", cells.backgrounded),
+                ("cell_background_ok_count", cells.ended_ok),
+                ("cell_background_error_count", cells.ended_with_error),
+                ("cell_background_interrupted_count", cells.interrupted),
+            ] {
+                cell_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent repl background cells", cell_properties);
         }
         self.client.flush().await
     }

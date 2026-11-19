@@ -190,11 +190,6 @@ impl Inner {
             if user_aborted {
                 status = ExecuteStatus::Aborted;
             }
-            // A user abort wins over the limit (plain Ctrl+C: no timeout text, no
-            // kill), and a cell that completed ok as its limit fired keeps its ok outcome.
-            let timed_out_after_ms = buffers
-                .timed_out_after_ms
-                .filter(|_| !user_aborted && status != ExecuteStatus::Ok);
 
             let mut background_output = std::mem::take(&mut buffers.background_output);
             buffers.background_output_chars = 0;
@@ -222,7 +217,7 @@ impl Inner {
                 status,
                 error: buffers.error.take(),
                 duration_ms: execution.started.elapsed().as_millis() as u64,
-                timed_out_after_ms,
+                backgrounded_cell: buffers.backgrounded_cell.take(),
             };
             drop(buffers);
             if let Some(tx) = lock(&execution.result_tx).take() {

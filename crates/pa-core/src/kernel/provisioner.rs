@@ -107,12 +107,13 @@ pub type KernelBootstrapResultHandler = Arc<dyn Fn(KernelBootstrapStats) + Send 
 pub struct IpythonKernelProvisionerOptions {
     /// Python override. Must have prime-agent-runtime installed.
     pub python: Option<PathBuf>,
-    /// Default time limit for user `python_repl` cells, in milliseconds
-    /// (`None`: never armed; `0`: disabled). The daemon engine resolves it
-    /// from settings and disarms it for daemonless sessions; a cell's own
+    /// Default yield window for user `python_repl` cells, in milliseconds
+    /// (`None`: never set; `0`: disabled): a cell still running when it ends
+    /// continues in the background. The daemon engine resolves it from
+    /// settings and leaves it unset for daemonless sessions; a cell's own
     /// `timeout` argument replaces it. The runtime bootstrap and internal
-    /// state ops never arm it.
-    pub cell_timeout_ms: Option<u64>,
+    /// state ops never set it.
+    pub cell_yield_ms: Option<u64>,
     pub env: HashMap<String, String>,
     /// Command prefix prepended to every kernel `bash()` invocation.
     pub command_prefix: Option<String>,
@@ -132,6 +133,8 @@ pub struct IpythonKernelProvisionerOptions {
     /// Fires when the kernel's last live background `bash()` handle
     /// settles, so owed continuations can resume.
     pub on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
+    /// Hears each cell that continues in the background, and how it ends.
+    pub on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
     /// Fires once per kernel start when installed Python skills failed to import into the kernel,
     /// so the session can tell the model before it wastes turns calling them.
     pub on_unavailable_skills: Option<UnavailableSkillsCallback>,
@@ -287,11 +290,11 @@ impl IpythonKernelProvisioner {
         self.lock_state().manager.clone()
     }
 
-    /// The default time limit the kernel executor arms for user cells
-    /// (`None`: never armed).
+    /// The default yield window the kernel executor gives user cells
+    /// (`None`: never set).
     #[must_use]
-    pub fn cell_timeout_ms(&self) -> Option<u64> {
-        self.inner.options.cell_timeout_ms
+    pub fn cell_yield_ms(&self) -> Option<u64> {
+        self.inner.options.cell_yield_ms
     }
 
     /// The host handlers the kernel reaches (tests call them as a kernel cell would).
@@ -1105,6 +1108,7 @@ async fn start_kernel_impl(
         host_handlers: options.host_handlers.clone(),
         python_skills: options.python_skills.clone(),
         on_background_work_settled: options.on_background_work_settled.clone(),
+        on_background_cell: options.on_background_cell.clone(),
         snapshot,
         bootstrap_code: Some(bootstrap_code.clone()),
         stderr_log_path,

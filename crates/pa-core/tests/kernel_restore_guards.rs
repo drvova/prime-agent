@@ -57,6 +57,7 @@ fn test_options(
 ) -> Option<KernelManagerOptions> {
     let python = kernel_python()?;
     Some(KernelManagerOptions {
+        on_background_cell: None,
         python: Some(python),
         cwd: Some(std::env::temp_dir()),
         env: HashMap::new(),

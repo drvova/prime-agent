@@ -33,6 +33,7 @@ async fn result_clipping_counts_characters_and_preserves_follow_up_cells() {
     let python = dir.path().join("fake-kernel");
     write_executable(&python, FAKE_RUNTIME);
     let manager = ReplKernelManager::new(KernelManagerOptions {
+        on_background_cell: None,
         python: Some(python),
         cwd: Some(dir.path().to_path_buf()),
         env: HashMap::new(),

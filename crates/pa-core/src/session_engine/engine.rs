@@ -558,11 +558,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
-    // The cell time limit: daemon-backed sessions arm the settings default
+    // The cell yield window: daemon-backed sessions use the settings default
     // (60s, `0` disables); daemonless sessions keep `await bash()`
-    // unbounded by design (#3523), so their cells are never interrupted.
-    let cell_timeout_ms =
-        super::runtime_wiring::arm_cell_timeout_ms(config.daemonless, python_cell_timeout_ms);
+    // unbounded by design (#3523), so their cells run to the end in the call.
+    let cell_yield_ms =
+        super::runtime_wiring::arm_cell_yield_ms(config.daemonless, python_cell_timeout_ms);
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),
         handlers,
@@ -573,9 +573,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         kernel_command_prefix,
         websearch_env,
         session_artifact_dir,
-        cell_timeout_ms,
+        cell_yield_ms,
         on_restore,
         config.on_background_work_settled.clone(),
+        // Telemetry counts each cell that continues in the background and how it ends.
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_background_cell(fact))
+                as crate::kernel::shared::BackgroundCellObserver
+        }),
         on_unavailable_skills,
         on_bootstrap_result,
         config.kernel_ready_gate.clone(),

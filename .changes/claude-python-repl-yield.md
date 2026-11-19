@@ -1,0 +1,1 @@
+- A Python cell still running when its `timeout` passes now continues in the background instead of being interrupted: the call returns with its output so far, the session keeps working, and a `[cell-done]` notice brings its value or error when it ends. `timeout` now goes up to 600 seconds.

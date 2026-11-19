@@ -65,6 +65,7 @@ fn test_options(snapshot_dir: Option<&std::path::Path>) -> Option<KernelManagerO
         host_handlers: HostRequestHandlers::new(),
         python_skills: Vec::new(),
         on_background_work_settled: None,
+        on_background_cell: None,
         snapshot: snapshot_dir.map(|dir| KernelSnapshotConfig {
             path: snapshot_path_in(dir),
             manifest_path: manifest_path_in(dir),

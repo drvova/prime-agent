@@ -71,8 +71,9 @@ pub struct ExecuteResult {
     /// The cell's `rlm.session.messages` reads (`transcriptReads` on the
     /// tool-result details).
     pub transcript_reads: Vec<serde_json::Value>,
-    /// The time limit that interrupted this cell, if one did.
-    pub timed_out_after_ms: Option<u64>,
+    /// The cell outlived its yield window and continues in the background
+    /// under this cell id; its end arrives as a `[cell-done]` notice.
+    pub backgrounded_cell: Option<String>,
     /// The cell ended the turn via the sanctioned `rlm.end_turn()` call:
     /// the host marked the execution, and this result terminates the tool
     /// batch (the "turn ended" note on the tool-result text).
@@ -165,10 +166,6 @@ pub trait IpythonKernelProvisioner: Send + Sync {
     fn kill(&self) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-pub fn kernel_restart_notice() -> &'static str {
-    "<ipython_kernel_reset>\nThe Python kernel was restarted after a previous interrupted cell kept running. Variables, imports, async tasks, and open resources from before the restart are no longer available; recreate them before using them.\n</ipython_kernel_reset>"
-}
-
 // Tool definition
 
 /// Turn kernel image attachments into image blocks; non-images are dropped.
@@ -183,11 +180,7 @@ pub fn image_blocks_from_attachments(attachments: &[KernelAttachment]) -> Vec<To
         .collect()
 }
 
-fn format_execute_text(
-    result: &ExecuteResult,
-    background_output: Option<&str>,
-    kernel_restarted: bool,
-) -> String {
+fn format_execute_text(result: &ExecuteResult, background_output: Option<&str>) -> String {
     let mut text = result.stdout.clone();
     if !result.stderr.is_empty() {
         text.push_str(if text.is_empty() { "" } else { "\n" });
@@ -197,10 +190,9 @@ fn format_execute_text(
         text.push_str(if text.is_empty() { "" } else { "\n" });
         text.push_str(result_text);
     }
-    if let Some(limit_ms) = result.timed_out_after_ms {
-        // Replaces the KeyboardInterrupt traceback, which only says where the cell was.
+    if let Some(cell) = &result.backgrounded_cell {
         text.push_str(if text.is_empty() { "" } else { "\n" });
-        text.push_str(&cell_timeout_message(limit_ms, kernel_restarted));
+        text.push_str(&cell_backgrounded_message(cell));
     } else if result.status == ExecuteStatus::Error {
         if let Some(error) = &result.error {
             text.push_str(if text.is_empty() { "" } else { "\n" });
@@ -217,32 +209,19 @@ fn format_execute_text(
     text
 }
 
-/// The model-facing cause and fix for a cell interrupted at its time limit.
-fn cell_timeout_message(limit_ms: u64, kernel_restarted: bool) -> String {
-    let mut message = format!(
-        "This cell was interrupted after {}: long blocking work stops the session. Make it \
-non-blocking: start the work as a task (`task = asyncio.create_task(...)`; wrap blocking libraries \
-with `asyncio.to_thread`) and check `task.done()` / `task.result()` in later cells. Run shell \
-commands with `bash()`. A cell that legitimately needs longer can pass a larger `timeout` (max \
-{PYTHON_REPL_TIMEOUT_MAX_S} s), but long work belongs in tasks.",
-        humanize_ms(limit_ms)
-    );
-    if kernel_restarted {
-        message.push_str(" The cell did not stop on the interrupt, so the kernel was restarted.");
-    }
-    message
-}
-
-/// Milliseconds as one plain reading: whole seconds when the value divides,
-/// a decimal otherwise, raw milliseconds under one second.
-fn humanize_ms(ms: u64) -> String {
-    if ms < 1000 {
-        format!("{ms}ms")
-    } else if ms.is_multiple_of(1000) {
-        format!("{}s", ms / 1000)
-    } else {
-        format!("{}.{:03}s", ms / 1000, ms % 1000)
-    }
+/// The running envelope of a cell that outlived its yield window (Nodecode's
+/// `exec.lisp:1828` message): it was not stopped, the notice reads its end,
+/// and the handle is there for a look in the meantime.
+fn cell_backgrounded_message(cell: &str) -> String {
+    let encoded = serde_json::to_string(cell).unwrap_or_default();
+    format!(
+        "[cell {cell} continues in the background: it outlived its yield window and was not \
+stopped.] Do not wait for it: go on with other work or end your turn. When it ends, a [cell-done] \
+notice brings its value or error and the tail of its output. Its writes go to its handle, never \
+into another cell's output. Meanwhile `h = rlm.cells.get({encoded})` gives the handle: `h.poll()` \
+is one look, `h.tail()` its newest output, `await h.wait(seconds)` a short wait, `h.cancel()` \
+stops it. A cell that must end inside this call can pass a larger `timeout`."
+    )
 }
 
 async fn execute_cell(
@@ -250,18 +229,11 @@ async fn execute_cell(
     report_startup_progress: BootstrapProgressHandler,
     code: &str,
     execute: KernelExecuteOptions<'_>,
-) -> anyhow::Result<(ExecuteResult, bool)> {
+) -> anyhow::Result<ExecuteResult> {
     let manager = provisioner
         .ensure(Some(report_startup_progress), execute.signal.clone())
         .await?;
-    let result = manager.execute(code, execute).await?;
-    // The cell outlived its limit and ignored the interrupt: restart the kernel.
-    let kernel_restarted =
-        result.timed_out_after_ms.is_some() && result.status == ExecuteStatus::Aborted;
-    if kernel_restarted {
-        provisioner.kill().await;
-    }
-    Ok((result, kernel_restarted))
+    manager.execute(code, execute).await
 }
 
 pub struct IpythonToolOptions {
@@ -282,7 +254,7 @@ pub fn ipython_tool_schema() -> serde_json::Value {
             "timeout": {
                 "type": "integer",
                 "description": format!(
-                    "Seconds before this cell is interrupted (default {} unless the user configured otherwise, max {PYTHON_REPL_TIMEOUT_MAX_S}).",
+                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default {} unless the user configured otherwise, max {PYTHON_REPL_TIMEOUT_MAX_S}.",
                     DEFAULT_PYTHON_CELL_TIMEOUT_MS / 1000
                 )
             }
@@ -290,10 +262,11 @@ pub fn ipython_tool_schema() -> serde_json::Value {
     })
 }
 
-/// The largest per-call `timeout` the model may pass, in seconds.
-pub const PYTHON_REPL_TIMEOUT_MAX_S: u64 = 180;
+/// The largest per-call `timeout` the model may pass, in seconds (Nodecode
+/// clamps its yield window to ten minutes).
+pub const PYTHON_REPL_TIMEOUT_MAX_S: u64 = 600;
 
-/// The model's `timeout` argument as a cell limit in milliseconds, clamped to
+/// The model's `timeout` argument as a yield window in milliseconds, clamped to
 /// 1..=[`PYTHON_REPL_TIMEOUT_MAX_S`] seconds.
 fn timeout_arg_ms(params: &serde_json::Value) -> Option<u64> {
     let seconds = params.get("timeout")?.as_f64()?;
@@ -355,16 +328,9 @@ pub async fn execute_ipython(
 
     // The full context chain, not just the outermost layer: a bare top-level
     // message hides the actual cause of kernel failures.
-    let (r, kernel_restarted) = result.map_err(|err| anyhow::anyhow!("{err:#}"))?;
+    let r = result.map_err(|err| anyhow::anyhow!("{err:#}"))?;
 
-    let mut text = format_execute_text(&r, r.background_output.as_deref(), kernel_restarted);
-    if kernel_restarted {
-        text = if text.is_empty() {
-            kernel_restart_notice().to_string()
-        } else {
-            format!("{}\n\n{}", kernel_restart_notice(), text)
-        };
-    }
+    let mut text = format_execute_text(&r, r.background_output.as_deref());
     // The sanctioned turn-end confirmation: short, and it lands in the
     // transcript for replay of the ended turn.
     if r.ended_turn {
@@ -376,17 +342,16 @@ pub async fn execute_ipython(
     let mut content = vec![ToolContentBlock::text(text)];
     content.extend(image_blocks);
 
-    // A timed-out cell is an error even when it had to be force-aborted:
-    // nobody aborted it.
     let status = match r.status {
+        ExecuteStatus::Ok if r.backgrounded_cell.is_some() => "backgrounded",
         ExecuteStatus::Ok => "ok",
-        ExecuteStatus::Aborted if r.timed_out_after_ms.is_none() => "aborted",
-        ExecuteStatus::Error | ExecuteStatus::Aborted => "error",
+        ExecuteStatus::Aborted => "aborted",
+        ExecuteStatus::Error => "error",
     };
-    let mut details = json!({
-        "status": status,
-        "kernelRestarted": kernel_restarted,
-    });
+    let mut details = json!({ "status": status });
+    if let Some(cell) = &r.backgrounded_cell {
+        details["backgroundCell"] = json!(cell);
+    }
     if let Some(duration) = r.duration_ms {
         details["durationMs"] = json!(duration);
     }
@@ -521,16 +486,6 @@ mod tests {
             timeout_arg_ms(&json!({ "timeout": 3600 })),
             Some(PYTHON_REPL_TIMEOUT_MAX_S * 1000)
         );
-    }
-
-    #[test]
-    fn humanize_ms_pads_the_millisecond_remainder() {
-        assert_eq!(humanize_ms(500), "500ms");
-        assert_eq!(humanize_ms(2000), "2s");
-        assert_eq!(humanize_ms(60_000), "60s");
-        assert_eq!(humanize_ms(1500), "1.500s");
-        // A sub-100ms remainder must not read as tenths: 60.005s, not 60.5s.
-        assert_eq!(humanize_ms(60_005), "60.005s");
     }
 
     #[test]

@@ -712,7 +712,10 @@ async def _notify_completion(run: CellRun) -> None:
         await _send_completion(run)
     finally:
         if repl.is_active():
-            repl.emit({_ACTIVITY_MIME: {"id": run.activity_id, "cell": run.cell_id, "active": False}})
+            release = {"id": run.activity_id, "cell": run.cell_id, "active": False}
+            if run.result is not None:
+                release["status"] = run.result.status
+            repl.emit({_ACTIVITY_MIME: release})
 
 
 async def _send_completion(run: CellRun) -> None:
