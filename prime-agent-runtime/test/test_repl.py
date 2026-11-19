@@ -1292,7 +1292,8 @@ class ReplTest(unittest.TestCase):
         )
         reply_ok(self.repl, request)
         inspected = self.repl.execute("bash-inspect", "handle.poll().output")
-        self.assertEqual(one(inspected, "result")["text"], repr("".join(f"{n}\n" for n in range(1, 26))))
+        output = "".join(f"{n}\n" for n in range(1, 26))
+        self.assertEqual(one(inspected, "result")["text"], f"[text: 25 lines, 66 chars]\n{output}")
 
     def test_degraded_await_in_creating_cell_still_sends_bash_completion(self):
         # A bounded await that degrades inside the creating cell must count as
