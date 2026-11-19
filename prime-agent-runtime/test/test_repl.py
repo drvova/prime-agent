@@ -1250,8 +1250,10 @@ class ReplTest(unittest.TestCase):
         )
         self.assertIsNone(one(eventual, "host_request"))
 
+        # The notice carries the newest 20 lines, marked truncated, so the
+        # model reads the result without spending a round on `await handle`.
         started = self.repl.execute(
-            "bash-detached", "handle = bash('sleep 0.05; printf detached')\nhandle.pid"
+            "bash-detached", "handle = bash('sleep 0.05; seq 1 25')\nhandle.pid"
         )
         pid = int(one(started, "result")["text"])
         request = wait_for_host_request(self.repl, started)
@@ -1260,13 +1262,15 @@ class ReplTest(unittest.TestCase):
             {
                 "type": "bash.completed",
                 "pid": pid,
-                "command": "sleep 0.05; printf detached",
+                "command": "sleep 0.05; seq 1 25",
                 "exitCode": 0,
+                "output": "\n".join(str(n) for n in range(6, 26)),
+                "outputTruncated": True,
             },
         )
         reply_ok(self.repl, request)
         inspected = self.repl.execute("bash-inspect", "handle.poll().output")
-        self.assertIn("detached", one(inspected, "result")["text"])
+        self.assertEqual(one(inspected, "result")["text"], repr("".join(f"{n}\n" for n in range(1, 26))))
 
     def test_degraded_await_in_creating_cell_still_sends_bash_completion(self):
         # A bounded await that degrades inside the creating cell must count as
@@ -1292,6 +1296,8 @@ class ReplTest(unittest.TestCase):
                 "pid": pid,
                 "command": "sleep 1.5; printf degraded",
                 "exitCode": 0,
+                "output": "degraded",
+                "outputTruncated": False,
             },
         )
         reply_ok(self.repl, request)
@@ -1328,6 +1334,8 @@ class ReplTest(unittest.TestCase):
                 "pid": int(pid),
                 "command": "sleep 1.5; printf persisted",
                 "exitCode": 0,
+                "output": "persisted",
+                "outputTruncated": False,
             },
         )
         reply_ok(repl, request)
