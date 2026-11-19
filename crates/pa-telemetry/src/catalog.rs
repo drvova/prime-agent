@@ -1567,6 +1567,24 @@ const AGENT_RESPONSES_TRANSPORT: EventRule = EventRule {
     ],
 };
 
+/// Background endpoint discovery in the session's worker (v2), emitted at session end beside
+/// `agent session ended` only when discovery probed or moved an endpoint: zero-cost probes sent,
+/// probes that found the Responses route or its WebSocket mode, endpoints whose built-in models
+/// moved from Chat Completions to the Responses wire, and moved endpoints demoted after the route
+/// failed. Counts only: never a host or a URL.
+const AGENT_ENDPOINT_DISCOVERY: EventRule = EventRule {
+    name: "agent endpoint discovery",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("endpoint_probe_count", required(count())),
+        ("endpoint_found_responses_count", required(count())),
+        ("endpoint_found_websocket_count", required(count())),
+        ("endpoint_upgrade_count", required(count())),
+        ("endpoint_demotion_count", required(count())),
+    ],
+};
+
 /// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
 /// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
@@ -1826,6 +1844,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
+        &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

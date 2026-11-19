@@ -101,6 +101,9 @@ pub struct ModelRegistry {
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
     catalog: std::sync::Arc<pa_models::ModelCatalog>,
+    /// `provider/id` of every models.json model at the last load: their declared API never
+    /// moves, so background discovery never checks their route.
+    custom_model_keys: std::collections::HashSet<(String, String)>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -167,7 +170,15 @@ fn xai_subscription_thinking_map(model_id: &str) -> ThinkingLevelMap {
 
 impl ModelRegistry {
     pub fn create(auth: AuthStorage, models_json_path: impl Into<PathBuf>) -> Self {
-        Self::new(auth, Some(models_json_path.into()))
+        let models_json_path = models_json_path.into();
+        // Learned endpoint capabilities live beside models.json in the agent dir; the built-in
+        // models' wire upgrade below reads them.
+        if let Some(agent_dir) = models_json_path.parent() {
+            pa_ai::responses_transport::set_capability_cache_path(
+                agent_dir.join("responses-transport.json"),
+            );
+        }
+        Self::new(auth, Some(models_json_path))
     }
 
     pub fn in_memory(auth: AuthStorage) -> Self {
@@ -186,6 +197,7 @@ impl ModelRegistry {
             model_request_headers: HashMap::new(),
             xai_model_sources: HashMap::new(),
             catalog,
+            custom_model_keys: std::collections::HashSet::new(),
         };
         registry.load_models();
         registry
@@ -346,6 +358,11 @@ impl ModelRegistry {
         );
         let credentials = self.prime_credentials();
         let built_in = self.load_built_in_models(&result, credentials.as_ref());
+        self.custom_model_keys = result
+            .models
+            .iter()
+            .map(|model| (model.provider.clone(), model.id.clone()))
+            .collect();
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
     }
@@ -533,7 +550,74 @@ impl ModelRegistry {
                 {
                     model = apply_model_override(&model, model_override);
                 }
+                // A built-in Chat Completions model whose endpoint is known to serve the
+                // Responses route moves to it when the registry loads (a session's model is
+                // resolved once, so a running session never switches); models.json models keep
+                // their declared API, and xAI's wire follows its credential shape (the
+                // subscription switch below), never discovery.
+                if model.provider != crate::auth::XAI_PROVIDER_ID {
+                    pa_ai::responses_transport::apply_responses_wire_upgrade(&mut model);
+                }
                 model
+            })
+            .collect()
+    }
+
+    /// The credentialed endpoints background discovery checks: one per base URL of the
+    /// auth-configured models on the Responses wire, or of built-in models on a plain Chat
+    /// Completions wire (only those can move wires: a compat quirk or a models.json API pins a
+    /// model, so its route needs no check), with the headers its requests carry. Loopback
+    /// endpoints (local servers, test mocks) are never checked in the background: a request's
+    /// own `auto` attempt learns them. Resolving the credentials may refresh a token, so this runs on the
+    /// discovery task, never on a user-facing path.
+    pub fn discovery_targets(&mut self) -> Vec<pa_ai::responses_transport::DiscoveryTarget> {
+        use pa_ai::responses_transport::{DiscoveryTarget, DiscoveryWire};
+        let mut seen = std::collections::HashSet::new();
+        let candidates: Vec<(Model, DiscoveryWire)> = self
+            .get_available()
+            .into_iter()
+            .filter_map(|model| {
+                let loopback = url::Url::parse(&model.base_url)
+                    .ok()
+                    .and_then(|url| url.host().map(|host| host.to_owned()))
+                    .is_none_or(|host| match host {
+                        url::Host::Domain(domain) => domain == "localhost",
+                        url::Host::Ipv4(address) => address.is_loopback(),
+                        url::Host::Ipv6(address) => address.is_loopback(),
+                    });
+                if loopback {
+                    return None;
+                }
+                let custom = self
+                    .custom_model_keys
+                    .contains(&(model.provider.clone(), model.id.clone()));
+                let wire = match model.api.as_str() {
+                    "openai-responses" => DiscoveryWire::Responses,
+                    "openai-completions" if model.compat.is_none() && !custom => {
+                        DiscoveryWire::ChatCompletions
+                    }
+                    _ => return None,
+                };
+                seen.insert(model.base_url.clone())
+                    .then(|| (model.clone(), wire))
+            })
+            .collect();
+        candidates
+            .into_iter()
+            .filter_map(|(model, wire)| {
+                let auth = self.get_api_key_and_headers(&model, None);
+                let api_key = auth.api_key.filter(|_| auth.ok)?;
+                let mut headers = vec![("Authorization".to_string(), format!("Bearer {api_key}"))];
+                for (name, value) in auth.headers.unwrap_or_default() {
+                    headers.retain(|(existing, _)| !existing.eq_ignore_ascii_case(&name));
+                    headers.push((name, value));
+                }
+                Some(DiscoveryTarget {
+                    base_url: model.base_url,
+                    model_id: model.id,
+                    wire,
+                    headers,
+                })
             })
             .collect()
     }

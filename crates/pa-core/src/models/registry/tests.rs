@@ -696,3 +696,70 @@ fn a_prime_base_url_override_voids_the_live_serving_label() {
     assert_eq!(overridden.base_url, "https://my-gateway.example/v1");
     assert_eq!(overridden.serving, None);
 }
+
+/// A models.json model keeps the API it declares even on an endpoint the docs verify for the
+/// Responses route, and xAI's built-ins stay on the wire their credential shape picks.
+#[test]
+fn a_known_responses_endpoint_never_moves_a_declared_models_json_api_or_xai() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "my-openai": {
+            "baseUrl": "https://api.openai.com/v1", "apiKey": "key",
+            "api": "openai-completions",
+            "models": [ { "id": "mine" } ]
+        } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_without_env(&serde_json::json!({})), &models_path);
+    let api_of = |provider: &str| {
+        registry
+            .get_all()
+            .iter()
+            .find(|model| model.provider == provider)
+            .map(|model| model.api.clone())
+    };
+    assert_eq!(
+        (api_of("my-openai"), api_of("xai")),
+        (
+            Some("openai-completions".to_string()),
+            Some("openai-completions".to_string())
+        )
+    );
+}
+
+/// Background discovery checks only endpoints whose wire can move or whose WebSocket mode can be
+/// learned: a models.json Chat Completions model keeps its API, so its route is never probed,
+/// and loopback endpoints (local servers, test mocks) are never probed in the background.
+#[test]
+fn discovery_targets_skip_declared_chat_completions_and_loopback_endpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": {
+            "remote-chat": { "baseUrl": "https://chat.example/v1", "apiKey": "k",
+                "api": "openai-completions", "models": [ { "id": "c" } ] },
+            "local-responses": { "baseUrl": "http://127.0.0.1:9/v1", "apiKey": "k",
+                "api": "openai-responses", "models": [ { "id": "l" } ] },
+            "remote-responses": { "baseUrl": "https://responses.example/v1", "apiKey": "k",
+                "api": "openai-responses", "models": [ { "id": "r" } ] }
+        } }"#,
+    )
+    .unwrap();
+    let mut registry =
+        ModelRegistry::create(auth_without_env(&serde_json::json!({})), &models_path);
+    let targets: Vec<_> = registry
+        .discovery_targets()
+        .into_iter()
+        .map(|target| (target.base_url, target.wire))
+        .collect();
+    assert_eq!(
+        targets,
+        vec![(
+            "https://responses.example/v1".to_string(),
+            pa_ai::responses_transport::DiscoveryWire::Responses
+        )]
+    );
+}

@@ -1,0 +1,1 @@
+- Prime Agent now checks your credentialed catalog endpoints in the background with zero-cost probes, moves built-in Chat Completions models to the Responses API (and its WebSocket mode) where the endpoint supports it, and shows what it learned under `prime-agent model list`.
