@@ -323,6 +323,7 @@ mod tests {
                     thinking: mpsc::unbounded_channel().0,
                     stats: mpsc::unbounded_channel().0,
                     usage: usage_tx,
+                    context: mpsc::unbounded_channel().0,
                 },
                 mpsc::unbounded_channel().0,
             )
@@ -400,6 +401,7 @@ mod tests {
                     thinking: mpsc::unbounded_channel().0,
                     stats: mpsc::unbounded_channel().0,
                     usage: mpsc::unbounded_channel().0,
+                    context: mpsc::unbounded_channel().0,
                 },
                 mpsc::unbounded_channel().0,
             )

@@ -445,6 +445,25 @@ pub trait SessionEngine: Send + Sync {
         Box::pin(async { Ok(String::new()) })
     }
 
+    /// The next request's category estimate for the context window. Engines without a loop
+    /// (the scripted harness) report `None`.
+    ///
+    /// # Errors
+    ///
+    /// Errors when the session's loop cannot be built to measure.
+    fn context_categories(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Option<pa_types::context_breakdown::ContextCategories>>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async { Ok(None) })
+    }
+
     /// One tool definition by name, when the engine exposes one.
     fn tool_definition(
         &self,

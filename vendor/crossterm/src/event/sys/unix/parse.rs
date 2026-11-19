@@ -293,9 +293,12 @@ fn parse_csi_primary_device_attributes(buffer: &[u8]) -> io::Result<Option<Inter
     assert!(buffer.starts_with(&[b'\x1B', b'[', b'?']));
     assert!(buffer.ends_with(&[b'c']));
 
-    // This is a stub for parsing the primary device attributes. This response is not
-    // exposed in the crossterm API so we don't need to parse the individual attributes yet.
+    // Prime Agent patch: the event itself stays attribute-free; the one attribute the app reads
+    // (4 = sixel graphics) is recorded for `terminal::reported_sixel_graphics`.
     // See <https://vt100.net/docs/vt510-rm/DA1.html>
+    let attributes = &buffer[3..buffer.len() - 1];
+    let sixel = attributes.split(|&byte| byte == b';').skip(1).any(|attribute| attribute == b"4");
+    crate::terminal::record_device_attributes(sixel);
 
     Ok(Some(InternalEvent::PrimaryDeviceAttributes))
 }

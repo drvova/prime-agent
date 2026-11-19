@@ -449,7 +449,7 @@ class CellRun:
         if not (self._has_trailing and value is not None):
             return "ok", value, None, None
         try:
-            return "ok", value, repl._cap_text(repr(value)), None
+            return "ok", value, repl._cap_text(repl._result_text(value)), None
         except BaseException as exc:  # noqa: BLE001 - a broken __repr__ is a cell error
             if self._interrupt_requested.is_set() and isinstance(exc, KeyboardInterrupt):
                 return "error", None, None, repl._interrupt_event(self.cell_id, exc)

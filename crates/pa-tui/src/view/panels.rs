@@ -50,13 +50,21 @@ impl AgentView {
         // The tray's `← manage` hint is a click region (operator directive 2026-09-29): its own
         // cells, never the depth label, perform the handoff.
         let tray_row = lines.len();
-        let (tray, tray_hint) = render_tray_with_hint(&self.chrome, &self.theme, width);
-        lines.push(tray);
-        if let Some(hint) = tray_hint.filter(|hint| hint.start < width) {
+        let tray = render_tray_with_hint(&self.chrome, &self.theme, width);
+        lines.push(tray.line);
+        if let Some(hint) = tray.manage.filter(|hint| hint.start < width) {
             self.click.record_dock_region(DockClickRegion {
                 dock_row: tray_row,
                 cols: hint.start..hint.end.min(width),
                 action: ClickAction::OpenAgentsView,
+            });
+        }
+        // The context gauge and its label open the context window (oh-my-pi's clickable meter).
+        if let Some(context) = tray.context {
+            self.click.record_dock_region(DockClickRegion {
+                dock_row: tray_row,
+                cols: context,
+                action: ClickAction::OpenContextView,
             });
         }
         // The activity dock's group segments are click regions too: the

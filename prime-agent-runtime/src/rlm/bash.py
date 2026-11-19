@@ -332,6 +332,13 @@ class BashResult:
         # repr, equality, and positional construction stay unchanged.
         return False
 
+    def _repl_text_(self) -> str | None:
+        # A cell's final value displays multi-line output raw (repl._result_text);
+        # a one-line output keeps the dataclass repr.
+        if len(self.output.splitlines()) < 2:
+            return None
+        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f})\n{self.output}"
+
 
 @dataclass(frozen=True)
 class BashSnapshot:

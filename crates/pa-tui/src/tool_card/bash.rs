@@ -29,7 +29,12 @@ pub fn render(
 ) -> Vec<Line> {
     let mut rows = RowOutput::paint();
     visit(card, detail, theme, width, &mut rows);
-    rows.images(card.result.as_ref(), show_images, theme);
+    rows.images(
+        card.result.as_ref(),
+        show_images,
+        theme,
+        panel_content_width(width),
+    );
     rows.panel(card, frame, theme, width);
     rows.into_lines()
 }
@@ -44,7 +49,12 @@ pub(crate) fn count(
 ) -> usize {
     let mut rows = RowOutput::count();
     visit(card, detail, theme, width, &mut rows);
-    rows.images(card.result.as_ref(), show_images, theme);
+    rows.images(
+        card.result.as_ref(),
+        show_images,
+        theme,
+        panel_content_width(width),
+    );
     rows.panel(card, frame, theme, width);
     rows.len()
 }

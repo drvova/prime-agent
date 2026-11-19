@@ -318,12 +318,26 @@ pub(crate) fn draw<W: std::io::Write>(
         // A following transcript that scrolled shifts its region in the terminal (DECSTBM + SU)
         // inside this frame's bracket and write, and the diff repaints only the rows the shift
         // did not predict; a frame whose shift and diff are both empty still writes nothing.
-        let region = view.transcript_scroll_region();
+        let mut overlay = crate::inline_image::overlay::OVERLAY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let placements = view.image_placements().to_vec();
+        // A terminal-side shift would move the overlay's pictures with the text: while one is
+        // (or is about to be) drawn, the frame paints as a plain cell diff.
+        let region = view
+            .transcript_scroll_region()
+            .filter(|_| placements.is_empty() && !overlay.holds_drawings());
         crate::scroll_region::PAINTER
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .draw(terminal, next, region, stamp, |terminal| {
                 terminal.flush()?;
+                // The pixel overlay draws over the cells the diff just painted (and takes back
+                // what moved); its bytes ride the same bracket and write.
+                if !placements.is_empty() || overlay.holds_drawings() {
+                    let painted = terminal.current_buffer_mut().clone();
+                    overlay.paint(terminal.backend_mut(), &painted, &placements)?;
+                }
                 let diff_painted = terminal
                     .backend_mut()
                     .writer_mut()

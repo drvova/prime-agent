@@ -22,6 +22,7 @@ impl Worker {
                 command_type,
                 "get_session_tree"
                     | "get_context_tree"
+                    | "get_context_breakdown"
                     | "get_user_messages_for_forking"
                     | "set_session_entry_label"
                     | "navigate_tree"
@@ -88,6 +89,7 @@ impl Worker {
             "remove_mcp_connection" => self.handle_remove_mcp_connection(payload).await,
             "get_rlm_children" => self.handle_get_rlm_children().await,
             "get_context_tree" => self.handle_get_context_tree().await,
+            "get_context_breakdown" => self.handle_get_context_breakdown().await,
             "get_commands" => self.handle_get_commands().await,
             "get_resource_snapshot" => self.handle_get_resource_snapshot().await,
             "get_session_context" => self.handle_get_session_context(),
