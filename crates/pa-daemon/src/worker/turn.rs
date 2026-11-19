@@ -350,12 +350,19 @@ impl TurnRunner {
         // `message_update` frames park in a single slot; other frames go
         // out direct, flushing the parked update first (wire order matches
         // event-sequence order).
+        // The live context reading: every settled row's `message_end` carries the session's
+        // context usage, and the coalescer grows the streamed replies' estimate from the latest.
+        let mut context_window = engine.model_context_window();
         let coalescer = {
             let core = self.core.lock().unwrap();
-            Arc::new(crate::streaming::TurnStreamCoalescer::new(
+            let coalescer = crate::streaming::TurnStreamCoalescer::new(
                 core.active_session_id.clone(),
                 core.generation.clone(),
-            ))
+            );
+            coalescer.set_context(core.store.as_ref().and_then(|store| {
+                crate::session_stats::store_context_usage(store, context_window)
+            }));
+            Arc::new(coalescer)
         };
         let flusher = {
             let coalescer = Arc::clone(&coalescer);
@@ -592,8 +599,12 @@ impl TurnRunner {
                         );
                     }
                 }
+                // The context reading after a settled row persists (below): it rides the row's
+                // `message_end` and re-anchors the next streamed reply's estimate.
+                let mut settled_context = None;
                 match &event {
                     EngineEvent::ModelChange(change) => {
+                        context_window = engine.model_context_window();
                         if let Some(Err(error)) = core.store.as_mut().map(|store| {
                             store.persist_entry(
                                 "model_change",
@@ -612,6 +623,9 @@ impl TurnRunner {
                     | EngineEvent::ToolResultMessage(message) => {
                         if let Some(store) = core.store.as_mut() {
                             let _ = store.persist_entry("message", json!({ "message": message }));
+                            settled_context =
+                                crate::session_stats::store_context_usage(store, context_window);
+                            turn_coalescer.set_context(settled_context);
                         }
                     }
                     // The in-flight tool-call set, updated under the same core lock
@@ -946,6 +960,14 @@ impl TurnRunner {
                         ]
                     }
                 };
+                if let Some(context) = settled_context {
+                    if let Some(end) = frames
+                        .iter_mut()
+                        .find(|frame| frame["type"] == "message_end")
+                    {
+                        end["contextUsage"] = json!(context);
+                    }
+                }
                 // The phase flip's queue-update frame rides the same batch,
                 // after the row frames it follows; an unchanged projection
                 // stays silent.

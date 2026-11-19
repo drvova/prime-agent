@@ -1,7 +1,48 @@
 //! Context-usage estimation over raw message JSON, shared by crates that read session files in
 //! different representations.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::context_breakdown::RequestCache;
+
+/// The `contextUsage` wire object (TS `SessionStats["contextUsage"]`, extended): served by
+/// `get_session_stats` and the attach snapshot's state, and pushed live on the session's
+/// `message_end` events and coalesced `message_update` events while a turn runs. `estimated` and
+/// `lastRequest` are Rust-only: older clients ignore them, and they default when an older daemon
+/// omits them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    /// `None` right after a compaction, until a reply measures the new context.
+    pub tokens: Option<u64>,
+    pub context_window: u64,
+    pub percent: Option<f64>,
+    /// A streaming estimate (the request's reported prompt, or the last reading, plus the
+    /// streamed output so far) rather than a reading anchored on a settled reply's usage.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub estimated: bool,
+    /// The prompt split of the request the reading anchors on: the prompt-cache hit source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_request: Option<RequestCache>,
+}
+
+impl ContextUsage {
+    /// A reading of `tokens` against a positive `context_window`, its percent derived.
+    #[must_use]
+    // TS number parity: the wire percent is a JavaScript number (f64); token counts stay far
+    // below 2^53.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn of(tokens: u64, context_window: u64) -> Self {
+        Self {
+            tokens: Some(tokens),
+            context_window,
+            percent: Some(tokens as f64 / context_window as f64 * 100.0),
+            estimated: false,
+            last_request: None,
+        }
+    }
+}
 
 /// `totalTokens` when present, else the four-field sum (TS
 /// `calculateContextTokens` over the raw usage object).

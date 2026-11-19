@@ -246,7 +246,7 @@ pub struct AgentConnectionState {
     #[serde(default)]
     pub active_tool_names: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_usage: Option<Value>,
+    pub context_usage: Option<pa_types::usage::ContextUsage>,
 }
 
 #[cfg(test)]

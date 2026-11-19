@@ -264,6 +264,17 @@ impl SessionUi {
                 if meta_sequence > self.last_event_sequence {
                     self.last_event_sequence = meta_sequence;
                 }
+                // The live context reading a turn's message events carry (each settled row's
+                // measurement, each streamed update's estimate) moves the tray now; it is newer
+                // than any turn-end stats refresh still in flight, so that reply is superseded.
+                if let Some(context) = event
+                    .get("contextUsage")
+                    .and_then(crate::chrome::ContextUsage::from_wire)
+                {
+                    self.stats_generation += 1;
+                    self.context = crate::chrome::ContextUsage::settle(Some(context), self.context);
+                    self.rebuild_tray(view);
+                }
                 if let Some(update) = event_to_update(&event) {
                     self.apply_update(update, view);
                 }

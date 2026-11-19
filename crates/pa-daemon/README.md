@@ -182,7 +182,12 @@ worker coalesces them for broadcast in a single-slot coalescer with a
 parked update first and go out directly, so wire order and event-sequence
 order match uncoalesced streaming. The supervisor stays payload-free:
 deltas ride the worker -> client session-event stream (direct-attach or
-supervisor-routed).
+supervisor-routed). The live context reading rides the same frames: every
+settled row's `message_end` carries the session's `contextUsage` (the
+`get_session_stats` walk over the store after the row persists), and every
+flushed `message_update` carries the streaming estimate grown from it (the
+request's reported prompt, else that reading, plus the partial's chars/4),
+marked `estimated` — once per flush, never per delta.
 
 Autonomous
 continuation driving in the worker's engine: per-message usage accounting

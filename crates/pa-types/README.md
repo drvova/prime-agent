@@ -62,6 +62,11 @@ Platform contracts (`platform`): the cross-crate transport, process-identity, so
 
 - `provider_usage`: the `/usage` page's wire vocabulary — the `get_usage` sections, the provider quota cards (`QuotaReport`/`ProviderQuota`/`QuotaWindow` with reset times and the card's source), and the local spend history (`SpendHistory`: spans, 30 local days, per-model rows, observed rate limits). Response-only payloads the daemon builds and the TUI reads (no TS counterpart to round-trip, so no catch-all maps). `platform::clock::local_civil` gives the local date, weekday, and clock the page and the daemon's day buckets share.
 
+- `usage`: the chars/4 context estimators over raw message JSON and the `contextUsage` wire object
+  (`ContextUsage`: tokens, window, percent, plus the Rust-only `estimated` flag and the anchoring
+  request's `lastRequest` cache split) that `get_session_stats`, the attach state, and the live
+  `message_end`/`message_update` frames carry.
+
 - `notification`: the kernel `notify(...)` wire vocabulary (`KernelNotification`, `NotificationLevel`, the
   `kernel_notification` session event) shared by pa-core's hub, the daemon worker, and the TUI.
 - `context_breakdown`: the TUI context window's `get_context_breakdown` reply — the request-view category estimate (pa-core measures it), prompt-cache totals, compaction history, session cost, and per-subagent rows (the daemon folds them). Response-only and additive: every field defaults, so older and newer replies both parse.

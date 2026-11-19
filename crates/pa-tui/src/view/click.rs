@@ -605,6 +605,7 @@ mod tests {
             tokens: 23_000,
             context_window: 128_000,
             reading: crate::chrome::ContextReading::Measured,
+            last_request: None,
         });
         view.chrome.model_id = Some("faux-1".to_string());
         let frame = view.render_frame(80, 24);

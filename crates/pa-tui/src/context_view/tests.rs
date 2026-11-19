@@ -23,6 +23,7 @@ fn chrome() -> ChromeState {
             tokens: 23_000,
             context_window: 128_000,
             reading: crate::chrome::ContextReading::Measured,
+            last_request: None,
         }),
         compaction_percent: Some(80.0),
         model_id: Some("faux-1".to_string()),
