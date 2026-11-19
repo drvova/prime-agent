@@ -17,6 +17,7 @@
 //! without `ConPTY`, whose MSYS pty stdin the TUI cannot read.
 
 mod conpty;
+mod console_windows;
 #[path = "../support/mod.rs"]
 mod support;
 
@@ -174,32 +175,36 @@ struct Supervisor {
 
 impl Drop for Supervisor {
     fn drop(&mut self) {
-        let socket = self.socket.clone();
-        let shutdown = std::thread::spawn(move || {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("shutdown runtime");
-            runtime.block_on(async move {
-                let Ok((client, events)) =
-                    pa_tui::daemon_client::DaemonClient::connect(&socket).await
-                else {
-                    return;
-                };
-                let shutdown = pa_types::daemon::DaemonCommand::Shutdown {
-                    id: None,
-                    force: Some(true),
-                    rest: Map::default(),
-                };
-                let _ = client.request_with_timeout(shutdown, 1_500).await;
-                client.close();
-                drop(events);
-            });
-        });
-        let _ = shutdown.join();
+        shutdown_daemon(&self.socket);
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Ask the daemon on `socket` to shut down (bounded; a gone daemon is fine).
+fn shutdown_daemon(socket: &Path) {
+    let socket = socket.to_path_buf();
+    let shutdown = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("shutdown runtime");
+        runtime.block_on(async move {
+            let Ok((client, events)) = pa_tui::daemon_client::DaemonClient::connect(&socket).await
+            else {
+                return;
+            };
+            let shutdown = pa_types::daemon::DaemonCommand::Shutdown {
+                id: None,
+                force: Some(true),
+                rest: Map::default(),
+            };
+            let _ = client.request_with_timeout(shutdown, 1_500).await;
+            client.close();
+            drop(events);
+        });
+    });
+    let _ = shutdown.join();
 }
 
 // The supervisor child is killed and reaped by `Supervisor`'s Drop.
@@ -987,5 +992,207 @@ fn git_bash_without_conpty_gets_a_clear_message() {
     assert!(
         stderr.contains("winpty prime-agent") && stderr.contains("MSYS=enable_pcon"),
         "stderr: {stderr}"
+    );
+}
+
+/// `winbase.h` `CREATE_NEW_CONSOLE`: the detector's canary opens a visible
+/// console window on purpose.
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// Launching Prime opens no console windows and keeps its own terminal
+/// title. The TUI spawns its daemon the way a real launch does. The
+/// session's worker probes git for the header and the turn checkpoint, a
+/// user shell command runs git, and a turn boots the Python kernel from a
+/// fresh venv. None of their console children may show a window (a
+/// detached parent leaves them none to share, so Windows opens one titled
+/// with the program path, such as `git.exe` or the venv's `python.exe`).
+/// None may retitle the terminal either.
+#[test]
+fn background_children_open_no_console_windows() {
+    use std::os::windows::process::CommandExt;
+
+    let watch = console_windows::ConsoleWatch::start();
+    // The detector must see a console window the tree does open: a green
+    // run is only evidence when the canary is caught.
+    let mut canary = Command::new("cmd.exe")
+        .args(["/d", "/c", "ping -n 3 127.0.0.1 >nul"])
+        .creation_flags(CREATE_NEW_CONSOLE)
+        .spawn()
+        .expect("spawn the canary console");
+    let canary_pid = canary.id();
+    let _ = canary.wait();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !watch
+        .shown_by_tree()
+        .iter()
+        .any(|window| window.pid == canary_pid)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "the detector never saw the canary console (pid {canary_pid}); shown: {:?}; job pids: {:?}",
+            console_windows::shown(),
+            watch.pids()
+        );
+        std::thread::park_timeout(Duration::from_millis(50));
+    }
+
+    support::scrub_ambient_provider_credentials();
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let root = dir.path().to_path_buf();
+    let agent_dir = root.join("agent");
+    let session_dir = agent_dir.join("sessions");
+    let cwd = root.join("project");
+    std::fs::create_dir_all(&session_dir).expect("sessions dir");
+    std::fs::create_dir_all(&cwd).expect("project dir");
+    pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
+        .set_onboarding_shown(true)
+        .expect("onboarding flag");
+    let git_init = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&cwd)
+        .status()
+        .expect("run git init");
+    assert!(git_init.success(), "git init the project");
+    std::fs::write(cwd.join("notes.txt"), "console windows\n").expect("project file");
+    let receipt = root.join("kernel-receipt.txt");
+    let cell = format!(
+        "import subprocess, sys\nopen({receipt:?}, 'w').write(sys.executable)\nsubprocess.run(['git', 'status', '--short'], check=False)\nprint('KERNEL_' + 'BOOTED')",
+        receipt = receipt.display().to_string(),
+    );
+    let script = root.join("script.json");
+    std::fs::write(
+        &script,
+        // The `faux` engine runs the real agent loop, so the tool call
+        // reaches the kernel (the default scripted engine only replays).
+        json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [ { "type": "toolCall", "name": "python_repl", "arguments": {
+                    "code": cell,
+                } } ] },
+                { "text": "kernel turn done" },
+            ],
+        })
+        .to_string(),
+    )
+    .expect("script");
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|stamp| stamp.as_nanos())
+        .unwrap_or_default();
+    let socket = PathBuf::from(format!(
+        r"\\.\pipe\prime-agent-console-windows-{}-{unique}",
+        std::process::id()
+    ));
+    // `base_env` drops every `PRIME_AGENT_*` variable, the worker handshake
+    // included; `PI_PACKAGE_DIR` would point the kernel at another runtime.
+    let mut env: Vec<(String, String)> = base_env()
+        .into_iter()
+        .filter(|(key, _)| key != "PI_PACKAGE_DIR")
+        .collect();
+    for (key, value) in [
+        (
+            "PRIME_AGENT_CODING_AGENT_DIR",
+            agent_dir.display().to_string(),
+        ),
+        ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
+        ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
+        // A fresh kernel venv: the worker bootstraps it, then compiles its
+        // bytecode in the background, as on a first launch.
+        (
+            "PRIME_AGENT_KERNEL_VENV",
+            root.join("kernel-venv").display().to_string(),
+        ),
+        ("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000".to_string()),
+        ("DO_NOT_TRACK", "1".to_string()),
+    ] {
+        env.push((key.to_string(), value));
+    }
+    // No `--mode daemon` here: the TUI spawns its own daemon on the socket,
+    // the product's launch path.
+    let command = format!(
+        "\"{}\" --daemon-socket \"{}\"",
+        env!("CARGO_BIN_EXE_prime-agent"),
+        socket.display()
+    );
+    let pty = PseudoConsole::spawn(&Host::Inbox, &command, &env, &cwd, 100, 30);
+    let mut term = Terminal::new(pty, 100, 30);
+    let started = term.wait_for("prime", Duration::from_secs(120));
+    term.settle(Duration::from_millis(500));
+    term.type_text("!git --version");
+    term.key(Key::Enter);
+    let shell_ran = term.wait_for("git version", Duration::from_secs(60));
+    term.settle(Duration::from_millis(500));
+    term.type_text("boot the kernel");
+    term.key(Key::Enter);
+    // The first kernel start bootstraps the venv (uv, a Python, the runtime).
+    let turn_done = term.wait_for("kernel turn done", Duration::from_mins(15));
+    term.settle(Duration::from_secs(2));
+    let kernel_python = std::fs::read_to_string(&receipt).unwrap_or_default();
+    let screen = term.screen.text();
+    let stream = String::from_utf8_lossy(&term.stream).to_string();
+    shutdown_daemon(&socket);
+    drop(term);
+    // The titles the terminal was asked to show (OSC 0 and OSC 2): the TUI's
+    // own, and the console host's for the program it started.
+    let mut titles = Vec::new();
+    let mut rest = stream.as_str();
+    while let Some(at) = rest.find("\x1b]") {
+        let tail = &rest[at + 2..];
+        let end = tail.find(['\x07', '\x1b']).unwrap_or(tail.len());
+        if let Some(title) = tail[..end]
+            .strip_prefix("0;")
+            .or_else(|| tail[..end].strip_prefix("2;"))
+        {
+            titles.push(title.to_string());
+        }
+        rest = &tail[end..];
+    }
+    let pids = watch.pids();
+    let opened: Vec<String> = watch
+        .shown_by_tree()
+        .into_iter()
+        .filter(|window| window.pid != canary_pid)
+        .map(|window| {
+            format!(
+                "pid {} ({}) titled {:?}",
+                window.pid,
+                pids.get(&window.pid).map_or("", String::as_str),
+                window.title
+            )
+        })
+        .collect();
+    let foreign_titles: Vec<&String> = titles
+        .iter()
+        .filter(|title| {
+            let title = title.to_ascii_lowercase();
+            title.contains("git.exe") || title.contains("python.exe")
+        })
+        .collect();
+    dump(
+        "console-windows",
+        &format!(
+            "started={started} shell_ran={shell_ran} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
+            console_windows::shown()
+        ),
+    );
+    assert!(started, "the TUI started:\n{screen}");
+    assert!(shell_ran, "the user shell command ran git:\n{screen}");
+    assert!(
+        turn_done && !kernel_python.is_empty(),
+        "the turn booted the kernel:\n{screen}"
+    );
+    assert!(
+        opened.is_empty(),
+        "Prime's process tree opened console windows:\n{}",
+        opened.join("\n")
+    );
+    assert!(
+        foreign_titles.is_empty(),
+        "a child retitled the terminal: {foreign_titles:?}"
+    );
+    assert!(
+        titles.last().is_some_and(|title| title.ends_with("prime")),
+        "the terminal keeps Prime's own title: {titles:?}"
     );
 }

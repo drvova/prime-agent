@@ -48,20 +48,25 @@ pub fn set_new_session(command: &mut Command) {
     }
 }
 
-/// Windows: the libuv mapping of Node `detached: true` on win32 -
-/// `CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS`, plus `CREATE_NO_WINDOW`
-/// (console children of a windowless parent would flash a fresh console).
-/// Tree kills need none of it (`taskkill /T` walks the parent-child tree).
+/// Windows: a new process group with its own console that has no window
+/// (`CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW`). The child never shares
+/// the parent's console, so the parent's console closing or a Ctrl+C there
+/// never reaches it. It must not be detached from consoles altogether (Node's
+/// `detached: true` mapping): a process with no console hands none to its
+/// console children, and Windows opens each of them a new, visible console
+/// window titled with the program's path (`git.exe`, a venv's `python.exe`).
+/// Windows also ignores `CREATE_NO_WINDOW` next to that flag. A windowless
+/// console is inherited by the child's whole subtree. Tree kills need none
+/// of it (`taskkill /T` walks the parent-child tree).
 #[cfg(windows)]
 pub fn set_new_process_group(command: &mut Command) {
     use std::os::windows::process::CommandExt;
     /// `winbase.h`: new process group (no ctrl+c broadcast from the parent).
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    /// `winbase.h`: detached console, survives the parent's console close.
-    const DETACHED_PROCESS: u32 = 0x0000_0008;
-    /// `winbase.h` `CREATE_NO_WINDOW` (TS `windowsHide`).
+    /// `winbase.h` `CREATE_NO_WINDOW` (TS `windowsHide`): a new console
+    /// without a window.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW);
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -660,5 +665,71 @@ mod exit_wait_tests {
             wait_for_exit(pid).await.is_ok(),
             "a reaped pid resolves at once"
         );
+    }
+}
+
+/// Windows creation flags live behind this module's seams. A console child
+/// of a process that has no console gets a new, visible console window, so
+/// no product spawn may detach from the console, and every other
+/// creation-flags call stays in the listed sites.
+#[cfg(test)]
+mod creation_flag_tests {
+    use std::path::{Path, PathBuf};
+
+    /// Product sources that set Windows creation flags themselves: this
+    /// module, and pa-tui's `gh` probe (pa-tui links pa-types alone, and its
+    /// flag is `CREATE_NO_WINDOW`).
+    const CREATION_FLAG_SITES: [&str; 2] = [
+        "pa-core/src/platform/process.rs",
+        "pa-tui/src/export_share.rs",
+    ];
+
+    #[test]
+    fn no_spawn_detaches_from_the_console() {
+        // Split so this file's own needles never match.
+        let detached = concat!("DETACHED", "_PROCESS");
+        let creation_flags = concat!("creation_flags", "(");
+        let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crates directory");
+        let mut pending: Vec<PathBuf> = std::fs::read_dir(crates)
+            .expect("read the crates directory")
+            .map(|entry| entry.expect("crate entry").path().join("src"))
+            .filter(|src| src.is_dir())
+            .collect();
+        let mut violations = Vec::new();
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                pending.extend(
+                    std::fs::read_dir(&path)
+                        .expect("read a source directory")
+                        .map(|entry| entry.expect("source entry").path()),
+                );
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(crates)
+                .expect("a crate source path")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = std::fs::read_to_string(&path).expect("read a source file");
+            for (index, line) in source.lines().enumerate() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                if code.contains(detached)
+                    || (code.contains(creation_flags)
+                        && !CREATION_FLAG_SITES.contains(&relative.as_str()))
+                {
+                    violations.push(format!("{relative}:{}: {code}", index + 1));
+                }
+            }
+        }
+        violations.sort();
+        assert_eq!(violations, Vec::<String>::new());
     }
 }

@@ -138,6 +138,14 @@ jobs:
           Copy-Item (Join-Path $unpacked 'runtimes\win-x64\native\conpty.dll') $hostDir
           Copy-Item (Join-Path $unpacked 'build\native\runtimes\x64\OpenConsole.exe') (Join-Path $hostDir 'x64')
           "PA_CONPTY_DLL=$(Join-Path $hostDir 'conpty.dll')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      # The console-window check boots the Python kernel from a fresh venv,
+      # which the worker bootstraps with uv (the product never installs uv).
+      - name: Install uv (the console-window check's kernel bootstrap uses it)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install uv
+          python -c "import sysconfig; print(sysconfig.get_path('scripts'))" >> "$GITHUB_PATH"
       - name: The pseudoconsole keyboard battery
         shell: bash
         run: |
