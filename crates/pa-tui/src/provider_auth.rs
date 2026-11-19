@@ -67,6 +67,29 @@ pub struct ProviderRow {
     /// Whether this build carries the row's login flow (the menu rule:
     /// unavailable rows are dimmed and Enter is inert).
     pub available: bool,
+    /// Which stored credential the row stands for.
+    pub credential: RowCredential,
+}
+
+/// Which stored credential a provider row stands for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowCredential {
+    /// The provider's default slot (`auth.json`): a login stores into it.
+    Default,
+    /// The default slot holds a credential and the provider takes more: Enter on the login row
+    /// offers "Replace default" or "Add another".
+    DefaultWithAddAnother,
+    /// One named credential (`auth-accounts.json`): a logout row removes exactly it.
+    Named { id: String, label: String },
+}
+
+/// Where a login stores the credential it obtains.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoginTarget {
+    /// The provider's default slot, replacing what it holds.
+    ReplaceDefault,
+    /// A new named credential beside the default slot.
+    AddNamed { label: String },
 }
 
 /// The outcome of one login/logout flow: the status row to show, the error row, or a silent cancel.
@@ -90,20 +113,77 @@ pub trait ProviderAuthCommands: Send + Sync {
     fn login_options(&self) -> ProviderRowsFuture;
     /// One row per stored credential, sorted by name.
     fn logout_options(&self) -> ProviderRowsFuture;
-    /// Store the key for `ApiKeyPrompt` rows; an OAuth row arriving here
+    /// Store the key for `ApiKeyPrompt` rows into `target`; an OAuth row arriving here
     /// answers the silent cancel, never an error wall (unavailable rows never reach this).
-    fn login(&self, provider: &ProviderRow, api_key: Option<&str>) -> ProviderAuthFuture;
+    fn login(
+        &self,
+        provider: &ProviderRow,
+        api_key: Option<&str>,
+        target: &LoginTarget,
+    ) -> ProviderAuthFuture;
     /// The panel-driven flows (the MCP OAuth login, the Prime Inference login): the TUI mounts the
-    /// inline auth panel ([`crate::auth_panel`]) and services the flow's requests.
+    /// inline auth panel ([`crate::auth_panel`]) and services the flow's requests; the obtained
+    /// credential lands in `target`.
     fn login_on_panel(
         &self,
         provider: &ProviderRow,
         panel: crate::auth_panel::AuthPanelHandle,
+        target: &LoginTarget,
     ) -> ProviderAuthFuture;
+    /// Remove the row's credential: the default slot, or exactly the named credential.
     fn logout(&self, provider: &ProviderRow) -> ProviderAuthFuture;
     /// The subscription-auth warning text when the stored Anthropic credential is an OAuth login or
     /// the resolved key is a subscription token (`sk-ant-oat...`); `None` when it is not.
     fn anthropic_subscription_warning(&self) -> ProviderWarningFuture;
+}
+
+/// Where a credential login ran (`agent credential added` `surface`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialSurface {
+    /// The `/login` selector.
+    Login,
+    /// The model picker's sign-in for an unsigned provider's model.
+    ModelPicker,
+    /// The first-run onboarding.
+    Onboarding,
+}
+
+/// Report one settled credential login (`agent credential added`): the credential's kind, the
+/// slot it went to, the surface, and the outcome; never the provider, the label, or the secret.
+/// Delivery is the telemetry worker's: this spawns the report and never waits on it.
+pub(crate) fn track_credential_added(
+    telemetry: Option<&std::sync::Arc<dyn crate::interactive::InteractionTelemetry>>,
+    provider: &ProviderRow,
+    target: &LoginTarget,
+    surface: CredentialSurface,
+    outcome: &ProviderAuthOutcome,
+) {
+    let Some(telemetry) = telemetry.cloned() else {
+        return;
+    };
+    let kind = match provider.auth_type {
+        AuthType::ApiKey => "api_key",
+        AuthType::Oauth => "oauth",
+    };
+    let slot = match target {
+        LoginTarget::ReplaceDefault => "default",
+        LoginTarget::AddNamed { .. } => "named",
+    };
+    let surface = match surface {
+        CredentialSurface::Login => "login",
+        CredentialSurface::ModelPicker => "model_picker",
+        CredentialSurface::Onboarding => "onboarding",
+    };
+    let outcome = match outcome {
+        ProviderAuthOutcome::Status(_) => "saved",
+        ProviderAuthOutcome::Error(_) => "failed",
+        ProviderAuthOutcome::Cancelled => "cancelled",
+    };
+    tokio::spawn(async move {
+        telemetry
+            .credential_added(kind, slot, surface, outcome)
+            .await;
+    });
 }
 
 pub type ProviderWarningFuture =
@@ -159,6 +239,7 @@ pub enum AuthSelectorAction {
     Login {
         provider: ProviderRow,
         api_key: Option<String>,
+        target: LoginTarget,
     },
     /// The prompted key was empty: the TS error row.
     LoginError { message: String },
@@ -168,11 +249,26 @@ pub enum AuthSelectorAction {
 
 enum Mode {
     List,
-    Prompt {
+    /// "Replace default" or "Add another" for a provider that already holds a credential.
+    SlotChoice {
+        provider: ProviderRow,
+        add_another: bool,
+    },
+    /// The new credential's label.
+    Label {
         provider: ProviderRow,
         input: SearchInput,
     },
+    Prompt {
+        provider: ProviderRow,
+        input: SearchInput,
+        target: LoginTarget,
+    },
 }
+
+/// The slot choice's rows, in order.
+const REPLACE_DEFAULT_LABEL: &str = "Replace default";
+const ADD_ANOTHER_LABEL: &str = "Add another";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthSelectorKind {
@@ -223,7 +319,9 @@ impl ProviderAuthSelector {
     /// The panel title (the API-key prompt uses `Login to {provider}`).
     fn title(&self) -> String {
         match &self.mode {
-            Mode::Prompt { provider, .. } => format!("Log in \u{203a} {}", provider.name),
+            Mode::Prompt { provider, .. }
+            | Mode::SlotChoice { provider, .. }
+            | Mode::Label { provider, .. } => format!("Log in \u{203a} {}", provider.name),
             Mode::List if self.is_logout() => "Log out".to_string(),
             Mode::List => "Log in".to_string(),
         }
@@ -270,7 +368,8 @@ impl ProviderAuthSelector {
     /// the API-key prompt takes it, the provider search filters with it.
     pub fn paste(&mut self, text: &str) {
         match &mut self.mode {
-            Mode::Prompt { input, .. } => input.paste(text),
+            Mode::Prompt { input, .. } | Mode::Label { input, .. } => input.paste(text),
+            Mode::SlotChoice { .. } => {}
             Mode::List => {
                 let previous = self.search.value().to_string();
                 self.search.paste(text);
@@ -287,7 +386,11 @@ impl ProviderAuthSelector {
             return AuthSelectorAction::Cancel;
         }
         match &mut self.mode {
-            Mode::Prompt { provider, input } => {
+            Mode::Prompt {
+                provider,
+                input,
+                target,
+            } => {
                 if kb.matches(key, "tui.select.cancel") {
                     self.mode = Mode::List;
                     return AuthSelectorAction::None;
@@ -303,11 +406,63 @@ impl ProviderAuthSelector {
                             ),
                         };
                     }
+                    let target = target.clone();
                     self.mode = Mode::List;
                     return AuthSelectorAction::Login {
                         provider,
                         api_key: Some(key_text),
+                        target,
                     };
+                }
+                input.handle_key(key, kb);
+                AuthSelectorAction::None
+            }
+            Mode::SlotChoice {
+                provider,
+                add_another,
+            } => {
+                if kb.matches(key, "tui.select.cancel") {
+                    self.mode = Mode::List;
+                    return AuthSelectorAction::None;
+                }
+                if kb.matches(key, "tui.select.up") || kb.matches(key, "tui.select.down") {
+                    *add_another = !*add_another;
+                    return AuthSelectorAction::None;
+                }
+                if kb.matches(key, "tui.select.confirm") {
+                    let provider = provider.clone();
+                    if *add_another {
+                        self.mode = Mode::Label {
+                            provider,
+                            input: SearchInput::new(),
+                        };
+                        return AuthSelectorAction::None;
+                    }
+                    return self.begin_login(provider, LoginTarget::ReplaceDefault);
+                }
+                AuthSelectorAction::None
+            }
+            Mode::Label { provider, input } => {
+                if kb.matches(key, "tui.select.cancel") {
+                    let provider = provider.clone();
+                    self.mode = Mode::SlotChoice {
+                        provider,
+                        add_another: true,
+                    };
+                    return AuthSelectorAction::None;
+                }
+                if kb.matches(key, "tui.select.confirm") {
+                    let label = input.value().trim().to_string();
+                    let provider = provider.clone();
+                    if label.is_empty() {
+                        return AuthSelectorAction::LoginError {
+                            message: format!(
+                                "A label is required to add another credential for {}.",
+                                provider.name
+                            ),
+                        };
+                    }
+                    return self.begin_login(provider, LoginTarget::AddNamed { label });
                 }
                 input.handle_key(key, kb);
                 AuthSelectorAction::None
@@ -356,24 +511,28 @@ impl ProviderAuthSelector {
                     return match self.selected_row() {
                         Some(provider) => {
                             if self.is_logout() {
-                                AuthSelectorAction::Logout { provider }
+                                // The menu rule: an unavailable row never runs.
+                                if provider.available {
+                                    AuthSelectorAction::Logout { provider }
+                                } else {
+                                    AuthSelectorAction::None
+                                }
+                            } else if provider.flow == AuthFlow::TerminalFlow && !provider.available
+                            {
+                                // The menu rule: an unavailable row never starts a flow.
+                                AuthSelectorAction::None
                             } else {
-                                match provider.flow {
-                                    AuthFlow::ApiKeyPrompt => {
-                                        self.mode = Mode::Prompt {
+                                match provider.credential {
+                                    RowCredential::DefaultWithAddAnother => {
+                                        self.mode = Mode::SlotChoice {
                                             provider,
-                                            input: SearchInput::new(),
+                                            add_another: false,
                                         };
                                         AuthSelectorAction::None
                                     }
-                                    // The menu rule: an unavailable row never starts a flow.
-                                    AuthFlow::TerminalFlow if !provider.available => {
-                                        AuthSelectorAction::None
+                                    RowCredential::Default | RowCredential::Named { .. } => {
+                                        self.begin_login(provider, LoginTarget::ReplaceDefault)
                                     }
-                                    AuthFlow::TerminalFlow => AuthSelectorAction::Login {
-                                        provider,
-                                        api_key: None,
-                                    },
                                 }
                             }
                         }
@@ -386,6 +545,29 @@ impl ProviderAuthSelector {
                     self.refilter();
                 }
                 AuthSelectorAction::None
+            }
+        }
+    }
+
+    /// Start the row's flow into `target`: the key prompt for an API-key row, else the
+    /// panel-driven flow.
+    fn begin_login(&mut self, provider: ProviderRow, target: LoginTarget) -> AuthSelectorAction {
+        match provider.flow {
+            AuthFlow::ApiKeyPrompt => {
+                self.mode = Mode::Prompt {
+                    provider,
+                    input: SearchInput::new(),
+                    target,
+                };
+                AuthSelectorAction::None
+            }
+            AuthFlow::TerminalFlow => {
+                self.mode = Mode::List;
+                AuthSelectorAction::Login {
+                    provider,
+                    api_key: None,
+                    target,
+                }
             }
         }
     }
@@ -443,6 +625,61 @@ impl ProviderAuthSelector {
                 lines.push(crate::auth_panel::auth_actions_row(
                     theme, width, kb, true, None,
                 ));
+                return lines;
+            }
+            Mode::Label { input, .. } => {
+                lines.push(Vec::new());
+                lines.push(vec![
+                    crate::Span::raw(CHROME_INDENT),
+                    theme.fg_span(
+                        ThemeColor::Text,
+                        "Label for the new credential:".to_string(),
+                    ),
+                ]);
+                lines.push(crate::menu_panel::login_field_row(
+                    theme,
+                    width,
+                    input.value(),
+                    input.cursor(),
+                    /*focused*/ true,
+                    "e.g. work",
+                ));
+                lines.push(Vec::new());
+                lines.push(crate::auth_panel::auth_actions_row(
+                    theme, width, kb, /*input_visible*/ true, None,
+                ));
+                return lines;
+            }
+            Mode::SlotChoice { add_another, .. } => {
+                lines.push(Vec::new());
+                for (label, selected) in [
+                    (REPLACE_DEFAULT_LABEL, !*add_another),
+                    (ADD_ANOTHER_LABEL, *add_another),
+                ] {
+                    lines.push(menu_row(
+                        theme,
+                        width,
+                        vec![crate::Span::raw(label.to_string())],
+                        &[],
+                        selected,
+                    ));
+                }
+                lines.push(Vec::new());
+                lines.push(
+                    Footer::new()
+                        .bound(
+                            kb,
+                            &["tui.select.up", "tui.select.down"],
+                            "navigate",
+                            HintRank::Useful,
+                        )
+                        .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                        .esc(kb, EscVerb::Back)
+                        .line(theme, width),
+                );
+                lines.push(vec![
+                    theme.fg_span(ThemeColor::Border, "─".repeat(width.max(1)))
+                ]);
                 return lines;
             }
             Mode::List => {}
@@ -550,6 +787,8 @@ impl ProviderAuthSelector {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+
     use super::*;
 
     fn kb() -> KeybindingsManager {
@@ -569,6 +808,7 @@ mod tests {
             flow: AuthFlow::TerminalFlow,
             configured: false,
             available: false,
+            credential: RowCredential::Default,
         }
     }
 
@@ -581,6 +821,7 @@ mod tests {
             flow: AuthFlow::TerminalFlow,
             configured: false,
             available: true,
+            credential: RowCredential::Default,
         }
     }
 
@@ -596,6 +837,7 @@ mod tests {
             flow: AuthFlow::ApiKeyPrompt,
             configured: true,
             available: true,
+            credential: RowCredential::Default,
         }
     }
 
@@ -608,6 +850,7 @@ mod tests {
             flow: AuthFlow::TerminalFlow,
             configured: false,
             available: true,
+            credential: RowCredential::Default,
         }
     }
 
@@ -672,7 +915,9 @@ mod tests {
         selector.handle_key("e", &kb());
         selector.handle_key("y", &kb());
         match selector.handle_key("enter", &kb()) {
-            AuthSelectorAction::Login { api_key, provider } => {
+            AuthSelectorAction::Login {
+                api_key, provider, ..
+            } => {
                 assert_eq!(api_key.as_deref(), Some("key"));
                 assert_eq!(provider.id, "openai");
             }
@@ -700,6 +945,7 @@ mod tests {
             AuthSelectorAction::Login {
                 provider: linear(),
                 api_key: None,
+                target: LoginTarget::ReplaceDefault,
             }
         );
     }
@@ -916,6 +1162,354 @@ mod tests {
         assert!(
             !text.iter().any(|row| row.contains("Sign In")),
             "no raw Sign In title: {text:?}"
+        );
+    }
+
+    /// A provider that already holds a credential offers "Replace default" or "Add another"; the
+    /// added credential is labelled before its key is prompted, and the label rides the submit.
+    #[test]
+    fn a_stored_provider_offers_replace_default_or_add_another() {
+        let stored = |row: ProviderRow| ProviderRow {
+            credential: RowCredential::DefaultWithAddAnother,
+            ..row
+        };
+        let mut selector =
+            ProviderAuthSelector::new(AuthSelectorKind::Login, vec![stored(openai())]);
+        let mut press = |keys: &[&str]| -> Vec<AuthSelectorAction> {
+            keys.iter()
+                .map(|key| selector.handle_key(key, &kb()))
+                .collect()
+        };
+        assert_eq!(
+            press(&["enter", "down", "enter", "w", "o", "r", "k", "enter", "k", "enter"]),
+            [
+                vec![AuthSelectorAction::None; 9],
+                vec![AuthSelectorAction::Login {
+                    provider: stored(openai()),
+                    api_key: Some("k".to_string()),
+                    target: LoginTarget::AddNamed {
+                        label: "work".to_string()
+                    },
+                }],
+            ]
+            .concat()
+        );
+        // The first choice replaces the default slot: a panel-driven row hands its flow over.
+        let mut selector =
+            ProviderAuthSelector::new(AuthSelectorKind::Login, vec![stored(codex())]);
+        assert_eq!(
+            [
+                selector.handle_key("enter", &kb()),
+                selector.handle_key("enter", &kb())
+            ],
+            [
+                AuthSelectorAction::None,
+                AuthSelectorAction::Login {
+                    provider: stored(codex()),
+                    api_key: None,
+                    target: LoginTarget::ReplaceDefault,
+                },
+            ]
+        );
+    }
+
+    /// A telemetry hook whose every report hangs forever (a sink that never replies), recording
+    /// the credential reports it was handed.
+    #[derive(Default)]
+    struct HangingTelemetry {
+        reports: std::sync::Mutex<Vec<[&'static str; 4]>>,
+        reported: tokio::sync::Notify,
+    }
+
+    impl crate::interactive::InteractionTelemetry for HangingTelemetry {
+        fn scroll_used(
+            &self,
+            _action: &'static str,
+            _resumed_following: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn click_used(
+            &self,
+            _surface: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn command_used(
+            &self,
+            _command: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn feature_outcome(
+            &self,
+            _feature: &'static str,
+            _outcome: &'static str,
+            _duration_ms: Option<u64>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn input_stage(
+            &self,
+            _input_id: String,
+            _stage: &'static str,
+            _outcome: &'static str,
+            _duration_ms: u64,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn client_exit(
+            &self,
+            _reason: &'static str,
+            _turn_active: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn subagents_view_opened(
+            &self,
+            _children_total: u64,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn scoped_agent_created(
+            &self,
+            _depth: u32,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn activity_opened(
+            &self,
+            _kind: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn menu_opened(
+            &self,
+            _menu: &'static str,
+            _source: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn image_paste(
+            &self,
+            _source: &'static str,
+            _outcome: &'static str,
+            _format: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn credential_added(
+            &self,
+            kind: &'static str,
+            slot: &'static str,
+            surface: &'static str,
+            outcome: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([kind, slot, surface, outcome]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
+        fn queued_input(
+            &self,
+            _lane: &'static str,
+            _steering_mode: String,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn queue_edited(
+            &self,
+            _action: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn queue_dispatched_now(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn suspend_used(
+            &self,
+            _outcome: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn enhanced_keys(
+            &self,
+            _kitty: bool,
+            _modify_other_keys: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn hyperlinks_active(
+            &self,
+            _enabled: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn bash_shortcut_used(
+            &self,
+            _excluded: bool,
+            _side_conversation: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn bash_bang_executed(
+            &self,
+            _duration_bucket: &'static str,
+            _exit_class: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn prompt_stash(
+            &self,
+            _action: &'static str,
+            _had_images: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn external_editor_used(
+            &self,
+            _outcome: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn scoped_models_used(
+            &self,
+            _action: &'static str,
+            _scoped: bool,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn agents_view_action(
+            &self,
+            _action: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn resume_picker_closed(
+            &self,
+            _scope: &'static str,
+            _toggles: u64,
+            _outcome: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn inline_images_rendered(
+            &self,
+            _counts: InlineImageCounts,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn todos_and_questions(
+            &self,
+            _counts: TodoQuestionCounts,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn usage_page_closed(
+            &self,
+            _summary: crate::usage_page::UsagePageSummary,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn context_view_closed(
+            &self,
+            _summary: crate::context_view::ContextViewSummary,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn ipython_bash_rendered(
+            &self,
+            _bash_lines: usize,
+            _cell_lines: usize,
+            _count: usize,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn live_tool_timer_started(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn turn_feedback_shown(
+            &self,
+            _feedback: TurnFeedback,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn menu_used(&self, _used: MenuUse) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn mention_pill_sent(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+    }
+
+    /// The credential report is fire-and-forget: with a sink that never replies, the login path's
+    /// hand-off returns at once and the report still starts with its catalogued enums.
+    #[tokio::test]
+    async fn a_hanging_credential_report_never_holds_the_login_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        track_credential_added(
+            Some(&hook),
+            &openai(),
+            &LoginTarget::AddNamed {
+                label: "work".to_string(),
+            },
+            CredentialSurface::Login,
+            &ProviderAuthOutcome::Status("saved".to_string()),
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["api_key", "named", "login", "saved"]]
         );
     }
 
