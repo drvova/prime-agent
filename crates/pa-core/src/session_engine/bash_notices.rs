@@ -35,12 +35,18 @@ pub struct KernelNotice {
 impl KernelNotice {
     /// The `[bash-done]` notice for one finished detached command.
     #[must_use]
-    pub fn bash_completion(pid: u32, command: &str, exit_code: i64) -> Self {
+    pub fn bash_completion(
+        pid: u32,
+        command: &str,
+        exit_code: i64,
+        output: messages::BashOutputTail<'_>,
+    ) -> Self {
         Self {
             row: messages::create_async_bash_completion_message(
                 pid,
                 command,
                 exit_code,
+                output,
                 crate::autonomous::now_millis(),
             ),
             preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
@@ -115,17 +121,28 @@ pub fn register_kernel_notice_host_handlers(
 }
 
 /// TS `createAsyncBashCompletionHostHandler` validation: a positive
-/// integer pid, a non-empty string command, an integer exit code.
+/// integer pid, a non-empty string command, an integer exit code, plus the
+/// kernel's bounded output tail (a string and its `outputTruncated` flag).
 fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
     let consumed = validate_consumed(data)?;
     let exit_code = data
         .get("exitCode")
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow::anyhow!("bash.completed exitCode must be an integer"))?;
+    let tail = data
+        .get("output")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("bash.completed output must be a string"))?;
+    let output = match data.get("outputTruncated").and_then(Value::as_bool) {
+        Some(true) => messages::BashOutputTail::Truncated(tail),
+        Some(false) => messages::BashOutputTail::Complete(tail),
+        None => anyhow::bail!("bash.completed outputTruncated must be a boolean"),
+    };
     Ok(KernelNotice::bash_completion(
         consumed.pid,
         &consumed.command,
         exit_code,
+        output,
     ))
 }
 
@@ -262,6 +279,8 @@ mod tests {
             "pid": pid,
             "command": command,
             "exitCode": exit_code,
+            "output": "",
+            "outputTruncated": false,
         })
     }
 

@@ -165,6 +165,13 @@ pub fn wire_session_runtime(
     let mut handlers = HostRequestHandlers::default();
     runtime.register_host_handlers(session.clone(), &mut handlers);
     interaction.register_host_handlers(&session, &mut handlers);
+    // `checkpoint.*` answers why it cannot here; a daemon worker's extra handlers replace it
+    // with its workspace store.
+    super::checkpoint_host::register_workspace_checkpoint_host_handlers(
+        None,
+        std::sync::Arc::clone(&interaction),
+        &mut handlers,
+    );
     let model_registry = rlm.model_registry.unwrap_or_else(|| {
         let auth = crate::auth::AuthStorage::create(agent_dir);
         Arc::new(crate::models::registry::ModelRegistry::create(

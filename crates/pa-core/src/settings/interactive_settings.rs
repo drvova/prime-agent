@@ -414,6 +414,16 @@ impl SettingsManager {
             .unwrap_or(false)
     }
 
+    /// `replCanRestoreCheckpoints` (the kernel's destructive `checkpoint.restore` gate): unset
+    /// reads as off. GLOBAL SCOPE ONLY, so a project's `.prime/agent/settings.json` can never
+    /// let the model rewrite the workspace.
+    #[must_use]
+    pub fn get_repl_can_restore_checkpoints(&self) -> bool {
+        self.global_settings()
+            .repl_can_restore_checkpoints
+            .unwrap_or(false)
+    }
+
     /// `factory.enabled` setter: persists the opt-in gate to the global
     /// scope (the same shared settings key the daemon's lane advertisement
     /// and the kernel's factory gate read).
