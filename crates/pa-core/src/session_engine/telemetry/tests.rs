@@ -1819,3 +1819,34 @@ async fn fs_searches_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `usage.get()` reads ride their own `agent usage reads` event at session end (a count,
+/// never a cost or a token number), and a session that never read its usage sends none.
+#[tokio::test]
+async fn usage_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_usage_read();
+    counters.note_usage_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent usage reads"]
+    );
+    let reads = &event_properties(&fixture.mock, "agent usage reads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reads
+        .iter()
+        .filter(|(key, _)| key.starts_with("usage_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({"usage_read_count": 2})
+    );
+}

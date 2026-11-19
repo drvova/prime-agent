@@ -504,19 +504,7 @@ async fn get_session_stats(state: &Arc<RpcState>) -> Result<ResponseData, String
             _ => {}
         }
     }
-    let mut spend = pa_types::ai::Usage::default();
-    for entry in manager.get_branch(None) {
-        let usage = match entry {
-            FileEntry::Message {
-                message: pa_types::session::AgentMessage::Assistant(assistant),
-                ..
-            } => Some(assistant.usage),
-            _ => pa_core::session::billed_row::billed_file_entry(entry).map(|row| row.usage),
-        };
-        if let Some(usage) = usage {
-            pa_core::session_engine::compaction_exec::add_assistant_usage(&mut spend, &usage);
-        }
-    }
+    let spend = pa_core::usage_host::branch_spend(&manager);
     let pa_types::ai::Usage {
         input,
         output,

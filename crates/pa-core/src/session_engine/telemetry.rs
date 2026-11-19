@@ -388,6 +388,8 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// Kernel `usage.get()` reads, reported by `agent usage reads`.
+    usage_read_count: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -599,6 +601,11 @@ impl SessionCounters {
                 .max_ms
                 .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
         });
+    }
+
+    /// One kernel `usage.get()` read (a count: never a cost or a token number).
+    pub(crate) fn note_usage_read(&self) {
+        self.with(|values| values.usage_read_count += 1);
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1136,6 +1143,15 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that never read its usage sends no usage event.
+        let mut usage_reads = 0;
+        self.counters
+            .with(|values| usage_reads = values.usage_read_count);
+        if usage_reads > 0 {
+            let mut usage_properties = self.session_properties();
+            usage_properties.set("usage_read_count", Value::from(usage_reads));
+            self.client.track("agent usage reads", usage_properties);
         }
         self.client.flush().await
     }

@@ -425,6 +425,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `usage.get`: the session's spend (and the no-daemon quota fallback);
+    // telemetry counts each read (never a number).
+    crate::usage_host::register_usage_host_handlers(
+        &mut handlers,
+        &wiring.session,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move || counters.note_usage_read())
+                as crate::usage_host::UsageObserver
+        }),
+    );
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings

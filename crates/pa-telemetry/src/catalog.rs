@@ -1500,6 +1500,18 @@ const AGENT_FS_SEARCH: EventRule = EventRule {
     ],
 };
 
+/// Kernel `usage.get()` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session read
+/// its usage. A count only: never a cost, a token number, a provider, or a quota.
+const AGENT_USAGE_READS: EventRule = EventRule {
+    name: "agent usage reads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("usage_read_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1528,6 +1540,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
+        &AGENT_USAGE_READS,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
