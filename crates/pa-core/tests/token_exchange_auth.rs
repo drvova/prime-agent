@@ -669,7 +669,6 @@ impl Session {
             },
             |_| async { Ok(()) },
             |_| async { true },
-            None,
             Some(auth_recovery),
         )
         .await

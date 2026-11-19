@@ -1,12 +1,11 @@
 //! The goal mint's progress gate: the just-settled turn's examination —
-//! the terminal kill, the quota-park refusal window, the durable
+//! the terminal kill, the durable
 //! no-progress streak with its doubling backoff, and the order-safety
 //! rules.
 
 use super::{now_millis, GoalDriver};
 use crate::goals::{GoalState, GoalStatus};
 use crate::session::manager::SessionManager;
-use crate::session_engine::provider_retry::provider_stream_failure_kind;
 
 /// How many consecutive no-output turns the mint tolerates before the
 /// goal finishes.
@@ -40,15 +39,10 @@ pub fn turn_produced_no_output(message: &pa_agent::types::AssistantMessage) -> b
 }
 
 /// The just-settled turn's provider-failure text on a terminal failure (stop
-/// reason `error`, a stream failure outside the quota-park class).
+/// reason `error`, a quota failure included).
 #[must_use]
 pub fn terminal_provider_failure(message: &pa_agent::types::AssistantMessage) -> Option<String> {
     if message.stop_reason != pa_agent::types::StopReason::Error {
-        return None;
-    }
-    // The diagnostic is consulted ONLY to exclude the quota-park
-    // class.
-    if provider_stream_failure_kind(message).as_deref() == Some("rate_limit") {
         return None;
     }
     Some(
@@ -99,18 +93,6 @@ impl GoalDriver {
             }
         }
         if turn_is_this_goals && turn_is_new {
-            // A parked corpse never consumes the no-progress budget. The refusal
-            // STICKS through the PARKED-REFUSAL window, NOT the backoff window — a
-            // probe wake must never be scheduled into the parked session.
-            if provider_stream_failure_kind(turn).as_deref() == Some("rate_limit") {
-                self.counted_no_progress_turn_ms = Some(turn.timestamp);
-                // An earlier strike's backoff window CLEARS here: the parked session
-                // owns the retry cadence; the durable streak carries the strike.
-                self.no_progress_backoff_until_ms = 0;
-                self.parked_refusal_until_ms =
-                    now_millis() + CONTINUATION_NO_PROGRESS_BACKOFF_BASE_MS;
-                return Ok(false);
-            }
             if turn_produced_no_output(turn) {
                 // The turn produced no output: count it and arm the doubling
                 // backoff window; at the cap the goal finishes.
@@ -151,7 +133,6 @@ impl GoalDriver {
             if self.no_progress_streak != 0 {
                 self.no_progress_streak = 0;
                 self.no_progress_backoff_until_ms = 0;
-                self.parked_refusal_until_ms = 0;
                 self.counted_no_progress_turn_ms = Some(turn.timestamp);
                 self.set_state(
                     session,

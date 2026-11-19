@@ -248,37 +248,6 @@ impl SessionManager {
             .find_map(|entry| crate::interaction::persisted_todo_list(entry))
     }
 
-    /// The branch's newest un-resumed quota park, reachable without
-    /// hydration (newest first): the loaded active branch entries first,
-    /// then — for a windowed store — the window's pre-boundary metadata.
-    #[must_use]
-    pub fn latest_quota_park(
-        &self,
-    ) -> Option<crate::session_engine::provider_park::PersistedQuotaPark> {
-        use crate::session_engine::provider_park::{scan_quota_park_entries, BranchParkScan};
-        // The loaded branch is a borrow scan; the windowed fallback below
-        // reads the older metadata records line by line.
-        let branch: Vec<FileEntry> = self.active_branch_entries().into_iter().cloned().collect();
-        match scan_quota_park_entries(&branch) {
-            BranchParkScan::Park(park) => return Some(park),
-            // A newer resume entry ends the episode; older records restore nothing.
-            BranchParkScan::Resumed => return None,
-            BranchParkScan::None => {}
-        }
-        let window = self.window.as_ref()?;
-        for line in window.metadata_entries().iter().rev() {
-            let Ok(entry) = serde_json::from_str::<FileEntry>(line) else {
-                continue;
-            };
-            match scan_quota_park_entries(std::slice::from_ref(&entry)) {
-                BranchParkScan::Park(park) => return Some(park),
-                BranchParkScan::Resumed => return None,
-                BranchParkScan::None => {}
-            }
-        }
-        None
-    }
-
     /// Newest `git_state` reachable without hydration: the loaded active
     /// branch first, then the window's pre-boundary metadata (newest first).
     pub(crate) fn latest_git_context(&self) -> Option<pa_types::session::GitContext> {
@@ -306,7 +275,7 @@ impl SessionManager {
 
     /// The restore-resurrection guard: `Some(failure_text)` when the newest
     /// goal-state row is `active` but a terminal provider failure (stop
-    /// reason `error`, not quota park) settled after it; the rehydrating
+    /// reason `error`) settled after it; the rehydrating
     /// driver adopts the failure as the goal's terminal state.
     #[must_use]
     pub fn stale_active_goal_failure(&self) -> Option<String> {
