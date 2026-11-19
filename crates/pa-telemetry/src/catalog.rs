@@ -1777,15 +1777,17 @@ const AGENT_BILLING_MODES: EventRule = EventRule {
 };
 
 /// Agent-to-agent messaging (`agent_message.send`) for one session (v2), emitted at session end
-/// beside `agent session ended` (which sits near the backend's 128-key cap) only when the sender's
-/// per-session rate bucket refused a delivery: the refused deliveries (a broadcast counts each
-/// refused recipient). Counts only: never a target, a name, or a message body.
+/// beside `agent session ended` (which sits near the backend's 128-key cap) only when a delivery
+/// was refused: by the sender's per-session rate bucket (`agent_message_throttled_count`) or by an
+/// idle receiver's per-sender wake budget (`agent_message_wake_refused_count`); a broadcast counts
+/// each refused recipient. Counts only: never a target, a name, or a message body.
 const AGENT_MESSAGES: EventRule = EventRule {
     name: "agent messages",
     since: 2,
     properties: &[
         ("session_id", required(uuid())),
         ("agent_message_throttled_count", required(count())),
+        ("agent_message_wake_refused_count", required(count())),
     ],
 };
 
