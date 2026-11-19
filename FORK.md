@@ -2,7 +2,7 @@
 
 This repository (`drvova/prime-agent`) is a fork of Prime Agent with its own
 features on top of the official build (for example the native `web.search`
-engine, token-exchange provider auth, and the `/usage` page). It ships its own
+engine, token-exchange and OAuth provider auth, and the `/usage` page). It ships its own
 releases, and it installs **next to** the official build instead of replacing
 it. The two builds have different commands, so you can't mix them up:
 

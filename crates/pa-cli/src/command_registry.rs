@@ -171,6 +171,22 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         "--json   Print JSON",
     ]),
     CommandSpec::new(
+        &["login"],
+        "login <provider> [--device]",
+        "Sign in to a models.json OAuth provider",
+    )
+    .description(
+        "Signs in to a models.json provider whose \"auth\" block declares the \"oauth\" strategy: \
+in the browser, or with a device code when the provider has a device endpoint and no browser can \
+open here (SSH). The URL or code is always printed.",
+    )
+    .options(&["--device  Use the device-code sign-in"]),
+    CommandSpec::new(
+        &["logout"],
+        "logout <provider>",
+        "Remove a provider's stored credential",
+    ),
+    CommandSpec::new(
         &["mcp"],
         "mcp <add|list|get|remove>",
         "Manage user MCP servers",

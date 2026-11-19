@@ -81,6 +81,20 @@ impl CallbackShared {
     }
 }
 
+/// Where a callback server listens and what it accepts: the bind host, the
+/// redirect path, and (when the login checks it at the server) the `state`
+/// a redirect must echo before it settles the login.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct CallbackRoute<'a> {
+    pub(crate) host: &'a str,
+    pub(crate) path: &'a str,
+    /// `Some`: a redirect with any other `state` (or none) gets the failure
+    /// page and never settles the login, so a stray local request cannot
+    /// end it; `None` settles every redirect and leaves the check to the
+    /// caller (the MCP login).
+    pub(crate) expected_state: Option<&'a str>,
+}
+
 /// A running callback server: its redirect URI plus the settled result.
 #[derive(Debug)]
 pub struct CallbackServer {
@@ -97,9 +111,30 @@ impl CallbackServer {
     /// an unregistered redirect port when the registered one is occupied.
     pub async fn start(label: &str, callback_port: Option<u16>) -> Result<Self> {
         let host = callback_host();
+        Self::start_route(
+            label,
+            callback_port,
+            CallbackRoute {
+                host: &host,
+                path: CALLBACK_PATH,
+                expected_state: None,
+            },
+        )
+        .await
+    }
+
+    /// [`CallbackServer::start`] on an explicit route (host, path, and the
+    /// server-side `state` check).
+    pub(crate) async fn start_route(
+        label: &str,
+        callback_port: Option<u16>,
+        route: CallbackRoute<'_>,
+    ) -> Result<Self> {
         let mut last_error: Option<String> = None;
+        let path: Arc<str> = Arc::from(route.path);
+        let expected_state: Option<Arc<str>> = route.expected_state.map(Arc::from);
         for port in candidate_ports(callback_port)? {
-            let listener = match TcpListener::bind((host.as_str(), port)).await {
+            let listener = match TcpListener::bind((route.host, port)).await {
                 Ok(listener) => listener,
                 Err(error) => {
                     last_error = Some(format!("port {port}: {error}"));
@@ -110,6 +145,8 @@ impl CallbackServer {
             let task_shared = Arc::clone(&shared);
             let listener = Arc::new(Mutex::new(Some(listener)));
             let task_listener = Arc::clone(&listener);
+            let path = Arc::clone(&path);
+            let expected_state = expected_state.clone();
             let listener_task = tokio::spawn(async move {
                 loop {
                     let accepted = futures::future::poll_fn(|cx| {
@@ -124,8 +161,10 @@ impl CallbackServer {
                         break;
                     };
                     let shared = Arc::clone(&task_shared);
+                    let path = Arc::clone(&path);
+                    let expected_state = expected_state.clone();
                     tokio::spawn(async move {
-                        serve_callback(stream, &shared).await;
+                        serve_callback(stream, &shared, &path, expected_state.as_deref()).await;
                     });
                 }
             });
@@ -154,6 +193,11 @@ impl CallbackServer {
     /// The local URL the authorization redirect must land on.
     pub fn redirect_uri(&self) -> String {
         redirect_uri_for(self.port)
+    }
+
+    /// The bound port.
+    pub(crate) fn port(&self) -> u16 {
+        self.port
     }
 
     /// Wait for the browser callback to settle.
@@ -206,7 +250,12 @@ impl Drop for CallbackServer {
 }
 
 /// One browser request: read it, answer it, settle the login's waiter.
-async fn serve_callback(mut stream: tokio::net::TcpStream, shared: &CallbackShared) {
+async fn serve_callback(
+    mut stream: tokio::net::TcpStream,
+    shared: &CallbackShared,
+    callback_path: &str,
+    expected_state: Option<&str>,
+) {
     let Some(request) = read_request_head(&mut stream).await else {
         let _ = write_response(
             &mut stream,
@@ -225,7 +274,7 @@ async fn serve_callback(mut stream: tokio::net::TcpStream, shared: &CallbackShar
         .unwrap_or_default()
         .to_string();
     let path = target.split('?').next().unwrap_or_default();
-    if path != CALLBACK_PATH {
+    if path != callback_path {
         let _ = write_response(
             &mut stream,
             "404 Not Found",
@@ -237,6 +286,15 @@ async fn serve_callback(mut stream: tokio::net::TcpStream, shared: &CallbackShar
     let query = target.split_once('?').map_or("", |(_, query)| query);
     let code = query_param(query, "code");
     let state = query_param(query, "state");
+    if expected_state.is_some_and(|expected| state.as_deref() != Some(expected)) {
+        let _ = write_response(
+            &mut stream,
+            "400 Bad Request",
+            oauth_error_page("Prime Agent", "State mismatch."),
+        )
+        .await;
+        return;
+    }
     let error = query_param(query, "error");
     if let Some(error) = error {
         shared.settle(None).await;

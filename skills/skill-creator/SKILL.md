@@ -18,8 +18,8 @@ Before writing a Python-backed skill, read [references/python-skills.md](referen
 
 1. **Pick the kind.** Default to markdown. Go Python only when the agent should *call* the capability (`await my_skill(...)`) instead of following instructions.
 2. **Pick the location.** Ask the user when it is not obvious from context:
-   - Project skill, shared via the repo: `.prime/agent/skills/<name>/`
-   - Personal global skill: `~/.prime/agent/skills/<name>/`
+   - Project skill, shared via the repo: `.prime/agent/skills/<name>/` under the project root
+   - Personal global skill: `<agent dir>/skills/<name>/`, where the agent dir is this build's own state directory: read it from `os.environ["PRIME_AGENT_CODING_AGENT_DIR"]` in the Python REPL (or `$PRIME_AGENT_CODING_AGENT_DIR` in `bash()`); never assume `~/.prime/agent`, which a distribution build does not use
    - Shipped with an npm package: a `skills/` directory in the package, or `pi.skills` paths in its `package.json`
 3. **Scaffold and write** the directory using the layout and frontmatter rules below.
 4. **Verify** the skill loads (see Verification).

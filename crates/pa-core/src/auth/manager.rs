@@ -269,6 +269,11 @@ pub struct AuthStorage {
     /// Memoized candidates (TS `authCandidateMemos`), keyed by `source:provider`,
     /// superseded when the hashed material changes.
     candidate_memos: std::sync::Mutex<HashMap<String, (String, AuthSourceCandidate)>>,
+    /// The providers whose models.json `auth` descriptor declares `oauth`
+    /// (the model registry sets them at load): their stored `oauth`
+    /// credential refreshes in the descriptor's resolver, never through
+    /// [`OAuthIntegration::refresh`].
+    descriptor_oauth_providers: std::collections::HashSet<String>,
 }
 
 /// The retained diagnostic cap: the newest [`AuthStorage::errors`] entries
@@ -291,6 +296,7 @@ impl AuthStorage {
             load_error: None,
             errors: Vec::new(),
             candidate_memos: std::sync::Mutex::new(HashMap::new()),
+            descriptor_oauth_providers: std::collections::HashSet::new(),
         };
         auth.reload();
         auth
@@ -363,6 +369,7 @@ impl AuthStorage {
             load_error: None,
             errors: Vec::new(),
             candidate_memos: std::sync::Mutex::new(HashMap::new()),
+            descriptor_oauth_providers: std::collections::HashSet::new(),
         };
         auth.reload();
         auth
@@ -460,6 +467,17 @@ impl AuthStorage {
                 org_id.as_deref().unwrap_or_default()
             )),
         }
+    }
+
+    /// Mark the providers whose `auth` descriptor declares `oauth`: the
+    /// lookup serves their fresh access token and leaves the refresh to the
+    /// descriptor's resolver, and a provider rejection expires their token
+    /// instead of rotating it here.
+    pub(crate) fn set_descriptor_oauth_providers(
+        &mut self,
+        providers: std::collections::HashSet<String>,
+    ) {
+        self.descriptor_oauth_providers = providers;
     }
 
     /// The backend under this store: a request-auth resolver reads,
