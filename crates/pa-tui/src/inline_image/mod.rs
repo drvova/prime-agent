@@ -116,6 +116,12 @@ pub(crate) fn image_row_count(data: &str, mime_type: &str, max_cols: usize) -> u
     layout(data, mime_type, max_cols).map_or(0, |geometry| usize::from(geometry.rows))
 }
 
+/// Drop the image sentinels from a row that is read as text (a selection copy): the row keeps
+/// its blank cells.
+pub(crate) fn strip_sentinels(line: &mut Line) {
+    line.retain(|span| !span.content.starts_with(SENTINEL_PREFIX));
+}
+
 /// One parsed sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Sentinel {

@@ -84,6 +84,29 @@ impl ImageOverlay {
         self.transmitted.clear();
     }
 
+    /// Take every drawing back before the surface hands the terminal on (a suspend, an exit,
+    /// the agents-view handoff): kitty placements outlive the cells under them, so each is
+    /// deleted; a cell-bound picture goes with the next surface's repaint. The memory resets
+    /// as [`Self::invalidate`] does.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the write error.
+    pub(crate) fn release(&mut self, out: &mut impl Write) -> io::Result<()> {
+        for drawn in &self.drawn {
+            match drawn.key.protocol {
+                ImageProtocol::Kitty => {
+                    if let Some(id) = self.kitty_ids.get(&drawn.key) {
+                        write!(out, "{}", encode::kitty_delete(*id))?;
+                    }
+                }
+                ImageProtocol::Iterm2 | ImageProtocol::Sixel | ImageProtocol::HalfBlock => {}
+            }
+        }
+        self.invalidate();
+        out.flush()
+    }
+
     /// Whether the terminal shows a drawing this overlay made.
     pub(crate) fn holds_drawings(&self) -> bool {
         !self.drawn.is_empty()
@@ -268,6 +291,15 @@ mod tests {
         );
         // Scrolled out: the placement is deleted, the data kept.
         assert_eq!(paint(&mut overlay, &buffer, &[]), encode::kitty_delete(1));
+        assert!(!overlay.holds_drawings());
+        // A surface hand-off takes the placements back.
+        paint(&mut overlay, &buffer, &[placement(ImageProtocol::Kitty, 2)]);
+        let mut released = Vec::new();
+        overlay.release(&mut released).expect("release");
+        assert_eq!(
+            String::from_utf8(released).expect("utf-8"),
+            encode::kitty_delete(1)
+        );
         assert!(!overlay.holds_drawings());
     }
 
