@@ -16,6 +16,7 @@ pub(crate) struct ActivityUpdates {
     pub thinking: mpsc::UnboundedSender<ThinkingCycleNote>,
     pub stats: mpsc::UnboundedSender<super::StatsUpdate>,
     pub usage: mpsc::UnboundedSender<super::UsageUpdate>,
+    pub context: mpsc::UnboundedSender<super::ContextUpdate>,
 }
 
 impl SessionUi {
@@ -544,6 +545,7 @@ mod retry_collapse_tests {
             ChatEntry::User {
                 text: "hi".to_string(),
                 sent_at: None,
+                images: Vec::new(),
             },
             failed_attempt("429 Too many concurrent requests"),
         ]);

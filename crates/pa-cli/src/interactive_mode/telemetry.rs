@@ -257,9 +257,28 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
-    fn image_pasted(&self, _mime_type: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        self.count("tui_image_paste_count");
-        Box::pin(std::future::ready(()))
+    fn image_paste(
+        &self,
+        source: &'static str,
+        outcome: &'static str,
+        format: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        if outcome == "attached" {
+            self.count("tui_image_paste_count");
+        }
+        // Standalone like `tui resume picker closed`: `tui exit` sits at the backend's 128-key
+        // cap. Delivery is the client worker's: the paste path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("source", serde_json::Value::from(source));
+            properties.set("outcome", serde_json::Value::from(outcome));
+            properties.set("format", serde_json::Value::from(format));
+            client.track("tui image paste", properties);
+            let _ = client.shutdown().await;
+        })
     }
 
     fn queued_input(
@@ -371,6 +390,30 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn inline_images_rendered(
+        &self,
+        counts: pa_tui::interactive::InlineImageCounts,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui resume picker closed`: `tui exit` sits at the backend's 128-key
+        // cap. Counts and the protocol name only.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("protocol", serde_json::Value::from(counts.protocol));
+            properties.set("kitty_count", serde_json::Value::from(counts.kitty));
+            properties.set("iterm2_count", serde_json::Value::from(counts.iterm2));
+            properties.set("sixel_count", serde_json::Value::from(counts.sixel));
+            properties.set(
+                "half_block_count",
+                serde_json::Value::from(counts.half_block),
+            );
+            client.track("tui inline images rendered", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn usage_page_closed(
         &self,
         summary: pa_tui::usage_page::UsagePageSummary,
@@ -401,6 +444,35 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
                 serde_json::Value::from(summary.reset_chip_shown_count),
             );
             client.track("tui usage page closed", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn context_view_closed(
+        &self,
+        summary: pa_tui::context_view::ContextViewSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui usage page closed`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the close path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("source", serde_json::Value::from(summary.source.as_str()));
+            properties.set(
+                "breakdown",
+                serde_json::Value::from(summary.breakdown.as_str()),
+            );
+            properties.set(
+                "category_count",
+                serde_json::Value::from(summary.category_count),
+            );
+            properties.set(
+                "subagent_count",
+                serde_json::Value::from(summary.subagent_count),
+            );
+            client.track("tui context window closed", properties);
             let _ = client.shutdown().await;
         })
     }

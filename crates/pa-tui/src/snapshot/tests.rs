@@ -58,6 +58,10 @@ fn image_only_user_message_shows_the_image_placeholder() {
         vec![ChatEntry::User {
             text: "[image]".to_string(),
             sent_at: None,
+            images: vec![crate::chat::MessageImage {
+                data: std::sync::Arc::from("QUJD"),
+                mime_type: "image/png".to_string(),
+            }],
         }]
     );
 }
@@ -1371,6 +1375,7 @@ fn decodes_block_content() {
         vec![ChatEntry::User {
             text: "hello world".to_string(),
             sent_at: None,
+            images: Vec::new(),
         }]
     );
     let items = message_value_to_entries(&json!({
@@ -1396,7 +1401,13 @@ fn decodes_streamed_events() {
         "message": { "role": "user", "content": "go" },
     }))
     .unwrap();
-    assert_eq!(user, TurnUpdate::UserMessage("go".to_string()));
+    assert_eq!(
+        user,
+        TurnUpdate::UserMessage {
+            text: "go".to_string(),
+            images: Vec::new()
+        }
+    );
     let partial = event_to_update(&json!({
         "type": "message_update",
         "message": { "role": "assistant", "content": "work" },
@@ -1546,6 +1557,7 @@ fn session_command_rows_respect_display_and_shape() {
         vec![ChatEntry::User {
             text: "[Malformed session command message]".to_string(),
             sent_at: None,
+            images: Vec::new(),
         }]
     );
 }
@@ -2007,7 +2019,8 @@ fn attach_snapshot_carries_the_tray_context_usage() {
     assert_eq!(usage.tokens, 9_400);
     assert_eq!(usage.context_window, 128_000);
 
-    // Unknown tokens (a fresh compaction) clear the tray display.
+    // Unknown tokens (a fresh compaction) read as unknown, never as "no usage": the tray keeps
+    // its indicator (the attach settles it over the last known value).
     let mut attach = slim_attach();
     attach
         .get_mut("snapshot")
@@ -2016,7 +2029,14 @@ fn attach_snapshot_carries_the_tray_context_usage() {
         .expect("state")["contextUsage"] =
         json!({ "tokens": null, "contextWindow": 128_000, "percent": null });
     let data = attach_data_from_response(attach).unwrap();
-    assert_eq!(reconstruct(&data).context_usage, None);
+    assert_eq!(
+        reconstruct(&data).context_usage,
+        Some(crate::chrome::ContextUsage {
+            tokens: 0,
+            context_window: 128_000,
+            reading: crate::chrome::ContextReading::Unknown,
+        })
+    );
 
     // A state without the field (a model-less session) stays `None`.
     let data = attach_data_from_response(slim_attach()).unwrap();

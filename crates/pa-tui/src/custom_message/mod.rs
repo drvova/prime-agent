@@ -276,6 +276,7 @@ fn slash_row_entries(
         return vec![ChatEntry::User {
             text: "[Malformed session command message]".to_string(),
             sent_at: None,
+            images: Vec::new(),
         }];
     }
     if is_command_row {

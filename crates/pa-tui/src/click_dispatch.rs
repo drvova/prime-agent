@@ -79,6 +79,10 @@ impl SessionUi {
                 self.track_click("dock");
                 self.open_dock_group_from_click(group, view);
             }
+            ClickAction::OpenContextView => {
+                self.track_click("context");
+                self.open_context_view(view, crate::context_view::ContextViewSource::Click);
+            }
             ClickAction::OpenAgentsView => {
                 // The click keeps the LEFT ARROW's contract — the pane
                 // hands off only while the editor is empty — so a draft

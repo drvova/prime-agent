@@ -24,7 +24,13 @@ impl AgentView {
                     crate::width::wrapped_text_count(text, width.saturating_sub(2).max(1))
                 }
             }
-            ChatEntry::User { text, .. } => {
+            ChatEntry::RunSummary(row) => {
+                1 + crate::width::wrapped_text_count(
+                    &row.text_at(width),
+                    width.saturating_sub(2).max(1),
+                )
+            }
+            ChatEntry::User { text, images, .. } => {
                 usize::from(spacing)
                     + crate::chat::user_block_row_count(
                         text,
@@ -32,6 +38,11 @@ impl AgentView {
                         &self.code_block_indent,
                         width,
                     )
+                    + if self.show_images {
+                        crate::chat::user_images_row_count(images, width)
+                    } else {
+                        0
+                    }
             }
             ChatEntry::Assistant(message) => {
                 #[cfg(test)]
@@ -322,7 +333,11 @@ mod tests {
                 StatusKind::Error,
             ]))
                 .prop_map(|(text, kind)| ChatEntry::Status { text, kind }),
-            1 => markdown_text().prop_map(|text| ChatEntry::User { text, sent_at: None }),
+            1 => markdown_text().prop_map(|text| ChatEntry::User {
+                text,
+                sent_at: None,
+                images: Vec::new(),
+            }),
             1 => markdown_text().prop_map(|text| ChatEntry::SlashCommand { text }),
             1 => (
                 markdown_text(),

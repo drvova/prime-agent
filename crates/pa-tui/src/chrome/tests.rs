@@ -85,7 +85,9 @@ fn the_tray_reports_the_manage_hints_own_cells() {
         tray_depth: Some(2),
         ..Default::default()
     };
-    let (line, hint) = render_tray_with_hint(&state, &theme, 120);
+    let TrayRow {
+        line, manage: hint, ..
+    } = render_tray_with_hint(&state, &theme, 120);
     let hint = hint.expect("the manage hint reports its cells");
     let text = line
         .iter()
@@ -108,10 +110,10 @@ fn the_tray_reports_the_manage_hints_own_cells() {
         tray_override: Some("Press ctrl+c again to exit".to_string()),
         ..Default::default()
     };
-    let (_, hint) = render_tray_with_hint(&state, &theme, 120);
+    let hint = render_tray_with_hint(&state, &theme, 120).manage;
     assert_eq!(hint, None, "an override label carries no hint region");
     let state = ChromeState::default();
-    let (_, hint) = render_tray_with_hint(&state, &theme, 120);
+    let hint = render_tray_with_hint(&state, &theme, 120).manage;
     assert_eq!(hint, None, "a hidden manage hint carries no region");
 }
 
@@ -888,6 +890,7 @@ fn tray_left_and_right_labels() {
         context: Some(ContextUsage {
             tokens: 6_123,
             context_window: 128_000,
+            reading: ContextReading::Measured,
         }),
         ..Default::default()
     };
@@ -1058,6 +1061,7 @@ fn tray_never_repeats_the_heartbeat_counts() {
         context: Some(ContextUsage {
             tokens: 190,
             context_window: 128_000,
+            reading: ContextReading::Measured,
         }),
         ..Default::default()
     };
@@ -1081,6 +1085,7 @@ fn tray_gap_is_the_context_gauge() {
             context: Some(ContextUsage {
                 tokens,
                 context_window: 200_000,
+                reading: ContextReading::Measured,
             }),
             ..Default::default()
         };
@@ -1207,6 +1212,7 @@ fn the_gauge_ticks_the_compaction_threshold() {
             context: Some(ContextUsage {
                 tokens: 50_000,
                 context_window: 200_000,
+                reading: ContextReading::Measured,
             }),
             compaction_percent,
             ..Default::default()
@@ -1230,7 +1236,7 @@ fn the_gauge_ticks_the_compaction_threshold() {
 }
 
 /// As the width drops, the tray gives segments up in its stated order (gauge, tier, depth,
-/// tokens/window, effort with its glyph, `manage`, percent, model) — each row fits its width, no segment is cut
+/// tokens/window, effort with its glyph, `manage`, model, percent) — each row fits its width, no segment is cut
 /// mid-word, and the lanes never touch.
 #[test]
 fn the_tray_degrades_in_its_shrink_order() {
@@ -1240,6 +1246,7 @@ fn the_tray_degrades_in_its_shrink_order() {
         context: Some(ContextUsage {
             tokens: 50_000,
             context_window: 200_000,
+            reading: ContextReading::Measured,
         }),
         model_id: Some("claude-sonnet-4-5".to_string()),
         thinking_suffix: Some("high".to_string()),
@@ -1280,24 +1287,25 @@ fn the_tray_degrades_in_its_shrink_order() {
             // 30, 25: the `manage` word (the arrow stays).
             "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
             "\u{2190} 25% \u{b7} claude-sonnet-4-5".to_string(),
-            // 20: the percent; the model goes last (12, 4).
-            "\u{2190} claude-sonnet-4-5".to_string(),
-            "\u{2190}".to_string(),
+            // 20, 12: the model; the context percent outlives it (4).
+            "\u{2190} 25%".to_string(),
+            "\u{2190} 25%".to_string(),
             "\u{2190}".to_string(),
         ]
     );
 }
 
 /// The rate-limit reset chip rides the location lane in the session accent; at narrow widths it
-/// outlives the context percent and drops before the model label.
+/// outlives the model label and the context percent.
 #[test]
-fn the_reset_chip_renders_and_drops_before_the_model() {
+fn the_reset_chip_renders_and_outlives_the_model() {
     let state = |chip: Option<&str>| ChromeState {
         show_manage: true,
         chat_name: "fix-login".to_string(),
         context: Some(ContextUsage {
             tokens: 50_000,
             context_window: 200_000,
+            reading: ContextReading::Measured,
         }),
         model_id: Some("claude-sonnet-4-5".to_string()),
         reset_chip: chip.map(str::to_string),
@@ -1327,10 +1335,10 @@ fn the_reset_chip_renders_and_drops_before_the_model() {
             "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5",
             "\u{2190} manage limit resets in 1h 2m 50k/200k 25% \u{b7} claude-sonnet-4-5",
             "\u{2190} manage 50k/200k 25% \u{b7} claude-sonnet-4-5",
-            // 44: the `manage` word and the context label go first; the chip stays with the model.
-            "\u{2190} limit resets in 1h 2m claude-sonnet-4-5",
-            // 30: the chip goes before the model.
-            "\u{2190} claude-sonnet-4-5",
+            // 44, 30: the `manage` word, the context label's tokens, and the model go first; the
+            // chip stays with the percent.
+            "\u{2190} limit resets in 1h 2m 25%",
+            "\u{2190} limit resets in 1h 2m 25%",
         ]
         .map(str::to_string)
     );
@@ -1344,4 +1352,56 @@ fn the_reset_chip_renders_and_drops_before_the_model() {
         session_accent("fix-login", &theme()),
         "the chip wears the session accent"
     );
+}
+
+/// The context indicator always reads something: `?/W` before the first measurement, the last
+/// known value marked `~` while a compaction leaves the usage unknown (or a reattached worker
+/// omits it), and `>100%` in the warning tone past the window.
+#[test]
+fn the_context_indicator_never_blanks() {
+    let window = |tokens: Option<u64>| {
+        ContextUsage::from_wire(&json!({ "tokens": tokens, "contextWindow": 128_000 }))
+    };
+    let measured = window(Some(90_000));
+    let label = |context: Option<ContextUsage>| {
+        let state = ChromeState {
+            context,
+            model_id: Some("faux-1".to_string()),
+            ..Default::default()
+        };
+        render_tray(&state, &theme(), 60)
+    };
+    let text = |line: &Line| {
+        line.iter()
+            .map(|span| span.content.as_str())
+            .collect::<String>()
+            .chars()
+            .filter(|c| !matches!(c, '\u{2501}' | '\u{2500}' | '\u{2503}'))
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    assert_eq!(
+        [
+            text(&label(window(None))),
+            text(&label(ContextUsage::settle(window(None), measured))),
+            text(&label(ContextUsage::settle(None, measured))),
+            text(&label(ContextUsage::settle(window(Some(70_000)), measured))),
+        ],
+        [
+            "?/128k \u{b7} faux-1",
+            "~90k/128k 70% \u{b7} faux-1",
+            "~90k/128k 70% \u{b7} faux-1",
+            "70k/128k 55% \u{b7} faux-1",
+        ]
+        .map(str::to_string)
+    );
+    let over = label(window(Some(140_000)));
+    assert_eq!(text(&over), "140k/128k >100% \u{b7} faux-1");
+    let percent = over
+        .iter()
+        .find(|span| span.content == ">100%")
+        .expect("the over-limit percent is its own span");
+    assert_eq!(percent.style, theme().fg_style(ThemeColor::Warning));
 }

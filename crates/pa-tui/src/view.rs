@@ -125,8 +125,11 @@ pub struct AgentView {
     /// The `/usage` page: provider quotas and local spend, mounted over the editor dock at
     /// nearly the full frame height.
     pub usage_page: Option<crate::usage_page::UsagePage>,
-    /// The `terminal.showImages` setting (default true): image blocks
-    /// render metadata rows when set, `[Image: ...]` placeholders otherwise.
+    /// The context window: what fills the model's context, mounted over the editor dock like
+    /// the `/usage` page.
+    pub context_view: Option<crate::context_view::ContextView>,
+    /// The `terminal.showImages` setting (default true): image blocks render inline (their
+    /// metadata row plus the picture) when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
     /// The `showHardwareCursor` setting (TS default false): frame paints
     /// never drag a visible cursor across the pane.
@@ -149,6 +152,9 @@ pub struct AgentView {
     /// The last composed frame's transcript window rows, when a paint may
     /// shift them as a terminal scroll region (following, nothing over them).
     scroll_region: Option<crate::scroll_region::ScrollRegion>,
+    /// The last composed frame's wholly visible images, for the pixel overlay the paint draws
+    /// after its cell diff.
+    image_placements: Vec<crate::inline_image::overlay::Placement>,
     /// Whether the last frame's window reached the tail (operator
     /// directive 2026-09-26): the follow hint shows only then.
     pub(crate) window_shows_tail: bool,
@@ -307,6 +313,7 @@ impl AgentView {
             || self.goal_panel.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
+            || self.context_view.is_some()
             || self.fork_selector.is_some()
             || self.confirm.is_some()
             || self.share_loader.is_some()
@@ -400,6 +407,7 @@ impl AgentView {
             settings_menu: None,
             info_panel: None,
             usage_page: None,
+            context_view: None,
             show_images: true,
             show_hardware_cursor: false,
             splash_suppressed: false,
@@ -411,6 +419,7 @@ impl AgentView {
             dock_cursor: None,
             window_rows: 0,
             scroll_region: None,
+            image_placements: Vec::new(),
             window_shows_tail: false,
             detail_transition: false,
             hover_pos: None,
@@ -835,6 +844,7 @@ fn item_to_entry(item: TranscriptItem) -> ChatEntry {
         TranscriptItem::UserMessage { text } => ChatEntry::User {
             text,
             sent_at: None,
+            images: Vec::new(),
         },
         TranscriptItem::SystemNote { text } => ChatEntry::Status {
             text,
