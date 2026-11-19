@@ -1,0 +1,12 @@
+module = "rlm.notify"
+closure_seed = true
+prompt_builtins = ["notify"]
+documented = ["notify"]
+probe = ["import rlm.notify as _notify", "assert callable(_notify.notify)"]
+
+[host_requests]
+"notify.send" = "notify"
+
+[[telemetry]]
+event = "agent repl notify"
+properties = ["notify_count", "notify_undelivered_count"]

@@ -629,10 +629,9 @@ impl SessionUi {
                 max_attempts,
                 delay_ms,
                 error_message,
-                reason,
             } => {
-                // The retry countdown loader replaces the working loader until the loop settles; a
-                // backup reason names the backup provider (no countdown). SANCTIONED DIVERGENCE
+                // The retry countdown loader replaces the working loader until the loop settles.
+                // SANCTIONED DIVERGENCE
                 // (operator ruling 2026-09-23): the just-failed attempt's error row leaves the chat
                 // — the transient loader line is the ONE error shown while the episode runs, and
                 // the durable outcome row replaces it at the settle.
@@ -648,7 +647,6 @@ impl SessionUi {
                     max_attempts,
                     ends_at: std::time::Instant::now() + delay,
                     error_message,
-                    reason,
                     provider: view.chrome.model_provider.clone(),
                 });
             }
@@ -656,7 +654,6 @@ impl SessionUi {
                 success,
                 attempt: _,
                 final_error,
-                restored_model,
             } => {
                 view.retry = None;
                 let waited = self.retry_episode_waited.take();
@@ -666,13 +663,6 @@ impl SessionUi {
                     // The give-up's final attempt (error and summary rows) is superseded by the
                     // ONE terminal line.
                     self.pop_superseded_attempt(view);
-                }
-                // A settled switch restores the primary provider.
-                if let Some(restored_model) = restored_model {
-                    view.push_entry(ChatEntry::Status {
-                        text: format!("Primary provider recovered — back on {restored_model}"),
-                        kind: StatusKind::Info,
-                    });
                 }
             }
             TurnUpdate::CompactionStart {

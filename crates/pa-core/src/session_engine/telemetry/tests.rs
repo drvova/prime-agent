@@ -811,19 +811,12 @@ async fn continuation_run_reports_continuation_trigger() {
     assert_eq!(runs[0]["trigger"], serde_json::json!("continuation"));
 }
 
-fn retry_start(telemetry: &SessionTelemetry, attempt: u32, delay_ms: u64, backup: bool) {
+fn retry_start(telemetry: &SessionTelemetry, attempt: u32, delay_ms: u64) {
     telemetry.note_auto_retry_event(&AutoRetryEvent::Start {
         attempt,
         max_attempts: 3,
         delay_ms,
         error_message: String::new(),
-        reason: if backup {
-            crate::session_engine::auto_retry::RetryStartReason::Backup {
-                backup_model: "backup/m".to_string(),
-            }
-        } else {
-            crate::session_engine::auto_retry::RetryStartReason::Quick
-        },
     });
 }
 
@@ -861,9 +854,9 @@ async fn retries_fold_into_one_run_that_succeeds() {
         },
     );
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     attempt(&fixture, failed);
-    retry_start(&telemetry, 2, 1_000, true);
+    retry_start(&telemetry, 2, 1_000);
     let mut recovered = assistant_message();
     recovered.usage.cost.total = 0.012;
     attempt(&fixture, recovered);
@@ -871,7 +864,6 @@ async fn retries_fold_into_one_run_that_succeeds() {
         success: true,
         attempt: 2,
         final_error: None,
-        restored_model: None,
     });
     telemetry.end().await.unwrap();
 
@@ -881,7 +873,6 @@ async fn retries_fold_into_one_run_that_succeeds() {
     assert_eq!(run["outcome"], serde_json::json!("success"));
     assert_eq!(run["error_category"], serde_json::Value::Null);
     assert_eq!(run["retry_count"], serde_json::json!(2));
-    assert_eq!(run["failover_count"], serde_json::json!(1));
     assert_eq!(run["retry_wait_ms"], serde_json::json!(1_500));
     assert_eq!(run["model_call_count"], serde_json::json!(3));
     assert_eq!(run["turn_count"], serde_json::json!(3));
@@ -926,7 +917,7 @@ async fn loop_guard_interventions_ride_the_run() {
         },
     );
     attempt(&fixture, cut);
-    retry_start(&telemetry, 1, 10, false);
+    retry_start(&telemetry, 1, 10);
     telemetry.note_tool_repeat_nudge();
     attempt(&fixture, assistant_message());
     telemetry.end().await.unwrap();
@@ -962,15 +953,14 @@ async fn exhausted_retries_are_one_failed_run() {
         },
     );
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 2, 500, false);
+    retry_start(&telemetry, 2, 500);
     attempt(&fixture, failed);
     telemetry.note_auto_retry_event(&AutoRetryEvent::End {
         success: false,
         attempt: 2,
         final_error: Some("network".to_string()),
-        restored_model: None,
     });
     telemetry.end().await.unwrap();
 
@@ -1004,12 +994,11 @@ async fn a_cancelled_retry_never_absorbs_the_next_turn() {
         },
     );
     attempt(&fixture, assistant_with_error("network connection reset"));
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     telemetry.note_auto_retry_event(&AutoRetryEvent::End {
         success: false,
         attempt: 1,
         final_error: Some("Retry cancelled".to_string()),
-        restored_model: None,
     });
     emit(
         &fixture,
@@ -1703,6 +1692,61 @@ async fn goal_verification_facts_ride_their_own_event() {
     );
     let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
     assert!(ended.keys().all(|key| !key.starts_with("goal_")));
+}
+
+/// The provider layer's Responses transport counts ride their own `agent responses transport`
+/// event at session end (counts only), and the session ended event carries none of them.
+#[tokio::test]
+async fn responses_transport_counts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_responses_transport(pa_ai::responses_transport::ResponsesTransportCounts {
+        websocket_requests: 3,
+        delta_requests: 2,
+        full_context_requests: 1,
+        stale_continuation_retries: 1,
+        auto_websocket: 2,
+        auto_sse_one_shot: 1,
+        probes: 1,
+        ..Default::default()
+    });
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent responses transport"]
+    );
+    let transport = &event_properties(&fixture.mock, "agent responses transport").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = transport
+        .iter()
+        .filter(|(key, _)| key.starts_with("responses_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "responses_websocket_request_count": 3,
+            "responses_delta_request_count": 2,
+            "responses_full_context_request_count": 1,
+            "responses_sse_fallback_count": 0,
+            "responses_stale_continuation_retry_count": 1,
+            "responses_auto_websocket_count": 2,
+            "responses_auto_sse_one_shot_count": 1,
+            "responses_auto_sse_no_websocket_wire_count": 0,
+            "responses_auto_sse_unsupported_count": 0,
+            "responses_auto_sse_demoted_count": 0,
+            "responses_probe_count": 1,
+            "responses_probe_failed_count": 0,
+            "responses_websocket_without_wire_count": 0,
+        })
+    );
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert!(ended.keys().all(|key| !key.starts_with("responses_")));
 }
 
 /// Kernel `web.read` outcomes ride their own `agent web reads` event at session end (counts by

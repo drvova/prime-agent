@@ -120,24 +120,20 @@ pub(crate) fn retry_event_to_engine_event(
             max_attempts,
             delay_ms,
             error_message,
-            reason,
         } => EngineEvent::AutoRetryStart {
             attempt,
             max_attempts,
             delay_ms,
             error_message,
-            reason,
         },
         AutoRetryEvent::End {
             success,
             attempt,
             final_error,
-            restored_model,
         } => EngineEvent::AutoRetryEnd {
             success,
             attempt,
             final_error,
-            restored_model,
         },
     }
 }

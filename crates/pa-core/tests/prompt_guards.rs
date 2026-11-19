@@ -12,8 +12,9 @@
 //! is byte-identical across sessions) and tool surface (the core layer's documented tools match the
 //! real registered surface; a tool change without a prompt update fails here).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::LazyLock;
 
 use pa_core::prompts::layers::{CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER};
 use pa_core::prompts::model_prompts::MODEL_PROMPTS_TOML;
@@ -60,7 +61,7 @@ const DYNAMIC_ONLY_MARKERS: &[&str] = &[
 #[test]
 fn static_layers_contain_no_dynamic_content() {
     for (name, text) in [
-        ("core", CORE_LAYER),
+        ("core", CORE_LAYER.as_str()),
         ("usage", USAGE_LAYER),
         ("opinionated", OPINIONATED_LAYER),
         ("model-prompts", MODEL_PROMPTS_TOML),
@@ -141,85 +142,87 @@ fn cached_prefix_is_stable_across_sessions() {
 
 // Tool surface
 
-/// Host-request types that are host-internal plumbing, not model-facing
-/// programmatic tools (the prompt must not document them).
-const INTERNAL_HOST_REQUESTS: &[&str] = &[
-    "mcp.config",
-    "mcp.refresh",
-    // The runtime's detached-bash notice pair (the kernel's bash module
-    // fires them; the model never calls them).
-    "bash.completed",
-    "bash.consumed",
-    // The same pair for a cell that ended in the background (`rlm.cells`).
-    "cell.completed",
-    "cell.consumed",
+/// What the kernel capability manifests (`prime-agent-runtime/capabilities/`) declare about the
+/// host requests their modules issue and the core prompt tokens they own.
+struct ManifestSurface {
+    /// Each host request a capability issues, mapped to the prompt token it surfaces as.
+    host_requests: BTreeMap<String, String>,
+    /// Host requests a capability issues as host plumbing, never documented.
+    internal_host_requests: BTreeSet<String>,
+    /// The core prompt's bullet tokens the capabilities own.
+    documented: BTreeSet<String>,
+}
+
+/// The manifest keys this file reads (the schema is in the manifests' README).
+#[derive(serde::Deserialize)]
+struct ManifestHostSurface {
+    #[serde(default)]
+    host_requests: BTreeMap<String, String>,
+    #[serde(default)]
+    internal_host_requests: Vec<String>,
+    #[serde(default)]
+    documented: Vec<String>,
+}
+
+static MANIFEST_SURFACE: LazyLock<ManifestSurface> = LazyLock::new(|| {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/capabilities");
+    let mut surface = ManifestSurface {
+        host_requests: BTreeMap::new(),
+        internal_host_requests: BTreeSet::new(),
+        documented: BTreeSet::new(),
+    };
+    for entry in
+        std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+    {
+        let path = entry.expect("directory entry").path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("manifest text");
+        let manifest: ManifestHostSurface = toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("unparseable manifest {}: {error}", path.display()));
+        surface.host_requests.extend(manifest.host_requests);
+        surface
+            .internal_host_requests
+            .extend(manifest.internal_host_requests);
+        surface.documented.extend(manifest.documented);
+    }
+    surface
+});
+
+/// Registered host-request types no capability manifest declares that are host-internal plumbing,
+/// not model-facing programmatic tools (the prompt must not document them).
+const NON_MANIFEST_INTERNAL_HOST_REQUESTS: &[&str] = &[
     // The factory module reports run milestones; the model never calls it.
     "factory.progress",
-    // The kernel's `ask` withdraws its own question when its cell is interrupted.
-    "question.cancel",
+    // pa-core's gate for `model.set_effort` hands the level to the embedding's switch.
+    "model.apply_effort",
 ];
 
-/// Map one registered host-request type to the prompt token that documents
-/// it. `None` when the request is host-internal.
+/// Map one registered host-request type to the prompt token that documents it: the capability
+/// manifests' `[host_requests]` mapping, else the explicit cases below for requests no manifest
+/// declares, else the request's own name. `None` when the request is host-internal.
 fn prompt_token_for_host_request(request: &str) -> Option<String> {
-    if INTERNAL_HOST_REQUESTS.contains(&request) {
+    let surface = &*MANIFEST_SURFACE;
+    if surface.internal_host_requests.contains(request)
+        || NON_MANIFEST_INTERNAL_HOST_REQUESTS.contains(&request)
+    {
         return None;
+    }
+    if let Some(token) = surface.host_requests.get(request) {
+        return Some(token.clone());
     }
     Some(
         match request {
-            "rlm.run" => "rlm.spawn",
-            "rlm.progress.note" => "rlm.progress_note",
-            "question.ask" => "ask",
+            // The bundled `agent_observe` skill's API: a skill, not a kernel capability.
             "agent_observe.list" | "agent_message.list_agents" => "agent_observe.list_agents",
             "agent_observe.get" => "agent_observe.get_agent",
             "agent_observe.recent" => "agent_observe.recent_messages",
-            "agent_observe.session_messages" | "rlm.session.saved_messages" => {
-                "rlm.session.messages"
-            }
-            "mcp.begin_login" => "mcp.login",
-            // `usage.get()` reads the session half, then the quota half.
-            "usage.session" | "usage.quotas" => "usage.get",
-            "notify.send" => "notify",
-            // `settings.get()` reads the session half, then the host half.
-            "settings.session" | "settings.host" => "settings.get",
             other => other,
         }
         .to_string(),
     )
 }
-
-/// Kernel-side programmatic tools implemented by the vendored `prime-agent-runtime` package
-/// (generic MCP calls). Update together with the runtime sidecar.
-const KERNEL_LOCAL_TOKENS: &[&str] = &[
-    "mcp.list_tools",
-    "mcp.call_tool",
-    "mcp.search_tools",
-    "mcp.describe_tool",
-];
-
-/// The vendored runtime's harness-state API (`rlm.harness` CRUD and
-/// `rlm.get_harness_state`) plus its sanctioned terminal turn call
-/// (`rlm.end_turn`). Update together with the runtime sidecar.
-const HARNESS_TOKENS: &[&str] = &[
-    "rlm.end_turn",
-    "rlm.harness.create_memory",
-    "rlm.harness.update_memory",
-    "rlm.harness.delete_memory",
-    "rlm.harness.create_prompt_note",
-    "rlm.harness.update_prompt_note",
-    "rlm.harness.delete_prompt_note",
-    "rlm.harness.create_skill",
-    "rlm.harness.update_skill",
-    "rlm.harness.delete_skill",
-    "rlm.harness.create_subagent",
-    "rlm.harness.update_subagent",
-    "rlm.harness.delete_subagent",
-    "rlm.harness.record_refinement",
-    "rlm.harness.plan_refinement",
-    "rlm.harness.overview",
-    "rlm.harness.search",
-    "rlm.get_harness_state",
-];
 
 /// A host-request type literal: lowercase dotted name (`rlm.collect`).
 fn is_request_type_literal(literal: &str) -> bool {
@@ -235,8 +238,9 @@ fn is_request_type_literal(literal: &str) -> bool {
 }
 
 /// Scan the pa-core sources for every host-request type the session engine
-/// registers: `handlers.register("<type>", ...)` literals plus
-/// `for request_type in [ "<type>", ... ]` loop tables.
+/// registers: `handlers.register("<type>", ...)` literals,
+/// `for request_type in [ "<type>", ... ]` loop tables, and the
+/// `pub const <NAME>_REQUEST_TYPE: &str = "<type>"` constants handlers register under.
 fn registered_host_requests() -> BTreeSet<String> {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut found = BTreeSet::new();
@@ -269,6 +273,14 @@ fn registered_host_requests() -> BTreeSet<String> {
                     }
                 }
             }
+            // Request-type constants: `pub const <NAME>_REQUEST_TYPE: &str = "a.b"`.
+            found.extend(
+                source
+                    .split("_REQUEST_TYPE: &str = ")
+                    .skip(1)
+                    .filter_map(first_string_literal)
+                    .filter(|literal| is_request_type_literal(literal)),
+            );
             // Loop tables: `for request_type in [ "a.b", ... ]`.
             for remainder in source.split("for request_type in").skip(1) {
                 let Some(open) = remainder.find('[') else {
@@ -414,7 +426,7 @@ fn bundled_python_skills() -> Vec<(String, Vec<String>)> {
 }
 
 /// The surface tokens the prompt is allowed to document: kernel-bound names, registered host
-/// requests, bundled Python skills, and the runtime-package (harness + generic MCP) API.
+/// requests, bundled Python skills, and the tokens the kernel capability manifests document.
 fn allowed_surface_tokens() -> BTreeSet<String> {
     let mut allowed = BTreeSet::new();
     allowed.extend(kernel_bound_names());
@@ -429,9 +441,7 @@ fn allowed_surface_tokens() -> BTreeSet<String> {
             allowed.insert(format!("{import}.{function}"));
         }
     }
-    for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
-        allowed.insert(token.to_string());
-    }
+    allowed.extend(MANIFEST_SURFACE.documented.iter().cloned());
     allowed
 }
 
@@ -453,9 +463,7 @@ fn required_surface_tokens() -> BTreeSet<String> {
             required.insert(format!("{import}.{function}"));
         }
     }
-    for token in KERNEL_LOCAL_TOKENS.iter().chain(HARNESS_TOKENS) {
-        required.insert(token.to_string());
-    }
+    required.extend(MANIFEST_SURFACE.documented.iter().cloned());
     required
 }
 
@@ -507,7 +515,7 @@ fn core_layer_documents_the_real_tool_surface() {
         assert!(
             known,
             "prompt documents unknown tool {token:?}: a tool-surface change must \
-             update prompts/layers/core.md (and this test's token mapping)"
+             update prompts/layers/core.md or the capability doc file (and this test's token mapping)"
         );
     }
 
@@ -522,9 +530,26 @@ fn core_layer_documents_the_real_tool_surface() {
         assert!(
             documented_form,
             "tool {token:?} is on the registered surface but the prompt does not \
-             document it: update prompts/layers/core.md"
+             document it: update prompts/layers/core.md or the capability doc file"
         );
     }
+}
+
+/// Every host request a capability manifest declares, documented or internal, is one pa-core
+/// registers a handler for.
+#[test]
+fn capability_manifests_declare_registered_host_requests() {
+    let registered = registered_host_requests();
+    let unregistered: Vec<&String> = MANIFEST_SURFACE
+        .host_requests
+        .keys()
+        .chain(&MANIFEST_SURFACE.internal_host_requests)
+        .filter(|request| !registered.contains(*request))
+        .collect();
+    assert!(
+        unregistered.is_empty(),
+        "capability manifests declare unregistered host requests {unregistered:?}"
+    );
 }
 
 // Packaged-set parity (TS packages/coding-agent/skills)

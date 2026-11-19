@@ -106,6 +106,9 @@ pub struct SessionTelemetry {
     /// `end()` runs exactly once (session close and later kill/shutdown
     /// paths may both reach it; only the first emits the ended event).
     ended: std::sync::atomic::AtomicBool,
+    /// The agent's session id: the provider layer counts its Responses transport choices under
+    /// it (`agent responses transport`).
+    agent_session_id: Option<String>,
     _subscription: Option<Subscription>,
 }
 
@@ -123,6 +126,7 @@ impl SessionTelemetry {
             execution_mode,
             counters: Arc::default(),
             ended: std::sync::atomic::AtomicBool::new(false),
+            agent_session_id: None,
             _subscription: None,
         }
     }
@@ -199,7 +203,6 @@ struct SessionTotals {
     tool_call_count: u64,
     compaction_count: u64,
     retry_count: u64,
-    failover_count: u64,
     model_error_count: u64,
     usage: UsageTotals,
 }
@@ -256,10 +259,9 @@ struct ActiveRun {
     tool_error_count: u64,
     compaction_count: u64,
     retry_count: u64,
-    failover_count: u64,
     usage: UsageTotals,
     last_assistant: Option<AssistantMessage>,
-    /// An auto-retry (or provider failover) started after this run's
+    /// An auto-retry started after this run's
     /// failed attempt: the retried attempt's `AgentStart` continues this
     /// run instead of starting a new one (TS: one run per turn, retries
     /// counted in `retry_count`).
@@ -387,6 +389,8 @@ struct CounterValues {
     goal: GoalVerificationCounts,
     /// The kernel `web.read` counters, reported by `agent web reads`.
     web_read: WebReadCounts,
+    /// The provider layer's Responses transport counts, reported by `agent responses transport`.
+    responses_transport: pa_ai::responses_transport::ResponsesTransportCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
@@ -662,6 +666,15 @@ impl SessionCounters {
     }
 
     /// One kernel `web.read` (counts only: never the URL or the content).
+    /// The session's Responses transport counts (the provider layer keeps them; session end
+    /// snapshots them here).
+    pub(crate) fn note_responses_transport(
+        &self,
+        counts: pa_ai::responses_transport::ResponsesTransportCounts,
+    ) {
+        self.with(|values| values.responses_transport = counts);
+    }
+
     pub(crate) fn note_web_read(
         &self,
         outcome: crate::web_read::ReadOutcome,
@@ -1121,6 +1134,7 @@ pub async fn install_session_telemetry(
         execution_mode,
         counters,
         ended: std::sync::atomic::AtomicBool::new(false),
+        agent_session_id: agent.session_id().map(str::to_string),
         _subscription: Some(subscription),
     })
 }
@@ -1168,9 +1182,8 @@ impl SessionTelemetry {
     }
 
     /// One auto-retry event from the retry seam (TS `auto_retry_start`):
-    /// `Start` counts the retry (and a backup-provider switch as a
-    /// failover) into the active run, sums the retry wait, and keeps the
-    /// run open, so the retried attempt continues the same run (one
+    /// `Start` counts the retry into the active run, sums the retry wait,
+    /// and keeps the run open, so the retried attempt continues the same run (one
     /// `agent run completed` per turn, like TS). `End` closes the retry:
     /// a retry that never ran (a cancelled wait) leaves the run to
     /// finalize at the next start instead of absorbing the next turn. The
@@ -1191,9 +1204,7 @@ impl SessionTelemetry {
             return;
         };
         match event {
-            AutoRetryEvent::Start {
-                delay_ms, reason, ..
-            } => {
+            AutoRetryEvent::Start { delay_ms, .. } => {
                 run.retry_count += 1;
                 if run
                     .last_assistant
@@ -1206,9 +1217,6 @@ impl SessionTelemetry {
                 }
                 run.retry_wait_ms += *delay_ms;
                 run.retry_pending = true;
-                if matches!(reason, super::auto_retry::RetryStartReason::Backup { .. }) {
-                    run.failover_count += 1;
-                }
             }
             AutoRetryEvent::End { .. } => run.retry_pending = false,
         }
@@ -1306,7 +1314,6 @@ impl SessionTelemetry {
             // reaches it (the archive path emits `session archived` first).
             properties.set("terminal_outcome", Value::from("success"));
             properties.set("retry_count", Value::from(totals.retry_count));
-            properties.set("failover_count", Value::from(totals.failover_count));
             properties.set("model_error_count", Value::from(totals.model_error_count));
             // Sessions whose providers declare no auth descriptor keep their
             // ended event unchanged.
@@ -1377,6 +1384,63 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent goal verification", goal_properties);
+        }
+        // A session whose requests never chose a Responses transport sends no transport event.
+        if let Some(counts) = self
+            .agent_session_id
+            .as_deref()
+            .and_then(pa_ai::responses_transport::session_counts)
+        {
+            self.counters.note_responses_transport(counts);
+        }
+        let mut transport = pa_ai::responses_transport::ResponsesTransportCounts::default();
+        self.counters
+            .with(|values| transport = values.responses_transport);
+        if transport != pa_ai::responses_transport::ResponsesTransportCounts::default() {
+            let mut transport_properties = self.session_properties();
+            for (key, value) in [
+                (
+                    "responses_websocket_request_count",
+                    transport.websocket_requests,
+                ),
+                ("responses_delta_request_count", transport.delta_requests),
+                (
+                    "responses_full_context_request_count",
+                    transport.full_context_requests,
+                ),
+                ("responses_sse_fallback_count", transport.sse_fallbacks),
+                (
+                    "responses_stale_continuation_retry_count",
+                    transport.stale_continuation_retries,
+                ),
+                ("responses_auto_websocket_count", transport.auto_websocket),
+                (
+                    "responses_auto_sse_one_shot_count",
+                    transport.auto_sse_one_shot,
+                ),
+                (
+                    "responses_auto_sse_no_websocket_wire_count",
+                    transport.auto_sse_no_websocket_wire,
+                ),
+                (
+                    "responses_auto_sse_unsupported_count",
+                    transport.auto_sse_unsupported,
+                ),
+                (
+                    "responses_auto_sse_demoted_count",
+                    transport.auto_sse_demoted,
+                ),
+                ("responses_probe_count", transport.probes),
+                ("responses_probe_failed_count", transport.probe_failures),
+                (
+                    "responses_websocket_without_wire_count",
+                    transport.websocket_requested_without_wire,
+                ),
+            ] {
+                transport_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent responses transport", transport_properties);
         }
         // A session that never read a URL sends no web-read event.
         let mut web_read = WebReadCounts::default();
@@ -1691,7 +1755,6 @@ fn handle_event(
                 tool_error_count: 0,
                 compaction_count: 0,
                 retry_count: 0,
-                failover_count: 0,
                 usage: UsageTotals::default(),
                 last_assistant: None,
                 retry_pending: false,
@@ -1914,7 +1977,6 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     state.totals.usage.merge(&run.usage);
 
     state.totals.retry_count += run.retry_count;
-    state.totals.failover_count += run.failover_count;
     state.totals.model_error_count += run.model_error_count;
 
     let mut properties = base_properties(execution_mode);
@@ -1942,7 +2004,6 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     properties.set("total_tokens", Value::from(run.usage.total_tokens));
     properties.set("compaction_count", Value::from(run.compaction_count));
     properties.set("retry_count", Value::from(run.retry_count));
-    properties.set("failover_count", Value::from(run.failover_count));
     properties.set("loop_guard_trip_count", Value::from(run.loop_guard.trips));
     properties.set(
         "loop_guard_retry_count",

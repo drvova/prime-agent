@@ -113,7 +113,21 @@ pub fn resolve_child_model_unchecked(
                 }
             }
         }
-        _ => {}
+        // A bare id several providers serve picks deterministically: the
+        // parent's provider when it serves the id, else catalog order.
+        _ => {
+            let parent_provider = parent_model
+                .and_then(|parent| parent.split_once('/'))
+                .map(|(provider, _)| provider);
+            if let Some(model) = pa_core::models::pick_bare_model_id(
+                reference,
+                &short_matches,
+                |model| (model.provider.as_str(), model.id.as_str()),
+                parent_provider.as_slice(),
+            ) {
+                return Ok(selector_of(model));
+            }
+        }
     }
     Err(model_unavailable_error(reference, target, &candidates))
 }

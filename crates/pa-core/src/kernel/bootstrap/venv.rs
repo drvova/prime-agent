@@ -32,6 +32,9 @@ use layout::home_dir;
 pub(crate) use layout::{expand_home, resolve_writable_kernel_venv_dir};
 pub use layout::{kernel_venv_dir, kernel_venv_python};
 pub use probe::invalidate_runtime_probe_cache;
+// The capability manifests' tests run the derived probe.
+#[cfg(test)]
+pub(crate) use probe::RUNTIME_READY_CHECK;
 #[cfg(test)]
 use probe::{installed_rlm_dir, lock_probe_memo, runtime_probe_key};
 // The memo-clear helper and the live-probe package-dir walk exist only behind

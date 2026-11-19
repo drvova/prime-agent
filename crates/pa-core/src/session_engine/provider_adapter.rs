@@ -80,7 +80,7 @@ fn agent_response_hook_to_ai(
 }
 
 /// The mutable provider target a live session's stream reads per call
-/// (daemon `set_model` and the failover switch swap it).
+/// (daemon `set_model` and the image-model route swap it).
 #[derive(Debug, Clone)]
 pub struct ProviderTarget {
     pub api_key: Option<String>,
@@ -92,7 +92,7 @@ pub struct ProviderTarget {
 }
 
 /// A real pa-ai stream adapter reading its target from a shared slot the host can swap live
-/// (`set_model`, failover); `None` only before the host sets the build-time target.
+/// (`set_model`, the image-model route); `None` only before the host sets the build-time target.
 ///
 /// # Panics
 ///

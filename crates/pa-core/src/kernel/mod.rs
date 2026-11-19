@@ -6,6 +6,7 @@
 
 pub mod bootstrap;
 pub mod cancellation;
+pub(crate) mod capabilities;
 pub mod cell_window;
 pub mod live_kernels;
 pub mod manager;

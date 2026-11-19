@@ -1,0 +1,20 @@
+module = "rlm.ask"
+closure_seed = true
+prompt_builtins = ["ask"]
+documented = ["ask"]
+internal_host_requests = ["question.cancel"]
+probe = ["import rlm.ask as _ask", "assert callable(_ask.ask)"]
+
+[host_requests]
+"question.ask" = "ask"
+
+[[telemetry]]
+event = "agent todos and questions"
+properties = [
+  "question_asked_count",
+  "question_answered_count",
+  "question_declined_count",
+  "question_timed_out_count",
+  "question_no_user_count",
+  "question_cancelled_count",
+]

@@ -1,0 +1,14 @@
+module = "rlm.repl"
+closure_seed = true
+probe = [
+  "assert callable(rlm.host_request)",
+  "import rlm.repl as _repl",
+  "assert callable(_repl.main)",
+  "assert callable(_repl.emit)",
+  "assert callable(_repl.host_request)",
+  "assert callable(_repl.is_active)",
+  "assert _repl.PROTOCOL_VERSION == 3",
+  "assert callable(rlm.emit)",
+  "assert not hasattr(rlm, 'HOST_COMM_TARGET')",
+  "assert callable(_repl.host_notify)",
+]

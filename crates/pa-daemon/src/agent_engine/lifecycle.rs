@@ -983,8 +983,8 @@ impl AgentSessionEngine {
         );
         {
             // The build's slot install serializes with the other slot
-            // writers' fence (`set_model`, the failover switch and
-            // restore, the image-route apply/clear): the lock is
+            // writers' fence (`set_model`, the image-route
+            // apply/clear): the lock is
             // acquired by yielding, never by blocking this worker: the
             // holders run synchronous store I/O, so a blocking acquire
             // on an async path would stall the executor for that span.
