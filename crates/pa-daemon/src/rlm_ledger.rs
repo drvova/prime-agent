@@ -153,8 +153,28 @@ fn add_usage(
 ) -> crate::session_usage::SessionUsageSummary {
     left.input_tokens = left.input_tokens.saturating_add(right.input_tokens);
     left.output_tokens = left.output_tokens.saturating_add(right.output_tokens);
+    // The billing splits sum; a side without one (unclassified calls only) adds its cost
+    // unclassified.
+    left.billing = match (left.billing, right.billing) {
+        (None, None) => None,
+        (left_split, right_split) => {
+            let mut split = left_split.unwrap_or_else(|| unclassified_split(left.cost));
+            split.merge(&right_split.unwrap_or_else(|| unclassified_split(right.cost)));
+            Some(split)
+        }
+    };
     left.cost += right.cost;
     left
+}
+
+/// A summary's cost as one unclassified share (a snapshot without a billing split); a zero
+/// cost (the fold's empty start) adds no call.
+fn unclassified_split(cost: f64) -> pa_types::billing::BillingSplit {
+    let mut split = pa_types::billing::BillingSplit::default();
+    if cost != 0.0 {
+        split.add(None, cost);
+    }
+    split
 }
 
 /// Merge two per-model splits; an unsplit side leaves the sum unsplit.

@@ -395,6 +395,26 @@ impl SessionManager {
                 format!("Assistant message entry {target_id} not found"),
             )
         })?;
+        // The aggregate replaces the target row's usage, so it keeps that call's billing mode;
+        // the child's summed usage spans its own calls and carries none (the child's file holds
+        // each call's mode).
+        let target_billing = if let FileEntry::Message {
+            message: AgentMessage::Assistant(assistant),
+            ..
+        } = &self.file_entries[target_index]
+        {
+            assistant.usage.billing
+        } else {
+            None
+        };
+        let aggregate_usage = pa_types::ai::Usage {
+            billing: target_billing,
+            ..aggregate_usage
+        };
+        let child_usage = pa_types::ai::Usage {
+            billing: None,
+            ..child_usage
+        };
         let mut base = self.next_base();
         base.id = Some(row_id.to_owned());
         let id = row_id.to_owned();

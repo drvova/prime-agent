@@ -97,6 +97,12 @@ impl SessionFile {
         origin: Option<ChildUsageOrigin>,
     ) -> Result<ChildUsageAppendResult> {
         ensure!(!row_id.is_empty(), "attribution ID must not be empty");
+        // The child's summed usage spans its own calls and carries no billing mode (the child's
+        // file holds each call's); the aggregate keeps the target call's.
+        let child_usage = Usage {
+            billing: None,
+            ..child_usage
+        };
         self.confirm_child_usage_write()?;
         if let Some(entry) = self.entry(row_id) {
             ensure!(

@@ -216,8 +216,17 @@ pub fn compute_rollups(records: &[UnifiedRecord]) -> HashMap<String, Rollup> {
                 }
                 split
             });
-        if deleted_descendants > 0.0 {
-            billing.add(None, deleted_descendants);
+        // The deleted-descendant bucket keeps its children's split when it was captured with one.
+        let deleted_split = [&records[*position].daemon, &records[*position].saved]
+            .into_iter()
+            .filter_map(|row| row.as_ref()?.get("deletedDescendantUsage"))
+            .find(|deleted| deleted.get("cost").and_then(Value::as_f64).is_some())
+            .and_then(|deleted| deleted.get("billing"))
+            .and_then(|split| serde_json::from_value(split.clone()).ok());
+        match deleted_split {
+            Some(split) => billing.merge(&split),
+            None if deleted_descendants > 0.0 => billing.add(None, deleted_descendants),
+            None => {}
         }
         // `descendants` starts at the deleted-descendant bucket: the bucket is descendant spend,
         // so the aggregate bills it even though no live child row carries it.
