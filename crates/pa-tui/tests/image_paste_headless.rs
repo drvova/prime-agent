@@ -42,6 +42,8 @@ fn an_empty_paste_and_ctrl_v_attach_the_clipboard_image() {
     let outcome = run_headless(
         HeadlessPlan {
             steps: vec![
+                // The session is attached (the startup echo hands pastes straight to the editor).
+                wait("paste session"),
                 HeadlessStep::Paste(String::new()),
                 wait("[image #1]"),
                 HeadlessStep::Paste(" \r\n".to_string()),
