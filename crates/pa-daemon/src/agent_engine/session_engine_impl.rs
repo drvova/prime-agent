@@ -965,6 +965,13 @@ impl SessionEngine for AgentSessionEngine {
         if let Some(children) = &self.children {
             children.notify_turn_started();
         }
+        // A provider connection the pool (or the provider) closed during an idle pause re-opens
+        // now, on the engine runtime beside the turn's context build; the call only starts the
+        // warm-ups and never waits on the network (never under `--offline`).
+        let _runtime = self.runtime.enter();
+        let _warmups = pa_ai::utils::prewarm::rewarm_idle_origins(
+            pa_ai::utils::prewarm::NetworkMode::from_env(),
+        );
     }
 
     /// The worker's turn completed: release child prompt tasks waiting on the boundary.

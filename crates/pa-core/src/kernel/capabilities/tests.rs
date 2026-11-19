@@ -21,6 +21,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent responses transport",
     // Provider request admission is engine plumbing, not a kernel capability.
     "agent provider admission",
+    // The turn-start provider connection re-warm is provider plumbing, not a kernel capability.
+    "agent connection rewarm",
     // The opt-in quota fallback is request-auth plumbing, not a kernel capability.
     "agent quota fallback",
     // The worker's background endpoint discovery (no kernel capability).
