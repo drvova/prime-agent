@@ -392,6 +392,8 @@ struct CounterValues {
     fs_edit: FsEditCounts,
     /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
     repl_schedule: ReplScheduleCounts,
+    /// The kernel `checkpoint.*` counters, reported by `agent repl checkpoint`.
+    repl_checkpoint: ReplCheckpointCounts,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -416,6 +418,17 @@ struct ReplScheduleCounts {
     listed: u64,
     cancelled: u64,
     rejected: u64,
+}
+
+/// `agent repl checkpoint`: checkpoints taken, listings, and restores by outcome.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplCheckpointCounts {
+    created: u64,
+    listed: u64,
+    restored: u64,
+    restore_declined: u64,
+    restore_disabled: u64,
+    failed: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -667,6 +680,22 @@ impl SessionCounters {
                 super::runtime::ScheduleFact::Listed => &mut counts.listed,
                 super::runtime::ScheduleFact::Cancelled => &mut counts.cancelled,
                 super::runtime::ScheduleFact::Rejected => &mut counts.rejected,
+            } += 1;
+        });
+    }
+
+    /// One kernel `checkpoint.*` call (counts only: never a label or a path).
+    pub(crate) fn note_repl_checkpoint(&self, fact: super::checkpoint_host::CheckpointFact) {
+        use super::checkpoint_host::CheckpointFact;
+        self.with(|values| {
+            let counts = &mut values.repl_checkpoint;
+            *match fact {
+                CheckpointFact::Created => &mut counts.created,
+                CheckpointFact::Listed => &mut counts.listed,
+                CheckpointFact::Restored => &mut counts.restored,
+                CheckpointFact::RestoreDeclined => &mut counts.restore_declined,
+                CheckpointFact::RestoreDisabled => &mut counts.restore_disabled,
+                CheckpointFact::Failed => &mut counts.failed,
             } += 1;
         });
     }
@@ -1242,6 +1271,31 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent repl schedule", schedule_properties);
+        }
+        // A session that never took a kernel checkpoint sends no checkpoint event.
+        let mut checkpoint = ReplCheckpointCounts::default();
+        self.counters
+            .with(|values| checkpoint = values.repl_checkpoint);
+        if checkpoint != ReplCheckpointCounts::default() {
+            let mut checkpoint_properties = self.session_properties();
+            for (key, value) in [
+                ("checkpoint_created_count", checkpoint.created),
+                ("checkpoint_list_count", checkpoint.listed),
+                ("checkpoint_restored_count", checkpoint.restored),
+                (
+                    "checkpoint_restore_declined_count",
+                    checkpoint.restore_declined,
+                ),
+                (
+                    "checkpoint_restore_disabled_count",
+                    checkpoint.restore_disabled,
+                ),
+                ("checkpoint_failed_count", checkpoint.failed),
+            ] {
+                checkpoint_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent repl checkpoint", checkpoint_properties);
         }
         self.client.flush().await
     }
