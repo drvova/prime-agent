@@ -394,6 +394,8 @@ struct CounterValues {
     repl_schedule: ReplScheduleCounts,
     /// The kernel `checkpoint.*` counters, reported by `agent repl checkpoint`.
     repl_checkpoint: ReplCheckpointCounts,
+    /// Kernel `usage.get()` reads, reported by `agent usage reads`.
+    usage_read_count: u64,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -698,6 +700,11 @@ impl SessionCounters {
                 CheckpointFact::Failed => &mut counts.failed,
             } += 1;
         });
+    }
+
+    /// One kernel `usage.get()` read (a count: never a cost or a token number).
+    pub(crate) fn note_usage_read(&self) {
+        self.with(|values| values.usage_read_count += 1);
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1296,6 +1303,15 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent repl checkpoint", checkpoint_properties);
+        }
+        // A session that never read its usage sends no usage event.
+        let mut usage_reads = 0;
+        self.counters
+            .with(|values| usage_reads = values.usage_read_count);
+        if usage_reads > 0 {
+            let mut usage_properties = self.session_properties();
+            usage_properties.set("usage_read_count", Value::from(usage_reads));
+            self.client.track("agent usage reads", usage_properties);
         }
         self.client.flush().await
     }
