@@ -100,6 +100,17 @@ pub enum DaemonClientEvent {
     /// `model_catalog_changed`: a background daemon-side catalog refresh
     /// changed the served snapshot. Rust-only extension (no TS counterpart).
     ModelCatalogChanged,
+    /// `history_import`: a distribution build is copying the official build's chats into its
+    /// own agent dir (Rust-only). `finished` false: started, `sessions` chats to copy; true: done,
+    /// `sessions` copied, `kept` already present, `config` entries added, `error` when it stopped
+    /// early.
+    HistoryImport {
+        finished: bool,
+        sessions: u64,
+        kept: u64,
+        config: Vec<String>,
+        error: Option<String>,
+    },
     /// `session_binding`: the supervisor rebound a session to a new active id; the view
     /// re-attaches.
     SessionBinding {
@@ -211,6 +222,32 @@ pub(crate) fn client_event_from_value(value: &Value) -> Option<DaemonClientEvent
         }),
         "heartbeats_changed" => Some(DaemonClientEvent::HeartbeatsChanged),
         "model_catalog_changed" => Some(DaemonClientEvent::ModelCatalogChanged),
+        "history_import" => Some(DaemonClientEvent::HistoryImport {
+            finished: value.get("phase").and_then(Value::as_str) == Some("finished"),
+            sessions: value
+                .get("sessions")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            kept: value
+                .get("kept")
+                .and_then(Value::as_u64)
+                .unwrap_or_default(),
+            config: value
+                .get("config")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            error: value
+                .get("error")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
         "session_binding" => Some(DaemonClientEvent::SessionBinding {
             previous_active_session_id: value
                 .get("previousActiveSessionId")

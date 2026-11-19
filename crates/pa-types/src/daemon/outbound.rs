@@ -217,6 +217,14 @@ pub struct DaemonEventEnvelope {
 }
 
 /// Supervisor -> client frames, tagged by `type`.
+/// The phase of a [`DaemonOutbound::HistoryImport`] broadcast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryImportPhase {
+    Started,
+    Finished,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -292,6 +300,23 @@ pub enum DaemonOutbound {
     /// served
     /// snapshot, so every client re-fetches (same shape as `model_catalog_changed`).
     ModelCatalogChanged {
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// The Rust-only history-import broadcast (a distribution build copying the official
+    /// build's chats into its own agent dir, in the background): `phase` `started` carries the
+    /// chats it is about to copy, `finished` the chats copied and kept, the configuration
+    /// entries added, and `error` when it stopped early. A client that never heard of it ignores
+    /// it, like every unknown broadcast.
+    HistoryImport {
+        phase: HistoryImportPhase,
+        sessions: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        config: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
         #[serde(flatten)]
         rest: JsonMap,
     },

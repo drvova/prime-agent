@@ -181,6 +181,9 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
         "doctor" => run_doctor(&rest),
         "telemetry" => run_telemetry(&rest),
         "incident" => run_incident_command(&rest),
+        "import-sessions" => handled_with_exit(
+            crate::import_sessions_command::run_import_sessions_command(&rest),
+        ),
         "shutdown" => run_shutdown(&rest),
         "package" => run_package(&rest),
         "mcp" => run_mcp(&rest),

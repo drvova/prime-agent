@@ -128,13 +128,58 @@ Windows has `prime-switch.ps1` with the same commands:
   `~/.prime/agent`: `settings.json`, `auth.json`, `models.json`,
   `keybindings.json`, `mcp-services.json`, `mcp-connections.json`, the
   global `AGENTS.md`/`CLAUDE.md`, `SYSTEM.md` and `APPEND_SYSTEM.md`, and the
-  `skills/`, `prompts/` and `themes/` folders. You stay logged in. It never
-  copies sessions, session artifacts, leases, logs, the global harness
-  memory, the kernel venv, daemon state or caches. An entry over the
-  import's 32 MB budget is skipped and named. After that the two
-  directories are independent: a login or setting changed in one build
-  doesn't reach the other. To import again, move `~/.prime/agent-fork`
-  aside (it holds the fork's sessions) and start `prime`.
+  `skills/`, `prompts/` and `themes/` folders. You stay logged in, and your
+  MCP servers, custom models and system prompts come along. An entry over
+  the import's 32 MB budget is skipped and named. This copy is synchronous
+  and small.
+- **Your chats follow once, in the background.** The first time the fork's
+  daemon starts, it copies the official build's history into
+  `~/.prime/agent-fork`: the chats (`sessions/`, `sessions-archive/`), their
+  subagent runs and RLM registries (`session-artifacts/`), and the global
+  harness memory (`harness/`, the same format the official build reads). The
+  copy runs off the UI path: the chat shows "Importing N chats from Prime
+  Agent…" when it starts and a second notice when it's done, and `/resume`
+  then lists them (an open `/resume` list reloads on its own). The import:
+  - **copies, never moves or links.** The official build and the TypeScript
+    Prime Agent keep using `~/.prime/agent`. Where the filesystem supports
+    copy-on-write clones (APFS, Btrfs, XFS), the copy is a clone; elsewhere
+    it's a real copy. It never hard-links, so later appends on one side never
+    show up on the other. A JSON file that names a chat or subagent run by its
+    absolute path under `~/.prime/agent` is rewritten to name the copy, so the
+    fork never opens a file in the official directory.
+  - **merges and never overwrites.** A file the fork already has under the same
+    name stays as it is, and the done notice counts it. That also covers
+    users of the first fork release, whose `~/.prime/agent-fork` already
+    exists.
+  - **fills in missing configuration.** Any of the configuration entries above
+    that `~/.prime/agent-fork` lacks but `~/.prime/agent` has (for example an
+    MCP server or `models.json` you set up in the TypeScript version after
+    the fork's first run) is copied, and the notice names each one. A file
+    the fork already has is never replaced.
+  - **resumes after a crash.** Each file is copied to a hidden temp file and
+    published in one step. The marker `~/.prime/agent-fork/.imported-sessions-v1`
+    is written last, so an interrupted import picks up where it stopped the
+    next time the daemon starts.
+  - **runs once.** Once the marker exists it never runs again on its own, even
+    if `~/.prime/agent` gets new chats.
+  - **leaves runtime state behind.** It never copies leases, worker state,
+    persistent shells, sockets, logs, lock files, the kernel venv,
+    update/restart state, caches or the telemetry id.
+
+  After that the two directories are independent: a chat, login or setting
+  changed in one build doesn't reach the other.
+- **Re-run or skip the import.** `prime import-sessions` runs it again now,
+  in the foreground. It copies only what the fork is missing (new chats
+  included) and never overwrites anything. `prime import-sessions --skip`
+  turns the automatic import off by writing the marker without copying. To
+  start over completely, move `~/.prime/agent-fork` aside (it holds the
+  fork's own sessions) and start `prime`.
+- **Packages reinstall on demand.** The git and npm packages listed under
+  `packages` in the copied `settings.json` aren't copied (they're checkouts
+  under the data directory). The first session the fork starts resolves its
+  resources and installs every configured package that's missing into
+  `~/.prime/agent-fork`, unless `--offline` or `PI_OFFLINE` is set.
+  `prime package install <source>` and `prime package update` work too.
 - **Separate daemon:** the fork's launcher pins its own daemon socket
   (`${TMPDIR:-/tmp}/prime-agent-fork-<uid>/daemon.sock`). On Windows it pins
   the pipe `\\.\pipe\prime-agent-fork-daemon`. The fork binary uses the same

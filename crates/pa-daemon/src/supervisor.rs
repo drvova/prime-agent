@@ -233,6 +233,9 @@ pub struct Supervisor {
     /// path, so a client gets its hello at once; the client's first command, the worker adoption
     /// pass and the dead-owner lease reclaim wait on this gate instead.
     pub(crate) boot_reaped: tokio::sync::watch::Sender<bool>,
+    /// The running history import's started frame (`None` while none runs):
+    /// a client that connects mid-import hears it after its hello.
+    pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
 }
 
 impl Supervisor {
@@ -297,6 +300,7 @@ impl Supervisor {
             passive_catalog_epoch: std::sync::atomic::AtomicU64::new(0),
             compaction_journal: std::sync::Mutex::new(None),
             boot_reaped: tokio::sync::watch::channel(true).0,
+            history_import: std::sync::Mutex::new(None),
         })
     }
 
@@ -531,6 +535,11 @@ impl Supervisor {
                 .await);
             });
         }
+
+        // A distribution build's one-time history import: off the accept
+        // path entirely (the blocking pool, after the boot reap), so no
+        // client ever waits on the copy.
+        self.spawn_boot_history_import();
 
         // Update-prepare watchdog: aborts deadline- or self-expiry-breached
         // prepare transactions even when no command arrives to re-check.

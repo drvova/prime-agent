@@ -150,6 +150,15 @@ pub const COMMAND_SPECS: &[CommandSpec] = &[
         "incident --session 2339fb7da605",
     ]),
     CommandSpec::new(
+        &["import-sessions"],
+        "import-sessions [--skip]",
+        "Import the chats of the official Prime Agent (distribution builds)",
+    )
+    .description(
+        "A distribution build keeps its own data dir and copies the official build's chats, their subagent runs, and the harness memory into it once, in the background, the first time its daemon starts; it also fills in configuration files the data dir lacks. This command runs that import again now, in the foreground: it copies only what is missing and never overwrites a file already there. --skip turns the automatic import off instead. The official build has nothing to import.",
+    )
+    .options(&["--skip  Never import automatically (writes the import marker)"]),
+    CommandSpec::new(
         &["shutdown"],
         "shutdown [--force] [--json]",
         "Stop every agent and background service",

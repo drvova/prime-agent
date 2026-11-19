@@ -32,6 +32,7 @@ pub(crate) mod factory_command;
 pub(crate) mod file_processor;
 pub(crate) mod global_flags;
 pub(crate) mod headless_autonomous;
+pub(crate) mod import_sessions_command;
 pub(crate) mod incident;
 pub(crate) mod initial_message;
 pub(crate) mod installer_update;
