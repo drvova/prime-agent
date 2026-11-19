@@ -538,43 +538,32 @@ pub fn resolve_cli_model(
     result
 }
 
-/// Provider-failover candidates for `current`: the other providers serving
-/// the same model id, in catalog order starting after `current`'s provider,
-/// one per provider. The caller passes the auth-configured catalog so
-/// unconfigured providers never surprise the user with a switch.
+/// The entry a bare model id names when several providers serve that same
+/// id: the first of `preferred_providers` that serves it (the session's
+/// current provider, then the user's default provider), else the first in
+/// catalog order. `None` when no entry carries the id. `identify` maps an
+/// entry to its `(provider, id)`.
+///
+/// The pick is a pure function of the selection, so it never re-picks on a
+/// provider error: a session's provider changes only when the user picks one.
 #[must_use]
-pub fn failover_candidates(current: &Model, available: &[Model]) -> Vec<Model> {
-    // Same model id, other providers: first catalog entry wins per provider.
-    let mut candidates: Vec<&Model> = Vec::new();
-    for model in available
+pub fn pick_bare_model_id<'a, T>(
+    model_id: &str,
+    models: &'a [T],
+    identify: impl Fn(&T) -> (&str, &str),
+    preferred_providers: &[&str],
+) -> Option<&'a T> {
+    let normalized = model_id.trim().to_lowercase();
+    let serves = |entry: &&T| identify(entry).1.to_lowercase() == normalized;
+    preferred_providers
         .iter()
-        .filter(|model| model.id == current.id && model.provider != current.provider)
-    {
-        if !candidates
-            .iter()
-            .any(|candidate| candidate.provider == model.provider)
-        {
-            candidates.push(model);
-        }
-    }
-    // Rotate so the provider after `current` (by catalog position) leads.
-    let current_position = available
-        .iter()
-        .position(|model| model.provider == current.provider);
-    if let Some(position) = current_position {
-        candidates.sort_by_key(|candidate| {
-            let candidate_position = available
+        .find_map(|preferred| {
+            models
                 .iter()
-                .position(|model| model.provider == candidate.provider)
-                .unwrap_or(usize::MAX);
-            if candidate_position > position {
-                candidate_position
-            } else {
-                candidate_position + available.len()
-            }
-        });
-    }
-    candidates.into_iter().cloned().collect()
+                .filter(serves)
+                .find(|entry| identify(entry).0 == *preferred)
+        })
+        .or_else(|| models.iter().find(serves))
 }
 
 /// Inputs to the startup-model lookup (TS `findInitialModel`, composed with
@@ -778,37 +767,36 @@ mod tests {
     }
 
     #[test]
-    fn failover_candidates_order_by_catalog_after_current() {
+    fn a_bare_id_served_by_several_providers_picks_current_then_default_then_catalog_order() {
+        fn identify(model: &Model) -> (&str, &str) {
+            (model.provider.as_str(), model.id.as_str())
+        }
         let mut catalog = catalog();
         catalog.push(model("zai", "z-ai/glm-5.3", "GLM via zai"));
         catalog.push(model("openrouter", "z-ai/glm-5.3", "GLM via openrouter"));
-        // The prime-inference entry (catalog position 2) fails over to the
-        // providers after it (openrouter first at position 3, zai at 4).
-        let current = model("prime-inference", "z-ai/glm-5.3", "GLM");
-        let candidates = failover_candidates(&current, &catalog);
+        let pick = |preferred: &[&str]| {
+            pick_bare_model_id("Z-AI/GLM-5.3", &catalog, identify, preferred)
+                .map(|model| model.provider.clone())
+        };
+        let picks = [
+            pick(&["openrouter", "zai"]),
+            pick(&["anthropic", "zai"]),
+            pick(&["anthropic"]),
+            pick(&[]),
+        ];
         assert_eq!(
-            candidates
-                .iter()
-                .map(|model| model.provider.as_str())
-                .collect::<Vec<_>>(),
-            vec!["openrouter", "zai"]
+            picks,
+            [
+                Some("openrouter".to_string()),
+                Some("zai".to_string()),
+                Some("prime-inference".to_string()),
+                Some("prime-inference".to_string()),
+            ]
         );
-        let current = model("openrouter", "z-ai/glm-5.3", "GLM");
-        let candidates = failover_candidates(&current, &catalog);
         assert_eq!(
-            candidates
-                .iter()
-                .map(|model| model.provider.as_str())
-                .collect::<Vec<_>>(),
-            vec!["zai", "prime-inference"]
+            pick_bare_model_id("missing", &catalog, identify, &["zai"]),
+            None
         );
-        let current = model("anthropic", "claude-sonnet-4-5", "Sonnet");
-        assert!(failover_candidates(&current, &catalog).is_empty());
-        // The current provider itself is never a candidate, even when the
-        // catalog carries a second entry for it.
-        let current = model("zai", "z-ai/glm-5.3", "GLM");
-        let candidates = failover_candidates(&current, &catalog);
-        assert!(candidates.iter().all(|model| model.provider != "zai"));
     }
 
     #[test]

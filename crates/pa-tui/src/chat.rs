@@ -5,7 +5,6 @@
 mod geometry;
 pub(crate) use geometry::{assistant_row_count, user_block_row_count};
 
-use crate::snapshot::RetryStartReason;
 use crate::theme::{Theme, ThemeBg, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -769,9 +768,6 @@ pub struct RetryState {
     pub ends_at: std::time::Instant,
     /// The provider error that started this retry.
     pub error_message: String,
-    /// Why the retry started: a quick retry counts down; a provider
-    /// failover switch names the backup the turn re-routes to.
-    pub reason: RetryStartReason,
     /// The session model's provider, named in the countdown line (`openai 429`).
     pub provider: Option<String>,
 }
@@ -789,70 +785,50 @@ impl RetryState {
 /// The retry loader rows. A quick retry is the nc-style countdown line, the amber
 /// `retry 2 of 4 in 3s` head, then the provider and status, with the provider's own words on
 /// the row under it. SANCTIONED DIVERGENCE from the TS `auto_retry_start` rendering (operator
-/// ruling 2026-09-23): the episode names the ERROR too, not just the attempt. A failover
-/// switch keeps its one muted line naming the backup.
+/// ruling 2026-09-23): the episode names the ERROR too, not just the attempt.
 #[must_use]
 pub fn render_retry(retry: &RetryState, frame: usize, theme: &Theme, width: usize) -> Vec<Line> {
     let muted = theme.fg_style(ThemeColor::Muted);
     let warning = theme.fg_style(ThemeColor::Warning);
     let spinner = LOADER_FRAMES[frame % LOADER_FRAMES.len()];
     let mut row: Line = vec![Span::styled(" ".to_string(), Style::default())];
-    match &retry.reason {
-        RetryStartReason::Quick => {
-            row.push(Span::styled(spinner.to_string(), warning));
-            // The gap between the spinner and the label is unstyled (the TS
-            // `Loader` pen reset — see `render_loader`).
-            row.push(Span::raw(" ".to_string()));
-            row.push(Span::styled(
-                format!(
-                    "retry {} of {} in {}s",
-                    retry.attempt,
-                    retry.max_attempts,
-                    retry.seconds_left()
-                ),
-                warning,
-            ));
-            // The provider and HTTP status (`openai 429`): the status is the error's leading
-            // three-digit code, the provider the session model's.
-            let status = retry
-                .error_message
-                .split_whitespace()
-                .next()
-                .filter(|word| word.len() == 3 && word.bytes().all(|byte| byte.is_ascii_digit()));
-            let source = match (retry.provider.as_deref(), status) {
-                (Some(provider), Some(status)) => Some(format!("{provider} {status}")),
-                (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
-                (None, None) => None,
-            };
-            if let Some(source) = source {
-                row.push(Span::styled(" \u{00b7} ".to_string(), muted));
-                row.push(Span::styled(source, theme.fg_style(ThemeColor::Text)));
-            }
-            let reason = crate::width::truncate_to_width(
-                &retry.error_message,
-                width.saturating_sub(4),
-                "\u{2026}",
-            );
-            let detail: Line = vec![Span::raw("   ".to_string()), Span::styled(reason, muted)];
-            vec![
-                spacer(),
-                pad_to(row, width, Style::default()),
-                pad_to(detail, width, Style::default()),
-            ]
-        }
-        RetryStartReason::Backup { backup_model } => {
-            row.push(Span::styled(spinner.to_string(), muted));
-            row.push(Span::raw(" ".to_string()));
-            row.push(Span::styled(
-                format!(
-                    "Primary model unavailable ({}) — retrying on backup model {backup_model}...",
-                    retry.error_message
-                ),
-                muted,
-            ));
-            vec![spacer(), pad_to(row, width, Style::default())]
-        }
+    row.push(Span::styled(spinner.to_string(), warning));
+    // The gap between the spinner and the label is unstyled (the TS
+    // `Loader` pen reset — see `render_loader`).
+    row.push(Span::raw(" ".to_string()));
+    row.push(Span::styled(
+        format!(
+            "retry {} of {} in {}s",
+            retry.attempt,
+            retry.max_attempts,
+            retry.seconds_left()
+        ),
+        warning,
+    ));
+    // The provider and HTTP status (`openai 429`): the status is the error's leading
+    // three-digit code, the provider the session model's.
+    let status = retry
+        .error_message
+        .split_whitespace()
+        .next()
+        .filter(|word| word.len() == 3 && word.bytes().all(|byte| byte.is_ascii_digit()));
+    let source = match (retry.provider.as_deref(), status) {
+        (Some(provider), Some(status)) => Some(format!("{provider} {status}")),
+        (Some(only), None) | (None, Some(only)) => Some(only.to_string()),
+        (None, None) => None,
+    };
+    if let Some(source) = source {
+        row.push(Span::styled(" \u{00b7} ".to_string(), muted));
+        row.push(Span::styled(source, theme.fg_style(ThemeColor::Text)));
     }
+    let reason =
+        crate::width::truncate_to_width(&retry.error_message, width.saturating_sub(4), "\u{2026}");
+    let detail: Line = vec![Span::raw("   ".to_string()), Span::styled(reason, muted)];
+    vec![
+        spacer(),
+        pad_to(row, width, Style::default()),
+        pad_to(detail, width, Style::default()),
+    ]
 }
 
 #[cfg(test)]

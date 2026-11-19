@@ -295,7 +295,7 @@ const IMAGE_INPUT_UNSEEN: &str =
     "Image input: this model cannot see images; `attach_image` errors for it.";
 
 /// `prompt` with its environment image-input line stating `vision_capable`:
-/// a model switch or failover changes what the session model can see, and
+/// a model switch changes what the session model can see, and
 /// a stale line keeps a vision model from ever calling `attach_image` (or
 /// sends a text-only one into its refusal). The environment section follows
 /// the project context, so the last occurrence is the line; a prompt without
