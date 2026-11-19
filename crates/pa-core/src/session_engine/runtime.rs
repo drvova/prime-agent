@@ -20,6 +20,9 @@ use super::host_requests::{
     SessionBinding,
 };
 
+mod schedule;
+pub(crate) use schedule::ScheduleFact;
+
 /// The host-side purge of queued goal-context turns: the queue lanes live in the daemon
 /// worker, so the completing kernel host request invokes this seam — dropping a
 /// continuation queued while the goal was completing.
@@ -106,7 +109,7 @@ impl SessionRuntime {
         self.cron_store.as_ref()
     }
 
-    /// Register the `goal.*` and `rlm_heartbeat.*` handlers onto a handler
+    /// Register the `goal.*`, `schedule.*`, and `rlm_heartbeat.*` handlers onto a handler
     /// map; the heartbeat handlers register only on a runtime that serves
     /// them (embeddings with cron wiring).
     pub fn register_host_handlers(
@@ -196,6 +199,8 @@ impl SessionRuntime {
                 }),
             );
         }
+        // `schedule.*` registers everywhere: without a scheduler it answers why it cannot.
+        self.register_schedule_handlers(handlers);
         // Scheduler-less embeddings expose goals but cannot create heartbeat jobs.
         let Some(store) = self.cron_store.clone() else {
             return;
