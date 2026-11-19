@@ -197,6 +197,14 @@ prime-agent searches files natively, in process, with ripgrep's own engine: rege
 - `fs.glob(pattern: str, path: str = ".", *, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: paths matching a `pathlib`-style glob (`"**/*.rs"`); `listing.paths`, `listing.entries` (`FsEntry(path, kind, size)`).
 - `fs.find(name: str | None = None, path: str = ".", *, kind: str | None = None, ignore_case: bool = False, max_depth: int | None = None, hidden: bool = False, gitignore: bool = True, max_results: int = 500) -> FsListing`: entries whose file name matches a glob (`"Cargo.toml"`, `"*.md"`), like `find -name`; `kind` is `file`/`dir`/`symlink`.
 
+## Scheduled jobs
+
+Schedule a prompt to run in this session later ("check CI in 30 minutes", "rerun the benchmark nightly"). Jobs persist with the session and the user sees them in `prime-agent schedule list`; you list and cancel only the jobs you created. At most 10 live jobs per session; recurring jobs fire at most every 5 minutes. Without the prime-agent daemon (headless runs) the calls raise `RuntimeError` and nothing is scheduled.
+
+- `schedule.add(prompt: str, *, at: str | datetime | timedelta | float | None = None, every: str | timedelta | float | None = None, cron: str | None = None, label: str | None = None) -> ScheduledJob`: pass exactly one of `at` (one shot: a datetime, a delay in seconds or `timedelta`, an ISO-8601 string, or `"in 30m"`), `every` (`"30m"`, `"2h"`, `"1d"`), or `cron` (five-field UTC expression or `@daily`); the job runs `prompt` as a new turn when it fires
+- `schedule.list(*, include_inactive: bool = False) -> list[ScheduledJob]`: soonest first; `ScheduledJob(id, prompt, kind, schedule, status, next_run_at, last_run_at, run_count, label, last_error, created_at)`, `kind` is `once`/`interval`/`cron`
+- `schedule.cancel(id: str) -> ScheduledJob`: cancel one of your jobs
+
 ## Todos and questions
 
 A session todo list the user sees live; keep one for work with 3+ steps, marking items `in_progress` and `done` as you go. It persists across kernel restarts.
@@ -210,4 +218,4 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
