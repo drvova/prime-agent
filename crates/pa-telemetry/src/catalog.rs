@@ -211,7 +211,7 @@ pub const TOOL_CATEGORIES: &[&str] = &[
 
 /// How a provider auth descriptor resolved the session's request
 /// credentials (`agent session ended` `auth_strategy`).
-pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "unknown"];
+pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "oauth", "unknown"];
 
 pub const TERMINAL_OUTCOMES: &[&str] = &[
     "success",
@@ -1557,6 +1557,27 @@ const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
     ],
 };
 
+/// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
+/// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
+/// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
+/// ended, and how long it took. Never a provider id, a URL, a client id, a code, or a token.
+const AGENT_PROVIDER_OAUTH_LOGIN: EventRule = EventRule {
+    name: "agent provider oauth login",
+    since: 2,
+    properties: &[
+        ("surface", required(enum_rule(&["cli", "tui"], "cli"))),
+        (
+            "flow",
+            required(enum_rule(&["browser", "device_code", "none"], "none")),
+        ),
+        (
+            "outcome",
+            required(enum_rule(&["completed", "failed", "canceled"], "failed")),
+        ),
+        ("duration_ms", required(duration())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1588,6 +1609,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
+        &AGENT_PROVIDER_OAUTH_LOGIN,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

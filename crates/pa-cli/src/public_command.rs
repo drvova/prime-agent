@@ -187,6 +187,8 @@ pub fn handle_public_command(args: &[String]) -> PublicCommandResult {
         "shutdown" => run_shutdown(&rest),
         "package" => run_package(&rest),
         "mcp" => run_mcp(&rest),
+        "login" => handled_with_exit(crate::descriptor_login::run_login_command(&rest)),
+        "logout" => handled_with_exit(crate::descriptor_login::run_logout_command(&rest)),
         "update" => run_update(&rest),
         "model" => rewrite_nested_command("model", "list", "--list-models", &rest),
         "session" => rewrite_nested_command("session", "export", "--export", &rest),
