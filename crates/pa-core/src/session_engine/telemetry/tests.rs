@@ -2039,3 +2039,42 @@ async fn rlm_child_aborts_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `notify(...)` pings and `model.set_effort(...)` calls ride their own `agent repl
+/// notify` event at session end (counts only, never a message or a level).
+#[tokio::test]
+async fn repl_notifications_and_effort_switches_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_notification(true);
+    counters.note_notification(false);
+    counters.note_effort_switch(true);
+    counters.note_effort_switch(false);
+    counters.note_effort_switch(false);
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl notify"]
+    );
+    let notify = &event_properties(&fixture.mock, "agent repl notify").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = notify
+        .iter()
+        .filter(|(key, _)| key.starts_with("notify_") || key.starts_with("effort_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "notify_count": 2,
+            "notify_undelivered_count": 1,
+            "effort_set_count": 1,
+            "effort_refused_count": 2,
+        })
+    );
+}

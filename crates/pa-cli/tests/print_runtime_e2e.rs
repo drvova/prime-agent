@@ -832,6 +832,38 @@ fn print_mode_json_streams_the_message_update_deltas() {
     assert_eq!(keys, ["type", "message", "assistantMessageEvent"]);
 }
 
+/// The context tokens a lone `seed turn` settles at: one print run under a window too large to
+/// compact, read from the last assistant `message_end` usage.
+fn seed_turn_context_tokens(home: &std::path::Path) -> u64 {
+    let probe = isolated_home();
+    std::fs::create_dir_all(probe.path().join(".prime/agent")).unwrap();
+    std::fs::copy(
+        home.join(".prime/agent/settings.json"),
+        probe.path().join(".prime/agent/settings.json"),
+    )
+    .unwrap();
+    let script = serde_json::json!({
+        "contextWindow": 1_000_000,
+        "responses": [{"text": "seed reply"}]
+    });
+    let (stdout, stderr, code) = run_in_home(
+        probe.path(),
+        &["--mode", "json", "-p", "seed turn"],
+        &script,
+    );
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let usage = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .rfind(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+        .expect("the seed turn's assistant message_end")["message"]["usage"]
+        .clone();
+    ["input", "output", "cacheRead", "cacheWrite"]
+        .iter()
+        .map(|key| usage[*key].as_u64().unwrap_or(0))
+        .sum()
+}
+
 /// The threshold compaction arm (TS `_checkCompaction` Case 3): a settled
 /// turn crossing the reserve headroom streams the `compaction_start`/
 /// `compaction_end` pair with the `threshold` reason.
@@ -844,11 +876,14 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
             "compaction": { "enabled": true, "reserveTokens": 1, "keepRecentTokens": 10 }
         }),
     );
-    // The session-scoped faux cache counts the ~8.1k seed prompt as input
-    // plus cache-write tokens. It stays below the 23_808 ceiling (32k -
-    // 4_096 output - 4_096 headroom); the crossing turn exceeds it.
+    // The ceiling is the window minus 4_096 output and 4_096 headroom. The
+    // seed turn's context (the whole system prompt, counted by the
+    // session-scoped faux cache) is measured first, so the window sits just
+    // above it however large the prompt grows; the 48k-character crossing
+    // turn then exceeds the ceiling.
+    let seed_tokens = seed_turn_context_tokens(home.path());
     let script = serde_json::json!({
-        "contextWindow": 32000,
+        "contextWindow": seed_tokens + 4_096 + 4_096 + 2_000,
         "responses": [
             {"text": "seed reply"},
             {"text": "crossing reply"},

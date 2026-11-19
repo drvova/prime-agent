@@ -386,7 +386,13 @@ pub(crate) fn draw<W: std::io::Write>(
                 let title_start = writer.len();
                 crate::terminal_title::sync(writer, view)?;
                 let titled = writer.len() != title_start;
-                Ok(mounting || diff_painted || visibility_changed || caret_moved || titled)
+                let attention = crate::terminal_attention::flush(writer, view)?;
+                Ok(mounting
+                    || diff_painted
+                    || visibility_changed
+                    || caret_moved
+                    || titled
+                    || attention)
             })
     };
     let painted = paint();
