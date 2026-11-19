@@ -1450,6 +1450,25 @@ const AGENT_WEB_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel native file search (`fs.grep`/`fs.glob`/`fs.find`) adoption for one session (v2),
+/// emitted at session end beside `agent session ended` (which sits near the backend's 128-key cap)
+/// only when the session searched: calls by operation, failures, capped calls, results returned,
+/// and the slowest call. Counts only: never a pattern, a path, or a match.
+const AGENT_FS_SEARCH: EventRule = EventRule {
+    name: "agent fs search",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("fs_grep_count", required(count())),
+        ("fs_glob_count", required(count())),
+        ("fs_find_count", required(count())),
+        ("fs_search_failed_count", required(count())),
+        ("fs_search_truncated_count", required(count())),
+        ("fs_search_result_count", required(count())),
+        ("fs_search_max_ms", required(duration())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1476,6 +1495,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_USAGE_PAGE_CLOSED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_WEB_READS,
+        &AGENT_FS_SEARCH,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
