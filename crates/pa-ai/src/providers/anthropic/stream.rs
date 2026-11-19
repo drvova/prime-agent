@@ -294,9 +294,12 @@ async fn run_stream(
                             if let Some(id) = message.get("id").and_then(|value| value.as_str()) {
                                 output.response_id = Some(id.to_string());
                             }
+                            // The prompt-side counts live on the message's `usage` block
+                            // (`message_delta` may repeat them, or carry only `output_tokens`).
+                            let usage = message.get("usage");
                             let get = |field: &str| {
-                                message
-                                    .get(field)
+                                usage
+                                    .and_then(|usage| usage.get(field))
                                     .and_then(|value| value.as_u64())
                                     .unwrap_or(0)
                             };
@@ -307,8 +310,8 @@ async fn run_stream(
                             output.usage.total_tokens =
                                 crate::types::usage_total_tokens(&output.usage);
                             if cache_control.is_some() && uses_anthropic_cache_pricing {
-                                let creation = message
-                                    .get("cache_creation")
+                                let creation = usage
+                                    .and_then(|usage| usage.get("cache_creation"))
                                     .and_then(|value| value.as_object())
                                     .map(|map| AnthropicCacheCreationUsage {
                                         ephemeral_5m_input_tokens: map

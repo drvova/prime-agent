@@ -1,0 +1,1 @@
+- Fixed the session cost (the header, footer, `/usage` and the agents view) and the context gauge under-counting Anthropic-API models: the input, cache-read and cache-write tokens a reply reports when it starts are billed, not just the reply's output tokens.
