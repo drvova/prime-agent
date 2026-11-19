@@ -518,6 +518,87 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
     );
 }
 
+/// The TypeScript Prime Agent the user still runs beside the fork: its
+/// daemon on the shared default socket and its global npm package. The
+/// fork's installer is no takeover: the install never stops that daemon and
+/// never uninstalls the package (the official installer retires both).
+#[test]
+fn the_fork_install_leaves_the_typescript_product_running_and_installed() {
+    use std::os::unix::fs::MetadataExt as _;
+    use std::os::unix::net::UnixListener;
+    use std::sync::{Arc, Mutex};
+
+    let world = World::new();
+    let npm_root = world.root.join("npm-global");
+    write_file(
+        &npm_root.join("prime-agent/package.json"),
+        br#"{"name": "prime-agent", "version": "0.9.9"}"#,
+    );
+    let npm_log = world.root.join("npm.log");
+    write_file(
+        &world.root.join("shims/npm"),
+        format!(
+            "#!/bin/sh
+[ \"$1\" = root ] && echo '{}' && exit 0
+echo \"$*\" >> '{}'
+exit 0
+",
+            npm_root.display(),
+            npm_log.display()
+        )
+        .as_bytes(),
+    );
+    // The TS daemon: it greets with the TS schema family and answers every
+    // command, logging its type.
+    let uid = std::fs::metadata(&world.root).expect("root").uid();
+    let socket_dir = world.root.join(format!("tmp/prime-agent-{uid}"));
+    std::fs::create_dir_all(&socket_dir).expect("TS socket dir");
+    let listener = UnixListener::bind(socket_dir.join("daemon.sock")).expect("TS daemon socket");
+    let commands = Arc::new(Mutex::new(Vec::<String>::new()));
+    let recorded = Arc::clone(&commands);
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let recorded = Arc::clone(&recorded);
+            std::thread::spawn(move || {
+                let mut writer = stream.try_clone().expect("clone stream");
+                let hello = "{\"type\": \"daemon_hello\", \"schemaId\": \"protocol-7-schema-29-a5c9d20f8b13\"}\n";
+                if writer.write_all(hello.as_bytes()).is_err() {
+                    return;
+                }
+                for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                    let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
+                    recorded.lock().expect("commands").push(
+                        envelope["command"]["type"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    let response = serde_json::json!({
+                        "type": "response",
+                        "id": envelope["id"],
+                        "success": true,
+                        "data": {"sessions": []},
+                    });
+                    let _ = writer.write_all(format!("{response}\n").as_bytes());
+                }
+            });
+        }
+    });
+
+    assert_ok(&world.switch(&["install", "fork"]), "install fork");
+    assert_eq!(
+        (
+            commands.lock().expect("commands").clone(),
+            std::fs::read_to_string(&npm_log).unwrap_or_default()
+        ),
+        (Vec::new(), String::new()),
+        "the fork install neither commands the TS daemon nor runs npm uninstall"
+    );
+    assert!(npm_root.join("prime-agent/package.json").is_file());
+}
+
 /// Prime Intellect's own CLI is also `prime`, often in ~/.local/bin: the
 /// fork install never replaces or removes a `prime` it did not write. Its
 /// own `prime` stays in the fork prefix's bin dir, and the install says
