@@ -21,7 +21,10 @@
 # touches GitHub.
 #
 # THE TYPESCRIPT TAKEOVER (this script is also the uninstall path for the
-# TS product — one installer owns the keyword's lifecycle):
+# TS product — one installer owns the keyword's lifecycle). The official
+# build's only: a distribution build (VARIANT_NAME set, see THE TAKEOVER
+# IS THE OFFICIAL BUILD'S below) installs beside the TS product and skips
+# every step here except stopping its own pinned daemon:
 #   1. BOTH DAEMONS ARE STOPPED CLEANLY, NEVER KILLED (--force alone may
 #      signal one that will not stop), but only AFTER the new payload and
 #      launcher are published — the retirement steps (daemon stops, npm
@@ -195,6 +198,17 @@ case "$VARIANT_NAME" in
   *[!a-z0-9-]*) echo "install-rust.sh: invalid VARIANT_NAME: ${VARIANT_NAME}" >&2; exit 1 ;;
   *) DAEMON_SOCKET_DIR_NAME="prime-agent-${VARIANT_NAME}" ;;
 esac
+# THE TAKEOVER IS THE OFFICIAL BUILD'S: the official installer owns the
+# prime-agent keyword's lifecycle and retires the TypeScript product (its
+# daemon on the shared default socket, its npm package). A distribution
+# build (VARIANT_NAME set) installs BESIDE the official build and the
+# TypeScript product - its own command, agent dir, and daemon - so it never
+# probes or stops a daemon but its own pinned one, and never uninstalls the
+# TypeScript npm package or reports on its native install.
+case "$VARIANT_NAME" in
+  "") TS_TAKEOVER="yes" ;;
+  *) TS_TAKEOVER="no" ;;
+esac
 case "$COMMAND_NAME" in
   "") LAUNCHER_NAME="prime-agent" ;;
   prime-agent|*[!a-z0-9-]*) echo "install-rust.sh: invalid COMMAND_NAME: ${COMMAND_NAME}" >&2; exit 1 ;;
@@ -213,6 +227,8 @@ TypeScript product is taken over: its daemon is stopped with its own shutdown re
 its native install is preserved under share/prime-agent-legacy, and its npm package is
 uninstalled (the restore command is printed). ~/.prime/agent (the shared session store)
 is never touched. Both the default and --update install the channel's current version.
+A distribution build's installer takes nothing over: it installs beside the official
+build and the TypeScript product, and stops only its own daemon.
 
 Needs curl + sh (+ the network): the installer bootstraps its own Python via
 uv — no system python3 required. It also pre-warms the Python kernel (uv +
@@ -1719,9 +1735,14 @@ esac
 # rust socket — deduped by string equality, each probed exactly once.
 # ts_candidate_report names every candidate for the no-silent-skips
 # ruling (a report string may carry the spaces; the probes do not).
-ts_candidate_report="$ts_socket"
+# A distribution build (no takeover) probes its own pinned socket alone.
+ts_socket_probe="$TS_TAKEOVER"
+ts_candidate_report=""
+if [ "$ts_socket_probe" = "yes" ]; then
+  ts_candidate_report="$ts_socket"
+fi
 env_socket_probe="no"
-if [ -n "$env_socket" ] && [ "$env_socket" != "$ts_socket" ] && [ "$env_socket" != "$rust_socket" ]; then
+if [ "$TS_TAKEOVER" = "yes" ] && [ -n "$env_socket" ] && [ "$env_socket" != "$ts_socket" ] && [ "$env_socket" != "$rust_socket" ]; then
   env_socket_probe="yes"
   ts_candidate_report="$ts_candidate_report, $env_socket"
 fi
@@ -1730,7 +1751,7 @@ fi
 rust_socket_probe="no"
 if [ "$rust_socket" != "$ts_socket" ]; then
   rust_socket_probe="yes"
-  ts_candidate_report="$ts_candidate_report, $rust_socket"
+  ts_candidate_report="${ts_candidate_report:+${ts_candidate_report}, }$rust_socket"
 fi
 # The daemon probe rides a FILE, not a heredoc inside a command
 # substitution: macOS ships bash 3.2 as /bin/sh, and its POSIX-mode parser
@@ -2332,7 +2353,7 @@ ts_owned_old_layout() {
 
 # A TS managed root elsewhere (XDG_DATA_HOME) does not block this install and
 # is left in place — only the keyword is taken over.
-if [ "$ts_managed_root" != "$share_dir" ] && [ -d "$ts_managed_root" ] && ts_managed "$ts_managed_root"; then
+if [ "$TS_TAKEOVER" = "yes" ] && [ "$ts_managed_root" != "$share_dir" ] && [ -d "$ts_managed_root" ] && ts_managed "$ts_managed_root"; then
   say "note: a TypeScript native install also lives at ${ts_managed_root}"
   say "  (XDG_DATA_HOME); it does not occupy ${share_dir} and was left in place."
 fi
@@ -2752,7 +2773,7 @@ done
 # the EXIT trap), so a half-finished install never leaves the machine with
 # no working prime-agent — the TS public symlink keeps resolving the whole
 # time and the TS tree returns to its original path if this install dies.
-if [ -d "$share_dir" ] && ts_managed "$share_dir"; then
+if [ "$TS_TAKEOVER" = "yes" ] && [ -d "$share_dir" ] && ts_managed "$share_dir"; then
   preserved_to="$legacy_dir"
   if [ -e "$preserved_to" ]; then preserved_to="$(fresh_slot "$legacy_dir")"; fi
   guard_preserved "$preserved_to"
@@ -3138,9 +3159,11 @@ last_stop_was_rust=""
 # migration bridge. That coordinator must capture the TS restart manifest
 # before stopping the old daemon; the bridge explicitly transfers that duty.
 if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_DEFER_DAEMON_STOP:-0}" != 1 ]; then
-  stop_daemon_candidate "$ts_socket" ts
-  ts_stop_stopped_ts="$last_stop_recorded"
-  ts_stop_was_rust_ts="$last_stop_was_rust"
+  if [ "$ts_socket_probe" = "yes" ]; then
+    stop_daemon_candidate "$ts_socket" ts
+    ts_stop_stopped_ts="$last_stop_recorded"
+    ts_stop_was_rust_ts="$last_stop_was_rust"
+  fi
   if [ "$env_socket_probe" = "yes" ]; then
     stop_daemon_candidate "$env_socket" ts
     ts_stop_stopped_env="$last_stop_recorded"
@@ -3191,7 +3214,7 @@ fi
 # step is darwin/linux. The npm migration bridge remains the package manager's
 # command entry point: removing it during its child installer would delete the
 # running launcher's files and break later package-manager updates.
-if [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_PRESERVE_NPM_BRIDGE:-0}" != 1 ] && command -v npm >/dev/null 2>&1; then
+if [ "$TS_TAKEOVER" = "yes" ] && [ "$WINDOWS" != "yes" ] && [ "${PRIME_AGENT_PRESERVE_NPM_BRIDGE:-0}" != 1 ] && command -v npm >/dev/null 2>&1; then
   npm_root="$(npm root -g 2>/dev/null || true)"
   if [ -n "$npm_root" ] && [ -f "${npm_root}/prime-agent/package.json" ]; then
     ts_version="$("$UVPY" -c 'import json, sys

@@ -1,0 +1,1 @@
+- The drvova build's installer (`install.sh`, `prime update`) no longer takes over from the TypeScript Prime Agent: it never stops the TypeScript or official daemon and never uninstalls the TypeScript npm package; it stops only its own daemon.

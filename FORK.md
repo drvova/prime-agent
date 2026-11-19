@@ -35,6 +35,9 @@ They install into `~/.local/share/prime-agent-fork` (on Windows
 `%USERPROFILE%\.local\share\prime-agent-fork`) and create the `prime`
 launcher there. They create no `prime-agent` launcher and never write to the
 official build's `~/.local/bin/prime-agent` or `~/.local/share/prime-agent`.
+Unlike the official installer, they don't take over from the TypeScript
+Prime Agent: they never stop its daemon (or the official build's) and never
+uninstall its npm package. The only daemon they stop is the fork's own.
 A fork installed before it had its own command still has a
 `bin/prime-agent` launcher in the fork prefix. The next install or
 `prime-agent update` of the fork replaces it with `bin/prime`.
