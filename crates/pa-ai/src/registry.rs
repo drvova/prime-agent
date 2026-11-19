@@ -34,6 +34,13 @@ pub trait Provider: Send + Sync {
     fn default_loop_guard(&self, model: &Model) -> LoopGuardLevel {
         crate::loop_guard::default_level(&model.id)
     }
+
+    /// Whether this provider's requests wait for a provider permit
+    /// ([`crate::admission`]). Every network provider is paced; a provider
+    /// that replays scripted fixtures returns `false`, since it has no limits to learn.
+    fn paced(&self) -> bool {
+        true
+    }
 }
 
 struct RegisteredProvider {

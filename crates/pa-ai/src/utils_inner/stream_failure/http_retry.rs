@@ -2,7 +2,7 @@
 //! seconds-vs-HTTP-date forms, and the civil-date math behind the date form.
 use super::now_ms;
 
-pub(super) fn header_value<S: std::hash::BuildHasher>(
+pub(crate) fn header_value<S: std::hash::BuildHasher>(
     headers: &std::collections::HashMap<String, String, S>,
     name: &str,
 ) -> Option<String> {
@@ -66,28 +66,71 @@ pub fn parse_rate_limit_reset_ms<S: std::hash::BuildHasher>(
     RATE_LIMIT_RESET_HEADERS
         .iter()
         .filter_map(|name| header_value(headers, name))
-        .filter_map(|raw| {
-            let raw = raw.trim();
-            match raw.parse::<f64>() {
-                Ok(number) if number.is_finite() && number >= 0.0 => {
-                    // Epoch millis fit i64; the max(0) floor keeps the delta non-negative.
-                    #[allow(clippy::cast_possible_wrap)]
-                    let now = now_ms() as i64;
-                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-                    let wait = if number >= 1e12 {
-                        (number as i64 - now).max(0) as u64
-                    } else if number >= 1e9 {
-                        ((number * 1000.0) as i64 - now).max(0) as u64
-                    } else {
-                        (number * 1000.0) as u64
-                    };
-                    Some(wait)
-                }
-                Ok(_) => None,
-                Err(_) => parse_duration_ms(raw),
-            }
-        })
+        .filter_map(|raw| parse_reset_ms(&raw))
         .max()
+}
+
+/// One rate-limit reset value as a millisecond wait: a duration (`1m30s`, `250ms`, `6m0s`),
+/// plain seconds, an epoch timestamp (values at or above 10^12 are epoch milliseconds, at or
+/// above 10^9 epoch seconds), or an RFC 3339 instant (Anthropic's
+/// `anthropic-ratelimit-*-reset`); the wait to an instant is the delta to now.
+pub(crate) fn parse_reset_ms(raw: &str) -> Option<u64> {
+    let raw = raw.trim();
+    // Epoch millis fit i64; the max(0) floor keeps the delta non-negative.
+    #[allow(clippy::cast_possible_wrap)]
+    let now = now_ms() as i64;
+    match raw.parse::<f64>() {
+        Ok(number) if number.is_finite() && number >= 0.0 => {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            let wait = if number >= 1e12 {
+                (number as i64 - now).max(0) as u64
+            } else if number >= 1e9 {
+                ((number * 1000.0) as i64 - now).max(0) as u64
+            } else {
+                (number * 1000.0) as u64
+            };
+            Some(wait)
+        }
+        Ok(_) => None,
+        Err(_) => parse_duration_ms(raw).or_else(|| {
+            // The floor keeps the delta non-negative for the u64 wait.
+            #[allow(clippy::cast_sign_loss)]
+            parse_rfc3339_ms(raw).map(|instant| (instant - now).max(0) as u64)
+        }),
+    }
+}
+
+/// A minimal RFC 3339 parser (`2026-11-19T12:00:30Z`, fractional seconds and numeric offsets
+/// allowed) into epoch milliseconds.
+fn parse_rfc3339_ms(raw: &str) -> Option<i64> {
+    let (date, time) = raw.split_once(['T', 't'])?;
+    let mut date_parts = date.splitn(3, '-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    let (clock, offset_seconds) = if let Some(clock) = time.strip_suffix(['Z', 'z']) {
+        (clock, 0)
+    } else {
+        let sign_at = time.rfind(['+', '-'])?;
+        let (clock, offset) = time.split_at(sign_at);
+        let sign = if offset.starts_with('-') { -1 } else { 1 };
+        let (hours, minutes) = offset[1..].split_once(':')?;
+        let hours: i64 = hours.parse().ok()?;
+        let minutes: i64 = minutes.parse().ok()?;
+        (clock, sign * (hours * 3600 + minutes * 60))
+    };
+    let mut clock_parts = clock.splitn(3, ':');
+    let hour: i64 = clock_parts.next()?.parse().ok()?;
+    let minute: i64 = clock_parts.next()?.parse().ok()?;
+    let seconds: f64 = clock_parts.next()?.parse().ok()?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    // A parsed second count is finite and non-negative.
+    #[allow(clippy::cast_possible_truncation)]
+    let millis = (seconds * 1000.0).round() as i64;
+    let days = days_from_civil(year, month, day);
+    Some((days * 86_400 + hour * 3600 + minute * 60 - offset_seconds) * 1000 + millis)
 }
 
 /// A Go-style duration (`1h2m3.5s`, `250ms`, `6m0s`) in milliseconds.

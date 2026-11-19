@@ -1694,61 +1694,6 @@ async fn goal_verification_facts_ride_their_own_event() {
     assert!(ended.keys().all(|key| !key.starts_with("goal_")));
 }
 
-/// The provider layer's Responses transport counts ride their own `agent responses transport`
-/// event at session end (counts only), and the session ended event carries none of them.
-#[tokio::test]
-async fn responses_transport_counts_ride_their_own_event() {
-    let fixture = fixture();
-    let counters = Arc::new(SessionCounters::default());
-    let mut telemetry = SessionTelemetry::detached(
-        fixture.client.clone(),
-        fixture.state.clone(),
-        "interactive".to_string(),
-    );
-    telemetry.counters = Arc::clone(&counters);
-    counters.note_responses_transport(pa_ai::responses_transport::ResponsesTransportCounts {
-        websocket_requests: 3,
-        delta_requests: 2,
-        full_context_requests: 1,
-        stale_continuation_retries: 1,
-        auto_websocket: 2,
-        auto_sse_one_shot: 1,
-        probes: 1,
-        ..Default::default()
-    });
-    telemetry.end().await.unwrap();
-    assert_eq!(
-        fixture.mock.event_names(),
-        ["agent session ended", "agent responses transport"]
-    );
-    let transport = &event_properties(&fixture.mock, "agent responses transport").await[0];
-    let counts: serde_json::Map<String, serde_json::Value> = transport
-        .iter()
-        .filter(|(key, _)| key.starts_with("responses_"))
-        .map(|(key, value)| (key.clone(), value.clone()))
-        .collect();
-    assert_eq!(
-        serde_json::Value::Object(counts),
-        serde_json::json!({
-            "responses_websocket_request_count": 3,
-            "responses_delta_request_count": 2,
-            "responses_full_context_request_count": 1,
-            "responses_sse_fallback_count": 0,
-            "responses_stale_continuation_retry_count": 1,
-            "responses_auto_websocket_count": 2,
-            "responses_auto_sse_one_shot_count": 1,
-            "responses_auto_sse_no_websocket_wire_count": 0,
-            "responses_auto_sse_unsupported_count": 0,
-            "responses_auto_sse_demoted_count": 0,
-            "responses_probe_count": 1,
-            "responses_probe_failed_count": 0,
-            "responses_websocket_without_wire_count": 0,
-        })
-    );
-    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
-    assert!(ended.keys().all(|key| !key.starts_with("responses_")));
-}
-
 /// Kernel `web.read` outcomes ride their own `agent web reads` event at session end (counts by
 /// kind, never a URL), and a session that read nothing sends none.
 #[tokio::test]

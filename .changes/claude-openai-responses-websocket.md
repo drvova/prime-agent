@@ -1,1 +1,0 @@
-- OpenAI and xAI API-key sessions now continue each turn over a persistent Responses WebSocket that sends only the new input, instead of re-sending the whole transcript; the default `auto` transport picks it per request, probes other Responses endpoints once, and falls back to SSE on its own.

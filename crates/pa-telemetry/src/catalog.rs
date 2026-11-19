@@ -1484,6 +1484,23 @@ const AGENT_TODOS_AND_QUESTIONS: EventRule = EventRule {
     ],
 };
 
+/// Provider request admission for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when any request waited for a permit or
+/// a provider pushed back: requests that waited, their summed wait, throttled/overloaded
+/// responses seen, and the adaptive controller's multiplicative decreases. Counts only: never a
+/// provider URL, model, or credential.
+const AGENT_PROVIDER_ADMISSION: EventRule = EventRule {
+    name: "agent provider admission",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("admission_waited_count", required(count())),
+        ("admission_wait_ms", required(duration())),
+        ("provider_throttled_count", required(count())),
+        ("admission_decrease_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1532,38 +1549,6 @@ const AGENT_SESSIONS_IMPORTED: EventRule = EventRule {
             )),
         ),
         ("duration_ms", required(duration())),
-    ],
-};
-
-/// Responses transport adoption for one session (v2), emitted at session end beside `agent session
-/// ended` (which sits at the backend's 128-key cap) only when a request chose a Responses
-/// transport: WebSocket requests (continuation deltas vs full context), SSE fallbacks, dropped
-/// continuations resent in full, the `auto` choice by reason, endpoint capability probes, and
-/// WebSocket requests on providers without the mode. Counts only: never an endpoint or a body.
-const AGENT_RESPONSES_TRANSPORT: EventRule = EventRule {
-    name: "agent responses transport",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("responses_websocket_request_count", required(count())),
-        ("responses_delta_request_count", required(count())),
-        ("responses_full_context_request_count", required(count())),
-        ("responses_sse_fallback_count", required(count())),
-        (
-            "responses_stale_continuation_retry_count",
-            required(count()),
-        ),
-        ("responses_auto_websocket_count", required(count())),
-        ("responses_auto_sse_one_shot_count", required(count())),
-        (
-            "responses_auto_sse_no_websocket_wire_count",
-            required(count()),
-        ),
-        ("responses_auto_sse_unsupported_count", required(count())),
-        ("responses_auto_sse_demoted_count", required(count())),
-        ("responses_probe_count", required(count())),
-        ("responses_probe_failed_count", required(count())),
-        ("responses_websocket_without_wire_count", required(count())),
     ],
 };
 
@@ -1819,7 +1804,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
-        &AGENT_RESPONSES_TRANSPORT,
+        &AGENT_PROVIDER_ADMISSION,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

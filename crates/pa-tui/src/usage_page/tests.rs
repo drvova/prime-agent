@@ -166,6 +166,7 @@ fn quota_report() -> QuotaReport {
                 },
             },
         ],
+        pacing: Vec::new(),
     }
 }
 
@@ -373,10 +374,39 @@ fn failed_and_empty_halves_render_their_own_states() {
     }
     page.apply_quotas(Ok(QuotaReport {
         providers: Vec::new(),
+        pacing: Vec::new(),
     }));
     assert_eq!(
         render(&mut page, 80, 30)[5],
         "  No subscription sign-in reports quotas (/login adds one)."
+    );
+}
+
+/// The daemon's live pacing rides the quota half as one read-only row per provider/model.
+#[test]
+fn the_quota_half_lists_the_live_request_pacing() {
+    let mut page = UsagePage::new(None, Some(spend_history()));
+    page.apply_quotas(Ok(QuotaReport {
+        providers: Vec::new(),
+        pacing: vec![pa_types::provider_usage::ProviderPacing {
+            provider: "anthropic".into(),
+            model: "claude-x".into(),
+            concurrency: 3,
+            rate_per_min: 50,
+            concurrency_ceiling: Some(6),
+            rate_ceiling: Some(50),
+            in_flight: 2,
+            reason: pa_types::control::AdjustReason::Throttled,
+        }],
+    }));
+    let rendered = render(&mut page, 80, 30);
+    let at = rendered
+        .iter()
+        .position(|row| row == "  Request pacing")
+        .expect("the pacing section");
+    assert_eq!(
+        rendered[at + 1],
+        "  anthropic/claude-x  2/3 in flight (ceiling 6) · 50/min · backed off (429)"
     );
 }
 

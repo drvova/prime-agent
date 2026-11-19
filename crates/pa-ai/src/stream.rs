@@ -195,12 +195,16 @@ pub fn stream(
     let mut options = options;
     clamp_output_budget(model, context, options.as_mut());
     declare_session_identity(options.as_mut());
-    crate::providers::responses_websocket::note_dispatch(&model.api, options.as_ref());
     // A request without options carries no abort token to cut, so it streams unguarded.
     let guard = options
         .as_mut()
         .and_then(|options| arm_loop_guard(provider.as_ref(), model, options));
-    let stream = provider.stream(model, context, options.as_ref());
+    let stream = crate::admission::admitted_stream(
+        provider,
+        model,
+        context,
+        crate::admission::CallOptions::Native(options),
+    );
     if let Some(guard) = guard {
         stream.arm_loop_guard(guard);
     }
@@ -232,18 +236,21 @@ pub fn stream_simple(
     options: Option<SimpleStreamOptions>,
 ) -> Result<AssistantMessageEventStream, ProviderError> {
     let provider = resolve_provider(&model.api)?;
-    let mut options = options;
     // A `None` caller still gets the default output budget downstream
     // (`build_base_options` fills the per-model default: an explicit
     // `maxTokens` unchanged, a catalog value `min(model.maxTokens, 32000)`),
     // so materialize the options to clamp that default too. The
     // materialized default builds the same request otherwise.
-    let simple = options.get_or_insert_with(SimpleStreamOptions::default);
+    let mut simple = options.unwrap_or_default();
     clamp_output_budget(model, context, Some(&mut simple.base));
     declare_session_identity(Some(&mut simple.base));
-    crate::providers::responses_websocket::note_dispatch(&model.api, Some(&simple.base));
     let guard = arm_loop_guard(provider.as_ref(), model, &mut simple.base);
-    let stream = provider.stream_simple(model, context, options.as_ref());
+    let stream = crate::admission::admitted_stream(
+        provider,
+        model,
+        context,
+        crate::admission::CallOptions::Simple(simple),
+    );
     if let Some(guard) = guard {
         stream.arm_loop_guard(guard);
     }

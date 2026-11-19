@@ -460,6 +460,7 @@ pub async fn generate_branch_summary(
     };
     let mut stream_options =
         pa_ai::types::SimpleStreamOptions::from_base(pa_ai::types::StreamOptions {
+            priority: Some(pa_ai::admission::Priority::Helper),
             max_tokens: Some(BRANCH_SUMMARY_MAX_TOKENS),
             api_key,
             session_id: session_id.map(str::to_string),

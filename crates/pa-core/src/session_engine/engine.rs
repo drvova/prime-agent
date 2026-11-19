@@ -214,11 +214,6 @@ fn mcp_gating_blocking(
 /// reporting.
 pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<SessionEngine> {
     let cwd = config.cwd.clone();
-    // Learned Responses WebSocket capabilities persist beside the agent's other state (the
-    // provider layer reads the file on its first lookup and writes it off the request path).
-    pa_ai::responses_transport::set_capability_cache_path(
-        config.agent_dir.join("responses-transport.json"),
-    );
     // Session persistence first: the conversation-log path and the resume
     // context both come from the session manager.
     let mut session_manager = config
@@ -1393,7 +1388,7 @@ impl SessionEngine {
 
     /// Tear the kernel down now with a final namespace snapshot, for a host that
     /// ends the session but keeps the engine alive; dropping the engine tears the kernel down too.
-    /// The session's cached Responses sockets close with it (TS `cleanupSessionResources` on
+    /// The session's cached Codex WebSocket closes with it (TS `cleanupSessionResources` on
     /// dispose), so a worker that replaces its session does not hold the old socket until the
     /// idle expiry.
     ///
@@ -1407,7 +1402,7 @@ impl SessionEngine {
             .expect("refinement cancellation lock")
             .abort();
         if let Some(session_id) = self.session.agent().session_id() {
-            pa_ai::responses_transport::close_session_websockets(session_id);
+            pa_ai::codex_debug::close_websocket_sessions(Some(session_id));
         }
         self.provisioner.dispose(None).await;
     }

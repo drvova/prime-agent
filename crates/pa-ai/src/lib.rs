@@ -7,6 +7,7 @@
 //! `result_large_err` are allowed crate-wide rather than boxing payloads.
 #![allow(clippy::large_enum_variant, clippy::result_large_err)]
 
+pub mod admission;
 pub mod env_api_keys;
 pub mod models;
 pub mod models_generated;
@@ -29,14 +30,6 @@ pub mod codex_debug {
     pub use crate::providers::openai_codex_responses::session::{
         close_websocket_sessions, get_debug_stats as get_websocket_debug_stats,
         reset_debug_stats as reset_websocket_debug_stats, WebSocketDebugStats,
-    };
-}
-/// The Responses WebSocket transport surface the session layer uses: closing a session's sockets,
-/// its adoption counts, and where learned endpoint capabilities persist.
-pub mod responses_transport {
-    pub use crate::providers::close_session_websockets;
-    pub use crate::providers::responses_websocket::{
-        session_counts, set_capability_cache_path, ResponsesTransportCounts,
     };
 }
 pub use providers::simple_options::{default_request_max_tokens, effective_request_max_tokens};

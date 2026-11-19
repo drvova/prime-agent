@@ -26,11 +26,8 @@ import contextvars
 import dataclasses
 import functools
 import heapq
-import os
-import sys
 import threading
 import time
-import warnings
 from collections.abc import Callable, Generator
 from typing import Any
 
@@ -313,83 +310,12 @@ def _sleep(seconds: float) -> None:
         run._deliver_in_sleep()
 
 
-# --- un-awaited kernel calls -----------------------------------------------
-
-_RLM_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
-
-
-def _unawaited_call(coro: Any) -> tuple[str, int] | None:
-    """Name a kernel coroutine the cell created and never awaited, with its
-    cell line: ``("todo.set", 2)``; None for any other coroutine.
-
-    Only coroutines defined in the rlm package and created directly by cell
-    code count (the cell thread tracks one origin frame): a coroutine the
-    cell defines itself, or one rlm creates internally, keeps the
-    interpreter's own behavior."""
-    code = getattr(coro, "cr_code", None)
-    origin = getattr(coro, "cr_origin", None)
-    if code is None or not origin or not origin[0][0].startswith("<cell-"):
-        return None
-    if not os.path.abspath(code.co_filename).startswith(_RLM_DIR):
-        return None
-    qualname = coro.__qualname__
-    if "<" in qualname:
-        qualname = coro.__name__
-    module = os.path.splitext(os.path.basename(code.co_filename))[0]
-    if "." in qualname or module == qualname:
-        name = qualname
-    elif module == "__init__":
-        name = f"rlm.{qualname}"
-    else:
-        name = f"{module}.{qualname}"
-    return name, origin[0][1]
-
-
-def _hook_unawaited_warning() -> None:
-    """Route the interpreter's "coroutine ... was never awaited" warning for a
-    kernel call dropped by a running cell into that cell's report. CPython
-    looks the hook up on the warnings module at every finalization; any
-    other coroutine, or one dropped outside a cell body, still warns."""
-    original = getattr(warnings, "_warn_unawaited_coroutine", None)
-    if original is None or getattr(original, "_rlm_hook", False):
-        return
-
-    def report(coro: Any) -> None:
-        run = _cell_threads.get(threading.get_ident())
-        call = _unawaited_call(coro)
-        if run is None or call is None:
-            original(coro)
-            return
-        run.unawaited.append(call)
-
-    report._rlm_hook = True  # type: ignore[attr-defined]
-    warnings._warn_unawaited_coroutine = report  # type: ignore[attr-defined]
-
-
-def _unawaited_error(cell_id: str, calls: list[tuple[str, int]]) -> dict[str, Any]:
-    from . import repl
-
-    unique = list(dict.fromkeys(calls))
-    one = len(unique) == 1
-    names = ", ".join(f"{name}(...)" for name, _ in unique)
-    lines = ", ".join(str(line) for _, line in unique)
-    message = (
-        f"{names} {'was' if one else 'were'} never awaited (cell line{'' if one else 's'} {lines}), "
-        f"so {'it' if one else 'they'} did not run. Kernel calls are async: write "
-        f"`await {unique[0][0]}(...)`. The rest of the cell ran; re-run only the missed "
-        f"call{'' if one else 's'}."
-    )
-    return repl._error_event(cell_id, RuntimeError(message))
-
-
 def install() -> None:
-    """Process-wide setup, once: the sleep shim, the cross-loop rules, and the
-    un-awaited kernel-call report."""
+    """Process-wide setup, once: the sleep shim and the cross-loop rules."""
     if time.sleep is not _sleep:
         time.sleep = _sleep
     _lenient_ensure_future()
     _marshal_primitives()
-    _hook_unawaited_warning()
 
 
 # --- the registry -----------------------------------------------------------
@@ -448,8 +374,6 @@ class CellRun:
         # status, value, result text, error event
         self.outcome: Outcome | None = None
         self.result: CellResult | None = None
-        # Kernel calls the body created and dropped without awaiting them.
-        self.unawaited: list[tuple[str, int]] = []
         self._output: list[str] = []
         self._output_chars = 0
         self._output_dropped = False
@@ -475,9 +399,6 @@ class CellRun:
 
         tid = threading.get_ident()
         _cell_threads[tid] = self
-        # Per thread: a coroutine records the frame that created it, so an
-        # un-awaited kernel call is told apart from one rlm made internally.
-        sys.set_coroutine_origin_tracking_depth(1)
         loop = _CellLoop()
         loop.set_task_factory(_bridged_task)
         asyncio.set_event_loop(loop)
@@ -525,13 +446,6 @@ class CellRun:
             if self._interrupt_requested.is_set() and isinstance(exc, (KeyboardInterrupt, asyncio.CancelledError)):
                 return "error", None, None, repl._interrupt_event(self.cell_id, exc)
             return "error", None, None, repl._error_event(self.cell_id, exc)
-        if self._has_trailing and asyncio.iscoroutine(value):
-            call = _unawaited_call(value)
-            if call is not None:
-                value.close()
-                self.unawaited.append(call)
-        if self.unawaited:
-            return "error", None, None, _unawaited_error(self.cell_id, self.unawaited)
         if not (self._has_trailing and value is not None):
             return "ok", value, None, None
         try:

@@ -1013,6 +1013,7 @@ pub fn default_refiner_call(
             };
             let mut stream_options =
                 pa_ai::types::SimpleStreamOptions::from_base(pa_ai::types::StreamOptions {
+                    priority: Some(pa_ai::admission::Priority::Helper),
                     api_key,
                     headers: headers.map(|headers| headers.into_iter().collect()),
                     session_id: Some(session_id),

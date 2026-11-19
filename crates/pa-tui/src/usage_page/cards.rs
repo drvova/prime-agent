@@ -4,6 +4,7 @@
 
 use std::fmt::Write as _;
 
+use pa_types::control::AdjustReason;
 use pa_types::platform::LocalCivil;
 use pa_types::provider_usage::{
     ProviderQuota, QuotaReport, QuotaSource, QuotaState, QuotaUnit, QuotaWindow, SpendHistory,
@@ -343,6 +344,46 @@ fn quota_rows(
             rows.push(Vec::new());
         }
         rows.extend(card_rows(theme, width, card, now_ms, civil));
+    }
+    // The daemon's live request pacing: what the adaptive admission controller allows each
+    // provider/model now, and why it last changed. Read-only; nothing here is configured.
+    let pacing = quotas
+        .data
+        .as_ref()
+        .map(|report| report.pacing.as_slice())
+        .unwrap_or_default();
+    if !pacing.is_empty() {
+        rows.push(Vec::new());
+        rows.push(section_title(theme, width, "Request pacing"));
+        for entry in pacing {
+            let reason = match entry.reason {
+                AdjustReason::Initial => "starting point",
+                AdjustReason::Restored => "restored",
+                AdjustReason::Headroom => "scaling up",
+                AdjustReason::LimitReported => "provider limit",
+                AdjustReason::Throttled => "backed off (429)",
+                AdjustReason::Overloaded => "backed off (overloaded)",
+                AdjustReason::LatencyRise => "backed off (latency)",
+                AdjustReason::Decay => "re-probing",
+            };
+            let ceiling = entry
+                .concurrency_ceiling
+                .map(|ceiling| format!(" (ceiling {ceiling})"))
+                .unwrap_or_default();
+            rows.push(note_row(
+                theme,
+                width,
+                ThemeColor::Muted,
+                &format!(
+                    "{}/{}  {}/{} in flight{ceiling} · {}/min · {reason}",
+                    entry.provider,
+                    entry.model,
+                    entry.in_flight,
+                    entry.concurrency,
+                    entry.rate_per_min
+                ),
+            ));
+        }
     }
     rows
 }
