@@ -404,6 +404,16 @@ struct CounterValues {
     login_recall: LoginRecallCounts,
     /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
     notify_effort: NotifyEffortCounts,
+    /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
+    repl_reload: ReplReloadCounts,
+}
+
+/// `agent repl reload`: reloads, the skills they added, and settings reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplReloadCounts {
+    reloads: u64,
+    skills_added: u64,
+    settings_reads: u64,
 }
 
 /// `agent repl notify`: pings (and those nobody saw), and effort switches (applied and refused).
@@ -756,6 +766,19 @@ impl SessionCounters {
                 None => &mut counts.failed,
             } += 1;
         });
+    }
+
+    /// One kernel `rlm.reload()` and the count of skills it added (never a name).
+    pub(crate) fn note_repl_reload(&self, skills_added: usize) {
+        self.with(|values| {
+            values.repl_reload.reloads += 1;
+            values.repl_reload.skills_added += skills_added as u64;
+        });
+    }
+
+    /// One kernel `settings.get()` read (never a value).
+    pub(crate) fn note_repl_settings_read(&self) {
+        self.with(|values| values.repl_reload.settings_reads += 1);
     }
 
     /// One kernel `mcp.login`: `Some(true)` logged in, `Some(false)` failed, `None` unavailable.
@@ -1429,6 +1452,21 @@ impl SessionTelemetry {
                 abort_properties.set(key, Value::from(value));
             }
             self.client.track("agent rlm child abort", abort_properties);
+        }
+        // A session that never reloaded or read its settings sends no reload event.
+        let mut repl_reload = ReplReloadCounts::default();
+        self.counters
+            .with(|values| repl_reload = values.repl_reload);
+        if repl_reload != ReplReloadCounts::default() {
+            let mut reload_properties = self.session_properties();
+            for (key, value) in [
+                ("repl_reload_count", repl_reload.reloads),
+                ("repl_reload_skills_added_count", repl_reload.skills_added),
+                ("repl_settings_get_count", repl_reload.settings_reads),
+            ] {
+                reload_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl reload", reload_properties);
         }
         // A session that neither logged in nor searched past sessions sends no recall event.
         let mut login_recall = LoginRecallCounts::default();

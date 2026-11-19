@@ -40,6 +40,7 @@ The following programmatic tools are available in the REPL for subagent manageme
 - `rlm.abort(target: str | RLMSubagent) -> RLMAbortResult`: stop a direct child's current turn without deleting it, to steer it: then send new instructions with `agent_message.send`; `result.outcome` is `aborted` or `idle` (nothing was running), `result.subagent` its row
 - `rlm.rename(new_name: str, *, session_id=None) -> str`: rename the calling session (omit `session_id`) or a direct child (spawn handle, `list_subagents()` row, or session id; never the child's name); names must be unique among siblings, and the renamed session sees a transcript line for the change
 - `rlm.collect(targets=None, *, timeout_ms: int = 0) -> list[RLMChildResult]`: typed snapshots of direct children (status, settled flag, answer preview, error) without steering anyone; `timeout_ms=0` returns a non-blocking snapshot; a positive timeout blocks only this call until the children settle or the deadline passes
+- `rlm.reload() -> ReloadResult`: re-read skills, prompt templates, and `AGENTS.md` context files like the user's `/reload`; call it after writing or changing a skill (e.g. with skill-creator) to use it in this session. The system prompt's skill list follows from the next model call, and a new Python skill is installed and callable in the REPL at once (`result.python_skills_bound`; `result.unbound` says why one is not). `str(result)` summarizes `skills_added`, `skills_removed`, and `diagnostics` (load warnings)
 - `rlm.progress_note(message: str) -> dict`: report brief in-flight progress to the parent orchestrator (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply
 - `RLMSpawnHandle`
   - `rlm_child_id: str`
@@ -238,6 +239,13 @@ Read-only, for budgeting long runs: check before expensive work and back off bef
 
 - `usage.get(*, refresh: bool = False) -> Usage`: `str(usage)` summarizes it; `usage.cost` holds `Cost(total, own, subagents)` in USD (`subagents` is your children's rolled-up spend); `usage.tokens` holds `Tokens(input, output, cache_read, cache_write, total)`; `usage.quotas` lists `ProviderQuota(provider, plan, state, windows, resets_at, error)` for each signed-in subscription provider, `state` being `windows`, `rate_limited`, or `failed`, with `QuotaWindow(label, used, limit, unit, resets_at)` (`unit` is `percent`/`requests`, `resets_at` a UTC datetime, `window.used_fraction`). Quota cards are cached for a few minutes; `refresh=True` re-reads them. `usage.quotas_unavailable` says why `quotas` is empty when no daemon serves the session.
 
+## Session settings
+
+Read-only views of what this session runs with; nothing here is a credential.
+
+- `model.info() -> ModelInfo`: `ModelInfo(id, provider, input, context_window, thinking_level)`; `info.selector` is the `provider/id` that `rlm.spawn(model=...)` takes, `info.image_input` whether `attach_image` works
+- `settings.get() -> Settings`: `str(s)` summarizes it; fields `model`, `context_window`, `thinking_level`, `cell_timeout_ms` (the default `python_repl` cell limit, `None` when unbounded), `compaction` (`Compaction(enabled, threshold_percent, keep_recent_tokens, agent_callable)`), `rlm_depth`, `rlm_max_depth`, `rlm_max_depth_source`, `image_model`, `web_search_provider`, `cache_retention`, `daemonless`, and `autonomous` (`Autonomous(enabled, continuations_used, turns_used, tokens_used, limits)`, `None` when no autonomous runner serves the session; a limit of `0` is unlimited)
+
 ## Notifications and effort
 
 - `notify(message: str, *, level: str = "info") -> bool`: a non-blocking ping (`level` is `info`/`success`/`warning`/`error`): the user sees a notice row and their terminal asks for attention. Use it when long or unattended work finishes or needs a look; unlike `ask` it never waits. Returns whether a user was attached to see it (`False` in headless runs).
@@ -247,4 +255,4 @@ Read-only, for budgeting long runs: check before expensive work and back off bef
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, `model.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, `model.*`, `settings.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

@@ -1696,6 +1696,21 @@ const AGENT_REPL_NOTIFY: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
+/// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
+/// session reloaded or read its settings: reloads, the skills they added, and settings reads.
+/// Counts only: never a skill name, a path, or a setting value.
+const AGENT_REPL_RELOAD: EventRule = EventRule {
+    name: "agent repl reload",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("repl_reload_count", required(count())),
+        ("repl_reload_skills_added_count", required(count())),
+        ("repl_settings_get_count", required(count())),
+    ],
+};
+
 /// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
 /// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
@@ -1755,6 +1770,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
+        &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
     ];
     all.extend(UPDATE_EVENTS.iter());

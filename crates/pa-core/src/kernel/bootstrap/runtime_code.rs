@@ -48,6 +48,7 @@ try:
     import rlm.checkpoint as checkpoint
     import rlm.todo as todo
     import rlm.usage as usage
+    import rlm.settings as settings
     import rlm.ask as _prime_agent_ask_module
     ask = _prime_agent_ask_module.ask
     import rlm.notify as _prime_agent_notify_module
@@ -338,6 +339,7 @@ mod tests {
                 "checkpoint",
                 "todo",
                 "usage",
+                "settings",
                 "model"
             ]
         );
@@ -363,6 +365,7 @@ mod tests {
                 "todo.*",
                 "usage.*",
                 "model.*",
+                "settings.*",
                 "ask",
                 "notify"
             ]

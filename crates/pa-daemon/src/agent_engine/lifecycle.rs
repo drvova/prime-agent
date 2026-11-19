@@ -880,6 +880,7 @@ impl AgentSessionEngine {
         register_agent_message_host_handlers(sender, &mut handlers);
         register_agent_observe_host_handlers(observer, &mut handlers);
         self.register_kernel_notice_host_handlers(&mut handlers);
+        self.register_settings_host_handler(&mut handlers);
         crate::usage_report::register_quota_host_handler(
             &mut handlers,
             self.config.agent_dir.clone(),

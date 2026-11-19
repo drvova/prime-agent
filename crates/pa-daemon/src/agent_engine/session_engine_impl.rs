@@ -1102,7 +1102,7 @@ impl SessionEngine for AgentSessionEngine {
             };
             // Order: prompt templates, then skills.
             let mut commands = Vec::new();
-            for template in &engine.prompt_templates {
+            for template in &engine.resource_reload.prompt_templates() {
                 let mut entry = json!({
                     "name": template.name,
                     "source": "prompt",
@@ -1116,7 +1116,7 @@ impl SessionEngine for AgentSessionEngine {
                 }
                 commands.push(entry);
             }
-            for skill in &engine.skills {
+            for skill in &engine.resource_reload.skills() {
                 let mut entry = json!({
                     "name": format!("skill:{}", skill.name),
                     "source": "skill",
@@ -1150,7 +1150,7 @@ impl SessionEngine for AgentSessionEngine {
             };
             let cwd = self.cwd().display().to_string();
             let mut skills = Vec::new();
-            for skill in &engine.skills {
+            for skill in &engine.resource_reload.skills() {
                 let mut entry = json!({
                     "name": skill.name,
                     "filePath": skill.file_path.display().to_string(),
@@ -1170,7 +1170,7 @@ impl SessionEngine for AgentSessionEngine {
                 skills.push(entry);
             }
             let mut prompts = Vec::new();
-            for template in &engine.prompt_templates {
+            for template in &engine.resource_reload.prompt_templates() {
                 let mut entry = json!({
                     "name": template.name,
                     "filePath": template.file_path,

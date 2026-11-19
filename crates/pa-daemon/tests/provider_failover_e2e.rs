@@ -849,7 +849,7 @@ fn failover_switch_and_restore_rebind_the_kernel_model_facts() {
     let episode = read_receipt(&mut client, &session_id, &episode_receipt, "gm-e");
     assert_eq!(
         episode["model_info"],
-        json!({ "id": "mock-1", "provider": "prime-inference", "input": ["text"] }),
+        json!({ "id": "mock-1", "provider": "prime-inference", "input": ["text"], "contextWindow": 128_000, "thinkingLevel": "off" }),
         "model.info must report the restored primary session before backup tools execute: {episode}"
     );
     assert_eq!(
@@ -873,7 +873,7 @@ fn failover_switch_and_restore_rebind_the_kernel_model_facts() {
     let restored = read_receipt(&mut client, &session_id, &restored_receipt, "gm-r");
     assert_eq!(
         restored["model_info"],
-        json!({ "id": "mock-1", "provider": "prime-inference", "input": ["text"] }),
+        json!({ "id": "mock-1", "provider": "prime-inference", "input": ["text"], "contextWindow": 128_000, "thinkingLevel": "off" }),
         "model.info must rebind the primary on restore: {restored}"
     );
     assert_eq!(
