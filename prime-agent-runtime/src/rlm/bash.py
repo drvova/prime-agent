@@ -192,6 +192,31 @@ def _consume_notice_task(task: asyncio.Task[None]) -> None:
         task.exception()
 
 
+def _output_tail(output: str) -> tuple[str, bool]:
+    """The newest output a degrade snapshot or [bash-done] notice carries (at
+    most _SNAPSHOT_TAIL_LINES lines / _SNAPSHOT_TAIL_CHARS characters), and
+    whether older output was cut."""
+    lines = output.splitlines()
+    tail = "\n".join(lines[-_SNAPSHOT_TAIL_LINES:])
+    cut = len(lines) > _SNAPSHOT_TAIL_LINES or len(tail) > _SNAPSHOT_TAIL_CHARS
+    return tail[-_SNAPSHOT_TAIL_CHARS:], cut
+
+
+def _completion_request(pid: int, command: str, result: BashResult) -> dict[str, Any]:
+    """The `bash.completed` host request. The output tail rides the notice so
+    the model reads the result without an `await h` round; the full output
+    stays on the handle."""
+    tail, truncated = _output_tail(result.output)
+    return {
+        "type": "bash.completed",
+        "pid": pid,
+        "command": command,
+        "exitCode": result.exit_code,
+        "output": tail,
+        "outputTruncated": truncated,
+    }
+
+
 def _capped(command: str) -> str:
     if len(command) > _COMPLETION_NOTICE_COMMAND_CAP:
         return command[:_COMPLETION_NOTICE_COMMAND_CAP] + "\n... [command truncated]"
@@ -303,6 +328,13 @@ class BashResult:
         # running (BashSnapshot.running is True). A property, not a field, so
         # repr, equality, and positional construction stay unchanged.
         return False
+
+    def _repl_text_(self) -> str | None:
+        # A cell's final value displays multi-line output raw (repl._result_text);
+        # a one-line output keeps the dataclass repr.
+        if len(self.output.splitlines()) < 2:
+            return None
+        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f})\n{self.output}"
 
 
 @dataclass(frozen=True)
@@ -879,14 +911,7 @@ class BashHandle:
             if self._awaited_by_creating_cell or self._result_consumed or not repl.is_active():
                 return
             command = _capped(self.command)
-            reply = await repl.host_request(
-                {
-                    "type": "bash.completed",
-                    "pid": self._pid,
-                    "command": command,
-                    "exitCode": result.exit_code,
-                }
-            )
+            reply = await repl.host_request(_completion_request(self._pid, command, result))
             if isinstance(reply, dict) and reply.get("status") == "ok":
                 # Notice accepted by the host; later reads must ask it to withdraw.
                 self._arm_consumed_notice(command)
@@ -1170,9 +1195,8 @@ class BashHandle:
         """Read the internal buffer directly: the public readers count as a
         result read, which would withdraw the [bash-done] notice the degrade
         must keep alive."""
-        tail = "\n".join(self._buffer.text().splitlines()[-_SNAPSHOT_TAIL_LINES:])
         return BashSnapshot(
-            output=tail[-_SNAPSHOT_TAIL_CHARS:],
+            output=_output_tail(self._buffer.text())[0],
             exit_code=None,
             running=True,
             duration=time.monotonic() - self._started,
@@ -1373,9 +1397,7 @@ class PersistentBashHandle(BashHandle):
             if self._awaited_by_creating_cell or self._result_consumed or not repl.is_active():
                 return
             command = _capped(self.command)
-            reply = await repl.host_request(
-                {"type": "bash.completed", "pid": self._pid, "command": command, "exitCode": result.exit_code}
-            )
+            reply = await repl.host_request(_completion_request(self._pid, command, result))
             if isinstance(reply, dict) and reply.get("status") == "ok":
                 self._arm_consumed_notice(command)
         except (OSError, RuntimeError):

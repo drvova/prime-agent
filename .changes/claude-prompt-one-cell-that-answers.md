@@ -1,0 +1,1 @@
+- The agent now writes one Python cell that answers instead of several that probe: everything it can already write (shell commands, edits, reads, searches, MCP calls) goes into a single cell, with independent calls run together, which cuts model round trips.

@@ -1919,6 +1919,127 @@ async fn repl_schedules_ride_their_own_event() {
     );
 }
 
+/// Kernel `checkpoint.*` calls ride their own `agent repl checkpoint` event at session end
+/// (counts by outcome, never a label or path), and a session that never checkpointed sends none.
+#[tokio::test]
+async fn repl_checkpoints_ride_their_own_event() {
+    use crate::session_engine::checkpoint_host::CheckpointFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        CheckpointFact::Created,
+        CheckpointFact::Created,
+        CheckpointFact::Listed,
+        CheckpointFact::Restored,
+        CheckpointFact::RestoreDeclined,
+        CheckpointFact::RestoreDisabled,
+        CheckpointFact::Failed,
+    ] {
+        counters.note_repl_checkpoint(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl checkpoint"]
+    );
+    let checkpoint = &event_properties(&fixture.mock, "agent repl checkpoint").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = checkpoint
+        .iter()
+        .filter(|(key, _)| key.starts_with("checkpoint_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "checkpoint_created_count": 2,
+            "checkpoint_list_count": 1,
+            "checkpoint_restored_count": 1,
+            "checkpoint_restore_declined_count": 1,
+            "checkpoint_restore_disabled_count": 1,
+            "checkpoint_failed_count": 1,
+        })
+    );
+}
+
+/// Kernel `usage.get()` reads ride their own `agent usage reads` event at session end (a count,
+/// never a cost or a token number), and a session that never read its usage sends none.
+#[tokio::test]
+async fn usage_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_usage_read();
+    counters.note_usage_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent usage reads"]
+    );
+    let reads = &event_properties(&fixture.mock, "agent usage reads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reads
+        .iter()
+        .filter(|(key, _)| key.starts_with("usage_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({"usage_read_count": 2})
+    );
+}
+
+/// Kernel `rlm.abort` calls ride their own `agent rlm child abort` event at session end (counts
+/// by outcome, never a child id), and a session that never aborted sends none.
+#[tokio::test]
+async fn rlm_child_aborts_ride_their_own_event() {
+    use crate::session_engine::rlm_host::RlmAbortOutcome;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for outcome in [
+        Some(RlmAbortOutcome::Aborted),
+        Some(RlmAbortOutcome::Aborted),
+        Some(RlmAbortOutcome::Idle),
+        None,
+    ] {
+        counters.note_rlm_abort(outcome);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent rlm child abort"]
+    );
+    let abort = &event_properties(&fixture.mock, "agent rlm child abort").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = abort
+        .iter()
+        .filter(|(key, _)| key.starts_with("rlm_abort_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "rlm_abort_aborted_count": 2,
+            "rlm_abort_idle_count": 1,
+            "rlm_abort_failed_count": 1,
+        })
+    );
+}
+
 /// Kernel `rlm.reload()` and `settings.get()` calls ride their own `agent repl reload` event at
 /// session end (counts only, never a skill name or a setting value).
 #[tokio::test]

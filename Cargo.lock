@@ -1865,6 +1865,7 @@ dependencies = [
  "crossterm",
  "emojis",
  "fancy-regex",
+ "flate2",
  "ignore",
  "notify",
  "pa-types",

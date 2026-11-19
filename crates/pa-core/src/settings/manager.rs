@@ -1218,6 +1218,31 @@ mod tests {
         assert!(!manager.get_factory_enabled());
     }
 
+    /// `replCanRestoreCheckpoints` is off unless the GLOBAL document turns it on: a project's
+    /// settings can never let the model rewrite its workspace.
+    #[test]
+    fn repl_checkpoint_restore_reads_the_global_scope_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("cwd");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(cwd.join(".prime/agent")).unwrap();
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        let project = cwd.join(".prime/agent/settings.json");
+        std::fs::write(&project, r#"{ "replCanRestoreCheckpoints": true }"#).unwrap();
+        let read = || SettingsManager::create(&cwd, &agent_dir).get_repl_can_restore_checkpoints();
+        assert!(
+            !read(),
+            "a project-scope override never enables the restore"
+        );
+        std::fs::write(
+            agent_dir.join("settings.json"),
+            r#"{ "replCanRestoreCheckpoints": true }"#,
+        )
+        .unwrap();
+        std::fs::write(&project, r#"{ "replCanRestoreCheckpoints": false }"#).unwrap();
+        assert!(read(), "the global document decides");
+    }
+
     #[test]
     fn reopen_keeps_the_runtime_overrides_in_the_merged_settings() {
         let mut manager = SettingsManager::in_memory(&Settings::default());

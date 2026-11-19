@@ -45,7 +45,7 @@ pub(crate) struct Section<T> {
 }
 
 impl<T> Section<T> {
-    fn loading(data: Option<T>) -> Self {
+    pub(crate) fn loading(data: Option<T>) -> Self {
         Self {
             data,
             loading: true,
@@ -54,7 +54,7 @@ impl<T> Section<T> {
     }
 
     /// Fold a landed fetch: success replaces the data, a failure keeps the last data.
-    fn land(&mut self, result: Result<T, String>) {
+    pub(crate) fn land(&mut self, result: Result<T, String>) {
         self.loading = false;
         match result {
             Ok(data) => {

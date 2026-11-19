@@ -70,6 +70,9 @@ impl MockSupervisor {
                     "list_kernel_bash" => {
                         write_json(writer, &bash_data(id));
                     }
+                    "get_context_breakdown" => {
+                        write_json(writer, &context_breakdown_data(id));
+                    }
                     "detach" => {
                         write_json(writer, &detach_response(id));
                     }
@@ -94,6 +97,9 @@ fn attach_data(id: &str) -> Value {
     ];
     let mut response = attach_response(id, "dock click session");
     response["data"]["snapshot"]["messages"] = json!(messages);
+    // The tray's context label and gauge: the context window's click surface.
+    response["data"]["snapshot"]["state"]["contextUsage"] =
+        json!({ "tokens": 1200, "contextWindow": 200_000 });
     response
 }
 
@@ -165,6 +171,23 @@ fn bash_data(id: &str) -> Value {
                 "status": "running",
             },
         ] },
+    })
+}
+
+/// The context window's one reply: a category estimate and one subagent row.
+fn context_breakdown_data(id: &str) -> Value {
+    json!({
+        "type": "response",
+        "id": id,
+        "command": "get_context_breakdown",
+        "success": true,
+        "data": {
+            "categories": {
+                "systemStatic": {"tokens": 700, "items": 1},
+                "toolResults": {"tokens": 300, "items": 2},
+            },
+            "agents": [{"label": "probe-researcher", "depth": 1, "status": "idle", "cost": 0.01}],
+        },
     })
 }
 
@@ -453,5 +476,53 @@ fn hover_motions_across_the_dock_never_disturb_the_click() {
     assert!(
         last.contains("watch the fleet"),
         "the click opened the heartbeats view after the hover motions: {last}"
+    );
+}
+
+/// oh-my-pi's clickable context meter: a click on the tray's `tokens/window %` label opens the
+/// context window, and the breakdown reply fills it in.
+#[test]
+fn a_click_on_the_context_label_opens_the_context_window() {
+    let frames = settled_frames("1.2k/200k");
+    let (row, col) = locate(&frames, "1.2k/200k").expect("the tray's context label renders");
+    let outcome = run_plan(vec![
+        HeadlessStep::WaitIdle { timeout_ms: 30_000 },
+        HeadlessStep::WaitRender {
+            needle: "1.2k/200k".to_string(),
+            timeout_ms: 10_000,
+        },
+        HeadlessStep::Mouse(press(col + 2, row + 1)),
+        HeadlessStep::Mouse(release(col + 2, row + 1)),
+        HeadlessStep::WaitRender {
+            needle: "Tool results".to_string(),
+            timeout_ms: 5_000,
+        },
+    ]);
+    let last = outcome.frames.last().expect("a frame after the click");
+    assert!(
+        last.contains("Breakdown (estimated)") && last.contains("Tool results"),
+        "the click opened the context window over the reply: {last}"
+    );
+}
+
+/// `/context` opens the same window from the keyboard.
+#[test]
+fn the_context_command_opens_the_context_window() {
+    let outcome = run_plan(vec![
+        HeadlessStep::WaitIdle { timeout_ms: 30_000 },
+        HeadlessStep::WaitRender {
+            needle: "1.2k/200k".to_string(),
+            timeout_ms: 10_000,
+        },
+        HeadlessStep::Submit("/context".to_string()),
+        HeadlessStep::WaitRender {
+            needle: "Tool results".to_string(),
+            timeout_ms: 5_000,
+        },
+    ]);
+    let last = outcome.frames.last().expect("a frame after the command");
+    assert!(
+        last.contains("Breakdown (estimated)") && last.contains("1.2k / 200k tokens"),
+        "/context opened the context window: {last}"
     );
 }

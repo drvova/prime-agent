@@ -1,5 +1,5 @@
 //! The host adapter concern: the `RlmSubagentHost` wire surface
-//! (`spawn`, `create_session`, `list_subagents`, `delete_subagent`,
+//! (`spawn`, `create_session`, `list_subagents`, `abort_child`, `delete_subagent`,
 //! `collect`, `rename`) over the supervisor's child-sessions registry,
 //! with the spawn-admission helpers only this surface uses.
 use super::retirement::{Retirement, RetirementEvent, RetirementIntent};
@@ -8,11 +8,11 @@ use super::{
     assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
     resolve_child_cwd, resolve_child_model, rlm_child_label, rlm_depth_limit_error,
     spawn_name_unavailable_error, Arc, ChildCloseReason, ChildObservationSource, ChildRecord,
-    Context, DaemonCommand, Duration, Instant, Kickoff, Mutex, Path, Result, RlmChildResult,
-    RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture,
-    RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
-    SupervisorChildSessions, SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS,
-    RENAME_TIMEOUT_MS, STATE_TIMEOUT_MS,
+    Context, DaemonCommand, Duration, Instant, Kickoff, Mutex, Path, Result, RlmAbortChildResult,
+    RlmAbortOutcome, RlmChildResult, RlmCreateSessionHandle, RlmCreateSessionRequest,
+    RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry,
+    RlmSubagentHost, SpawnNameReservationGuard, SupervisorChildSessions,
+    SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS, RENAME_TIMEOUT_MS, STATE_TIMEOUT_MS,
 };
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
@@ -458,6 +458,44 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 entries.push(SupervisorChildSessions::entry(&record));
             }
             Ok(entries)
+        })
+    }
+
+    fn abort_child(&self, target: String) -> RlmHostFuture<RlmAbortChildResult> {
+        let this = Arc::clone(&self.inner);
+        Box::pin(async move {
+            let record = this.resolve_record(&target, "subagent").await?;
+            let (child_id, active_session_id, task_running) = {
+                let record = record.lock().await;
+                (
+                    record.rlm_child_id.clone(),
+                    record.active_session_id.clone(),
+                    record.run.is_running(),
+                )
+            };
+            let outcome = if task_running {
+                // The task run: the cancel path settles the row and aborts the worker's turn,
+                // the same as the user's cancel; the child and its session stay.
+                if !this.cancel_child_run(&child_id).await {
+                    bail!("RLM child {child_id} did not take the abort; retry");
+                }
+                RlmAbortOutcome::Aborted
+            } else if this.child_busy(&active_session_id).await? {
+                // A follow-up turn (a message after the task settled): abort that turn alone.
+                let abort = DaemonCommand::Abort {
+                    id: None,
+                    active_session_id: active_session_id.clone(),
+                    rest: serde_json::Map::default(),
+                };
+                this.command(&abort, KILL_TIMEOUT_MS)
+                    .await
+                    .with_context(|| format!("abort RLM child session {active_session_id}"))?;
+                RlmAbortOutcome::Aborted
+            } else {
+                RlmAbortOutcome::Idle
+            };
+            let subagent = SupervisorChildSessions::entry(&*record.lock().await);
+            Ok(RlmAbortChildResult { subagent, outcome })
         })
     }
 

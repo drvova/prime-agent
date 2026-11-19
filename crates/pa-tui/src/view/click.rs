@@ -30,6 +30,8 @@ pub(crate) enum ClickAction {
     /// The tray's `← manage` hint: hand the pane to the agents view
     /// (operator directive 2026-09-29).
     OpenAgentsView,
+    /// The tray's context gauge and label: open the context window.
+    OpenContextView,
 }
 
 /// One chat entry's visible span within the last transcript window.
@@ -253,6 +255,7 @@ impl AgentView {
                 ClickAction::ToggleCardExpansion(_)
                     | ClickAction::OpenDockGroup(_)
                     | ClickAction::OpenAgentsView
+                    | ClickAction::OpenContextView
             )
         )
         .then_some((row, col));
@@ -589,6 +592,49 @@ mod tests {
         for col in between {
             assert_eq!(view.click_target_at(groups_row, col), None);
         }
+    }
+
+    /// The tray's context gauge and its `tokens/window %` label open the context window; the
+    /// model label beside them and the manage hint keep their own targets, and the hover arms
+    /// over the gauge.
+    #[test]
+    fn the_tray_gauge_and_context_label_open_the_context_window() {
+        let mut view = view();
+        view.chrome.show_manage = true;
+        view.chrome.context = Some(crate::chrome::ContextUsage {
+            tokens: 23_000,
+            context_window: 128_000,
+            reading: crate::chrome::ContextReading::Measured,
+        });
+        view.chrome.model_id = Some("faux-1".to_string());
+        let frame = view.render_frame(80, 24);
+        let (row, cols) = region_span(&view, &ClickAction::OpenContextView);
+        let text: String = frame[row]
+            .iter()
+            .map(|span| span.content.as_str())
+            .collect();
+        let cells: String = text.chars().skip(cols.start).take(cols.len()).collect();
+        assert!(
+            cells.starts_with(" \u{2501}") && cells.ends_with("\u{2500} 23k/128k 18%"),
+            "the region spans the gauge and the label: {cells:?}"
+        );
+        for col in cols.clone() {
+            assert_eq!(
+                view.click_target_at(row, col),
+                Some(ClickAction::OpenContextView)
+            );
+        }
+        assert_eq!(
+            view.click_target_at(row, cols.end + 3),
+            None,
+            "the model label is inert"
+        );
+        assert_eq!(
+            view.click_target_at(row, 0),
+            Some(ClickAction::OpenAgentsView)
+        );
+        assert!(view.note_hover(row, cols.start + 4));
+        assert_eq!(view.hover_pos, Some((row, cols.start + 4)));
     }
 
     #[test]

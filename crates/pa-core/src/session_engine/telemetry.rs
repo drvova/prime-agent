@@ -392,6 +392,12 @@ struct CounterValues {
     fs_edit: FsEditCounts,
     /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
     repl_schedule: ReplScheduleCounts,
+    /// The kernel `checkpoint.*` counters, reported by `agent repl checkpoint`.
+    repl_checkpoint: ReplCheckpointCounts,
+    /// Kernel `usage.get()` reads, reported by `agent usage reads`.
+    usage_read_count: u64,
+    /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
+    rlm_abort: RlmAbortCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
 }
@@ -402,6 +408,14 @@ struct ReplReloadCounts {
     reloads: u64,
     skills_added: u64,
     settings_reads: u64,
+}
+
+/// `agent rlm child abort`: aborts by outcome.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RlmAbortCounts {
+    aborted: u64,
+    idle: u64,
+    failed: u64,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -426,6 +440,17 @@ struct ReplScheduleCounts {
     listed: u64,
     cancelled: u64,
     rejected: u64,
+}
+
+/// `agent repl checkpoint`: checkpoints taken, listings, and restores by outcome.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplCheckpointCounts {
+    created: u64,
+    listed: u64,
+    restored: u64,
+    restore_declined: u64,
+    restore_disabled: u64,
+    failed: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -639,19 +664,6 @@ impl SessionCounters {
         });
     }
 
-    /// One kernel `rlm.reload()` and the count of skills it added (never a name).
-    pub(crate) fn note_repl_reload(&self, skills_added: usize) {
-        self.with(|values| {
-            values.repl_reload.reloads += 1;
-            values.repl_reload.skills_added += skills_added as u64;
-        });
-    }
-
-    /// One kernel `settings.get()` read (never a value).
-    pub(crate) fn note_repl_settings_read(&self) {
-        self.with(|values| values.repl_reload.settings_reads += 1);
-    }
-
     /// One kernel `fs.read`/`fs.edit` (counts only: never a path or content).
     pub(crate) fn note_fs_edit(&self, fact: crate::fs_edit::EditFact) {
         use crate::fs_edit::{EditFact, FsEditOperation};
@@ -692,6 +704,53 @@ impl SessionCounters {
                 super::runtime::ScheduleFact::Rejected => &mut counts.rejected,
             } += 1;
         });
+    }
+
+    /// One kernel `checkpoint.*` call (counts only: never a label or a path).
+    pub(crate) fn note_repl_checkpoint(&self, fact: super::checkpoint_host::CheckpointFact) {
+        use super::checkpoint_host::CheckpointFact;
+        self.with(|values| {
+            let counts = &mut values.repl_checkpoint;
+            *match fact {
+                CheckpointFact::Created => &mut counts.created,
+                CheckpointFact::Listed => &mut counts.listed,
+                CheckpointFact::Restored => &mut counts.restored,
+                CheckpointFact::RestoreDeclined => &mut counts.restore_declined,
+                CheckpointFact::RestoreDisabled => &mut counts.restore_disabled,
+                CheckpointFact::Failed => &mut counts.failed,
+            } += 1;
+        });
+    }
+
+    /// One kernel `usage.get()` read (a count: never a cost or a token number).
+    pub(crate) fn note_usage_read(&self) {
+        self.with(|values| values.usage_read_count += 1);
+    }
+
+    /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
+    pub(crate) fn note_rlm_abort(&self, outcome: Option<super::rlm_host::RlmAbortOutcome>) {
+        use super::rlm_host::RlmAbortOutcome;
+        self.with(|values| {
+            let counts = &mut values.rlm_abort;
+            *match outcome {
+                Some(RlmAbortOutcome::Aborted) => &mut counts.aborted,
+                Some(RlmAbortOutcome::Idle) => &mut counts.idle,
+                None => &mut counts.failed,
+            } += 1;
+        });
+    }
+
+    /// One kernel `rlm.reload()` and the count of skills it added (never a name).
+    pub(crate) fn note_repl_reload(&self, skills_added: usize) {
+        self.with(|values| {
+            values.repl_reload.reloads += 1;
+            values.repl_reload.skills_added += skills_added as u64;
+        });
+    }
+
+    /// One kernel `settings.get()` read (never a value).
+    pub(crate) fn note_repl_settings_read(&self) {
+        self.with(|values| values.repl_reload.settings_reads += 1);
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1265,6 +1324,54 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent repl schedule", schedule_properties);
+        }
+        // A session that never took a kernel checkpoint sends no checkpoint event.
+        let mut checkpoint = ReplCheckpointCounts::default();
+        self.counters
+            .with(|values| checkpoint = values.repl_checkpoint);
+        if checkpoint != ReplCheckpointCounts::default() {
+            let mut checkpoint_properties = self.session_properties();
+            for (key, value) in [
+                ("checkpoint_created_count", checkpoint.created),
+                ("checkpoint_list_count", checkpoint.listed),
+                ("checkpoint_restored_count", checkpoint.restored),
+                (
+                    "checkpoint_restore_declined_count",
+                    checkpoint.restore_declined,
+                ),
+                (
+                    "checkpoint_restore_disabled_count",
+                    checkpoint.restore_disabled,
+                ),
+                ("checkpoint_failed_count", checkpoint.failed),
+            ] {
+                checkpoint_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent repl checkpoint", checkpoint_properties);
+        }
+        // A session that never read its usage sends no usage event.
+        let mut usage_reads = 0;
+        self.counters
+            .with(|values| usage_reads = values.usage_read_count);
+        if usage_reads > 0 {
+            let mut usage_properties = self.session_properties();
+            usage_properties.set("usage_read_count", Value::from(usage_reads));
+            self.client.track("agent usage reads", usage_properties);
+        }
+        // A session that never aborted a child from the kernel sends no abort event.
+        let mut abort = RlmAbortCounts::default();
+        self.counters.with(|values| abort = values.rlm_abort);
+        if abort != RlmAbortCounts::default() {
+            let mut abort_properties = self.session_properties();
+            for (key, value) in [
+                ("rlm_abort_aborted_count", abort.aborted),
+                ("rlm_abort_idle_count", abort.idle),
+                ("rlm_abort_failed_count", abort.failed),
+            ] {
+                abort_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent rlm child abort", abort_properties);
         }
         // A session that never reloaded or read its settings sends no reload event.
         let mut repl_reload = ReplReloadCounts::default();
