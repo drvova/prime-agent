@@ -24,6 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 anyhow = "1"
 base64 = "0.22"
+# Inline transcript images: decode PNG/JPEG/GIF/WebP payloads off the paint path, scale them, and
+# re-encode the scaled PNG the kitty/iTerm2 protocols carry (no codec existed in the workspace).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util", "net", "process"] }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }

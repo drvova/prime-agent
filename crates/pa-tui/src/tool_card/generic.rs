@@ -67,7 +67,7 @@ fn traverse(
             out,
         );
     }
-    out.images(card.result.as_ref(), show_images, theme);
+    out.images(card.result.as_ref(), show_images, theme, content_width);
 }
 
 /// Preview the first three source lines, not the first three wrapped rows.
