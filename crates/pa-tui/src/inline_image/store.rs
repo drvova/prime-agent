@@ -157,6 +157,13 @@ pub(crate) fn set_waker(waker: tokio::sync::mpsc::UnboundedSender<()>) {
     store().waker = Some(waker);
 }
 
+/// Ask the event loop for a repaint (a terminal answer changed how images draw).
+pub(crate) fn wake() {
+    if let Some(waker) = &store().waker {
+        let _ = waker.send(());
+    }
+}
+
 /// How [`lookup`] treats a rendering that is not ready.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OnMiss {
