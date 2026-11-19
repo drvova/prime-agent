@@ -785,7 +785,7 @@ async fn an_armed_quota_fallback_retries_once_at_once_then_fails_with_its_note()
             attempts.load(std::sync::atomic::Ordering::SeqCst),
             waits.load(std::sync::atomic::Ordering::SeqCst),
             consulted.lock().unwrap().clone(),
-            message.error_message.clone(),
+            message.error_message,
             events.lock().unwrap().clone(),
         ),
         (
