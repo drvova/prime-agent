@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from .agent_dir import agent_dir
 
 if sys.platform == "darwin":
     import fcntl
@@ -127,12 +128,7 @@ def _harness_query_terms(query: str) -> list[str]:
 
 
 def _agent_dir() -> Path:
-    raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        or os.environ.get("PI_CODING_AGENT_DIR")
-        or str(Path.home() / ".prime" / "agent")
-    )
-    return Path(raw).expanduser().resolve()
+    return agent_dir()
 
 
 def _require_refinements_enabled() -> None:

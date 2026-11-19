@@ -1006,7 +1006,8 @@ print(json.dumps({"closure": sorted(closure), "violations": violations}))
             && report.closure.contains(&"rlm.schedule".to_string())
             && report.closure.contains(&"rlm.checkpoint".to_string())
             && report.closure.contains(&"rlm.todo".to_string())
-            && report.closure.contains(&"rlm.ask".to_string()),
+            && report.closure.contains(&"rlm.ask".to_string())
+            && report.closure.contains(&"rlm.agent_dir".to_string()),
         "the frozen closure seed is wrong: {report:?}"
     );
     assert!(

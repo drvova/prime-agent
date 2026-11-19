@@ -21,10 +21,10 @@ import json
 import os
 import time
 from contextlib import AsyncExitStack
-from pathlib import Path
 from typing import Any
 
 from . import host_request
+from .agent_dir import agent_dir
 
 __all__ = ["McpIntegration", "McpToolError", "NotEnabled"]
 
@@ -53,22 +53,10 @@ class McpToolError(RuntimeError):
     """Raised when an MCP tool call returns a result flagged as an error."""
 
 
-def _agent_dir() -> Path:
-    """Resolve the Prime Agent config dir the same way the rest of the runtime does."""
-    raw = (
-        os.environ.get("PRIME_AGENT_CODING_AGENT_DIR")
-        or os.environ.get("PI_CODING_AGENT_DIR")
-        or str(Path.home() / ".prime" / "agent")
-    )
-    # resolve() so a relative env override reads auth.json from the right place,
-    # not relative to the kernel's cwd.
-    return Path(raw).expanduser().resolve()
-
-
 def _read_auth(provider: str) -> dict[str, Any] | None:
     """Read one credential entry from auth.json. Returns None if absent/unreadable."""
     try:
-        data = json.loads((_agent_dir() / "auth.json").read_text())
+        data = json.loads((agent_dir() / "auth.json").read_text())
     except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
