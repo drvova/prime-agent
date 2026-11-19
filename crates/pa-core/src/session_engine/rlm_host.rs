@@ -104,6 +104,23 @@ pub struct RlmDeleteSubagentResult {
     pub outcome: Option<&'static str>,
 }
 
+/// What `rlm.abort` did to the child's current turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RlmAbortOutcome {
+    /// A running turn was stopped; the child stays and can be messaged again.
+    Aborted,
+    /// The child had no turn in flight: nothing to stop.
+    Idle,
+}
+
+/// `rlm.abort` reply: the child's row after the abort plus what happened.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RlmAbortChildResult {
+    pub subagent: RlmSubagentEntry,
+    pub outcome: RlmAbortOutcome,
+}
+
 /// One `rlm.collect` result envelope.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct RlmChildResult {
@@ -188,6 +205,16 @@ pub trait RlmSubagentHost: Send + Sync {
     ) -> RlmHostFuture<RlmCreateSessionHandle>;
     fn list_subagents(&self) -> RlmHostFuture<Vec<RlmSubagentEntry>>;
     fn delete_subagent(&self, target: String) -> RlmHostFuture<RlmDeleteSubagentResult>;
+    /// Stop one direct child's current turn (`rlm.abort`) without retiring it: the child keeps
+    /// its session and roster row, and a later `agent_message.send` starts a new turn. Only
+    /// children of this session match `target`. Only the daemon runs children.
+    fn abort_child(&self, target: String) -> RlmHostFuture<RlmAbortChildResult> {
+        Box::pin(async move {
+            anyhow::bail!(
+                "No direct RLM subagent matches \"{target}\" in the current parent session"
+            )
+        })
+    }
     /// A timeout returns snapshots, never errors.
     fn collect(&self, targets: Vec<String>, timeout_ms: u64) -> RlmHostFuture<Vec<RlmChildResult>>;
     /// Rename the current session (`session_id` absent) or one direct
@@ -507,6 +534,8 @@ pub struct RlmHostBridge {
     /// The spawn anchor [`register_run`] reads the in-flight turn from
     /// (`None` until the engine built the session's agent).
     pub(crate) semantic_spawn: std::sync::OnceLock<SemanticSpawnAnchor>,
+    /// The session counters `rlm.abort` counts into, bound by the engine.
+    pub(crate) telemetry: std::sync::OnceLock<Arc<super::telemetry::SessionCounters>>,
 }
 
 impl RlmHostBridge {
@@ -526,6 +555,7 @@ impl RlmHostBridge {
             host,
             usage,
             semantic_spawn: std::sync::OnceLock::new(),
+            telemetry: std::sync::OnceLock::new(),
         }
     }
 }
@@ -538,6 +568,7 @@ pub fn register_rlm_host_handlers(handlers: &mut HostRequestHandlers, bridge: &A
     register_create_session(handlers, bridge);
     register_list_subagents(handlers, bridge);
     register_delete_subagent(handlers, bridge);
+    register_abort(handlers, bridge);
     register_collect(handlers, bridge);
     register_rename(handlers, bridge);
     register_session_messages(handlers, bridge);
@@ -788,6 +819,32 @@ fn register_delete_subagent(handlers: &mut HostRequestHandlers, bridge: &Arc<Rlm
                 };
                 let result = host.delete_subagent(target.to_string()).await?;
                 serde_json::to_value(&result).map_err(anyhow::Error::new)
+            })
+        }),
+    );
+}
+
+fn register_abort(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
+    let bridge = Arc::clone(bridge);
+    handlers.register(
+        "rlm.abort",
+        host_handler(move |payload| {
+            let bridge = Arc::clone(&bridge);
+            Box::pin(async move {
+                let Some(target) = payload
+                    .data
+                    .get("target")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|target| !target.is_empty())
+                else {
+                    anyhow::bail!("rlm.abort target must be a non-empty string");
+                };
+                let result = bridge.host.abort_child(target.to_string()).await;
+                if let Some(counters) = bridge.telemetry.get() {
+                    counters.note_rlm_abort(result.as_ref().ok().map(|result| result.outcome));
+                }
+                serde_json::to_value(&result?).map_err(anyhow::Error::new)
             })
         }),
     );
@@ -1047,6 +1104,32 @@ mod tests {
                         activity_stale_ms: None,
                     },
                     outcome: Some("deleted"),
+                })
+            })
+        }
+        fn abort_child(&self, target: String) -> RlmHostFuture<RlmAbortChildResult> {
+            let targets = Arc::clone(&self.targets);
+            Box::pin(async move {
+                targets.lock().await.push(target);
+                Ok(RlmAbortChildResult {
+                    subagent: RlmSubagentEntry {
+                        rlm_child_id: "sub-1".into(),
+                        active_session_id: Some("live-2".into()),
+                        session_id: None,
+                        session_name: "worker".into(),
+                        session_dir: "/tmp/sub-1".into(),
+                        status: "cancelled",
+                        activity: None,
+                        tool_use_count: None,
+                        duration_ms: None,
+                        answer_preview: None,
+                        replied_since_task: None,
+                        progress_note: None,
+                        label: None,
+                        last_activity_at: None,
+                        activity_stale_ms: None,
+                    },
+                    outcome: RlmAbortOutcome::Aborted,
                 })
             })
         }
@@ -1633,6 +1716,49 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "rlm.delete_subagent target must be a non-empty string"
+        );
+    }
+
+    /// `rlm.abort` hands the trimmed selector to the host and answers its row and outcome; a
+    /// session without children answers the selector miss.
+    #[tokio::test]
+    async fn abort_round_trip_and_the_no_children_miss() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let host = RecordingHost::new();
+        let targets = Arc::clone(&host.targets);
+        let wiring = wired(dir.path(), Some(host));
+        let aborted = call(&wiring, "rlm.abort", json!({ "target": "  worker  " }))
+            .await
+            .unwrap();
+        assert_eq!(
+            aborted,
+            json!({
+                "subagent": {
+                    "rlm_child_id": "sub-1",
+                    "active_session_id": "live-2",
+                    "session_id": null,
+                    "session_name": "worker",
+                    "session_dir": "/tmp/sub-1",
+                    "status": "cancelled",
+                },
+                "outcome": "aborted",
+            })
+        );
+        assert_eq!(*targets.lock().await, vec!["worker".to_string()]);
+        assert_eq!(
+            call(&wiring, "rlm.abort", json!({ "target": " " }))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "rlm.abort target must be a non-empty string"
+        );
+        let childless = wired(dir.path(), None);
+        assert_eq!(
+            call(&childless, "rlm.abort", json!({ "target": "worker" }))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "No direct RLM subagent matches \"worker\" in the current parent session"
         );
     }
 

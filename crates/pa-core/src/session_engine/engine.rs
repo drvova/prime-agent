@@ -943,6 +943,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .runtime
         .goal_telemetry()
         .set(std::sync::Arc::clone(&session_counters));
+    let _ = wiring
+        .rlm
+        .telemetry
+        .set(std::sync::Arc::clone(&session_counters));
     wiring
         .runtime
         .goal_verifier()

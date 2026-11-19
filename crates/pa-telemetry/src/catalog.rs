@@ -1599,6 +1599,21 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
+/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
+/// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
+/// child, and failed calls. Counts only: never a child id or name.
+const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
+    name: "agent rlm child abort",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_abort_aborted_count", required(count())),
+        ("rlm_abort_idle_count", required(count())),
+        ("rlm_abort_failed_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1632,6 +1647,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_RLM_CHILD_ABORT,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
