@@ -118,6 +118,25 @@ impl AgentSessionEngine {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
+        // The quota-fallback seam: a quota failure arms the serving model's
+        // declared fallback credential for one immediate retry.
+        let fallback_engine = recovery_engine.clone();
+        let fallback_model = preflight_model.clone();
+        let quota_fallback: Option<pa_core::session_engine::auto_retry::QuotaFallbackCallback> =
+            Some(&mut move |_message, retry_after_ms| {
+                let engine = fallback_engine.as_ref().and_then(std::sync::Weak::upgrade);
+                let model = fallback_model.clone();
+                Box::pin(async move {
+                    let Some(engine) = engine else {
+                        return pa_core::models::QuotaFallback::NotDeclared;
+                    };
+                    tokio::task::spawn_blocking(move || {
+                        engine.arm_quota_fallback(&model, retry_after_ms)
+                    })
+                    .await
+                    .unwrap_or(pa_core::models::QuotaFallback::NotDeclared)
+                })
+            });
         let auth_recovery: Option<pa_core::session_engine::auto_retry::AuthRecoveryCallback> =
             Some(&mut move |message| {
                 let engine = recovery_engine.as_ref().and_then(std::sync::Weak::upgrade);
@@ -304,6 +323,7 @@ impl AgentSessionEngine {
                     }
                 },
                 auth_recovery,
+                quota_fallback,
             ),
         );
         match result {

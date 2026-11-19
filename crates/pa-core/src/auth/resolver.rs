@@ -221,11 +221,19 @@ pub(crate) enum AuthCounter {
     OAuthRefresh,
     /// A failed OAuth refresh (the user must sign in again).
     OAuthRefreshFailure,
+    /// A quota-exhausted provider's declared fallback credential was chosen
+    /// for the retry.
+    QuotaFallbackChosen,
+    /// A quota-exhausted provider declares a fallback, but none could serve
+    /// (none present or usable, or the fallback was exhausted too).
+    QuotaFallbackExhausted,
 }
 
 /// The process-wide counters: one daemon worker process serves one session,
 /// so the session telemetry folds the per-session delta.
-static COUNTERS: [AtomicU64; 8] = [
+static COUNTERS: [AtomicU64; 10] = [
+    AtomicU64::new(0),
+    AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
     AtomicU64::new(0),
@@ -247,6 +255,8 @@ impl AuthCounter {
             AuthCounter::OAuthResolve => 5,
             AuthCounter::OAuthRefresh => 6,
             AuthCounter::OAuthRefreshFailure => 7,
+            AuthCounter::QuotaFallbackChosen => 8,
+            AuthCounter::QuotaFallbackExhausted => 9,
         };
         &COUNTERS[index]
     }
@@ -269,6 +279,8 @@ pub(crate) struct AuthMetrics {
     pub(crate) oauth_resolves: u64,
     pub(crate) oauth_refreshes: u64,
     pub(crate) oauth_refresh_failures: u64,
+    pub(crate) quota_fallbacks_chosen: u64,
+    pub(crate) quota_fallbacks_exhausted: u64,
 }
 
 impl AuthMetrics {
@@ -284,6 +296,8 @@ impl AuthMetrics {
             oauth_resolves: read(AuthCounter::OAuthResolve),
             oauth_refreshes: read(AuthCounter::OAuthRefresh),
             oauth_refresh_failures: read(AuthCounter::OAuthRefreshFailure),
+            quota_fallbacks_chosen: read(AuthCounter::QuotaFallbackChosen),
+            quota_fallbacks_exhausted: read(AuthCounter::QuotaFallbackExhausted),
         }
     }
 
@@ -311,6 +325,12 @@ impl AuthMetrics {
             oauth_refresh_failures: self
                 .oauth_refresh_failures
                 .saturating_sub(baseline.oauth_refresh_failures),
+            quota_fallbacks_chosen: self
+                .quota_fallbacks_chosen
+                .saturating_sub(baseline.quota_fallbacks_chosen),
+            quota_fallbacks_exhausted: self
+                .quota_fallbacks_exhausted
+                .saturating_sub(baseline.quota_fallbacks_exhausted),
         }
     }
 }

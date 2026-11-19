@@ -2,7 +2,8 @@
 
 pub use allowlist::{model_allowed, ModelAllowlistRefusal};
 pub use registry::{
-    ModelRegistry, ProviderRequestConfig, ResolvedRequestAuth, SetModelSelectionError,
+    ModelRegistry, ProviderRequestConfig, QuotaFallback, ResolvedRequestAuth,
+    SetModelSelectionError,
 };
 
 pub use catalog_chain::{

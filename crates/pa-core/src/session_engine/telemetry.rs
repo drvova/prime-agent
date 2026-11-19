@@ -1470,6 +1470,27 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A session whose provider never armed a declared quota fallback sends no fallback
+        // event (counts only: never a provider, model, or credential).
+        let auth = crate::auth::resolver::AuthMetrics::current().since(
+            self.state
+                .lock()
+                .expect("telemetry state poisoned")
+                .auth_baseline,
+        );
+        if auth.quota_fallbacks_chosen + auth.quota_fallbacks_exhausted > 0 {
+            let mut fallback_properties = self.session_properties();
+            fallback_properties.set(
+                "quota_fallback_chosen_count",
+                Value::from(auth.quota_fallbacks_chosen),
+            );
+            fallback_properties.set(
+                "quota_fallback_exhausted_count",
+                Value::from(auth.quota_fallbacks_exhausted),
+            );
+            self.client
+                .track("agent quota fallback", fallback_properties);
+        }
         // A worker whose discovery never probed or moved an endpoint sends no discovery event.
         // Only a session installed on a live agent reads the worker's process-wide counts.
         let discovered = pa_ai::responses_transport::discovery_counts();

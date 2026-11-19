@@ -187,12 +187,14 @@ pub fn parse_models_config(content: &str) -> Result<ModelsConfig, String> {
 ///
 /// # Errors
 ///
-/// Error when a provider lacks its base URL, API key, or API kind, or a
-/// model lacks an id or zero limits.
+/// Error when a provider lacks its base URL, API key, or API kind, a model
+/// lacks an id or zero limits, or an `auth.fallback` names an unknown
+/// provider or forms a cycle.
 pub fn validate_config(
     config: &ModelsConfig,
     built_in_providers: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
+    let mut fallbacks: BTreeMap<&str, Vec<String>> = BTreeMap::new();
     for (provider_name, provider_config) in &config.providers {
         let is_built_in = built_in_providers(provider_name);
         let models = provider_config.models.as_deref().unwrap_or_default();
@@ -205,6 +207,18 @@ pub fn validate_config(
             .as_ref()
             .map(|block| ProviderAuthDescriptor::parse(provider_name, block))
             .transpose()?;
+        if let Some(descriptor) = &descriptor {
+            for fallback in &descriptor.fallback {
+                if !built_in_providers(fallback) && !config.providers.contains_key(fallback) {
+                    return Err(format!(
+                        "Provider {provider_name}: invalid \"auth\": \"fallback\" names an unknown provider \"{fallback}\""
+                    ));
+                }
+            }
+            if !descriptor.fallback.is_empty() {
+                fallbacks.insert(provider_name, descriptor.fallback.clone());
+            }
+        }
         // A token-exchange or oauth provider authenticates from its
         // auth.json credential, so it needs no `apiKey`.
         let exchanges_tokens = descriptor.is_some_and(|descriptor| {
@@ -262,6 +276,33 @@ pub fn validate_config(
                         model.id
                     ));
                 }
+            }
+        }
+    }
+    // A fallback serves one hop (its own `fallback` is never followed), so a
+    // cycle could only read as a chain that never runs: refuse it.
+    for start in fallbacks.keys() {
+        // Depth-first over the fallback edges, keeping the current path (each
+        // frame: a provider and its next edge): an edge back to `start` closes
+        // a cycle.
+        let mut stack: Vec<(&str, usize)> = vec![(*start, 0)];
+        while let Some(top) = stack.last_mut() {
+            let Some(next) = fallbacks.get(top.0).and_then(|list| list.get(top.1)) else {
+                stack.pop();
+                continue;
+            };
+            top.1 += 1;
+            if next.as_str() == *start {
+                let path: Vec<&str> = stack.iter().map(|(provider, _)| *provider).collect();
+                return Err(format!(
+                    "Provider {start}: invalid \"auth\": \"fallback\" forms a cycle ({} -> {start})",
+                    path.join(" -> ")
+                ));
+            }
+            if fallbacks.contains_key(next.as_str())
+                && !stack.iter().any(|(provider, _)| *provider == next.as_str())
+            {
+                stack.push((next.as_str(), 0));
             }
         }
     }
@@ -504,6 +545,35 @@ mod tests {
         let error = validate_config(&config, &|_| false).unwrap_err();
         assert!(error.contains("apiKey"));
         assert!(validate_config(&config, &|p| p == "custom").is_ok());
+    }
+
+    /// An `auth.fallback` must name a built-in or models.json provider and
+    /// must not cycle back; a built-in provider declares one with an
+    /// `auth`-only entry.
+    #[test]
+    fn a_fallback_names_known_providers_without_cycles() {
+        let check = |document: serde_json::Value| {
+            let config: ModelsConfig = serde_json::from_value(document).unwrap();
+            validate_config(&config, &|provider| {
+                matches!(provider, "opencode" | "opencode-go")
+            })
+        };
+        let auth = |fallback: &[&str]| serde_json::json!({ "auth": { "strategy": "api-key", "fallback": fallback } });
+        assert_eq!(
+            [
+                check(serde_json::json!({ "providers": { "opencode": auth(&["opencode-go"]) } })),
+                check(serde_json::json!({ "providers": { "opencode": auth(&["nowhere"]) } })),
+                check(serde_json::json!({ "providers": {
+                    "opencode": auth(&["opencode-go"]),
+                    "opencode-go": auth(&["opencode"]),
+                } })),
+            ],
+            [
+                Ok(()),
+                Err("Provider opencode: invalid \"auth\": \"fallback\" names an unknown provider \"nowhere\"".to_string()),
+                Err("Provider opencode: invalid \"auth\": \"fallback\" forms a cycle (opencode -> opencode-go -> opencode)".to_string()),
+            ]
+        );
     }
 
     #[test]

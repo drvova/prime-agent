@@ -16,7 +16,10 @@ use crate::auth::token_exchange::TokenExchange;
 use crate::auth::types::{AuthCredential, AuthSource, PRIME_INFERENCE_PROVIDER_ID};
 
 use super::catalog_chain;
+
+mod quota_fallback;
 use super::custom::{apply_model_override, load_custom_models, merge_compat, CustomModelsResult};
+pub use quota_fallback::QuotaFallback;
 
 /// Request-auth bits a provider can configure in models.json.
 #[derive(Debug, Clone, Default)]
@@ -666,7 +669,29 @@ impl ModelRegistry {
     }
 
     /// Resolve request auth: API key + merged headers for a model.
+    ///
+    /// A provider whose `auth` descriptor declares `fallback`, and whose
+    /// serving credential spent its quota (noted by
+    /// [`Self::arm_quota_fallback`] until the reported reset), resolves
+    /// through its first usable fallback instead: that provider's
+    /// credential and transport, carried as the per-call request model with
+    /// the session's provider and model id unchanged. Every other provider
+    /// resolves exactly as before.
     pub fn get_api_key_and_headers(
+        &mut self,
+        model: &Model,
+        request_headers: Option<&BTreeMap<String, String>>,
+    ) -> ResolvedRequestAuth {
+        if self.is_quota_exhausted(model) {
+            if let Ok((_, fallback)) = self.quota_fallback_target(model) {
+                return fallback;
+            }
+        }
+        self.resolve_request_auth(model, request_headers)
+    }
+
+    /// The request auth `model`'s own provider credential serves.
+    fn resolve_request_auth(
         &mut self,
         model: &Model,
         request_headers: Option<&BTreeMap<String, String>>,
