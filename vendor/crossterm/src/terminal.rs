@@ -116,6 +116,29 @@ pub fn supports_keyboard_enhancement_checked_raw() -> io::Result<bool> {
     sys::read_supports_keyboard_enhancement_raw()
 }
 
+/// Prime Agent patch: the primary device attributes (DA1) reply the keyboard probe already
+/// requests: `0` until a reply was parsed, then `1` without and `2` with attribute 4 (sixel).
+static DEVICE_ATTRIBUTES_SIXEL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Record a parsed DA1 reply's sixel attribute (the unix event parser calls this).
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(crate) fn record_device_attributes(sixel: bool) {
+    DEVICE_ATTRIBUTES_SIXEL.store(
+        if sixel { 2 } else { 1 },
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Prime Agent patch: whether the terminal's DA1 reply advertised sixel graphics (attribute 4),
+/// or `None` while no DA1 reply has been parsed (none was requested yet, the terminal is silent,
+/// or this is the Windows console, which never reports through this parser).
+pub fn reported_sixel_graphics() -> Option<bool> {
+    match DEVICE_ATTRIBUTES_SIXEL.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        reported => Some(reported == 2),
+    }
+}
+
 /// Tells whether the raw mode is enabled.
 ///
 /// Please have a look at the [raw mode](./index.html#raw-mode) section.

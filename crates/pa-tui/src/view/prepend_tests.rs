@@ -131,6 +131,7 @@ fn prepended_history_keeps_a_top_anchored_window() {
     sparse.push_entry(ChatEntry::User {
         text: "the tail opens\nwith a user row".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     for index in 0..200 {
         sparse.push_entry(body("tail", index));
