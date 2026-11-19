@@ -54,7 +54,7 @@ class McpIntegrationTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.agent_dir = Path(self._tmp.name)
         self.auth_path = self.agent_dir / "auth.json"
-        patcher = mock.patch.object(mcp_base, "_agent_dir", return_value=self.agent_dir)
+        patcher = mock.patch.object(mcp_base, "agent_dir", return_value=self.agent_dir)
         patcher.start()
         self.addCleanup(patcher.stop)
         self.addCleanup(self._tmp.cleanup)
