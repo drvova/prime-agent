@@ -171,14 +171,16 @@ static MANIFEST_SURFACE: LazyLock<ManifestSurface> = LazyLock::new(|| {
         internal_host_requests: BTreeSet::new(),
         documented: BTreeSet::new(),
     };
-    for entry in std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {dir:?}: {error}")) {
+    for entry in
+        std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+    {
         let path = entry.expect("directory entry").path();
         if path.extension().is_none_or(|ext| ext != "toml") {
             continue;
         }
         let text = std::fs::read_to_string(&path).expect("manifest text");
         let manifest: ManifestHostSurface = toml::from_str(&text)
-            .unwrap_or_else(|error| panic!("unparseable manifest {path:?}: {error}"));
+            .unwrap_or_else(|error| panic!("unparseable manifest {}: {error}", path.display()));
         surface.host_requests.extend(manifest.host_requests);
         surface
             .internal_host_requests
