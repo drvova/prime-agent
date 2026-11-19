@@ -3,8 +3,11 @@
 //! image is about to render ([`request_query`], from the live frame's row resolve), and only
 //! where a pixel protocol is a candidate for this terminal (its environment or DA1 answer names
 //! one) while the cell pixel size is still unknown (no pty pixel size, no fixed Windows
-//! Terminal sixel cell). A terminal or harness that advertises nothing is never asked, and no
-//! startup or first-paint path writes it. The frame paint writes a queued query after its own
+//! Terminal sixel cell) — and on native Windows, where Windows Terminal as the default
+//! terminal advertises nothing, whenever no protocol is known yet (DA1 is asked then). On a
+//! Unix tty a terminal or harness that advertises nothing is never asked, and no startup or
+//! first-paint path writes it anywhere. Until an answer arrives the image keeps its
+//! half-blocks; a recorded answer wakes a repaint, which switches it. The frame paint writes a queued query after its own
 //! bytes ([`take_pending_query`]); the answers arrive on the input path, never awaited:
 //! - on a Unix tty the vendored crossterm parser records them as it reads
 //!   (`crossterm::terminal::reported_sixel_graphics` / `reported_cell_pixels`);
@@ -22,7 +25,7 @@ use super::detect::{select_protocol, CellReports, ImageProtocol, Platform, Termi
 /// DA1 (`enhanced_keys`).
 const CELL_QUERY: &[u8] = b"\x1b[16t";
 /// The cell pixel size and DA1, for the Windows console where no keyboard probe asks DA1 and
-/// the terminal's own answer is still needed to confirm sixel (`WezTerm`'s pseudoconsole).
+/// only the terminal's own answer can confirm sixel.
 const CELL_AND_DA1_QUERY: &[u8] = b"\x1b[16t\x1b[c";
 
 /// One reply the input path recognised.
@@ -70,6 +73,8 @@ pub(crate) fn note_reply(bytes: &[u8]) -> bool {
     match parse_reply(bytes) {
         Some(Reply::DeviceAttributes { sixel }) => {
             DA1_SIXEL.store(if sixel { 2 } else { 1 }, Ordering::Relaxed);
+            // The shown images may switch protocol or scale: repaint them.
+            super::store::wake();
             true
         }
         Some(Reply::CellPixels { width, height }) => {
@@ -77,6 +82,7 @@ pub(crate) fn note_reply(bytes: &[u8]) -> bool {
                 u32::from(width) << 16 | u32::from(height),
                 Ordering::Relaxed,
             );
+            super::store::wake();
             true
         }
         None => false,
@@ -109,12 +115,18 @@ pub(crate) fn query_needed(
     reports: CellReports,
 ) -> Option<&'static [u8]> {
     let selected = select_protocol(hints, platform, da1_sixel);
-    // On Windows only Windows Terminal is named by the environment; `WezTerm` draws sixel
-    // through its bundled pseudoconsole, which its own DA1 answer confirms.
+    // On native Windows the environment names Windows Terminal only in its own tabs: a console
+    // it took over as the default terminal, and `WezTerm`'s bundled pseudoconsole, advertise
+    // nothing. With no protocol known yet, the first image asks DA1 (the console host answers
+    // for itself without sixel where graphics cannot arrive). A pinned protocol or a
+    // multiplexer is the answer already.
     let unconfirmed = platform == Platform::Windows
         && selected == ImageProtocol::HalfBlock
-        && hints.wezterm_pane.is_some()
-        && da1_sixel.is_none();
+        && da1_sixel.is_none()
+        && hints.override_protocol.is_none()
+        && hints.tmux.is_none()
+        && hints.sty.is_none()
+        && hints.zellij.is_none();
     if selected == ImageProtocol::HalfBlock && !unconfirmed {
         return None;
     }
@@ -245,11 +257,12 @@ mod tests {
                 Some(false),
                 none,
             ),
+            // The console host already answered DA1 for itself: no sixel, nothing more to ask.
             (
                 "conhost",
                 TerminalHints::default(),
                 Platform::Windows,
-                None,
+                Some(false),
                 none,
             ),
             ("tmux inside kitty", tmux, Platform::Unix, Some(true), none),
@@ -283,6 +296,21 @@ mod tests {
                 none,
             ),
             ("wezterm on windows", wezterm, Platform::Windows, None, none),
+            // Windows Terminal as the default terminal: nothing advertised, DA1 not yet heard.
+            (
+                "native windows, nothing advertised",
+                TerminalHints::default(),
+                Platform::Windows,
+                None,
+                none,
+            ),
+            (
+                "native windows, DA1 heard with sixel",
+                TerminalHints::default(),
+                Platform::Windows,
+                Some(true),
+                none,
+            ),
         ];
         assert_eq!(
             cases.map(|(name, hints, platform, da1, reports)| (
@@ -300,6 +328,11 @@ mod tests {
                 ("kitty over mosh", Some(CELL_QUERY)),
                 ("vscode with images", Some(CELL_QUERY)),
                 ("wezterm on windows", Some(CELL_AND_DA1_QUERY)),
+                (
+                    "native windows, nothing advertised",
+                    Some(CELL_AND_DA1_QUERY)
+                ),
+                ("native windows, DA1 heard with sixel", Some(CELL_QUERY)),
             ]
         );
     }
