@@ -9,6 +9,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::fmt::Write as _;
+
 use pa_types::context_breakdown::{CategoryUsage, ContextBreakdown, ContextCategories};
 
 use crate::chrome::{format_token_count, ChromeState, ContextReading};
@@ -566,10 +568,11 @@ impl ContextView {
                 if let Some(last) = cache.last_request {
                     let last_prompt = last.input + last.cache_read + last.cache_write;
                     if last_prompt > 0 {
-                        text.push_str(&format!(
+                        let _ = write!(
+                            text,
                             " (last {:.0}%)",
                             last.cache_read as f64 / last_prompt as f64 * 100.0
-                        ));
+                        );
                     }
                 }
                 rows.extend(note(theme, width, ThemeColor::Text, &text));

@@ -880,18 +880,18 @@ fn tray_lanes(state: &ChromeState, theme: &Theme, shrink: TrayShrink) -> TrayLan
                 right.push(Span::styled(label, dim));
             }
             ContextReading::Measured | ContextReading::Stale => {
-                let stale = if context.reading == ContextReading::Stale {
+                let marker = if context.reading == ContextReading::Stale {
                     "~"
                 } else {
                     ""
                 };
                 if full {
                     right.push(Span::styled(
-                        format!("{stale}{}/{window} ", format_token_count(context.tokens)),
+                        format!("{marker}{}/{window} ", format_token_count(context.tokens)),
                         dim,
                     ));
                 } else {
-                    right.push(Span::styled(stale.to_string(), dim));
+                    right.push(Span::styled(marker.to_string(), dim));
                 }
                 // Past the window the percent reads `>100%` in the warning tone.
                 if context.tokens > context.context_window {
