@@ -270,6 +270,7 @@ pub fn kernel_provisioner(
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_window: crate::kernel::cell_window::CellWindow,
+    output_budget: crate::kernel::spill::OutputBudget,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
@@ -326,6 +327,7 @@ pub fn kernel_provisioner(
             // The engine-resolved cell yield window policy (daemonless: none;
             // the runtime bootstrap and state ops never use it).
             cell_window,
+            output_budget,
             ready_gate,
             on_restore,
             on_background_work_settled,
@@ -373,6 +375,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
                 manager,
                 cell_window: this.cell_window().clone(),
                 spill: this.spill_store(),
+                output_budget: this.output_budget().clone(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -392,6 +395,8 @@ struct KernelManagerExecutor {
     cell_window: crate::kernel::cell_window::CellWindow,
     /// Where a user cell's cut output pages out (persistent sessions).
     spill: Option<crate::kernel::spill::SpillStore>,
+    /// The session's output cap policy, read when each cell starts.
+    output_budget: crate::kernel::spill::OutputBudget,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -411,6 +416,7 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
+        let max_output_chars = Some(self.output_budget.max_output_chars());
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -420,6 +426,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         on_late_sent_agent_message,
                         cell_yield_ms,
                         spill,
+                        max_output_chars,
                         ..Default::default()
                     },
                 )

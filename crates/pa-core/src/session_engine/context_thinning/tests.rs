@@ -124,7 +124,7 @@ fn request_bytes(messages: &[AgentMessage]) -> Vec<u8> {
 fn below_the_threshold_the_view_is_unchanged() {
     let messages = history(20, 4_000);
 
-    let view = thin_context(messages.clone(), 1_000_000, &ThinningSettings::default());
+    let view = thin_context(messages.clone(), 1_000_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
 
     assert_eq!(
         view,
@@ -158,7 +158,7 @@ fn above_the_threshold_old_big_results_thin_and_protected_ones_stay() {
         "python_repl",
     ));
 
-    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default());
+    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
 
     let mut expected = messages.clone();
     let mut chars_saved = 0;
@@ -188,10 +188,10 @@ fn the_prefix_holds_byte_identical_until_the_boundary_advances() {
     // 17..=23 rounds: thinnable 9..=15, so the boundary stays at round 8.
     for rounds in 17..=23 {
         let messages = history(rounds, 4_000);
-        let view = thin_context(messages.clone(), 20_000, &settings);
+        let view = thin_context(messages.clone(), 20_000, &settings, &ThinnedRecall::ToolResult);
         assert_eq!(
             view,
-            thin_context(messages, 20_000, &settings),
+            thin_context(messages, 20_000, &settings, &ThinnedRecall::ToolResult),
             "the view is a pure function of the history"
         );
         assert_eq!(view.stats.thinned_results, 8);
@@ -203,7 +203,7 @@ fn the_prefix_holds_byte_identical_until_the_boundary_advances() {
         previous = Some(view.messages);
     }
     // Round 24 advances the boundary by a whole block: rounds 8..16 thin.
-    let advanced = thin_context(history(24, 4_000), 20_000, &settings);
+    let advanced = thin_context(history(24, 4_000), 20_000, &settings, &ThinnedRecall::ToolResult);
     let previous = previous.expect("prior view");
     assert_eq!(advanced.stats.thinned_results, 16);
     assert_eq!(advanced.messages[..18], previous[..18]);
@@ -226,7 +226,7 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     register_tool_result_recall(&mut handlers, &session);
     let recall = handlers.get("rlm.session.tool_result").expect("registered");
 
-    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default());
+    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
     let pointer = result_text(&view.messages[2]);
     let call = pointer
         .split("rlm.session.tool_result(\"")
@@ -341,7 +341,7 @@ fn a_long_session_sends_fewer_request_bytes_per_turn() {
             false,
         ));
         let before = request_bytes(&messages).len();
-        let view = thin_context(messages.clone(), 200_000, &settings);
+        let view = thin_context(messages.clone(), 200_000, &settings, &ThinnedRecall::ToolResult);
         let after = request_bytes(&view.messages).len();
         before_total += before;
         after_total += after;
@@ -365,10 +365,67 @@ fn a_long_session_sends_fewer_request_bytes_per_turn() {
     );
     // The last turn carries the whole history; thinning must cut it hard.
     let last_before = request_bytes(&messages).len();
-    let last_after = request_bytes(&thin_context(messages, 200_000, &settings).messages).len();
+    let last_after = request_bytes(&thin_context(messages, 200_000, &settings, &ThinnedRecall::ToolResult).messages).len();
     assert!(
         last_after * 3 < last_before,
         "thinning kept {last_after} of {last_before} bytes"
     );
     assert!(after_total < before_total);
+}
+
+/// A persistent session's thinned results carry their spill handle instead
+/// of the transcript pointer, and each handle reads the whole result back:
+/// thinning loses nothing.
+#[tokio::test]
+async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
+    use crate::kernel::spill::{content_id, SpillLookup, SpillStore};
+
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let store = SpillStore::for_session_dir(dir.path());
+    let messages = history(20, 4_000);
+
+    let view = thin_context(
+        messages.clone(),
+        20_000,
+        &ThinningSettings::default(),
+        &ThinnedRecall::Spill(store.clone()),
+    );
+
+    let mut expected = messages.clone();
+    let mut chars_saved = 0;
+    let mut originals = Vec::new();
+    for index in 0..8 {
+        let at = 2 + 2 * index;
+        let original = result_text(&messages[at]);
+        let chars: Vec<char> = original.chars().collect();
+        let head: String = chars[..240].iter().collect();
+        let tail: String = chars[chars.len() - 120..].iter().collect();
+        let thinned = format!(
+            "{head}\n[out:{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]\n{tail}",
+            content_id(&original),
+            crate::kernel::spill::group_digits(chars.len()),
+            original.lines().count(),
+        );
+        chars_saved += (chars.len() - thinned.chars().count()) as u64;
+        expected[at] = with_text(&messages[at], thinned);
+        originals.push(original);
+    }
+    assert_eq!(
+        view,
+        ThinnedView {
+            messages: expected,
+            stats: ThinningStats {
+                thinned_results: 8,
+                chars_saved,
+            },
+        }
+    );
+    let mut paged_back = Vec::new();
+    for original in &originals {
+        match store.lookup(&content_id(original)).await {
+            SpillLookup::Stored(spill) => paged_back.push(spill.text),
+            other => panic!("not stored: {other:?}"),
+        }
+    }
+    assert_eq!(paged_back, originals);
 }

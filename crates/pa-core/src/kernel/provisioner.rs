@@ -114,6 +114,9 @@ pub struct IpythonKernelProvisionerOptions {
     /// `timeout` argument wins. The runtime bootstrap and internal state ops
     /// never use it.
     pub cell_window: crate::kernel::cell_window::CellWindow,
+    /// The per-stream output cap user cells run with, scaled to the context
+    /// the session has left; the default keeps the fixed cap.
+    pub output_budget: crate::kernel::spill::OutputBudget,
     pub env: HashMap<String, String>,
     /// Command prefix prepended to every kernel `bash()` invocation.
     pub command_prefix: Option<String>,
@@ -303,6 +306,12 @@ impl IpythonKernelProvisioner {
             .snapshot_dir
             .as_deref()
             .map(crate::kernel::spill::SpillStore::for_session_dir)
+    }
+
+    /// The output cap policy the kernel executor sizes user cells with.
+    #[must_use]
+    pub(crate) fn output_budget(&self) -> &crate::kernel::spill::OutputBudget {
+        &self.inner.options.output_budget
     }
 
     /// The yield window policy the kernel executor arms user cells with.
