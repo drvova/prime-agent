@@ -1431,6 +1431,25 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
     ],
 };
 
+/// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
+/// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
+/// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
+/// page), truncated reads, and the slowest read. Counts only: never a URL, a title, or content.
+const AGENT_WEB_READS: EventRule = EventRule {
+    name: "agent web reads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_read_count", required(count())),
+        ("web_read_failed_count", required(count())),
+        ("web_read_site_count", required(count())),
+        ("web_read_pdf_count", required(count())),
+        ("web_read_page_count", required(count())),
+        ("web_read_truncated_count", required(count())),
+        ("web_read_max_ms", required(duration())),
+    ],
+};
+
 /// Kernel native file search (`fs.grep`/`fs.glob`/`fs.find`) adoption for one session (v2),
 /// emitted at session end beside `agent session ended` (which sits near the backend's 128-key cap)
 /// only when the session searched: calls by operation, failures, capped calls, results returned,
@@ -1475,6 +1494,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &AGENT_TODOS_AND_QUESTIONS,
+        &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
     ];
     all.extend(UPDATE_EVENTS.iter());

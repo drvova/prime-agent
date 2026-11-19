@@ -384,6 +384,8 @@ struct CounterValues {
     interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+    /// The kernel `web.read` counters, reported by `agent web reads`.
+    web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
 }
@@ -397,6 +399,18 @@ struct FsSearchCounts {
     failed: u64,
     truncated: u64,
     results: u64,
+    max_ms: u64,
+}
+
+/// `agent web reads`: reads by outcome and kind, truncations, and the slowest read.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct WebReadCounts {
+    reads: u64,
+    failed: u64,
+    site: u64,
+    pdf: u64,
+    page: u64,
+    truncated: u64,
     max_ms: u64,
 }
 
@@ -536,6 +550,33 @@ impl SessionCounters {
                 GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
             };
             *counter += 1;
+        });
+    }
+
+    /// One kernel `web.read` (counts only: never the URL or the content).
+    pub(crate) fn note_web_read(
+        &self,
+        outcome: crate::web_read::ReadOutcome,
+        elapsed: std::time::Duration,
+    ) {
+        self.with(|values| {
+            let counts = &mut values.web_read;
+            counts.reads += 1;
+            match outcome {
+                crate::web_read::ReadOutcome::Read { kind, truncated } => {
+                    let bucket = match kind {
+                        crate::web_read::ReadKind::Site => &mut counts.site,
+                        crate::web_read::ReadKind::Pdf => &mut counts.pdf,
+                        crate::web_read::ReadKind::Page => &mut counts.page,
+                    };
+                    *bucket += 1;
+                    counts.truncated += u64::from(truncated);
+                }
+                crate::web_read::ReadOutcome::Failed => counts.failed += 1,
+            }
+            counts.max_ms = counts
+                .max_ms
+                .max(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
         });
     }
 
@@ -1059,6 +1100,24 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent goal verification", goal_properties);
+        }
+        // A session that never read a URL sends no web-read event.
+        let mut web_read = WebReadCounts::default();
+        self.counters.with(|values| web_read = values.web_read);
+        if web_read != WebReadCounts::default() {
+            let mut read_properties = self.session_properties();
+            for (key, value) in [
+                ("web_read_count", web_read.reads),
+                ("web_read_failed_count", web_read.failed),
+                ("web_read_site_count", web_read.site),
+                ("web_read_pdf_count", web_read.pdf),
+                ("web_read_page_count", web_read.page),
+                ("web_read_truncated_count", web_read.truncated),
+                ("web_read_max_ms", web_read.max_ms),
+            ] {
+                read_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent web reads", read_properties);
         }
         // A session that never searched sends no fs-search event.
         let mut fs_search = FsSearchCounts::default();

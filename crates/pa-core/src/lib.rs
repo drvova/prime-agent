@@ -64,5 +64,6 @@ pub mod settings;
 pub mod skills;
 pub mod slash_command_args;
 pub mod update;
+pub(crate) mod web_read;
 pub mod web_search;
 pub use kernel::ReplKernelManager;
