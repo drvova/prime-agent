@@ -83,6 +83,18 @@ relative to the REPL's cwd; each call runs on a blocking thread. Adoption
 counts ride the `agent fs search` event. Non-goals: a shell or coreutils
 replacement, file watching, and indexing.
 
+Anchored file editing (`fs_edit`, crate-internal): the `fs.read`/`fs.edit`
+host requests behind the kernel's `rlm.fs.read`/`rlm.fs.edit`. A read tags
+each line `LINE:abc` (three letters of a SHA-256 over the line and its
+neighbours); an edit replaces, deletes, or inserts by anchor, checks every
+anchor against the file first and rejects the whole patch (stale anchors plus
+the current lines, nothing written) on any mismatch, then writes atomically
+(temp file + rename, through symlinks, permissions kept) with the file's own
+line endings, final newline, and encoding (UTF-8 with or without a BOM,
+UTF-16 with one; binary files are refused). Each call runs on a blocking
+thread; adoption counts ride the `agent fs edit` event. Non-goals: creating,
+moving, or deleting files, and the model-facing `edit` tool (unchanged).
+
 Kernel scheduled jobs (`schedule.add`/`schedule.list`/`schedule.cancel`,
 crate-internal, in `session_engine/runtime/schedule.rs` over
 `cron/store/repl_schedule.rs`): one-shot or recurring prompts the model

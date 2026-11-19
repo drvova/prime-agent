@@ -1820,6 +1820,59 @@ async fn fs_searches_ride_their_own_event() {
     );
 }
 
+/// Kernel `fs.read`/`fs.edit` calls ride their own `agent fs edit` event at session end (counts
+/// by outcome, never a path or content), and a session that never used them sends none.
+#[tokio::test]
+async fn fs_edits_ride_their_own_event() {
+    use crate::fs_edit::{EditFact, FsEditOperation};
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        EditFact::Read { lines: 40 },
+        EditFact::Read { lines: 2 },
+        EditFact::Failed {
+            operation: FsEditOperation::Read,
+        },
+        EditFact::Applied { edits: 3 },
+        EditFact::Rejected { stale: 2 },
+        EditFact::Failed {
+            operation: FsEditOperation::Edit,
+        },
+    ] {
+        counters.note_fs_edit(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent fs edit"]
+    );
+    let edits = &event_properties(&fixture.mock, "agent fs edit").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = edits
+        .iter()
+        .filter(|(key, _)| key.starts_with("fs_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "fs_read_count": 2,
+            "fs_read_line_count": 42,
+            "fs_read_failed_count": 1,
+            "fs_edit_count": 1,
+            "fs_edit_op_count": 3,
+            "fs_edit_rejected_count": 1,
+            "fs_edit_stale_anchor_count": 2,
+            "fs_edit_failed_count": 1,
+        })
+    );
+}
+
 /// Kernel `schedule.*` calls ride their own `agent repl schedule` event at session end (counts by
 /// kind, never a prompt or schedule), and a session that never scheduled sends none.
 #[tokio::test]

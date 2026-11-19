@@ -388,6 +388,8 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
+    fs_edit: FsEditCounts,
     /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
     repl_schedule: ReplScheduleCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
@@ -400,6 +402,20 @@ struct ReplReloadCounts {
     reloads: u64,
     skills_added: u64,
     settings_reads: u64,
+}
+
+/// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
+/// anchors.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct FsEditCounts {
+    reads: u64,
+    read_lines: u64,
+    read_failed: u64,
+    applied: u64,
+    edits: u64,
+    rejected: u64,
+    stale_anchors: u64,
+    edit_failed: u64,
 }
 
 /// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
@@ -634,6 +650,34 @@ impl SessionCounters {
     /// One kernel `settings.get()` read (never a value).
     pub(crate) fn note_repl_settings_read(&self) {
         self.with(|values| values.repl_reload.settings_reads += 1);
+    }
+
+    /// One kernel `fs.read`/`fs.edit` (counts only: never a path or content).
+    pub(crate) fn note_fs_edit(&self, fact: crate::fs_edit::EditFact) {
+        use crate::fs_edit::{EditFact, FsEditOperation};
+        self.with(|values| {
+            let counts = &mut values.fs_edit;
+            match fact {
+                EditFact::Read { lines } => {
+                    counts.reads += 1;
+                    counts.read_lines += lines as u64;
+                }
+                EditFact::Applied { edits } => {
+                    counts.applied += 1;
+                    counts.edits += edits as u64;
+                }
+                EditFact::Rejected { stale } => {
+                    counts.rejected += 1;
+                    counts.stale_anchors += stale as u64;
+                }
+                EditFact::Failed {
+                    operation: FsEditOperation::Read,
+                } => counts.read_failed += 1,
+                EditFact::Failed {
+                    operation: FsEditOperation::Edit,
+                } => counts.edit_failed += 1,
+            }
+        });
     }
 
     /// One kernel `schedule.add/list/cancel` call (counts only: never a prompt or a schedule).
@@ -1185,6 +1229,25 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that never read or edited by anchor sends no fs-edit event.
+        let mut fs_edit = FsEditCounts::default();
+        self.counters.with(|values| fs_edit = values.fs_edit);
+        if fs_edit != FsEditCounts::default() {
+            let mut edit_properties = self.session_properties();
+            for (key, value) in [
+                ("fs_read_count", fs_edit.reads),
+                ("fs_read_line_count", fs_edit.read_lines),
+                ("fs_read_failed_count", fs_edit.read_failed),
+                ("fs_edit_count", fs_edit.applied),
+                ("fs_edit_op_count", fs_edit.edits),
+                ("fs_edit_rejected_count", fs_edit.rejected),
+                ("fs_edit_stale_anchor_count", fs_edit.stale_anchors),
+                ("fs_edit_failed_count", fs_edit.edit_failed),
+            ] {
+                edit_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent fs edit", edit_properties);
         }
         // A session that never scheduled from the kernel sends no schedule event.
         let mut schedule = ReplScheduleCounts::default();
