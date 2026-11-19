@@ -1760,6 +1760,44 @@ async fn responses_transport_counts_ride_their_own_event() {
     assert!(ended.keys().all(|key| !key.starts_with("responses_")));
 }
 
+/// The worker's endpoint discovery counts ride their own `agent endpoint discovery` event at
+/// session end (counts only).
+#[tokio::test]
+async fn endpoint_discovery_counts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_endpoint_discovery(pa_ai::responses_transport::DiscoveryCounts {
+        probes: 3,
+        found_responses: 1,
+        found_websocket: 1,
+        upgrades: 1,
+        demotions: 0,
+    });
+    telemetry.end().await.unwrap();
+    let discovery = &event_properties(&fixture.mock, "agent endpoint discovery").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = discovery
+        .iter()
+        .filter(|(key, _)| key.starts_with("endpoint_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "endpoint_probe_count": 3,
+            "endpoint_found_responses_count": 1,
+            "endpoint_found_websocket_count": 1,
+            "endpoint_upgrade_count": 1,
+            "endpoint_demotion_count": 0,
+        })
+    );
+}
+
 /// Kernel `web.read` outcomes ride their own `agent web reads` event at session end (counts by
 /// kind, never a URL), and a session that read nothing sends none.
 #[tokio::test]

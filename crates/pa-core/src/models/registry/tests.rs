@@ -696,3 +696,36 @@ fn a_prime_base_url_override_voids_the_live_serving_label() {
     assert_eq!(overridden.base_url, "https://my-gateway.example/v1");
     assert_eq!(overridden.serving, None);
 }
+
+/// A built-in Chat Completions model on an endpoint known to serve the Responses route (xAI's
+/// docs-verified base URL) loads on the Responses wire, while a models.json model on the same
+/// endpoint keeps the API it declares.
+#[test]
+fn a_known_responses_endpoint_upgrades_built_ins_but_never_a_declared_models_json_api() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": { "my-xai": {
+            "baseUrl": "https://api.x.ai/v1", "apiKey": "key",
+            "api": "openai-completions",
+            "models": [ { "id": "grok-mine" } ]
+        } } }"#,
+    )
+    .unwrap();
+    let registry = ModelRegistry::create(auth_without_env(&serde_json::json!({})), &models_path);
+    let api_of = |provider: &str| {
+        registry
+            .get_all()
+            .iter()
+            .find(|model| model.provider == provider)
+            .map(|model| model.api.clone())
+    };
+    assert_eq!(
+        (api_of("xai"), api_of("my-xai")),
+        (
+            Some("openai-responses".to_string()),
+            Some("openai-completions".to_string())
+        )
+    );
+}

@@ -43,7 +43,39 @@ async fn list(options: &RunOptions) -> Result<i32, String> {
     };
     filtered.sort_by(|a, b| a.provider.cmp(&b.provider).then_with(|| a.id.cmp(&b.id)));
     print_table(&filtered);
+    print_learned_endpoints(&filtered);
     Ok(0)
+}
+
+/// What automatic endpoint discovery learned about the listed models' endpoints (read-only; an
+/// endpoint nothing was learned about prints nothing).
+fn print_learned_endpoints(models: &[pa_types::ai::Model]) {
+    let mut seen = std::collections::BTreeSet::new();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        });
+    let state = |known: Option<bool>| match known {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    };
+    for model in models {
+        if !seen.insert(model.base_url.as_str()) {
+            continue;
+        }
+        let Some(learned) = pa_ai::responses_transport::learned_endpoint(&model.base_url) else {
+            continue;
+        };
+        let days = now.saturating_sub(learned.checked_at) / (24 * 60 * 60 * 1000);
+        println!(
+            "{}: responses {}, websocket {} (checked {days}d ago)",
+            model.base_url,
+            state(learned.responses_http),
+            state(learned.websocket),
+        );
+    }
 }
 
 /// Guidance plus the bundled docs paths for providers and models.

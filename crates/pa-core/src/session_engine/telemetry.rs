@@ -393,6 +393,8 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
     responses_transport: pa_ai::responses_transport::ResponsesTransportCounts,
+    /// The worker process's endpoint discovery counts, reported by `agent endpoint discovery`.
+    endpoint_discovery: pa_ai::responses_transport::DiscoveryCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
@@ -669,6 +671,15 @@ impl SessionCounters {
         counts: pa_ai::responses_transport::ResponsesTransportCounts,
     ) {
         self.with(|values| values.responses_transport = counts);
+    }
+
+    /// The worker process's endpoint discovery counts (one worker serves one session; session end
+    /// snapshots them here).
+    pub(crate) fn note_endpoint_discovery(
+        &self,
+        counts: pa_ai::responses_transport::DiscoveryCounts,
+    ) {
+        self.with(|values| values.endpoint_discovery = counts);
     }
 
     pub(crate) fn note_web_read(
@@ -1430,6 +1441,31 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent responses transport", transport_properties);
+        }
+        // A worker whose discovery never probed or moved an endpoint sends no discovery event.
+        // Only a session installed on a live agent reads the worker's process-wide counts.
+        let discovered = pa_ai::responses_transport::discovery_counts();
+        if self.agent_session_id.is_some()
+            && discovered != pa_ai::responses_transport::DiscoveryCounts::default()
+        {
+            self.counters.note_endpoint_discovery(discovered);
+        }
+        let mut discovery = pa_ai::responses_transport::DiscoveryCounts::default();
+        self.counters
+            .with(|values| discovery = values.endpoint_discovery);
+        if discovery != pa_ai::responses_transport::DiscoveryCounts::default() {
+            let mut discovery_properties = self.session_properties();
+            for (key, value) in [
+                ("endpoint_probe_count", discovery.probes),
+                ("endpoint_found_responses_count", discovery.found_responses),
+                ("endpoint_found_websocket_count", discovery.found_websocket),
+                ("endpoint_upgrade_count", discovery.upgrades),
+                ("endpoint_demotion_count", discovery.demotions),
+            ] {
+                discovery_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent endpoint discovery", discovery_properties);
         }
         // A session that never read a URL sends no web-read event.
         let mut web_read = WebReadCounts::default();

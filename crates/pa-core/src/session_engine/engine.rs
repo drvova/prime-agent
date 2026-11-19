@@ -214,11 +214,6 @@ fn mcp_gating_blocking(
 /// reporting.
 pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<SessionEngine> {
     let cwd = config.cwd.clone();
-    // Learned Responses WebSocket capabilities persist beside the agent's other state (the
-    // provider layer reads the file on its first lookup and writes it off the request path).
-    pa_ai::responses_transport::set_capability_cache_path(
-        config.agent_dir.join("responses-transport.json"),
-    );
     // Session persistence first: the conversation-log path and the resume
     // context both come from the session manager.
     let mut session_manager = config

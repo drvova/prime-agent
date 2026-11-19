@@ -1,5 +1,5 @@
-//! Learned WebSocket capability per endpoint host: what a probe of an endpoint with no declared
-//! capability found. Verdicts live in memory and in a small cache file in the agent dir (written
+//! Learned capabilities per endpoint host: whether it serves the Responses API over HTTP and its
+//! WebSocket mode, as a probe (a request's own WebSocket attempt, or background discovery) found. Verdicts live in memory and in a small cache file in the agent dir (written
 //! off the request path) so a later session does not re-probe a host, and expire after a week.
 
 use std::collections::HashMap;
@@ -10,15 +10,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils_inner::diagnostics::now_ms;
 
+/// Built-in registry data: base URLs whose Responses WebSocket mode (and so the Responses route)
+/// the provider's own documentation verifies. They seed the capability and are never probed;
+/// every other endpoint is learned.
+/// - `https://api.openai.com/v1`: <https://developers.openai.com/api/docs/guides/websocket-mode>
+/// - `https://api.x.ai/v1`: <https://docs.x.ai/developers/advanced-api-usage/websocket-mode>
+const VERIFIED_WEBSOCKET_BASE_URLS: &[&str] = &["https://api.openai.com/v1", "https://api.x.ai/v1"];
+
+/// Whether the docs verify the base URL's Responses WebSocket mode.
+pub(crate) fn is_verified_endpoint(base_url: &str) -> bool {
+    VERIFIED_WEBSOCKET_BASE_URLS.contains(&base_url.trim_end_matches('/'))
+}
+
 /// How long a learned verdict holds before the endpoint is probed again.
 const LEARNED_CAPABILITY_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What is known about one endpoint host; `None` fields are unknown (never probed, or the probe
+/// was inconclusive).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Verdict {
-    websocket: bool,
-    checked_at: u64,
+pub struct LearnedEndpoint {
+    /// `POST {base}/responses` is routed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses_http: Option<bool>,
+    /// The Responses WebSocket mode answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub websocket: Option<bool>,
+    /// When the endpoint was last checked (epoch milliseconds).
+    pub checked_at: u64,
 }
+
+type Verdict = LearnedEndpoint;
 
 #[derive(Default)]
 struct Learned {
@@ -53,8 +75,18 @@ pub(crate) fn endpoint_key(base_url: &str) -> Option<String> {
     })
 }
 
-/// The unexpired learned verdict for an endpoint, if a probe recorded one.
+/// The unexpired learned WebSocket verdict for an endpoint, if a probe recorded one.
 pub(crate) fn learned_capability(key: &str) -> Option<bool> {
+    learned_endpoint_by_key(key)?.websocket
+}
+
+/// The unexpired learned record for a base URL's endpoint host.
+#[must_use]
+pub fn learned_endpoint(base_url: &str) -> Option<LearnedEndpoint> {
+    learned_endpoint_by_key(&endpoint_key(base_url)?)
+}
+
+fn learned_endpoint_by_key(key: &str) -> Option<LearnedEndpoint> {
     let mut learned = learned().lock().ok()?;
     if !learned.loaded {
         learned.loaded = true;
@@ -73,21 +105,26 @@ pub(crate) fn learned_capability(key: &str) -> Option<bool> {
         learned.verdicts.remove(key);
         return None;
     }
-    Some(verdict.websocket)
+    Some(verdict)
 }
 
-/// Record a probe's verdict; the cache file is rewritten on a blocking worker, never awaited.
+/// Record a request's WebSocket probe verdict.
 pub(crate) fn record_learned_capability(key: &str, websocket: bool) {
+    record_learned(key, |verdict| verdict.websocket = Some(websocket));
+}
+
+/// Update an endpoint's record (a conclusive finding replaces the field it covers; the others
+/// keep their values) and stamp it checked now. The cache file is rewritten on a blocking worker,
+/// never awaited.
+pub(crate) fn record_learned(key: &str, update: impl FnOnce(&mut LearnedEndpoint)) {
+    // The first lookup loads the file; load it before the first write so a write never drops it.
+    let _ = learned_endpoint_by_key(key);
     let Ok(mut learned) = learned().lock() else {
         return;
     };
-    learned.verdicts.insert(
-        key.to_string(),
-        Verdict {
-            websocket,
-            checked_at: now_ms(),
-        },
-    );
+    let verdict = learned.verdicts.entry(key.to_string()).or_default();
+    update(verdict);
+    verdict.checked_at = now_ms();
     let Some(path) = learned.path.clone() else {
         return;
     };
@@ -110,4 +147,15 @@ pub(crate) fn record_learned_capability(key: &str, websocket: bool) {
             let _ = std::fs::remove_file(&temp);
         }
     });
+}
+
+/// Seed an endpoint's learned Responses route (tests of the paths that read it).
+#[cfg(test)]
+pub(crate) fn record_learned_for_test(base_url: &str, responses_http: Option<bool>) {
+    record_learned(
+        &endpoint_key(base_url).expect("a test base URL"),
+        |learned| {
+            learned.responses_http = responses_http;
+        },
+    );
 }

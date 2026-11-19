@@ -7,6 +7,7 @@
 mod capability;
 mod connection;
 mod continuation;
+mod discovery;
 pub(crate) mod errors;
 mod plan;
 mod sessions;
@@ -14,10 +15,19 @@ mod sessions;
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-pub use capability::set_capability_cache_path;
-pub(crate) use capability::{endpoint_key, learned_capability, record_learned_capability};
+#[cfg(test)]
+pub(crate) use capability::record_learned_for_test;
+pub(crate) use capability::{
+    endpoint_key, is_verified_endpoint, learned_capability, record_learned_capability,
+};
+pub use capability::{learned_endpoint, set_capability_cache_path, LearnedEndpoint};
 pub(crate) use connection::{AcquiredConnection, WireProfile, WorkerEvent};
 pub(crate) use continuation::{build_cached_websocket_request_body, ContinuationState};
+pub(crate) use discovery::demote_responses_route;
+pub use discovery::{
+    apply_responses_wire_upgrade, discover_endpoints, discovery_counts, DiscoveryCounts,
+    DiscoveryTarget, DiscoveryWire,
+};
 pub(crate) use plan::{
     is_visible_response_event, note_dispatch, note_plan, plan_transport, transport_debug_name,
     Capability, PlanInput, TransportPlan,
