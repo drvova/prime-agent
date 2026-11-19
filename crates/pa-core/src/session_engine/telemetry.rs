@@ -388,6 +388,16 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
+    rlm_abort: RlmAbortCounts,
+}
+
+/// `agent rlm child abort`: aborts by outcome.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RlmAbortCounts {
+    aborted: u64,
+    idle: u64,
+    failed: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -598,6 +608,19 @@ impl SessionCounters {
             counts.max_ms = counts
                 .max_ms
                 .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
+        });
+    }
+
+    /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
+    pub(crate) fn note_rlm_abort(&self, outcome: Option<super::rlm_host::RlmAbortOutcome>) {
+        use super::rlm_host::RlmAbortOutcome;
+        self.with(|values| {
+            let counts = &mut values.rlm_abort;
+            *match outcome {
+                Some(RlmAbortOutcome::Aborted) => &mut counts.aborted,
+                Some(RlmAbortOutcome::Idle) => &mut counts.idle,
+                None => &mut counts.failed,
+            } += 1;
         });
     }
 
@@ -1136,6 +1159,20 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that never aborted a child from the kernel sends no abort event.
+        let mut abort = RlmAbortCounts::default();
+        self.counters.with(|values| abort = values.rlm_abort);
+        if abort != RlmAbortCounts::default() {
+            let mut abort_properties = self.session_properties();
+            for (key, value) in [
+                ("rlm_abort_aborted_count", abort.aborted),
+                ("rlm_abort_idle_count", abort.idle),
+                ("rlm_abort_failed_count", abort.failed),
+            ] {
+                abort_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent rlm child abort", abort_properties);
         }
         self.client.flush().await
     }
