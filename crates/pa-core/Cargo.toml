@@ -39,6 +39,11 @@ flate2 = "1"
 unicode-normalization = "0.1"
 serde_yaml = { package = "yaml_serde", version = "0.10.7" }
 ignore = "0.4"
+# The kernel's `fs.grep`: ripgrep's own searcher and regex matcher, in
+# process (with `ignore`/`globset` above for the walk and the globs).
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

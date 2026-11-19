@@ -43,6 +43,7 @@ try:
     bash = _prime_agent_rlm_module.bash
     import rlm.mcp as mcp
     import rlm.web as web
+    import rlm.fs as fs
     import rlm.todo as todo
     import rlm.ask as _prime_agent_ask_module
     ask = _prime_agent_ask_module.ask

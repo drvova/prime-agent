@@ -384,6 +384,20 @@ struct CounterValues {
     interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+    /// The kernel `fs.*` search counters, reported by `agent fs search`.
+    fs_search: FsSearchCounts,
+}
+
+/// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct FsSearchCounts {
+    grep: u64,
+    glob: u64,
+    find: u64,
+    failed: u64,
+    truncated: u64,
+    results: u64,
+    max_ms: u64,
 }
 
 /// `agent todos and questions`: lists set, items newly done, and questions by outcome.
@@ -522,6 +536,27 @@ impl SessionCounters {
                 GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
             };
             *counter += 1;
+        });
+    }
+
+    /// One kernel `fs.grep`/`fs.glob`/`fs.find` (counts only: never a pattern or a path).
+    pub(crate) fn note_fs_search(&self, fact: crate::fs_search::SearchFact) {
+        self.with(|values| {
+            let counts = &mut values.fs_search;
+            let operation = match fact.operation {
+                crate::fs_search::FsOperation::Grep => &mut counts.grep,
+                crate::fs_search::FsOperation::Glob => &mut counts.glob,
+                crate::fs_search::FsOperation::Find => &mut counts.find,
+            };
+            *operation += 1;
+            match fact.results {
+                Some(results) => counts.results += results as u64,
+                None => counts.failed += 1,
+            }
+            counts.truncated += u64::from(fact.truncated);
+            counts.max_ms = counts
+                .max_ms
+                .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
         });
     }
 
@@ -1024,6 +1059,24 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent goal verification", goal_properties);
+        }
+        // A session that never searched sends no fs-search event.
+        let mut fs_search = FsSearchCounts::default();
+        self.counters.with(|values| fs_search = values.fs_search);
+        if fs_search != FsSearchCounts::default() {
+            let mut search_properties = self.session_properties();
+            for (key, value) in [
+                ("fs_grep_count", fs_search.grep),
+                ("fs_glob_count", fs_search.glob),
+                ("fs_find_count", fs_search.find),
+                ("fs_search_failed_count", fs_search.failed),
+                ("fs_search_truncated_count", fs_search.truncated),
+                ("fs_search_result_count", fs_search.results),
+                ("fs_search_max_ms", fs_search.max_ms),
+            ] {
+                search_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent fs search", search_properties);
         }
         self.client.flush().await
     }

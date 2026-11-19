@@ -402,6 +402,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `fs.grep`/`fs.glob`/`fs.find`: the kernel's native in-process search;
+    // telemetry folds each call (never a pattern or path) into the counters.
+    crate::fs_search::FsSearchHost {
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_fs_search(fact))
+                as crate::fs_search::SearchObserver
+        }),
+    }
+    .register(&mut handlers);
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings

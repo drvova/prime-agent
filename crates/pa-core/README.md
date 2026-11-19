@@ -62,6 +62,16 @@ bundled websearch skill reach. One process-wide engine serves every
 session; credentials resolve per search on the host and never enter the
 kernel; the HTTP client is built on the first search, never at startup.
 
+Native file search (`fs_search`, crate-internal): the `fs.grep`/`fs.glob`/
+`fs.find` host requests the kernel's `rlm.fs` client reaches — ripgrep's
+library crates in process (`ignore` for the parallel `.gitignore`-aware
+walk, `globset`, `grep-searcher` + `grep-regex`), so search needs no `rg`,
+`grep`, or `find` on any platform. Results are structured (path, line,
+column, text, context), capped and clipped, with `/`-separated paths
+relative to the REPL's cwd; each call runs on a blocking thread. Adoption
+counts ride the `agent fs search` event. Non-goals: a shell or coreutils
+replacement, file watching, and indexing.
+
 Provider auth descriptors (`auth/descriptor.rs`, `auth/resolver.rs`,
 `auth/token_exchange.rs`): the optional models.json provider `auth` block,
 validated at load, and the one request-auth seam (`AuthResolver`, crate
