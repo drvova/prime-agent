@@ -955,7 +955,7 @@ def path_of(module, root):
     return None
 
 root = sys.argv[1]
-seed = ["rlm", "rlm.mcp", "rlm.harness", "rlm.bash", "rlm.repl", "rlm.web", "rlm.fs", "rlm.schedule", "rlm.checkpoint", "rlm.todo", "rlm.ask", "rlm.usage", "rlm.notify", "rlm.model", "rlm.settings", "rlm.resource_reload", "rlm.cells"]
+seed = json.loads(sys.argv[2])
 closure = []
 pending = list(seed)
 violations = []
@@ -983,10 +983,19 @@ while pending:
 
 print(json.dumps({"closure": sorted(closure), "violations": violations}))
 "#;
+    // The seed is every manifest that seeds the closure; the closure must also reach each
+    // manifest's transitive modules.
+    let manifests = crate::kernel::capabilities::capabilities().expect("the manifests parse");
+    let seed: Vec<&str> = manifests
+        .values()
+        .filter(|manifest| manifest.closure_seed)
+        .map(|manifest| manifest.module.as_str())
+        .collect();
     let output = std::process::Command::new(&real_python)
         .arg("-c")
         .arg(script)
         .arg(&real_rlm)
+        .arg(serde_json::to_string(&seed).expect("the seed serializes"))
         .output()
         .expect("the real python must run the closure parse");
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -994,27 +1003,19 @@ print(json.dumps({"closure": sorted(closure), "violations": violations}))
     assert!(output.status.success(), "closure parse failed: {stderr}");
     let report: ClosureReport = serde_json::from_str(&stdout)
         .unwrap_or_else(|error| panic!("unparseable closure report {stdout:?}: {error}"));
-    // The seed set mirrors the RUNTIME_READY_CHECK's imports; if either
-    // changes, this test is the tripwire.
+    let unreached: Vec<&str> = seed
+        .iter()
+        .copied()
+        .chain(
+            manifests
+                .values()
+                .flat_map(|manifest| manifest.closure_transitive.iter().map(String::as_str)),
+        )
+        .filter(|module| !report.closure.iter().any(|reached| reached == module))
+        .collect();
     assert!(
-        report.closure.contains(&"rlm.mcp".to_string())
-            && report.closure.contains(&"rlm.harness".to_string())
-            && report.closure.contains(&"rlm.bash".to_string())
-            && report.closure.contains(&"rlm.repl".to_string())
-            && report.closure.contains(&"rlm.web".to_string())
-            && report.closure.contains(&"rlm.fs".to_string())
-            && report.closure.contains(&"rlm.schedule".to_string())
-            && report.closure.contains(&"rlm.checkpoint".to_string())
-            && report.closure.contains(&"rlm.todo".to_string())
-            && report.closure.contains(&"rlm.ask".to_string())
-            && report.closure.contains(&"rlm.usage".to_string())
-            && report.closure.contains(&"rlm.notify".to_string())
-            && report.closure.contains(&"rlm.model".to_string())
-            && report.closure.contains(&"rlm.agent_dir".to_string())
-            && report.closure.contains(&"rlm.settings".to_string())
-            && report.closure.contains(&"rlm.resource_reload".to_string())
-            && report.closure.contains(&"rlm.cells".to_string()),
-        "the frozen closure seed is wrong: {report:?}"
+        unreached.is_empty(),
+        "the probe closure misses manifest modules {unreached:?}: {report:?}"
     );
     assert!(
         report.violations.is_empty(),
