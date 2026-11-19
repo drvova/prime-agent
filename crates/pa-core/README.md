@@ -133,14 +133,19 @@ daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
 
-Background cells (`kernel::manager`, `tools::ipython`, `session_engine::bash_notices`): a
-`python_repl` cell runs for at most its yield window inside the call (the model's `timeout`,
-default the `pythonCellTimeoutMs` setting; daemonless sessions wait for the end). A cell still
-running then continues in the background, never stopped for time: the result carries
-`backgrounded_cell`, the kernel's activity track counts it as background work, and its end
-arrives as the `[cell-done]` notice. Adoption counts ride the `agent repl background cells`
-event. Non-goals: a hard time limit (Nodecode keeps none) and stopping a cell from the host for
-time.
+Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
+`session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside
+the call (the model's `timeout`, else a `pythonCellTimeoutMs` the user set, else a window learned
+per project; daemonless sessions wait for the end). A cell still running then continues in the
+background, never stopped for time: the result carries `backgrounded_cell`, the kernel's activity
+track counts it as background work, and its end arrives as the `[cell-done]` notice. The learned
+window (`kernel::cell_window`, the opaque `CellWindow` policy carried by
+`IpythonKernelProvisionerOptions::cell_window`) is about 1.5x the recency-weighted P90 of the
+project's cell times, in 10 s..600 s, cold 60 s; its state lives in
+`<agent dir>/cell-windows/<project hash>.json`, loaded and saved off every cell path. Adoption
+counts (including each window's source) ride the `agent repl background cells` event.
+Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
+a user setting for the learner.
 
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs
