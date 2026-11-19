@@ -130,6 +130,7 @@ class RlmSubagentRegistryTest(unittest.TestCase):
                         "id": "claude-opus-4-7",
                         "name": "Claude Opus 4.7",
                         "selector": "anthropic/claude-opus-4-7",
+                        "image_input": True,
                     }
                 ]
             }
@@ -138,10 +139,18 @@ class RlmSubagentRegistryTest(unittest.TestCase):
         with patch.object(rlm_module, "host_request", host_request):
             models = asyncio.run(rlm_module.rlm.find_models("opus", limit=3))
 
-        self.assertEqual(models[0].provider, "anthropic")
-        self.assertEqual(models[0].id, "claude-opus-4-7")
-        self.assertEqual(models[0].name, "Claude Opus 4.7")
-        self.assertEqual(models[0].selector, "anthropic/claude-opus-4-7")
+        self.assertEqual(
+            models,
+            [
+                rlm_module.RLMModel(
+                    provider="anthropic",
+                    id="claude-opus-4-7",
+                    name="Claude Opus 4.7",
+                    selector="anthropic/claude-opus-4-7",
+                    image_input=True,
+                )
+            ],
+        )
         host_request.assert_awaited_once_with(
             "rlm.find_models",
             {"query": "opus", "limit": 3},

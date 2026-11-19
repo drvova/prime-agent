@@ -39,6 +39,7 @@ pub fn catalog_models(agent_dir: &Path) -> Vec<RlmModelInfo> {
             } else {
                 model.name.clone()
             },
+            image_input: model.input.contains(&pa_types::ai::ModelInput::Image),
         })
         .collect()
 }

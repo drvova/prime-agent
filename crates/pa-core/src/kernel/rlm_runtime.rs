@@ -18,6 +18,8 @@ pub struct RlmModelInfo {
     pub provider: String,
     pub id: String,
     pub name: String,
+    /// The model accepts image input (`attach_image` and pasted images reach it).
+    pub image_input: bool,
 }
 
 impl RlmModelInfo {
@@ -34,6 +36,9 @@ pub struct RlmModelMatch {
     pub id: String,
     pub name: String,
     pub selector: String,
+    /// The model accepts image input: a text-only agent picks one of these to
+    /// spawn a subagent that can look at an image for it.
+    pub image_input: bool,
 }
 
 fn error(operation: &str, message: &str) -> anyhow::Error {
@@ -271,6 +276,7 @@ pub fn find_rlm_model_matches(
                     id: model.id.clone(),
                     name,
                     selector,
+                    image_input: model.image_input,
                 },
                 score,
             ));
@@ -417,11 +423,13 @@ mod tests {
                 provider: "a".into(),
                 id: "glm-5.3".into(),
                 name: "GLM 5.3".into(),
+                image_input: false,
             },
             RlmModelInfo {
                 provider: "pi".into(),
                 id: "glm-5.3-turbo".into(),
                 name: "GLM".into(),
+                image_input: false,
             },
         ];
         let matches = find_rlm_model_matches("glm-5.3", &models, 8);
@@ -441,11 +449,13 @@ mod tests {
                 provider: "prime-inference".into(),
                 id: "z-ai/glm-5.3".into(),
                 name: "GLM".into(),
+                image_input: false,
             },
             RlmModelInfo {
                 provider: "a".into(),
                 id: "glm-5.3".into(),
                 name: "GLM".into(),
+                image_input: false,
             },
         ];
         assert!(find_unique_rlm_short_form_model_match("glm-5.3", &models, None).is_none());
