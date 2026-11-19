@@ -13,8 +13,12 @@ Port of the TS catalog client (branch `feat/catalog-client`:
   8 MiB cap (content-length AND streaming), redirects refused, ETag
   `If-None-Match` with 304 snapshot reuse; `PI_OFFLINE` disables the network.
 - No-cold-start chain: validated last-good disk cache -> build-time bundled
-  snapshot -> compiled fallback (42 transport tuples + 110 offline Prime
-  Inference entries).
+  snapshot -> compiled fallback (75 transport tuples + 110 offline Prime
+  Inference entries). The cache or snapshot stays authoritative for every
+  provider it carries; a provider id it does not carry at all (a compiled
+  transport the catalog has no rows for yet) resolves with its compiled rows,
+  whole. Compiled rows never mix into a provider the catalog carries, and
+  Prime Inference is never filled (its offline entries always ride along).
 - Strict schemas: serde `deny_unknown_fields`, version gates (models
   `schemaVersion == 1`), skip-invalid for remote model refresh, compat
   validation per `api`. Unsupported future versions keep last-good
