@@ -11,7 +11,7 @@ mod tests;
 
 use pa_types::context_breakdown::{CategoryUsage, ContextBreakdown, ContextCategories};
 
-use crate::chrome::{format_token_count, ChromeState};
+use crate::chrome::{format_token_count, ChromeState, ContextReading};
 use crate::keybindings::KeybindingsManager;
 use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
 use crate::menu_panel::{menu_list_layout, scroll_row};
@@ -371,7 +371,11 @@ impl ContextView {
 
     /// The usage head: tokens over the window, the bar, and the autocompact distance.
     fn usage_rows(theme: &Theme, width: usize, chrome: &ChromeState) -> Vec<Line> {
-        let Some(context) = chrome.context.as_ref() else {
+        let Some(context) = chrome
+            .context
+            .as_ref()
+            .filter(|context| context.reading != ContextReading::Unknown)
+        else {
             return note(
                 theme,
                 width,
@@ -392,6 +396,14 @@ impl ContextView {
             ),
         ];
         let mut rows = vec![truncate_line(&headline, width, "…")];
+        if context.reading == ContextReading::Stale {
+            rows.extend(note(
+                theme,
+                width,
+                ThemeColor::Dim,
+                "Last known value: the next reply measures the context again.",
+            ));
+        }
         rows.push(usage_bar(theme, width, percent, chrome.compaction_percent));
         rows.retain(|row| !row.is_empty());
         let threshold = match chrome.compaction_percent {

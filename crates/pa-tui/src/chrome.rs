@@ -283,27 +283,69 @@ impl ActivityDock {
     }
 }
 
-/// Context usage for the tray label (`N (P%)`).
+/// Context usage for the tray label (`N/W P%`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextUsage {
     pub tokens: u64,
     pub context_window: u64,
+    pub reading: ContextReading,
+}
+
+/// How current the tray's context usage is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContextReading {
+    /// The daemon measured `tokens` for the context as it stands.
+    #[default]
+    Measured,
+    /// The last measured `tokens`, carried over while the daemon cannot measure the context
+    /// (right after a compaction, until the next reply) — the tray marks it `~`.
+    Stale,
+    /// Nothing measured yet (before the first reply): `tokens` is meaningless; the tray shows
+    /// `?/W`.
+    Unknown,
 }
 
 impl ContextUsage {
-    /// The wire shape (TS `SessionStats["contextUsage"]`, served by
-    /// `get_session_stats` and carried by the attach snapshot's state):
-    /// unknown tokens — a session right after a compaction — yield
-    /// `None`, which clears the tray display instead of keeping the
-    /// stale one (TS `patchConnectionState` replaces the snapshot).
+    /// The wire shape (TS `SessionStats["contextUsage"]`, served by `get_session_stats` and
+    /// carried by the attach snapshot's state). Unknown or zero tokens with a known window — a
+    /// session right after a compaction, or before its first reply — read as
+    /// [`ContextReading::Unknown`]; only a missing window yields `None`.
     #[must_use]
     pub fn from_wire(usage: &Value) -> Option<Self> {
-        let tokens = usage.get("tokens").and_then(Value::as_u64)?;
         let context_window = usage.get("contextWindow").and_then(Value::as_u64)?;
+        let tokens = usage
+            .get("tokens")
+            .and_then(Value::as_u64)
+            .filter(|tokens| *tokens > 0);
         Some(Self {
-            tokens,
+            tokens: tokens.unwrap_or_default(),
             context_window,
+            reading: match tokens {
+                Some(_) => ContextReading::Measured,
+                None => ContextReading::Unknown,
+            },
         })
+    }
+
+    /// Fold a fresh reading over the last one shown for the SAME session: an unknown reading,
+    /// or a reply without the field at all (a worker that restarted before its model resolved),
+    /// keeps the last known tokens marked stale instead of blanking the tray.
+    #[must_use]
+    pub fn settle(next: Option<Self>, previous: Option<Self>) -> Option<Self> {
+        let known = previous.filter(|previous| previous.reading != ContextReading::Unknown);
+        match (next, known) {
+            (Some(next), Some(previous)) if next.reading == ContextReading::Unknown => Some(Self {
+                tokens: previous.tokens,
+                context_window: next.context_window,
+                reading: ContextReading::Stale,
+            }),
+            (None, Some(previous)) => Some(Self {
+                reading: ContextReading::Stale,
+                ..previous
+            }),
+            (Some(next), Some(_) | None) => Some(next),
+            (None, None) => previous,
+        }
     }
 
     #[must_use]
@@ -636,10 +678,12 @@ pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
 /// The tray's shrink order as the width drops. Every step keeps all the previous steps'
 /// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
 /// first and vanishes below six cells, then the tier badge, the subagent depth, the context
-/// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking glyph), the `manage` word
-/// (the `←` stays), the context percent, the rate-limit reset chip, and the model last. The chip
-/// outlives the context percent: while the provider refuses requests, when it lets them through
-/// again is the tray's one actionable fact. Nothing is cut mid-word.
+/// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking
+/// glyph), the `manage` word (the `←` stays), the model, the context percent, and the rate-limit
+/// reset chip last. The context percent outlives the model: a crowded tray (a long model id on a
+/// narrow pane) must never lose the indicator of how full the context is. The chip outlives the
+/// percent: while the provider refuses requests, when it lets them through again is the tray's
+/// one actionable fact. Nothing is cut mid-word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayShrink {
     Full,
@@ -648,9 +692,9 @@ enum TrayShrink {
     PercentOnly,
     NoEffort,
     BareManage,
+    NoModel,
     NoContext,
     NoResetChip,
-    NoModel,
 }
 
 const TRAY_SHRINK: [TrayShrink; 9] = [
@@ -660,9 +704,9 @@ const TRAY_SHRINK: [TrayShrink; 9] = [
     TrayShrink::PercentOnly,
     TrayShrink::NoEffort,
     TrayShrink::BareManage,
+    TrayShrink::NoModel,
     TrayShrink::NoContext,
     TrayShrink::NoResetChip,
-    TrayShrink::NoModel,
 ];
 
 /// The tray row with its two click regions' column spans (start inclusive, end exclusive).
@@ -707,7 +751,7 @@ pub fn render_tray_with_hint(state: &ChromeState, theme: &Theme, width: usize) -
         .iter()
         .map(|shrink| lanes(*shrink))
         .find(fits)
-        .unwrap_or_else(|| lanes(TrayShrink::NoModel));
+        .unwrap_or_else(|| lanes(TrayShrink::NoResetChip));
     let left_width = line_width(&left);
     let right_width = line_width(&right);
     let gap = width.saturating_sub(left_width + right_width);
@@ -824,17 +868,42 @@ fn tray_lanes(state: &ChromeState, theme: &Theme, shrink: TrayShrink) -> TrayLan
         .as_ref()
         .filter(|_| shrink < TrayShrink::NoContext)
     {
-        let percent = format!("{:.0}%", context.percent());
-        let label = if shrink < TrayShrink::PercentOnly {
-            format!(
-                "{}/{} {percent}",
-                format_token_count(context.tokens),
-                format_token_count(context.context_window)
-            )
-        } else {
-            percent
-        };
-        right.push(Span::styled(label, dim));
+        let window = format_token_count(context.context_window);
+        let full = shrink < TrayShrink::PercentOnly;
+        match context.reading {
+            ContextReading::Unknown => {
+                let label = if full {
+                    format!("?/{window}")
+                } else {
+                    "?".to_string()
+                };
+                right.push(Span::styled(label, dim));
+            }
+            ContextReading::Measured | ContextReading::Stale => {
+                let stale = if context.reading == ContextReading::Stale {
+                    "~"
+                } else {
+                    ""
+                };
+                if full {
+                    right.push(Span::styled(
+                        format!("{stale}{}/{window} ", format_token_count(context.tokens)),
+                        dim,
+                    ));
+                } else {
+                    right.push(Span::styled(stale.to_string(), dim));
+                }
+                // Past the window the percent reads `>100%` in the warning tone.
+                if context.tokens > context.context_window {
+                    right.push(Span::styled(
+                        ">100%".to_string(),
+                        theme.fg_style(ThemeColor::Warning),
+                    ));
+                } else {
+                    right.push(Span::styled(format!("{:.0}%", context.percent()), dim));
+                }
+            }
+        }
     }
     let context_label = line_width(&right);
     if let Some(model) = state
