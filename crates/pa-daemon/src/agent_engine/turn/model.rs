@@ -1,9 +1,8 @@
 //! The model-turn runner: the streaming run over the built session agent,
-//! the retry/failover policy application, and the quota-park mid-run arm.
+//! the same-provider retry policy application, and the quota-park mid-run arm.
 use super::{
-    aborted_message, drop_trailing_assistant, json_round_trip, map_thinking_level,
-    retry_event_to_engine_event, AgentSessionEngine, EngineEvent, ProviderTarget, StopReason,
-    TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
+    aborted_message, drop_trailing_assistant, retry_event_to_engine_event, AgentSessionEngine,
+    EngineEvent, StopReason, TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
 };
 
 impl AgentSessionEngine {
@@ -18,12 +17,6 @@ impl AgentSessionEngine {
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) -> TurnResult {
-        #[derive(Clone)]
-        struct FailoverPrimary {
-            model: pa_types::ai::Model,
-            thinking_level: pa_agent::types::ThinkingLevel,
-            session_restored: bool,
-        }
         let model = match self.resolve_model() {
             Ok(model) => model,
             Err(error) => {
@@ -95,13 +88,6 @@ impl AgentSessionEngine {
         // model (the agent state itself never swaps — per-run, like TS).
         self.apply_armed_image_route(&agent);
         let policy = self.retry_policy();
-        let failover_policy = self.failover_policy();
-        // A routed episode serves (and fails over within) the ROUTED
-        // model: the candidate chain derives from the serving model.
-        let candidates = match self.armed_image_route() {
-            Some(route) => self.failover_candidates(&route.target.model),
-            None => self.failover_candidates(&model),
-        };
         // The pa-core retry driver owns the attempt loop; this engine
         // owns one turn. The single `emit` reference is handed through
         // a RefCell slot to whichever closure is currently running.
@@ -110,18 +96,8 @@ impl AgentSessionEngine {
         // user message, so its turn starts as a continuation (TS
         // `agent.continue()`); ordinary turns start fresh.
         let first_attempt = std::cell::Cell::new(matches!(admission, TurnAdmission::FreshPrompt));
-        // Failover switch/restore re-bind the live agent's model, append
-        // the model-change row, and re-bind the turn-boundary model facts
-        // (`model.info` follows the session model). The first successful
-        // backup response restores session state before tools, like TS; the
-        // captured run still serves backup traffic until it settles.
-        let core = {
-            let guard = self.session.blocking_lock();
-            guard.as_ref().cloned()
-        };
-        let persistence = core.as_ref().map(|core| core.session.shared_persistence());
-        // Retry/failover adoption telemetry (TS `auto_retry_start` counting):
-        // retries increment `retry_count`, provider switches `failover_count`.
+        // Retry adoption telemetry (TS `auto_retry_start` counting):
+        // retries increment `retry_count`.
         // The semantic-edge recorder rides the same snapshot (TS
         // `prepareTurnRetry` / `clearTurnRetry` ride the retry events: the
         // parked id makes the retried call reuse the failed attempt's
@@ -135,13 +111,6 @@ impl AgentSessionEngine {
                     .and_then(|engine| engine.session.semantic_edges()),
             )
         };
-        // The failover-captured primary target state (TS `_backupModel`):
-        // Session state restores at successful message_end; request auth
-        // stays on the backup until the active run settles.
-        let primary_state = std::sync::Arc::new(std::sync::Mutex::new(None::<FailoverPrimary>));
-        let pending_model_changes = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
-            pa_types::session::ModelChangeEntry,
-        >::new()));
         // The quota-park seam (TS #2375): the retry chain consults the
         // engine at its give-up; a quota failure whose reset exceeds
         // the wait cap parks the session. The weak self keeps the
@@ -205,172 +174,9 @@ impl AgentSessionEngine {
                 None => assistant,
             }
         };
-        let restore_subscription = self.runtime.block_on(async {
-            // Awaited before tool execution. The agent loop has already
-            // captured its serving model, so restoring session state here
-            // does not redirect the remaining backup provider requests.
-            let primary_state = primary_state.clone();
-            let pending_model_changes = pending_model_changes.clone();
-            let agent_weak = std::sync::Arc::downgrade(&agent);
-            let core = core.clone();
-            let persistence = persistence.clone();
-            agent
-                .subscribe(move |event, _signal| {
-                    let primary_state = primary_state.clone();
-                    let pending_model_changes = pending_model_changes.clone();
-                    let agent_weak = agent_weak.clone();
-                    let core = core.clone();
-                    let persistence = persistence.clone();
-                    Box::pin(async move {
-                        let pa_agent::types::AgentEvent::MessageEnd {
-                            message:
-                                pa_agent::types::AgentMessage::Standard(
-                                    pa_agent::types::Message::Assistant(assistant),
-                                ),
-                        } = event
-                        else {
-                            return Ok(());
-                        };
-                        if matches!(
-                            assistant.stop_reason,
-                            StopReason::Error | StopReason::Aborted
-                        ) {
-                            return Ok(());
-                        }
-                        let primary = primary_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .clone();
-                        let Some(primary) = primary.filter(|primary| !primary.session_restored)
-                        else {
-                            return Ok(());
-                        };
-                        let Some(agent) = agent_weak.upgrade() else {
-                            return Ok(());
-                        };
-                        let model = json_round_trip(&primary.model)
-                            .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
-                        agent
-                            .set_model_and_thinking_level(model, primary.thinking_level)
-                            .await;
-                        if let Some(core) = core {
-                            core.update_model_facts(&primary.model).await;
-                        }
-                        if let Some(persistence) = persistence {
-                            persistence
-                                .lock()
-                                .await
-                                .append_model_change(&primary.model.provider, &primary.model.id)?;
-                        }
-                        // The later run_once subscriber forwards this after the
-                        // assistant row and before tool execution, matching TS.
-                        pending_model_changes
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .push(pa_types::session::ModelChangeEntry {
-                                provider: primary.model.provider.clone(),
-                                model_id: primary.model.id.clone(),
-                            });
-                        if let Some(primary) = primary_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .as_mut()
-                        {
-                            primary.session_restored = true;
-                        }
-                        Ok(())
-                    })
-                })
-                .await
-        });
-        let restore_primary = || {
-            let emit_cell = &emit_cell;
-            let primary_state = primary_state.clone();
-            let agent = agent.clone();
-            let persistence = persistence.clone();
-            let core = core.clone();
-            let primary = primary_state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            async move {
-                let Some(FailoverPrimary {
-                    model: primary_model,
-                    thinking_level,
-                    session_restored,
-                }) = primary
-                else {
-                    return Ok(None);
-                };
-                let agent_model = json_round_trip(&primary_model)
-                    .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
-                {
-                    // The restore serializes with the other
-                    // slot writers (`set_model`, the failover
-                    // switch, the image-route apply/clear): the
-                    // lock makes the last writer leave the newest
-                    // target standing. The whole turn (this
-                    // closure included) runs on the blocking
-                    // pool — the worker parks the turn there
-                    // (`worker/turn.rs`) — so the slot write
-                    // below never touches an async executor
-                    // worker; only a concurrently reloading
-                    // session waits on this span.
-                    let _reload_serialized = self
-                        .reload_lock
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    // The armed-route install goes through the
-                    // fenced helper (no provider-slot lock held
-                    // across the route read).
-                    if !self.install_armed_route_target() {
-                        // The restored target carries the model and
-                        // the tier: the daemon's stream re-resolves
-                        // request auth per provider call, so the
-                        // slot's auth half is write-only here.
-                        let target = self.restored_primary_target(&primary_model);
-                        *self.provider_target.write().expect("provider target lock") = Some(target);
-                    }
-                }
-                agent.set_model(agent_model).await;
-                agent.set_thinking_level(thinking_level).await;
-                if let Some(core) = &core {
-                    core.update_model_facts(&primary_model).await;
-                }
-                if let Some(persistence) = persistence.filter(|_| !session_restored) {
-                    persistence
-                        .lock()
-                        .await
-                        .append_model_change(&primary_model.provider, &primary_model.id)?;
-                }
-                if !session_restored
-                    && !(emit_cell.borrow_mut())(EngineEvent::ModelChange(
-                        pa_types::session::ModelChangeEntry {
-                            provider: primary_model.provider.clone(),
-                            model_id: primary_model.id.clone(),
-                        },
-                    ))
-                {
-                    anyhow::bail!("Model restoration persistence was cancelled");
-                }
-                if let Some(primary) = primary_state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .as_mut()
-                {
-                    primary.session_restored = true;
-                }
-                Ok(Some(format!(
-                    "{}/{}",
-                    primary_model.provider, primary_model.id
-                )))
-            }
-        };
         let result = self.runtime.block_on(
-            pa_core::session_engine::provider_failover::run_turn_with_provider_failover(
+            pa_core::session_engine::auto_retry::run_turn_with_auto_retry(
                 &policy,
-                &failover_policy,
-                &candidates,
                 overflow_window,
                 None,
                 || {
@@ -380,7 +186,6 @@ impl AgentSessionEngine {
                     let agent = agent.clone();
                     let prompt = prompt.clone();
                     let model = model.clone();
-                    let pending_model_changes = pending_model_changes.clone();
                     async move {
                         // A retry re-issues the failed turn: the failed
                         // assistant message leaves the loop context first
@@ -396,7 +201,6 @@ impl AgentSessionEngine {
                                     &prompt,
                                     admit_prompt,
                                     boundary_passed,
-                                    &pending_model_changes,
                                     aborted,
                                     &mut **emit,
                                 )
@@ -440,7 +244,7 @@ impl AgentSessionEngine {
                             if aborted() {
                                 return Ok(aborted_message(&model));
                             }
-                            // Keep the retry/failover episode alive across this artificial
+                            // Keep the retry episode alive across this artificial
                             // yield. The engine owns a multi-thread runtime; the synchronous
                             // compaction boundary may re-enter it without holding async locks.
                             let outcome = tokio::task::block_in_place(|| {
@@ -518,108 +322,10 @@ impl AgentSessionEngine {
                         }
                     }
                 },
-                |next: &pa_types::ai::Model| {
-                    let emit_cell = &emit_cell;
-                    let agent = agent.clone();
-                    let persistence = persistence.clone();
-                    let core = core.clone();
-                    {
-                        let mut primary = primary_state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        // Capture the primary state once (TS `_backupModel`), restored when the
-                        // successful backup response arrives.
-                        if primary.is_none() {
-                            *primary = Some(FailoverPrimary {
-                                model: model.clone(),
-                                thinking_level: map_thinking_level(self.effective_thinking()),
-                                session_restored: false,
-                            });
-                        } else if let Some(primary) = primary.as_mut() {
-                            primary.session_restored = false;
-                        }
-                    }
-                    let next = next.clone();
-                    async move {
-                        let agent_model = json_round_trip(&next)
-                            .ok_or_else(|| anyhow::anyhow!("model conversion failed"))?;
-                        // Clamp the level to the switched-to model (TS
-                        // `clampThinkingLevel`); the primary restores with
-                        // the primary.
-                        let clamped =
-                            pa_ai::models::clamp_thinking_level(&next, self.effective_thinking());
-                        // The stream's provider target follows the switch (the same slot
-                        // `set_model` swaps).
-                        {
-                            // The switch's install serializes with the
-                            // other slot writers (the restore path in
-                            // the sibling callback takes the same lock):
-                            // the turn runs on the blocking pool, so the
-                            // write never touches an async executor
-                            // worker.
-                            let _reload_serialized = self
-                                .reload_lock
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            // A routed episode keeps serving the route's
-                            // target across the failover switch — through
-                            // the fenced install (the route lock covers
-                            // the clone and the slot write together).
-                            if !self.install_armed_route_target() {
-                                let mut target =
-                                    self.provider_target.write().expect("provider target lock");
-                                // The daemon's stream re-resolves
-                                // request auth per provider call: the
-                                // slot's auth half is write-only here.
-                                *target = Some(ProviderTarget {
-                                    service_tier: *self
-                                        .service_tier
-                                        .read()
-                                        .expect("service tier lock"),
-                                    api_key: None,
-                                    model: next.clone(),
-                                    headers: None,
-                                });
-                            }
-                        }
-                        agent.set_model(agent_model).await;
-                        agent.set_thinking_level(map_thinking_level(clamped)).await;
-                        if let Some(core) = &core {
-                            core.update_model_facts(&next).await;
-                        }
-                        if let Some(persistence) = persistence {
-                            let mut session = persistence.lock().await;
-                            session.append_model_change(&next.provider, &next.id)?;
-                        }
-                        if !(emit_cell.borrow_mut())(EngineEvent::ModelChange(
-                            pa_types::session::ModelChangeEntry {
-                                provider: next.provider.clone(),
-                                model_id: next.id.clone(),
-                            },
-                        )) {
-                            anyhow::bail!("Model switch persistence was cancelled");
-                        }
-                        Ok(())
-                    }
-                },
-                &restore_primary,
                 park,
                 auth_recovery,
             ),
         );
-        self.runtime.block_on(restore_subscription.unsubscribe());
-        // A failing awaited listener (including a failed model-change
-        // append) exits the retry driver before its normal restore callback.
-        // Always restore the transport as well, while preserving both errors.
-        let result = match result {
-            Err(error) => match self.runtime.block_on(restore_primary()) {
-                Ok(_) => Err(error),
-                Err(cleanup) => Err(anyhow::anyhow!(
-                    "{error:#}; primary restoration also failed: {cleanup:#}"
-                )),
-            },
-            Ok(message) => Ok(message),
-        };
         match result {
             Ok(message) => match message.stop_reason {
                 // The failure already reached the transcript as the final

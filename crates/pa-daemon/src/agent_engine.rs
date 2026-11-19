@@ -8,7 +8,6 @@ use std::sync::Arc;
 use serde_json::{json, Value};
 
 use crate::agent_messaging::{LinkAgentMessageController, LinkAgentObserveController};
-use crate::model_allowlist::DaemonAllowlist;
 use crate::overflow_compaction::{OverflowArmRun, OverflowRecovery};
 use pa_agent::abort::AbortController;
 use pa_agent::types::StopReason;
@@ -302,7 +301,7 @@ pub struct AgentSessionEngine {
     /// episode settles.
     pub(crate) image_route: std::sync::Mutex<Option<ImageRoute>>,
     /// The provider-slot writers' fence (`set_model`, the build, the
-    /// failover switch and restore, the image-route apply/clear): the
+    /// image-route apply/clear): the
     /// last writer leaves the newest target standing.
     pub(crate) reload_lock: std::sync::Mutex<()>,
 

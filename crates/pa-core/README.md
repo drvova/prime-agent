@@ -30,13 +30,12 @@ Platform wall (`platform`): process control (signals/process groups, kernel exit
 
 Provider resilience policies in `session_engine`: the shared quick-retry
 policy (TS `provider-retry.ts`: permanent-kind classification,
-Retry-After-aware capped delays), the interactive auto-retry loop, and the
-provider-failover driver (when a provider exhausts its quick retries and
-another configured provider serves the same model, the failed turn
-re-routes to the next provider in catalog order; the TS
-`auto_retry_start`/`reason: "backup"` event vocabulary surfaces the
-progression). The drivers are pure decision logic: the host (pa-daemon)
-owns the attempt, the wait, and the model switch.
+Retry-After-aware capped delays) and the interactive auto-retry loop.
+Retries always stay on the session's provider: a spent retry budget fails
+the turn there, and nothing re-routes a turn to another provider serving
+the same model id (a provider changes only when the user picks one). The
+driver is pure decision logic: the host (pa-daemon) owns the attempt and
+the wait.
 
 Session HTML export (`export_html`): the standalone viewer file for
 `/export` and `session export` - the embedded product template

@@ -571,7 +571,6 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("total_tokens", optional(tokens())),
         ("compaction_count", optional(count())),
         ("retry_count", optional(count())),
-        ("failover_count", optional(count())),
         // The stream loop guard: model calls cut for repeating themselves,
         // retries after such a cut, and repeated-tool-call nudges.
         ("loop_guard_trip_count", optional(count())),
@@ -694,7 +693,6 @@ const AGENT_SESSION_ENDED: EventRule = EventRule {
         ),
         // The folded per-session counters:
         ("retry_count", optional(count())),
-        ("failover_count", optional(count())),
         ("model_error_count", optional(count())),
         ("skill_use_count", optional(count())),
         ("mcp_connector_use_count", optional(count())),

@@ -16,15 +16,11 @@ use super::provider_retry::{
     provider_stream_failure_status, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
 };
 
-/// Why one `auto_retry_start` fired (the TS wire `reason` field).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RetryStartReason {
-    /// Ordinary quick retry on the current provider.
-    Quick,
-    /// The failed turn re-routes to another configured provider serving the
-    /// same model; `backup_model` is the `"provider/model-id"` reference.
-    Backup { backup_model: String },
-}
+/// The whole-episode retry ceiling (SANCTIONED DIVERGENCE, operator
+/// ruling 2026-09-23): a turn gives up after 8 retries on its provider
+/// whatever `retry.maxRetries` says - the same anchor as TS's own
+/// provider-wait `maxParks: 8`.
+pub const MAX_TOTAL_PROVIDER_RETRIES: u32 = 8;
 
 /// One retry-loop event, in the TS wire vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,15 +32,13 @@ pub enum AutoRetryEvent {
         max_attempts: u32,
         delay_ms: u64,
         error_message: String,
-        reason: RetryStartReason,
     },
     /// `auto_retry_end`: the loop settled. `final_error` is present exactly
-    /// when `success` is false; `restored_model` is the restored primary.
+    /// when `success` is false.
     End {
         success: bool,
         attempt: u32,
         final_error: Option<String>,
-        restored_model: Option<String>,
     },
 }
 
@@ -111,6 +105,7 @@ where
     W: FnMut(std::time::Duration) -> WF,
     WF: Future<Output = bool>,
 {
+    let max_retries = policy.max_retries.min(MAX_TOTAL_PROVIDER_RETRIES);
     let mut retries_performed = 0u32;
     loop {
         let message = attempt().await?;
@@ -120,7 +115,6 @@ where
                     success: true,
                     attempt: retries_performed,
                     final_error: None,
-                    restored_model: None,
                 })
                 .await?;
             }
@@ -154,7 +148,6 @@ where
                     success: false,
                     attempt: retries_performed,
                     final_error: Some(final_error_of(&message)),
-                    restored_model: None,
                 })
                 .await?;
             }
@@ -165,13 +158,12 @@ where
                 success: false,
                 attempt: retries_performed,
                 final_error: Some(final_error_of(&message)),
-                restored_model: None,
             })
             .await?;
             return Ok(message);
         }
         // The attempt counter bumps before deciding, so the exhaustion
-        // check compares past `max_retries`.
+        // check compares past the (ceiling-capped) `max_retries`.
         retries_performed += 1;
         let delay = provider_retry_delay(
             retries_performed,
@@ -185,12 +177,11 @@ where
             ProviderRetryDelay::Wait { delay_ms } => {
                 // The server-requested-wait arm runs BEFORE the quick-retry
                 // exhaustion check: a quota-blocked final retry still parks.
-                if retries_performed > policy.max_retries {
+                if retries_performed > max_retries {
                     emit(AutoRetryEvent::End {
                         success: false,
                         attempt: retries_performed - 1,
                         final_error: Some(final_error_of(&message)),
-                        restored_model: None,
                     })
                     .await?;
                     return Ok(message);
@@ -227,7 +218,6 @@ where
                 emit(AutoRetryEvent::End {
                     success: false,
                     attempt: retries_performed - 1,
-                    restored_model: None,
                     final_error: Some(final_error),
                 })
                 .await?;
@@ -236,10 +226,9 @@ where
         };
         emit(AutoRetryEvent::Start {
             attempt: retries_performed,
-            max_attempts: policy.max_retries,
+            max_attempts: max_retries,
             delay_ms,
             error_message: final_error_of(&message),
-            reason: RetryStartReason::Quick,
         })
         .await?;
         if !wait(std::time::Duration::from_millis(delay_ms)).await {
@@ -247,7 +236,6 @@ where
                 success: false,
                 attempt: retries_performed,
                 final_error: Some("Retry cancelled".to_string()),
-                restored_model: None,
             })
             .await?;
             return Ok(with_stop_reason_aborted(message));

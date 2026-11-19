@@ -1258,29 +1258,6 @@ fn decodes_auto_retry_events() {
             max_attempts: 2,
             delay_ms: 50,
             error_message: "provider down".to_string(),
-            reason: RetryStartReason::Quick,
-        }
-    );
-    let backup = event_to_update(&json!({
-        "type": "auto_retry_start",
-        "attempt": 3,
-        "maxAttempts": 5,
-        "delayMs": 0,
-        "errorMessage": "provider down",
-        "reason": "backup",
-        "backupModel": "prime-inference/glm-5.3",
-    }))
-    .expect("backup switch maps");
-    assert_eq!(
-        backup,
-        TurnUpdate::AutoRetryStart {
-            attempt: 3,
-            max_attempts: 5,
-            delay_ms: 0,
-            error_message: "provider down".to_string(),
-            reason: RetryStartReason::Backup {
-                backup_model: "prime-inference/glm-5.3".to_string()
-            },
         }
     );
     let end = event_to_update(&json!({
@@ -1296,23 +1273,6 @@ fn decodes_auto_retry_events() {
             success: false,
             attempt: 2,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
-        }
-    );
-    let settled = event_to_update(&json!({
-        "type": "auto_retry_end",
-        "success": true,
-        "attempt": 2,
-        "restoredModel": "prime-inference/glm-5.3",
-    }))
-    .expect("retry success maps");
-    assert_eq!(
-        settled,
-        TurnUpdate::AutoRetryEnd {
-            success: true,
-            attempt: 2,
-            final_error: None,
-            restored_model: Some("prime-inference/glm-5.3".to_string()),
         }
     );
 }

@@ -35,8 +35,8 @@ pub use prime_inference::{
     private_prime_inference_models, PRIME_INFERENCE_BASE_URL,
 };
 pub use resolver::{
-    build_fallback_model, failover_candidates, find_exact_model_reference_match,
-    find_initial_model, find_preferred_default_model, resolve_cli_model,
+    build_fallback_model, find_exact_model_reference_match, find_initial_model,
+    find_preferred_default_model, pick_bare_model_id, resolve_cli_model,
     resolve_model_scope_from_models, scope_patterns_select_reference, InitialModelOptions,
     ResolveCliModelResult, ScopedModel, PRIME_INFERENCE_DEFAULT_MODEL_ID,
 };

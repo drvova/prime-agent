@@ -894,32 +894,20 @@ impl TurnRunner {
                         max_attempts,
                         delay_ms,
                         error_message,
-                        reason,
                     } => {
                         last_retry_error = Some(error_message.clone());
-                        let mut event = json!({
+                        vec![json!({
                             "type": "auto_retry_start",
                             "attempt": attempt,
                             "maxAttempts": max_attempts,
                             "delayMs": delay_ms,
                             "errorMessage": error_message,
-                        });
-                        match reason {
-                            pa_core::session_engine::auto_retry::RetryStartReason::Quick => {}
-                            pa_core::session_engine::auto_retry::RetryStartReason::Backup {
-                                backup_model,
-                            } => {
-                                event["reason"] = json!("backup");
-                                event["backupModel"] = json!(backup_model);
-                            }
-                        }
-                        vec![event]
+                        })]
                     }
                     EngineEvent::AutoRetryEnd {
                         success,
                         attempt,
                         final_error,
-                        restored_model,
                     } => {
                         let mut event = json!({
                             "type": "auto_retry_end",
@@ -928,9 +916,6 @@ impl TurnRunner {
                         });
                         if let Some(final_error) = &final_error {
                             event["finalError"] = json!(final_error);
-                        }
-                        if let Some(restored_model) = restored_model {
-                            event["restoredModel"] = json!(restored_model);
                         }
                         // The episode's ONE durable outcome row (operator ruling
                         // 2026-09-23), instead of one error row per failed attempt.
