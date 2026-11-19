@@ -197,6 +197,10 @@ pub(crate) fn resolve_rows(
     // (image, first row index, rows seen so far, column)
     let mut runs: Vec<(store::RenderKey, usize, u16, usize)> = Vec::new();
     let mut ready: Vec<(store::RenderKey, Arc<store::Rendered>)> = Vec::new();
+    // Images that missed the cache earlier in this frame stay misses for the whole frame: the
+    // decode worker can finish between two rows of one image, and a later row's hit would
+    // otherwise report the image visible while its first rows painted the reserved blanks.
+    let mut missed: Vec<store::RenderKey> = Vec::new();
     for (index, row) in rows.iter_mut().enumerate() {
         let Some(at) = row
             .iter()
@@ -219,9 +223,15 @@ pub(crate) fn resolve_rows(
         };
         let rendered = match ready.iter().find(|(candidate, _)| *candidate == key) {
             Some((_, rendered)) => Some(rendered.clone()),
-            None => store::lookup(key, on_miss).inspect(|rendered| {
-                ready.push((key, rendered.clone()));
-            }),
+            None if missed.contains(&key) => None,
+            None => {
+                let looked_up = store::lookup(key, on_miss);
+                match &looked_up {
+                    Some(rendered) => ready.push((key, rendered.clone())),
+                    None => missed.push(key),
+                }
+                looked_up
+            }
         };
         let blank_style = row
             .get(at + 1)
