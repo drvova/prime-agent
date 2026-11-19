@@ -318,6 +318,13 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         counts: InlineImageCounts,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The run used the todo tray or the question panel (`tui todos and questions`, emitted at
+    /// the run's exit when any count is nonzero) — counts only, never item text, a question, or
+    /// an answer.
+    fn todos_and_questions(
+        &self,
+        counts: TodoQuestionCounts,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One `/usage` page run ended (`tui usage page closed`): how each half landed, the card
     /// count, whether the details view opened, the refreshes, and the tray reset chips shown since
     /// the last close — primitives only, never an
@@ -603,6 +610,21 @@ pub struct InlineImageCounts {
     pub iterm2: u64,
     pub sixel: u64,
     pub half_block: u64,
+}
+
+/// One run's todo-tray and question-panel adoption counts (`tui todos and questions`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TodoQuestionCounts {
+    /// `app.todos.toggle` presses that expanded or collapsed the tray.
+    pub todo_tray_toggles: u64,
+}
+
+impl TodoQuestionCounts {
+    /// Whether the run used either surface at all (the event rides only then).
+    #[must_use]
+    pub fn any(&self) -> bool {
+        *self != Self::default()
+    }
 }
 
 enum UiInput {

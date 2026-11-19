@@ -1118,6 +1118,15 @@ const TUI_INLINE_IMAGES_RENDERED: EventRule = EventRule {
     ],
 };
 
+/// One interactive run used the todo tray or the kernel-question panel (v2), emitted at the
+/// run's exit when any count is nonzero. Standalone because `tui exit` sits at the backend's
+/// 128-key cap. Counts only: never item text, a question, a choice, or an answer.
+const TUI_TODOS_AND_QUESTIONS: EventRule = EventRule {
+    name: "tui todos and questions",
+    since: 2,
+    properties: &[("todo_tray_toggle_count", required(count()))],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1805,6 +1814,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
+        &TUI_TODOS_AND_QUESTIONS,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,

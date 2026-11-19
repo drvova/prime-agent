@@ -48,6 +48,18 @@ class TodoClientTest(unittest.TestCase):
             ],
         )
 
+    def test_mutations_show_the_new_list_on_the_cell_card(self) -> None:
+        from rlm import repl
+
+        host = AsyncMock(return_value=_LIST)
+        with patch.object(todo, "host_request", host), patch.object(repl, "is_active", return_value=True), patch.object(
+            repl, "emit"
+        ) as emit:
+            asyncio.run(todo.set(["read", "write"]))
+            asyncio.run(todo.update("2", status="in_progress"))
+            asyncio.run(todo.get())
+        self.assertEqual(emit.call_args_list, [unittest.mock.call({todo._TODO_MIME: _LIST})] * 2)
+
     def test_invalid_arguments_fail_before_the_host(self) -> None:
         host = AsyncMock()
         with patch.object(todo, "host_request", host):

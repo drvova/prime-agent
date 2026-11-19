@@ -75,6 +75,8 @@ pub const BASH_COMMAND_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-co
 pub const BASH_WAIT_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-wait+json";
 /// One `rlm.session.messages` read: `{returned, first, total, roles}`.
 pub const TRANSCRIPT_READ_DISPLAY_MIME: &str = "application/vnd.prime-agent.transcript-read+json";
+/// The todo list a `todo.set`/`todo.update` call left (`{items: [...]}`); the cell keeps its last.
+pub const TODO_DISPLAY_MIME: &str = "application/vnd.prime-agent.todo+json";
 /// The kernel host request that reports a background bash completion
 /// (the `[bash-done]` lane). The daemon registers the handler
 /// (`bash_notices`), and the provisioner keys the bounded-await bootstrap
@@ -249,6 +251,8 @@ pub struct ExecuteResult {
     pub bash_waits: KernelBashWaits,
     /// The cell's `rlm.session.messages` reads, one display record each.
     pub transcript_reads: Option<Vec<Value>>,
+    /// The todo list the cell's last `todo.set`/`todo.update` left.
+    pub todo_list: Option<Value>,
     /// Output that arrived without this cell's id (user threads, other cells' leftovers, raw fd writes).
     pub background_output: Option<String>,
     /// The cell called the sanctioned `rlm.end_turn()`: the host marked

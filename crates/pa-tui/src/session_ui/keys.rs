@@ -844,6 +844,15 @@ impl SessionUi {
             self.cycle_detail(view);
             return Ok(());
         }
+        // The todo tray's fold toggle, while the tray shows unfinished items.
+        if view.editor.keybindings().matches(&id, "app.todos.toggle")
+            && view.todos.done_count() < view.todos.items.len()
+        {
+            view.todo_fold = view.todo_fold.toggled();
+            self.todo_question_counts.todo_tray_toggles += 1;
+            self.dirty = true;
+            return Ok(());
+        }
         if view.editor.keybindings().matches(&id, "app.context.open") {
             self.open_context_view(view, crate::context_view::ContextViewSource::Shortcut);
             return Ok(());

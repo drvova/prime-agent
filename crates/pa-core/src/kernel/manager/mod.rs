@@ -34,7 +34,7 @@ use crate::kernel::shared::{
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_KERNEL_STDERR_CHARS,
     MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
     RESTORE_EXECUTION_TIMEOUT_MS, SNAPSHOT_EXECUTION_TIMEOUT_MS, SNAPSHOT_MAX_YIELD_MS,
-    TRANSCRIPT_READ_DISPLAY_MIME,
+    TODO_DISPLAY_MIME, TRANSCRIPT_READ_DISPLAY_MIME,
 };
 use crate::kernel::state_snapshot::{
     RestoreResult, SnapshotResult, SnapshotSkip, DEFAULT_SNAPSHOT_MAX_BYTES,
@@ -89,6 +89,7 @@ struct ExecBuffers {
     bash_commands: Option<KernelBashCommands>,
     bash_waits: KernelBashWaits,
     transcript_reads: Vec<Value>,
+    todo_list: Option<Value>,
     background_output: String,
     background_output_chars: usize,
     background_output_truncated: bool,
@@ -135,6 +136,7 @@ impl InternalExecuteResult {
                 bash_commands: None,
                 bash_waits: KernelBashWaits::default(),
                 transcript_reads: None,
+                todo_list: None,
                 background_output: None,
                 ended_turn: false,
                 status: ExecuteStatus::Aborted,

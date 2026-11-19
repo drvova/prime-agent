@@ -185,7 +185,7 @@ impl AgentView {
         } else if let Some(prompt) = &self.question {
             // A kernel question waiting for the user replaces the composer; the todo tray
             // stays above it.
-            let mut dock = crate::todo_panel::render_todo_panel(&self.todos, &self.theme, width);
+            let mut dock = self.render_todo_tray(width);
             dock.extend(prompt_context);
             dock.extend(prompt.render(&self.theme, width, self.editor.keybindings()));
             Some(dock)

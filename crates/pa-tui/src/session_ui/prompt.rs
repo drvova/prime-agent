@@ -711,6 +711,11 @@ impl SessionUi {
     ) -> Result<()> {
         // A new prompt settles the held bash cards into the transcript first.
         Self::flush_pending_bash(view);
+        // A finished todo list's summary row leaves the tray once the user starts the next turn
+        // (a later `todo_update` brings a list back).
+        if view.todos.done_count() == view.todos.items.len() {
+            view.todos = pa_types::todo::TodoList::default();
+        }
         if let crate::interactive::reconnect::Connection::SessionPlaneFailed(error) =
             &self.connection
         {

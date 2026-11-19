@@ -71,6 +71,9 @@ pub struct ExecuteResult {
     /// The cell's `rlm.session.messages` reads (`transcriptReads` on the
     /// tool-result details).
     pub transcript_reads: Vec<serde_json::Value>,
+    /// The todo list the cell's last `todo.set`/`todo.update` left (`todoList` on the
+    /// tool-result details).
+    pub todo_list: Option<serde_json::Value>,
     /// The cell outlived its yield window and continues in the background
     /// under this cell id; its end arrives as a `[cell-done]` notice.
     pub backgrounded_cell: Option<String>,
@@ -379,6 +382,9 @@ pub async fn execute_ipython(
     }
     if !r.transcript_reads.is_empty() {
         details["transcriptReads"] = json!(r.transcript_reads);
+    }
+    if let Some(list) = &r.todo_list {
+        details["todoList"] = list.clone();
     }
     if let Some(background) = &r.background_output {
         details["backgroundOutput"] = json!(background);
