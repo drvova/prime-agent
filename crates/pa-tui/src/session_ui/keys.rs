@@ -284,8 +284,10 @@ impl SessionUi {
         self.dirty = true;
     }
 
-    /// A bracketed paste goes to the focused input.
-    pub(crate) fn handle_paste(&mut self, text: &str, view: &mut AgentView) {
+    /// A bracketed paste goes to the focused input. An empty or whitespace-only paste is what a
+    /// terminal sends when it intercepts Ctrl+V over an image-only clipboard, so it attaches the
+    /// clipboard's image when there is one.
+    pub(crate) async fn handle_paste(&mut self, text: &str, view: &mut AgentView) {
         // The overlays own the whole frame while open (like their key
         // dispatch): the paste lands in the overlay's own input or is
         // consumed by the input-less ones, never in the hidden editor
@@ -295,7 +297,45 @@ impl SessionUi {
             return;
         }
         view.composer_status = None;
+        if text.trim().is_empty() {
+            let source = crate::clipboard_image::ImagePasteSource::Clipboard;
+            match crate::clipboard_image::read_clipboard_image().await {
+                Ok(pasted) => {
+                    self.attach_pasted_image(pasted, view);
+                    return;
+                }
+                // A whitespace paste over a clipboard without an image is that whitespace.
+                Err(crate::clipboard_image::ImagePasteError::NoImage) if !text.is_empty() => {}
+                Err(error) => {
+                    self.report_image_paste_error(source, error, view);
+                    return;
+                }
+            }
+        }
+        self.paste_text(text, view);
+    }
+
+    /// Text pasted into the editor prompt: a paste never submits, whatever line breaks it
+    /// carries.
+    pub(super) fn paste_text(&mut self, text: &str, view: &mut AgentView) {
+        // A pasted or dragged image file path attaches the image (omp parity); a path to a
+        // missing or non-image file stays text, and an oversized image says so and stays text.
+        if let Some(path) = crate::pasted_image_path::pasted_image_path(
+            text,
+            crate::pasted_image_path::PathFlavor::CURRENT,
+        ) {
+            let source = crate::clipboard_image::ImagePasteSource::Path;
+            match crate::clipboard_image::load_pasted_image_file(&path, source) {
+                Ok(Some(pasted)) => {
+                    self.attach_pasted_image(pasted, view);
+                    return;
+                }
+                Ok(None) => {}
+                Err(error) => self.report_image_paste_error(source, error, view),
+            }
+        }
         view.editor.handle_paste(text);
+        self.dirty = true;
     }
 
     /// One key press while the `/effort` picker is open: Esc/Ctrl+C close it
@@ -578,7 +618,8 @@ impl SessionUi {
             self.update_subagent_summary(view);
         }
         // The editor's own ctrl+v is otherwise unbound, so the exact match is
-        // safe before any editor motion.
+        // safe before any editor motion. The key reached the app, so the terminal did not paste:
+        // the clipboard's image attaches, else its text pastes.
         if view
             .editor
             .keybindings()

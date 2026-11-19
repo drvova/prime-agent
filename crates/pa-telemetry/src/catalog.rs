@@ -1068,6 +1068,36 @@ const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One image paste attempt (v2): where the image came from (clipboard data, a clipboard file
+/// copy, a pasted or dropped path), how it ended (`text`: Ctrl+V found no image and pasted the
+/// clipboard's text), and the attached format. Standalone because
+/// `tui exit` sits at the backend's 128-key cap (an attach also counts `tui_image_paste_count`
+/// there). Never a path, a size, or image content.
+const TUI_IMAGE_PASTE: EventRule = EventRule {
+    name: "tui image paste",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(
+                &["clipboard", "clipboard_file", "path"],
+                "clipboard",
+            )),
+        ),
+        (
+            "outcome",
+            required(enum_rule(
+                &["attached", "text", "no_image", "too_large", "unreadable"],
+                "no_image",
+            )),
+        ),
+        (
+            "format",
+            required(enum_rule(&["png", "jpeg", "gif", "webp", "none"], "none")),
+        ),
+    ],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1593,6 +1623,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &TUI_IMAGE_PASTE,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,

@@ -1219,7 +1219,7 @@ async fn run_interactive_surface(
                         if view.auth_panel.is_some() {
                             session.paste_to_auth_panel(&text, &mut view);
                         } else {
-                            session.handle_paste(&text, &mut view);
+                            session.handle_paste(&text, &mut view).await;
                         }
                     }
                     // A mouse report reaches the transcript scroll dispatch's wheel branch;
