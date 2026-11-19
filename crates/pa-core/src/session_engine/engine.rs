@@ -380,14 +380,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager
             .lock()
             .unwrap()
-            .set_usage_report(Some(std::sync::Arc::new(
-                move |action, _server| match action {
+            .set_usage_report(Some(std::sync::Arc::new(move |action, _server| {
+                match action {
                     crate::mcp::LOGIN_ACTION => counters.note_kernel_mcp_login(Some(true)),
                     crate::mcp::LOGIN_FAILED_ACTION => counters.note_kernel_mcp_login(Some(false)),
                     crate::mcp::LOGIN_UNAVAILABLE_ACTION => counters.note_kernel_mcp_login(None),
                     _ => counters.note_mcp_connector_use(),
-                },
-            )));
+                }
+            })));
     }
     // The registration takes the shared manager: the inventory handlers
     // serve live views per request.
@@ -427,6 +427,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             let counters = std::sync::Arc::clone(&session_counters);
             std::sync::Arc::new(move |fact| counters.note_fs_search(fact))
                 as crate::fs_search::SearchObserver
+        }),
+    }
+    .register(&mut handlers);
+    // `fs.read`/`fs.edit`: the kernel's anchored (hashline) reads and edits;
+    // telemetry folds each call (never a path or content) into the counters.
+    crate::fs_edit::FsEditHost {
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_fs_edit(fact))
+                as crate::fs_edit::EditObserver
         }),
     }
     .register(&mut handlers);

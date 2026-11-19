@@ -388,6 +388,10 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
+    fs_edit: FsEditCounts,
+    /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
+    repl_schedule: ReplScheduleCounts,
     /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
     /// `agent kernel login and recall`.
     login_recall: LoginRecallCounts,
@@ -404,6 +408,30 @@ struct LoginRecallCounts {
     search_hits: u64,
     reads: u64,
     recall_failed: u64,
+}
+
+/// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
+/// anchors.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct FsEditCounts {
+    reads: u64,
+    read_lines: u64,
+    read_failed: u64,
+    applied: u64,
+    edits: u64,
+    rejected: u64,
+    stale_anchors: u64,
+    edit_failed: u64,
+}
+
+/// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplScheduleCounts {
+    added_once: u64,
+    added_recurring: u64,
+    listed: u64,
+    cancelled: u64,
+    rejected: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -614,6 +642,48 @@ impl SessionCounters {
             counts.max_ms = counts
                 .max_ms
                 .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
+        });
+    }
+
+    /// One kernel `fs.read`/`fs.edit` (counts only: never a path or content).
+    pub(crate) fn note_fs_edit(&self, fact: crate::fs_edit::EditFact) {
+        use crate::fs_edit::{EditFact, FsEditOperation};
+        self.with(|values| {
+            let counts = &mut values.fs_edit;
+            match fact {
+                EditFact::Read { lines } => {
+                    counts.reads += 1;
+                    counts.read_lines += lines as u64;
+                }
+                EditFact::Applied { edits } => {
+                    counts.applied += 1;
+                    counts.edits += edits as u64;
+                }
+                EditFact::Rejected { stale } => {
+                    counts.rejected += 1;
+                    counts.stale_anchors += stale as u64;
+                }
+                EditFact::Failed {
+                    operation: FsEditOperation::Read,
+                } => counts.read_failed += 1,
+                EditFact::Failed {
+                    operation: FsEditOperation::Edit,
+                } => counts.edit_failed += 1,
+            }
+        });
+    }
+
+    /// One kernel `schedule.add/list/cancel` call (counts only: never a prompt or a schedule).
+    pub(crate) fn note_repl_schedule(&self, fact: super::runtime::ScheduleFact) {
+        self.with(|values| {
+            let counts = &mut values.repl_schedule;
+            *match fact {
+                super::runtime::ScheduleFact::AddedOnce => &mut counts.added_once,
+                super::runtime::ScheduleFact::AddedRecurring => &mut counts.added_recurring,
+                super::runtime::ScheduleFact::Listed => &mut counts.listed,
+                super::runtime::ScheduleFact::Cancelled => &mut counts.cancelled,
+                super::runtime::ScheduleFact::Rejected => &mut counts.rejected,
+            } += 1;
         });
     }
 
@@ -1180,6 +1250,42 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that never read or edited by anchor sends no fs-edit event.
+        let mut fs_edit = FsEditCounts::default();
+        self.counters.with(|values| fs_edit = values.fs_edit);
+        if fs_edit != FsEditCounts::default() {
+            let mut edit_properties = self.session_properties();
+            for (key, value) in [
+                ("fs_read_count", fs_edit.reads),
+                ("fs_read_line_count", fs_edit.read_lines),
+                ("fs_read_failed_count", fs_edit.read_failed),
+                ("fs_edit_count", fs_edit.applied),
+                ("fs_edit_op_count", fs_edit.edits),
+                ("fs_edit_rejected_count", fs_edit.rejected),
+                ("fs_edit_stale_anchor_count", fs_edit.stale_anchors),
+                ("fs_edit_failed_count", fs_edit.edit_failed),
+            ] {
+                edit_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent fs edit", edit_properties);
+        }
+        // A session that never scheduled from the kernel sends no schedule event.
+        let mut schedule = ReplScheduleCounts::default();
+        self.counters.with(|values| schedule = values.repl_schedule);
+        if schedule != ReplScheduleCounts::default() {
+            let mut schedule_properties = self.session_properties();
+            for (key, value) in [
+                ("schedule_once_added_count", schedule.added_once),
+                ("schedule_recurring_added_count", schedule.added_recurring),
+                ("schedule_list_count", schedule.listed),
+                ("schedule_cancelled_count", schedule.cancelled),
+                ("schedule_rejected_count", schedule.rejected),
+            ] {
+                schedule_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent repl schedule", schedule_properties);
         }
         // A session that neither logged in nor searched past sessions sends no recall event.
         let mut login_recall = LoginRecallCounts::default();
