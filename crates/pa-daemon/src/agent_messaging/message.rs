@@ -405,11 +405,15 @@ fn child_member(
 fn receipt_from_wire(data: &Value, input: AgentMessageSendInput) -> Option<AgentMessageReceipt> {
     let target = data.get("target")?;
     let id = data.get("id")?.as_str()?.to_string();
-    let delivery_status = if data.get("deliveryStatus").and_then(Value::as_str) == Some("delivered")
-    {
-        AgentMessageDeliveryStatus::Delivered
-    } else {
-        AgentMessageDeliveryStatus::Queued
+    let delivery_status = match data.get("deliveryStatus").and_then(Value::as_str) {
+        Some("delivered") => AgentMessageDeliveryStatus::Delivered,
+        // The receiving worker's wake budget refused the idle wake: nothing was delivered.
+        Some(pa_core::session_engine::agent_messaging::AGENT_MESSAGE_WAKE_REFUSED_STATUS) => {
+            AgentMessageDeliveryStatus::WakeRefused {
+                retry_after_ms: data.get("retryAfterMs").and_then(Value::as_u64)?,
+            }
+        }
+        _ => AgentMessageDeliveryStatus::Queued,
     };
     let delivery_mode = match data.get("deliveryMode").and_then(Value::as_str) {
         Some("follow_up") => "follow_up",
