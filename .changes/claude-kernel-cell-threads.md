@@ -1,0 +1,1 @@
+- Python cells now run on their own threads, so a cell stuck in synchronous code no longer blocks the kernel's other work; an interrupt reaches it at its next Python instruction (and at once in `time.sleep`).

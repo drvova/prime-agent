@@ -29,6 +29,7 @@ import types
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from . import cells
 from .bash import _kill_live_handles, _rehydrate_persistent_shells
 
 PROTOCOL_VERSION = 3
@@ -67,6 +68,10 @@ _protocol_fd: int = -1
 # report a dropped protocol frame without feeding it back into the protocol.
 _host_stderr_fd: int = -1
 _write_lock = threading.Lock()
+# Held while a Python write checks whether its cell went to the background and
+# ships its frames, and while a cell goes there: no frame of a backgrounded
+# cell reaches the host after its `done`.
+_divert_lock = threading.RLock()
 _loop: asyncio.AbstractEventLoop | None = None
 _serve_task: asyncio.Task[Any] | None = None
 
@@ -193,11 +198,10 @@ def current_cell_remaining_seconds() -> float | None:
 
 
 def active_cell_task() -> asyncio.Task[Any] | None:
-    """The cell body task executing right now, or None between cells (global
-    state, not the cell contextvar — detached tasks keep stale context copies)."""
-    with _interrupt_lock:
-        task = _active["task"]
-    return task if isinstance(task, asyncio.Task) and not task.done() else None
+    """The body task of the cell in its yield window, or None between cells
+    (global state, not the cell contextvar — detached tasks keep stale context
+    copies; a backgrounded cell is no longer the live one)."""
+    return cells.window_task()
 
 
 async def host_request(data: dict[str, Any]) -> dict[str, Any]:
@@ -208,7 +212,8 @@ async def host_request(data: dict[str, Any]) -> dict[str, Any]:
         raise RuntimeError("host connection closed; host_request cannot be answered")
     _check_payload("host_request", data)
     rid = os.urandom(16).hex()
-    future: asyncio.Future[dict[str, Any]] = _loop.create_future()
+    # On the caller's loop: cells and their tasks run on loops of their own threads.
+    future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     _pending_host[rid] = future
     try:
         _send({"event": "host_request", "id": rid, "data": data})
@@ -234,21 +239,29 @@ def _fail_pending_host_requests() -> None:
     awaiting cell must unblock or the queued shutdown would never be served."""
     global _host_closed
     _host_closed = True
-    for future in _pending_host.values():
-        if not future.done():
-            future.set_exception(RuntimeError("host connection closed; host_request cannot be answered"))
+    for future in list(_pending_host.values()):
+        future.get_loop().call_soon_threadsafe(_fail_host_future, future)
+
+
+def _fail_host_future(future: asyncio.Future[dict[str, Any]]) -> None:
+    if not future.done():
+        future.set_exception(RuntimeError("host connection closed; host_request cannot be answered"))
 
 
 def _resolve_host_reply(rid: str, data: dict[str, Any]) -> None:
     """Reader-thread half of the host bridge; late/unknown replies are dropped."""
-    assert _loop is not None
+    future = _pending_host.get(rid)
+    if future is None:
+        return
 
     def deliver() -> None:
-        future = _pending_host.get(rid)
-        if future is not None and not future.done():
+        if not future.done():
             future.set_result(data)
 
-    _loop.call_soon_threadsafe(deliver)
+    try:
+        future.get_loop().call_soon_threadsafe(deliver)
+    except RuntimeError:
+        pass  # the awaiting cell's loop is gone
 
 
 class _Pump:
@@ -393,16 +406,20 @@ class _TaggedWriter(io.TextIOBase):
             _log(text)
         elif text:
             cell_id = _current_cell.get()
-            with self._frame_lock:
-                for start in range(0, len(text), _STREAM_FRAME_TEXT_CAP):
-                    _send(
-                        {
-                            "event": self._stream,
-                            "id": cell_id,
-                            "text": text[start : start + _STREAM_FRAME_TEXT_CAP],
-                        }
-                    )
+            with _divert_lock:
+                run = cells.diverting(cell_id)
+                if run is not None:
+                    # A backgrounded cell's writes stay on its handle: the host
+                    # finished its request, and the next cell must not read them.
+                    run.divert(text)
+                    return len(text)
+                self._send_frames(cell_id, text)
         return len(text)
+
+    def _send_frames(self, cell_id: str | None, text: str) -> None:
+        with self._frame_lock:
+            for start in range(0, len(text), _STREAM_FRAME_TEXT_CAP):
+                _send({"event": self._stream, "id": cell_id, "text": text[start : start + _STREAM_FRAME_TEXT_CAP]})
 
     def flush(self) -> None:
         pass
@@ -475,6 +492,12 @@ def _request_interrupt(target: str | None) -> None:
     """
     global _sigint_target
     with _interrupt_lock:
+        run = cells.find(target)
+        if run is not None:
+            # Cells run on their own threads: the interrupt is injected there
+            # (a cell already deciding its outcome drops it, never parks it).
+            run.interrupt()
+            return
         task = _active["task"]
         rid = _active["rid"]
         if rid is not None and (target is None or target == rid):
@@ -694,6 +717,17 @@ async def _run_guarded(task: asyncio.Task[Any], rid: str) -> tuple[str, Any, dic
             _active["rid"] = None
 
 
+def _yield_seconds(req: dict[str, Any]) -> float | None:
+    """The request's yield window: how long the call waits before a cell that
+    is still running continues in the background. None waits for the end."""
+    value = req.get("yieldMs")
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError("execute yieldMs must be a positive integer")
+    return value / 1000
+
+
 async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
     global _cell_counter
     cell_id = req["id"]
@@ -707,44 +741,65 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
         if isinstance(timeout_ms, int) and not isinstance(timeout_ms, bool) and timeout_ms > 0
         else None
     )
+    yield_s = _yield_seconds(req)
     execution = _CellExecution(deadline)
     cell_token = _current_cell.set(cell_id)
     execution_token = _current_cell_execution.set(execution)
+    backgrounded = False
     try:
         codes, has_trailing = _compile_cell(req["code"], filename)
-        assert _loop is not None
-        task = _loop.create_task(_run_codes(codes, ns))
-        execution.owner = task
-        status, value, error = await _run_guarded(task, cell_id)
-        result_text: str | None = None
+        # The cell runs on its own thread (cells.CellRun); this request waits
+        # for it at most one yield window.
+        run = cells.CellRun(cell_id, codes, has_trailing, ns)
+        with _interrupt_lock:
+            cells.register(run)
+            if _consume_pending_interrupt(cell_id):
+                # Interrupt parked before the request started: it stops at once.
+                run.interrupt()
+        run.start(contextvars.copy_context())
         try:
-            if _consume_handoff_interrupt() and status == "ok":
-                # SIGINT landed between the task's completion and the finishing
-                # phase: it targeted this request, so cancel its remaining work.
-                status, error = "error", _error_event(cell_id, KeyboardInterrupt())
-            if status == "ok" and has_trailing and value is not None:
-                try:
-                    ns["_"] = value
-                    result_text = repr(value)
-                except BaseException as exc:  # noqa: BLE001 - a broken __repr__ is a cell error
-                    status, error = "error", _error_event(cell_id, exc)
-            if result_text is not None:
-                result_text = _cap_text(result_text)
-            _drain_output()
+            if yield_s is not None:
+                await asyncio.wait({run.window_closed}, timeout=yield_s)
+                if not run.window_closed.done() and run.background():
+                    backgrounded = True
+                    _drain_output()
+                    _finish_request(cell_id)
+                    _send({"event": "done", "id": cell_id, "status": "backgrounded", "cell": cell_id})
+                    run.done.add_done_callback(lambda _: _settle_execution(execution))
+                    return
+            # The cell thread sends the result itself (_deliver_cell_outcome).
+            await asyncio.shield(run.window_closed)
         finally:
-            # Close the interrupt window before the protocol sends so a
-            # handler-raised KeyboardInterrupt can never tear a frame mid-_send.
-            _finish_request(cell_id)
-        if result_text is not None:
-            _send({"event": "result", "id": cell_id, "text": result_text})
-        if error is not None:
-            _send(error)
-        _send({"event": "done", "id": cell_id, "status": status})
+            cells.leave_window(run)
     finally:
-        execution.owner = None
-        execution.finished.set()
+        if not backgrounded:
+            _settle_execution(execution)
         _current_cell_execution.reset(execution_token)
         _current_cell.reset(cell_token)
+
+
+def _settle_execution(execution: _CellExecution) -> None:
+    execution.owner = None
+    execution.finished.set()
+
+
+def _deliver_cell_outcome(run: cells.CellRun) -> None:
+    """Ship a cell's result that finished inside its window, from its own
+    thread: a main loop busy with a hogging task cannot hold the reply back."""
+    assert run.outcome is not None
+    status, value, result_text, error = run.outcome
+    cell_id = run.cell_id
+    try:
+        if result_text is not None:
+            run.ns["_"] = value
+        _drain_output()
+    finally:
+        _finish_request(cell_id)
+    if result_text is not None:
+        _send({"event": "result", "id": cell_id, "text": result_text})
+    if error is not None:
+        _send(error)
+    _send({"event": "done", "id": cell_id, "status": status})
 
 
 def _drain_output() -> None:
@@ -1897,8 +1952,9 @@ def main() -> None:
     user_module.__dict__["__builtins__"] = __builtins__
     sys.modules["__main__"] = user_module
 
-    _loop = asyncio.new_event_loop()
+    _loop = cells.KernelLoop()
     asyncio.set_event_loop(_loop)
+    cells.install()
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     signal.signal(signal.SIGINT, _sigint_handler)
     threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
