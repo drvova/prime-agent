@@ -7,6 +7,7 @@ mod apply;
 mod auth;
 mod bash;
 mod commands;
+mod context;
 mod factory;
 mod heartbeats;
 mod keys;
@@ -28,6 +29,7 @@ pub(crate) use apply::CompactionAbortNote;
 use auth::{McpAuthIntent, PendingModelSignIn, SetModelOutcome};
 pub(crate) use bash::BashActivityUpdate;
 use bash::{ResyncBash, SideBashRun};
+pub(crate) use context::ContextUpdate;
 pub(crate) use factory::FactoryUpdate;
 use heartbeats::paused_heartbeat_count;
 pub(crate) use heartbeats::HeartbeatsUpdate;
@@ -355,6 +357,12 @@ pub(crate) struct SessionUi {
     /// The last fetched `/usage` halves: a reopened page shows them while it refreshes.
     usage_quotas: Option<pa_types::provider_usage::QuotaReport>,
     usage_spend: Option<pa_types::provider_usage::SpendHistory>,
+    /// The context window's reply channel (see `spawn_context_fetch`).
+    context_updates: mpsc::UnboundedSender<ContextUpdate>,
+    /// The newest issued breakdown request; the open window drops an older reply.
+    context_generation: u64,
+    /// The last landed breakdown: a reopened window shows it while it refreshes.
+    context_breakdown: Option<pa_types::context_breakdown::ContextBreakdown>,
     /// The tray reset chip's source: the session's last rate-limited response.
     rate_limit_reset: Option<usage::RateLimitReset>,
     /// Reset chips shown since the last `/usage` close (its adoption event carries the count).

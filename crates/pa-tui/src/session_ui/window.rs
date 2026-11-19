@@ -774,6 +774,7 @@ mod tests {
                 thinking: mpsc::unbounded_channel().0,
                 stats: mpsc::unbounded_channel().0,
                 usage: mpsc::unbounded_channel().0,
+                context: mpsc::unbounded_channel().0,
             },
             page_tx.clone(),
         )

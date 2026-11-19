@@ -1149,6 +1149,29 @@ const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One context-window run ended (v2): where it opened from (the tray gauge's click, `/context`,
+/// or its key), how its breakdown request landed, and the category and subagent rows it showed.
+/// Standalone because `tui exit` sits at the backend's 128-key cap. Counts and enums only.
+const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
+    name: "tui context window closed",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(&["click", "command", "shortcut"], "command")),
+        ),
+        (
+            "breakdown",
+            required(enum_rule(
+                &["loaded", "unavailable", "failed", "loading"],
+                "loading",
+            )),
+        ),
+        ("category_count", required(count())),
+        ("subagent_count", required(count())),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1621,6 +1644,21 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
+/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
+/// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
+/// child, and failed calls. Counts only: never a child id or name.
+const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
+    name: "agent rlm child abort",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_abort_aborted_count", required(count())),
+        ("rlm_abort_idle_count", required(count())),
+        ("rlm_abort_failed_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1646,6 +1684,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
+        &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
@@ -1655,6 +1694,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_RLM_CHILD_ABORT,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

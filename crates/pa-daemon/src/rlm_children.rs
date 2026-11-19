@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context, Result};
 use pa_core::kernel::rlm_runtime::create_default_rlm_subagent_session_name;
 use pa_core::session_engine::rlm_host::{
-    RlmChildResult, RlmCreateSessionHandle, RlmCreateSessionRequest, RlmDeleteSubagentResult,
-    RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentActivity, RlmSubagentEntry,
-    RlmSubagentHost,
+    RlmAbortChildResult, RlmAbortOutcome, RlmChildResult, RlmCreateSessionHandle,
+    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
+    RlmSpawnRequest, RlmSubagentActivity, RlmSubagentEntry, RlmSubagentHost,
 };
 use pa_core::session_engine::rlm_notices::{
     create_rlm_child_failure_message, create_rlm_child_terminal_notice, RlmChildTerminalNotice,
@@ -1106,6 +1106,10 @@ mod usage;
 
 #[cfg(test)]
 mod watch_tests;
+
+/// `rlm.abort` over the watcher tests' fake supervisor.
+#[cfg(test)]
+mod abort_tests;
 
 #[cfg(test)]
 mod usage_emit_tests;

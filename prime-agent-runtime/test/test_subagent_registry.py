@@ -188,6 +188,42 @@ class RlmSubagentRegistryTest(unittest.TestCase):
             {"target": "api-reviewer"},
         )
 
+    def test_abort_stops_a_child_turn_through_host(self) -> None:
+        row = {
+            "rlm_child_id": "sub-a1b2c3d4",
+            "active_session_id": "active-child",
+            "session_id": "session-child",
+            "session_name": "api-reviewer",
+            "session_dir": "/tmp/parent/sub-a1b2c3d4",
+            "status": "cancelled",
+        }
+        host_request = AsyncMock(return_value={"subagent": row, "outcome": "aborted"})
+        handle = rlm_module.RLMSpawnHandle(
+            rlm_child_id="sub-a1b2c3d4",
+            name="api-reviewer",
+            session_dir=Path("/tmp/parent/sub-a1b2c3d4"),
+            model="deepseek/deepseek-v4-flash",
+        )
+
+        with patch.object(rlm_module, "host_request", host_request):
+            result = asyncio.run(rlm_module.rlm.abort(handle))
+
+        host_request.assert_awaited_once_with("rlm.abort", {"target": "sub-a1b2c3d4"})
+        self.assertEqual(
+            result,
+            rlm_module.RLMAbortResult(
+                subagent=rlm_module._subagent_from_payload(row, "rlm.abort"),
+                outcome="aborted",
+            ),
+        )
+        self.assertEqual(result.subagent.status, "cancelled")
+
+        with patch.object(rlm_module, "host_request", AsyncMock(return_value={"subagent": row, "outcome": "?"})):
+            with self.assertRaisesRegex(RuntimeError, "unexpected result"):
+                asyncio.run(rlm_module.abort("api-reviewer"))
+        with self.assertRaisesRegex(ValueError, "must not be empty"):
+            asyncio.run(rlm_module.abort("  "))
+
     def test_deletes_subagent_object_by_child_id(self) -> None:
         subagent = rlm_module.RLMSubagent(
             rlm_child_id="sub-a1b2c3d4",

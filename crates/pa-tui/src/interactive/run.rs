@@ -275,6 +275,9 @@ async fn run_interactive_surface(
     let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsUpdate>();
     // The `/usage` page's halves land here, never ahead of a frame.
     let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<crate::session_ui::UsageUpdate>();
+    // The context window's breakdown lands here, never ahead of a frame.
+    let (context_tx, mut context_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::ContextUpdate>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -446,6 +449,7 @@ async fn run_interactive_surface(
                     let page_tx = page_tx.clone();
                     let stats_tx = stats_tx.clone();
                     let usage_tx = usage_tx.clone();
+                    let context_tx = context_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -475,6 +479,7 @@ async fn run_interactive_surface(
                                 thinking: thinking_tx,
                                 stats: stats_tx,
                                 usage: usage_tx,
+                                context: context_tx,
                             },
                             page_tx,
                         )
@@ -1593,6 +1598,11 @@ async fn run_interactive_surface(
             maybe_usage = usage_rx.recv() => {
                 if let Some(update) = maybe_usage {
                     session.apply_usage_update(update, &mut view);
+                }
+            }
+            maybe_context = context_rx.recv() => {
+                if let Some(update) = maybe_context {
+                    session.apply_context_update(update, &mut view);
                 }
             }
             maybe_page = page_rx.recv() => {

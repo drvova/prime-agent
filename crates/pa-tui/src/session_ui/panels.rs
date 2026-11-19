@@ -16,6 +16,7 @@ pub(crate) struct ActivityUpdates {
     pub thinking: mpsc::UnboundedSender<ThinkingCycleNote>,
     pub stats: mpsc::UnboundedSender<super::StatsUpdate>,
     pub usage: mpsc::UnboundedSender<super::UsageUpdate>,
+    pub context: mpsc::UnboundedSender<super::ContextUpdate>,
 }
 
 impl SessionUi {

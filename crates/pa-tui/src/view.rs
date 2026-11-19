@@ -125,6 +125,9 @@ pub struct AgentView {
     /// The `/usage` page: provider quotas and local spend, mounted over the editor dock at
     /// nearly the full frame height.
     pub usage_page: Option<crate::usage_page::UsagePage>,
+    /// The context window: what fills the model's context, mounted over the editor dock like
+    /// the `/usage` page.
+    pub context_view: Option<crate::context_view::ContextView>,
     /// The `terminal.showImages` setting (default true): image blocks render inline (their
     /// metadata row plus the picture) when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
@@ -310,6 +313,7 @@ impl AgentView {
             || self.goal_panel.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
+            || self.context_view.is_some()
             || self.fork_selector.is_some()
             || self.confirm.is_some()
             || self.share_loader.is_some()
@@ -403,6 +407,7 @@ impl AgentView {
             settings_menu: None,
             info_panel: None,
             usage_page: None,
+            context_view: None,
             show_images: true,
             show_hardware_cursor: false,
             splash_suppressed: false,

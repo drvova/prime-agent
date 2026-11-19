@@ -2019,7 +2019,8 @@ fn attach_snapshot_carries_the_tray_context_usage() {
     assert_eq!(usage.tokens, 9_400);
     assert_eq!(usage.context_window, 128_000);
 
-    // Unknown tokens (a fresh compaction) clear the tray display.
+    // Unknown tokens (a fresh compaction) read as unknown, never as "no usage": the tray keeps
+    // its indicator (the attach settles it over the last known value).
     let mut attach = slim_attach();
     attach
         .get_mut("snapshot")
@@ -2028,7 +2029,14 @@ fn attach_snapshot_carries_the_tray_context_usage() {
         .expect("state")["contextUsage"] =
         json!({ "tokens": null, "contextWindow": 128_000, "percent": null });
     let data = attach_data_from_response(attach).unwrap();
-    assert_eq!(reconstruct(&data).context_usage, None);
+    assert_eq!(
+        reconstruct(&data).context_usage,
+        Some(crate::chrome::ContextUsage {
+            tokens: 0,
+            context_window: 128_000,
+            reading: crate::chrome::ContextReading::Unknown,
+        })
+    );
 
     // A state without the field (a model-less session) stays `None`.
     let data = attach_data_from_response(slim_attach()).unwrap();
