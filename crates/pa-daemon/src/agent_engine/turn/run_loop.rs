@@ -39,8 +39,6 @@ impl AgentSessionEngine {
         let boundary_passed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         // TS resets `_overflowRecovery` when a message that starts an agent run enters the loop.
         self.reset_overflow_recovery();
-        self.quota_parked_this_run
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         loop {
             // A stale overflow error gets its compact-and-retry attempt on the
             // newly admitted prompt, then an earlier threshold crossing compacts
@@ -70,18 +68,6 @@ impl AgentSessionEngine {
                     // counts into the auto-refine review's turn line.
                     self.reset_overflow_recovery();
                     self.note_settled_turn_since_auto_refine_review();
-                    // A parked session that completes a model call has its quota back:
-                    // clear the park and resume; an early success queues a marker so the
-                    // interrupted task continues.
-                    if self.is_quota_parked() {
-                        let marker =
-                            pa_core::session_engine::provider_park::QUOTA_RESUME_MARKER_TEXT;
-                        let wake_probe = match &prompt {
-                            TurnPrompt::User { text, .. } => text == marker,
-                            TurnPrompt::Injected(row) => row.content.text() == marker,
-                        };
-                        self.runtime.block_on(self.resume_quota_park(wake_probe));
-                    }
                 }
                 // An aborted turn never services boundary requests: drop any pending ones.
                 TurnResult::Aborted => {
@@ -102,39 +88,6 @@ impl AgentSessionEngine {
                         }
                         OverflowArmRun::NotApplicable | OverflowArmRun::Finished => {}
                         OverflowArmRun::Cancelled => return,
-                    }
-                    // A live quota park owns the resume: the parked turn is the park's
-                    // pause, not the goal's death, so the goal survives until the wake ends
-                    // it (a restored park too).
-                    let parked_this_run = self
-                        .quota_parked_this_run
-                        .swap(false, std::sync::atomic::Ordering::SeqCst);
-                    let live_park = self
-                        .quota_park
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone();
-                    if parked_this_run {
-                        emit(EngineEvent::Done(Err(error)));
-                        return;
-                    }
-                    if let Some(park) = live_park {
-                        if park.resume_at_ms > crate::util::now_ms() {
-                            emit(EngineEvent::Done(Err(error)));
-                            return;
-                        }
-                        // The wake was consumed and this give-up did not re-park:
-                        // the episode ends here, so the stale park must not
-                        // linger without a wake.
-                        if let Some(job_id) = &park.job_id {
-                            self.cancel_quota_resume_job(job_id);
-                        }
-                        self.runtime
-                            .block_on(self.append_quota_resume_entry("wake-error"));
-                        *self
-                            .quota_park
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
                     }
                     // An error assistant message fails an active goal.
                     self.finish_goal_for_terminal_error(&error);

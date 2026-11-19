@@ -33,9 +33,12 @@ policy (TS `provider-retry.ts`: permanent-kind classification,
 Retry-After-aware capped delays) and the interactive auto-retry loop.
 Retries always stay on the session's provider: a spent retry budget fails
 the turn there, and nothing re-routes a turn to another provider serving
-the same model id (a provider changes only when the user picks one). The
-driver is pure decision logic: the host (pa-daemon) owns the attempt and
-the wait.
+the same model id (a provider changes only when the user picks one). A
+server-requested wait above `retry.provider.maxRetryDelayMs` (an exhausted
+quota's reset) fails the turn at once with the provider's raw error: no
+session parks until a reset or resumes on its own, and an active goal
+stops on that error like on any other. The driver is pure decision logic:
+the host (pa-daemon) owns the attempt and the wait.
 
 Session HTML export (`export_html`): the standalone viewer file for
 `/export` and `session export` - the embedded product template

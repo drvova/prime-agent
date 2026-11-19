@@ -8,7 +8,6 @@ use std::future::Future;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AssistantMessage, StopReason};
 
-use super::provider_park::{is_quota_block_failure, ParkDecisionCallback};
 use super::provider_retry::{
     backoff_attempt, has_provider_stream_failure, is_agent_lifecycle_failure,
     is_context_overflow_failure, is_permanent_provider_failure_kind, is_unsupported_tool_failure,
@@ -79,8 +78,8 @@ pub(super) async fn end_turn_on_auth_rejection(
 /// with stop reason `Error` is classified against the policy; `emit` observes
 /// retry events, `wait` sleeps one delay (returning `false` aborts).
 ///
-/// `park` is the quota-park seam, consulted when a server-requested wait
-/// exceeds the policy cap: `Some` parks the session, `None` gives up.
+/// A server-requested wait above the policy cap (a quota reset) fails the
+/// turn at once with the provider's raw error: nothing waits it out.
 /// `auth_recovery` is consulted before a credential rejection's retry.
 ///
 /// # Errors
@@ -95,7 +94,6 @@ pub async fn run_turn_with_auto_retry<A, AF, E, EF, W, WF>(
     mut attempt: A,
     mut emit: E,
     mut wait: W,
-    mut park: Option<ParkDecisionCallback<'_>>,
     mut auth_recovery: Option<AuthRecoveryCallback<'_>>,
 ) -> anyhow::Result<AssistantMessage>
 where
@@ -176,8 +174,6 @@ where
             // the jittered value is both waited and reported, so the countdown
             // stays honest while retried sessions spread off the ladder ticks.
             ProviderRetryDelay::Wait { delay_ms } => {
-                // The server-requested-wait arm runs BEFORE the quick-retry
-                // exhaustion check: a quota-blocked final retry still parks.
                 if retries_performed > max_retries {
                     emit(AutoRetryEvent::End {
                         success: false,
@@ -189,37 +185,13 @@ where
                 }
                 jittered_delay_ms(delay_ms, retry_jitter_rand01())
             }
-            ProviderRetryDelay::ExceedsCap { retry_after_ms } => {
-                // The give-up sentence of this arm is the park's abort
-                // message (the TS wait loop's `reset-too-far` analogue).
-                let abort = format!(
-                    "Provider requested a {}s wait before retrying (above retry.provider.maxRetryDelayMs={}ms)",
-                    retry_after_ms.div_ceil(1000),
-                    policy.max_retry_delay_ms,
-                );
-                // The park seam is a quota-failure seam: other
-                // server-requested waits keep the give-up.
-                let parked = if is_quota_block_failure(&message) {
-                    match park.as_deref_mut() {
-                        Some(park) => park(message.clone(), &abort).await,
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                let final_error = match parked {
-                    // The turn settles as the park's pause, not its
-                    // death: the parked status replaces the give-up.
-                    Some(outcome) => outcome.status_message,
-                    None => format!(
-                        "{abort}: {}",
-                        message.error_message.as_deref().unwrap_or("unknown error"),
-                    ),
-                };
+            ProviderRetryDelay::ExceedsCap { .. } => {
+                // A reset beyond the cap is an exhausted quota: the turn
+                // fails now with the provider's own error text.
                 emit(AutoRetryEvent::End {
                     success: false,
                     attempt: retries_performed - 1,
-                    final_error: Some(final_error),
+                    final_error: Some(final_error_of(&message)),
                 })
                 .await?;
                 return Ok(message);

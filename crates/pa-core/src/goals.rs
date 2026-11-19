@@ -263,22 +263,9 @@ pub fn stale_active_goal_failure(entries: &[pa_types::session::FileEntry]) -> Op
 }
 
 /// The wire form of terminal-provider-failure predicate: the failure text when the assistant row
-/// settled as terminal. The quota-park class keeps the goal.
+/// settled as terminal (every error stop, a quota failure included).
 fn wire_terminal_provider_failure(message: &pa_types::ai::AssistantMessage) -> Option<String> {
     if message.stop_reason != pa_types::ai::StopReason::Error {
-        return None;
-    }
-    // The diagnostic only excludes the quota-park class: an error-stop row WITHOUT a provider
-    // diagnostic is still terminal.
-    let kind = message.diagnostics.as_ref().and_then(|diagnostics| {
-        diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.type_ == "provider_stream_failure")
-            .and_then(|diagnostic| diagnostic.details.as_ref())
-            .and_then(|details| details.get("kind"))
-            .and_then(serde_json::Value::as_str)
-    });
-    if kind == Some("rate_limit") {
         return None;
     }
     Some(
@@ -778,18 +765,11 @@ mod tests {
         finished.active = false;
         let finished = goal_state_entry(&finished);
         let failure = error_turn_entry("invalid_request", Some(402), "402 Insufficient balance");
-        let rate_limited =
-            error_turn_entry("rate_limit", Some(429), "429 Too many concurrent requests");
 
         // The interrupted settle: the active mint row, then the corpse.
         assert_eq!(
             stale_active_goal_failure(&[active.clone(), failure.clone()]),
             Some("402 Insufficient balance".to_string())
-        );
-        // The quota-park class keeps the goal: not stale.
-        assert_eq!(
-            stale_active_goal_failure(&[active.clone(), rate_limited]),
-            None
         );
         let healthy = pa_types::session::FileEntry::Message {
             message: pa_types::session::AgentMessage::Assistant(pa_types::ai::AssistantMessage {
@@ -827,8 +807,7 @@ mod tests {
         );
         // The goal restarted after the failure: the active row is newer.
         assert_eq!(stale_active_goal_failure(&[failure, active.clone()]), None);
-        // A diagnostic-less error row is still terminal: the diagnostic
-        // only excludes the quota-park class.
+        // A diagnostic-less error row is still terminal.
         let mut bare_failure = error_turn_entry("invalid_request", Some(402), "402 no diagnostic");
         if let pa_types::session::FileEntry::Message {
             message: pa_types::session::AgentMessage::Assistant(assistant),

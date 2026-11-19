@@ -19,8 +19,8 @@ use crate::types::{
     SimpleStreamOptions, StopReason, StreamOptions,
 };
 
-/// A server-requested wait longer than this is a quota reset, not pacing: the quota park owns
-/// it, so the admission controller does not block the key for it.
+/// A server-requested wait longer than this is a quota reset, not pacing: the turn fails with
+/// the provider's error, so the admission controller does not block the key for it.
 const PACING_RETRY_AFTER_CAP_MS: u64 = 60_000;
 
 /// The options of one provider call, in either facade's shape.

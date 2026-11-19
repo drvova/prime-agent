@@ -333,12 +333,6 @@ pub trait SessionEngine: Send + Sync {
         None
     }
 
-    /// True while the session is parked waiting out a provider-reported
-    /// usage reset: the turn ended cleanly and a durable wake resumes it.
-    fn is_quota_parked(&self) -> bool {
-        false
-    }
-
     /// True while any RLM child this session spawned is still running
     /// (each child counts its own descendants the same way). Scripted
     /// harness engines spawn no children.

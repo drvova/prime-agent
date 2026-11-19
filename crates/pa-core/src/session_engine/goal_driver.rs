@@ -128,9 +128,6 @@ pub struct GoalDriver {
     /// the cap finishes the goal. In-memory only.
     no_progress_streak: u32,
     no_progress_backoff_until_ms: u64,
-    /// The quota-park refusal window (in-memory; separate so no probe
-    /// wake is ever scheduled into a parked session).
-    parked_refusal_until_ms: u64,
     /// The last turn the streak counted (re-consult dedup): adopted from the
     /// durable `no_progress_turn_ms` so a restart never re-counts the same corpse.
     counted_no_progress_turn_ms: Option<i64>,
@@ -168,7 +165,6 @@ impl GoalDriver {
             pending_continuation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             no_progress_streak: 0,
             no_progress_backoff_until_ms: 0,
-            parked_refusal_until_ms: 0,
             counted_no_progress_turn_ms: None,
             billed: std::sync::Arc::default(),
             telemetry: GoalTelemetrySlot::default(),
@@ -235,7 +231,6 @@ impl GoalDriver {
                 // window does not survive the move.
                 self.no_progress_streak = reloaded.no_progress_streak.unwrap_or(0);
                 self.no_progress_backoff_until_ms = 0;
-                self.parked_refusal_until_ms = 0;
                 self.counted_no_progress_turn_ms = reloaded.no_progress_turn_ms;
                 // The restore-resurrection guard applies here as in `load_persisted`.
                 if reloaded.status == GoalStatus::Active {
@@ -273,7 +268,6 @@ impl GoalDriver {
         // and un-cap a degenerate loop); the backoff window is not.
         self.no_progress_streak = self.state.no_progress_streak.unwrap_or(0);
         self.no_progress_backoff_until_ms = 0;
-        self.parked_refusal_until_ms = 0;
         self.counted_no_progress_turn_ms = self.state.no_progress_turn_ms;
         self.continuation_consumed();
     }
@@ -374,11 +368,9 @@ impl GoalDriver {
         self.owed_continuation_for_rlm_work = false;
         let previous_streak = self.no_progress_streak;
         let previous_backoff = self.no_progress_backoff_until_ms;
-        let previous_parked = self.parked_refusal_until_ms;
         let previous_counted = self.counted_no_progress_turn_ms;
         self.no_progress_streak = 0;
         self.no_progress_backoff_until_ms = 0;
-        self.parked_refusal_until_ms = 0;
         self.counted_no_progress_turn_ms = None;
         self.continuation_consumed();
         if let Err(error) = self.set_state(session, goal) {
@@ -388,7 +380,6 @@ impl GoalDriver {
             self.owed_continuation_for_rlm_work = previous_owed;
             self.no_progress_streak = previous_streak;
             self.no_progress_backoff_until_ms = previous_backoff;
-            self.parked_refusal_until_ms = previous_parked;
             self.counted_no_progress_turn_ms = previous_counted;
             if previous_pending {
                 self.mark_continuation_pending();
@@ -753,10 +744,9 @@ impl GoalDriver {
             )?;
             return Ok(None);
         }
-        // A consult inside either window mints nothing; the next boundary
+        // A consult inside the backoff window mints nothing; the next boundary
         // after the window re-mints (the goal stays Active — a delay, not a death).
-        let now = now_millis();
-        if now < self.no_progress_backoff_until_ms || now < self.parked_refusal_until_ms {
+        if now_millis() < self.no_progress_backoff_until_ms {
             return Ok(None);
         }
         // The pending-never-re-arms contract: a minted-but-unadmitted

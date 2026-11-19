@@ -413,7 +413,6 @@ async fn a_turns_tool_executions_count_onto_the_summary() {
                 model: None,
                 model_fallback_message: None,
                 bash_running: false,
-                quota_parked: false,
                 subagents_running: false,
                 progress_note: None,
             },
