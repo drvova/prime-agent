@@ -399,6 +399,8 @@ struct CounterValues {
     usage_read_count: u64,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
     rlm_abort: RlmAbortCounts,
+    /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
+    notify_effort: NotifyEffortCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
 }
@@ -409,6 +411,15 @@ struct ReplReloadCounts {
     reloads: u64,
     skills_added: u64,
     settings_reads: u64,
+}
+
+/// `agent repl notify`: pings (and those nobody saw), and effort switches (applied and refused).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct NotifyEffortCounts {
+    notified: u64,
+    undelivered: u64,
+    effort_set: u64,
+    effort_refused: u64,
 }
 
 /// `agent rlm child abort`: aborts by outcome.
@@ -752,6 +763,26 @@ impl SessionCounters {
     /// One kernel `settings.get()` read (never a value).
     pub(crate) fn note_repl_settings_read(&self) {
         self.with(|values| values.repl_reload.settings_reads += 1);
+    }
+
+    /// One kernel `notify(...)` ping and whether a user was attached to see it (never the text).
+    pub(crate) fn note_notification(&self, delivered: bool) {
+        self.with(|values| {
+            values.notify_effort.notified += 1;
+            values.notify_effort.undelivered += u64::from(!delivered);
+        });
+    }
+
+    /// One kernel `model.set_effort(...)`: applied, or refused (the setting is off or the
+    /// level invalid). Never the level.
+    pub(crate) fn note_effort_switch(&self, applied: bool) {
+        self.with(|values| {
+            if applied {
+                values.notify_effort.effort_set += 1;
+            } else {
+                values.notify_effort.effort_refused += 1;
+            }
+        });
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1392,6 +1423,22 @@ impl SessionTelemetry {
                 reload_properties.set(key, Value::from(value));
             }
             self.client.track("agent repl reload", reload_properties);
+        }
+        // A session that never pinged or switched effort sends no notify event.
+        let mut notify_effort = NotifyEffortCounts::default();
+        self.counters
+            .with(|values| notify_effort = values.notify_effort);
+        if notify_effort != NotifyEffortCounts::default() {
+            let mut notify_properties = self.session_properties();
+            for (key, value) in [
+                ("notify_count", notify_effort.notified),
+                ("notify_undelivered_count", notify_effort.undelivered),
+                ("effort_set_count", notify_effort.effort_set),
+                ("effort_refused_count", notify_effort.effort_refused),
+            ] {
+                notify_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl notify", notify_properties);
         }
         self.client.flush().await
     }

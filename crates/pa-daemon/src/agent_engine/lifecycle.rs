@@ -132,6 +132,7 @@ impl AgentSessionEngine {
             mcp,
             refinement_completion_sink: std::sync::Mutex::new(None),
             late_agent_message_sink: std::sync::Mutex::new(None),
+            kernel_effort_switch: std::sync::Mutex::new(None),
             goal_budget_crossed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             goal_input_probe: std::sync::Mutex::new(None),
             goal_admission_sink: std::sync::Mutex::new(None),
@@ -885,6 +886,7 @@ impl AgentSessionEngine {
             self.config.agent_dir.clone(),
             crate::usage_report::quotas::QuotaFetchConfig::from_env(),
         );
+        self.register_kernel_effort_handler(&mut handlers);
         // `checkpoint.*` on the worker's store (replacing the engine's refusing default); the
         // restore confirmation asks through the worker's question hub.
         let checkpoints = self

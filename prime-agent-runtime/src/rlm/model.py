@@ -2,7 +2,8 @@
 
 ``await model.info()`` reports the model this session runs on: its id and
 provider, the input it accepts, its context window, and the thinking level the
-next call runs at.
+next call runs at. ``await model.set_effort(level)`` changes this session's
+thinking level, only where the user allowed it (``replCanChangeEffort``).
 """
 
 from __future__ import annotations
@@ -11,7 +12,9 @@ from dataclasses import dataclass
 
 from . import host_request
 
-__all__ = ["ModelInfo", "info"]
+__all__ = ["THINKING_LEVELS", "ModelInfo", "info", "set_effort"]
+
+THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -51,3 +54,20 @@ async def info() -> ModelInfo:
         context_window=reply.get("contextWindow"),
         thinking_level=reply.get("thinkingLevel"),
     )
+
+
+async def set_effort(level: str) -> str:
+    """Change this session's thinking level from the next model call; the effective level.
+
+    It changes what every later call costs, so it works only when the user set
+    ``"replCanChangeEffort": true`` in the global settings; otherwise it raises
+    ``RuntimeError`` saying how to enable it. The level may be clamped to what
+    the model supports. Children pick their own level with
+    ``rlm.spawn(thinking=...)``.
+    """
+    if level not in THINKING_LEVELS:
+        raise ValueError(f"level must be one of {', '.join(THINKING_LEVELS)}, got {level!r}")
+    reply = await host_request("model.set_effort", {"level": level})
+    if not isinstance(reply, dict) or not isinstance(reply.get("thinkingLevel"), str):
+        raise RuntimeError(f"model.set_effort returned an unexpected result: {reply!r}")
+    return reply["thinkingLevel"]

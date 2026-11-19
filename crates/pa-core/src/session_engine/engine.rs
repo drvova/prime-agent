@@ -505,6 +505,21 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as super::settings_view::SettingsObserver
         }),
     );
+    // `model.set_effort`: the opt-in thinking-level switch; telemetry counts
+    // applied and refused switches (never the level).
+    super::effort_switch::register_effort_handler(
+        &mut handlers,
+        &turn_boundary,
+        super::effort_switch::EffortGate {
+            cwd: cwd.clone(),
+            agent_dir: config.agent_dir.clone(),
+        },
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |applied| counters.note_effort_switch(applied))
+                as super::effort_switch::EffortObserver
+        }),
+    );
     let _ = turn_boundary
         .refinement_settings
         .set(refinement_settings.reopen());

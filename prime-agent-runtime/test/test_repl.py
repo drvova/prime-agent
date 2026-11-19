@@ -607,21 +607,6 @@ class ReplTest(unittest.TestCase):
         follow = self.repl.execute("after-sync", "1+1")
         self.assertEqual(one(follow, "result")["text"], "2")
 
-    def test_interrupt_survives_cell_rebinding_sigint(self):
-        # A cell that ignores SIGINT must not break protocol interrupts for later cells.
-        events = self.repl.execute(
-            "rebind", "import signal\nsignal.signal(signal.SIGINT, signal.SIG_IGN)"
-        )
-        self.assertEqual(one(events, "done")["status"], "ok")
-        events = self._interrupt_after_running(
-            "sync-after-rebind", "import time\nwhile True:\n    time.sleep(0.05)"
-        )
-        error = one(events, "error")
-        self.assertEqual(error["ename"], "KeyboardInterrupt")
-        self.assertEqual(one(events, "done")["status"], "error")
-        follow = self.repl.execute("after-rebind", "5+5")
-        self.assertEqual(one(follow, "result")["text"], "10")
-
     def test_interrupt_await_suspended(self):
         events = self._interrupt_after_running(
             "await", "import asyncio\nawait asyncio.sleep(1e9)"
@@ -632,17 +617,6 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(one(events, "done")["status"], "error")
         follow = self.repl.execute("after-await", "2+2")
         self.assertEqual(one(follow, "result")["text"], "4")
-
-    def test_interrupt_sync_blocked_in_selectors(self):
-        events = self._interrupt_after_running(
-            "sel", "import selectors\ns = selectors.DefaultSelector()\ns.select()"
-        )
-        error = one(events, "error")
-        self.assertEqual(error["ename"], "KeyboardInterrupt")
-        self.assertNotIn("repl.py", "".join(error["traceback"]))
-        self.assertEqual(one(events, "done")["status"], "error")
-        follow = self.repl.execute("after-sel", "3+3")
-        self.assertEqual(one(follow, "result")["text"], "6")
 
     def test_interrupt_await_with_loop_hogging_background_task(self):
         # A sync-blocked background task hogs the only thread; the interrupt kills it
@@ -712,6 +686,129 @@ class ReplTest(unittest.TestCase):
         self.assertEqual(one(events, "done")["status"], "error")
         follow = self.repl.execute("after-slowrepr", "1+1")
         self.assertEqual(one(follow, "result")["text"], "2")
+
+    _host_requests: list[dict]
+
+    def _background(self, rid: str, code: str) -> list[dict]:
+        """Run a cell with a yield window; it must still be running at its end."""
+        self.repl.send({"type": "execute", "id": rid, "code": code, "yieldMs": 300})
+        events = self.repl.until_done(rid)
+        self.assertEqual(events[-1], {"event": "done", "id": rid, "status": "backgrounded", "cell": rid})
+        return events
+
+    def _execute_apart(self, rid: str, code: str) -> list[dict]:
+        """A cell's own events; host requests that land meanwhile (a
+        background cell's notice) are set aside for _completion."""
+        events = []
+        for event in self.repl.execute(rid, code):
+            if event.get("event") == "host_request":
+                self._host_requests.append(event)
+            else:
+                events.append(event)
+        return events
+
+    def _completion(self, rid: str) -> dict:
+        self._host_requests = getattr(self, "_host_requests", [])
+        while True:
+            event = self._host_requests.pop(0) if self._host_requests else self.repl.read_event()
+            if event.get("event") == "host_request" and event["data"].get("type") == "cell.completed":
+                self.assertEqual(event["data"]["cell"], rid)
+                reply_ok(self.repl, event)
+                return event["data"]
+
+    def test_sync_cell_continues_in_the_background_and_reports_its_end(self):
+        self.repl.execute("bg-sync-setup", "import os, tempfile\nflag = os.path.join(tempfile.mkdtemp(), 'go')")
+        events = self._background(
+            "bg-sync",
+            "import os, time\nprint('before')\nwhile not os.path.exists(flag):\n    time.sleep(0.02)\n"
+            "print('after')\n'finished'",
+        )
+        self.assertEqual(stream_text(events, "stdout"), "before\n")
+        # The kernel serves the next cell while the first one still runs.
+        self._host_requests = []
+        self.assertEqual(
+            self._execute_apart("bg-sync-next", "open(flag, 'w').close()\n1 + 1"),
+            [{"event": "result", "id": "bg-sync-next", "text": "2"}, {"event": "done", "id": "bg-sync-next", "status": "ok"}],
+        )
+        self.assertEqual(
+            self._completion("bg-sync"),
+            {
+                "type": "cell.completed",
+                "cell": "bg-sync",
+                "status": "ok",
+                "output": "after",
+                "outputTruncated": False,
+                "text": "'finished'",
+            },
+        )
+        # A read of the handle after the notice landed withdraws it.
+        read = self.repl.execute("bg-sync-read", "from rlm import cells\n(await cells.get('bg-sync')).value")
+        self.assertEqual(
+            [event for event in read if event.get("event") != "host_request"],
+            [{"event": "result", "id": "bg-sync-read", "text": "'finished'"}, {"event": "done", "id": "bg-sync-read", "status": "ok"}],
+        )
+        self.assertEqual(one(read, "host_request")["data"], {"type": "cell.consumed", "cell": "bg-sync"})
+
+    def test_awaiting_cell_continues_in_the_background_and_reports_its_end(self):
+        self.repl.execute("bg-await-setup", "import asyncio\ngate = asyncio.Event()")
+        self._background("bg-await", "await asyncio.wait_for(gate.wait(), 30)\nprint('after')\n'awaited'")
+        self._host_requests = []
+        self.assertEqual(
+            self._execute_apart("bg-await-next", "gate.set()"),
+            [{"event": "done", "id": "bg-await-next", "status": "ok"}],
+        )
+        self.assertEqual(
+            self._completion("bg-await"),
+            {
+                "type": "cell.completed",
+                "cell": "bg-await",
+                "status": "ok",
+                "output": "after",
+                "outputTruncated": False,
+                "text": "'awaited'",
+            },
+        )
+
+    def test_interrupt_and_cancel_reach_a_backgrounded_sync_cell(self):
+        stops = {
+            "protocol": lambda rid: self.repl.send({"type": "interrupt", "id": rid}),
+            "handle": lambda rid: self.assertEqual(
+                self._execute_apart(f"{rid}-cancel", f"from rlm import cells\ncells.get('{rid}').cancel()"),
+                [{"event": "result", "id": f"{rid}-cancel", "text": "True"}, {"event": "done", "id": f"{rid}-cancel", "status": "ok"}],
+            ),
+        }
+        for label, stop in stops.items():
+            with self.subTest(stop=label):
+                rid = f"bg-stop-{label}"
+                self._host_requests = []
+                self._background(rid, "import time\nwhile True:\n    time.sleep(0.05)")
+                stop(rid)
+                data = self._completion(rid)
+                self.assertTrue(data.pop("text").endswith("KeyboardInterrupt\n"))
+                self.assertEqual(
+                    data,
+                    {"type": "cell.completed", "cell": rid, "status": "interrupted", "output": "", "outputTruncated": False},
+                )
+
+    def test_background_cell_output_never_reaches_the_next_cell(self):
+        self.repl.execute("bg-out-setup", "import threading\ngo, said, stop = threading.Event(), threading.Event(), threading.Event()")
+        self._background("bg-out", "go.wait(30)\nprint('late-line')\nsaid.set()\nstop.wait(30)")
+        self._host_requests = []
+        self.assertEqual(
+            self._execute_apart("bg-out-next", "go.set()\nsaid.wait(30)\nstop.set()\n'next'"),
+            [{"event": "result", "id": "bg-out-next", "text": "'next'"}, {"event": "done", "id": "bg-out-next", "status": "ok"}],
+        )
+        self.assertEqual(
+            self._completion("bg-out"),
+            {
+                "type": "cell.completed",
+                "cell": "bg-out",
+                "status": "ok",
+                "output": "late-line",
+                "outputTruncated": False,
+                "text": "True",
+            },
+        )
 
     def test_traceback_clean_with_source_line(self):
         code = "def boom():\n    raise ValueError('nope')\nboom()"

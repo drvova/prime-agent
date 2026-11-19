@@ -72,6 +72,7 @@ pub(crate) use config::CreateSessionResources;
 pub use config::SupervisorLinkConfig;
 use config::{GoalRuntimeHandles, ProducerUsageSink, RestoredSessionModel, StartupScope};
 
+mod effort;
 mod reload;
 mod session_engine_impl;
 
@@ -128,6 +129,8 @@ pub struct AgentSessionEngine {
     pub(crate) refinement_completion_sink: std::sync::Mutex<Option<RefinementCompletionSink>>,
     pub(crate) late_agent_message_sink:
         std::sync::Mutex<Option<pa_core::LateSentAgentMessageHandler>>,
+    /// The worker's thinking switch the kernel's opt-in `model.set_effort` applies through.
+    pub(crate) kernel_effort_switch: std::sync::Mutex<Option<effort::KernelEffortSwitch>>,
     /// Whether this run's usage crossed the goal's token budget: the boundary
     /// mints the budget-limit wrap-up steer. Shared with the agent-loop
     /// subscription (a plain field cannot cross the 'static handler).

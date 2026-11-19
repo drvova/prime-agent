@@ -708,6 +708,35 @@ impl Worker {
                     roster_delta_sequence: std::sync::Arc::clone(&roster_delta_sequence),
                 });
             crate::roster_activity::spawn_roster_activity_watch(&events, roster_pushes.clone());
+            // The kernel's opt-in `model.set_effort` applies through the same thinking switch
+            // as the `set_thinking_level` command (minus the settings default).
+            if let Some(concrete) = agent_engine.as_ref() {
+                let (switch_engine, switch_core, switch_roster, switch_dir) = (
+                    std::sync::Arc::clone(&engine),
+                    Arc::clone(&core),
+                    roster_pushes.clone(),
+                    config.agent_dir.clone(),
+                );
+                concrete.set_kernel_effort_switch(std::sync::Arc::new(move |level| {
+                    let (engine, core, roster, agent_dir) = (
+                        std::sync::Arc::clone(&switch_engine),
+                        Arc::clone(&switch_core),
+                        switch_roster.clone(),
+                        switch_dir.clone(),
+                    );
+                    Box::pin(async move {
+                        crate::model_switch::apply_thinking_level(
+                            engine,
+                            core,
+                            agent_dir,
+                            &roster,
+                            level,
+                            crate::model_switch::ThinkingSwitchOrigin::Kernel,
+                        )
+                        .await
+                    })
+                }));
+            }
             if let Some(children) = agent_engine
                 .as_ref()
                 .and_then(|engine| engine.children.as_ref())
