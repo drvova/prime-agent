@@ -1,0 +1,1 @@
+- `/usage` now splits the 30-day spend into what was billed (pay-as-you-go), plan usage shown at its API-equivalent value (not billed), and free or unpriced calls; the details view names each model's billing mode and notes the estimate's limits (cached-token pricing, long-context and service tiers, plan percentages lagging up to 5 minutes).

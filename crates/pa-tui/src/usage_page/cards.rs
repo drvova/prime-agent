@@ -455,6 +455,55 @@ fn spend_rows(theme: &Theme, width: usize, spend: &Section<SpendHistory>) -> Vec
     ] {
         rows.push(spend_row(theme, width, name, totals));
     }
+    // The 30 days by billing mode, once any call there carries a mode: a plan's calls are its
+    // API-equivalent value, never part of the billed figure.
+    let split = history.last_30_days.billing;
+    let classified = split
+        != pa_types::billing::BillingSplit {
+            unclassified: split.unclassified,
+            ..Default::default()
+        };
+    if classified {
+        let calls = |calls: u64| format!("{calls} call{}", if calls == 1 { "" } else { "s" });
+        let billed_calls = split.pay_as_you_go.calls + split.unclassified.calls;
+        let plan_calls = split.plan.calls + split.flat_rate.calls;
+        let free_calls = split.free.calls + split.unknown.calls;
+        rows.push(note_row(
+            theme,
+            width,
+            ThemeColor::Muted,
+            "  30 days by billing",
+        ));
+        for (shown, color, text) in [
+            (
+                billed_calls > 0,
+                ThemeColor::Text,
+                format!(
+                    "  Billed (pay-as-you-go)  {}  {}",
+                    money(split.pay_as_you_go.cost + split.unclassified.cost),
+                    calls(billed_calls)
+                ),
+            ),
+            (
+                plan_calls > 0,
+                ThemeColor::Muted,
+                format!(
+                    "  Plan usage (API-equivalent value, not billed)  {}  {}",
+                    money(split.plan.cost + split.flat_rate.cost),
+                    calls(plan_calls)
+                ),
+            ),
+            (
+                free_calls > 0,
+                ThemeColor::Dim,
+                format!("  Free / unpriced  {}", calls(free_calls)),
+            ),
+        ] {
+            if shown {
+                rows.push(note_row(theme, width, color, &text));
+            }
+        }
+    }
     // The spark weighs days by cost, or by tokens when nothing recorded a price.
     let priced = history.daily.iter().any(|day| day.totals.cost > 0.0);
     let values: Vec<f64> = history
@@ -565,13 +614,28 @@ pub(crate) fn detail_rows(
         rows.extend(spend_rows(theme, width, spend).into_iter().skip(1));
         return rows;
     };
+    for caveat in [
+        "  Estimates: cached-token pricing varies; long-context and service tiers",
+        "  are not modelled; plan percentages lag up to 5 minutes.",
+    ] {
+        rows.push(note_row(theme, width, ThemeColor::Dim, caveat));
+    }
     for model in &history.models {
+        // The latest call's billing mode; a plan's cost is its API-equivalent value.
+        let mode = match model.mode {
+            Some(pa_types::billing::BillingMode::PayAsYouGo { .. }) => " · billed",
+            Some(pa_types::billing::BillingMode::Plan { .. }) => " · plan, not billed",
+            Some(pa_types::billing::BillingMode::FlatRate) => " · flat rate",
+            Some(pa_types::billing::BillingMode::Free) => " · free",
+            Some(pa_types::billing::BillingMode::Unknown) => " · unpriced",
+            None => "",
+        };
         rows.push(note_row(
             theme,
             width,
             ThemeColor::Text,
             &format!(
-                "  {}/{}  {} · {} tok  /  {} · {} tok",
+                "  {}/{}  {} · {} tok  /  {} · {} tok{mode}",
                 model.provider,
                 model.model,
                 money(model.last_30_days.cost),

@@ -138,10 +138,13 @@ pub struct SpendTotals {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_write_tokens: u64,
-    /// The provider-billed cost the session files recorded, in USD.
+    /// The recorded cost in USD: billed for pay-as-you-go calls, the API-equivalent value (not
+    /// billed) for plan calls; [`SpendTotals::billing`] splits it.
     pub cost: f64,
-    /// Billed model calls.
+    /// Recorded model calls.
     pub requests: u64,
+    /// The calls and cost by billing mode.
+    pub billing: crate::billing::BillingSplit,
 }
 
 impl SpendTotals {
@@ -170,6 +173,13 @@ pub struct DailySpend {
 pub struct ModelSpend {
     pub provider: String,
     pub model: String,
+    /// The billing mode of the model's latest recorded call (`None`: unclassified).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::billing::deserialize_lenient_billing"
+    )]
+    pub mode: Option<crate::billing::BillingMode>,
     pub today: SpendTotals,
     pub last_7_days: SpendTotals,
     pub last_30_days: SpendTotals,

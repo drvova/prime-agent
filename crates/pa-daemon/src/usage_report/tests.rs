@@ -4,6 +4,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use pa_types::billing::{BillingMode, BillingSplit, CostSource, ModeSpend};
 use pa_types::provider_usage::{
     DailySpend, ModelSpend, ObservedRateLimit, ProviderQuota, QuotaReport, QuotaSource, QuotaState,
     QuotaUnit, QuotaWindow, SpendHistory, SpendTotals,
@@ -53,6 +54,14 @@ fn totals(input: u64, output: u64, cost: f64, requests: u64) -> SpendTotals {
         cache_write_tokens: 0,
         cost,
         requests,
+        // The fixture rows predate billing modes: every call reads unclassified.
+        billing: BillingSplit {
+            unclassified: ModeSpend {
+                calls: requests,
+                cost,
+            },
+            ..BillingSplit::default()
+        },
     }
 }
 
@@ -165,6 +174,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
                 ModelSpend {
                     provider: "anthropic".into(),
                     model: "claude-sonnet".into(),
+                    mode: None,
                     today: totals(999, 999, 9.0, 1),
                     last_7_days: totals(999, 999, 9.0, 1),
                     last_30_days: totals(999, 999, 9.0, 1),
@@ -173,6 +183,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
                 ModelSpend {
                     provider: "anthropic".into(),
                     model: "claude-opus".into(),
+                    mode: None,
                     today: totals(120, 12, 0.5, 1),
                     last_7_days: totals(120, 12, 0.5, 1),
                     last_30_days: totals(120, 12, 0.5, 1),
@@ -181,6 +192,7 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
                 ModelSpend {
                     provider: "anthropic".into(),
                     model: "claude-haiku".into(),
+                    mode: None,
                     today: SpendTotals::default(),
                     last_7_days: SpendTotals::default(),
                     last_30_days: totals(50, 5, 0.125, 1),
@@ -194,6 +206,126 @@ fn spend_history_aggregates_days_spans_models_and_rate_limits() {
             }],
             sessions: 2,
         }
+    );
+}
+
+/// Each call's stamped mode lands in its span's split and the model rows carry their latest
+/// call's mode: a plan's API-equivalent value never adds to the billed share.
+#[test]
+fn spend_history_splits_spend_by_billing_mode() {
+    let root = tempfile::tempdir().unwrap();
+    let noon = local_noon(1_795_003_200_000);
+    let row = |id: &str, provider: &str, model: &str, cost: f64, billing: serde_json::Value| {
+        json!({
+            "type": "message", "id": id,
+            "timestamp": crate::util::iso_from_unix_ms(noon as u64),
+            "message": {
+                "role": "assistant", "provider": provider, "model": model,
+                "stopReason": "stop", "timestamp": noon,
+                "usage": { "input": 10, "output": 1, "totalTokens": 11,
+                           "cost": { "total": cost }, "billing": billing },
+            },
+        })
+        .to_string()
+    };
+    let lines = [
+        row(
+            "p1",
+            "anthropic",
+            "claude-opus",
+            1.5,
+            json!({"mode": "plan", "providerQuota": true}),
+        ),
+        row(
+            "p2",
+            "anthropic",
+            "claude-opus",
+            0.5,
+            json!({"mode": "plan", "providerQuota": true}),
+        ),
+        row(
+            "g1",
+            "openrouter",
+            "glm",
+            0.25,
+            json!({"mode": "pay_as_you_go", "source": "provider_reported"}),
+        ),
+        row("f1", "ollama", "qwen", 0.0, json!({"mode": "free"})),
+    ];
+    std::fs::write(root.path().join("s.jsonl"), lines.join("\n")).unwrap();
+
+    let history = spend_history(root.path(), noon + 3_600_000);
+
+    let spend = |calls: u64, cost: f64| ModeSpend { calls, cost };
+    let model = |provider: &str, name: &str, mode, calls, cost, billing: BillingSplit| {
+        let totals = SpendTotals {
+            input_tokens: 10 * calls,
+            output_tokens: calls,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cost,
+            requests: calls,
+            billing,
+        };
+        ModelSpend {
+            provider: provider.into(),
+            model: name.into(),
+            mode: Some(mode),
+            today: totals,
+            last_7_days: totals,
+            last_30_days: totals,
+            all_time: totals,
+        }
+    };
+    assert_eq!(
+        (history.all_time.billing, history.models),
+        (
+            BillingSplit {
+                pay_as_you_go: spend(1, 0.25),
+                plan: spend(2, 2.0),
+                free: spend(1, 0.0),
+                ..BillingSplit::default()
+            },
+            vec![
+                model(
+                    "anthropic",
+                    "claude-opus",
+                    BillingMode::Plan {
+                        provider_quota: true
+                    },
+                    2,
+                    2.0,
+                    BillingSplit {
+                        plan: spend(2, 2.0),
+                        ..BillingSplit::default()
+                    },
+                ),
+                model(
+                    "openrouter",
+                    "glm",
+                    BillingMode::PayAsYouGo {
+                        source: CostSource::ProviderReported
+                    },
+                    1,
+                    0.25,
+                    BillingSplit {
+                        pay_as_you_go: spend(1, 0.25),
+                        ..BillingSplit::default()
+                    },
+                ),
+                model(
+                    "ollama",
+                    "qwen",
+                    BillingMode::Free,
+                    1,
+                    0.0,
+                    BillingSplit {
+                        free: spend(1, 0.0),
+                        ..BillingSplit::default()
+                    },
+                ),
+            ],
+        )
     );
 }
 

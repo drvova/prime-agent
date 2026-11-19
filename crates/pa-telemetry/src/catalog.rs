@@ -1160,6 +1160,10 @@ const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
         ("details_opened", required(boolean())),
         ("refresh_count", required(count())),
         ("reset_chip_shown_count", required(count())),
+        // The shown 30 days' recorded calls by billing share (counts only, never a cost).
+        ("billed_call_count", optional(count())),
+        ("plan_call_count", optional(count())),
+        ("free_call_count", optional(count())),
     ],
 };
 

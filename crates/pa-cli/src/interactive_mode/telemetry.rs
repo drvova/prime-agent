@@ -469,6 +469,13 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
                 "reset_chip_shown_count",
                 serde_json::Value::from(summary.reset_chip_shown_count),
             );
+            for (key, value) in [
+                ("billed_call_count", summary.billed_call_count),
+                ("plan_call_count", summary.plan_call_count),
+                ("free_call_count", summary.free_call_count),
+            ] {
+                properties.set(key, serde_json::Value::from(value));
+            }
             client.track("tui usage page closed", properties);
             let _ = client.shutdown().await;
         })
