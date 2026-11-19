@@ -132,6 +132,7 @@ impl AgentSessionEngine {
             mcp,
             refinement_completion_sink: std::sync::Mutex::new(None),
             late_agent_message_sink: std::sync::Mutex::new(None),
+            kernel_effort_switch: std::sync::Mutex::new(None),
             goal_budget_crossed: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             goal_input_probe: std::sync::Mutex::new(None),
             goal_admission_sink: std::sync::Mutex::new(None),
@@ -861,6 +862,7 @@ impl AgentSessionEngine {
         register_agent_message_host_handlers(sender, &mut handlers);
         register_agent_observe_host_handlers(observer, &mut handlers);
         self.register_kernel_notice_host_handlers(&mut handlers);
+        self.register_kernel_effort_handler(&mut handlers);
         Some(handlers)
     }
 

@@ -1538,6 +1538,22 @@ const AGENT_REPL_SCHEDULE: EventRule = EventRule {
     ],
 };
 
+/// Kernel `notify(...)` and `model.set_effort(...)` adoption for one session (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// the session pinged or switched effort: pings, pings nobody was attached to see, and effort
+/// switches applied and refused. Counts only: never a message or a level.
+const AGENT_REPL_NOTIFY: EventRule = EventRule {
+    name: "agent repl notify",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("notify_count", required(count())),
+        ("notify_undelivered_count", required(count())),
+        ("effort_set_count", required(count())),
+        ("effort_refused_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1568,6 +1584,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_SEARCH,
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
+        &AGENT_REPL_NOTIFY,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

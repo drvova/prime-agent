@@ -62,6 +62,8 @@ Platform contracts (`platform`): the cross-crate transport, process-identity, so
 
 - `provider_usage`: the `/usage` page's wire vocabulary — the `get_usage` sections, the provider quota cards (`QuotaReport`/`ProviderQuota`/`QuotaWindow` with reset times and the card's source), and the local spend history (`SpendHistory`: spans, 30 local days, per-model rows, observed rate limits). Response-only payloads the daemon builds and the TUI reads (no TS counterpart to round-trip, so no catch-all maps). `platform::clock::local_civil` gives the local date, weekday, and clock the page and the daemon's day buckets share.
 
+- `notification`: the kernel `notify(...)` wire vocabulary (`KernelNotification`, `NotificationLevel`, the
+  `kernel_notification` session event) shared by pa-core's hub, the daemon worker, and the TUI.
 - `todo` and `question`: the kernel todo list and question wire vocabulary shared by
   the host (pa-core's `interaction` hub persists and serves them), the daemon wire (the
   `todo_update`/`question_open`/`question_closed` session events, the attach snapshot's

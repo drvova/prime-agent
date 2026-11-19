@@ -111,6 +111,8 @@ pub enum TurnUpdate {
     /// `question_closed`: the question settled (answered here or elsewhere, timed out,
     /// withdrawn).
     QuestionClosed { question_id: String },
+    /// `kernel_notification`: a kernel `notify(...)` ping.
+    Notification(pa_types::notification::KernelNotification),
     /// `session_action_update`: the queue projection changed. `starting`
     /// carries the picked-up prompt still preparing (TS #2063); the
     /// `rlm_child_status`/`injected_prompts` riders are Rust-native
@@ -354,6 +356,11 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
             .cloned()
             .and_then(|question| serde_json::from_value(question).ok())
             .map(TurnUpdate::QuestionOpen),
+        "kernel_notification" => event
+            .get("notification")
+            .cloned()
+            .and_then(|notification| serde_json::from_value(notification).ok())
+            .map(TurnUpdate::Notification),
         "question_closed" => event
             .get("questionId")
             .and_then(Value::as_str)

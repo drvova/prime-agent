@@ -173,6 +173,7 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
             "agent_observe.get" => "agent_observe.get_agent",
             "agent_observe.recent" => "agent_observe.recent_messages",
             "agent_observe.session_messages" => "rlm.session.messages",
+            "notify.send" => "notify",
             other => other,
         }
         .to_string(),

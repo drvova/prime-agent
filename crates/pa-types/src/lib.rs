@@ -12,6 +12,7 @@ pub mod daemon;
 pub mod goal;
 pub mod incident;
 pub mod memory_release;
+pub mod notification;
 pub mod platform;
 pub mod provider_usage;
 pub mod question;

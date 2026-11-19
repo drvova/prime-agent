@@ -48,6 +48,9 @@ try:
     import rlm.todo as todo
     import rlm.ask as _prime_agent_ask_module
     ask = _prime_agent_ask_module.ask
+    import rlm.notify as _prime_agent_notify_module
+    notify = _prime_agent_notify_module.notify
+    import rlm.model as model
 ";
 
 /// One line inside the bootstrap's try block, emitted only when the host

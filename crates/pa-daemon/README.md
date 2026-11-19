@@ -259,7 +259,11 @@ Kernel todos and questions (`user_interaction`): the worker's `InteractionSurfac
 session core — the hub's events framed as `todo_update`/`question_open`/`question_closed`
 session events, availability as "an attached client declared `user_questions`" (attach records
 it, detach and connection release re-check a waiting question) — and the `answer_question`
-command; a closing session cancels the open question.
+command; a closing session cancels the open question. Kernel `notify(...)` pings ride the
+same surface as `kernel_notification` session events. The kernel's opt-in `model.set_effort`
+reaches the worker's thinking switch through the `model.apply_effort` handler
+(`agent_engine/effort.rs`, over `model_switch::apply_thinking_level`, the `set_thinking_level`
+path minus the settings default).
 
 
 ## Non-goals

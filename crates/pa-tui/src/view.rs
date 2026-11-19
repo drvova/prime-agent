@@ -77,6 +77,8 @@ pub struct AgentView {
     pub pulse_frame: usize,
     /// The terminal title last written (OSC 0): a paint writes it only when it changes.
     pub(crate) terminal_title: Option<String>,
+    /// A kernel `notify(...)` ping's terminal attention signal, written with the next frame.
+    pub(crate) pending_attention: Option<crate::terminal_attention::Attention>,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
     /// When the session last sent anything while working (the loader's stall timer).
@@ -374,6 +376,7 @@ impl AgentView {
             compaction_generation: 0,
             pulse_frame: 0,
             terminal_title: None,
+            pending_attention: None,
             working_since: None,
             working_heard: None,
             stall_shown: false,

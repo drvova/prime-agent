@@ -414,6 +414,16 @@ impl SettingsManager {
             .unwrap_or(false)
     }
 
+    /// `replCanChangeEffort`: whether the kernel's `model.set_effort(...)` may change the
+    /// session's thinking level. Global scope only (a project's settings cannot opt a session
+    /// into spending more); unset means off.
+    #[must_use]
+    pub fn get_repl_can_change_effort(&self) -> bool {
+        self.global_settings()
+            .repl_can_change_effort
+            .unwrap_or(false)
+    }
+
     /// `factory.enabled` setter: persists the opt-in gate to the global
     /// scope (the same shared settings key the daemon's lane advertisement
     /// and the kernel's factory gate read).

@@ -82,6 +82,10 @@ impl InteractionSurface for WorkerInteractionSurface {
                 "questionId": question_id,
                 "status": status,
             }),
+            InteractionEvent::Notified(notification) => json!({
+                "type": pa_types::notification::NOTIFICATION_EVENT,
+                "notification": notification,
+            }),
         };
         // A send fails only once the pump task ended with the worker.
         let _ = self.frames.send(frame);

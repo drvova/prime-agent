@@ -421,6 +421,9 @@ pub struct Settings {
     pub cache_warming: Option<CacheWarmingSetting>,
     /// The stream loop guard (unset means on, at each model family's default sensitivity).
     pub loop_guard: Option<LoopGuardSettings>,
+    /// Lets the kernel's `model.set_effort(...)` change the session's thinking level (unset
+    /// means off: it changes cost). Read from the global scope only.
+    pub repl_can_change_effort: Option<bool>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,

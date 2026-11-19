@@ -163,70 +163,103 @@ impl Worker {
                 None,
             );
         };
-        let previous = self.engine.effective_thinking_level();
-        // The blocking switch owns the pre-switch level (the durable-row
-        // change gate); the handler keeps its own copy for the roster push.
-        let previous_level = previous.clone();
-        let engine = std::sync::Arc::clone(&self.engine);
-        let core = std::sync::Arc::clone(&self.core);
-        let agent_dir = self.config.agent_dir.clone();
-        let reasoning = self
-            .engine
-            .model_metadata()
-            .and_then(|model| model.get("reasoning").and_then(Value::as_bool))
-            .unwrap_or(false);
-        let applied = tokio::task::spawn_blocking(move || {
-            if !engine.switch_thinking_level(parsed) {
-                return None;
-            }
-            let effective = engine
-                .effective_thinking_level()
-                .unwrap_or_else(|| "off".to_string());
-            // TS records the durable row only when the effective level
-            // changed.
-            if previous.as_deref() == Some(effective.as_str()) {
-                return Some(effective);
-            }
-            let cwd = {
-                let mut core = core.lock().unwrap();
-                if let Some(store) = core.store.as_mut() {
-                    let _ = store.persist_entry(
-                        "thinking_level_change",
-                        serde_json::json!({ "thinkingLevel": effective }),
-                    );
-                }
-                core.cwd.clone()
-            };
-            // TS persists the default when the model can think or the level
-            // is a real reasoning request; the persisted value is the
-            // clamped effective level, not the raw request.
-            if reasoning || effective != "off" {
-                let effective_level = pa_ai::models::thinking_level_from_str(&effective)
-                    .expect("the engine reports a valid wire level");
-                let mut settings = pa_core::settings::SettingsManager::create(&cwd, &agent_dir);
-                let _ = settings.set_default_thinking_level(
-                    pa_core::settings::ThinkingLevelSetting::from_model_level(effective_level),
+        match apply_thinking_level(
+            std::sync::Arc::clone(&self.engine),
+            std::sync::Arc::clone(&self.core),
+            self.config.agent_dir.clone(),
+            &self.roster_pushes,
+            parsed,
+            ThinkingSwitchOrigin::User,
+        )
+        .await
+        {
+            Ok(_) => response_success(None, "set_thinking_level", None),
+            Err(error) => response_failure(None, "set_thinking_level", &error, None),
+        }
+    }
+}
+
+/// Who asked for a thinking switch: the user's own switch also becomes the settings default,
+/// the kernel's opt-in `model.set_effort` changes this session only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ThinkingSwitchOrigin {
+    User,
+    Kernel,
+}
+
+/// Apply one thinking level through the engine (clamped to the model's supported levels),
+/// record the durable `thinking_level_change` row only when the effective level changed, let the
+/// settings default follow a user switch, and push the roster delta: the `set_thinking_level`
+/// command and the kernel's opt-in `model.set_effort` both land here. The effective level, or
+/// why the session has none.
+pub(crate) async fn apply_thinking_level(
+    engine: std::sync::Arc<dyn crate::engine::SessionEngine>,
+    core: std::sync::Arc<std::sync::Mutex<crate::worker::SessionCore>>,
+    agent_dir: std::path::PathBuf,
+    roster_pushes: &crate::roster_activity::RosterPushQueue,
+    parsed: pa_types::ai::ModelThinkingLevel,
+    origin: ThinkingSwitchOrigin,
+) -> Result<String, String> {
+    let previous = engine.effective_thinking_level();
+    // The blocking switch owns the pre-switch level (the durable-row
+    // change gate); the handler keeps its own copy for the roster push.
+    let previous_level = previous.clone();
+    let reasoning = engine
+        .model_metadata()
+        .and_then(|model| model.get("reasoning").and_then(Value::as_bool))
+        .unwrap_or(false);
+    let switch_engine = std::sync::Arc::clone(&engine);
+    let applied = tokio::task::spawn_blocking(move || {
+        let engine = switch_engine;
+        if !engine.switch_thinking_level(parsed) {
+            return None;
+        }
+        let effective = engine
+            .effective_thinking_level()
+            .unwrap_or_else(|| "off".to_string());
+        // TS records the durable row only when the effective level
+        // changed.
+        if previous.as_deref() == Some(effective.as_str()) {
+            return Some(effective);
+        }
+        let cwd = {
+            let mut core = core.lock().unwrap();
+            if let Some(store) = core.store.as_mut() {
+                let _ = store.persist_entry(
+                    "thinking_level_change",
+                    serde_json::json!({ "thinkingLevel": effective }),
                 );
             }
-            Some(effective)
-        })
-        .await
-        .unwrap_or(None);
-        if applied.is_none() {
-            return response_failure(
-                None,
-                "set_thinking_level",
-                "This session does not support thinking levels",
-                None,
+            core.cwd.clone()
+        };
+        // TS persists the default when the model can think or the level
+        // is a real reasoning request; the persisted value is the
+        // clamped effective level, not the raw request.
+        let default_follows = match origin {
+            ThinkingSwitchOrigin::User => reasoning || effective != "off",
+            ThinkingSwitchOrigin::Kernel => false,
+        };
+        if default_follows {
+            let effective_level = pa_ai::models::thinking_level_from_str(&effective)
+                .expect("the engine reports a valid wire level");
+            let mut settings = pa_core::settings::SettingsManager::create(&cwd, &agent_dir);
+            let _ = settings.set_default_thinking_level(
+                pa_core::settings::ThinkingLevelSetting::from_model_level(effective_level),
             );
         }
-        // The changed level reaches the roster surfaces immediately (TS
-        // emits `thinking_level_changed`, a roster-flush trigger).
-        if applied.as_deref() != previous_level.as_deref() {
-            self.push_roster_delta();
-        }
-        response_success(None, "set_thinking_level", None)
+        Some(effective)
+    })
+    .await
+    .unwrap_or(None);
+    let Some(applied) = applied else {
+        return Err("This session does not support thinking levels".to_string());
+    };
+    // The changed level reaches the roster surfaces immediately (TS
+    // emits `thinking_level_changed`, a roster-flush trigger).
+    if Some(applied.as_str()) != previous_level.as_deref() {
+        roster_pushes.push();
     }
+    Ok(applied)
 }
 
 /// Resolve one `(provider, modelId)` pair against the registry's

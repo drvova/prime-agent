@@ -221,8 +221,13 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 - `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
 - `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
 
+## Notifications and effort
+
+- `notify(message: str, *, level: str = "info") -> bool`: a non-blocking ping (`level` is `info`/`success`/`warning`/`error`): the user sees a notice row and their terminal asks for attention. Use it when long or unattended work finishes or needs a look; unlike `ask` it never waits. Returns whether a user was attached to see it (`False` in headless runs).
+- `model.set_effort(level: str) -> str`: change this session's thinking level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) from the next model call; returns the effective level. It changes cost, so it works only when the user set `"replCanChangeEffort": true` in the global settings, and raises `RuntimeError` saying so otherwise. Children take their own level with `rlm.spawn(thinking=...)`.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, `model.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
