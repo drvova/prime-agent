@@ -6,7 +6,8 @@ use serde_json::{json, Map};
 use crate::event_stream::AssistantMessageEventExt;
 use crate::providers::anthropic::{stream_anthropic, AnthropicOptions};
 use crate::types::{
-    AssistantContent, Context, Model, StopReason, StreamOptions, ThinkingContent, ToolCall,
+    AssistantContent, CacheRetention, Context, Model, StopReason, StreamOptions, ThinkingContent,
+    ToolCall, Usage, UsageCost,
 };
 
 #[tokio::test]
@@ -140,6 +141,80 @@ data: {"type":"message_stop"}"#,
     assert_eq!(
         events.last().unwrap().partial().stop_reason,
         StopReason::ToolUse
+    );
+}
+
+/// Anthropic reports the prompt side of a request (input, cache reads, cache writes and their
+/// TTL split) on `message_start`'s `message.usage`; `message_delta` may carry only the output
+/// count. The settled usage keeps both, so the session's cost bills the prompt, not just the
+/// reply.
+#[tokio::test]
+async fn message_start_usage_bills_input_and_cache_tokens() {
+    let mut sse = [
+        r#"event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":2000,"output_tokens":1,"cache_read_input_tokens":4000,"cache_creation_input_tokens":3000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":3000}}}}"#,
+        r#"event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+        r#"event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}"#,
+        r#"event: content_block_stop
+data: {"type":"content_block_stop","index":0}"#,
+        r#"event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1000}}"#,
+        r#"event: message_stop
+data: {"type":"message_stop"}"#,
+    ]
+    .join("\n\n");
+    sse.push_str("\n\n");
+    let (addr, _head) = serve_sse_capturing_head(sse).await;
+    let model: Model = serde_json::from_value(json!({
+        "id": "claude-test", "name": "Claude Test", "api": "anthropic-messages",
+        "provider": "anthropic", "baseUrl": format!("http://{addr}"), "reasoning": false,
+        "input": ["text"],
+        "cost": {"input": 4, "output": 20, "cacheRead": 0.4, "cacheWrite": 5},
+        "contextWindow": 128_000, "maxTokens": 8192
+    }))
+    .unwrap();
+    let options = AnthropicOptions::from_base(StreamOptions {
+        api_key: Some("sk-ant-api-test".into()),
+        cache_retention: Some(CacheRetention::Short),
+        ..Default::default()
+    });
+    let message = stream_anthropic(
+        &model,
+        &Context {
+            system_prompt: None,
+            messages: vec![],
+            tools: None,
+        },
+        Some(&options),
+    )
+    .result()
+    .await;
+
+    // Every cache write here is a one-hour write: twice the input rate.
+    let (input, output, cache_read, cache_write) = (
+        (4.0 / 1_000_000.0) * 2000.0,
+        (20.0 / 1_000_000.0) * 1000.0,
+        (0.4 / 1_000_000.0) * 4000.0,
+        (8.0 / 1_000_000.0) * 3000.0,
+    );
+    assert_eq!(
+        message.usage,
+        Usage {
+            input: 2000,
+            output: 1000,
+            cache_read: 4000,
+            cache_write: 3000,
+            total_tokens: 10_000,
+            cost: UsageCost {
+                input: input.into(),
+                output: output.into(),
+                cache_read: cache_read.into(),
+                cache_write: cache_write.into(),
+                total: (input + output + cache_read + cache_write).into(),
+            },
+        }
     );
 }
 
