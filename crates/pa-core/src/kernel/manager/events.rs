@@ -3,8 +3,8 @@
 
 use super::{
     append_truncated, lock, parse_attachment_display, parse_diff_display, parse_sent_agent_message,
-    Arc, Event, ExecBuffers, ExecuteStatus, Guarded, Inner, KernelBashCommands, KernelError,
-    StreamName, Value, AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME,
+    Arc, BackgroundCellFact, Event, ExecBuffers, ExecuteStatus, Guarded, Inner, KernelBashCommands,
+    KernelError, StreamName, Value, AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME,
     BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME, BASH_WAIT_DISPLAY_MIME,
     DIFF_DISPLAY_MIME, MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS,
     TRANSCRIPT_READ_DISPLAY_MIME,
@@ -37,6 +37,7 @@ impl Inner {
                         && matches!(active, Some(true | false))
                     {
                         let mut settled = false;
+                        let mut ended = None;
                         {
                             let mut g = lock(&self.guarded);
                             if active == Some(true) {
@@ -45,10 +46,23 @@ impl Inner {
                                     .or_insert(pid as i32);
                             } else if g.background_jobs.get(activity_id) == Some(&(pid as i32)) {
                                 g.background_jobs.remove(activity_id);
+                                if cell {
+                                    ended = match obj.get("status").and_then(Value::as_str) {
+                                        Some("ok") => Some(BackgroundCellFact::EndedOk),
+                                        Some("error") => Some(BackgroundCellFact::EndedWithError),
+                                        Some("interrupted") => {
+                                            Some(BackgroundCellFact::Interrupted)
+                                        }
+                                        Some(_) | None => None,
+                                    };
+                                }
                                 // The last live handle settled: the completion notice for it is
                                 // already admitted, so owed continuations may resume.
                                 settled = g.background_jobs.is_empty();
                             }
+                        }
+                        if let Some(fact) = ended {
+                            self.note_background_cell(fact);
                         }
                         if settled {
                             self.notify_background_work_settled();
@@ -132,7 +146,21 @@ impl Inner {
                     {
                         let mut buffers = lock(&execution.buffers);
                         buffers.done_fields = Some(fields.clone());
-                        if status != "ok" && buffers.status == ExecuteStatus::Ok {
+                        if status == "backgrounded" {
+                            // The cell runs on past its yield window: the
+                            // request settled ok, its end comes as a notice.
+                            self.note_background_cell(BackgroundCellFact::Backgrounded);
+                            buffers.backgrounded_cell = Some(
+                                fields
+                                    .get("cell")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or(&id)
+                                    .to_string(),
+                            );
+                        }
+                        if !matches!(status, "ok" | "backgrounded")
+                            && buffers.status == ExecuteStatus::Ok
+                        {
                             buffers.status = ExecuteStatus::Error;
                             // State requests report failures as a done reason
                             // without an error event.
@@ -409,20 +437,31 @@ mod tests {
     #[test]
     fn a_backgrounded_cell_counts_as_background_work_until_it_ends() {
         let (fired, on_settled) = settlement_counter();
+        let facts = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&facts);
         let manager = ReplKernelManager::new(KernelManagerOptions {
             on_background_work_settled: Some(on_settled),
+            on_background_cell: Some(Arc::new(move |fact| seen.lock().unwrap().push(fact))),
             ..Default::default()
         });
-        let cell =
-            |active: bool| json!({ "id": "c".repeat(32), "cell": "cell-1", "active": active });
-        deliver_activity(&manager, cell(true));
+        deliver_activity(
+            &manager,
+            json!({ "id": "c".repeat(32), "cell": "cell-1", "active": true }),
+        );
         assert_eq!(manager.background_job_count(), 1);
         // A cell activity without its cell id is malformed, like a bash one without a pid.
         deliver_activity(&manager, json!({ "id": "c".repeat(32), "active": false }));
         assert_eq!(manager.background_job_count(), 1);
-        deliver_activity(&manager, cell(false));
+        deliver_activity(
+            &manager,
+            json!({ "id": "c".repeat(32), "cell": "cell-1", "active": false, "status": "interrupted" }),
+        );
         assert_eq!(manager.background_job_count(), 0);
         assert_eq!(fired.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            *facts.lock().unwrap(),
+            [crate::kernel::shared::BackgroundCellFact::Interrupted]
+        );
     }
 
     #[test]

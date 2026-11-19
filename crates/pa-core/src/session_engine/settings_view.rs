@@ -28,7 +28,7 @@ pub const SETTINGS_HOST_REQUEST_TYPE: &str = "settings.host";
 /// The creation-time values the session armed (see the module docs).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ArmedSettings {
-    /// The armed `python_repl` cell limit (`None`: unbounded).
+    /// The armed `python_repl` cell yield window (`None`: the cell runs to its end in the call).
     pub(crate) cell_timeout_ms: Option<u64>,
     pub(crate) compaction_enabled: bool,
     pub(crate) compaction_threshold_percent: f64,

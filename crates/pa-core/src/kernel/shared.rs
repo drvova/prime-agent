@@ -124,6 +124,23 @@ pub type StreamCallback = Arc<dyn Fn(&str, StreamName) + Send + Sync>;
 /// resume.
 pub type BackgroundWorkSettledCallback = Arc<dyn Fn() + Send + Sync>;
 
+/// One step in a backgrounded cell's life, for adoption counts (never code,
+/// output, or an id).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundCellFact {
+    /// A cell outlived its yield window and continued in the background.
+    Backgrounded,
+    /// A backgrounded cell ended with a value.
+    EndedOk,
+    /// A backgrounded cell ended with an exception.
+    EndedWithError,
+    /// A backgrounded cell was interrupted.
+    Interrupted,
+}
+
+/// Receives each [`BackgroundCellFact`] the kernel reports.
+pub type BackgroundCellObserver = Arc<dyn Fn(BackgroundCellFact) + Send + Sync>;
+
 /// Callback receiving an agent message sent late by the kernel.
 pub type LateSentAgentMessageCallback = Arc<dyn Fn(KernelSentAgentMessage) + Send + Sync>;
 
@@ -240,9 +257,10 @@ pub struct ExecuteResult {
     pub status: ExecuteStatus,
     pub error: Option<KernelError>,
     pub duration_ms: u64,
-    /// The [`ExecuteOptions::cell_timeout_ms`] limit that interrupted this
-    /// cell; `None` when the cell settled on its own or was aborted.
-    pub timed_out_after_ms: Option<u64>,
+    /// The cell outlived its [`ExecuteOptions::cell_yield_ms`] window and
+    /// continues in the background under this cell id (its end arrives as a
+    /// `cell.completed` notice); `None` when it ended in the window.
+    pub backgrounded_cell: Option<String>,
 }
 
 /// Options for one `execute` call.
@@ -260,13 +278,12 @@ pub struct ExecuteOptions {
     pub internal: bool,
     /// The protocol repair's own request; exempt from waiting on the repair it belongs to.
     pub protocol_repair: bool,
-    /// Per-cell time limit in milliseconds, measured from the request going on
-    /// the wire (queue wait and kernel boot excluded). A cell that outlives it
-    /// is interrupted exactly like an aborted one (interrupt, then force-abort
-    /// after the grace window), and its result carries
-    /// [`ExecuteResult::timed_out_after_ms`]. `None` and zero disable it; the
-    /// runtime bootstrap and state ops never arm it.
-    pub cell_timeout_ms: Option<u64>,
+    /// The cell's yield window in milliseconds (Nodecode's `yield_time_ms`):
+    /// a cell still running when it ends continues in the background, never
+    /// interrupted for time, and the result carries
+    /// [`ExecuteResult::backgrounded_cell`]. `None` and zero wait for the
+    /// cell's end; the runtime bootstrap and state ops never set it.
+    pub cell_yield_ms: Option<u64>,
 }
 
 /// A typed request from Python code running in the kernel to the host.
@@ -378,6 +395,8 @@ pub struct KernelManagerOptions {
     /// Fires when the last live background `bash()` handle settles (its activity
     /// track empties or the kernel tears down), so owed continuations can resume.
     pub on_background_work_settled: Option<BackgroundWorkSettledCallback>,
+    /// Hears each cell that continues in the background, and how it ends.
+    pub on_background_cell: Option<BackgroundCellObserver>,
     /// Persist/revive the user namespace across kernel restarts and session resume.
     pub snapshot: Option<KernelSnapshotConfig>,
     /// Runtime bootstrap re-run on a protocol-repaired kernel so live handles (rlm, bash, skills) exist again.

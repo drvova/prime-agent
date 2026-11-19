@@ -550,6 +550,7 @@ async fn the_kernel_client_round_trips_through_the_native_handler() {
         host_handlers: handlers,
         python_skills: Vec::new(),
         on_background_work_settled: None,
+        on_background_cell: None,
         snapshot: None,
         bootstrap_code: Some(bootstrap.clone()),
         stderr_log_path: None,

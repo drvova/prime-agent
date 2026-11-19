@@ -1659,6 +1659,22 @@ const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
     ],
 };
 
+/// Python cells that continued in the background (v2), emitted at session end beside `agent
+/// session ended` (which sits near the backend's 128-key cap) only when a cell outlived its yield
+/// window: cells backgrounded, and how they ended (value, exception, interrupted). Counts only:
+/// never code, output, a value, or a cell id.
+const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
+    name: "agent repl background cells",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("cell_backgrounded_count", required(count())),
+        ("cell_background_ok_count", required(count())),
+        ("cell_background_error_count", required(count())),
+        ("cell_background_interrupted_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -1768,6 +1784,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
         &AGENT_RLM_CHILD_ABORT,
+        &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

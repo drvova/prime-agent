@@ -2040,6 +2040,51 @@ async fn rlm_child_aborts_ride_their_own_event() {
     );
 }
 
+/// Cells that continued in the background ride their own `agent repl background cells` event at
+/// session end (counts only: never code, output, or a cell id), and a session whose cells all
+/// ended inside their window sends none.
+#[tokio::test]
+async fn background_cells_ride_their_own_event() {
+    use crate::kernel::shared::BackgroundCellFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        BackgroundCellFact::Backgrounded,
+        BackgroundCellFact::Backgrounded,
+        BackgroundCellFact::Backgrounded,
+        BackgroundCellFact::EndedOk,
+        BackgroundCellFact::Interrupted,
+    ] {
+        counters.note_background_cell(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl background cells"]
+    );
+    let cells = &event_properties(&fixture.mock, "agent repl background cells").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = cells
+        .iter()
+        .filter(|(key, _)| key.starts_with("cell_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "cell_backgrounded_count": 3,
+            "cell_background_ok_count": 1,
+            "cell_background_error_count": 0,
+            "cell_background_interrupted_count": 1,
+        })
+    );
+}
+
 /// Kernel `notify(...)` pings and `model.set_effort(...)` calls ride their own `agent repl
 /// notify` event at session end (counts only, never a message or a level).
 #[tokio::test]

@@ -21,15 +21,15 @@ use crate::kernel::orphan_journal;
 use crate::kernel::protocol::{parse_event, Event, Request, REPL_PROTOCOL_VERSION};
 use crate::kernel::shared::FACTORY_ACTIVITY_ACTIONS;
 use crate::kernel::shared::{
-    parse_attachment_display, parse_diff_display, parse_sent_agent_message, ExecuteOptions,
-    ExecuteResult, ExecuteStatus, HostRequestPayload, KernelAttachment, KernelBashCommands,
-    KernelBashWaits, KernelDiffDisplay, KernelError, KernelManagerOptions, KernelSentAgentMessage,
-    KernelShutdownOptions, LateSentAgentMessageCallback, StreamName, AGENT_MESSAGE_DISPLAY_MIME,
-    ATTACHMENT_DISPLAY_MIME, BASH_ACTIVITY_DISPLAY_MIME, BASH_COMMAND_DISPLAY_MIME,
-    BASH_WAIT_DISPLAY_MIME, DEFAULT_MAX_OUTPUT_CHARS, DEFAULT_SNAPSHOT_DEBOUNCE_MS,
-    DIFF_DISPLAY_MIME, END_TURN_REQUEST_TYPE, FACTIVITY_SETTLE_TIMEOUT_MS,
-    FACTIVITY_WATCH_TIMEOUT_MS_CAP, HOST_REQUEST_SHUTDOWN_TIMEOUT_MS, KERNEL_ABORT_GRACE_MS,
-    KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
+    parse_attachment_display, parse_diff_display, parse_sent_agent_message, BackgroundCellFact,
+    ExecuteOptions, ExecuteResult, ExecuteStatus, HostRequestPayload, KernelAttachment,
+    KernelBashCommands, KernelBashWaits, KernelDiffDisplay, KernelError, KernelManagerOptions,
+    KernelSentAgentMessage, KernelShutdownOptions, LateSentAgentMessageCallback, StreamName,
+    AGENT_MESSAGE_DISPLAY_MIME, ATTACHMENT_DISPLAY_MIME, BASH_ACTIVITY_DISPLAY_MIME,
+    BASH_COMMAND_DISPLAY_MIME, BASH_WAIT_DISPLAY_MIME, DEFAULT_MAX_OUTPUT_CHARS,
+    DEFAULT_SNAPSHOT_DEBOUNCE_MS, DIFF_DISPLAY_MIME, END_TURN_REQUEST_TYPE,
+    FACTIVITY_SETTLE_TIMEOUT_MS, FACTIVITY_WATCH_TIMEOUT_MS_CAP, HOST_REQUEST_SHUTDOWN_TIMEOUT_MS,
+    KERNEL_ABORT_GRACE_MS, KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, KERNEL_SHUTDOWN_TIMEOUT_MS, KERNEL_STDERR_LOG_BUDGET_MARKER,
     MAX_ATTACHMENT_DATA_CHARS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_KERNEL_STDERR_CHARS,
     MAX_KERNEL_STDERR_LOG_BYTES, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
@@ -98,8 +98,8 @@ struct ExecBuffers {
     ended_turn: bool,
     done_fields: Option<Value>,
     settled: bool,
-    /// The time limit the cell outlived and was interrupted for.
-    timed_out_after_ms: Option<u64>,
+    /// The cell outlived its yield window: it runs on in the background as this cell.
+    backgrounded_cell: Option<String>,
 }
 
 pub(crate) struct ActiveExecution {
@@ -140,7 +140,7 @@ impl InternalExecuteResult {
                 status: ExecuteStatus::Aborted,
                 error: None,
                 duration_ms: started.elapsed().as_millis() as u64,
-                timed_out_after_ms: None,
+                backgrounded_cell: None,
             },
             done_fields: None,
         }
@@ -375,6 +375,13 @@ struct StderrLog {
 impl Inner {
     /// Fire the embedding's background-work settlement notice: the settlement is already recorded,
     /// so a host-callback panic neither breaks the kernel event path nor aborts the teardown.
+    /// Report one background-cell fact to the embedding's observer, if any.
+    fn note_background_cell(&self, fact: crate::kernel::shared::BackgroundCellFact) {
+        if let Some(observer) = &self.options.on_background_cell {
+            observer(fact);
+        }
+    }
+
     fn notify_background_work_settled(&self) {
         let Some(callback) = self.options.on_background_work_settled.clone() else {
             return;
@@ -641,11 +648,12 @@ impl ReplKernelManager {
         execution_timeout_ms: Option<u64>,
     ) -> anyhow::Result<InternalExecuteResult> {
         // The same filter the abort watcher applies: zero disables the limit.
-        let cell_timeout_ms = opts.cell_timeout_ms.filter(|ms| *ms > 0);
+        // Zero waits for the cell's end, like no window at all.
+        let yield_ms = opts.cell_yield_ms.filter(|ms| *ms > 0);
         self.enqueue_request(
             Request::Execute {
                 code: code.to_string(),
-                cell_timeout_ms,
+                yield_ms,
             },
             opts,
             execution_timeout_ms,

@@ -18,10 +18,11 @@ pub const REPL_PROTOCOL_VERSION: u64 = 3;
 pub enum Request {
     Execute {
         code: String,
-        /// The cell's armed time limit ([`crate::kernel::shared::ExecuteOptions::cell_timeout_ms`]),
-        /// sent as `timeoutMs` so the runtime's bounded `bash()` awaits degrade before the
-        /// host interrupts the cell. `None` sends no field: the cell has no limit.
-        cell_timeout_ms: Option<u64>,
+        /// The cell's yield window ([`crate::kernel::shared::ExecuteOptions::cell_yield_ms`]),
+        /// sent as `yieldMs`: a cell still running when it ends continues in the
+        /// background and the request settles with `done` status `backgrounded`.
+        /// `None` sends no field: the request waits for the cell's end.
+        yield_ms: Option<u64>,
     },
     Interrupt,
     HostReply {
@@ -67,13 +68,10 @@ impl Request {
     #[must_use]
     pub fn to_json(&self) -> Value {
         match self {
-            Request::Execute {
-                code,
-                cell_timeout_ms,
-            } => {
+            Request::Execute { code, yield_ms } => {
                 let mut frame = json!({ "type": "execute", "code": code });
-                if let Some(timeout_ms) = cell_timeout_ms {
-                    frame["timeoutMs"] = json!(timeout_ms);
+                if let Some(yield_ms) = yield_ms {
+                    frame["yieldMs"] = json!(yield_ms);
                 }
                 frame
             }

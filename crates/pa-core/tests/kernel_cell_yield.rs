@@ -8,10 +8,10 @@
     clippy::cast_precision_loss
 )]
 
-//! The cell time limit interrupts a cell that runs past it: the tool result is an
-//! error naming the limit, the turn continues, and the namespace survives. A cell
-//! that ignores the interrupt gets the kernel restarted. A long `bash()` wait
-//! inside a limited cell degrades to its snapshot before the limit instead.
+//! A cell still running when its `timeout` (the yield window) passes continues in
+//! the background, as Nodecode's evaluations do: the tool result says so with its
+//! output so far, nothing interrupts it, the next cell runs meanwhile, and its end
+//! arrives as a `[cell-done]` notice that wakes the session.
 #![cfg(unix)]
 
 use std::path::PathBuf;
@@ -114,7 +114,7 @@ fn tool_result(entries: &Value, call_id: &str) -> (String, String) {
 }
 
 #[tokio::test]
-async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
+async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_the_session() {
     let Some(kernel_python) = kernel_python() else {
         return;
     };
@@ -124,6 +124,7 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
+    let flag = dir.path().join("go");
 
     let _env = EnvOverride::apply(&[
         (
@@ -139,23 +140,13 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
 
     let model = scripted_model();
     let provider = std::sync::Arc::new(ScriptedProvider::new(model.clone()));
-    let swallow_interrupt =
-        "import time\nwhile True:\n    try:\n        time.sleep(30)\n    except KeyboardInterrupt:\n        pass";
+    let long_cell = format!(
+        "import os, time\nprint('before')\nwhile not os.path.exists({flag:?}):\n    time.sleep(0.02)\nprint('after')\n'finished'"
+    );
     for (call_id, args) in [
         ("call-1", json!({ "code": "x = 41" })),
-        (
-            "call-2",
-            json!({ "code": "import time\nprint('before')\ntime.sleep(30)", "timeout": 2 }),
-        ),
+        ("call-2", json!({ "code": long_cell, "timeout": 1 })),
         ("call-3", json!({ "code": "print(x + 1)" })),
-        (
-            "call-wait",
-            json!({
-                "code": "r = await bash('sleep 8').wait(60)\nprint(type(r).__name__, r.running)\nr.handle.kill(grace=0.1)",
-                "timeout": 4,
-            }),
-        ),
-        ("call-4", json!({ "code": swallow_interrupt, "timeout": 2 })),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
             &model,
@@ -165,6 +156,9 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     }
     provider.push_text_turn("done");
 
+    // The notice's wake is the observable event: the test awaits it.
+    let woken = std::sync::Arc::new(tokio::sync::Notify::new());
+    let wake = std::sync::Arc::clone(&woken);
     let engine = create_session(SessionEngineConfig {
         on_late_sent_agent_message: None,
         semantic_edges: None,
@@ -200,8 +194,8 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
         kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         on_background_work_settled: None,
-        // Registers the bash completion notice, which arms the bounded await.
-        bash_notice_wake: Some(std::sync::Arc::new(|| {})),
+        // Registers the in-process notice handlers (bash and cell) with this wake.
+        bash_notice_wake: Some(std::sync::Arc::new(move || wake.notify_one())),
         queued_goal_context_purge: None,
         queued_steering_probe: None,
         should_stop_after_turn: None,
@@ -210,40 +204,52 @@ async fn a_cell_past_its_timeout_is_interrupted_and_the_turn_continues() {
     .await
     .expect("create_session");
 
-    tokio::time::timeout(
-        std::time::Duration::from_secs(240),
-        engine.session.prompt(
+    let notified = woken.notified();
+    engine
+        .session
+        .prompt(
             "run the cells",
             pa_core::session_engine::PromptOptions::default(),
-        ),
-    )
-    .await
-    .expect("the turn must not wait out the 30s sleeps")
-    .expect("prompt");
-
+        )
+        .await
+        .expect("prompt");
     let entries = serde_json::to_value(engine.session.entries().await).expect("entries json");
 
-    // The over-limit cell is an error naming the limit; its output so far survives.
+    // The over-window cell was not stopped: it ended the call at its window with
+    // its output so far and the running envelope.
     let (status, text) = tool_result(&entries, "call-2");
-    assert_eq!(status, "error", "{text}");
-    assert!(text.contains("before"), "{text}");
-    assert!(text.contains("interrupted after 2s"), "{text}");
-    assert!(!text.contains("<ipython_kernel_reset>"), "{text}");
+    assert_eq!(status, "backgrounded", "{text}");
+    assert!(text.starts_with("before\n\n[cell "), "{text}");
+    assert!(text.contains("continues in the background"), "{text}");
 
-    // The turn continued and the namespace is intact.
+    // The next cell ran while it did, on the intact namespace.
     let (status, text) = tool_result(&entries, "call-3");
-    assert_eq!(status, "ok", "{text}");
-    assert!(text.contains("42"), "{text}");
+    assert_eq!((status.as_str(), text.as_str()), ("ok", "42\n"));
 
-    // The host sends the cell's limit with the request, so a wait asked for
-    // past it degrades to the snapshot in time and the cell settles ok.
-    let (status, text) = tool_result(&entries, "call-wait");
-    assert_eq!(status, "ok", "{text}");
-    assert!(text.contains("BashSnapshot True"), "{text}");
-
-    // A cell that swallows the interrupt gets the kernel restarted.
-    let (status, text) = tool_result(&entries, "call-4");
-    assert_eq!(status, "error", "{text}");
-    assert!(text.starts_with("<ipython_kernel_reset>"), "{text}");
-    assert!(text.contains("interrupted after 2s"), "{text}");
+    // Released after the run ended, its end wakes the session with the
+    // [cell-done] row queued on the agent.
+    std::fs::write(&flag, "").expect("release the cell");
+    tokio::time::timeout(std::time::Duration::from_secs(30), notified)
+        .await
+        .expect("the cell's end must wake the session");
+    let queued = engine.session.agent().remove_queued_messages(|_| true);
+    let [pa_agent::types::AgentMessage::Custom(custom)] = queued.as_slice() else {
+        panic!("exactly the cell's notice row queued: {queued:?}");
+    };
+    let details = &custom.payload["details"];
+    let cell = details["cell"].as_str().expect("the row names its cell");
+    assert_eq!(
+        (
+            &custom.payload["customType"],
+            &custom.payload["content"],
+            details
+        ),
+        (
+            &json!("async_cell_completion"),
+            &json!(format!(
+                "[cell-done cell:{cell} status:ok]\n\nValue:\n```\n'finished'\n```\n\nOutput:\n```\nafter\n```"
+            )),
+            &json!({ "cell": cell, "status": "ok" }),
+        )
+    );
 }

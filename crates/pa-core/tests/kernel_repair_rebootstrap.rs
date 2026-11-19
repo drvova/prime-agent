@@ -15,6 +15,7 @@ use pa_core::kernel::shared::{
 
 fn fake_kernel(dir: &Path, env: HashMap<String, String>) -> ReplKernelManager {
     ReplKernelManager::new(KernelManagerOptions {
+        on_background_cell: None,
         python: Some(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/rebootstrap_kernel.py"),
         ),

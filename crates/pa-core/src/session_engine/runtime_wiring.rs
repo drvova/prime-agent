@@ -269,9 +269,10 @@ pub fn kernel_provisioner(
     command_prefix: Option<String>,
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
-    cell_timeout_ms: Option<u64>,
+    cell_yield_ms: Option<u64>,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
+    on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
     on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
     on_bootstrap_result: Option<crate::kernel::provisioner::KernelBootstrapResultHandler>,
     ready_gate: Option<crate::kernel::provisioner::KernelReadyGate>,
@@ -322,12 +323,13 @@ pub fn kernel_provisioner(
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
             snapshot_dir: session_artifact_dir,
-            // The engine-resolved default cell time limit (`None`: daemonless;
-            // the runtime bootstrap and state ops never arm it).
-            cell_timeout_ms,
+            // The engine-resolved default cell yield window (`None`: daemonless;
+            // the runtime bootstrap and state ops never set it).
+            cell_yield_ms,
             ready_gate,
             on_restore,
             on_background_work_settled,
+            on_background_cell,
             on_unavailable_skills,
             on_bootstrap_result,
         },
@@ -365,10 +367,10 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             // wraps it in its own abort signal.
             let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
             let manager = this.ensure(on_progress, signal).await?;
-            let cell_timeout_ms = this.cell_timeout_ms();
+            let cell_yield_ms = this.cell_yield_ms();
             Ok(Box::new(KernelManagerExecutor {
                 manager,
-                cell_timeout_ms,
+                cell_yield_ms,
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -384,8 +386,8 @@ impl IpythonKernelProvisioner for KernelProvisioner {
 /// Adapts the kernel manager to the ipython tool's executor contract.
 struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
-    /// The session's default cell time limit (`None`: never armed; `0`: disabled).
-    cell_timeout_ms: Option<u64>,
+    /// The session's default cell yield window (`None`: never set; `0`: disabled).
+    cell_yield_ms: Option<u64>,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -399,10 +401,10 @@ impl KernelExecutor for KernelManagerExecutor {
         let code = code.to_string();
         let signal = options.signal;
         let on_late_sent_agent_message = options.on_late_sent_agent_message;
-        // The session decides whether cells are limited at all; the model's
-        // per-call `timeout` only replaces the default limit.
-        let cell_timeout_ms = self
-            .cell_timeout_ms
+        // The session decides whether cells can go to the background at all;
+        // the model's per-call `timeout` only replaces the default window.
+        let cell_yield_ms = self
+            .cell_yield_ms
             .filter(|ms| *ms > 0)
             .map(|default_ms| options.timeout_ms.unwrap_or(default_ms));
         Box::pin(async move {
@@ -412,7 +414,7 @@ impl KernelExecutor for KernelManagerExecutor {
                     crate::kernel::shared::ExecuteOptions {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
-                        cell_timeout_ms,
+                        cell_yield_ms,
                         ..Default::default()
                     },
                 )
@@ -422,11 +424,11 @@ impl KernelExecutor for KernelManagerExecutor {
     }
 }
 
-/// Whether the cell time limit arms for this session. Daemonless sessions
-/// keep `await bash()` unbounded by design (#3523): every over-limit cell
-/// there would be a sanctioned long await with no background lane to move
-/// to, so the limit arms only in daemon-backed sessions.
-pub(crate) fn arm_cell_timeout_ms(daemonless: bool, settings_ms: u64) -> Option<u64> {
+/// Whether cells get a yield window in this session. Daemonless sessions
+/// keep `await bash()` unbounded by design (#3523) and have no background
+/// lane to wake them when a cell ends, so their cells always run to the end
+/// inside the call; the window applies only in daemon-backed sessions.
+pub(crate) fn arm_cell_yield_ms(daemonless: bool, settings_ms: u64) -> Option<u64> {
     if daemonless {
         None
     } else {
@@ -475,7 +477,7 @@ fn convert_execute_result(
         bash_commands: result.bash_commands,
         bash_waits: result.bash_waits,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
-        timed_out_after_ms: result.timed_out_after_ms,
+        backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
     }
 }
@@ -587,14 +589,14 @@ mod tests {
     }
 
     #[test]
-    fn cell_timeout_arms_only_in_daemon_backed_sessions() {
+    fn cell_yield_window_applies_only_in_daemon_backed_sessions() {
         // Daemonless sessions keep `await bash()` unbounded by design
-        // (#3523): their over-limit cells are sanctioned long awaits.
-        assert_eq!(arm_cell_timeout_ms(true, 60_000), None);
-        assert_eq!(arm_cell_timeout_ms(true, 0), None);
-        assert_eq!(arm_cell_timeout_ms(false, 60_000), Some(60_000));
+        // (#3523) and have no lane to wake them when a cell ends.
+        assert_eq!(arm_cell_yield_ms(true, 60_000), None);
+        assert_eq!(arm_cell_yield_ms(true, 0), None);
+        assert_eq!(arm_cell_yield_ms(false, 60_000), Some(60_000));
         // A zero setting is the explicit disable: it must reach the
-        // executor as an armed zero budget, not fall back to a default.
-        assert_eq!(arm_cell_timeout_ms(false, 0), Some(0));
+        // executor as a zero window, not fall back to a default.
+        assert_eq!(arm_cell_yield_ms(false, 0), Some(0));
     }
 }

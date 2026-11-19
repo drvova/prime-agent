@@ -751,7 +751,14 @@ class ReplTest(unittest.TestCase):
                 break
         self.assertEqual(
             event["data"],
-            {"application/vnd.prime-agent.bash-activity+json": {"id": activity_id, "cell": "bg-sync", "active": False}},
+            {
+                "application/vnd.prime-agent.bash-activity+json": {
+                    "id": activity_id,
+                    "cell": "bg-sync",
+                    "active": False,
+                    "status": "ok",
+                }
+            },
         )
         # A read of the handle after the notice landed withdraws it.
         read = self.repl.execute("bg-sync-read", "from rlm import cells\n(await cells.get('bg-sync')).value")
