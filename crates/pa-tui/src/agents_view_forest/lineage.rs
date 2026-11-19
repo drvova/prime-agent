@@ -195,34 +195,44 @@ pub fn compute_rollups(records: &[UnifiedRecord]) -> HashMap<String, Rollup> {
         // Deleted subagents keep no row, and their spend is already subtracted from the
         // parent's own usage by the attribution entries: without this term a deletion erases
         // the money from the subtree total (TS #2506).
-        let own_cost = records[*position]
-            .daemon
-            .as_ref()
-            .and_then(|daemon| daemon.get("usage"))
+        let own_usage = [&records[*position].daemon, &records[*position].saved]
+            .into_iter()
+            .filter_map(|row| row.as_ref()?.get("usage"))
+            .find(|usage| usage.get("cost").and_then(Value::as_f64).is_some());
+        let usage_cost = own_usage
             .and_then(|usage| usage.get("cost"))
-            .and_then(Value::as_f64)
-            .or_else(|| {
-                records[*position]
-                    .saved
-                    .as_ref()
-                    .and_then(|saved| saved.get("usage"))
-                    .and_then(|usage| usage.get("cost"))
-                    .and_then(Value::as_f64)
-            })
-            .unwrap_or(0.0)
-            + deleted_descendants;
+            .and_then(Value::as_f64);
+        let own_cost = usage_cost.unwrap_or(0.0) + deleted_descendants;
+        // The own calls by billing mode; a row without the split (an older daemon, a saved row
+        // recorded before modes) and the deleted-descendant bucket bill unclassified, so they
+        // read as their cost always did.
+        let mut billing = own_usage
+            .and_then(|usage| usage.get("billing"))
+            .and_then(|split| serde_json::from_value(split.clone()).ok())
+            .unwrap_or_else(|| {
+                let mut split = pa_types::billing::BillingSplit::default();
+                if let Some(cost) = usage_cost {
+                    split.add(None, cost);
+                }
+                split
+            });
+        if deleted_descendants > 0.0 {
+            billing.add(None, deleted_descendants);
+        }
         // `descendants` starts at the deleted-descendant bucket: the bucket is descendant spend,
         // so the aggregate bills it even though no live child row carries it.
         let mut rollup = Rollup {
             cost: own_cost,
             descendants: deleted_descendants,
             descendant_count: 0,
+            billing,
         };
         for child in index.children_by_parent.get(position).into_iter().flatten() {
             if !is_subagent_descendant(&records[*child], &records[*position]) {
                 continue;
             }
             rollup.cost += rollups[*child].cost;
+            rollup.billing.merge(&rollups[*child].billing);
             rollup.descendants += rollups[*child].cost;
             rollup.descendant_count += 1 + rollups[*child].descendant_count;
         }

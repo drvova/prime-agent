@@ -1425,6 +1425,7 @@ async fn run_interactive_surface(
         if let Some(at) = usage_wake
             .into_iter()
             .chain(session.reset_chip_deadline(&view))
+            .chain(session.plan_quota_deadline(&view))
             .min()
         {
             session.dirty |= at <= Instant::now();
@@ -1928,6 +1929,7 @@ async fn run_interactive_surface(
         // the select's sleep: the expiry wake would repaint the hint with the pre-sleep value.
         view.chrome.tray_override = session.tray_override(&view);
         session.refresh_reset_chip(&mut view, crate::usage_page::now_ms());
+        session.refresh_plan_quota(&mut view, crate::usage_page::now_ms());
 
         // The frame gate: at most one render per MIN_RENDER_INTERVAL_MS — every state change inside
         // the window coalesces into the next frame (a stream burst renders at most one frame per

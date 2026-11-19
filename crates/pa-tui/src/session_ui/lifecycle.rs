@@ -179,6 +179,7 @@ impl SessionUi {
             context_breakdown: None,
             rate_limit_reset: None,
             reset_chips_shown: 0,
+            plan_quota_resets_at_ms: None,
             factory_graph: serde_json::json!({"runs": []}),
             factory_view_session: None,
             factory_refresh_in_flight: false,

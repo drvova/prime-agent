@@ -882,6 +882,66 @@ fn top_bar_centers_name_with_cost() {
     assert_eq!(start, 55);
 }
 
+/// A plan's calls show the plan (its cached quota window when there is one), never a `$`; only a
+/// billed call adds a dollar figure.
+#[test]
+fn top_bar_shows_a_plan_session_without_a_dollar_figure() {
+    use pa_types::billing::{BillingSplit, ModeSpend};
+    let plan = ModeSpend {
+        calls: 4,
+        cost: 1.87,
+    };
+    let title = |billing: BillingSplit, plan_quota: Option<&str>| {
+        let state = ChromeState {
+            chat_name: "plan-chat".to_string(),
+            cost_usd: Some(billing.plan.cost + billing.pay_as_you_go.cost),
+            billing: Some(billing),
+            plan_quota: plan_quota.map(str::to_string),
+            ..Default::default()
+        };
+        render_top_bar(&state, &theme(), 80)
+            .iter()
+            .map(|span| span.content.as_str())
+            .collect::<String>()
+            .trim()
+            .to_string()
+    };
+    assert_eq!(
+        [
+            title(
+                BillingSplit {
+                    plan,
+                    ..Default::default()
+                },
+                None,
+            ),
+            title(
+                BillingSplit {
+                    plan,
+                    ..Default::default()
+                },
+                Some("5h 42% \u{b7} 1h 20m"),
+            ),
+            title(
+                BillingSplit {
+                    plan,
+                    pay_as_you_go: ModeSpend {
+                        calls: 1,
+                        cost: 0.4,
+                    },
+                    ..Default::default()
+                },
+                Some("5h 42% \u{b7} 1h 20m"),
+            ),
+        ],
+        [
+            "plan-chat  plan".to_string(),
+            "plan-chat  5h 42% \u{b7} 1h 20m".to_string(),
+            "plan-chat  $0.40 + plan".to_string(),
+        ]
+    );
+}
+
 #[test]
 fn tray_left_and_right_labels() {
     let state = ChromeState {

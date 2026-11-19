@@ -443,6 +443,7 @@ pub(crate) fn parse_chunk_usage(
         cache_write: cache_write_tokens,
         total_tokens: input + output_tokens + cache_read_tokens + cache_write_tokens,
         cost: UsageCost::default(),
+        billing: None,
     };
     calculate_cost(
         model,

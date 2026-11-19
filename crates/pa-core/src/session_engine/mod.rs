@@ -7,6 +7,7 @@ pub mod auto_refine_trigger;
 pub mod auto_retry;
 pub mod auxiliary_model;
 pub mod bash_notices;
+pub mod billing;
 pub mod branch_summarization;
 mod cache_warming;
 pub mod checkpoint_host;
@@ -205,6 +206,8 @@ pub struct AgentSession {
     /// their `model_usage` rows: the session file unless the host binds
     /// its durable store (the daemon worker's).
     usage_store: std::sync::Arc<dyn rlm_usage::RlmChildUsageStore>,
+    /// Stamps each recorded assistant message's billing mode (armed by the engine wiring).
+    billing: billing::SessionBilling,
 }
 
 impl AgentSession {
@@ -243,11 +246,14 @@ impl AgentSession {
     ) -> anyhow::Result<Self> {
         let persistence = session.clone();
         let usage_store = std::sync::Arc::new(rlm_usage::SessionUsageStore(session.clone()));
+        let billing = billing::SessionBilling::new(Arc::default(), &agent);
+        let stamp = billing.clone();
         agent
             .subscribe(move |event, _signal| {
                 let persistence = persistence.clone();
+                let stamp = stamp.clone();
                 Box::pin(async move {
-                    persist_event(&persistence, event).await?;
+                    persist_event(&persistence, &stamp, event).await?;
                     Ok(())
                 })
             })
@@ -278,6 +284,7 @@ impl AgentSession {
             refinements_in_flight: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             refinement_cancel: std::sync::Mutex::default(),
             usage_store,
+            billing,
         };
         this.ensure_harness_digest_context().await?;
         Ok(this)
@@ -402,13 +409,17 @@ impl AgentSession {
 
 async fn persist_event(
     session: &Arc<tokio::sync::Mutex<SessionManager>>,
+    billing: &billing::SessionBilling,
     event: AgentEvent,
 ) -> std::io::Result<()> {
     match event {
         AgentEvent::MessageEnd { message, .. } => {
-            let Some(session_message) = loop_message_to_session(&message) else {
+            let Some(mut session_message) = loop_message_to_session(&message) else {
                 return Ok(());
             };
+            if let SessionAgentMessage::Assistant(assistant) = &mut session_message {
+                billing.stamp(assistant).await;
+            }
             let mut session = session.lock().await;
             // TS `_processAgentEvent` swallows persistence failures and keeps
             // the row in memory: the loop already reduced the event into live

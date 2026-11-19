@@ -21,6 +21,7 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, cost: f64) 
             total: JsNumber(cost),
             ..UsageCost::default()
         },
+        billing: None,
     }
 }
 

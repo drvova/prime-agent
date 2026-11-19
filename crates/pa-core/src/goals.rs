@@ -598,6 +598,7 @@ mod tests {
             cache_write: 300,
             total_tokens: 1330,
             cost: pa_types::ai::UsageCost::default(),
+            billing: None,
         };
         assert_eq!(
             (

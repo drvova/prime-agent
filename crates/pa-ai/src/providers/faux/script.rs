@@ -22,10 +22,14 @@ pub struct FauxScript {
     /// re-serves the last one on every further call instead of erroring (the default stays the
     /// finite response budget).
     pub repeat_last_response: bool,
+    /// The `provider` / `baseUrl` script keys: the identity the scripted model presents (a
+    /// harness standing in for a real provider's endpoint); `faux` on loopback by default.
+    pub provider: Option<String>,
+    pub base_url: Option<String>,
 }
 
 /// Parse a `{"responses": [...], "modelId": ..., "tokensPerSecond": ..., "repeatLastResponse":
-/// ...}` script.
+/// ..., "provider": ..., "baseUrl": ...}` script.
 ///
 /// Entry forms: a plain string, `{"text": "..."}`, or `{"content": [{"type":
 /// "thinking"|"text"|"toolCall", ...}], "stopReason"?}`. The stop reason defaults to `toolUse` when
@@ -95,11 +99,14 @@ pub fn parse_faux_script(script: &Value) -> Result<FauxScript, String> {
         .get("repeatLastResponse")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::to_string);
     Ok(FauxScript {
         model,
         tokens_per_second,
         responses,
         repeat_last_response,
+        provider: text("provider"),
+        base_url: text("baseUrl"),
     })
 }
 
@@ -205,7 +212,13 @@ fn parse_content_block(block: &Value) -> Result<super::AssistantContent, String>
 #[must_use]
 pub fn register_faux_provider_from_script(script: &FauxScript) -> FauxProviderRegistration {
     let registration = register_faux_provider(RegisterFauxProviderOptions {
-        provider: Some("faux".to_string()),
+        provider: Some(
+            script
+                .provider
+                .clone()
+                .unwrap_or_else(|| "faux".to_string()),
+        ),
+        base_url: script.base_url.clone(),
         models: Some(vec![script.model.clone()]),
         tokens_per_second: script.tokens_per_second,
         ..Default::default()

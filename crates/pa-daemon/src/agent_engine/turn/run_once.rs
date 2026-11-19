@@ -4,6 +4,26 @@ use crate::engine::{session_wire_value, AssistantSnapshot};
 
 use super::{json, json_round_trip, AgentSessionEngine, EngineEvent, TurnOnce, TurnPrompt, Value};
 
+/// The wire value of a settled loop message; an assistant message carries the session's
+/// billing stamp, like the core's own record of it.
+async fn stamped_wire_value(
+    billing: Option<&pa_core::session_engine::billing::SessionBilling>,
+    agent_message: &pa_agent::types::AgentMessage,
+) -> Option<Value> {
+    let mut value = session_wire_value(agent_message)?;
+    if let (
+        Some(billing),
+        pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(assistant)),
+    ) = (billing, agent_message)
+    {
+        let message = json_round_trip::<_, pa_types::ai::AssistantMessage>(assistant)?;
+        if let Some(mode) = billing.mode_of(&message).await {
+            value["usage"]["billing"] = json!(mode);
+        }
+    }
+    Some(value)
+}
+
 impl AgentSessionEngine {
     pub(super) fn retry_policy(
         &self,
@@ -35,6 +55,14 @@ impl AgentSessionEngine {
         // item's first run; this subscription forwards them only once a
         // boundary frame already passed.
         let boundary_passed = std::sync::Arc::clone(boundary_passed);
+        // The worker records its own copy of each settled assistant message: it carries the
+        // session's billing stamp like the core's record.
+        let billing = self
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .map(|engine| engine.session.billing());
         let subscription = {
             let tx = tx.clone();
             let boundary_passed = std::sync::Arc::clone(&boundary_passed);
@@ -48,6 +76,7 @@ impl AgentSessionEngine {
             agent
                 .subscribe(move |event, _signal| {
                     let tx = tx.clone();
+                    let billing = billing.clone();
                     let boundary_passed = std::sync::Arc::clone(&boundary_passed);
                     let autonomous_state = std::sync::Arc::clone(&autonomous_state);
                     let autonomous_driver = std::sync::Arc::clone(&autonomous_driver);
@@ -153,7 +182,10 @@ impl AgentSessionEngine {
                                         pa_agent::types::Message::Assistant(_)
                                             | pa_agent::types::Message::ToolResult(_),
                                     ) => {
-                                        if let Some(value) = session_wire_value(agent_message) {
+                                        if let Some(value) =
+                                            stamped_wire_value(billing.as_ref(), agent_message)
+                                                .await
+                                        {
                                             let event = if matches!(
                                                 agent_message,
                                                 pa_agent::types::AgentMessage::Standard(
@@ -208,7 +240,9 @@ impl AgentSessionEngine {
                                 message,
                                 tool_results,
                             } => {
-                                if let Some(message) = session_wire_value(message) {
+                                if let Some(message) =
+                                    stamped_wire_value(billing.as_ref(), message).await
+                                {
                                     let tool_results = tool_results
                                         .iter()
                                         .filter_map(|result| {

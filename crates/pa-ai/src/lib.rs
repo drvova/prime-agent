@@ -8,6 +8,7 @@
 #![allow(clippy::large_enum_variant, clippy::result_large_err)]
 
 pub mod admission;
+pub mod billing;
 pub mod env_api_keys;
 pub mod models;
 pub mod models_generated;

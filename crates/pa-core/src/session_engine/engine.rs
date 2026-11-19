@@ -1142,6 +1142,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     )));
     session.set_auto_refine(auto_refine_allowed, auto_refine_gates);
     session.set_agent_dir(config.agent_dir.clone());
+    session.arm_billing_stamp(
+        config.agent_dir.clone(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |mode| counters.note_billing_mode(mode))
+                as super::billing::BillingObserver
+        }),
+    );
     session.set_usage_store(wiring.rlm_usage.store());
     // Keep the context descriptor even while disabled, so re-enabling can load it.
     session.harness_digest = Some(digest_context);

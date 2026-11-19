@@ -69,6 +69,7 @@ fn parse_deleted_usage(
         input_tokens,
         output_tokens,
         cost,
+        billing: None,
     })
 }
 

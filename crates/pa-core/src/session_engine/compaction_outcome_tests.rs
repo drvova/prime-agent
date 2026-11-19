@@ -202,6 +202,7 @@ async fn message_end_persist_failure_retains_the_row_and_swallows() {
         .len();
     persist_event(
         &session.session,
+        &session.billing,
         AgentEvent::MessageEnd {
             message: AgentMessage::user("retained after the failed write"),
         },

@@ -44,6 +44,7 @@ fn append_compaction_serializes_the_full_ts_record() {
                 cache_write: 0,
                 total_tokens: 110,
                 cost: pa_types::ai::UsageCost::default(),
+                billing: None,
             }),
             harness_digest: None,
             harness_state_fingerprint: None,

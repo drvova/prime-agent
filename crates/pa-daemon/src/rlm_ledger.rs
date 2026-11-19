@@ -141,6 +141,7 @@ fn zero_usage() -> crate::session_usage::SessionUsageSummary {
         input_tokens: 0,
         output_tokens: 0,
         cost: 0.0,
+        billing: None,
     }
 }
 

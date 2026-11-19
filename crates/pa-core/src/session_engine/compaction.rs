@@ -546,6 +546,7 @@ mod tests {
                     cache_write: 0,
                     total_tokens: 150,
                     cost: pa_types::ai::UsageCost::default(),
+                    billing: None,
                 },
                 stop_reason: pa_types::ai::StopReason::Stop,
                 stop_reason_raw: None,
@@ -586,6 +587,7 @@ mod tests {
                 cache_write: 0,
                 total_tokens: usage_total,
                 cost: pa_types::ai::UsageCost::default(),
+                billing: None,
             },
             stop_reason: pa_types::ai::StopReason::Stop,
             stop_reason_raw: None,
@@ -771,6 +773,7 @@ mod tests {
             cache_write: 1,
             total_tokens: 100,
             cost: pa_types::ai::UsageCost::default(),
+            billing: None,
         };
         assert_eq!(calculate_context_tokens(&usage), 100);
     }
@@ -909,6 +912,7 @@ mod tests {
                         cache_write: 0,
                         total_tokens: 2,
                         cost: pa_types::ai::UsageCost::default(),
+                        billing: None,
                     },
                     stop_reason: pa_types::ai::StopReason::Aborted,
                     stop_reason_raw: None,
