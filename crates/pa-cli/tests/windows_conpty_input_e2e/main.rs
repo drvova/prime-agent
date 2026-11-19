@@ -996,7 +996,10 @@ fn background_children_open_no_console_windows() {
     let script = root.join("script.json");
     std::fs::write(
         &script,
+        // The `faux` engine runs the real agent loop, so the tool call
+        // reaches the kernel (the default scripted engine only replays).
         json!({
+            "engine": "faux",
             "responses": [
                 { "content": [ { "type": "toolCall", "name": "python_repl", "arguments": {
                     "code": cell,
