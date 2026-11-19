@@ -193,6 +193,7 @@ impl AgentSessionEngine {
             compaction_summary_sink: std::sync::Mutex::new(None),
             progress_note_emit: std::sync::Mutex::new(None),
             interaction_hub: std::sync::Mutex::new(None),
+            workspace_checkpoints: std::sync::Mutex::new(None),
             model_refusal_telemetry,
             semantic_identity: std::sync::Mutex::new(None),
         })
@@ -313,6 +314,23 @@ impl AgentSessionEngine {
     /// Panics when the hub slot's mutex is poisoned.
     pub fn set_interaction_hub(&self, hub: Arc<pa_core::interaction::InteractionHub>) {
         *self.interaction_hub.lock().expect("interaction hub lock") = Some(hub);
+    }
+
+    /// Installs the worker's workspace checkpoint store for the kernel's `checkpoint.*`.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the slot's mutex is poisoned.
+    pub(crate) fn set_workspace_checkpoints(
+        &self,
+        checkpoints: Arc<
+            dyn pa_core::session_engine::checkpoint_host::WorkspaceCheckpointController,
+        >,
+    ) {
+        *self
+            .workspace_checkpoints
+            .lock()
+            .expect("workspace checkpoints lock") = Some(checkpoints);
     }
 
     /// The installed todo/question hub, if a worker installed one.
@@ -866,6 +884,20 @@ impl AgentSessionEngine {
             self.config.agent_dir.clone(),
             crate::usage_report::quotas::QuotaFetchConfig::from_env(),
         );
+        // `checkpoint.*` on the worker's store (replacing the engine's refusing default); the
+        // restore confirmation asks through the worker's question hub.
+        let checkpoints = self
+            .workspace_checkpoints
+            .lock()
+            .expect("workspace checkpoints lock")
+            .clone();
+        if let (Some(checkpoints), Some(hub)) = (checkpoints, self.interaction_hub()) {
+            pa_core::session_engine::checkpoint_host::register_workspace_checkpoint_host_handlers(
+                Some(checkpoints),
+                hub,
+                &mut handlers,
+            );
+        }
         Some(handlers)
     }
 

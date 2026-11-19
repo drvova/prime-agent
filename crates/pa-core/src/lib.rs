@@ -47,6 +47,7 @@ pub mod auth;
 pub mod autonomous;
 pub mod cron;
 pub mod export_html;
+pub(crate) mod fs_edit;
 pub(crate) mod fs_search;
 pub mod goals;
 pub mod interaction;

@@ -421,6 +421,9 @@ pub struct Settings {
     pub cache_warming: Option<CacheWarmingSetting>,
     /// The stream loop guard (unset means on, at each model family's default sensitivity).
     pub loop_guard: Option<LoopGuardSettings>,
+    /// Lets the kernel's `checkpoint.restore` put the workspace back to a checkpoint the
+    /// session took, after the user confirms (unset means off). Global settings only.
+    pub repl_can_restore_checkpoints: Option<bool>,
     /// Unknown keys survive load/save round-trips (forward compatibility).
     #[serde(flatten, skip_serializing_if = "serde_json::Map::is_empty")]
     pub extra: serde_json::Map<String, serde_json::Value>,
