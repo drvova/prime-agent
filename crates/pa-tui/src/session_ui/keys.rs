@@ -94,6 +94,7 @@ impl SessionUi {
             || view.bash_view.is_some()
             || view.info_panel.is_some()
             || view.usage_page.is_some()
+            || view.context_view.is_some()
             || view.tree_selector.is_some()
             || view.fork_selector.is_some()
             || view.share_loader.is_some()
@@ -463,6 +464,10 @@ impl SessionUi {
         }
         if view.usage_page.is_some() {
             self.handle_usage_page_key(key, view);
+            return Ok(());
+        }
+        if view.context_view.is_some() {
+            self.handle_context_view_key(key, view);
             return Ok(());
         }
         if view.tree_selector.is_some() {
@@ -839,6 +844,10 @@ impl SessionUi {
             self.cycle_detail(view);
             return Ok(());
         }
+        if view.editor.keybindings().matches(&id, "app.context.open") {
+            self.open_context_view(view, crate::context_view::ContextViewSource::Shortcut);
+            return Ok(());
+        }
         if view
             .editor
             .keybindings()
@@ -1188,6 +1197,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.thinking.cycle")
         || kb.matches(id, "app.tools.expand")
         || kb.matches(id, "app.subagents.focus")
+        || kb.matches(id, "app.context.open")
         || kb.matches(id, "app.editor.external")
         || kb.matches(id, "app.prompt.stash")
         || kb.matches(id, "app.history.search")

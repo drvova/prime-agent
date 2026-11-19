@@ -424,6 +424,35 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn context_view_closed(
+        &self,
+        summary: pa_tui::context_view::ContextViewSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui usage page closed`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the close path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("source", serde_json::Value::from(summary.source.as_str()));
+            properties.set(
+                "breakdown",
+                serde_json::Value::from(summary.breakdown.as_str()),
+            );
+            properties.set(
+                "category_count",
+                serde_json::Value::from(summary.category_count),
+            );
+            properties.set(
+                "subagent_count",
+                serde_json::Value::from(summary.subagent_count),
+            );
+            client.track("tui context window closed", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn command_used(&self, command: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         // `agent command used` (TS `captureAgentCommandUsed`): every
         // submitted builtin reports from the client, session commands

@@ -24,6 +24,12 @@ impl AgentView {
                     crate::width::wrapped_text_count(text, width.saturating_sub(2).max(1))
                 }
             }
+            ChatEntry::RunSummary(row) => {
+                1 + crate::width::wrapped_text_count(
+                    &row.text_at(width),
+                    width.saturating_sub(2).max(1),
+                )
+            }
             ChatEntry::User { text, .. } => {
                 usize::from(spacing)
                     + crate::chat::user_block_row_count(

@@ -50,6 +50,7 @@ pub mod code_preview;
 mod compaction_row;
 pub mod config_selector;
 pub mod confirm;
+pub mod context_view;
 pub mod custom_message;
 pub mod daemon_client;
 pub mod daemon_reconnect;
