@@ -536,6 +536,108 @@ fn transcript_reads_render_one_summary_row_below_the_summary() {
     }
 }
 
+/// A cell that changed the todo list records it on its card, collapsed or not: the progress and
+/// the current item, the next pending one between items, `all done` at the end.
+#[test]
+fn a_todo_change_renders_one_row_on_the_cell_card() {
+    let item = |text: &str, status: &str| json!({ "id": text, "text": text, "status": status });
+    for (items, summary) in [
+        (
+            json!([
+                item("read", "done"),
+                item("wire", "in_progress"),
+                item("test", "pending")
+            ]),
+            "1/3 \u{b7} wire",
+        ),
+        (
+            json!([item("read", "done"), item("wire", "pending")]),
+            "1/2 \u{b7} next: wire",
+        ),
+        (json!([item("read", "done")]), "1/1 \u{b7} all done"),
+        (json!([]), "cleared"),
+    ] {
+        let card = cell_card(
+            "await todo.update('2', status='in_progress')",
+            json!({ "status": "ok", "durationMs": 40, "todoList": { "items": items } }),
+            false,
+            false,
+        );
+        for detail in [Detail::Overview, Detail::All] {
+            let rows: Vec<String> = render(&card, 0, detail, detail, &theme(), 100, true)
+                .iter()
+                .map(text_of)
+                .collect();
+            let row = format!(" \u{2630} todos \u{b7} {summary}");
+            if detail == Detail::Overview {
+                assert_eq!(rows[1..], [row]);
+            } else {
+                assert!(rows.contains(&row), "{rows:?}");
+            }
+            assert_eq!(
+                count(&card, 0, detail, detail, &theme(), 100, true),
+                rows.len(),
+                "the row count matches the painted rows"
+            );
+        }
+    }
+}
+
+/// A cell's settled questions record on its card, collapsed or not, one row each: the question
+/// and the answer, or how it settled without one; a long question gives way to the answer.
+#[test]
+fn settled_questions_render_one_row_each_on_the_cell_card() {
+    let asked = |text: &str, status: &str, answer: &[&str]| json!({ "text": text, "status": status, "answer": answer });
+    let card = cell_card(
+        "r = await ask('Which database?', ['sqlite', 'postgres'])",
+        json!({ "status": "ok", "durationMs": 40, "questions": [
+            asked("Which database?", "answered", &["postgres"]),
+            asked("Which checks?", "answered", &["fmt", "my own"]),
+            asked("Proceed?", "timed_out", &["no"]),
+            asked("Name it", "declined", &[]),
+            asked("Ship it?", "no_user", &[]),
+            asked("A question long enough that the row cannot hold it whole", "answered", &["yes"]),
+        ] }),
+        false,
+        false,
+    );
+    let rows: Vec<String> = render(
+        &card,
+        0,
+        Detail::Overview,
+        Detail::Overview,
+        &theme(),
+        48,
+        true,
+    )
+    .iter()
+    .map(text_of)
+    .collect();
+    assert_eq!(
+        rows[1..],
+        [
+            " ? Which database? \u{2192} postgres",
+            " ? Which checks? \u{2192} fmt, my own",
+            " ? Proceed? \u{2192} timed out \u{b7} no",
+            " ? Name it \u{2192} declined",
+            " ? Ship it? \u{2192} no one to ask",
+            " ? A question long enough that the row ca\u{2026} \u{2192} yes",
+        ]
+    );
+    assert_eq!(
+        count(
+            &card,
+            0,
+            Detail::Overview,
+            Detail::Overview,
+            &theme(),
+            48,
+            true
+        ),
+        rows.len()
+    );
+}
+
 #[test]
 fn bash_minority_cell_stays_python() {
     let code = "async def sh(cmd):\n    return await bash(cmd)\nr = await sh(\"ls\")\nprint(r.pid)";

@@ -2,7 +2,8 @@
 //! with the surface's reply.
 //!
 //! `question.ask {id, text, kind, choices?, default?, timeoutSeconds?}` replies
-//! `{status, answer}` once the question settles:
+//! `{status, answer}` once the question settles (a choice question also takes the user's own
+//! typed answer, `allowOther`; a timeout's deadline rides the open question as `expiresAtMs`):
 //! - no surface, or nobody attached who can answer: `no_user` at once, `answer` = the default;
 //! - the user replied: `answered` (the answer) or `declined` (`[]`);
 //! - `timeoutSeconds` elapsed: `timed_out`, `answer` = the default;
@@ -79,7 +80,7 @@ pub(super) fn register(hub: &Arc<InteractionHub>, handlers: &mut HostRequestHand
 #[tracing::instrument(skip_all, fields(kind = ?question.kind))]
 pub(super) async fn ask(
     hub: &InteractionHub,
-    question: Question,
+    mut question: Question,
 ) -> anyhow::Result<(QuestionStatus, Vec<String>)> {
     let Some(surface) = hub
         .surface
@@ -89,6 +90,13 @@ pub(super) async fn ask(
         note(hub, QuestionStatus::NoUser);
         return Ok((QuestionStatus::NoUser, question.default));
     };
+    // Every surface counts down to the host's deadline, a reattached one included.
+    question.expires_at_ms = question.timeout_seconds.map(|seconds| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        u64::try_from(now.as_millis()).unwrap_or(u64::MAX) + seconds * 1000
+    });
     let (sender, mut receiver) = oneshot::channel();
     {
         let mut open = lock(&hub.question);
@@ -192,6 +200,14 @@ fn note(hub: &InteractionHub, status: QuestionStatus) {
 }
 
 fn check_answer(question: &Question, answer: &[String]) -> anyhow::Result<()> {
+    // The user's own typed answer: at most one, never blank, where the question takes one.
+    let typed: Vec<&String> = answer
+        .iter()
+        .filter(|item| !question.choices.contains(item))
+        .collect();
+    let typed_fits = question.allow_other
+        && typed.len() <= 1
+        && typed.iter().all(|item| !item.trim().is_empty());
     match question.kind {
         QuestionKind::Text => {
             if answer.len() != 1 {
@@ -199,12 +215,12 @@ fn check_answer(question: &Question, answer: &[String]) -> anyhow::Result<()> {
             }
         }
         QuestionKind::Single => {
-            if answer.len() != 1 || !question.choices.contains(&answer[0]) {
-                bail!("a single-choice answer is exactly one of the choices");
+            if answer.len() != 1 || !(typed.is_empty() || typed_fits) {
+                bail!("a single-choice answer is exactly one of the choices or one typed answer");
             }
         }
         QuestionKind::Multi => {
-            if let Some(unknown) = answer.iter().find(|item| !question.choices.contains(item)) {
+            if let Some(unknown) = typed.first().filter(|_| !typed_fits) {
                 bail!("\"{unknown}\" is not one of the choices");
             }
         }
@@ -274,6 +290,9 @@ fn parse_question(data: &Value) -> anyhow::Result<Question> {
         kind,
         default: strings("default")?,
         choices,
+        // A choice question always offers the user's own answer beside the choices.
+        allow_other: kind != QuestionKind::Text,
+        expires_at_ms: None,
         timeout_seconds: match data.get("timeoutSeconds") {
             None | Some(Value::Null) => None,
             Some(value) => Some(

@@ -19,6 +19,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent responses transport",
     // Provider request admission is engine plumbing, not a kernel capability.
     "agent provider admission",
+    // The worker's background endpoint discovery (no kernel capability).
+    "agent endpoint discovery",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {

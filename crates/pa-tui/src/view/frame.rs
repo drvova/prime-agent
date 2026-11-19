@@ -185,9 +185,21 @@ impl AgentView {
         } else if let Some(prompt) = &self.question {
             // A kernel question waiting for the user replaces the composer; the todo tray
             // stays above it.
-            let mut dock = crate::todo_panel::render_todo_panel(&self.todos, &self.theme, width);
+            let mut dock = self.render_todo_tray(width);
             dock.extend(prompt_context);
-            dock.extend(prompt.render(&self.theme, width, self.editor.keybindings()));
+            // The choice rows are clickable: the recorded span starts under the question title.
+            self.click.record_picker(PickerClickSurface {
+                dock_row: dock.len(),
+                chrome_rows: prompt.chrome_rows(width),
+                items: (0, prompt.item_rows()),
+                kind: PickerKind::Question,
+            });
+            dock.extend(prompt.render(
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                u64::try_from(crate::usage_page::now_ms()).unwrap_or_default(),
+            ));
             Some(dock)
         } else {
             None

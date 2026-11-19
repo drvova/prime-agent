@@ -203,6 +203,8 @@ async fn todo_and_ask_round_trip_through_a_real_kernel_and_survive_a_reload() {
             choices: vec!["sqlite".to_string(), "postgres".to_string()],
             default: vec!["sqlite".to_string()],
             timeout_seconds: None,
+            allow_other: true,
+            expires_at_ms: None,
         }
     );
     engine.dispose_kernel().await;

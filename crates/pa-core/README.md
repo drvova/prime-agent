@@ -132,14 +132,19 @@ daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
 
-Background cells (`kernel::manager`, `tools::ipython`, `session_engine::bash_notices`): a
-`python_repl` cell runs for at most its yield window inside the call (the model's `timeout`,
-default the `pythonCellTimeoutMs` setting; daemonless sessions wait for the end). A cell still
-running then continues in the background, never stopped for time: the result carries
-`backgrounded_cell`, the kernel's activity track counts it as background work, and its end
-arrives as the `[cell-done]` notice. Adoption counts ride the `agent repl background cells`
-event. Non-goals: a hard time limit (Nodecode keeps none) and stopping a cell from the host for
-time.
+Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
+`session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside
+the call (the model's `timeout`, else a `pythonCellTimeoutMs` the user set, else a window learned
+per project; daemonless sessions wait for the end). A cell still running then continues in the
+background, never stopped for time: the result carries `backgrounded_cell`, the kernel's activity
+track counts it as background work, and its end arrives as the `[cell-done]` notice. The learned
+window (`kernel::cell_window`, the opaque `CellWindow` policy carried by
+`IpythonKernelProvisionerOptions::cell_window`) is about 1.5x the recency-weighted P90 of the
+project's cell times, in 10 s..600 s, cold 60 s; its state lives in
+`<agent dir>/cell-windows/<project hash>.json`, loaded and saved off every cell path. Adoption
+counts (including each window's source) ride the `agent repl background cells` event.
+Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
+a user setting for the learner.
 
 Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per kernel
 capability under `prime-agent-runtime/capabilities/`, embedded with `include_str!`, recording each
@@ -193,7 +198,12 @@ newest wins; the session window tracks it like the goal state), and one open que
 wait parks on the reply, the timeout, and the embedding's presence notification. The embedding
 supplies the `InteractionSurface` (the daemon worker's attached clients); without one the
 session is headless and `ask` settles as `no_user` at once. Adoption counts ride the
-`agent todos and questions` telemetry event.
+`agent todos and questions` telemetry event. The kernel's `todo.set`/`todo.update` also show the
+new list on the running cell (the `todo` display MIME; the cell keeps its last as the tool
+result's `todoList` detail), so the transcript records each plan change; a settled `ask(...)`
+shows likewise (the `question` display MIME, every one kept as the `questions` detail). A choice
+question also takes the user's own typed answer (`allowOther`; a host confirmation never does),
+and a timed question carries its deadline (`expiresAtMs`) for the surfaces' countdown.
 The kernel's `notify(...)` rides the same hub (`notify.send`: an
 `InteractionEvent::Notified` published fire-and-forget, `delivered` answered at once from the
 surface's presence). The opt-in `model.set_effort` (`session_engine::effort_switch`) is gated on

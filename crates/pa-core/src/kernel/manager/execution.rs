@@ -212,6 +212,9 @@ impl Inner {
                 bash_waits: std::mem::take(&mut buffers.bash_waits),
                 transcript_reads: (!buffers.transcript_reads.is_empty())
                     .then(|| std::mem::take(&mut buffers.transcript_reads)),
+                todo_list: buffers.todo_list.take(),
+                questions: (!buffers.questions.is_empty())
+                    .then(|| std::mem::take(&mut buffers.questions)),
                 background_output: (!background_output.is_empty()).then_some(background_output),
                 ended_turn: buffers.ended_turn,
                 status,

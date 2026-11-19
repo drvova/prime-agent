@@ -391,6 +391,8 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
     responses_transport: pa_ai::responses_transport::ResponsesTransportCounts,
+    /// The worker process's endpoint discovery counts, reported by `agent endpoint discovery`.
+    endpoint_discovery: pa_ai::responses_transport::DiscoveryCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
@@ -410,7 +412,8 @@ struct CounterValues {
     notify_effort: NotifyEffortCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
-    /// Cells that continued in the background, reported by `agent repl background cells`.
+    /// Cells that continued in the background, and where each cell's yield
+    /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
 }
 
@@ -431,13 +434,18 @@ struct NotifyEffortCounts {
     effort_refused: u64,
 }
 
-/// `agent repl background cells`: cells that outlived their yield window, and how they ended.
+/// `agent repl background cells`: cells that outlived their yield window, how they ended, and
+/// where each armed window came from.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct BackgroundCellCounts {
     backgrounded: u64,
     ended_ok: u64,
     ended_with_error: u64,
     interrupted: u64,
+    window_learned: u64,
+    window_timeout: u64,
+    window_setting: u64,
+    window_default: u64,
 }
 
 /// `agent rlm child abort`: aborts by outcome.
@@ -669,6 +677,15 @@ impl SessionCounters {
         self.with(|values| values.responses_transport = counts);
     }
 
+    /// The worker process's endpoint discovery counts (one worker serves one session; session end
+    /// snapshots them here).
+    pub(crate) fn note_endpoint_discovery(
+        &self,
+        counts: pa_ai::responses_transport::DiscoveryCounts,
+    ) {
+        self.with(|values| values.endpoint_discovery = counts);
+    }
+
     pub(crate) fn note_web_read(
         &self,
         outcome: crate::web_read::ReadOutcome,
@@ -781,9 +798,23 @@ impl SessionCounters {
             let counts = &mut values.background_cells;
             *match fact {
                 BackgroundCellFact::Backgrounded => &mut counts.backgrounded,
-                BackgroundCellFact::EndedOk => &mut counts.ended_ok,
-                BackgroundCellFact::EndedWithError => &mut counts.ended_with_error,
+                BackgroundCellFact::EndedOk { .. } => &mut counts.ended_ok,
+                BackgroundCellFact::EndedWithError { .. } => &mut counts.ended_with_error,
                 BackgroundCellFact::Interrupted => &mut counts.interrupted,
+            } += 1;
+        });
+    }
+
+    /// One cell armed with a yield window, by the window's source (a count: never a duration).
+    pub(crate) fn note_cell_window(&self, source: crate::kernel::cell_window::CellWindowSource) {
+        use crate::kernel::cell_window::CellWindowSource;
+        self.with(|values| {
+            let counts = &mut values.background_cells;
+            *match source {
+                CellWindowSource::Learned => &mut counts.window_learned,
+                CellWindowSource::ModelTimeout => &mut counts.window_timeout,
+                CellWindowSource::Setting => &mut counts.window_setting,
+                CellWindowSource::ColdDefault => &mut counts.window_default,
             } += 1;
         });
     }
@@ -1439,6 +1470,31 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A worker whose discovery never probed or moved an endpoint sends no discovery event.
+        // Only a session installed on a live agent reads the worker's process-wide counts.
+        let discovered = pa_ai::responses_transport::discovery_counts();
+        if self.agent_session_id.is_some()
+            && discovered != pa_ai::responses_transport::DiscoveryCounts::default()
+        {
+            self.counters.note_endpoint_discovery(discovered);
+        }
+        let mut discovery = pa_ai::responses_transport::DiscoveryCounts::default();
+        self.counters
+            .with(|values| discovery = values.endpoint_discovery);
+        if discovery != pa_ai::responses_transport::DiscoveryCounts::default() {
+            let mut discovery_properties = self.session_properties();
+            for (key, value) in [
+                ("endpoint_probe_count", discovery.probes),
+                ("endpoint_found_responses_count", discovery.found_responses),
+                ("endpoint_found_websocket_count", discovery.found_websocket),
+                ("endpoint_upgrade_count", discovery.upgrades),
+                ("endpoint_demotion_count", discovery.demotions),
+            ] {
+                discovery_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent endpoint discovery", discovery_properties);
+        }
         // A session that never read a URL sends no web-read event.
         let mut web_read = WebReadCounts::default();
         self.counters.with(|values| web_read = values.web_read);
@@ -1613,7 +1669,8 @@ impl SessionTelemetry {
             }
             self.client.track("agent repl notify", notify_properties);
         }
-        // A session whose cells all ended inside their window sends no background-cell event.
+        // A session that armed no cell window and backgrounded no cell sends no background-cell
+        // event.
         let mut cells = BackgroundCellCounts::default();
         self.counters.with(|values| cells = values.background_cells);
         if cells != BackgroundCellCounts::default() {
@@ -1623,6 +1680,10 @@ impl SessionTelemetry {
                 ("cell_background_ok_count", cells.ended_ok),
                 ("cell_background_error_count", cells.ended_with_error),
                 ("cell_background_interrupted_count", cells.interrupted),
+                ("cell_window_learned_count", cells.window_learned),
+                ("cell_window_timeout_count", cells.window_timeout),
+                ("cell_window_setting_count", cells.window_setting),
+                ("cell_window_default_count", cells.window_default),
             ] {
                 cell_properties.set(key, Value::from(value));
             }

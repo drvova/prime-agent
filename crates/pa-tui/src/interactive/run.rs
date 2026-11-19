@@ -2043,12 +2043,16 @@ async fn run_interactive_surface(
             sixel,
             half_block,
         };
+        let todo_question_counts = session.todo_question_counts;
         let exit_event = async move {
             let () = telemetry
                 .client_exit(exit_reason, turn_active_at_exit)
                 .await;
             if images.kitty + images.iterm2 + images.sixel + images.half_block > 0 {
                 let () = telemetry.inline_images_rendered(images).await;
+            }
+            if todo_question_counts.any() {
+                let () = telemetry.todos_and_questions(todo_question_counts).await;
             }
         };
         if session.open_agents_view {

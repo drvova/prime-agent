@@ -20,10 +20,10 @@ use crate::providers::responses_websocket::errors::{
     append_transport_failure_diagnostic, ResponsesStreamError,
 };
 use crate::providers::responses_websocket::{
-    build_cached_websocket_request_body, endpoint_key, is_visible_response_event,
-    learned_capability, note_counts, note_plan, plan_transport, record_learned_capability,
-    transport_debug_name, AcquiredConnection, Capability, ContinuationState, PlanInput,
-    TransportPlan, WebSocketSessions, WireProfile, WorkerEvent,
+    build_cached_websocket_request_body, endpoint_key, is_verified_endpoint,
+    is_visible_response_event, learned_capability, note_counts, note_plan, plan_transport,
+    record_learned_capability, transport_debug_name, AcquiredConnection, Capability,
+    ContinuationState, PlanInput, TransportPlan, WebSocketSessions, WireProfile, WorkerEvent,
 };
 use crate::types::{
     AssistantMessage, Context, Message, Model, StopReason, StreamOptions, Transport,
@@ -56,12 +56,6 @@ const PROBE_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Mid-stream WebSocket failures in a row after which a session is demoted to SSE.
 const MID_STREAM_FAILURE_LIMIT: u32 = 2;
 
-/// Built-in registry data: base URLs whose WebSocket mode the provider's own documentation verifies.
-/// Every other endpoint is probed once under `auto` and its verdict learned:
-/// - `https://api.openai.com/v1`: <https://developers.openai.com/api/docs/guides/websocket-mode>
-/// - `https://api.x.ai/v1`: <https://docs.x.ai/developers/advanced-api-usage/websocket-mode>
-const VERIFIED_WEBSOCKET_BASE_URLS: &[&str] = &["https://api.openai.com/v1", "https://api.x.ai/v1"];
-
 /// The continuation error codes after which the request is resent once with the full context:
 /// the connection no longer holds the previous response, or the connection hit its lifetime.
 const STALE_CONTINUATION_CODE: &str = "previous_response_not_found";
@@ -75,7 +69,7 @@ pub(crate) fn close_websocket_session(session_id: &str) {
 /// What is known about the model's endpoint: the docs-verified base URLs, then a learned verdict.
 fn endpoint_capability(model: &Model) -> Capability {
     let base_url = model.base_url.trim_end_matches('/');
-    if VERIFIED_WEBSOCKET_BASE_URLS.contains(&base_url) {
+    if is_verified_endpoint(base_url) {
         return Capability::Declared(true);
     }
     endpoint_key(base_url)
@@ -1013,5 +1007,81 @@ mod tests {
             ),
             (Some("Hello".to_string()), 0, 1)
         );
+    }
+
+    /// A Responses route that answers 404 to a real request after discovery (or the docs) said it
+    /// exists is demoted: the endpoint's models load on Chat Completions again.
+    #[tokio::test]
+    async fn a_missing_responses_route_demotes_the_endpoint() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let _ = read_head(&mut socket).await;
+                let _ = socket
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        let base_url = format!("http://127.0.0.1:{port}/v1");
+        crate::providers::responses_websocket::record_learned_for_test(&base_url, Some(true));
+        let model = model(&base_url);
+        let reply = run(&model, &first_turn(), &options(None, Some(Transport::Sse))).await;
+        let mut completions = model.clone();
+        completions.api = "openai-completions".to_string();
+        assert_eq!(
+            (
+                reply.stop_reason,
+                crate::providers::responses_websocket::learned_endpoint(&base_url)
+                    .and_then(|learned| learned.responses_http),
+                crate::providers::responses_websocket::apply_responses_wire_upgrade(
+                    &mut completions
+                ),
+            ),
+            (StopReason::Error, Some(false), false)
+        );
+    }
+
+    /// Background discovery never holds a request: with the probe stuck on an endpoint that
+    /// accepts and never answers, a request on another endpoint still completes.
+    #[tokio::test]
+    async fn a_hanging_probe_never_delays_a_request() {
+        let hanging = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hanging_port = hanging.local_addr().unwrap().port();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (socket, _) = hanging.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            // Hold the socket open without answering.
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        crate::providers::responses_websocket::discover_endpoints(
+            vec![crate::providers::responses_websocket::DiscoveryTarget {
+                base_url: format!("http://127.0.0.1:{hanging_port}/v1"),
+                model_id: "m".to_string(),
+                wire: crate::providers::responses_websocket::DiscoveryWire::ChatCompletions,
+                headers: vec![],
+            }],
+            crate::utils::prewarm::NetworkMode::Online,
+        );
+        accepted_rx
+            .await
+            .expect("the probe reached the hanging endpoint");
+        let endpoint = spawn_endpoint(vec![], vec![response_events("resp_1", "Hello")]).await;
+        let reply = tokio::time::timeout(
+            Duration::from_secs(2),
+            run(
+                &model(&endpoint.base_url),
+                &first_turn(),
+                &options(None, Some(Transport::Sse)),
+            ),
+        )
+        .await
+        .expect("the request completes while the probe hangs");
+        assert_eq!(text(&reply), Some("Hello".to_string()));
     }
 }
