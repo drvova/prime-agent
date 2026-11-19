@@ -845,11 +845,11 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
         }),
     );
     // The session-scoped faux cache counts the seed prompt as input plus
-    // cache-write tokens. It stays below the 31_808 ceiling (40k - 4_096
+    // cache-write tokens. It stays below the 39_808 ceiling (48k - 4_096
     // output - 4_096 headroom), with room for the system prompt to grow;
-    // the 48k-character crossing turn exceeds it.
+    // the 48k-character crossing turn (counted the same way) exceeds it.
     let script = serde_json::json!({
-        "contextWindow": 40000,
+        "contextWindow": 48000,
         "responses": [
             {"text": "seed reply"},
             {"text": "crossing reply"},
