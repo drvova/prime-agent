@@ -6,6 +6,10 @@
 //! one answered turn the title beside the chat name reads `plan`, never a dollar figure: the
 //! subscription's calls carry API list prices that are never billed.
 //!
+//! A second check opens `/usage` against a loopback Claude usage fixture: the spend half splits
+//! the plan's calls out as API-equivalent value (not billed), the quota card keeps its reset
+//! countdown, and the title then shows the cached 5-hour window instead of `plan`.
+//!
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
 
@@ -67,7 +71,9 @@ impl Drop for Pane {
     }
 }
 
-fn start(dir: &Path) -> Pane {
+/// Start the product; `quota_origin` points every provider usage endpoint at a loopback
+/// fixture (`PRIME_AGENT_QUOTA_BASE_URL`), or at a closed port when `None`.
+fn start(dir: &Path, quota_origin: &str) -> Pane {
     let home = dir.join("home");
     let agent = home.join(".prime/agent");
     let project = dir.join("billing-chat");
@@ -107,7 +113,7 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_QUOTA_BASE_URL={quota_origin} \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
@@ -147,7 +153,7 @@ fn start(dir: &Path) -> Pane {
 fn a_subscription_session_titles_its_plan_without_a_dollar_figure() {
     let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
         .expect("temp dir");
-    let pane = start(dir.path());
+    let pane = start(dir.path(), "http://127.0.0.1:9");
     pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
     assert!(pane
         .tmux(&["send-keys", "-t", "main", "-l", "hello"])
@@ -172,4 +178,106 @@ fn a_subscription_session_titles_its_plan_without_a_dollar_figure() {
         Some("billing-chat  plan".to_string()),
         "the screen:\n{screen}"
     );
+}
+
+/// A loopback Claude usage endpoint: `GET /api/oauth/usage` answers a 5-hour window 42% used,
+/// resetting 80 minutes from the start; the server runs until the test process ends.
+fn quota_fixture() -> String {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the quota fixture");
+    let origin = format!("http://{}", listener.local_addr().expect("fixture address"));
+    let resets_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_secs()
+        + 80 * 60;
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let body = json!({
+                "five_hour": { "utilization": 42, "resets_at": iso_seconds(resets_at) },
+            })
+            .to_string();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    origin
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` for epoch seconds (civil-from-days).
+fn iso_seconds(epoch: u64) -> String {
+    let days = i64::try_from(epoch / 86_400).expect("days");
+    let of_day = epoch % 86_400;
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        of_day / 3600,
+        of_day % 3600 / 60,
+        of_day % 60
+    )
+}
+
+#[test]
+fn the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota() {
+    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
+        .expect("temp dir");
+    let pane = start(dir.path(), &quota_fixture());
+    pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "-l", "hello"])
+        .status
+        .success());
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "Enter"])
+        .status
+        .success());
+    pane.wait("the answer", |screen| screen.contains("planned answer"));
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "-l", "/usage"])
+        .status
+        .success());
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "Enter"])
+        .status
+        .success());
+    let usage_screen = pane.wait("the split spend and the quota card", |screen| {
+        screen.contains("Plan usage (API-equivalent value, not billed)")
+            && screen.contains("5-hour")
+            && screen.contains("resets")
+    });
+    let plan_row = usage_screen
+        .lines()
+        .find(|line| line.contains("Plan usage"))
+        .map(str::trim);
+    assert_eq!(
+        plan_row,
+        Some("Plan usage (API-equivalent value, not billed)  $0.00  1 call"),
+        "the page:\n{usage_screen}"
+    );
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "Escape"])
+        .status
+        .success());
+    // The cached card now names the plan's tightest window in the title, with its countdown.
+    pane.wait("the cached quota in the title", |screen| {
+        screen.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("billing-chat  5h 42% \u{b7} 1h")
+        })
+    });
 }

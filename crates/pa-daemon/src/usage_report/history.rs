@@ -17,6 +17,7 @@ use std::time::SystemTime;
 
 use pa_core::session_engine::compaction_exec::add_assistant_usage;
 use pa_types::ai::Usage;
+use pa_types::billing::{BillingMode, BillingSplit};
 use pa_types::provider_usage::{
     DailySpend, ModelSpend, ObservedRateLimit, SpendHistory, SpendTotals,
 };
@@ -36,12 +37,14 @@ const DAY_MS: i64 = 86_400_000;
 /// `(local date, provider, model)`.
 type BucketKey = (String, String, String);
 
-/// One file's fold: the billed usage per bucket (ordered, so the cost sums add in one order every
-/// run) and the latest rate-limited response per provider.
+/// One file's fold: the billed usage, call count and billing split per bucket (ordered, so the
+/// cost sums add in one order every run), the latest rate-limited response per provider, and each
+/// model's latest assistant call (its time and billing mode).
 #[derive(Debug, Clone, Default, PartialEq)]
 struct FileSpend {
-    buckets: BTreeMap<BucketKey, (Usage, u64)>,
+    buckets: BTreeMap<BucketKey, (Usage, u64, BillingSplit)>,
     rate_limits: HashMap<String, ObservedRateLimit>,
+    latest_modes: HashMap<(String, String), (i64, Option<BillingMode>)>,
 }
 
 /// The scan's file identity: a changed length or mtime rescans the file.
@@ -191,11 +194,19 @@ fn scan_file(path: &Path) -> FileSpend {
                 message.provider.unwrap_or_else(|| "unknown".to_string()),
                 message.model.unwrap_or_else(|| "unknown".to_string()),
             );
+            let usage: Usage = usage.into();
+            let latest = spend
+                .latest_modes
+                .entry((key.1.clone(), key.2.clone()))
+                .or_insert((at_ms, usage.billing));
+            if latest.0 <= at_ms {
+                *latest = (at_ms, usage.billing);
+            }
             if let Some(at) = assistant_index.get(&entry.id) {
-                assistant_rows[*at] = (key, usage.into());
+                assistant_rows[*at] = (key, usage);
             } else {
                 assistant_index.insert(entry.id, assistant_rows.len());
-                assistant_rows.push((key, usage.into()));
+                assistant_rows.push((key, usage));
             }
         }
     }
@@ -208,6 +219,9 @@ fn scan_file(path: &Path) -> FileSpend {
         let bucket = spend.buckets.entry(key).or_default();
         add_assistant_usage(&mut bucket.0, &usage);
         bucket.1 += 1;
+        bucket
+            .2
+            .add(usage.billing.as_ref(), usage.cost.total.as_f64());
     }
     spend
 }
@@ -237,13 +251,14 @@ fn session_files(root: &Path) -> Vec<PathBuf> {
     files
 }
 
-fn add_totals(totals: &mut SpendTotals, usage: &Usage, requests: u64) {
+fn add_totals(totals: &mut SpendTotals, (usage, requests, billing): &(Usage, u64, BillingSplit)) {
     totals.input_tokens += usage.input;
     totals.output_tokens += usage.output;
     totals.cache_read_tokens += usage.cache_read;
     totals.cache_write_tokens += usage.cache_write;
     totals.cost += usage.cost.total.as_f64();
     totals.requests += requests;
+    totals.billing.merge(billing);
 }
 
 /// Scan the sessions root (cached per file) and aggregate the page's spans at `now_ms`.
@@ -299,13 +314,21 @@ pub(crate) fn spend_history(sessions_root: &Path, now_ms: i64) -> SpendHistory {
     };
     let mut models: BTreeMap<(String, String), ModelSpend> = BTreeMap::new();
     let mut rate_limits: BTreeMap<String, ObservedRateLimit> = BTreeMap::new();
+    let mut latest_modes: HashMap<(String, String), (i64, Option<BillingMode>)> = HashMap::new();
     for fold in &folds {
-        for ((date, provider, model), (usage, requests)) in &fold.buckets {
+        for (model, latest) in &fold.latest_modes {
+            let known = latest_modes.entry(model.clone()).or_insert(*latest);
+            if known.0 <= latest.0 {
+                *known = *latest;
+            }
+        }
+        for ((date, provider, model), bucket) in &fold.buckets {
             let row = models
                 .entry((provider.clone(), model.clone()))
                 .or_insert_with(|| ModelSpend {
                     provider: provider.clone(),
                     model: model.clone(),
+                    mode: None,
                     today: SpendTotals::default(),
                     last_7_days: SpendTotals::default(),
                     last_30_days: SpendTotals::default(),
@@ -329,12 +352,12 @@ pub(crate) fn spend_history(sessions_root: &Path, now_ms: i64) -> SpendHistory {
             ];
             for (inside, total, model_total) in spans {
                 if inside {
-                    add_totals(total, usage, *requests);
-                    add_totals(model_total, usage, *requests);
+                    add_totals(total, bucket);
+                    add_totals(model_total, bucket);
                 }
             }
             if let Some(day) = daily.get_mut(date.as_str()) {
-                add_totals(day, usage, *requests);
+                add_totals(day, bucket);
             }
         }
         for observed in fold.rate_limits.values() {
@@ -356,7 +379,15 @@ pub(crate) fn spend_history(sessions_root: &Path, now_ms: i64) -> SpendHistory {
             totals,
         })
         .collect();
-    history.models = models.into_values().collect();
+    history.models = models
+        .into_values()
+        .map(|row| ModelSpend {
+            mode: latest_modes
+                .get(&(row.provider.clone(), row.model.clone()))
+                .and_then(|(_, mode)| *mode),
+            ..row
+        })
+        .collect();
     history.models.sort_by(|left, right| {
         right
             .all_time

@@ -124,6 +124,11 @@ pub struct UsagePageSummary {
     pub refresh_count: u64,
     /// Rate-limit reset chips the tray showed since the last page close.
     pub reset_chip_shown_count: u64,
+    /// The shown 30 days' recorded calls by billing share: billed (pay-as-you-go and
+    /// unclassified), plan (and flat rate), free or unpriced.
+    pub billed_call_count: u64,
+    pub plan_call_count: u64,
+    pub free_call_count: u64,
 }
 
 /// The `/usage` page.
@@ -267,6 +272,12 @@ impl UsagePage {
             (None, true) => UsageSectionOutcome::Loading,
             (None, false) => UsageSectionOutcome::Failed,
         };
+        let split = self
+            .spend
+            .data
+            .as_ref()
+            .map(|history| history.last_30_days.billing)
+            .unwrap_or_default();
         UsagePageSummary {
             provider_count: cards.len() as u64,
             quotas,
@@ -274,6 +285,9 @@ impl UsagePage {
             details_opened: self.details_opened,
             refresh_count: self.refresh_count,
             reset_chip_shown_count: 0,
+            billed_call_count: split.pay_as_you_go.calls + split.unclassified.calls,
+            plan_call_count: split.plan.calls + split.flat_rate.calls,
+            free_call_count: split.free.calls + split.unknown.calls,
         }
     }
 

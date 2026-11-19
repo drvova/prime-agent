@@ -178,6 +178,7 @@ fn spend_totals(cost: f64, tokens: u64, requests: u64) -> SpendTotals {
         cache_write_tokens: 0,
         cost,
         requests,
+        billing: pa_types::billing::BillingSplit::default(),
     }
 }
 
@@ -203,6 +204,7 @@ fn spend_history() -> SpendHistory {
         models: vec![ModelSpend {
             provider: "anthropic".into(),
             model: "claude-opus".into(),
+            mode: None,
             today: spend_totals(9.5, 2_100, 2),
             last_7_days: spend_totals(9.5, 2_100, 2),
             last_30_days: spend_totals(14.25, 3_000, 3),
@@ -329,6 +331,91 @@ fn the_filled_page_fits_both_widths() {
     );
 }
 
+/// Spend the session files stamped with billing modes splits into the billed share, the plan's
+/// API-equivalent value (never billed), and free or unpriced calls; the model rows name each
+/// model's mode, and the page close counts the calls per share.
+#[test]
+fn the_spend_half_splits_billed_plan_and_free_calls() {
+    use pa_types::billing::{BillingMode, BillingSplit, CostSource, ModeSpend};
+    let split = BillingSplit {
+        pay_as_you_go: ModeSpend {
+            calls: 1,
+            cost: 0.4,
+        },
+        plan: ModeSpend {
+            calls: 2,
+            cost: 13.85,
+        },
+        free: ModeSpend {
+            calls: 3,
+            cost: 0.0,
+        },
+        ..BillingSplit::default()
+    };
+    let mut history = spend_history();
+    history.last_30_days.billing = split;
+    history.models[0].mode = Some(BillingMode::Plan {
+        provider_quota: true,
+    });
+    history.models.push(ModelSpend {
+        provider: "openrouter".into(),
+        model: "glm".into(),
+        mode: Some(BillingMode::PayAsYouGo {
+            source: CostSource::ProviderReported,
+        }),
+        today: spend_totals(0.4, 100, 1),
+        last_7_days: spend_totals(0.4, 100, 1),
+        last_30_days: spend_totals(0.4, 100, 1),
+        all_time: spend_totals(0.4, 100, 1),
+    });
+    let mut page = UsagePage::new(None, None);
+    page.apply_quotas(Ok(quota_report()));
+    page.apply_spend(Ok(history));
+    let overview = render(&mut page, 80, 40);
+    let spend_at = overview
+        .iter()
+        .position(|row| row == "  Spend · local sessions")
+        .expect("the spend half");
+    assert_eq!(
+        overview[spend_at..overview.len() - 2].to_vec(),
+        vec![
+            "  Spend · local sessions".to_string(),
+            "    Today        $9.50     2.1k tokens  2 calls".into(),
+            "    7 days       $9.50     2.1k tokens  2 calls".into(),
+            "    30 days     $14.25     3.0k tokens  3 calls".into(),
+            "    All time    $20.00    12.0k tokens  7 calls".into(),
+            "    30 days by billing".into(),
+            "    Billed (pay-as-you-go)  $0.40  1 call".into(),
+            "    Plan usage (API-equivalent value, not billed)  $13.85  2 calls".into(),
+            "    Free / unpriced  3 calls".into(),
+            "    30 days  ····················▅········█".into(),
+        ]
+    );
+    let kb = KeybindingsManager::new();
+    assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
+    let details = render(&mut page, 100, 60);
+    let models_at = details
+        .iter()
+        .position(|row| row == "  Spend by model · 30 days / all time")
+        .expect("the model rows");
+    assert_eq!(
+        details[models_at + 3..models_at + 5].to_vec(),
+        vec![
+            "    anthropic/claude-opus  $14.25 · 3.0k tok  /  $20.00 · 12.0k tok · plan, not billed"
+                .to_string(),
+            "    openrouter/glm  $0.40 · 100 tok  /  $0.40 · 100 tok · billed".into(),
+        ]
+    );
+    assert_eq!(
+        (
+            page.summary().billed_call_count,
+            page.summary().plan_call_count,
+            page.summary().free_call_count,
+        ),
+        (1, 2, 3)
+    );
+}
+
 /// A failed half keeps the other: the quota half's error state beside an empty history.
 #[test]
 fn failed_and_empty_halves_render_their_own_states() {
@@ -443,9 +530,11 @@ fn details_navigation_and_refresh() {
         ]
     );
     assert_eq!(
-        details[16..19].to_vec(),
+        details[16..21].to_vec(),
         vec![
             "  Spend by model · 30 days / all time".to_string(),
+            "    Estimates: cached-token pricing varies; long-context and service tiers".into(),
+            "    are not modelled; plan percentages lag up to 5 minutes.".into(),
             "    anthropic/claude-opus  $14.25 · 3.0k tok  /  $20.00 · 12.0k tok".into(),
             String::new(),
         ]
@@ -482,6 +571,9 @@ fn details_navigation_and_refresh() {
             details_opened: true,
             refresh_count: 1,
             reset_chip_shown_count: 0,
+            billed_call_count: 0,
+            plan_call_count: 0,
+            free_call_count: 0,
         }
     );
 }
