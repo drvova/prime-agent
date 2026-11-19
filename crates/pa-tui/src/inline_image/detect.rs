@@ -1,6 +1,7 @@
 //! The inline-image protocol choice: which pixel protocol (if any) this terminal renders,
 //! decided from the environment hints the terminal exports and the DA1 reply (requested by the
-//! keyboard probe on a Unix tty, by the capability query on Windows; see [`super::reports`]),
+//! keyboard probe on a Unix tty, by the lazy capability query for `WezTerm` on Windows; see
+//! [`super::reports`]),
 //! and the cell pixel size the payload is scaled to ([`cell_size`]). The half-block cells are always painted as the
 //! base layer, so the choice only decides what draws OVER them: a protocol a terminal ignores
 //! leaves the half-blocks visible, while one it does not parse would print as text — the rule
@@ -23,10 +24,10 @@
 //!   explicit passthrough configuration, so the half-blocks are the only safe paint there.
 //! - A native Windows console program under any other host (Git Bash's mintty, conhost)
 //!   reaches it through the inbox console host, which re-renders the screen: graphics never
-//!   arrive, so the half-blocks are the paint there. That host answers DA1 for itself without
-//!   sixel, while a host that relays the terminal's own answer (Windows Terminal taking a
-//!   console over as the default terminal, which sets no `WT_SESSION`; `WezTerm`'s bundled
-//!   pseudoconsole) lists sixel when the terminal draws it.
+//!   arrive, so the half-blocks are the paint there. `WezTerm` (`WEZTERM_PANE`) relays through its
+//!   bundled pseudoconsole and confirms sixel with its own DA1 answer. Windows Terminal taking a
+//!   console over as the default terminal sets no `WT_SESSION` and advertises nothing else, so
+//!   it is never asked and keeps the half-blocks there.
 
 use std::sync::OnceLock;
 
@@ -123,10 +124,9 @@ pub(crate) fn select_protocol(
         return ImageProtocol::HalfBlock;
     }
     if platform == Platform::Windows {
-        // Windows Terminal's own tabs carry `WT_SESSION`; a console it took over as the default
-        // terminal does not, and neither does another host relaying through its pseudoconsole
-        // (WezTerm): their DA1 answer is the signal. The console host answering for itself
-        // lists no sixel.
+        // Windows Terminal's own tabs carry `WT_SESSION`; another host relaying through its
+        // pseudoconsole (WezTerm) confirms sixel with its DA1 answer, which the lazy capability
+        // query asks for. The console host answering for itself lists no sixel.
         return if hints.wt_session.is_some() || da1_sixel == Some(true) {
             ImageProtocol::Sixel
         } else {
@@ -286,12 +286,6 @@ fn hinted() -> [ImageProtocol; 2] {
             select_protocol(&hints, PLATFORM, Some(true)),
         ]
     })
-}
-
-/// Whether any terminal answer could still pick a pixel protocol here (not in a multiplexer
-/// pane, not pinned to the half-blocks): the capability query is only worth sending then.
-pub(crate) fn pixel_protocol_possible() -> bool {
-    hinted() != [ImageProtocol::HalfBlock; 2]
 }
 
 /// The process's protocol: the environment-derived choice, upgraded by a DA1 sixel answer and
@@ -614,10 +608,10 @@ mod tests {
                 None,
             ),
             windows("windows terminal", windows_terminal, None, None),
-            // Windows Terminal as the default terminal (a console handoff) sets no WT_SESSION:
-            // its DA1 answer is the signal.
+            // Any Windows host whose DA1 answer lists sixel (only `WezTerm` is asked; see
+            // `reports::query_needed`).
             windows(
-                "windows terminal, default-terminal handoff",
+                "a windows host whose DA1 lists sixel",
                 TerminalHints::default(),
                 Some(true),
                 Some((10, 20)),
@@ -682,7 +676,7 @@ mod tests {
                 ),
                 ("windows terminal", ImageProtocol::Sixel, sixel_default),
                 (
-                    "windows terminal, default-terminal handoff",
+                    "a windows host whose DA1 lists sixel",
                     ImageProtocol::Sixel,
                     sixel_default
                 ),
