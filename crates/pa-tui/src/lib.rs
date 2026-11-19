@@ -115,6 +115,7 @@ pub mod side_question;
 pub mod snapshot;
 pub mod subagents;
 mod suspend;
+mod terminal_attention;
 mod terminal_image;
 mod terminal_title;
 pub mod theme;

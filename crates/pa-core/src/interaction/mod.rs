@@ -1,4 +1,5 @@
-//! Session todos and user questions: the host side of the kernel's `todo.*` and `ask(...)`.
+//! Session todos, user questions, and notifications: the host side of the kernel's `todo.*`,
+//! `ask(...)`, and `notify(...)`.
 //!
 //! The [`InteractionHub`] owns one session's todo list (persisted as `session_todo_list` custom
 //! entries, newest on the branch wins, so it survives a kernel restart and a session reload) and
@@ -7,6 +8,7 @@
 //! RPC and other headless embeddings supply none, so `ask` settles at once as `no_user` and never
 //! waits.
 
+mod notify;
 mod question;
 mod todo;
 
@@ -39,6 +41,8 @@ pub enum InteractionEvent {
         question_id: String,
         status: QuestionStatus,
     },
+    /// A kernel `notify(...)` ping: shown, never waited on.
+    Notified(pa_types::notification::KernelNotification),
 }
 
 /// The embedding's user-facing side of an [`InteractionHub`].
@@ -146,7 +150,7 @@ impl InteractionHub {
         self.publish(InteractionEvent::TodosAdopted(todos));
     }
 
-    /// Register the `todo.*` and `question.*` host requests.
+    /// Register the `todo.*`, `question.*`, and `notify.send` host requests.
     pub(crate) fn register_host_handlers(
         self: &Arc<Self>,
         session: &Arc<tokio::sync::Mutex<SessionManager>>,
@@ -154,6 +158,7 @@ impl InteractionHub {
     ) {
         todo::register(self, session, handlers);
         question::register(self, handlers);
+        notify::register(self, handlers);
     }
 
     fn publish(&self, event: InteractionEvent) {

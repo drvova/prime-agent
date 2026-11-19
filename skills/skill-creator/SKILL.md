@@ -75,7 +75,7 @@ Keep `SKILL.md` short: the decision flow, the common commands, the contract. Pus
 After writing the skill:
 
 1. Re-read the frontmatter and check every rule in the table above, especially that `name` matches the directory name and the description is non-empty.
-2. In an interactive session, `/reload` picks up new skills without a restart; other sessions pick them up on start. Loading problems (bad name, missing description, name collisions) surface as warnings — ask the user to check, or check diagnostics yourself if you can.
+2. Run `await rlm.reload()` in the Python REPL: the new skill joins this session's skill list from the next model call, and a Python skill is callable at once (check `result.python_skills_bound`). The user's `/reload` does the same; other sessions pick skills up on start. Loading problems (bad name, missing description, name collisions) surface as warnings — ask the user to check, or check diagnostics yourself if you can.
 3. A loaded skill is also invocable as `/skill:<name>`, which the user can try directly.
 
 For Python-backed skills, also run the checks in [references/python-skills.md](references/python-skills.md).

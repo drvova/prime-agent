@@ -762,6 +762,29 @@ impl SessionUi {
                 }
                 self.dirty = true;
             }
+            TurnUpdate::Notification(notification) => {
+                use pa_types::notification::NotificationLevel;
+                let (mark, kind) = match notification.level {
+                    NotificationLevel::Info => ("\u{2139}", StatusKind::Info),
+                    NotificationLevel::Success => ("\u{2713}", StatusKind::Info),
+                    NotificationLevel::Warning => ("\u{26a0}", StatusKind::Warning),
+                    NotificationLevel::Error => ("\u{2717}", StatusKind::Error),
+                };
+                view.push_entry(ChatEntry::Status {
+                    text: format!("{mark} {}", notification.message),
+                    kind,
+                });
+                // The terminal's attention signal rides the next frame's write.
+                let osc_indicators = self
+                    .client_settings
+                    .as_ref()
+                    .is_some_and(|settings| settings.show_terminal_progress());
+                view.pending_attention = Some(crate::terminal_attention::Attention::for_ping(
+                    &notification.message,
+                    osc_indicators,
+                ));
+                self.dirty = true;
+            }
             TurnUpdate::QuestionClosed { question_id } => {
                 if view
                     .question

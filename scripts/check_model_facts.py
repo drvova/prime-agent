@@ -115,7 +115,9 @@ def latest_probe(request, tool_call_id):
 def verify_probe(probe, model, count, provider='fixture'):
     assert probe['kernel_probe_count'] == count, probe
     assert probe['model_info'] == {'provider': provider, 'id': model['id'],
-                                   'input': model['input']}, probe
+                                   'input': model['input'],
+                                   'contextWindow': model['contextWindow'],
+                                   'thinkingLevel': 'off'}, probe
     assert probe['compact_status']['context_window'] == model['contextWindow'], probe
     assert probe['compact_status']['scheduled'] is False, probe
 
