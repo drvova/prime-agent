@@ -50,16 +50,15 @@ fn every_manifest_file_is_embedded() {
     assert_eq!(on_disk, sorted(MANIFESTS.iter().map(|(name, _)| *name)));
 }
 
-/// The runtime-ready probe is exactly the manifests' probe statements: the probe's `; `-joined
-/// statements (split outside string literals) as a sorted multiset.
-#[test]
-fn the_probe_is_the_manifests_probe_statements() {
+/// The hand-written runtime-ready probe this PR replaces, kept only to prove the derivation equal.
+const PRE_DERIVATION_RUNTIME_READY_CHECK: &str = "import inspect; import rlm; from rlm import McpIntegration; import rlm.mcp as mcp; from rlm.harness import HarnessEntry; _harness_methods = ['create_memory', 'update_memory', 'delete_memory', 'create_skill', 'update_skill', 'delete_skill', 'create_subagent', 'update_subagent', 'delete_subagent', 'create_prompt_note', 'update_prompt_note', 'delete_prompt_note', 'record_refinement']; _mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']; assert callable(mcp.list_tools); assert callable(mcp.call_tool); assert callable(mcp.login); assert callable(rlm.rlm.session.search); assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), \"rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime\"; assert callable(rlm.spawn); assert hasattr(rlm, 'rlm'); assert callable(rlm.rlm.spawn); assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty; assert not hasattr(rlm, 'run'); assert not hasattr(rlm.rlm, 'run'); assert callable(rlm.end_turn); assert callable(rlm.rlm.end_turn); assert callable(rlm.host_request); assert callable(rlm.find_models); assert callable(rlm.rlm.find_models); assert callable(rlm.create_session); assert callable(rlm.rlm.create_session); assert callable(rlm.progress_note); assert callable(rlm.rlm.progress_note); assert callable(rlm.rename); assert callable(rlm.rlm.rename); assert callable(rlm.abort); assert callable(rlm.rlm.abort); assert hasattr(rlm, 'harness'); assert hasattr(rlm, 'get_harness_state'); assert hasattr(rlm.rlm, 'harness'); assert hasattr(rlm.rlm, 'get_harness_state'); assert all(callable(getattr(_harness, _method, None)) for _harness in (rlm.harness, rlm.rlm.harness) for _method in _harness_methods); assert 'reference' in HarnessEntry.__dataclass_fields__; assert 'scope' in HarnessEntry.__dataclass_fields__; assert 'reference' in inspect.signature(rlm.harness.create_skill).parameters; assert 'reference' in inspect.signature(rlm.harness.update_skill).parameters; assert 'global_' in inspect.signature(rlm.harness.create_memory).parameters; assert 'global_' in inspect.signature(rlm.get_harness_state).parameters; assert not hasattr(rlm, 'background'); assert not hasattr(rlm.rlm, 'background'); from rlm.bash import BashHandle, BashResult; assert callable(rlm.bash); assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']; assert callable(rlm.persistent_shells); assert callable(rlm._set_completion_notices_wired); assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill')); assert {'exit_code', 'output', 'duration'} <= set(BashResult.__dataclass_fields__); import rlm.repl as _repl; assert callable(_repl.main); assert callable(_repl.emit); assert callable(_repl.host_request); assert callable(_repl.is_active); assert _repl.PROTOCOL_VERSION == 3; assert callable(rlm.emit); assert not hasattr(rlm, 'HOST_COMM_TARGET'); assert not hasattr(mcp, 'install_shutdown_hook'); import rlm.web as _web; assert callable(_web.search); assert callable(_web.read); import rlm.fs as _fs; assert all(callable(getattr(_fs, _m, None)) for _m in ('grep', 'glob', 'find', 'read', 'edit')); assert issubclass(_fs.StaleAnchorsError, RuntimeError); import rlm.schedule as _schedule; assert all(callable(getattr(_schedule, _m, None)) for _m in ('add', 'list', 'cancel')); import rlm.checkpoint as _checkpoint; assert all(callable(getattr(_checkpoint, _m, None)) for _m in ('create', 'list', 'restore')); import rlm.todo as _todo; assert all(callable(getattr(_todo, _m, None)) for _m in ('get', 'set', 'update')); import rlm.ask as _ask; assert callable(_ask.ask); import rlm.notify as _notify; assert callable(_notify.notify); import rlm.model as _model; assert callable(_model.set_effort); assert callable(_model.info); import rlm.settings as _settings; assert callable(_settings.get); import rlm.resource_reload as _reload; assert callable(_reload.reload); assert callable(rlm.rlm.reload); import rlm.usage as _usage; assert callable(_usage.get); assert callable(_repl.host_notify); import rlm.cells as _cells; assert all(callable(getattr(_cells, _m, None)) for _m in ('get', 'handles'))";
+
+/// A probe program's `; `-joined statements (split outside string literals), sorted.
+fn sorted_statements(program: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
     let mut quote: Option<char> = None;
-    let mut chars = crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK
-        .chars()
-        .peekable();
+    let mut chars = program.chars().peekable();
     while let Some(ch) = chars.next() {
         match (quote, ch) {
             (Some(_), '\\') => {
@@ -84,10 +83,15 @@ fn the_probe_is_the_manifests_probe_statements() {
         }
     }
     statements.push(current);
+    sorted(statements)
+}
 
+/// The derived runtime-ready probe holds exactly the hand-written probe's statements.
+#[test]
+fn the_derived_probe_holds_the_hand_written_probes_statements() {
     assert_eq!(
-        sorted(statements),
-        sorted(manifests().into_iter().flat_map(|manifest| manifest.probe))
+        sorted_statements(&crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK),
+        sorted_statements(PRE_DERIVATION_RUNTIME_READY_CHECK)
     );
 }
 

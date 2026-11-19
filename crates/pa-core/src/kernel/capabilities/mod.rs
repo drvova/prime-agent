@@ -3,9 +3,9 @@
 //! records what the host keeps about one capability: its readiness-probe statements, closure
 //! seed, bootstrap binding, prompt names, host requests, and standalone telemetry event.
 //!
-//! Test-only for now: the consistency tests hold the manifests equal to the hand-maintained
-//! lists (the runtime-ready probe, the closure freeze, the bootstrap bindings, the core prompt,
-//! and the telemetry catalog) until those lists derive from them.
+//! The runtime-ready probe and the closure freeze's seed derive from the manifests; the tests hold
+//! the hand-written surfaces (the bootstrap bindings, the core prompt, and the telemetry catalog)
+//! equal to them.
 
 use std::collections::BTreeMap;
 
@@ -54,6 +54,13 @@ const MANIFESTS: &[(&str, &str)] = &[
 /// One capability's manifest, as the README's schema table describes it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the shipped build derives only the probe; the tests read every other key"
+    )
+)]
 pub(crate) struct CapabilityManifest {
     pub(crate) module: String,
     pub(crate) closure_seed: bool,
@@ -77,6 +84,10 @@ pub(crate) struct CapabilityManifest {
 /// The count properties of one standalone session-end telemetry event a capability owns.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "read only by the telemetry catalog test")
+)]
 pub(crate) struct TelemetryClaim {
     pub(crate) event: String,
     pub(crate) properties: Vec<String>,
