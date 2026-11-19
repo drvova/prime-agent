@@ -126,3 +126,17 @@ graphics), in a process-global, exported as
 was parsed). The event, its filters, parse order and the probe's timing are
 unchanged; only `parse_csi_primary_device_attributes` reads its own
 parameters now (the first, the conformance class, is skipped).
+
+# The cell-size report (2026-11-19, sharp-inline-images lane)
+
+The inline-image renderer asks for the character cell size in pixels (`CSI 16 t`) once at the
+first surface start, so a sixel or kitty payload is scaled to the terminal's real cells where the
+pty carries no pixel size (`TIOCGWINSZ` `ws_xpixel`/`ws_ypixel` are 0 under WSL, node-pty hosts
+and mosh). Upstream parsed the answer (`CSI 6 ; height ; width t`) as a modified key, which fails
+on the `t` final and drops the bytes. `src/event/sys/unix/parse.rs` now routes a numbered CSI with
+the `t` final to `parse_csi_window_report`, which records the cell-size form in a process-global
+exported as `terminal::reported_cell_pixels() -> Option<(u16, u16)>` (`(width, height)`, `None`
+until a reply was parsed) and then returns the same parse error, so every window report is still
+dropped exactly as before: no event, filter, or parse order changes. Test:
+`a_cell_size_report_is_recorded_and_dropped_like_any_window_report`, run from a copy as described
+above.

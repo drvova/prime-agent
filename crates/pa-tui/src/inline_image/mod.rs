@@ -19,6 +19,7 @@ mod detect;
 mod encode;
 pub(crate) mod overlay;
 mod raster;
+pub(crate) mod reports;
 mod store;
 
 use std::sync::Arc;
@@ -146,28 +147,31 @@ fn parse_sentinel(content: &str) -> Option<Sentinel> {
     })
 }
 
-/// The pixel size of one cell for `protocol`'s payload: the terminal's report where it gives
-/// one, Windows Terminal's fixed sixel cell on Windows, else the default — except for sixel,
-/// which draws at the terminal's own scale and so needs the real size (`None` without it).
+/// The pixel size of one cell for `protocol`'s payload (see [`detect::cell_size`]), from the
+/// live reports.
 pub(crate) fn cell_pixels(protocol: ImageProtocol) -> Option<(u16, u16)> {
     match protocol {
-        ImageProtocol::HalfBlock => return Some((0, 0)),
-        ImageProtocol::Kitty | ImageProtocol::Iterm2 | ImageProtocol::Sixel => {}
+        ImageProtocol::HalfBlock => Some((0, 0)),
+        ImageProtocol::Kitty | ImageProtocol::Iterm2 | ImageProtocol::Sixel => detect::cell_size(
+            protocol,
+            &detect::process_hints(),
+            detect::PLATFORM,
+            live_cell_reports(),
+        ),
     }
-    if cfg!(windows) {
-        return Some(DEFAULT_CELL_PIXELS);
-    }
-    let reported = crossterm::terminal::window_size().ok().and_then(|size| {
+}
+
+/// The cell pixel sizes the terminal reports right now: the pty's pixel size (a `TIOCGWINSZ`
+/// read; the Windows console has none) and the `CSI 16 t` answer.
+fn live_cell_reports() -> detect::CellReports {
+    let winsize = crossterm::terminal::window_size().ok().and_then(|size| {
         (size.columns > 0 && size.rows > 0 && size.width > 0 && size.height > 0)
             .then(|| (size.width / size.columns, size.height / size.rows))
             .filter(|(width, height)| *width > 0 && *height > 0)
     });
-    match (reported, protocol) {
-        (Some(cell), _) => Some(cell),
-        (None, ImageProtocol::Sixel) => None,
-        (None, ImageProtocol::Kitty | ImageProtocol::Iterm2 | ImageProtocol::HalfBlock) => {
-            Some(DEFAULT_CELL_PIXELS)
-        }
+    detect::CellReports {
+        winsize,
+        reply: reports::cell_pixels(),
     }
 }
 
