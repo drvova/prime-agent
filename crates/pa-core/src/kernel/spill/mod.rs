@@ -29,6 +29,7 @@
 //! stay under the store's cap ([`SPILL_STORE_CAP_BYTES`]) by evicting the
 //! oldest stored spills first; an evicted handle answers "evicted".
 
+pub(crate) mod host;
 mod index;
 mod marker;
 #[cfg(test)]
