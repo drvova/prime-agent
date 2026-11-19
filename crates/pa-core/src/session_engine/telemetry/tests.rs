@@ -2084,3 +2084,127 @@ async fn background_cells_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `notify(...)` pings and `model.set_effort(...)` calls ride their own `agent repl
+/// notify` event at session end (counts only, never a message or a level).
+#[tokio::test]
+async fn repl_notifications_and_effort_switches_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_notification(true);
+    counters.note_notification(false);
+    counters.note_effort_switch(true);
+    counters.note_effort_switch(false);
+    counters.note_effort_switch(false);
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl notify"]
+    );
+    let notify = &event_properties(&fixture.mock, "agent repl notify").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = notify
+        .iter()
+        .filter(|(key, _)| key.starts_with("notify_") || key.starts_with("effort_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "notify_count": 2,
+            "notify_undelivered_count": 1,
+            "effort_set_count": 1,
+            "effort_refused_count": 2,
+        })
+    );
+}
+
+/// Kernel `rlm.reload()` and `settings.get()` calls ride their own `agent repl reload` event at
+/// session end (counts only, never a skill name or a setting value).
+#[tokio::test]
+async fn repl_reloads_and_settings_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_repl_reload(2);
+    counters.note_repl_reload(0);
+    counters.note_repl_settings_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl reload"]
+    );
+    let reload = &event_properties(&fixture.mock, "agent repl reload").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reload
+        .iter()
+        .filter(|(key, _)| key.starts_with("repl_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "repl_reload_count": 2,
+            "repl_reload_skills_added_count": 2,
+            "repl_settings_get_count": 1,
+        })
+    );
+}
+
+/// Kernel `mcp.login` outcomes and past-session recall ride their own `agent kernel login and
+/// recall` event at session end (counts only), and a session that used neither sends none.
+#[tokio::test]
+async fn kernel_login_and_recall_ride_their_own_event() {
+    use crate::session_engine::session_search::SessionRecallFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_kernel_mcp_login(Some(true));
+    counters.note_kernel_mcp_login(Some(false));
+    counters.note_kernel_mcp_login(None);
+    for fact in [
+        SessionRecallFact::Searched { hits: 3 },
+        SessionRecallFact::Searched { hits: 0 },
+        SessionRecallFact::Read,
+        SessionRecallFact::Failed,
+    ] {
+        counters.note_session_recall(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent kernel login and recall"]
+    );
+    let recall = &event_properties(&fixture.mock, "agent kernel login and recall").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = recall
+        .iter()
+        .filter(|(key, _)| key.starts_with("kernel_mcp_") || key.starts_with("session_search_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "kernel_mcp_login_count": 1,
+            "kernel_mcp_login_failed_count": 1,
+            "kernel_mcp_login_unavailable_count": 1,
+            "session_search_count": 2,
+            "session_search_hit_count": 3,
+            "session_search_read_count": 1,
+            "session_search_failed_count": 1,
+        })
+    );
+}

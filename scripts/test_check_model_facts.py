@@ -9,7 +9,8 @@ from check_model_facts import MARKER, MODELS, latest_probe, verify_probe
 
 def probe(model, count):
     return {'kernel_probe_count': count,
-            'model_info': {'provider': 'fixture', 'id': model['id'], 'input': model['input']},
+            'model_info': {'provider': 'fixture', 'id': model['id'], 'input': model['input'],
+                           'contextWindow': model['contextWindow'], 'thinkingLevel': 'off'},
             'compact_status': {'context_window': model['contextWindow'], 'scheduled': False,
                                'tokens': 11, 'percent': 0.1}}
 

@@ -1,0 +1,1 @@
+- The Python REPL can now start an MCP sign-in for you with `await mcp.login(server)` (you finish it in the browser; headless runs answer that you should run `/mcp login`), and search this project's past sessions read-only with `await rlm.session.search("flaky test")`, reading a hit through `rlm.session.messages(session=hit)`. Past sessions are never resumed, edited, or deleted.

@@ -42,6 +42,7 @@ The following programmatic tools are available in the REPL for subagent manageme
 - `rlm.abort(target: str | RLMSubagent) -> RLMAbortResult`: stop a direct child's current turn without deleting it, to steer it: then send new instructions with `agent_message.send`; `result.outcome` is `aborted` or `idle` (nothing was running), `result.subagent` its row
 - `rlm.rename(new_name: str, *, session_id=None) -> str`: rename the calling session (omit `session_id`) or a direct child (spawn handle, `list_subagents()` row, or session id; never the child's name); names must be unique among siblings, and the renamed session sees a transcript line for the change
 - `rlm.collect(targets=None, *, timeout_ms: int = 0) -> list[RLMChildResult]`: typed snapshots of direct children (status, settled flag, answer preview, error) without steering anyone; `timeout_ms=0` returns a non-blocking snapshot; a positive timeout blocks only this call until the children settle or the deadline passes
+- `rlm.reload() -> ReloadResult`: re-read skills, prompt templates, and `AGENTS.md` context files like the user's `/reload`; call it after writing or changing a skill (e.g. with skill-creator) to use it in this session. The system prompt's skill list follows from the next model call, and a new Python skill is installed and callable in the REPL at once (`result.python_skills_bound`; `result.unbound` says why one is not). `str(result)` summarizes `skills_added`, `skills_removed`, and `diagnostics` (load warnings)
 - `rlm.progress_note(message: str) -> dict`: report brief in-flight progress to the parent orchestrator (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply
 - `RLMSpawnHandle`
   - `rlm_child_id: str`
@@ -146,7 +147,8 @@ prime-agent compacts automatically when there is only a given number of tokens l
 
 - `compact.run(instructions: str | None = None) -> dict`: schedule a compaction at the next assistant turn boundary
 - `compact.status() -> dict`: context usage & threshold before auto-compaction
-- `rlm.session.messages(start: int = -10, limit: int = 10, *, role: str | tuple[str, ...] = "*", agent=None) -> list[RLMMessage]` / `rlm.session.count(role="*", *, agent=None) -> int`: this session's own transcript on the active branch, or with `agent` a nuclear-family member's (parent, sibling, or child: a name, child id, session id, spawn handle, or `list_subagents()` row), oldest first, including the messages compaction summarized away (each compaction in place as a `compactionSummary` message); `messages` returns `rows[start:][:limit]` (Python slice semantics) of the rows whose role matches `role`, fnmatch globs over `user`, `assistant`, `toolResult`, `custom`, `compactionSummary`, `branchSummary`, `bashExecution`; `count` returns `len(rows)`
+- `rlm.session.messages(start: int = -10, limit: int = 10, *, role: str | tuple[str, ...] = "*", agent=None, session=None) -> list[RLMMessage]` / `rlm.session.count(role="*", *, agent=None, session=None) -> int`: this session's own transcript on the active branch, or with `agent` a nuclear-family member's (parent, sibling, or child: a name, child id, session id, spawn handle, or `list_subagents()` row), or with `session` a past session of this project (a `search()` hit or its session id, read-only), oldest first, including the messages compaction summarized away (each compaction in place as a `compactionSummary` message); `messages` returns `rows[start:][:limit]` (Python slice semantics) of the rows whose role matches `role`, fnmatch globs over `user`, `assistant`, `toolResult`, `custom`, `compactionSummary`, `branchSummary`, `bashExecution`; `count` returns `len(rows)`
+- `rlm.session.search(query: str, *, limit: int = 10) -> list[RLMSessionHit]`: past sessions saved in this project folder whose messages mention every word of `query`, most matches first; `RLMSessionHit(session_id, title, created_at, updated_at, match_count, message_count, snippets)` with `snippets` as `RLMSessionSnippet(index, role, text)`; read a hit with `rlm.session.messages(start=snippet.index, session=hit)`; read-only: it never resumes, edits, or deletes a session
 - `rlm.session.tool_result(tool_call_id: str) -> str`: one tool result's full text; under context pressure, older large results are replayed as a head and tail with a pointer naming this call
 - `RLMMessage`
   - `index: int`: the position in `rows` for the same `role`; the page before `msgs` is `messages(max(0, i - k), min(k, i), role=role)` with `i = msgs[0].index`
@@ -184,6 +186,7 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 - `mcp.list_connections() -> list[dict]`: the user's current connections (the dispatch ids)
 - `mcp.search_tools(query: str, connection_id: str | None = None, limit: int = 20) -> dict`: search live tool names/descriptions and report the search scope
 - `mcp.describe_tool(connection_id: str, tool: str) -> dict`: one live tool's name, description, and inputSchema
+- `mcp.login(server: str) -> dict`: when a server needs the user to sign in, start the user's interactive login (the user completes it in their browser) and wait; returns `{server, status, message}` with `status` `logged_in` (usable now), `unavailable` (this run cannot show a login: ask the user to run `/mcp login <server>`), or `failed`
 
 ## Web search
 
@@ -238,8 +241,20 @@ Read-only, for budgeting long runs: check before expensive work and back off bef
 
 - `usage.get(*, refresh: bool = False) -> Usage`: `str(usage)` summarizes it; `usage.cost` holds `Cost(total, own, subagents)` in USD (`subagents` is your children's rolled-up spend); `usage.tokens` holds `Tokens(input, output, cache_read, cache_write, total)`; `usage.quotas` lists `ProviderQuota(provider, plan, state, windows, resets_at, error)` for each signed-in subscription provider, `state` being `windows`, `rate_limited`, or `failed`, with `QuotaWindow(label, used, limit, unit, resets_at)` (`unit` is `percent`/`requests`, `resets_at` a UTC datetime, `window.used_fraction`). Quota cards are cached for a few minutes; `refresh=True` re-reads them. `usage.quotas_unavailable` says why `quotas` is empty when no daemon serves the session.
 
+## Session settings
+
+Read-only views of what this session runs with; nothing here is a credential.
+
+- `model.info() -> ModelInfo`: `ModelInfo(id, provider, input, context_window, thinking_level)`; `info.selector` is the `provider/id` that `rlm.spawn(model=...)` takes, `info.image_input` whether `attach_image` works
+- `settings.get() -> Settings`: `str(s)` summarizes it; fields `model`, `context_window`, `thinking_level`, `cell_timeout_ms` (the default `python_repl` cell limit, `None` when unbounded), `compaction` (`Compaction(enabled, threshold_percent, keep_recent_tokens, agent_callable)`), `rlm_depth`, `rlm_max_depth`, `rlm_max_depth_source`, `image_model`, `web_search_provider`, `cache_retention`, `daemonless`, and `autonomous` (`Autonomous(enabled, continuations_used, turns_used, tokens_used, limits)`, `None` when no autonomous runner serves the session; a limit of `0` is unlimited)
+
+## Notifications and effort
+
+- `notify(message: str, *, level: str = "info") -> bool`: a non-blocking ping (`level` is `info`/`success`/`warning`/`error`): the user sees a notice row and their terminal asks for attention. Use it when long or unattended work finishes or needs a look; unlike `ask` it never waits. Returns whether a user was attached to see it (`False` in headless runs).
+- `model.set_effort(level: str) -> str`: change this session's thinking level (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) from the next model call; returns the effective level. It changes cost, so it works only when the user set `"replCanChangeEffort": true` in the global settings, and raises `RuntimeError` saying so otherwise. Children take their own level with `rlm.spawn(thinking=...)`.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, `model.*`, `settings.*`, `ask`, and `notify` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

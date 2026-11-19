@@ -1696,6 +1696,58 @@ const AGENT_PROVIDER_OAUTH_LOGIN: EventRule = EventRule {
     ],
 };
 
+/// Kernel `notify(...)` and `model.set_effort(...)` adoption for one session (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// the session pinged or switched effort: pings, pings nobody was attached to see, and effort
+/// switches applied and refused. Counts only: never a message or a level.
+const AGENT_REPL_NOTIFY: EventRule = EventRule {
+    name: "agent repl notify",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("notify_count", required(count())),
+        ("notify_undelivered_count", required(count())),
+        ("effort_set_count", required(count())),
+        ("effort_refused_count", required(count())),
+    ],
+};
+
+/// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
+/// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
+/// session reloaded or read its settings: reloads, the skills they added, and settings reads.
+/// Counts only: never a skill name, a path, or a setting value.
+const AGENT_REPL_RELOAD: EventRule = EventRule {
+    name: "agent repl reload",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("repl_reload_count", required(count())),
+        ("repl_reload_skills_added_count", required(count())),
+        ("repl_settings_get_count", required(count())),
+    ],
+};
+
+/// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
+/// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
+/// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
+/// outcome (logged in, failed, no interactive login in the run), searches, the hits they
+/// returned, saved-transcript reads, and failed recall calls. Counts only: never a server, a
+/// query, a session, or a snippet.
+const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
+    name: "agent kernel login and recall",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("kernel_mcp_login_count", required(count())),
+        ("kernel_mcp_login_failed_count", required(count())),
+        ("kernel_mcp_login_unavailable_count", required(count())),
+        ("session_search_count", required(count())),
+        ("session_search_hit_count", required(count())),
+        ("session_search_read_count", required(count())),
+        ("session_search_failed_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1734,6 +1786,9 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_PROVIDER_OAUTH_LOGIN,
+        &AGENT_REPL_NOTIFY,
+        &AGENT_REPL_RELOAD,
+        &AGENT_KERNEL_LOGIN_AND_RECALL,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

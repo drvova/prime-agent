@@ -399,8 +399,32 @@ struct CounterValues {
     usage_read_count: u64,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
     rlm_abort: RlmAbortCounts,
+    /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
+    /// `agent kernel login and recall`.
+    login_recall: LoginRecallCounts,
+    /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
+    notify_effort: NotifyEffortCounts,
+    /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
+    repl_reload: ReplReloadCounts,
     /// Cells that continued in the background, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+}
+
+/// `agent repl reload`: reloads, the skills they added, and settings reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplReloadCounts {
+    reloads: u64,
+    skills_added: u64,
+    settings_reads: u64,
+}
+
+/// `agent repl notify`: pings (and those nobody saw), and effort switches (applied and refused).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct NotifyEffortCounts {
+    notified: u64,
+    undelivered: u64,
+    effort_set: u64,
+    effort_refused: u64,
 }
 
 /// `agent repl background cells`: cells that outlived their yield window, and how they ended.
@@ -418,6 +442,19 @@ struct RlmAbortCounts {
     aborted: u64,
     idle: u64,
     failed: u64,
+}
+
+/// `agent kernel login and recall`: kernel MCP logins by outcome, and past-session searches,
+/// their hits, transcript reads, and failed recall calls.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct LoginRecallCounts {
+    login_ok: u64,
+    login_failed: u64,
+    login_unavailable: u64,
+    searches: u64,
+    search_hits: u64,
+    reads: u64,
+    recall_failed: u64,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -753,6 +790,67 @@ impl SessionCounters {
                 Some(RlmAbortOutcome::Idle) => &mut counts.idle,
                 None => &mut counts.failed,
             } += 1;
+        });
+    }
+
+    /// One kernel `rlm.reload()` and the count of skills it added (never a name).
+    pub(crate) fn note_repl_reload(&self, skills_added: usize) {
+        self.with(|values| {
+            values.repl_reload.reloads += 1;
+            values.repl_reload.skills_added += skills_added as u64;
+        });
+    }
+
+    /// One kernel `settings.get()` read (never a value).
+    pub(crate) fn note_repl_settings_read(&self) {
+        self.with(|values| values.repl_reload.settings_reads += 1);
+    }
+
+    /// One kernel `mcp.login`: `Some(true)` logged in, `Some(false)` failed, `None` unavailable.
+    pub(crate) fn note_kernel_mcp_login(&self, outcome: Option<bool>) {
+        self.with(|values| {
+            let counts = &mut values.login_recall;
+            *match outcome {
+                Some(true) => &mut counts.login_ok,
+                Some(false) => &mut counts.login_failed,
+                None => &mut counts.login_unavailable,
+            } += 1;
+        });
+    }
+
+    /// One kernel past-session recall call (counts only: never a query or a session).
+    pub(crate) fn note_session_recall(&self, fact: super::session_search::SessionRecallFact) {
+        use super::session_search::SessionRecallFact;
+        self.with(|values| {
+            let counts = &mut values.login_recall;
+            match fact {
+                SessionRecallFact::Searched { hits } => {
+                    counts.searches += 1;
+                    counts.search_hits += hits as u64;
+                }
+                SessionRecallFact::Read => counts.reads += 1,
+                SessionRecallFact::Failed => counts.recall_failed += 1,
+            }
+        });
+    }
+
+    /// One kernel `notify(...)` ping and whether a user was attached to see it (never the text).
+    pub(crate) fn note_notification(&self, delivered: bool) {
+        self.with(|values| {
+            values.notify_effort.notified += 1;
+            values.notify_effort.undelivered += u64::from(!delivered);
+        });
+    }
+
+    /// One kernel `model.set_effort(...)`: applied, or refused (the setting is off or the
+    /// level invalid). Never the level.
+    pub(crate) fn note_effort_switch(&self, applied: bool) {
+        self.with(|values| {
+            if applied {
+                values.notify_effort.effort_set += 1;
+            } else {
+                values.notify_effort.effort_refused += 1;
+            }
         });
     }
 
@@ -1379,6 +1477,60 @@ impl SessionTelemetry {
                 abort_properties.set(key, Value::from(value));
             }
             self.client.track("agent rlm child abort", abort_properties);
+        }
+        // A session that never reloaded or read its settings sends no reload event.
+        let mut repl_reload = ReplReloadCounts::default();
+        self.counters
+            .with(|values| repl_reload = values.repl_reload);
+        if repl_reload != ReplReloadCounts::default() {
+            let mut reload_properties = self.session_properties();
+            for (key, value) in [
+                ("repl_reload_count", repl_reload.reloads),
+                ("repl_reload_skills_added_count", repl_reload.skills_added),
+                ("repl_settings_get_count", repl_reload.settings_reads),
+            ] {
+                reload_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl reload", reload_properties);
+        }
+        // A session that neither logged in nor searched past sessions sends no recall event.
+        let mut login_recall = LoginRecallCounts::default();
+        self.counters
+            .with(|values| login_recall = values.login_recall);
+        if login_recall != LoginRecallCounts::default() {
+            let mut recall_properties = self.session_properties();
+            for (key, value) in [
+                ("kernel_mcp_login_count", login_recall.login_ok),
+                ("kernel_mcp_login_failed_count", login_recall.login_failed),
+                (
+                    "kernel_mcp_login_unavailable_count",
+                    login_recall.login_unavailable,
+                ),
+                ("session_search_count", login_recall.searches),
+                ("session_search_hit_count", login_recall.search_hits),
+                ("session_search_read_count", login_recall.reads),
+                ("session_search_failed_count", login_recall.recall_failed),
+            ] {
+                recall_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent kernel login and recall", recall_properties);
+        }
+        // A session that never pinged or switched effort sends no notify event.
+        let mut notify_effort = NotifyEffortCounts::default();
+        self.counters
+            .with(|values| notify_effort = values.notify_effort);
+        if notify_effort != NotifyEffortCounts::default() {
+            let mut notify_properties = self.session_properties();
+            for (key, value) in [
+                ("notify_count", notify_effort.notified),
+                ("notify_undelivered_count", notify_effort.undelivered),
+                ("effort_set_count", notify_effort.effort_set),
+                ("effort_refused_count", notify_effort.effort_refused),
+            ] {
+                notify_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl notify", notify_properties);
         }
         // A session whose cells all ended inside their window sends no background-cell event.
         let mut cells = BackgroundCellCounts::default();

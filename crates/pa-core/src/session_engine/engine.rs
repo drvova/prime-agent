@@ -163,6 +163,8 @@ pub struct SessionEngine {
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
+    /// The session's current resources and the `rlm.reload`/`/reload` re-read.
+    pub resource_reload: std::sync::Arc<super::resource_reload::ResourceReload>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -299,6 +301,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let (cache_retention, cache_warming) =
         (settings.get_cache_retention(), settings.get_cache_warming());
     let web_search_provider = settings.get_web_search_provider();
+    // The `settings.session` view's armed values, read before `settings` moves.
+    let (compaction_enabled, image_model) = (
+        settings.get_compaction_enabled(),
+        settings.get_image_model(),
+    );
     let (mcp_skill_overrides, mcp_generic_servers, built_manager) =
         mcp_gating(&settings, config.agent_dir.clone()).await?;
     let mcp_manager = config
@@ -313,6 +320,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             generic_mcp_servers.push(server);
         }
     }
+    let reload_skill_overrides = extra_builtin_skill_overrides.clone();
     let resources = load_resources(ResourceLoaderOptions {
         cwd: cwd.clone(),
         agent_dir: config.agent_dir.clone(),
@@ -385,9 +393,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager
             .lock()
             .unwrap()
-            .set_usage_report(Some(std::sync::Arc::new(move |_action, _server| {
-                counters.note_mcp_connector_use();
-            })));
+            .set_usage_report(Some(std::sync::Arc::new(
+                move |action, _server| match action {
+                    crate::mcp::LOGIN_ACTION => counters.note_kernel_mcp_login(Some(true)),
+                    crate::mcp::LOGIN_FAILED_ACTION => counters.note_kernel_mcp_login(Some(false)),
+                    crate::mcp::LOGIN_UNAVAILABLE_ACTION => counters.note_kernel_mcp_login(None),
+                    _ => counters.note_mcp_connector_use(),
+                },
+            )));
     }
     // The registration takes the shared manager: the inventory handlers
     // serve live views per request.
@@ -451,7 +464,82 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::usage_host::UsageObserver
         }),
     );
+    // `rlm.session.search`/`rlm.session.saved_messages`: read-only recall over this project's
+    // saved sessions; telemetry folds each call (never a query or a session) into the counters.
+    super::session_search::register(
+        &mut handlers,
+        &wiring.session,
+        config
+            .telemetry
+            .is_some()
+            .then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_session_recall(fact))
+                    as super::session_search::SessionRecallObserver
+            })
+            .as_ref(),
+    );
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
+    // `rlm.reload` re-reads the skills, prompts, and context files; `settings.*`
+    // reports the armed limits. Telemetry counts each (never a name or a value).
+    let resource_reload = super::resource_reload::ResourceReload::new(
+        &turn_boundary,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |added| counters.note_repl_reload(added))
+                as super::resource_reload::ReloadObserver
+        }),
+    );
+    resource_reload.register(&mut handlers);
+    super::settings_view::register_settings_handlers(
+        &mut handlers,
+        &turn_boundary,
+        super::settings_view::ArmedSettings {
+            cell_timeout_ms: super::runtime_wiring::arm_cell_yield_ms(
+                config.daemonless,
+                python_cell_timeout_ms,
+            ),
+            compaction_enabled,
+            compaction_threshold_percent,
+            compaction_keep_recent_tokens: compaction_settings
+                .keep_recent_tokens
+                .unwrap_or(super::compaction::DEFAULT_KEEP_RECENT_TOKENS),
+            compaction_agent_callable: compaction_settings.agent_callable.unwrap_or(true),
+            image_model,
+            web_search_provider: serde_json::to_value(web_search_provider)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_default(),
+            cache_retention: serde_json::to_value(cache_retention).unwrap_or_default(),
+            rlm_depth: config.rlm_depth.unwrap_or(0),
+            daemonless: config.daemonless,
+        },
+        super::settings_view::HostFallback {
+            session_file: conversation_log.clone(),
+            cwd: cwd.clone(),
+            agent_dir: config.agent_dir.clone(),
+        },
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move || counters.note_repl_settings_read())
+                as super::settings_view::SettingsObserver
+        }),
+    );
+    // `model.set_effort`: the opt-in thinking-level switch; telemetry counts
+    // applied and refused switches (never the level).
+    super::effort_switch::register_effort_handler(
+        &mut handlers,
+        &turn_boundary,
+        super::effort_switch::EffortGate {
+            cwd: cwd.clone(),
+            agent_dir: config.agent_dir.clone(),
+        },
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |applied| counters.note_effort_switch(applied))
+                as super::effort_switch::EffortObserver
+        }),
+    );
     let _ = turn_boundary
         .refinement_settings
         .set(refinement_settings.reopen());
@@ -561,6 +649,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
     let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
+    let hidden_skills: Vec<String> = resources
+        .skills
+        .iter()
+        .filter(|skill| !model_visible_skills.contains(skill))
+        .map(|skill| skill.name.clone())
+        .collect();
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
     // The cell yield window: daemon-backed sessions use the settings default
@@ -591,6 +685,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         on_bootstrap_result,
         config.kernel_ready_gate.clone(),
     );
+    resource_reload.bind_provisioner(&provisioner);
     let mut tools = config.tools.clone();
     if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {
         let definition = crate::tools::ipython::create_ipython_tool_definition(
@@ -680,10 +775,37 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             factory_child: config.factory_child,
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
-            generic_mcp_servers,
+            generic_mcp_servers: generic_mcp_servers.clone(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
+    );
+    resource_reload.seed(
+        super::resource_reload::ReloadInputs {
+            cwd: cwd.clone(),
+            agent_dir: config.agent_dir.clone(),
+            extra_builtin_skill_overrides: reload_skill_overrides,
+            additional_skill_paths: config.additional_skill_paths.clone(),
+            additional_prompt_paths: config.additional_prompt_paths.clone(),
+            custom_system_prompt: config.custom_system_prompt.clone(),
+            prompt_guidelines: config.prompt_guidelines.clone(),
+            hidden_skills,
+            prompt: super::resource_reload::PromptInputs {
+                model_prompt_extras: model_prompts.extras.clone(),
+                messages_path: conversation_log.clone(),
+                selected_tools: active_tool_names.clone(),
+                allow_recursion: config.allow_recursion,
+                rlm_depth: config.rlm_depth,
+                factory_child: config.factory_child,
+                daemonless: config.daemonless,
+                can_spawn: config.rlm_subagent_host.is_some(),
+                generic_mcp_servers,
+            },
+        },
+        resources.skills.clone(),
+        resources.prompts.clone(),
+        system_prompt_breakdown.assembled.clone(),
+        python_skills.clone(),
     );
     // The static layers' byte span is the cache-stable prefix the cache
     // seam marks as its own block (shared by every session and subagent on
@@ -1162,6 +1284,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
+        resource_reload,
     })
 }
 
@@ -1184,7 +1307,7 @@ impl SessionEngine {
         self.session
             .agent()
             .set_system_prompt(crate::prompts::system_prompt::with_image_input(
-                &self.system_prompt,
+                &self.resource_reload.base_prompt(),
                 vision_capable,
             ))
             .await;
@@ -1216,7 +1339,7 @@ impl SessionEngine {
     /// turn's own expansion is idempotent over the block. The
     /// `skill_use_count` counter counts at the admission, not here.
     pub fn expand_skill_submission(&self, text: &str) -> String {
-        crate::skills::expand_skill_command(text, &self.skills).0
+        crate::skills::expand_skill_command(text, &self.resource_reload.skills()).0
     }
 
     /// Record one late (fire-and-forget) `agent_message.send` receipt (TS

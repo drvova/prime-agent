@@ -236,6 +236,9 @@ struct ProvisionerState {
     /// doomed boot entirely and can orphan its kernel at worker exit.
     /// Each parked memo is spent by its own boot's settle.
     doomed_startups: Vec<tokio::sync::watch::Receiver<Option<StartupResult>>>,
+    /// Python skills a resource reload added since creation: every later
+    /// boot binds them beside `options.python_skills`.
+    reloaded_python_skills: Vec<KernelPythonSkill>,
 }
 
 /// Owns one kernel for one session: starts it, memoizes the startup so concurrent callers join the
@@ -271,6 +274,7 @@ impl IpythonKernelProvisioner {
                     pending_stop: None,
                     pending_stop_for_startup: None,
                     doomed_startups: Vec::new(),
+                    reloaded_python_skills: Vec::new(),
                 }),
                 dispose_signal: AbortSignal::new(),
             }),
@@ -309,6 +313,37 @@ impl IpythonKernelProvisioner {
     #[must_use]
     pub(crate) fn python_skills(&self) -> &[KernelPythonSkill] {
         &self.inner.options.python_skills
+    }
+
+    /// A resource reload's new Python skills: installed into the kernel venv
+    /// now (with `all`, the session's whole set, so the venv record keeps
+    /// them; an explicit interpreter installs nothing) and bound by every
+    /// later boot.
+    ///
+    /// # Errors
+    ///
+    /// The venv install failing; the skills still join later boots.
+    pub(crate) async fn add_python_skills(
+        &self,
+        all: &[KernelPythonSkill],
+        new: &[KernelPythonSkill],
+    ) -> anyhow::Result<()> {
+        self.lock_state()
+            .reloaded_python_skills
+            .extend(new.iter().cloned());
+        if self.inner.options.python.is_some() {
+            return Ok(());
+        }
+        crate::kernel::bootstrap::ensure_kernel_python_for_project(
+            crate::kernel::bootstrap::EnsureKernelPythonOptions {
+                python_skills: all.to_vec(),
+                on_progress: None,
+                bytecode: crate::kernel::bootstrap::KernelBytecode::CompileInBackground,
+            },
+            Some(self.inner.cwd.clone()),
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Result of reviving a prior session's namespace on the last kernel start.
@@ -1070,8 +1105,21 @@ async fn start_kernel_impl(
     let snapshot_dir = options.snapshot_dir.clone();
     // The bounded-await default keys on the bash.completed host handler:
     // one source of truth (the registry the daemon registers the notice in).
+    let python_skills: Vec<KernelPythonSkill> = options
+        .python_skills
+        .iter()
+        .cloned()
+        .chain(
+            inner
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .reloaded_python_skills
+                .clone(),
+        )
+        .collect();
     let bootstrap_code = build_rlm_bootstrap_code(
-        &options.python_skills,
+        &python_skills,
         options
             .host_handlers
             .get(BASH_COMPLETED_REQUEST_TYPE)
@@ -1106,7 +1154,7 @@ async fn start_kernel_impl(
         env,
         session_id: options.session_id.clone(),
         host_handlers: options.host_handlers.clone(),
-        python_skills: options.python_skills.clone(),
+        python_skills,
         on_background_work_settled: options.on_background_work_settled.clone(),
         on_background_cell: options.on_background_cell.clone(),
         snapshot,
