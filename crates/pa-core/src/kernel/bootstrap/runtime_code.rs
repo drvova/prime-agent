@@ -44,6 +44,7 @@ try:
     import rlm.mcp as mcp
     import rlm.web as web
     import rlm.fs as fs
+    import rlm.schedule as schedule
     import rlm.todo as todo
     import rlm.settings as settings
     import rlm.model as model

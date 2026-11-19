@@ -1820,6 +1820,52 @@ async fn fs_searches_ride_their_own_event() {
     );
 }
 
+/// Kernel `schedule.*` calls ride their own `agent repl schedule` event at session end (counts by
+/// kind, never a prompt or schedule), and a session that never scheduled sends none.
+#[tokio::test]
+async fn repl_schedules_ride_their_own_event() {
+    use crate::session_engine::runtime::ScheduleFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        ScheduleFact::AddedOnce,
+        ScheduleFact::AddedRecurring,
+        ScheduleFact::AddedRecurring,
+        ScheduleFact::Listed,
+        ScheduleFact::Cancelled,
+        ScheduleFact::Rejected,
+    ] {
+        counters.note_repl_schedule(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl schedule"]
+    );
+    let schedule = &event_properties(&fixture.mock, "agent repl schedule").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = schedule
+        .iter()
+        .filter(|(key, _)| key.starts_with("schedule_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "schedule_once_added_count": 1,
+            "schedule_recurring_added_count": 2,
+            "schedule_list_count": 1,
+            "schedule_cancelled_count": 1,
+            "schedule_rejected_count": 1,
+        })
+    );
+}
+
 /// Kernel `rlm.reload()` and `settings.get()` calls ride their own `agent repl reload` event at
 /// session end (counts only, never a skill name or a setting value).
 #[tokio::test]

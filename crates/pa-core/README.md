@@ -83,6 +83,16 @@ relative to the REPL's cwd; each call runs on a blocking thread. Adoption
 counts ride the `agent fs search` event. Non-goals: a shell or coreutils
 replacement, file watching, and indexing.
 
+Kernel scheduled jobs (`schedule.add`/`schedule.list`/`schedule.cancel`,
+crate-internal, in `session_engine/runtime/schedule.rs` over
+`cron/store/repl_schedule.rs`): one-shot or recurring prompts the model
+schedules for its own session, stored as ordinary cron jobs (source
+`repl_schedule`, so `prime-agent schedule list` shows them) that a session
+lists and cancels only when it created them. Capped per session with a
+minimum recurring interval; an embedding without a scheduler answers with
+an error. Adoption counts ride the `agent repl schedule` event. Non-goals:
+managing the user's own jobs.
+
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs
 resource discovery with the session's creation inputs, rebuilds the system prompt's
