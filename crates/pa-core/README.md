@@ -6,8 +6,9 @@ The session engine.
 MCP host side (`mcp/`): auth gating for built-in integrations (the
 disabled-skill overrides and `/mcp list` status), the `mcpServers` settings
 seam, and the `mcp.*` host-request handlers the kernel's generic MCP
-client reaches through (`mcp.config`, `mcp.refresh`, optional
-`mcp.begin_login`). The OAuth flow lives behind it (`oauth*` submodules:
+client reaches through (`mcp.config`, `mcp.refresh`, and `mcp.begin_login`, the
+kernel's `mcp.login`: the wired interactive login, else an `unavailable` answer
+naming `/mcp login`). The OAuth flow lives behind it (`oauth*` submodules:
 RFC 9728 discovery, dynamic registration, PKCE, the local callback
 server, token refresh; `McpOAuthConfig::callback_port` selects an exact registered
 desktop callback port, while dynamic clients retain the candidate range.
@@ -104,6 +105,14 @@ lists and cancels only when it created them. Capped per session with a
 minimum recurring interval; an embedding without a scheduler answers with
 an error. Adoption counts ride the `agent repl schedule` event. Non-goals:
 managing the user's own jobs.
+
+Past-session recall (`session_engine::session_search`, crate-internal): the
+`rlm.session.search` and `rlm.session.saved_messages` host requests behind the
+kernel's `rlm.session.search(query)` and `rlm.session.messages(session=...)`.
+They scan the session directory `/resume` lists, keep the sessions whose
+header cwd is this session's, and read files read-only on a blocking thread
+(no repair, resume, edit, or delete). Adoption counts ride the `agent kernel
+login and recall` event. Non-goals: indexing and cross-project search.
 
 Kernel workspace checkpoints (`session_engine::checkpoint_host`): the
 `checkpoint.create`/`checkpoint.list`/`checkpoint.restore` host requests

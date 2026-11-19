@@ -96,6 +96,33 @@ class RLMMessage:
 
 
 @dataclass(frozen=True)
+class RLMSessionSnippet:
+    """One matching message of a past session: its ``index`` in that session's transcript
+    (``rlm.session.messages(start=index, session=hit)`` reads it), ``role``, and the text
+    around the match."""
+
+    index: int
+    role: str
+    text: str
+
+
+@dataclass(frozen=True)
+class RLMSessionHit:
+    """A past session of this project that matched ``rlm.session.search``.
+
+    Times are ISO-8601. Read it with ``rlm.session.messages(..., session=hit)``.
+    """
+
+    session_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    match_count: int
+    message_count: int
+    snippets: list[RLMSessionSnippet]
+
+
+@dataclass(frozen=True)
 class RLMChildResult:
     """Terminal or in-progress state of one direct child, from `collect()`.
 
@@ -765,6 +792,7 @@ class _RLMSessionNamespace:
         *,
         role: str | tuple[str, ...] = "*",
         agent: str | RLMSpawnHandle | RLMSubagent | None = None,
+        session: str | RLMSessionHit | None = None,
     ) -> list[RLMMessage]:
         """Return ``rows[start:][:limit]`` of a session's transcript on the active branch.
 
@@ -774,12 +802,13 @@ class _RLMSessionNamespace:
         ``start`` counts from the end when negative. Each message's ``index`` is its
         position in ``rows``. ``agent`` reads a nuclear-family member's transcript
         instead of this session's: a name, child id, session id, spawn handle, or
-        ``list_subagents()`` row.
+        ``list_subagents()`` row. ``session`` reads a past session of this project
+        instead, read-only: a ``search()`` hit or its session id.
         """
         if limit < 0:
             raise ValueError("limit must not be negative")
         roles = _roles(role)
-        reply = await _read_transcript(start, limit, roles, agent)
+        reply = await _read_transcript(start, limit, roles, agent, session)
         messages = [
             RLMMessage(
                 index=row["index"],
@@ -793,7 +822,7 @@ class _RLMSessionNamespace:
         ]
         first = messages[0].index if messages else None
         read = {"returned": len(messages), "first": first, "total": reply["total"], "roles": roles}
-        if agent is not None:
+        if agent is not None or session is not None:
             read["agent"] = reply["agent"]
         emit({_TRANSCRIPT_READ_MIME: read})
         return messages
@@ -803,10 +832,35 @@ class _RLMSessionNamespace:
         role: str | tuple[str, ...] = "*",
         *,
         agent: str | RLMSpawnHandle | RLMSubagent | None = None,
+        session: str | RLMSessionHit | None = None,
     ) -> int:
-        """Return how many messages of the transcript match ``role`` (``agent`` as in ``messages``)."""
-        reply = await _read_transcript(0, 0, _roles(role), agent)
+        """Return how many messages of the transcript match ``role`` (``agent``/``session`` as in ``messages``)."""
+        reply = await _read_transcript(0, 0, _roles(role), agent, session)
         return reply["total"]
+
+    async def search(self, query: str, *, limit: int = 10) -> list[RLMSessionHit]:
+        """Find past sessions of this project whose messages mention every word of ``query``.
+
+        Read-only: sessions are never resumed, edited, or deleted. Hits come
+        most-matching first, then most recent; this session is left out.
+        """
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must contain a word")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            raise ValueError("limit must be an integer from 1 to 50")
+        reply = await host_request("rlm.session.search", {"query": query, "limit": limit})
+        return [
+            RLMSessionHit(
+                session_id=hit["session_id"],
+                title=hit["title"],
+                created_at=hit["created_at"],
+                updated_at=hit["updated_at"],
+                match_count=hit["match_count"],
+                message_count=hit["message_count"],
+                snippets=[RLMSessionSnippet(**snippet) for snippet in hit["snippets"]],
+            )
+            for hit in reply["hits"]
+        ]
 
     async def tool_result(self, tool_call_id: str) -> str:
         """Return one tool result's full text by its tool call id.
@@ -820,10 +874,10 @@ class _RLMSessionNamespace:
         reply = await host_request("rlm.session.tool_result", {"toolCallId": tool_call_id})
         if reply["found"]:
             return reply["text"]
-        end = (await _read_transcript(0, 0, ["toolResult"], None))["total"]
+        end = (await _read_transcript(0, 0, ["toolResult"], None, None))["total"]
         while end > 0:
             start = max(0, end - _TOOL_RESULT_PAGE)
-            page = await _read_transcript(start, end - start, ["toolResult"], None)
+            page = await _read_transcript(start, end - start, ["toolResult"], None, None)
             for row in reversed(page["messages"]):
                 if row["message"].get("toolCallId") == tool_call_id:
                     return _message_text(row["message"])
@@ -836,9 +890,20 @@ _TOOL_RESULT_PAGE = 50
 
 
 async def _read_transcript(
-    start: int, limit: int, roles: list[str], agent: str | RLMSpawnHandle | RLMSubagent | None
+    start: int,
+    limit: int,
+    roles: list[str],
+    agent: str | RLMSpawnHandle | RLMSubagent | None,
+    session: str | RLMSessionHit | None,
 ) -> dict[str, Any]:
     request = {"start": start, "limit": limit, "roles": roles}
+    if session is not None:
+        if agent is not None:
+            raise ValueError("pass agent or session, not both")
+        session_id = session.session_id if isinstance(session, RLMSessionHit) else session
+        if not isinstance(session_id, str) or not session_id:
+            raise TypeError("session must be a search() hit or a session id")
+        return await host_request("rlm.session.saved_messages", {**request, "session": session_id})
     if agent is None:
         return await host_request("rlm.session.messages", request)
     target = _collect_target_selector(agent, "agent")
@@ -946,6 +1011,8 @@ __all__ = [
     "RLMMessage",
     "RLMModel",
     "RLMProgressNoteResult",
+    "RLMSessionHit",
+    "RLMSessionSnippet",
     "RLMSpawnHandle",
     "RLMSubagent",
     "RLMSubagentActivity",
