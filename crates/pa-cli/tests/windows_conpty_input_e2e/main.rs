@@ -601,7 +601,7 @@ enum Key {
     Enter,
     Escape,
     CtrlC,
-    AltV,
+    CtrlV,
 }
 
 impl Key {
@@ -615,14 +615,13 @@ impl Key {
             Key::Enter => b"\r".to_vec(),
             Key::Escape => b"\x1b".to_vec(),
             Key::CtrlC => b"\x03".to_vec(),
-            Key::AltV => b"\x1bv".to_vec(),
+            Key::CtrlV => b"\x16".to_vec(),
         }
     }
 
     fn win32(self) -> Vec<u8> {
         const SHIFT: u32 = 0x10;
         const LEFT_CTRL: u32 = 0x08;
-        const LEFT_ALT: u32 = 0x02;
         const ENHANCED: u32 = 0x100;
         match self {
             Key::Char(ch) => {
@@ -670,11 +669,11 @@ impl Key {
                 win32_key(0x11, 0x1d, 0, false, 0),
             ]
             .concat(),
-            Key::AltV => [
-                win32_key(0x12, 0x38, 0, true, LEFT_ALT),
-                win32_key(0x56, 0x2f, u16::from(b'v'), true, LEFT_ALT),
-                win32_key(0x56, 0x2f, u16::from(b'v'), false, LEFT_ALT),
-                win32_key(0x12, 0x38, 0, false, 0),
+            Key::CtrlV => [
+                win32_key(0x11, 0x1d, 0, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, false, LEFT_CTRL),
+                win32_key(0x11, 0x1d, 0, false, 0),
             ]
             .concat(),
         }
@@ -856,17 +855,49 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         &format!("only the typed prompt was submitted ({prompts:?})"),
         prompts == ["hello"],
     );
-    // Image paste: Windows terminals keep Ctrl+V for their own text paste, so Alt+V reads the
-    // clipboard's bitmap (converted to PNG) into an `[image #N]` marker; an empty clipboard
-    // says so; a pasted image file path attaches the file.
+    // Image paste is Ctrl+V (the user's spec; there is no Alt+V binding). A
+    // Ctrl+V the terminal passes on reads the clipboard's bitmap (converted
+    // to PNG) into an `[image #N]` marker; with no image, Ctrl+V pastes the
+    // clipboard's text, and an empty clipboard says so; a pasted image file
+    // path attaches the file. None of it submits.
     let bitmap = set_clipboard_bitmap();
     check(&mut term, "a bitmap lands on the clipboard", bitmap.is_ok());
-    term.key(Key::AltV);
+    term.key(Key::CtrlV);
     let marker = term.wait_for("[image #1]", Duration::from_secs(30));
-    check(&mut term, "alt+v pastes the clipboard image", marker);
+    check(&mut term, "ctrl+v pastes the clipboard image", marker);
+    // A terminal that intercepts Ctrl+V over an image-only clipboard sends an
+    // empty bracketed paste. Both console hosts consume the marker pair before
+    // the app reads a record (run 44467269683: no host delivered anything), so
+    // on the console it must leave the draft as it was; a VT terminal's empty
+    // paste attaching the image is pinned by pa-tui's image_paste_headless.
+    let composer = |term: &Terminal| {
+        term.screen
+            .text()
+            .lines()
+            .find(|line| line.contains("[image #1]"))
+            .map(str::to_string)
+    };
+    let draft = composer(&term);
+    term.pty.send(b"\x1b[200~\x1b[201~");
+    term.settle(Duration::from_millis(500));
+    let unchanged = draft.is_some() && composer(&term) == draft;
+    check(
+        &mut term,
+        "an empty bracketed paste leaves the draft as it was",
+        unchanged,
+    );
+    let text = set_clipboard_text("clip-text-fallback");
+    check(&mut term, "text lands on the clipboard", text.is_ok());
+    term.key(Key::CtrlV);
+    let fallback = term.wait_for("clip-text-fallback", Duration::from_secs(30));
+    check(
+        &mut term,
+        "ctrl+v without an image pastes the text",
+        fallback,
+    );
     let cleared = clear_clipboard();
     check(&mut term, "the clipboard clears", cleared.is_ok());
-    term.key(Key::AltV);
+    term.key(Key::CtrlV);
     let empty = term.wait_for("Clipboard has no image", Duration::from_secs(30));
     check(&mut term, "an empty clipboard says so", empty);
     let image_file = root.join("dropped shot.png");
@@ -875,6 +906,12 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     let dropped = term.wait_for("[image #2]", Duration::from_secs(30));
     check(&mut term, "a pasted image path attaches the file", dropped);
     term.settle(Duration::from_millis(500));
+    let prompts = submitted_prompts(&session_dir);
+    check(
+        &mut term,
+        &format!("image paste never submits ({prompts:?})"),
+        prompts == ["hello"],
+    );
     dump(
         &format!("tui-{scenario}"),
         &format!(
@@ -925,6 +962,12 @@ fn set_clipboard_bitmap() -> Result<(), String> {
          $graphics.Clear([System.Drawing.Color]::SteelBlue); \
          [System.Windows.Forms.Clipboard]::SetImage($bitmap)",
     )
+}
+
+fn set_clipboard_text(text: &str) -> Result<(), String> {
+    clipboard_script(&format!(
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText('{text}')"
+    ))
 }
 
 fn clear_clipboard() -> Result<(), String> {
@@ -1187,11 +1230,18 @@ fn background_children_open_no_console_windows() {
     let mut term = Terminal::new(pty, 100, 30);
     let started = term.wait_for("prime", Duration::from_secs(120));
     term.settle(Duration::from_millis(500));
+    // Each typed line echoes and settles before its Enter, as a person's
+    // would: on Windows a key burst and an Enter right behind it read as
+    // one paste, so the Enter would land as a line break, never a submit.
     term.type_text("!git --version");
+    let shell_typed = term.wait_for("git --version", Duration::from_secs(30));
+    term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
     let shell_ran = term.wait_for("git version", Duration::from_secs(60));
     term.settle(Duration::from_millis(500));
     term.type_text("boot the kernel");
+    let prompt_typed = term.wait_for("boot the kernel", Duration::from_secs(30));
+    term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
     // The first kernel start bootstraps the venv (uv, a Python, the runtime).
     let turn_done = term.wait_for("kernel turn done", Duration::from_mins(15));
@@ -1240,12 +1290,14 @@ fn background_children_open_no_console_windows() {
     dump(
         "console-windows",
         &format!(
-            "started={started} shell_ran={shell_ran} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
+            "started={started} shell_typed={shell_typed} shell_ran={shell_ran} prompt_typed={prompt_typed} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
             console_windows::shown()
         ),
     );
     assert!(started, "the TUI started:\n{screen}");
+    assert!(shell_typed, "the shell command echoed:\n{screen}");
     assert!(shell_ran, "the user shell command ran git:\n{screen}");
+    assert!(prompt_typed, "the prompt echoed:\n{screen}");
     assert!(
         turn_done && !kernel_python.is_empty(),
         "the turn booted the kernel:\n{screen}"

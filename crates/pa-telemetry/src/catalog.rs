@@ -1068,6 +1068,36 @@ const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One image paste attempt (v2): where the image came from (clipboard data, a clipboard file
+/// copy, a pasted or dropped path), how it ended (`text`: Ctrl+V found no image and pasted the
+/// clipboard's text), and the attached format. Standalone because
+/// `tui exit` sits at the backend's 128-key cap (an attach also counts `tui_image_paste_count`
+/// there). Never a path, a size, or image content.
+const TUI_IMAGE_PASTE: EventRule = EventRule {
+    name: "tui image paste",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(
+                &["clipboard", "clipboard_file", "path"],
+                "clipboard",
+            )),
+        ),
+        (
+            "outcome",
+            required(enum_rule(
+                &["attached", "text", "no_image", "too_large", "unreadable"],
+                "no_image",
+            )),
+        ),
+        (
+            "format",
+            required(enum_rule(&["png", "jpeg", "gif", "webp", "none"], "none")),
+        ),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1615,6 +1645,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &TUI_IMAGE_PASTE,
         &TUI_INLINE_IMAGES_RENDERED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,

@@ -36,7 +36,14 @@ uuid = { version = "1", features = ["v4"] }
 name = "pa-tui-replay"
 path = "src/bin/pa-tui-replay.rs"
 
+# The Windows clipboard-bitmap PNG encoder's IDAT compression and chunk CRCs (already a
+# pa-core/pa-cli dependency; pa-tui cannot reach pa-core). A dev-dependency too: the bitmap
+# decode and encode are tested on every host.
+[target.'cfg(windows)'.dependencies]
+flate2 = "1"
+
 [dev-dependencies]
+flate2 = "1"
 tempfile = "3"
 proptest = { workspace = true }
 vt100 = "0.15"
