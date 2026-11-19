@@ -979,3 +979,34 @@ fn console_record_replies_are_consumed_never_typed() {
         ]
     );
 }
+
+/// The inline-image capability answers arrive on the Windows console the same way: the cell-size
+/// report (Windows Terminal's 10x20 sixel cell) is consumed and recorded for the image renderer.
+/// The recorded size is the renderer's own default, so no other test's scale moves.
+#[test]
+fn a_console_record_cell_size_reply_is_recorded_for_the_images() {
+    let record = |byte: u8, kind: KeyEventKind| {
+        let code = match byte {
+            0x1b => KeyCode::Esc,
+            _ => KeyCode::Char(char::from(byte)),
+        };
+        Event::Key(KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind))
+    };
+    let mut guard = SequenceGuard::new(EventSource::ConsoleRecords);
+    let mut now = Instant::now();
+    let mut outputs = Vec::new();
+    for &byte in b"\x1b[6;20;10t" {
+        for kind in [KeyEventKind::Press, KeyEventKind::Release] {
+            outputs.extend(guard.feed(record(byte, kind), now));
+            now += Duration::from_millis(1);
+        }
+    }
+    outputs.extend(guard.flush_expired(now + HOLD));
+    assert_eq!(
+        (outputs, crate::inline_image::reports::cell_pixels()),
+        (
+            vec![GuardOutput::Event(record(b't', KeyEventKind::Release))],
+            Some((10, 20))
+        )
+    );
+}

@@ -88,6 +88,9 @@ pub struct StreamOptions {
     /// The stream loop guard's level for this request; `None` takes the provider's default
     /// (`Provider::default_loop_guard`: by model family, off for scripted fixtures).
     pub loop_guard: Option<LoopGuardLevel>,
+    /// The request's admission class ([`crate::admission`]); `None` takes the process's class
+    /// (a subagent worker's requests are [`pa_types::control::Priority::Subagent`]).
+    pub priority: Option<pa_types::control::Priority>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -108,6 +111,7 @@ impl std::fmt::Debug for StreamOptions {
             .field("timeout_ms", &self.timeout_ms)
             .field("metadata", &self.metadata)
             .field("loop_guard", &self.loop_guard)
+            .field("priority", &self.priority)
             .finish()
     }
 }

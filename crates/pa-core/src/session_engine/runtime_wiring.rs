@@ -269,7 +269,7 @@ pub fn kernel_provisioner(
     command_prefix: Option<String>,
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
-    cell_yield_ms: Option<u64>,
+    cell_window: crate::kernel::cell_window::CellWindow,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
@@ -323,9 +323,9 @@ pub fn kernel_provisioner(
             // Only persistent sessions (which have an artifact dir) get
             // a revivable snapshot (TS `snapshotDir`).
             snapshot_dir: session_artifact_dir,
-            // The engine-resolved default cell yield window (`None`: daemonless;
-            // the runtime bootstrap and state ops never set it).
-            cell_yield_ms,
+            // The engine-resolved cell yield window policy (daemonless: none;
+            // the runtime bootstrap and state ops never use it).
+            cell_window,
             ready_gate,
             on_restore,
             on_background_work_settled,
@@ -366,11 +366,12 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             // The tool contract uses the raw cancellation token; the kernel
             // wraps it in its own abort signal.
             let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
+            // The learned window's stored state loads while the kernel boots.
+            this.cell_window().prime();
             let manager = this.ensure(on_progress, signal).await?;
-            let cell_yield_ms = this.cell_yield_ms();
             Ok(Box::new(KernelManagerExecutor {
                 manager,
-                cell_yield_ms,
+                cell_window: this.cell_window().clone(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -386,8 +387,8 @@ impl IpythonKernelProvisioner for KernelProvisioner {
 /// Adapts the kernel manager to the ipython tool's executor contract.
 struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
-    /// The session's default cell yield window (`None`: never set; `0`: disabled).
-    cell_yield_ms: Option<u64>,
+    /// The session's cell yield window policy.
+    cell_window: crate::kernel::cell_window::CellWindow,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -402,11 +403,10 @@ impl KernelExecutor for KernelManagerExecutor {
         let signal = options.signal;
         let on_late_sent_agent_message = options.on_late_sent_agent_message;
         // The session decides whether cells can go to the background at all;
-        // the model's per-call `timeout` only replaces the default window.
-        let cell_yield_ms = self
-            .cell_yield_ms
-            .filter(|ms| *ms > 0)
-            .map(|default_ms| options.timeout_ms.unwrap_or(default_ms));
+        // the model's per-call `timeout` only replaces the default window. The
+        // window is fixed here, when the cell starts.
+        let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
+        let cell_window = self.cell_window.clone();
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -419,20 +419,20 @@ impl KernelExecutor for KernelManagerExecutor {
                     },
                 )
                 .await?;
+            // A cell that ended in its window teaches the learned window its
+            // time (a backgrounded one teaches it when it ends); an interrupted
+            // or aborted cell's time says nothing about the work.
+            if result.backgrounded_cell.is_none() {
+                match result.status {
+                    crate::kernel::shared::ExecuteStatus::Ok
+                    | crate::kernel::shared::ExecuteStatus::Error => {
+                        cell_window.observe(std::time::Duration::from_millis(result.duration_ms));
+                    }
+                    crate::kernel::shared::ExecuteStatus::Aborted => {}
+                }
+            }
             Ok(convert_execute_result(result))
         })
-    }
-}
-
-/// Whether cells get a yield window in this session. Daemonless sessions
-/// keep `await bash()` unbounded by design (#3523) and have no background
-/// lane to wake them when a cell ends, so their cells always run to the end
-/// inside the call; the window applies only in daemon-backed sessions.
-pub(crate) fn arm_cell_yield_ms(daemonless: bool, settings_ms: u64) -> Option<u64> {
-    if daemonless {
-        None
-    } else {
-        Some(settings_ms)
     }
 }
 
@@ -477,6 +477,8 @@ fn convert_execute_result(
         bash_commands: result.bash_commands,
         bash_waits: result.bash_waits,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
+        todo_list: result.todo_list,
+        questions: result.questions.unwrap_or_default(),
         backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
     }
@@ -586,17 +588,5 @@ mod tests {
             &handlers,
         );
         assert_eq!(visible.len(), 3);
-    }
-
-    #[test]
-    fn cell_yield_window_applies_only_in_daemon_backed_sessions() {
-        // Daemonless sessions keep `await bash()` unbounded by design
-        // (#3523) and have no lane to wake them when a cell ends.
-        assert_eq!(arm_cell_yield_ms(true, 60_000), None);
-        assert_eq!(arm_cell_yield_ms(true, 0), None);
-        assert_eq!(arm_cell_yield_ms(false, 60_000), Some(60_000));
-        // A zero setting is the explicit disable: it must reach the
-        // executor as a zero window, not fall back to a default.
-        assert_eq!(arm_cell_yield_ms(false, 0), Some(0));
     }
 }

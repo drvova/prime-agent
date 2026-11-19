@@ -1694,6 +1694,99 @@ async fn goal_verification_facts_ride_their_own_event() {
     assert!(ended.keys().all(|key| !key.starts_with("goal_")));
 }
 
+/// The provider layer's Responses transport counts ride their own `agent responses transport`
+/// event at session end (counts only), and the session ended event carries none of them.
+#[tokio::test]
+async fn responses_transport_counts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_responses_transport(pa_ai::responses_transport::ResponsesTransportCounts {
+        websocket_requests: 3,
+        delta_requests: 2,
+        full_context_requests: 1,
+        stale_continuation_retries: 1,
+        auto_websocket: 2,
+        auto_sse_one_shot: 1,
+        probes: 1,
+        ..Default::default()
+    });
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent responses transport"]
+    );
+    let transport = &event_properties(&fixture.mock, "agent responses transport").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = transport
+        .iter()
+        .filter(|(key, _)| key.starts_with("responses_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "responses_websocket_request_count": 3,
+            "responses_delta_request_count": 2,
+            "responses_full_context_request_count": 1,
+            "responses_sse_fallback_count": 0,
+            "responses_stale_continuation_retry_count": 1,
+            "responses_auto_websocket_count": 2,
+            "responses_auto_sse_one_shot_count": 1,
+            "responses_auto_sse_no_websocket_wire_count": 0,
+            "responses_auto_sse_unsupported_count": 0,
+            "responses_auto_sse_demoted_count": 0,
+            "responses_probe_count": 1,
+            "responses_probe_failed_count": 0,
+            "responses_websocket_without_wire_count": 0,
+        })
+    );
+    let ended = &event_properties(&fixture.mock, "agent session ended").await[0];
+    assert!(ended.keys().all(|key| !key.starts_with("responses_")));
+}
+
+/// The worker's endpoint discovery counts ride their own `agent endpoint discovery` event at
+/// session end (counts only).
+#[tokio::test]
+async fn endpoint_discovery_counts_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_endpoint_discovery(pa_ai::responses_transport::DiscoveryCounts {
+        probes: 3,
+        found_responses: 1,
+        found_websocket: 1,
+        upgrades: 1,
+        demotions: 0,
+    });
+    telemetry.end().await.unwrap();
+    let discovery = &event_properties(&fixture.mock, "agent endpoint discovery").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = discovery
+        .iter()
+        .filter(|(key, _)| key.starts_with("endpoint_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "endpoint_probe_count": 3,
+            "endpoint_found_responses_count": 1,
+            "endpoint_found_websocket_count": 1,
+            "endpoint_upgrade_count": 1,
+            "endpoint_demotion_count": 0,
+        })
+    );
+}
+
 /// Kernel `web.read` outcomes ride their own `agent web reads` event at session end (counts by
 /// kind, never a URL), and a session that read nothing sends none.
 #[tokio::test]
@@ -2060,11 +2153,12 @@ async fn rlm_child_aborts_ride_their_own_event() {
     );
 }
 
-/// Cells that continued in the background ride their own `agent repl background cells` event at
-/// session end (counts only: never code, output, or a cell id), and a session whose cells all
-/// ended inside their window sends none.
+/// Cells that continued in the background, and the source of each armed cell window, ride their
+/// own `agent repl background cells` event at session end (counts only: never code, output, a
+/// cell id, or a duration).
 #[tokio::test]
 async fn background_cells_ride_their_own_event() {
+    use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::shared::BackgroundCellFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
@@ -2078,10 +2172,20 @@ async fn background_cells_ride_their_own_event() {
         BackgroundCellFact::Backgrounded,
         BackgroundCellFact::Backgrounded,
         BackgroundCellFact::Backgrounded,
-        BackgroundCellFact::EndedOk,
+        BackgroundCellFact::EndedOk {
+            ran_for: Some(std::time::Duration::from_secs(90)),
+        },
         BackgroundCellFact::Interrupted,
     ] {
         counters.note_background_cell(fact);
+    }
+    for source in [
+        CellWindowSource::Learned,
+        CellWindowSource::Learned,
+        CellWindowSource::ModelTimeout,
+        CellWindowSource::ColdDefault,
+    ] {
+        counters.note_cell_window(source);
     }
     telemetry.end().await.unwrap();
     assert_eq!(
@@ -2101,6 +2205,10 @@ async fn background_cells_ride_their_own_event() {
             "cell_background_ok_count": 1,
             "cell_background_error_count": 0,
             "cell_background_interrupted_count": 1,
+            "cell_window_learned_count": 2,
+            "cell_window_timeout_count": 1,
+            "cell_window_setting_count": 0,
+            "cell_window_default_count": 1,
         })
     );
 }

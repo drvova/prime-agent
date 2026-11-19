@@ -1196,6 +1196,18 @@ pub async fn run_worker() -> Result<()> {
     // Structured logs land in the worker's captured stderr log.
     pa_ai::utils::log::install_stderr_log_sink();
     let config = WorkerConfig::from_env()?;
+    // Provider requests share the daemon-wide budget through the supervisor (with this
+    // worker's own pool as the bounded-wait fallback).
+    if !config.supervisor_socket_path.as_os_str().is_empty() {
+        pa_ai::admission::install(Arc::new(
+            crate::provider_admission::SupervisorAdmission::new(
+                Arc::new(crate::supervisor_link::SupervisorLink::new(
+                    config.supervisor_socket_path.clone(),
+                )),
+                config.token.clone(),
+            ),
+        ));
+    }
     // Self-registration: the supervisor's roster survives its own restarts
     // because workers re-present their identity (liveness watch + backoff).
     let registration = crate::registration::start(&config);

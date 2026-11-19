@@ -24,6 +24,8 @@ pub(crate) enum ClickAction {
     /// Move the `/effort` picker's selection to the
     /// clicked filtered row.
     SelectChoiceRow(usize),
+    /// Pick the open kernel question's clicked row (select, toggle, or open `Other…`).
+    PickQuestionRow(usize),
     /// Open the activity dock group the click landed on (operator
     /// directive 2026-09-29). The target spans one group's segment.
     OpenDockGroup(crate::chrome::ActivityGroup),
@@ -87,6 +89,7 @@ pub(crate) struct PickerClickSurface {
 pub(crate) enum PickerKind {
     Model,
     Choice,
+    Question,
 }
 
 /// The `/model` picker's chrome rows: the title row and the bordered
@@ -196,6 +199,7 @@ impl AgentView {
             return Some(match picker.kind {
                 PickerKind::Model => ClickAction::SelectModelRow(picker.items.0 + item),
                 PickerKind::Choice => ClickAction::SelectChoiceRow(picker.items.0 + item),
+                PickerKind::Question => ClickAction::PickQuestionRow(picker.items.0 + item),
             });
         }
         // The dock's chrome rows resolve before the editor: their rows

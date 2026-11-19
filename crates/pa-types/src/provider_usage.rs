@@ -20,6 +20,33 @@ pub enum UsageSection {
 #[serde(rename_all = "camelCase")]
 pub struct QuotaReport {
     pub providers: Vec<ProviderQuota>,
+    /// The daemon's live request pacing per provider and model (the adaptive
+    /// admission controller's state); empty without a daemon or before any
+    /// request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pacing: Vec<ProviderPacing>,
+}
+
+/// One provider/model's request pacing as the admission controller holds it
+/// now: read-only, learned from responses, never configured.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPacing {
+    pub provider: String,
+    pub model: String,
+    /// Requests allowed in flight now.
+    pub concurrency: u32,
+    /// Requests per minute allowed now.
+    pub rate_per_min: u32,
+    /// The concurrency the provider last pushed back at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency_ceiling: Option<u32>,
+    /// The reported (or pushed-back) request rate limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_ceiling: Option<u32>,
+    pub in_flight: u32,
+    /// Why the controller last changed the pacing.
+    pub reason: crate::control::AdjustReason,
 }
 
 /// Where a card's numbers came from; the page labels every card with it.

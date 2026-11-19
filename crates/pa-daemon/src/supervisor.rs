@@ -236,6 +236,8 @@ pub struct Supervisor {
     /// The running history import's started frame (`None` while none runs):
     /// a client that connects mid-import hears it after its hello.
     pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
+    /// The daemon-wide provider request budget every worker takes permits from.
+    pub(crate) admission: Arc<crate::provider_admission::AdmissionService>,
 }
 
 impl Supervisor {
@@ -265,7 +267,9 @@ impl Supervisor {
             &options.socket_path,
             &options.agent_dir,
         ));
+        let admission = crate::provider_admission::AdmissionService::new(&options.agent_dir);
         Ok(Supervisor {
+            admission,
             options,
             descriptor_dir,
             bound_socket_identity: std::sync::Mutex::new(None),

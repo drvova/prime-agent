@@ -61,7 +61,7 @@ const DYNAMIC_ONLY_MARKERS: &[&str] = &[
 #[test]
 fn static_layers_contain_no_dynamic_content() {
     for (name, text) in [
-        ("core", CORE_LAYER),
+        ("core", CORE_LAYER.as_str()),
         ("usage", USAGE_LAYER),
         ("opinionated", OPINIONATED_LAYER),
         ("model-prompts", MODEL_PROMPTS_TOML),
@@ -515,7 +515,7 @@ fn core_layer_documents_the_real_tool_surface() {
         assert!(
             known,
             "prompt documents unknown tool {token:?}: a tool-surface change must \
-             update prompts/layers/core.md (and this test's token mapping)"
+             update prompts/layers/core.md or the capability doc file (and this test's token mapping)"
         );
     }
 
@@ -530,7 +530,7 @@ fn core_layer_documents_the_real_tool_surface() {
         assert!(
             documented_form,
             "tool {token:?} is on the registered surface but the prompt does not \
-             document it: update prompts/layers/core.md"
+             document it: update prompts/layers/core.md or the capability doc file"
         );
     }
 }

@@ -223,6 +223,33 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// Worker -> supervisor: wait for a provider request permit from the
+    /// daemon-wide budget. The answer comes within `wait_ms`: granted with a
+    /// lease id, or not yet (the worker polls again, keeping the request's
+    /// `enqueuedAtMs` so it keeps its place). `request` is pa-ai's
+    /// `AdmissionRequest` (provider, credential hash, model, priority).
+    ProviderAdmissionAcquire {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        worker_token: String,
+        request: Value,
+        wait_ms: u64,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// Worker -> supervisor: return a provider permit with what the request
+    /// observed (outcome, latency, reported limits).
+    ProviderAdmissionRelease {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        worker_token: String,
+        lease_id: u64,
+        observation: crate::control::Observation,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     RosterUnsubscribe {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

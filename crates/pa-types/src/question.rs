@@ -44,6 +44,14 @@ pub struct Question {
     /// Seconds before the default (or nothing) is submitted; `None` waits for the user.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_seconds: Option<u64>,
+    /// A choice question also takes a typed answer (the surface's `Other…` row): one string
+    /// that is not a choice (with the chosen ones, for `multi`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_other: bool,
+    /// When the timeout settles the question (epoch milliseconds, stamped by the host as it
+    /// opens), so every surface counts down to the same moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<u64>,
 }
 
 /// A surface's reply to an open question.

@@ -169,6 +169,8 @@ pub async fn complete_summary_call(
     let _cancel_on_drop = cancel.clone().drop_guard();
     let mut stream_options =
         pa_ai::types::SimpleStreamOptions::from_base(pa_ai::types::StreamOptions {
+            // A helper call: the turn the user waits on is admitted first.
+            priority: Some(pa_ai::admission::Priority::Helper),
             signal: Some(cancel),
             max_tokens: Some(max_tokens),
             session_id: Some(session_id.to_string()),

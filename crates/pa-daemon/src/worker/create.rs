@@ -582,6 +582,11 @@ impl Worker {
                 .or_else(|| core.store.as_ref().and_then(SessionFile::rlm_depth))
                 .unwrap_or(0);
             core.rlm_depth = rlm_depth;
+            // One worker hosts one session: a subagent's provider requests yield to the
+            // foreground turn the user waits on when the shared budget is tight.
+            if rlm_depth > 0 {
+                pa_ai::admission::set_process_priority(pa_ai::admission::Priority::Subagent);
+            }
             core.runtime_kind = if rlm_child_id.is_some() {
                 "subagent".to_string()
             } else {
@@ -637,6 +642,7 @@ impl Worker {
         // model-independent; a build failure surfaces on the first demand seam.
         if let Some(agent_engine) = &self.agent_engine {
             let engine = std::sync::Arc::clone(agent_engine);
+            let discovery_dir = self.config.agent_dir.clone();
             tokio::spawn(async move {
                 let Ok(model) = engine.resolve_model() else {
                     return;
@@ -650,6 +656,20 @@ impl Worker {
                     pa_ai::utils::prewarm::NetworkMode::from_env(),
                 ));
                 let _ = engine.ensure_core_session_async(&model).await;
+                // Once the session is built, check the credentialed catalog endpoints whose
+                // Responses capabilities are unknown or stale (zero-cost probes on a detached
+                // task; never under `--offline`). What it learns reaches the next session.
+                let targets = tokio::task::spawn_blocking(move || {
+                    let auth = pa_core::auth::AuthStorage::create(&discovery_dir);
+                    pa_core::models::ModelRegistry::create(auth, discovery_dir.join("models.json"))
+                        .discovery_targets()
+                })
+                .await
+                .unwrap_or_default();
+                pa_ai::responses_transport::discover_endpoints(
+                    targets,
+                    pa_ai::utils::prewarm::NetworkMode::from_env(),
+                );
             });
         }
         // Bind the schedule catalog onto the session (artifact partition,

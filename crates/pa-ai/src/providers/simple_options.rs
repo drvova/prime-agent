@@ -62,6 +62,7 @@ pub fn build_base_options(
         timeout_ms: base.timeout_ms,
         metadata: base.metadata,
         loop_guard: base.loop_guard,
+        priority: base.priority,
     }
 }
 

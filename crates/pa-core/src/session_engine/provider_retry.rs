@@ -242,6 +242,19 @@ pub fn retry_jitter_rand01() -> f64 {
     (x % 10_000) as f64 / 10_000.0
 }
 
+/// The backoff step a retry of `message` waits at. A throttled or overloaded provider is paced
+/// by the adaptive admission controller (`pa_ai::admission`): it already cut concurrency and
+/// rate and holds any server-requested wait, and the retried request waits for its permit. So
+/// those retries stay at the first step instead of also growing exponentially; every other
+/// failure backs off by `attempt`.
+#[must_use]
+pub fn backoff_attempt(message: &AssistantMessage, attempt: u32) -> u32 {
+    match provider_stream_failure_kind(message).as_deref() {
+        Some("rate_limit" | "overloaded") => 1,
+        _ => attempt,
+    }
+}
+
 /// Delay before retry `attempt` (1-based), honoring a server-requested wait.
 #[must_use]
 pub fn provider_retry_delay(
@@ -309,7 +322,7 @@ where
             return Ok(message);
         }
         let delay = provider_retry_delay(
-            retries_performed + 1,
+            backoff_attempt(&message, retries_performed + 1),
             provider_stream_failure_retry_after_ms(&message),
             policy,
         );

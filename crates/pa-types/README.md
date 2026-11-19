@@ -15,6 +15,11 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   over every written `session_event`, and the client decoder that restores each delta
   `message_update` to its full message before anything else reads it.
 - `daemon::{DaemonOutbound::HistoryImport, HistoryImportPhase}`: the Rust-only `history_import` broadcast (a distribution build's background chat import started/finished) the daemon sends and the TUI reads; older clients ignore it like any unknown broadcast, so the schema id is unchanged.
+- `control`: the IO-free adaptive capacity controller (`Controller`, `ControllerConfig`,
+  `Observation`, `Target`, `LearnedState`), the pure `RateBucket`, and the `Priority` classes
+  with `service_deadline_ms` aging. Pure decision logic with explicit clocks (no tokio, no IO):
+  pa-ai's provider admission is its first user; any later autoscaled resource wraps the same
+  controller in its own permit pool and persistence.
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the
