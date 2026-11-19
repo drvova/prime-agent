@@ -282,6 +282,9 @@ def _completion_reaches(
                 task = getattr(callback, "__self__", None)
                 if isinstance(task, asyncio.Task):
                     pending.append(task)
+            elif identity == ("rlm.cells", "_relay"):
+                # A cell thread awaiting a main-loop future: its local twin.
+                pending.append(callback.args[0])
             elif identity == ("asyncio.taskgroups", "TaskGroup._on_task_done"):
                 parent = getattr(getattr(callback, "__self__", None), "_parent_task", None)
                 if isinstance(parent, asyncio.Future):

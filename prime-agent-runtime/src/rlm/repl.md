@@ -1,7 +1,8 @@
 # REPL runtime protocol
 
 `python -m rlm.repl` starts a CPython REPL runtime that executes code cells in
-one persistent `__main__` namespace on a single asyncio event loop. The wire
+one persistent `__main__` namespace, each cell on its own thread (see
+Execution). The wire
 format is newline-delimited JSON: one object per line, UTF-8, no other framing.
 The current protocol version is `3`; the runtime announces it in the `ready`
 event.
@@ -27,7 +28,7 @@ event.
 
 | Request | Fields |
 |---|---|
-| `execute` | `{"type":"execute","id":str,"code":str,"timeoutMs"?:int}` — `timeoutMs` is the host's armed cell time limit; bounded `bash()` awaits in the cell degrade before it |
+| `execute` | `{"type":"execute","id":str,"code":str,"timeoutMs"?:int,"yieldMs"?:int}` — `timeoutMs` is the host's armed cell time limit; bounded `bash()` awaits in the cell degrade before it. `yieldMs` is the yield window: a cell still running when it ends continues in the background (see Background cells) |
 | `interrupt` | `{"type":"interrupt","id"?:str}` — no reply |
 | `host_reply` | `{"type":"host_reply","id":str,"data":{"status":"ok","result":{...}}}` or an error envelope — no reply |
 | `snapshot` | `{"type":"snapshot","id":str,"path":str,"manifest_path":str,"max_bytes"?:int,"max_variable_bytes"?:int,"prune_oversized"?:bool}` |
@@ -74,7 +75,8 @@ runtime keeps serving. Closing stdin is equivalent to `shutdown`.
   — `evalue` and each `traceback` entry are capped like `result` text (same
   cap, same trailing marker).
 - `{"event":"done","id":str,"status":"ok"|"error"}` — exactly one per id'd
-  request, always after all of that request's other events. A snapshot `done`
+  request, always after all of that request's other events. An execute whose
+  cell outlived its `yieldMs` ends with `{"status":"backgrounded","cell":str}`. A snapshot `done`
   adds `saved`, `skipped`, `pruned`, `bytes`; a restore `done` adds `restored`,
   `failed`; a `list_names` `done` adds `names`; a failed snapshot/restore adds
   `reason`. Bash activity `done` carries `activities` (list), `tail` (tail),
@@ -97,16 +99,54 @@ between a cell's Python-level writes and its raw fd writes is not guaranteed
 
 ## Execution
 
-Cells compile with `PyCF_ALLOW_TOP_LEVEL_AWAIT` and run as tasks on the
-persistent event loop, so `await` works at top level and background tasks
-created by a cell keep running between cells. Each cell's source is registered
+Cells compile with `PyCF_ALLOW_TOP_LEVEL_AWAIT` (on the main loop, so a
+`SyntaxError` fails the request at once). Each cell then runs on its own
+thread, `rlm-cell-…`, with its own event loop (`rlm.cells`): the cell body and
+every task the cell starts run there, so `await` works at top level, asyncio
+inside one cell stays single-threaded, and a cell stuck in synchronous code
+stops only itself. The thread keeps its loop running after the body ends for
+as long as the cell's tasks run, so background tasks keep running between
+cells. Across cells: a task (or any future) of another cell is awaitable, and
+asyncio's `Lock`/`Event`/`Semaphore`/`Condition`/`Queue`/`Barrier` run each
+operation on the thread of the loop they are bound to. The main loop serves
+the protocol, the host bridge, and MCP.
+
+The cell body sees the cell's context variables (cell id, completion barrier),
+so output attribution works as before. `signal.signal` cannot be called from a
+cell (Python allows it only on the main thread). The trailing expression's
+`repr` runs on the cell thread; its value is bound to `_` when the result is
+delivered. Each cell's source is registered
 in `linecache` under `<cell-N>`, so tracebacks show the offending source line.
 Tracebacks are plain `traceback` formatting with the runtime's own frames
 stripped, keeping cell and library frames; no colors, no decoration.
 
+## Background cells
+
+An execute that carries `yieldMs` waits that long for its cell. A cell still
+running then (synchronous or suspended at an `await`) continues in the
+background, as Nodecode's evaluations do: the request ends with
+`done` `{"status":"backgrounded","cell":id}` and the next request runs. From
+then on, the cell's Python-level writes go to its handle instead of the
+protocol, so they never reach another cell's output; raw fd writes stay
+`id:null` as always. Its value is not bound to `_`.
+
+When it ends, the runtime sends one `host_request`
+`{"type":"cell.completed","cell":id,"status":"ok"|"error"|"interrupted","output":str,"outputTruncated":bool,"text":str}`:
+`output` is the tail of what it printed in the background (the newest 20
+lines / 2,000 characters, as `bash.completed`), `text` its value's `repr` or
+its traceback. A read of the result inside a cell after the host accepted the
+notice sends `{"type":"cell.consumed","cell":id}` (no reply awaited).
+
+`rlm.cells.get(id)` returns its `CellHandle`: `await h` (a `CellResult`:
+`status`, `value`, `text`, `output`, `duration`), `await h.wait(seconds)`
+(None while it runs), `h.poll()`, `h.output()`, `h.tail(n)`, `h.running`, and
+`h.cancel()` (an interrupt). `rlm.cells.handles()` lists them; the newest 64
+finished ones are kept.
+
 ## Interrupt
 
-`{"type":"interrupt"}` raises `KeyboardInterrupt` in the running cell. Without
+`{"type":"interrupt"}` raises `KeyboardInterrupt` in the running cell; with an
+`id`, also in a backgrounded cell. Without
 an `id` the interrupt applies to the running request, or — when none is running
 yet — to the next queued one; with an `id` it applies to that request only.
 An interrupt that arrives before its request starts executing is parked and
@@ -116,27 +156,25 @@ interrupt-targetable until its `done` event is emitted: this covers the
 post-run trailing-expression `repr` and output drain. Interrupts for finished
 or unknown requests are dropped.
 
-Delivery: the reader thread sends SIGINT to the main thread (also the loop
-thread); the handler asks asyncio which task's step the signal interrupted.
-On Windows (no `signal.pthread_kill`) the reader instead cancels the active
-cell task on the loop, so await-suspended cells interrupt normally but cells
-blocked in synchronous code cannot be broken (best-effort parity):
+Cell delivery happens on the cell's thread:
 
-- The active cell's own task is mid-step (sync bytecode such as a `time.sleep`
-  loop, or a blocking syscall such as `selectors.select()` woken by EINTR):
-  the handler raises `KeyboardInterrupt` directly and it propagates out of the
-  cell task.
-- The loop is idle in `select()` (the cell is suspended at an `await`) or a
-  different task — a background task or the runtime itself — is mid-step:
-  raising there would land in the wrong context, so the handler cancels the
-  active cell task and the runtime reports the cancellation as a
-  `KeyboardInterrupt`. When the mid-step task is a background task, the
-  handler also raises `KeyboardInterrupt` into it: a background task blocked
-  in synchronous code occupies the only thread, so it receives the
-  `KeyboardInterrupt` (and dies with it) to unblock the loop and let the
-  cancel take effect. Limitation: the interrupt lands at the await point as a
-  cancellation, so user code catching `KeyboardInterrupt` around an `await`
-  does not intercept it.
+- The cell is suspended at an `await` (its loop is idle): the body task is
+  cancelled there and the runtime reports the cancellation as a
+  `KeyboardInterrupt` whose traceback names the await. User code catching
+  `KeyboardInterrupt` around an `await` does not intercept it.
+- Code is running on the cell thread (the body's synchronous bytecode, its
+  `repr`, or one of the cell's tasks hogging the thread): after 50 ms a
+  `KeyboardInterrupt` is injected into the thread
+  (`PyThreadState_SetAsyncExc`) and fires at its next bytecode; a task that
+  takes it dies with it, as before.
+- `time.sleep` on a cell thread waits on the cell's interrupt and raises it at
+  once. A single other blocking C call (`selectors.select()` with no timeout,
+  a blocking `recv`) takes the interrupt only when it returns: Python cannot
+  break a C call on a non-main thread, so the host's stop-then-restart path
+  covers it.
+
+Snapshot and restore requests still run on the main loop and take SIGINT
+there, as before.
 
 Both paths end with an `error` event (`ename` `KeyboardInterrupt`) and
 `done` with `status:"error"`; the runtime keeps serving. When nothing is
