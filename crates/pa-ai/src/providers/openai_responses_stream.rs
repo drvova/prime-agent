@@ -785,6 +785,7 @@ impl<'a> ResponsesStreamProcessor<'a> {
                             .and_then(serde_json::Value::as_u64)
                             .unwrap_or(0),
                         cost: UsageCost::default(),
+                        billing: None,
                     };
                 }
                 calculate_cost(self.model, &mut self.output.usage, None);

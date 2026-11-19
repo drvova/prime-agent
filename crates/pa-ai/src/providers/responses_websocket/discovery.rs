@@ -275,7 +275,13 @@ pub fn discover_endpoints(targets: Vec<DiscoveryTarget>, network: NetworkMode) {
     };
     runtime.spawn(async move {
         let mut seen = std::collections::HashSet::new();
-        for target in targets {
+        for mut target in targets {
+            // A base URL whose placeholders cannot be filled is never probed: the probe would
+            // carry the target's credentials to an unfilled path.
+            let Ok(base_url) = crate::base_url::resolve_placeholders(&target.base_url) else {
+                continue;
+            };
+            target.base_url = base_url.into_owned();
             let Some(key) = endpoint_key(&target.base_url) else {
                 continue;
             };

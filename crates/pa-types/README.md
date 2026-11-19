@@ -27,6 +27,9 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   the attach snapshot's `state.goal`), and the TUI (announcement rows, tray
   label). The goal *engine* (validation, accounting, continuation prompts)
   is pa-core's.
+- `billing`: how one model call is paid for (`BillingMode`, stamped as the optional
+  `usage.billing` of each recorded assistant message; a missing or unknown mode reads as
+  unclassified) and the per-mode spend split (`BillingSplit`) the daemon's session summaries carry.
 - `slash_commands`: the builtin slash-command table every surface shares
   (the TUI dispatch + autocomplete, the session engine's command admission,
   CLI suggestion help) plus its pure parse/suggestion helpers — the TS

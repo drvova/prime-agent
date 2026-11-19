@@ -3,7 +3,7 @@
 //! channel, so neither a slow provider nor a long session scan ever holds a frame (AGENTS.md
 //! "Performance and the critical path").
 
-use pa_types::provider_usage::{QuotaReport, SpendHistory, UsageSection};
+use pa_types::provider_usage::{QuotaReport, QuotaState, SpendHistory, UsageSection};
 
 use super::{key_event_to_id, AgentView, DaemonCommand, Duration, KeyEvent, Map, SessionUi, Value};
 use crate::usage_page::{countdown, next_label_change, now_ms, UsagePage, UsagePageAction};
@@ -119,6 +119,56 @@ impl SessionUi {
         let now = now_ms();
         let wait =
             (next_label_change(now, reset.resets_at_ms).min(reset.resets_at_ms) - now).max(0);
+        Some(std::time::Instant::now() + Duration::from_millis(wait.unsigned_abs()))
+    }
+
+    /// Re-derive the title's plan quota at `now_ms` from the cached `/usage` cards (the run loop
+    /// calls this before each paint; nothing here fetches): the current provider's most-used
+    /// window that has not reset yet, as `5h 42% · 1h 20m`.
+    pub(crate) fn refresh_plan_quota(&mut self, view: &mut AgentView, now_ms: i64) {
+        let provider = view.chrome.model_provider.as_deref();
+        let tightest = self
+            .usage_quotas
+            .as_ref()
+            .and_then(|report| {
+                report
+                    .providers
+                    .iter()
+                    .find(|card| Some(card.provider.as_str()) == provider)
+            })
+            .and_then(|card| match &card.state {
+                QuotaState::Windows { windows } => windows
+                    .iter()
+                    .filter(|window| window.resets_at_ms.is_none_or(|at| at > now_ms))
+                    .filter_map(|window| Some((window, window.used_fraction()?)))
+                    .max_by(|left, right| left.1.total_cmp(&right.1)),
+                QuotaState::RateLimited { .. } | QuotaState::Failed { .. } => None,
+            });
+        let quota = tightest.map(|(window, fraction)| {
+            let name = match window.label.as_str() {
+                "5-hour" => "5h",
+                "Weekly" => "7d",
+                label => label,
+            };
+            let percent = (fraction * 100.0).round();
+            match window.resets_at_ms {
+                Some(at) => format!("{name} {percent}% \u{b7} {}", countdown(at - now_ms)),
+                None => format!("{name} {percent}%"),
+            }
+        });
+        self.plan_quota_resets_at_ms = tightest.and_then(|(window, _)| window.resets_at_ms);
+        if quota != view.chrome.plan_quota {
+            view.chrome.plan_quota = quota;
+            self.dirty = true;
+        }
+    }
+
+    /// When the title's plan quota countdown next changes (or its window resets).
+    pub(crate) fn plan_quota_deadline(&self, view: &AgentView) -> Option<std::time::Instant> {
+        let resets_at = self.plan_quota_resets_at_ms?;
+        view.chrome.plan_quota.as_ref()?;
+        let now = now_ms();
+        let wait = (next_label_change(now, resets_at).min(resets_at) - now).max(0);
         Some(std::time::Instant::now() + Duration::from_millis(wait.unsigned_abs()))
     }
 

@@ -7,6 +7,7 @@
 //! survive a parse/serialize round trip: the re-parsed JSON must equal the original.
 
 pub mod ai;
+pub mod billing;
 pub mod compaction;
 pub mod context_breakdown;
 pub mod control;

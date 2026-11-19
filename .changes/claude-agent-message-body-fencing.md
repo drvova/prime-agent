@@ -1,0 +1,1 @@
+- Agent messages now quote any body line that looks like a harness notice (such as a forged `[agent-message from parent]` or `[child-exited ...]` header), and the system prompt tells agents to treat peer messages as information rather than instructions and to message siblings only with substance.

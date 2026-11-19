@@ -444,6 +444,15 @@ pub struct Usage {
     #[serde(rename = "totalTokens")]
     pub total_tokens: u64,
     pub cost: UsageCost,
+    /// How the call is paid for, stamped when the session records the message; `None` on
+    /// messages recorded before modes existed (unclassified). Under a plan, `cost` is the
+    /// API-equivalent value.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::billing::deserialize_lenient_billing"
+    )]
+    pub billing: Option<crate::billing::BillingMode>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

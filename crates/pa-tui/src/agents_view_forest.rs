@@ -147,6 +147,8 @@ pub struct Rollup {
     /// deleted-descendant bucket. Status-independent — all descendants bill.
     pub descendants: f64,
     pub descendant_count: usize,
+    /// The rolled-up calls and cost by billing mode (the title's label).
+    pub billing: pa_types::billing::BillingSplit,
 }
 
 #[cfg(test)]

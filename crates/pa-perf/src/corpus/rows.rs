@@ -212,6 +212,7 @@ fn usage(rng: &mut Rng) -> Usage {
             cache_write: cost(cache_write),
             total: cost(total),
         },
+        billing: None,
     }
 }
 

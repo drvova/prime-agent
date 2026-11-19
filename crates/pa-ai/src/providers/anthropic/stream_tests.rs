@@ -214,6 +214,7 @@ data: {"type":"message_stop"}"#,
                 cache_write: cache_write.into(),
                 total: (input + output + cache_read + cache_write).into(),
             },
+            billing: None,
         }
     );
 }

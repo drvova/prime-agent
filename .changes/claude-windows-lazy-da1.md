@@ -1,0 +1,1 @@
+- Inline images on native Windows draw with sixel under Windows Terminal set as the default terminal: the first image asks the terminal once whether it draws sixel, and switches from half-blocks when it does.

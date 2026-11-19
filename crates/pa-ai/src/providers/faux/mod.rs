@@ -422,6 +422,7 @@ fn with_usage_estimate(
         cache_write,
         total_tokens: input + output_tokens + cache_read + cache_write,
         cost: UsageCost::default(),
+        billing: None,
     };
     message
 }
@@ -697,6 +698,8 @@ async fn stream_with_deltas(
 pub struct RegisterFauxProviderOptions {
     pub api: Option<String>,
     pub provider: Option<String>,
+    /// The models' base URL (default a loopback placeholder).
+    pub base_url: Option<String>,
     pub models: Option<Vec<FauxModelDefinition>>,
     pub tokens_per_second: Option<f64>,
     pub token_size_min: Option<usize>,
@@ -905,6 +908,9 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
         ..Default::default()
     });
     let tokens_per_second = options.tokens_per_second;
+    let base_url = options
+        .base_url
+        .unwrap_or_else(|| DEFAULT_BASE_URL.to_string());
 
     let model_definitions = options.models.unwrap_or_else(|| {
         vec![FauxModelDefinition {
@@ -927,7 +933,7 @@ pub fn register_faux_provider(options: RegisterFauxProviderOptions) -> FauxProvi
                 .unwrap_or_else(|| definition.id.clone()),
             api: api.clone(),
             provider: provider_name.clone(),
-            base_url: DEFAULT_BASE_URL.to_string(),
+            base_url: base_url.clone(),
             reasoning: definition.reasoning.unwrap_or(false),
             thinking_level_map: None,
             input: definition

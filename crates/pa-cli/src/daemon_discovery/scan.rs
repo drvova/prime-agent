@@ -85,7 +85,10 @@ pub(crate) fn parse_lsof_listeners(stdout: &str) -> Vec<DiscoveredDaemonProcess>
             pid = value.parse().ok();
         } else if field == 'n' && value.starts_with('/') {
             let Some(pid) = pid else { continue };
-            let socket_path = normalize_socket_path(value);
+            // Linux lsof appends the socket type to a unix socket's name (`/path type=STREAM`);
+            // the path is what precedes it.
+            let path = value.rsplit_once(" type=").map_or(value, |(path, _)| path);
+            let socket_path = normalize_socket_path(path);
             if seen.insert((pid, socket_path.clone())) {
                 daemons.push(DiscoveredDaemonProcess {
                     pid,
@@ -421,6 +424,21 @@ mod tests {
             listeners,
             vec![("9703".to_string(), "/tmp/agent sandbox/daemon.sock".to_string())],
             "the spaced path is kept whole; the non-UTF-8 row drops out alone, never rejecting the census"
+        );
+    }
+
+    /// The exact field shape lsof 4.95 prints on Linux: the name carries the socket type, and a
+    /// pathless connected socket names only its type.
+    #[test]
+    fn parse_lsof_listeners_drops_the_linux_socket_type_suffix() {
+        let sample = "p123\nn/tmp/agent/daemon.sock type=STREAM\nntype=STREAM\n";
+        assert_eq!(
+            parse_lsof_listeners(sample),
+            vec![DiscoveredDaemonProcess {
+                pid: 123,
+                socket_path: PathBuf::from("/tmp/agent/daemon.sock"),
+                uptime_seconds: None,
+            }]
         );
     }
 

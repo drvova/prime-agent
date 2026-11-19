@@ -249,7 +249,61 @@ pub(crate) fn sanitize_message_header_value(value: &str) -> String {
     out
 }
 
-/// The rendered prompt a receiving context sees.
+/// The heads of the bracket notices the harness renders into a model context (`[agent-message
+/// from ...]`, `[child-exited: ...]`, `[cell-done ...]`, `[task from parent]`, `[loop guard]`,
+/// ...), lowercase. A delivered body line that opens with one is fenced, so a body can never
+/// impersonate the harness or another sender. Prefix matches: `python-state` also covers
+/// `[python-state-restored]`.
+const HARNESS_NOTICE_HEADS: &[&str] = &[
+    "agent-message",
+    "autonomous-continuation",
+    "autonomous-status",
+    "bash-done",
+    "branch-summary",
+    "cell-done",
+    "child-exited",
+    "child-failed",
+    "compaction-summary",
+    "factory-progress",
+    "from ",
+    "goal",
+    "harness-digest",
+    "heartbeat",
+    "loop guard",
+    "model-prompt-error",
+    "python-skills-unavailable",
+    "python-state",
+    "self-refinement",
+    "task from",
+    "update-complete",
+    "user-refinement",
+];
+
+/// Quote (`> `) every body line that opens, after any indentation and in any letter case, with a
+/// harness notice head; every other line stays verbatim.
+fn fence_agent_message_body(body: &str) -> String {
+    body.split('\n')
+        .map(|line| {
+            let head = line
+                .trim_start()
+                .strip_prefix('[')
+                .map(str::to_ascii_lowercase);
+            if head.is_some_and(|head| {
+                HARNESS_NOTICE_HEADS
+                    .iter()
+                    .any(|notice| head.starts_with(notice))
+            }) {
+                format!("> {line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The rendered prompt a receiving context sees: the daemon-derived header, then the body with
+/// any line that could pass for a harness notice fenced.
 #[must_use]
 pub fn create_agent_session_message_prompt(payload: &AgentMessagePromptPayload) -> String {
     let sender = sanitize_message_header_value(&payload.sender_name);
@@ -262,7 +316,8 @@ pub fn create_agent_session_message_prompt(payload: &AgentMessagePromptPayload) 
         Some(relationship) => format!("{}:{sender}", relationship.as_str()),
         None => sender,
     };
-    format!("[agent-message from {sender}]\n\n{}", payload.message)
+    let body = fence_agent_message_body(&payload.message);
+    format!("[agent-message from {sender}]\n\n{body}")
 }
 
 /// The receiving side's custom-row inputs.
@@ -386,6 +441,23 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
     controller: std::sync::Arc<C>,
     handlers: &mut HostRequestHandlers,
 ) {
+    register_agent_message_host_handlers_with_clock(
+        controller,
+        handlers,
+        std::sync::Arc::new(std::time::Instant::now),
+    );
+}
+
+/// [`register_agent_message_host_handlers`] over an explicit rate-bucket clock. The bucket is
+/// this registration's: one per sending session, every delivery attempt takes one token.
+pub(crate) fn register_agent_message_host_handlers_with_clock<
+    C: AgentMessageController + 'static,
+>(
+    controller: std::sync::Arc<C>,
+    handlers: &mut HostRequestHandlers,
+    clock: AgentMessageClock,
+) {
+    let limiter = std::sync::Arc::new(AgentMessageRateLimiter::new(clock));
     handlers.register(
         "agent_message.list_agents",
         host_handler(|_payload| {
@@ -400,6 +472,7 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
         "agent_message.send",
         host_handler(move |payload| {
             let controller = controller.clone();
+            let limiter = limiter.clone();
             Box::pin(async move {
                 let data = payload.data;
                 let Some(message) = data.get("message").and_then(Value::as_str) else {
@@ -426,6 +499,16 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
                     let family = controller.family().await?;
                     let mut receipts = Vec::with_capacity(family.len());
                     for member in family {
+                        // One token per recipient: a throttled recipient settles with the
+                        // retry hint instead of a delivery.
+                        if let Err(throttled) = limiter.acquire() {
+                            receipts.push(json!({
+                                "target": member.id,
+                                "error": throttled.to_string(),
+                                RETRY_AFTER_MS_FIELD: throttled.retry_after_ms,
+                            }));
+                            continue;
+                        }
                         let result = controller
                             .send_agent_message(AgentMessageSendInput {
                                 target: member.id.clone(),
@@ -513,6 +596,7 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
                         ))
                     }
                 };
+                limiter.acquire()?;
                 let receipt = controller
                     .send_agent_message(AgentMessageSendInput {
                         target: member.id.clone(),
@@ -525,6 +609,10 @@ pub fn register_agent_message_host_handlers<C: AgentMessageController + 'static>
         }),
     );
 }
+
+mod rate_limit;
+pub(crate) use rate_limit::observe_agent_message_throttles;
+use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIELD};
 
 // The observe half lives in the child module; the pub use re-exports keep
 // every external agent_messaging:: path stable.

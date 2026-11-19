@@ -1,0 +1,1 @@
+- Fixed `prime-agent doctor` and `prime-agent shutdown` seeing every daemon twice (once under a bogus `… type=STREAM` socket path) on Linux machines without `ss`.

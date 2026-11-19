@@ -1292,6 +1292,7 @@ fn priced_usage(input: u64, output: u64, cache_write: u64, cost: f64) -> pa_type
             total: cost.into(),
             ..Default::default()
         },
+        billing: None,
     }
 }
 

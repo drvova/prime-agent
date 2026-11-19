@@ -305,7 +305,10 @@ pub fn count_descendants(roster: &[Value], parent: &SessionIdentity) -> Subagent
 /// The session's whole-family spend: the `compute_rollups` total the
 /// agents view bills the session's row. `None` when the roster holds no
 /// record for the session.
-pub(crate) fn family_cost(roster: &[Value], session: &SessionIdentity) -> Option<f64> {
+pub(crate) fn family_rollup(
+    roster: &[Value],
+    session: &SessionIdentity,
+) -> Option<crate::agents_view_forest::Rollup> {
     let records = crate::agents_view_state::reconcile_unified_sessions(roster, &[], None);
     let rollups = crate::agents_view_forest::compute_rollups(&records);
     let keys = session.keys();
@@ -317,7 +320,7 @@ pub(crate) fn family_cost(roster: &[Value], session: &SessionIdentity) -> Option
                 .any(|key| keys.contains(key))
         })
         .and_then(|record| rollups.get(&record.identity))
-        .map(|rollup| rollup.cost)
+        .copied()
 }
 
 #[cfg(test)]
@@ -444,7 +447,10 @@ mod tests {
             Some("root".to_string()),
             Some("/sessions/root.jsonl".to_string()),
         );
-        assert_eq!(family_cost(&roster, &identity), Some(2.30));
+        assert_eq!(
+            family_rollup(&roster, &identity).map(|rollup| rollup.cost),
+            Some(2.30)
+        );
         // Pinned against the agents-view row itself, not a second copy
         // of the formula.
         let records = crate::agents_view_state::reconcile_unified_sessions(&roster, &[], None);
@@ -463,12 +469,12 @@ mod tests {
             .find(|row| row.kind == crate::agents_view_forest::RowKind::Agent)
             .expect("the root's agent row");
         assert_eq!(
-            family_cost(&roster, &identity),
+            family_rollup(&roster, &identity).map(|rollup| rollup.cost),
             Some(row.cost),
             "the title and the agents-view row agree"
         );
         assert_eq!(
-            family_cost(
+            family_rollup(
                 &roster,
                 &SessionIdentity::new(None, Some("missing".to_string()), None)
             ),

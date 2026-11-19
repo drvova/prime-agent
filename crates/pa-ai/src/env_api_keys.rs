@@ -8,6 +8,13 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
         "github-copilot" => Some(vec!["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]),
         // ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY.
         "anthropic" => Some(vec!["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]),
+        "charm-hyper" => Some(vec!["CHARM_HYPER_API_KEY", "HYPER_API_KEY"]),
+        // MODEL_API_KEY is Meta's documented name; META_API_KEY is the explicit alternative.
+        "meta" => Some(vec!["MODEL_API_KEY", "META_API_KEY"]),
+        "sakana" => Some(vec!["SAKANA_API_KEY", "FUGU_API_KEY"]),
+        "umans" => Some(vec!["UMANS_AI_CODING_PLAN_API_KEY", "UMANS_AI_API_KEY"]),
+        // SCW_SECRET_KEY is Scaleway's documented name; SCW_API_KEY is the legacy one.
+        "scaleway" => Some(vec!["SCW_SECRET_KEY", "SCW_API_KEY"]),
         other => {
             let env_var = match other {
                 "openai" => "OPENAI_API_KEY",
@@ -35,6 +42,29 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
                 "xiaomi-token-plan-cn" => "XIAOMI_TOKEN_PLAN_CN_API_KEY",
                 "xiaomi-token-plan-ams" => "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
                 "xiaomi-token-plan-sgp" => "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+                "aiand" => "AIAND_API_KEY",
+                "aimlapi" => "AIMLAPI_API_KEY",
+                "alibaba-coding-plan" => "ALIBABA_CODING_PLAN_API_KEY",
+                "alibaba-coding-plan-cn" => "ALIBABA_CODING_PLAN_CN_API_KEY",
+                "baseten" => "BASETEN_API_KEY",
+                "chutes" => "CHUTES_API_KEY",
+                "deepinfra" => "DEEPINFRA_API_KEY",
+                "firepass" => "FIREPASS_API_KEY",
+                "gmi-cloud" => "GMI_API_KEY",
+                "nanogpt" => "NANO_GPT_API_KEY",
+                "novita" => "NOVITA_API_KEY",
+                "nvidia" => "NVIDIA_API_KEY",
+                "qianfan" => "QIANFAN_API_KEY",
+                "sambanova" => "SAMBANOVA_API_KEY",
+                "siliconflow" => "SILICONFLOW_API_KEY",
+                "siliconflow-cn" => "SILICONFLOW_CN_API_KEY",
+                "stepfun" => "STEPFUN_API_KEY",
+                "together" => "TOGETHER_API_KEY",
+                "venice" => "VENICE_API_KEY",
+                "zhipu-coding-plan" => "ZHIPU_API_KEY",
+                "minimax-code" => "MINIMAX_CODE_API_KEY",
+                "minimax-code-cn" => "MINIMAX_CODE_CN_API_KEY",
+                "synthetic" => "SYNTHETIC_API_KEY",
                 _ => return None,
             };
             Some(vec![env_var])

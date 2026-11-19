@@ -31,6 +31,11 @@ pub struct ScanUsage {
     total_tokens: u64,
     #[serde(default)]
     cost: ScanUsageCost,
+    #[serde(
+        default,
+        deserialize_with = "pa_types::billing::deserialize_lenient_billing"
+    )]
+    billing: Option<pa_types::billing::BillingMode>,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -63,6 +68,7 @@ impl From<ScanUsage> for Usage {
                 cache_write: scan.cost.cache_write,
                 total: scan.cost.total,
             },
+            billing: scan.billing,
         }
     }
 }

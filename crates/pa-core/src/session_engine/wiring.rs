@@ -149,6 +149,23 @@ impl AgentSession {
         self.agent_dir = Some(agent_dir);
     }
 
+    /// Arm the billing-mode stamp: `agent_dir`'s auth store names each provider's credential
+    /// kind, and `observer` (a telemetry-enabled session's counters) sees every stamped mode.
+    pub fn arm_billing_stamp(
+        &self,
+        agent_dir: std::path::PathBuf,
+        observer: Option<super::billing::BillingObserver>,
+    ) {
+        self.billing.stamp.arm(agent_dir, observer);
+    }
+
+    /// The session's billing stamp, for a host that writes its own copy of each settled
+    /// assistant message.
+    #[must_use]
+    pub fn billing(&self) -> super::billing::SessionBilling {
+        self.billing.clone()
+    }
+
     /// Bind the kernel-state probe behind the post-compaction
     /// `ipython_state` notice (the engine wiring hands over the session's
     /// kernel provisioner, TS `AgentSession._ipythonKernelProvisioner`).

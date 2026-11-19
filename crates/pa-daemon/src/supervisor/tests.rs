@@ -824,6 +824,7 @@ fn saved_session_rows_publish_deleted_descendant_usage() {
         input_tokens: 1_100,
         output_tokens: 110,
         cost: 0.5,
+        billing: None,
     });
     let row = saved_session_row(
         &info,

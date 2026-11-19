@@ -382,6 +382,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         wiring
             .interaction
             .set_counters(std::sync::Arc::clone(&session_counters));
+        // `agent_message.send` (registered by the embedding): telemetry counts the deliveries
+        // the per-sender rate bucket refused (never a target or a body).
+        let counters = std::sync::Arc::clone(&session_counters);
+        super::agent_messaging::observe_agent_message_throttles(
+            &mut handlers,
+            std::sync::Arc::new(move |count| counters.note_agent_message_throttled(count)),
+        );
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.
@@ -1142,6 +1149,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     )));
     session.set_auto_refine(auto_refine_allowed, auto_refine_gates);
     session.set_agent_dir(config.agent_dir.clone());
+    session.arm_billing_stamp(
+        config.agent_dir.clone(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |mode| counters.note_billing_mode(mode))
+                as super::billing::BillingObserver
+        }),
+    );
     session.set_usage_store(wiring.rlm_usage.store());
     // Keep the context descriptor even while disabled, so re-enabling can load it.
     session.harness_digest = Some(digest_context);
