@@ -1,7 +1,7 @@
 //! The cron job store: file-backed job state with cross-process locking,
 //! claim-based dispatch, and heartbeat lifecycle management. Submodules:
 //! state save/load, generic jobs and dispatches, `/heartbeat` jobs, RLM
-//! heartbeats, per-session artifacts.
+//! heartbeats, kernel-scheduled jobs, per-session artifacts.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,10 +12,12 @@ use super::{is_heartbeat_cron_job, AgentCronJob, AgentCronSchedule, DeliveryMode
 
 mod heartbeat;
 mod jobs;
+mod repl_schedule;
 mod rlm_heartbeat;
 mod session_artifacts;
 mod state;
 
+pub(crate) use repl_schedule::{ReplScheduleListing, ReplScheduleWhen};
 pub use session_artifacts::read_scheduled_jobs_artifact;
 
 pub const SESSION_SCHEDULED_JOBS_FILENAME: &str = "scheduled-jobs.json";

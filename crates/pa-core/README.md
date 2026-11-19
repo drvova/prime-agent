@@ -95,6 +95,16 @@ UTF-16 with one; binary files are refused). Each call runs on a blocking
 thread; adoption counts ride the `agent fs edit` event. Non-goals: creating,
 moving, or deleting files, and the model-facing `edit` tool (unchanged).
 
+Kernel scheduled jobs (`schedule.add`/`schedule.list`/`schedule.cancel`,
+crate-internal, in `session_engine/runtime/schedule.rs` over
+`cron/store/repl_schedule.rs`): one-shot or recurring prompts the model
+schedules for its own session, stored as ordinary cron jobs (source
+`repl_schedule`, so `prime-agent schedule list` shows them) that a session
+lists and cancels only when it created them. Capped per session with a
+minimum recurring interval; an embedding without a scheduler answers with
+an error. Adoption counts ride the `agent repl schedule` event. Non-goals:
+managing the user's own jobs.
+
 Provider auth descriptors (`auth/descriptor.rs`, `auth/resolver.rs`,
 `auth/token_exchange.rs`): the optional models.json provider `auth` block,
 validated at load, and the one request-auth seam (`AuthResolver`, crate

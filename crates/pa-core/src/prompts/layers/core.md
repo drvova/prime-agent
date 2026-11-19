@@ -204,6 +204,14 @@ prime-agent searches files natively, in process, with ripgrep's own engine: rege
 - `fs.read(path: str, *, start: int | None = None, end: int | None = None) -> FileView`: `str(view)` is a header (`path (lines 1-40 of 120)`, plus `crlf`/`no final newline`/encoding notes) and `LINE:abc|text` rows; `view.lines` holds `AnchoredLine(line, anchor, text)`, `view.anchor(n)` gives line n's anchor. `start`/`end` are 1-based, inclusive; at most 2000 lines unless `end` asks for more (`view.truncated`). Binary and non-UTF-8/UTF-16 files raise.
 - `fs.edit(path: str, edits: dict | list[dict]) -> EditResult`: one atomic patch; each edit names one operation: `{"replace": "12:abc", "text": "new"}`, a range `{"replace": ["12:abc", "15:xyz"], "text": ...}` (inclusive), `{"delete": "12:abc"}` or `{"delete": [first, last]}`, `{"insert_after": "12:abc", "text": ...}`, `{"insert_before": ...}`, `{"append": "text"}` (also fills an empty file). `text` is the new lines (a str, or a list of str); line endings, final newline, and encoding stay the file's. All anchors address the file as read (numbers never shift within a patch); edits may not overlap. `str(result)` shows the changed regions under fresh anchors to chain the next edit from; anchors outside them keep their letters, and lines below a change shift by its net line count.
 
+## Scheduled jobs
+
+Schedule a prompt to run in this session later ("check CI in 30 minutes", "rerun the benchmark nightly"). Jobs persist with the session and the user sees them in `prime-agent schedule list`; you list and cancel only the jobs you created. At most 10 live jobs per session; recurring jobs fire at most every 5 minutes. Without the prime-agent daemon (headless runs) the calls raise `RuntimeError` and nothing is scheduled.
+
+- `schedule.add(prompt: str, *, at: str | datetime | timedelta | float | None = None, every: str | timedelta | float | None = None, cron: str | None = None, label: str | None = None) -> ScheduledJob`: pass exactly one of `at` (one shot: a datetime, a delay in seconds or `timedelta`, an ISO-8601 string, or `"in 30m"`), `every` (`"30m"`, `"2h"`, `"1d"`), or `cron` (five-field UTC expression or `@daily`); the job runs `prompt` as a new turn when it fires
+- `schedule.list(*, include_inactive: bool = False) -> list[ScheduledJob]`: soonest first; `ScheduledJob(id, prompt, kind, schedule, status, next_run_at, last_run_at, run_count, label, last_error, created_at)`, `kind` is `once`/`interval`/`cron`
+- `schedule.cancel(id: str) -> ScheduledJob`: cancel one of your jobs
+
 ## Todos and questions
 
 A session todo list the user sees live; keep one for work with 3+ steps, marking items `in_progress` and `done` as you go. It persists across kernel restarts.
@@ -217,4 +225,4 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

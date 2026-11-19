@@ -390,6 +390,8 @@ struct CounterValues {
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
     fs_edit: FsEditCounts,
+    /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
+    repl_schedule: ReplScheduleCounts,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -404,6 +406,16 @@ struct FsEditCounts {
     rejected: u64,
     stale_anchors: u64,
     edit_failed: u64,
+}
+
+/// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplScheduleCounts {
+    added_once: u64,
+    added_recurring: u64,
+    listed: u64,
+    cancelled: u64,
+    rejected: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -642,6 +654,20 @@ impl SessionCounters {
                     operation: FsEditOperation::Edit,
                 } => counts.edit_failed += 1,
             }
+        });
+    }
+
+    /// One kernel `schedule.add/list/cancel` call (counts only: never a prompt or a schedule).
+    pub(crate) fn note_repl_schedule(&self, fact: super::runtime::ScheduleFact) {
+        self.with(|values| {
+            let counts = &mut values.repl_schedule;
+            *match fact {
+                super::runtime::ScheduleFact::AddedOnce => &mut counts.added_once,
+                super::runtime::ScheduleFact::AddedRecurring => &mut counts.added_recurring,
+                super::runtime::ScheduleFact::Listed => &mut counts.listed,
+                super::runtime::ScheduleFact::Cancelled => &mut counts.cancelled,
+                super::runtime::ScheduleFact::Rejected => &mut counts.rejected,
+            } += 1;
         });
     }
 
@@ -1199,6 +1225,23 @@ impl SessionTelemetry {
                 edit_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs edit", edit_properties);
+        }
+        // A session that never scheduled from the kernel sends no schedule event.
+        let mut schedule = ReplScheduleCounts::default();
+        self.counters.with(|values| schedule = values.repl_schedule);
+        if schedule != ReplScheduleCounts::default() {
+            let mut schedule_properties = self.session_properties();
+            for (key, value) in [
+                ("schedule_once_added_count", schedule.added_once),
+                ("schedule_recurring_added_count", schedule.added_recurring),
+                ("schedule_list_count", schedule.listed),
+                ("schedule_cancelled_count", schedule.cancelled),
+                ("schedule_rejected_count", schedule.rejected),
+            ] {
+                schedule_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent repl schedule", schedule_properties);
         }
         self.client.flush().await
     }
