@@ -32,6 +32,7 @@ fn provider_name(provider: &str) -> &str {
         "anthropic" => "Anthropic",
         "openai-codex" => "ChatGPT (Codex)",
         "github-copilot" => "GitHub Copilot",
+        "synthetic" => "Synthetic",
         "prime-inference" => "Prime Inference",
         "openai" => "OpenAI",
         "google" => "Google",

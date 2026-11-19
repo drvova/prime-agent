@@ -1535,6 +1535,22 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Provider connection re-warm for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when a turn start re-opened an idle
+/// provider connection: warm-ups sent, those that found the connection closed and reconnected
+/// (a handshake the turn's first request no longer paid), and the summed time of those
+/// reconnects. Counts only: never a provider URL or origin.
+const AGENT_CONNECTION_REWARM: EventRule = EventRule {
+    name: "agent connection rewarm",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("connection_rewarm_count", required(count())),
+        ("connection_rewarm_reopened_count", required(count())),
+        ("connection_rewarm_reopened_ms", required(duration())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1931,6 +1947,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_CONNECTION_REWARM,
         &AGENT_QUOTA_FALLBACK,
         &AGENT_ENDPOINT_DISCOVERY,
     ];

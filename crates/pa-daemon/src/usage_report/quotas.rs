@@ -11,8 +11,8 @@ use std::time::Duration;
 use pa_ai::oauth::{ProviderHttp, ReqwestProviderHttp};
 use pa_ai::quota::{
     fetch_anthropic_quota, fetch_github_copilot_quota, fetch_openai_codex_quota,
-    github_api_base_url, FetchedQuota, ANTHROPIC_USAGE_BASE_URL, OPENAI_CODEX_USAGE_BASE_URL,
-    QUOTA_REQUEST_TIMEOUT_MS,
+    fetch_synthetic_quota, github_api_base_url, FetchedQuota, ANTHROPIC_USAGE_BASE_URL,
+    OPENAI_CODEX_USAGE_BASE_URL, QUOTA_REQUEST_TIMEOUT_MS, SYNTHETIC_QUOTA_BASE_URL,
 };
 use pa_core::auth::{AuthCredential, AuthStorage};
 use pa_types::provider_usage::{ProviderQuota, QuotaReport, QuotaSource, QuotaState};
@@ -34,19 +34,21 @@ pub(crate) enum CachePolicy {
     Bypass,
 }
 
-/// The subscription providers whose own usage endpoint the page reads.
+/// The plan providers whose own usage endpoint the page reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum QuotaProvider {
     Anthropic,
     OpenAiCodex,
     GithubCopilot,
+    Synthetic,
 }
 
 impl QuotaProvider {
-    const ALL: [QuotaProvider; 3] = [
+    const ALL: [QuotaProvider; 4] = [
         QuotaProvider::Anthropic,
         QuotaProvider::OpenAiCodex,
         QuotaProvider::GithubCopilot,
+        QuotaProvider::Synthetic,
     ];
 
     fn id(self) -> &'static str {
@@ -54,6 +56,7 @@ impl QuotaProvider {
             QuotaProvider::Anthropic => "anthropic",
             QuotaProvider::OpenAiCodex => "openai-codex",
             QuotaProvider::GithubCopilot => "github-copilot",
+            QuotaProvider::Synthetic => "synthetic",
         }
     }
 }
@@ -103,18 +106,18 @@ fn quota_cache() -> &'static QuotaCache {
     CACHE.get_or_init(Default::default)
 }
 
-/// The stored subscription credentials, each with a usable token. Blocking: the auth store reads
+/// The stored plan credentials, each with a usable token. Blocking: the auth store reads
 /// its file and refreshes an expired OAuth token synchronously.
 fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
     let mut auth = AuthStorage::create(agent_dir);
     let stored = auth.get_all();
     let mut credentials = Vec::new();
     for provider in QuotaProvider::ALL {
-        let Some(credential) = stored.credential(provider.id()) else {
-            continue;
-        };
         let credential = match provider {
             QuotaProvider::Anthropic | QuotaProvider::OpenAiCodex => {
+                let Some(credential) = stored.credential(provider.id()) else {
+                    continue;
+                };
                 let usable = match &credential {
                     AuthCredential::Oauth { .. } => true,
                     // A Claude OAuth token pasted into the API-key slot opens the usage route
@@ -143,24 +146,36 @@ fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
                     },
                 }
             }
-            QuotaProvider::GithubCopilot => match credential {
+            QuotaProvider::GithubCopilot => match stored.credential(provider.id()) {
                 // The GitHub OAuth token is the refresh token: the Copilot API token in
                 // `access` does not open the GitHub REST route.
-                AuthCredential::Oauth {
+                Some(AuthCredential::Oauth {
                     refresh: Some(token),
                     enterprise_url,
                     ..
-                } => QuotaCredential::Token {
+                }) => QuotaCredential::Token {
                     provider,
                     token,
                     enterprise_domain: enterprise_url,
                 },
                 // No GitHub OAuth token, so no route to read; a token-exchange sign-in has no
                 // usage endpoint and falls through to observed rate limits and local spend.
-                AuthCredential::Oauth { refresh: None, .. }
-                | AuthCredential::ApiKey { .. }
-                | AuthCredential::McpStaticToken { .. }
-                | AuthCredential::TokenExchange { .. } => continue,
+                None
+                | Some(
+                    AuthCredential::Oauth { refresh: None, .. }
+                    | AuthCredential::ApiKey { .. }
+                    | AuthCredential::McpStaticToken { .. }
+                    | AuthCredential::TokenExchange { .. },
+                ) => continue,
+            },
+            // The plan is sold on an API key, stored or from the environment.
+            QuotaProvider::Synthetic => match auth.get_api_key(provider.id()) {
+                Some(token) => QuotaCredential::Token {
+                    provider,
+                    token,
+                    enterprise_domain: None,
+                },
+                None => continue,
             },
         };
         credentials.push(credential);
@@ -196,6 +211,9 @@ async fn fetch_card(
                 let api =
                     origin.map_or_else(|| github_api_base_url(enterprise_domain), str::to_string);
                 fetch_github_copilot_quota(http, &api, token).await
+            }
+            QuotaProvider::Synthetic => {
+                fetch_synthetic_quota(http, origin.unwrap_or(SYNTHETIC_QUOTA_BASE_URL), token).await
             }
         }
     };
