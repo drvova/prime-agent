@@ -67,6 +67,7 @@ mod frame_output;
 pub mod fuzzy;
 pub mod goal_surface;
 pub mod heartbeats_picker;
+mod history_import_notice;
 mod history_search;
 pub mod hotkeys;
 pub mod hyperlinks;

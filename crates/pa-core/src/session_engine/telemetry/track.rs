@@ -112,3 +112,45 @@ pub fn track_worker_children_closed(client: &TelemetryClient, count: usize) {
     properties.set("count", Value::from(count));
     client.track("daemon event", properties);
 }
+
+/// Track a settled history import (`agent sessions imported`, schema v2): who ran it, how it
+/// ended, the counts, and the copied bytes as a coarse bucket. Never a path or a session id.
+/// `trigger` is `automatic` (the daemon's boot run, execution mode `daemon`) or `command`
+/// (`import-sessions`, execution mode `cli`).
+pub fn track_sessions_imported(
+    client: &TelemetryClient,
+    trigger: &str,
+    outcome: &str,
+    report: &crate::settings::HistoryImportReport,
+    duration_ms: u64,
+) {
+    const MB: u64 = 1024 * 1024;
+    let bucket = match report.bytes_imported {
+        bytes if bytes < MB => "lt_1mb",
+        bytes if bytes < 100 * MB => "lt_100mb",
+        bytes if bytes < 1024 * MB => "lt_1gb",
+        bytes if bytes < 10 * 1024 * MB => "lt_10gb",
+        _ => "ge_10gb",
+    };
+    let mode = if trigger == "command" {
+        "cli"
+    } else {
+        "daemon"
+    };
+    let mut properties = base_properties(mode);
+    properties.set("trigger", Value::from(trigger));
+    properties.set("outcome", Value::from(outcome));
+    properties.set(
+        "sessions_imported_count",
+        Value::from(report.chats_imported),
+    );
+    properties.set("sessions_kept_count", Value::from(report.kept.len()));
+    properties.set("files_imported_count", Value::from(report.files_imported));
+    properties.set(
+        "config_entries_added_count",
+        Value::from(report.config_added.len()),
+    );
+    properties.set("bytes_bucket", Value::from(bucket));
+    properties.set("duration_ms", Value::from(duration_ms));
+    client.track("agent sessions imported", properties);
+}

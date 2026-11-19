@@ -393,6 +393,31 @@ impl SessionUi {
                     self.pending_rebind = Some(active_session_id);
                 }
             }
+            // A distribution build's background chat import: one status row when it starts and
+            // one when it lands (the resume picker re-reads its catalog on the latter).
+            DaemonClientEvent::HistoryImport {
+                finished,
+                sessions,
+                kept,
+                config,
+                error,
+            } => {
+                view.push_entry(crate::chat::ChatEntry::Status {
+                    text: crate::history_import_notice::history_import_notice(
+                        finished,
+                        sessions,
+                        kept,
+                        &config,
+                        error.as_deref(),
+                    ),
+                    kind: if error.is_some() {
+                        crate::chat::StatusKind::Warning
+                    } else {
+                        crate::chat::StatusKind::Info
+                    },
+                });
+                self.dirty = true;
+            }
             DaemonClientEvent::SessionListItem { .. }
             | DaemonClientEvent::SessionListProgress { .. } => {}
         }

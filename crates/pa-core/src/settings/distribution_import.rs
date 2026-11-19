@@ -5,8 +5,8 @@
 //! lists, resumes, or leases the sessions the official products keep in
 //! `~/.prime/agent`. On its first run (its own dir does not exist yet) it
 //! copies the user's hand-made configuration over once, so logins, settings,
-//! providers, and skills carry over; sessions and all runtime state stay
-//! behind.
+//! providers, and skills carry over; runtime state stays behind, and the
+//! chats follow in the background ([`super::history_import`]).
 //!
 //! The import is local and bounded (no network, a size budget), idempotent
 //! (it runs only while the target dir is missing), and crash-safe: entries are
@@ -28,12 +28,14 @@ use pa_types::platform::StateLayout;
 /// `auth.json`), the global context and system-prompt files, and the
 /// `skills/`, `prompts/`, and `themes/` dirs.
 ///
-/// Never imported: `sessions/`, `session-artifacts/`, `session-leases/`,
-/// `daemon-workers/`, `persistent-shells/`, `logs/`, `harness/`, the
-/// `kernel-venv/`, update and restart state, caches, the `git`/`npm`
-/// package checkouts (packages reinstall from the copied settings), and
+/// Never imported here: the history (`sessions/`, `session-artifacts/`,
+/// `harness/`), which the one-time history import copies in the background
+/// ([`super::history_import`]); `session-leases/`, `daemon-workers/`,
+/// `persistent-shells/`, `logs/`, the `kernel-venv/`, update and restart
+/// state, caches, the `git`/`npm` package checkouts (packages reinstall from
+/// the copied settings on the first session's resource resolution), and
 /// `telemetry.json` (the build gets its own installation id).
-const CONFIG_ENTRIES: [&str; 15] = [
+pub(super) const CONFIG_ENTRIES: [&str; 15] = [
     "settings.json",
     "auth.json",
     "models.json",
@@ -54,10 +56,10 @@ const CONFIG_ENTRIES: [&str; 15] = [
 /// The import's byte budget: an entry that would push the copy past it (a
 /// skill dir holding a checkout or a virtualenv) is left behind and named,
 /// so the first run never stalls on a large copy.
-const IMPORT_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
+pub(super) const IMPORT_BYTE_BUDGET: u64 = 32 * 1024 * 1024;
 
 /// The import's file-count budget, the same rule as the byte budget.
-const IMPORT_ENTRY_BUDGET: u64 = 4096;
+pub(super) const IMPORT_ENTRY_BUDGET: u64 = 4096;
 
 /// A stage dir this old belongs to a run that crashed mid-import.
 const STALE_STAGE_AGE: Duration = Duration::from_mins(10);
@@ -179,7 +181,7 @@ fn discard_stage(stage: &Path, error: std::io::Error) -> std::io::Error {
 
 /// The bytes and files under `path`, symlinks unfollowed (a link counts as
 /// one file of no size).
-fn measure(path: &Path) -> std::io::Result<(u64, u64)> {
+pub(super) fn measure(path: &Path) -> std::io::Result<(u64, u64)> {
     let metadata = std::fs::symlink_metadata(path)?;
     if !metadata.is_dir() {
         return Ok((metadata.len(), 1));
@@ -196,7 +198,7 @@ fn measure(path: &Path) -> std::io::Result<(u64, u64)> {
 /// private), dirs recursively, symlinks as links to the same target (Unix;
 /// Windows skips them, its link creation needs a privilege). Sockets and
 /// other special files are not configuration and are skipped.
-fn copy_entry(from: &Path, to: &Path) -> std::io::Result<()> {
+pub(super) fn copy_entry(from: &Path, to: &Path) -> std::io::Result<()> {
     let kind = std::fs::symlink_metadata(from)?.file_type();
     if kind.is_symlink() {
         #[cfg(unix)]

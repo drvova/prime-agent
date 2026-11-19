@@ -874,7 +874,16 @@ async fn run_agents_view_surface(
     // Drain broadcast frames that landed on the parked connection while the view was closed: the
     // fresh roster snapshot supersedes them, and the drain must run BEFORE the catalog fetch spawns
     // or it could discard the fetch's first `session_list_item` frames.
-    while events.try_recv().is_ok() {}
+    // A history import that landed while the view was closed still makes its chats show: the
+    // carried catalog predates them, so it is fetched again.
+    while let Ok(event) = events.try_recv() {
+        if matches!(
+            event,
+            DaemonClientEvent::HistoryImport { finished: true, .. }
+        ) {
+            mode.saved_catalog_loaded = false;
+        }
+    }
     // A loaded catalog never re-fetches; a first run - or one whose previous fetch failed - arms
     // the fetch below.
     let mut catalog_request = (!mode.saved_catalog_loaded).then(|| {
@@ -1237,6 +1246,36 @@ async fn run_agents_view_surface(
                                     ui_tx.clone(),
                                     heartbeat_generation,
                                 );
+                            }
+                            // A history import landed: its chats join the list (the catalog is
+                            // fetched again from its first page), and the status line says so.
+                            Some(DaemonClientEvent::HistoryImport {
+                                finished: true,
+                                sessions,
+                                kept,
+                                config,
+                                error,
+                            }) => {
+                                mode.set_status(
+                                    &crate::history_import_notice::history_import_notice(
+                                        true,
+                                        sessions,
+                                        kept,
+                                        &config,
+                                        error.as_deref(),
+                                    ),
+                                );
+                                mode.drop_saved_stream();
+                                saved_flush = None;
+                                catalog_request = Some(spawn_saved_catalog_fetch(
+                                    &client,
+                                    ui_tx.clone(),
+                                    cwd.clone(),
+                                    session_dir.clone(),
+                                    None,
+                                    Some(SAVED_CATALOG_PAGE_FILES),
+                                ));
+                                redraw = true;
                             }
                             Some(_) => {}
                             None => {

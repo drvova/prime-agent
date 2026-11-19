@@ -1431,6 +1431,37 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
     ],
 };
 
+/// A distribution build's one-time history import (v2), emitted by the daemon once the import
+/// that copies the official build's chats into the build's own agent dir settles (its automatic
+/// run after boot, or `import-sessions`). Counts and a size bucket only: never a path, a session
+/// id, or a file name.
+const AGENT_SESSIONS_IMPORTED: EventRule = EventRule {
+    name: "agent sessions imported",
+    since: 2,
+    properties: &[
+        (
+            "trigger",
+            required(enum_rule(&["automatic", "command"], "automatic")),
+        ),
+        (
+            "outcome",
+            required(enum_rule(&["completed", "failed"], "failed")),
+        ),
+        ("sessions_imported_count", required(count())),
+        ("sessions_kept_count", required(count())),
+        ("files_imported_count", required(count())),
+        ("config_entries_added_count", required(count())),
+        (
+            "bytes_bucket",
+            required(enum_rule(
+                &["lt_1mb", "lt_100mb", "lt_1gb", "lt_10gb", "ge_10gb"],
+                "lt_1mb",
+            )),
+        ),
+        ("duration_ms", required(duration())),
+    ],
+};
+
 /// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
 /// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
@@ -1494,6 +1525,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &AGENT_TODOS_AND_QUESTIONS,
+        &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
     ];

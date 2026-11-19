@@ -14,6 +14,7 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   per-connection encoder the serving side (supervisor client writer, worker direct link) runs
   over every written `session_event`, and the client decoder that restores each delta
   `message_update` to its full message before anything else reads it.
+- `daemon::{DaemonOutbound::HistoryImport, HistoryImportPhase}`: the Rust-only `history_import` broadcast (a distribution build's background chat import started/finished) the daemon sends and the TUI reads; older clients ignore it like any unknown broadcast, so the schema id is unchanged.
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the

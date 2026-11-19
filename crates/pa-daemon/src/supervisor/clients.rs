@@ -149,6 +149,12 @@ impl Supervisor {
         let mut reader = BufReader::new(reader);
         let mut line = String::new();
         let mut events = self.events.subscribe();
+        // A history import already running: this client hears its started frame now (the
+        // finished one rides the broadcast it just subscribed to).
+        let running_import = self.history_import.lock().unwrap().clone();
+        if let Some(frame) = running_import {
+            write_line(&mut writer, &frame).await?;
+        }
         // Session events ride this per-connection queue (the subscriber
         // registry resolves delivery at publish time, TS `handleWorkerFrame`
         // parity); broadcast-class events keep the ring above.

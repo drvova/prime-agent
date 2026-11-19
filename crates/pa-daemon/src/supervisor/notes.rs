@@ -174,6 +174,48 @@ impl Supervisor {
         }
     }
 
+    /// Report a settled boot history import: one log line, and its
+    /// `agent sessions imported` event (counts and a size bucket only).
+    /// Nothing ran: nothing to report.
+    pub(crate) fn note_history_import(
+        &self,
+        outcome: &crate::history_import::HistoryImportOutcome,
+        elapsed: std::time::Duration,
+    ) {
+        use crate::history_import::HistoryImportOutcome;
+        let (report, result) = match outcome {
+            HistoryImportOutcome::Idle => return,
+            HistoryImportOutcome::Completed(report) => (report.clone(), "completed"),
+            HistoryImportOutcome::Failed(error) => {
+                self.log_line(&format!(
+                    "history import stopped (resumes on the next boot): {error}"
+                ));
+                (pa_core::settings::HistoryImportReport::default(), "failed")
+            }
+        };
+        if result == "completed" {
+            self.log_line(&format!(
+                "history import: {} chat(s), {} file(s) copied, {} kept, config added: [{}]",
+                report.chats_imported,
+                report.files_imported,
+                report.kept.len(),
+                report.config_added.join(", ")
+            ));
+        }
+        if !self.telemetry_recording_on() {
+            return;
+        }
+        if let Some(client) = &*self.telemetry.lock().unwrap() {
+            pa_core::session_engine::telemetry::track_sessions_imported(
+                client,
+                "automatic",
+                result,
+                &report,
+                elapsed.as_millis() as u64,
+            );
+        }
+    }
+
     pub(crate) fn log_line(&self, message: &str) {
         self.log.append(&format!("[{}] {message}", util::now_iso()));
     }
