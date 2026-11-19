@@ -464,4 +464,30 @@ mod tests {
             )
         );
     }
+
+    /// A plain Chat Completions model on an endpoint discovered to serve the Responses route
+    /// moves to the Responses wire; one with a compat quirk stays put.
+    #[test]
+    fn a_discovered_route_moves_only_plain_chat_completions_models() {
+        let base_url = "https://route-found.example/v1";
+        super::super::record_learned_for_test(base_url, Some(true));
+        let mut plain: crate::types::Model = serde_json::from_value(json!({
+            "id": "m", "name": "m", "api": "openai-completions", "provider": "groq",
+            "baseUrl": base_url, "reasoning": true, "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 1000, "maxTokens": 100
+        }))
+        .unwrap();
+        let mut quirky = plain.clone();
+        quirky.compat = serde_json::from_value(json!({ "maxTokensField": "max_tokens" })).ok();
+        assert_eq!(
+            (
+                apply_responses_wire_upgrade(&mut plain),
+                plain.api.as_str(),
+                apply_responses_wire_upgrade(&mut quirky),
+                quirky.api.as_str(),
+            ),
+            (true, "openai-responses", false, "openai-completions")
+        );
+    }
 }

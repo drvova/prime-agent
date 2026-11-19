@@ -697,19 +697,18 @@ fn a_prime_base_url_override_voids_the_live_serving_label() {
     assert_eq!(overridden.serving, None);
 }
 
-/// A built-in Chat Completions model on an endpoint known to serve the Responses route (xAI's
-/// docs-verified base URL) loads on the Responses wire, while a models.json model on the same
-/// endpoint keeps the API it declares.
+/// A models.json model keeps the API it declares even on an endpoint the docs verify for the
+/// Responses route, and xAI's built-ins stay on the wire their credential shape picks.
 #[test]
-fn a_known_responses_endpoint_upgrades_built_ins_but_never_a_declared_models_json_api() {
+fn a_known_responses_endpoint_never_moves_a_declared_models_json_api_or_xai() {
     let dir = tempfile::tempdir().unwrap();
     let models_path = dir.path().join("models.json");
     std::fs::write(
         &models_path,
-        r#"{ "providers": { "my-xai": {
-            "baseUrl": "https://api.x.ai/v1", "apiKey": "key",
+        r#"{ "providers": { "my-openai": {
+            "baseUrl": "https://api.openai.com/v1", "apiKey": "key",
             "api": "openai-completions",
-            "models": [ { "id": "grok-mine" } ]
+            "models": [ { "id": "mine" } ]
         } } }"#,
     )
     .unwrap();
@@ -722,9 +721,9 @@ fn a_known_responses_endpoint_upgrades_built_ins_but_never_a_declared_models_jso
             .map(|model| model.api.clone())
     };
     assert_eq!(
-        (api_of("xai"), api_of("my-xai")),
+        (api_of("my-openai"), api_of("xai")),
         (
-            Some("openai-responses".to_string()),
+            Some("openai-completions".to_string()),
             Some("openai-completions".to_string())
         )
     );

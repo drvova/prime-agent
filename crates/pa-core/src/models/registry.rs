@@ -553,8 +553,11 @@ impl ModelRegistry {
                 // A built-in Chat Completions model whose endpoint is known to serve the
                 // Responses route moves to it when the registry loads (a session's model is
                 // resolved once, so a running session never switches); models.json models keep
-                // their declared API.
-                pa_ai::responses_transport::apply_responses_wire_upgrade(&mut model);
+                // their declared API, and xAI's wire follows its credential shape (the
+                // subscription switch below), never discovery.
+                if model.provider != crate::auth::XAI_PROVIDER_ID {
+                    pa_ai::responses_transport::apply_responses_wire_upgrade(&mut model);
+                }
                 model
             })
             .collect()
