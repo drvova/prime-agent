@@ -299,8 +299,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // factory host bridge's preflight facts (the daemon `allowedModels`
     // pin), like the request-timing snapshot above.
     let factory_allowed_models = settings.get_allowed_models();
-    // Captured before `settings` moves into the resource loader: the
-    // default cell time limit (default 60s, `0` disables).
+    // Captured before `settings` moves into the resource loader: the cell
+    // yield window the user set (`0` disables; unset, it is learned).
     let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
     // The prompt-cache policy (`cacheRetention`, `cacheWarming`).
     let (cache_retention, cache_warming) =
@@ -496,14 +496,26 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     );
     resource_reload.register(&mut handlers);
+    // The cell yield window policy: none daemonless, else the user's setting,
+    // else learned for this project. Telemetry counts each armed window's source.
+    let cell_window = crate::kernel::cell_window::CellWindow::for_session(
+        crate::kernel::cell_window::CellWindowConfig {
+            daemonless: config.daemonless,
+            configured_ms: python_cell_timeout_ms,
+            agent_dir: &config.agent_dir,
+            project_dir: &cwd,
+            on_armed: config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |source| counters.note_cell_window(source))
+                    as crate::kernel::cell_window::CellWindowObserver
+            }),
+        },
+    );
     super::settings_view::register_settings_handlers(
         &mut handlers,
         &turn_boundary,
         super::settings_view::ArmedSettings {
-            cell_timeout_ms: super::runtime_wiring::arm_cell_yield_ms(
-                config.daemonless,
-                python_cell_timeout_ms,
-            ),
+            cell_window: cell_window.clone(),
             compaction_enabled,
             compaction_threshold_percent,
             compaction_keep_recent_tokens: compaction_settings
@@ -662,11 +674,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .collect();
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
-    // The cell yield window: daemon-backed sessions use the settings default
-    // (60s, `0` disables); daemonless sessions keep `await bash()`
-    // unbounded by design (#3523), so their cells run to the end in the call.
-    let cell_yield_ms =
-        super::runtime_wiring::arm_cell_yield_ms(config.daemonless, python_cell_timeout_ms);
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),
         handlers,
@@ -677,14 +684,36 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         kernel_command_prefix,
         websearch_env,
         session_artifact_dir,
-        cell_yield_ms,
+        cell_window.clone(),
         on_restore,
         config.on_background_work_settled.clone(),
-        // Telemetry counts each cell that continues in the background and how it ends.
-        config.telemetry.is_some().then(|| {
-            let counters = std::sync::Arc::clone(&session_counters);
-            std::sync::Arc::new(move |fact| counters.note_background_cell(fact))
-                as crate::kernel::shared::BackgroundCellObserver
+        // Telemetry counts each cell that continues in the background and how it
+        // ends; the learned window learns its time when it ends.
+        Some({
+            let counters = config
+                .telemetry
+                .is_some()
+                .then(|| std::sync::Arc::clone(&session_counters));
+            std::sync::Arc::new(move |fact| {
+                use crate::kernel::shared::BackgroundCellFact;
+                if let Some(counters) = &counters {
+                    counters.note_background_cell(fact);
+                }
+                match fact {
+                    BackgroundCellFact::EndedOk {
+                        ran_for: Some(ran_for),
+                    }
+                    | BackgroundCellFact::EndedWithError {
+                        ran_for: Some(ran_for),
+                    } => {
+                        cell_window.observe(ran_for);
+                    }
+                    BackgroundCellFact::Backgrounded
+                    | BackgroundCellFact::EndedOk { ran_for: None }
+                    | BackgroundCellFact::EndedWithError { ran_for: None }
+                    | BackgroundCellFact::Interrupted => {}
+                }
+            }) as crate::kernel::shared::BackgroundCellObserver
         }),
         on_unavailable_skills,
         on_bootstrap_result,

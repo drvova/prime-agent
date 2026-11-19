@@ -107,13 +107,13 @@ pub type KernelBootstrapResultHandler = Arc<dyn Fn(KernelBootstrapStats) + Send 
 pub struct IpythonKernelProvisionerOptions {
     /// Python override. Must have prime-agent-runtime installed.
     pub python: Option<PathBuf>,
-    /// Default yield window for user `python_repl` cells, in milliseconds
-    /// (`None`: never set; `0`: disabled): a cell still running when it ends
-    /// continues in the background. The daemon engine resolves it from
-    /// settings and leaves it unset for daemonless sessions; a cell's own
-    /// `timeout` argument replaces it. The runtime bootstrap and internal
-    /// state ops never set it.
-    pub cell_yield_ms: Option<u64>,
+    /// How user `python_repl` cells get their yield window: a cell still
+    /// running when it ends continues in the background. The daemon engine
+    /// resolves it from settings (else it is learned per project); the default
+    /// runs every cell to its end, as daemonless sessions do. A cell's own
+    /// `timeout` argument wins. The runtime bootstrap and internal state ops
+    /// never use it.
+    pub cell_window: crate::kernel::cell_window::CellWindow,
     pub env: HashMap<String, String>,
     /// Command prefix prepended to every kernel `bash()` invocation.
     pub command_prefix: Option<String>,
@@ -294,11 +294,10 @@ impl IpythonKernelProvisioner {
         self.lock_state().manager.clone()
     }
 
-    /// The default yield window the kernel executor gives user cells
-    /// (`None`: never set).
+    /// The yield window policy the kernel executor arms user cells with.
     #[must_use]
-    pub fn cell_yield_ms(&self) -> Option<u64> {
-        self.inner.options.cell_yield_ms
+    pub(crate) fn cell_window(&self) -> &crate::kernel::cell_window::CellWindow {
+        &self.inner.options.cell_window
     }
 
     /// The host handlers the kernel reaches (tests call them as a kernel cell would).

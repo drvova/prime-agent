@@ -2084,11 +2084,12 @@ async fn rlm_child_aborts_ride_their_own_event() {
     );
 }
 
-/// Cells that continued in the background ride their own `agent repl background cells` event at
-/// session end (counts only: never code, output, or a cell id), and a session whose cells all
-/// ended inside their window sends none.
+/// Cells that continued in the background, and the source of each armed cell window, ride their
+/// own `agent repl background cells` event at session end (counts only: never code, output, a
+/// cell id, or a duration).
 #[tokio::test]
 async fn background_cells_ride_their_own_event() {
+    use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::shared::BackgroundCellFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
@@ -2102,10 +2103,20 @@ async fn background_cells_ride_their_own_event() {
         BackgroundCellFact::Backgrounded,
         BackgroundCellFact::Backgrounded,
         BackgroundCellFact::Backgrounded,
-        BackgroundCellFact::EndedOk,
+        BackgroundCellFact::EndedOk {
+            ran_for: Some(std::time::Duration::from_secs(90)),
+        },
         BackgroundCellFact::Interrupted,
     ] {
         counters.note_background_cell(fact);
+    }
+    for source in [
+        CellWindowSource::Learned,
+        CellWindowSource::Learned,
+        CellWindowSource::ModelTimeout,
+        CellWindowSource::ColdDefault,
+    ] {
+        counters.note_cell_window(source);
     }
     telemetry.end().await.unwrap();
     assert_eq!(
@@ -2125,6 +2136,10 @@ async fn background_cells_ride_their_own_event() {
             "cell_background_ok_count": 1,
             "cell_background_error_count": 0,
             "cell_background_interrupted_count": 1,
+            "cell_window_learned_count": 2,
+            "cell_window_timeout_count": 1,
+            "cell_window_setting_count": 0,
+            "cell_window_default_count": 1,
         })
     );
 }
