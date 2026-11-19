@@ -372,6 +372,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_window: this.cell_window().clone(),
+                spill: this.spill_store(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -389,6 +390,8 @@ struct KernelManagerExecutor {
     manager: crate::kernel::manager::ReplKernelManager,
     /// The session's cell yield window policy.
     cell_window: crate::kernel::cell_window::CellWindow,
+    /// Where a user cell's cut output pages out (persistent sessions).
+    spill: Option<crate::kernel::spill::SpillStore>,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -407,6 +410,7 @@ impl KernelExecutor for KernelManagerExecutor {
         // window is fixed here, when the cell starts.
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
+        let spill = self.spill.clone();
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -415,6 +419,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
                         cell_yield_ms,
+                        spill,
                         ..Default::default()
                     },
                 )
