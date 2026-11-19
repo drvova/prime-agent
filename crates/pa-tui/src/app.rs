@@ -338,6 +338,11 @@ pub(crate) fn draw<W: std::io::Write>(
                     let painted = terminal.current_buffer_mut().clone();
                     overlay.paint(terminal.backend_mut(), &painted, &placements)?;
                 }
+                // The lazy inline-image capability query, queued when the first image that
+                // needs it rendered (see `inline_image::reports`): it rides this frame's write.
+                if let Some(query) = crate::inline_image::reports::take_pending_query() {
+                    std::io::Write::write_all(terminal.backend_mut(), query)?;
+                }
                 let diff_painted = terminal
                     .backend_mut()
                     .writer_mut()
