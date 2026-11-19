@@ -1,0 +1,1 @@
+- Fixed pasted text with a line break (a copied line, a CRLF block, a split Windows paste) sending the prompt instead of landing in the editor; pasted escape sequences and control characters are now stripped.

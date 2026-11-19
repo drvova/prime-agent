@@ -55,6 +55,62 @@ pub(crate) fn decode_paste_ctrl_sequences(text: &str) -> String {
     out
 }
 
+/// Drop every terminal escape sequence from pasted text, whole: CSI (7-bit `ESC [` and 8-bit
+/// `U+009B`, so a CSI-u Enter or a stray paste end marker never lands as `[13u` text), the string
+/// controls (OSC, DCS, SOS, PM, APC; ended by BEL or ST), SS2/SS3 with their one character, and the
+/// two-character `ESC` forms. An unterminated sequence runs to the end of the text.
+pub(crate) fn strip_escape_sequences(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let introducer = match c {
+            '\x1b' => match chars.next() {
+                Some('[') => '\u{9b}',
+                Some(']') => '\u{9d}',
+                Some('P') => '\u{90}',
+                Some('X') => '\u{98}',
+                Some('^') => '\u{9e}',
+                Some('_') => '\u{9f}',
+                Some('N') => '\u{8e}',
+                Some('O') => '\u{8f}',
+                // nF sequences: intermediates, then one final character.
+                Some(' '..='/') => {
+                    while chars.next_if(|c| matches!(c, ' '..='/')).is_some() {}
+                    chars.next();
+                    continue;
+                }
+                Some(_) | None => continue,
+            },
+            other => other,
+        };
+        match introducer {
+            '\u{9b}' => {
+                // Parameters and intermediates, then the final byte.
+                while chars
+                    .next_if(|c| matches!(c, '0'..='?' | ' '..='/'))
+                    .is_some()
+                {}
+                chars.next();
+            }
+            '\u{9d}' | '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => {
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || c == '\u{9c}' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.next_if_eq(&'\\').is_some() {
+                        break;
+                    }
+                }
+            }
+            '\u{8e}' | '\u{8f}' => {
+                chars.next();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Split a string at a char (not byte) index.
 pub(crate) fn split_at_char(s: &str, char_idx: usize) -> (String, String) {
     let mut left = String::new();

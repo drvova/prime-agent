@@ -794,6 +794,20 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     term.key(Key::CtrlC);
     let ctrl_c = term.wait_gone("stezx", Duration::from_secs(10));
     check(&mut term, "ctrl+c clears the draft", ctrl_c);
+    // A paste never submits: a copied line carries its line break, and a
+    // multi-line paste its CRLFs and a trailing one. Both stay draft text
+    // (a submit would leave them in the transcript past the Ctrl+C, and
+    // add them to the session's prompts checked at the end).
+    term.paste("pasted-alpha\r\n");
+    let line = term.wait_for("pasted-alpha", Duration::from_secs(10));
+    term.paste("pasted-beta\r\npasted-omega\r\n");
+    let lines = term.wait_for("pasted-omega", Duration::from_secs(10));
+    check(&mut term, "pastes with line breaks land", line && lines);
+    term.settle(Duration::from_millis(500));
+    term.key(Key::CtrlC);
+    let unsent = term.wait_gone("pasted-alpha", Duration::from_secs(10))
+        && term.wait_gone("pasted-omega", Duration::from_secs(10));
+    check(&mut term, "pasted line breaks never submit", unsent);
     // A lone Esc acts where it is observable: it closes the command menu (on a
     // draft, one Esc only arms the double-Esc clear). The keys typed after it
     // must stay plain text, never an Alt chord with the held Esc.
@@ -812,10 +826,21 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     term.key(Key::CtrlC);
     let cleared = term.wait_gone("/abc", Duration::from_secs(10));
     check(&mut term, "ctrl+c clears the command", cleared);
+    // The typed prompt settles before Enter, as a person's would: a key
+    // burst and an Enter right behind it read as one paste.
     term.type_text("hello");
+    let echoed = term.wait_for("hello", Duration::from_secs(10));
+    check(&mut term, "the prompt echoes", echoed);
+    term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
     let replied = term.wait_for("conpty scripted reply", Duration::from_secs(60));
     check(&mut term, "enter submits", replied);
+    let prompts = submitted_prompts(&session_dir);
+    check(
+        &mut term,
+        &format!("only the typed prompt was submitted ({prompts:?})"),
+        prompts == ["hello"],
+    );
     term.settle(Duration::from_millis(500));
     dump(
         &format!("tui-{scenario}"),
@@ -833,6 +858,47 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     drop(term);
     drop(supervisor);
     failures
+}
+
+/// The user prompts every session file under `dir` stored, in file order.
+fn submitted_prompts(dir: &Path) -> Vec<String> {
+    let mut prompts = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return prompts;
+    };
+    let mut paths: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            prompts.extend(submitted_prompts(&path));
+            continue;
+        }
+        if path.extension().is_none_or(|ext| ext != "jsonl") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        for line in text.lines() {
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let message = &entry["message"];
+            if entry["type"] != "message" || message["role"] != "user" {
+                continue;
+            }
+            let content = &message["content"];
+            let prompt = match content.as_str() {
+                Some(text) => text.to_string(),
+                None => content
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|part| part["text"].as_str())
+                    .collect(),
+            };
+            prompts.push(prompt);
+        }
+    }
+    prompts
 }
 
 /// Git Bash's mintty without `ConPTY` hands the program an MSYS pty pipe, which
