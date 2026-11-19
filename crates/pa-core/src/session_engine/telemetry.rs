@@ -106,6 +106,9 @@ pub struct SessionTelemetry {
     /// `end()` runs exactly once (session close and later kill/shutdown
     /// paths may both reach it; only the first emits the ended event).
     ended: std::sync::atomic::AtomicBool,
+    /// The agent's session id: the provider layer counts its Responses transport choices under
+    /// it (`agent responses transport`).
+    agent_session_id: Option<String>,
     _subscription: Option<Subscription>,
 }
 
@@ -123,6 +126,7 @@ impl SessionTelemetry {
             execution_mode,
             counters: Arc::default(),
             ended: std::sync::atomic::AtomicBool::new(false),
+            agent_session_id: None,
             _subscription: None,
         }
     }
@@ -385,6 +389,8 @@ struct CounterValues {
     goal: GoalVerificationCounts,
     /// The kernel `web.read` counters, reported by `agent web reads`.
     web_read: WebReadCounts,
+    /// The provider layer's Responses transport counts, reported by `agent responses transport`.
+    responses_transport: pa_ai::responses_transport::ResponsesTransportCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
@@ -654,6 +660,15 @@ impl SessionCounters {
     }
 
     /// One kernel `web.read` (counts only: never the URL or the content).
+    /// The session's Responses transport counts (the provider layer keeps them; session end
+    /// snapshots them here).
+    pub(crate) fn note_responses_transport(
+        &self,
+        counts: pa_ai::responses_transport::ResponsesTransportCounts,
+    ) {
+        self.with(|values| values.responses_transport = counts);
+    }
+
     pub(crate) fn note_web_read(
         &self,
         outcome: crate::web_read::ReadOutcome,
@@ -1099,6 +1114,7 @@ pub async fn install_session_telemetry(
         execution_mode,
         counters,
         ended: std::sync::atomic::AtomicBool::new(false),
+        agent_session_id: agent.session_id().map(str::to_string),
         _subscription: Some(subscription),
     })
 }
@@ -1348,6 +1364,63 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent goal verification", goal_properties);
+        }
+        // A session whose requests never chose a Responses transport sends no transport event.
+        if let Some(counts) = self
+            .agent_session_id
+            .as_deref()
+            .and_then(pa_ai::responses_transport::session_counts)
+        {
+            self.counters.note_responses_transport(counts);
+        }
+        let mut transport = pa_ai::responses_transport::ResponsesTransportCounts::default();
+        self.counters
+            .with(|values| transport = values.responses_transport);
+        if transport != pa_ai::responses_transport::ResponsesTransportCounts::default() {
+            let mut transport_properties = self.session_properties();
+            for (key, value) in [
+                (
+                    "responses_websocket_request_count",
+                    transport.websocket_requests,
+                ),
+                ("responses_delta_request_count", transport.delta_requests),
+                (
+                    "responses_full_context_request_count",
+                    transport.full_context_requests,
+                ),
+                ("responses_sse_fallback_count", transport.sse_fallbacks),
+                (
+                    "responses_stale_continuation_retry_count",
+                    transport.stale_continuation_retries,
+                ),
+                ("responses_auto_websocket_count", transport.auto_websocket),
+                (
+                    "responses_auto_sse_one_shot_count",
+                    transport.auto_sse_one_shot,
+                ),
+                (
+                    "responses_auto_sse_no_websocket_wire_count",
+                    transport.auto_sse_no_websocket_wire,
+                ),
+                (
+                    "responses_auto_sse_unsupported_count",
+                    transport.auto_sse_unsupported,
+                ),
+                (
+                    "responses_auto_sse_demoted_count",
+                    transport.auto_sse_demoted,
+                ),
+                ("responses_probe_count", transport.probes),
+                ("responses_probe_failed_count", transport.probe_failures),
+                (
+                    "responses_websocket_without_wire_count",
+                    transport.websocket_requested_without_wire,
+                ),
+            ] {
+                transport_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent responses transport", transport_properties);
         }
         // A session that never read a URL sends no web-read event.
         let mut web_read = WebReadCounts::default();

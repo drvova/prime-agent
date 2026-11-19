@@ -195,6 +195,7 @@ pub fn stream(
     let mut options = options;
     clamp_output_budget(model, context, options.as_mut());
     declare_session_identity(options.as_mut());
+    crate::providers::responses_websocket::note_dispatch(&model.api, options.as_ref());
     // A request without options carries no abort token to cut, so it streams unguarded.
     let guard = options
         .as_mut()
@@ -240,6 +241,7 @@ pub fn stream_simple(
     let simple = options.get_or_insert_with(SimpleStreamOptions::default);
     clamp_output_budget(model, context, Some(&mut simple.base));
     declare_session_identity(Some(&mut simple.base));
+    crate::providers::responses_websocket::note_dispatch(&model.api, Some(&simple.base));
     let guard = arm_loop_guard(provider.as_ref(), model, &mut simple.base);
     let stream = provider.stream_simple(model, context, options.as_ref());
     if let Some(guard) = guard {

@@ -31,6 +31,14 @@ pub mod codex_debug {
         reset_debug_stats as reset_websocket_debug_stats, WebSocketDebugStats,
     };
 }
+/// The Responses WebSocket transport surface the session layer uses: closing a session's sockets,
+/// its adoption counts, and where learned endpoint capabilities persist.
+pub mod responses_transport {
+    pub use crate::providers::close_session_websockets;
+    pub use crate::providers::responses_websocket::{
+        session_counts, set_capability_cache_path, ResponsesTransportCounts,
+    };
+}
 pub use providers::simple_options::{default_request_max_tokens, effective_request_max_tokens};
 pub use registry::{Provider, ProviderRegistry};
 pub use stream::{complete, complete_simple, stream, stream_simple, SESSION_ID_TEMPLATE};
