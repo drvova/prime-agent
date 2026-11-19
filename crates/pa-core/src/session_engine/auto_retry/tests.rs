@@ -264,21 +264,18 @@ async fn transient_failure_is_retried_until_success_with_events() {
                 attempt: 1,
                 max_attempts: 3,
                 error_message: error_one,
-                reason: RetryStartReason::Quick,
                 ..
             },
             AutoRetryEvent::Start {
                 attempt: 2,
                 max_attempts: 3,
                 error_message: error_two,
-                reason: RetryStartReason::Quick,
                 ..
             },
             AutoRetryEvent::End {
                 success: true,
                 attempt: 2,
                 final_error: None,
-                restored_model: None,
             },
         ] if error_one == "provider down" && error_two == "provider down"
     );
@@ -336,10 +333,50 @@ async fn exhausted_retries_surface_the_final_error() {
             success: false,
             attempt: 3,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
         })
     );
     assert_eq!(events.len(), 4); // three starts + one end
+}
+
+/// A configured budget above the episode ceiling still gives up at the
+/// ceiling, on the same provider.
+#[tokio::test]
+async fn a_retry_budget_above_the_episode_ceiling_gives_up_at_the_ceiling() {
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    let mut last_event = None;
+    let policy = ProviderRetryPolicy {
+        max_retries: 30,
+        ..fast_policy()
+    };
+    run_turn_with_auto_retry(
+        &policy,
+        0,
+        None,
+        || {
+            attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { Ok(error_message(Some("server_error"), None, None)) }
+        },
+        |event| {
+            last_event = Some(event);
+            async { Ok(()) }
+        },
+        |_| async { true },
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        (attempts.into_inner(), last_event),
+        (
+            1 + MAX_TOTAL_PROVIDER_RETRIES as usize,
+            Some(AutoRetryEvent::End {
+                success: false,
+                attempt: MAX_TOTAL_PROVIDER_RETRIES,
+                final_error: Some("provider down".to_string()),
+            })
+        )
+    );
 }
 
 /// A failed turn carrying the `stream_drop` class (the provider ended
@@ -429,7 +466,6 @@ async fn stream_drop_retries_until_the_turn_completes() {
                     success: true,
                     attempt: 1,
                     final_error: None,
-                    restored_model: None,
                 }
             ] if error_message.contains("stream_drop")
                 && error_message.contains("thinking block")
@@ -479,7 +515,6 @@ async fn stream_drop_exhausts_retries_surfacing_the_class() {
             success: false,
             attempt: 3,
             final_error: Some(final_error),
-            restored_model: None,
         }) => final_error.clone(),
         other => panic!("the exhaustion must disclose the class: {other:?}"),
     };
@@ -533,7 +568,6 @@ async fn permanent_failures_never_retry_but_disclose() {
             success: false,
             attempt: 0,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
         }]
     );
 }
@@ -581,7 +615,6 @@ async fn payment_failures_settle_once_with_the_disclosure() {
             success: false,
             attempt: 0,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
         }]
     );
 }
@@ -631,7 +664,6 @@ async fn safety_failures_are_permanent_never_retry_but_disclose() {
             success: false,
             attempt: 0,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
         }]
     );
 }
@@ -712,7 +744,6 @@ async fn cancelled_wait_aborts_with_retry_cancelled() {
             success: false,
             attempt: 1,
             final_error: Some("Retry cancelled".to_string()),
-            restored_model: None,
         })
     );
 }
@@ -779,7 +810,6 @@ async fn server_retry_after_over_cap_ends_the_loop() {
                 "Provider requested a 1s wait before retrying (above retry.provider.maxRetryDelayMs=50ms): provider down"
                     .to_string(),
             ),
-            restored_model: None,
         }]
     );
 }
@@ -827,7 +857,6 @@ async fn disabled_policy_never_retries_but_discloses() {
             success: false,
             attempt: 0,
             final_error: Some("provider down".to_string()),
-            restored_model: None,
         }]
     );
 }
@@ -895,7 +924,6 @@ async fn unsupported_tool_failures_surface_with_the_disclosure() {
             success: false,
             attempt: 0,
             final_error: Some("404 No endpoints found that support tool use.".to_string()),
-            restored_model: None,
         }]
     );
 }
@@ -949,7 +977,6 @@ async fn an_auth_rejection_whose_recovery_ends_the_turn_never_retries() {
             success: false,
             attempt: 0,
             final_error: Some("sign in again".to_string()),
-            restored_model: None,
         }]
     );
 }

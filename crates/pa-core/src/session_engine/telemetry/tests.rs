@@ -811,19 +811,12 @@ async fn continuation_run_reports_continuation_trigger() {
     assert_eq!(runs[0]["trigger"], serde_json::json!("continuation"));
 }
 
-fn retry_start(telemetry: &SessionTelemetry, attempt: u32, delay_ms: u64, backup: bool) {
+fn retry_start(telemetry: &SessionTelemetry, attempt: u32, delay_ms: u64) {
     telemetry.note_auto_retry_event(&AutoRetryEvent::Start {
         attempt,
         max_attempts: 3,
         delay_ms,
         error_message: String::new(),
-        reason: if backup {
-            crate::session_engine::auto_retry::RetryStartReason::Backup {
-                backup_model: "backup/m".to_string(),
-            }
-        } else {
-            crate::session_engine::auto_retry::RetryStartReason::Quick
-        },
     });
 }
 
@@ -861,9 +854,9 @@ async fn retries_fold_into_one_run_that_succeeds() {
         },
     );
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     attempt(&fixture, failed);
-    retry_start(&telemetry, 2, 1_000, true);
+    retry_start(&telemetry, 2, 1_000);
     let mut recovered = assistant_message();
     recovered.usage.cost.total = 0.012;
     attempt(&fixture, recovered);
@@ -871,7 +864,6 @@ async fn retries_fold_into_one_run_that_succeeds() {
         success: true,
         attempt: 2,
         final_error: None,
-        restored_model: None,
     });
     telemetry.end().await.unwrap();
 
@@ -881,7 +873,6 @@ async fn retries_fold_into_one_run_that_succeeds() {
     assert_eq!(run["outcome"], serde_json::json!("success"));
     assert_eq!(run["error_category"], serde_json::Value::Null);
     assert_eq!(run["retry_count"], serde_json::json!(2));
-    assert_eq!(run["failover_count"], serde_json::json!(1));
     assert_eq!(run["retry_wait_ms"], serde_json::json!(1_500));
     assert_eq!(run["model_call_count"], serde_json::json!(3));
     assert_eq!(run["turn_count"], serde_json::json!(3));
@@ -926,7 +917,7 @@ async fn loop_guard_interventions_ride_the_run() {
         },
     );
     attempt(&fixture, cut);
-    retry_start(&telemetry, 1, 10, false);
+    retry_start(&telemetry, 1, 10);
     telemetry.note_tool_repeat_nudge();
     attempt(&fixture, assistant_message());
     telemetry.end().await.unwrap();
@@ -962,15 +953,14 @@ async fn exhausted_retries_are_one_failed_run() {
         },
     );
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     attempt(&fixture, failed.clone());
-    retry_start(&telemetry, 2, 500, false);
+    retry_start(&telemetry, 2, 500);
     attempt(&fixture, failed);
     telemetry.note_auto_retry_event(&AutoRetryEvent::End {
         success: false,
         attempt: 2,
         final_error: Some("network".to_string()),
-        restored_model: None,
     });
     telemetry.end().await.unwrap();
 
@@ -1004,12 +994,11 @@ async fn a_cancelled_retry_never_absorbs_the_next_turn() {
         },
     );
     attempt(&fixture, assistant_with_error("network connection reset"));
-    retry_start(&telemetry, 1, 500, false);
+    retry_start(&telemetry, 1, 500);
     telemetry.note_auto_retry_event(&AutoRetryEvent::End {
         success: false,
         attempt: 1,
         final_error: Some("Retry cancelled".to_string()),
-        restored_model: None,
     });
     emit(
         &fixture,

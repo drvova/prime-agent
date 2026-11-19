@@ -791,7 +791,6 @@ fn a_refused_forced_refresh_ends_the_turn_with_the_re_login_sentence() {
                 "Authentication failed for \"battery\": the stored credential could not be refreshed (invalid_grant: the refresh token was revoked).\n\nRun /login to update credentials."
                     .to_string()
             ),
-            restored_model: None,
         }]
     );
 }

@@ -445,7 +445,7 @@ impl SessionEngine for AgentSessionEngine {
         self.rebuild_request_auth_registry();
         {
             // The switch's slot install serializes with the other slot
-            // writers' fence (the failover callbacks take the same lock),
+            // writers' fence (the image-route apply/clear take the same lock),
             // so a mid-switch turn never sees a half-swapped target.
             let _reload_serialized = self
                 .reload_lock

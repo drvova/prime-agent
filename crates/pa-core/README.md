@@ -30,13 +30,12 @@ Platform wall (`platform`): process control (signals/process groups, kernel exit
 
 Provider resilience policies in `session_engine`: the shared quick-retry
 policy (TS `provider-retry.ts`: permanent-kind classification,
-Retry-After-aware capped delays), the interactive auto-retry loop, and the
-provider-failover driver (when a provider exhausts its quick retries and
-another configured provider serves the same model, the failed turn
-re-routes to the next provider in catalog order; the TS
-`auto_retry_start`/`reason: "backup"` event vocabulary surfaces the
-progression). The drivers are pure decision logic: the host (pa-daemon)
-owns the attempt, the wait, and the model switch.
+Retry-After-aware capped delays) and the interactive auto-retry loop.
+Retries always stay on the session's provider: a spent retry budget fails
+the turn there, and nothing re-routes a turn to another provider serving
+the same model id (a provider changes only when the user picks one). The
+driver is pure decision logic: the host (pa-daemon) owns the attempt and
+the wait.
 
 Session HTML export (`export_html`): the standalone viewer file for
 `/export` and `session export` - the embedded product template
@@ -142,12 +141,13 @@ arrives as the `[cell-done]` notice. Adoption counts ride the `agent repl backgr
 event. Non-goals: a hard time limit (Nodecode keeps none) and stopping a cell from the host for
 time.
 
-Kernel capability manifests (`kernel::capabilities`, crate-internal and test-only for now): one
-TOML file per kernel capability under `prime-agent-runtime/capabilities/`, embedded with
-`include_str!`, recording each capability's runtime-ready probe statements, closure seed,
-bootstrap binding, prompt names, host requests, and standalone telemetry event. Its tests hold
-the manifests equal to the probe, the closure freeze, the bootstrap, the core prompt, and the
-telemetry catalog. Non-goals: behavior (nothing derives from the manifests yet) and any public API.
+Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per kernel
+capability under `prime-agent-runtime/capabilities/`, embedded with `include_str!`, recording each
+capability's runtime-ready probe statements, closure seed, bootstrap binding, prompt names, host
+requests, and standalone telemetry event. The runtime-ready probe (built once, on the first kernel
+start that probes) and the closure freeze's seed derive from them; its tests hold the bootstrap,
+the core prompt, and the telemetry catalog equal to them. Non-goals: capability behavior and any
+public API.
 
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs

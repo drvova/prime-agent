@@ -318,60 +318,6 @@ mod tests {
         assert!(!code.contains(KERNEL_VENV_TOKEN), "{code}");
     }
 
-    /// Prompt guard: every kernel module the bootstrap binds is one the core prompt layer names
-    /// as built in (not a skill), so a new kernel API ships bound and documented together.
-    #[test]
-    fn the_bound_kernel_modules_are_the_ones_the_core_prompt_names() {
-        let code = build_rlm_bootstrap_code(&[], false);
-        let bound: Vec<&str> = code
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("import rlm."))
-            .filter_map(|line| line.split_once(" as ").map(|(_, name)| name))
-            .filter(|name| !name.starts_with('_'))
-            .collect();
-        assert_eq!(
-            bound,
-            [
-                "mcp",
-                "web",
-                "fs",
-                "schedule",
-                "checkpoint",
-                "todo",
-                "usage",
-                "settings",
-                "model"
-            ]
-        );
-        let core_layer = crate::prompts::layers::CORE_LAYER;
-        let (_, built_in) = core_layer
-            .split_once("All programmatic tools described above except for ")
-            .unwrap();
-        let (built_in, _) = built_in.split_once(" are implemented").unwrap();
-        let listed: Vec<&str> = built_in
-            .split(", ")
-            .map(|name| name.trim_start_matches("and ").trim_matches('`'))
-            .collect();
-        assert_eq!(
-            listed,
-            [
-                "bash",
-                "rlm.*",
-                "mcp.*",
-                "web.*",
-                "fs.*",
-                "schedule.*",
-                "checkpoint.*",
-                "todo.*",
-                "usage.*",
-                "model.*",
-                "settings.*",
-                "ask",
-                "notify"
-            ]
-        );
-    }
-
     #[test]
     fn bootstrap_turns_the_bounded_bash_default_on_only_with_notices() {
         let daemonless = build_rlm_bootstrap_code(&[], false);

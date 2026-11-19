@@ -8,33 +8,6 @@ fn theme() -> Theme {
     Theme::builtin("prime", ColorMode::TrueColor)
 }
 
-#[test]
-fn backup_switch_loader_renders_the_failover_message() {
-    // TS reason "backup": no countdown — the switch re-issues
-    // immediately on the backup provider.
-    let retry = RetryState {
-        attempt: 3,
-        max_attempts: 5,
-        ends_at: std::time::Instant::now(),
-        error_message: "Connection failed".to_string(),
-        reason: RetryStartReason::Backup {
-            backup_model: "prime-backup/mock-1".to_string(),
-        },
-        provider: None,
-    };
-    let rows = render_retry(&retry, 0, &theme(), 60);
-    let text = rows[1]
-        .iter()
-        .map(|s| s.content.as_str())
-        .collect::<String>();
-    assert!(
-        text.contains(
-            "Primary model unavailable (Connection failed) — retrying on backup model prime-backup/mock-1..."
-        ),
-        "got: {text}"
-    );
-}
-
 /// The quick-retry countdown (nc): the amber `retry 2 of 4 in 3s` head, the provider and
 /// status, and the provider's own words on the row under it.
 #[test]
@@ -44,7 +17,6 @@ fn retry_loader_counts_down_and_names_the_provider_and_status() {
         max_attempts: 4,
         ends_at: std::time::Instant::now() + std::time::Duration::from_millis(3500),
         error_message: "429 Rate limit exceeded".to_string(),
-        reason: RetryStartReason::Quick,
         provider: Some("openai".to_string()),
     };
     let t = theme();

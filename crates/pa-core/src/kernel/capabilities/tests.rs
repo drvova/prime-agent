@@ -1,13 +1,11 @@
-//! Consistency between the capability manifests and the hand-maintained lists they describe.
-//! The host-request mapping half lives beside its mapping in `tests/prompt_guards.rs`.
+//! The artefacts derived from the capability manifests and doc files, and consistency between them
+//! and the hand-written surfaces they describe. The host-request half lives in
+//! `tests/prompt_guards.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{capabilities, CapabilityManifest, MANIFESTS};
-
-/// The test source that holds the closure freeze's seed list and its expected-closure chain.
-const VENV_TESTS: &str = include_str!("../bootstrap/venv/tests.rs");
 
 /// Session-scoped catalog events that are not a kernel capability's standalone adoption event:
 /// the session lifecycle, and goal verification (`goal` is an executable skill).
@@ -36,111 +34,112 @@ fn sorted(items: impl IntoIterator<Item = impl Into<String>>) -> Vec<String> {
     items
 }
 
-#[test]
-fn every_manifest_file_is_embedded() {
+/// The capability directory's files, by extension, as file stems.
+fn files_on_disk(extension: &str) -> Vec<String> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/capabilities");
-    let on_disk = sorted(
+    sorted(
         std::fs::read_dir(&dir)
-            .unwrap_or_else(|error| panic!("read {dir:?}: {error}"))
+            .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
             .map(|entry| entry.expect("directory entry").path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "toml"))
+            .filter(|path| path.extension().is_some_and(|ext| ext == extension))
             .map(|path| {
                 path.file_stem()
                     .expect("file stem")
                     .to_string_lossy()
                     .into_owned()
-            }),
-    );
-    assert_eq!(on_disk, sorted(MANIFESTS.iter().map(|(name, _)| *name)));
+            })
+            .filter(|stem| stem != "README"),
+    )
 }
 
-/// The runtime-ready probe is exactly the manifests' probe statements: the probe's `; `-joined
-/// statements (split outside string literals) as a sorted multiset.
+/// Every manifest and doc file in the directory is embedded, and each doc file under the manifest
+/// it is named for (`<name>.md` or `<name>.<part>.md`).
 #[test]
-fn the_probe_is_the_manifests_probe_statements() {
-    let mut statements = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
-    let mut chars = crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK
-        .chars()
-        .peekable();
-    while let Some(ch) = chars.next() {
-        match (quote, ch) {
-            (Some(_), '\\') => {
-                current.push(ch);
-                current.extend(chars.next());
-            }
-            (Some(open), _) => {
-                current.push(ch);
-                if ch == open {
-                    quote = None;
-                }
-            }
-            (None, ';') if chars.peek() == Some(&' ') => {
-                chars.next();
-                statements.push(std::mem::take(&mut current));
-            }
-            (None, '"' | '\'') => {
-                quote = Some(ch);
-                current.push(ch);
-            }
-            (None, _) => current.push(ch),
-        }
-    }
-    statements.push(current);
-
-    assert_eq!(
-        sorted(statements),
-        sorted(manifests().into_iter().flat_map(|manifest| manifest.probe))
-    );
-}
-
-/// The live closure freeze seeds from the manifests' seed modules, and its expected-closure chain
-/// (which pins the `rlm.` submodules, not the package root) adds their transitive modules.
-#[test]
-fn the_closure_freeze_seeds_from_the_manifests() {
-    let seed_line = VENV_TESTS
-        .lines()
-        .find_map(|line| line.strip_prefix("seed = ["))
-        .expect("the closure freeze's seed list");
-    let seed = sorted(
-        seed_line
-            .trim_end_matches(']')
-            .split(", ")
-            .map(|module| module.trim_matches('"')),
-    );
-    let chain: BTreeSet<&str> = VENV_TESTS
-        .lines()
-        .filter_map(|line| {
-            line.trim()
-                .trim_start_matches("&& ")
-                .strip_prefix("report.closure.contains(&\"")
-        })
-        .filter_map(|rest| rest.split_once('"').map(|(module, _)| module))
-        .collect();
-
-    let manifests = manifests();
-    let manifest_seed = sorted(
-        manifests
-            .iter()
-            .filter(|manifest| manifest.closure_seed)
-            .map(|manifest| manifest.module.as_str()),
-    );
-    let manifest_chain: BTreeSet<&str> = manifests
+fn every_manifest_and_doc_file_is_embedded() {
+    let misfiled: Vec<&str> = MANIFESTS
         .iter()
-        .filter(|manifest| manifest.closure_seed)
-        .map(|manifest| manifest.module.as_str())
-        .chain(
-            manifests
+        .flat_map(|capability| {
+            capability
+                .docs
                 .iter()
-                .flat_map(|manifest| manifest.closure_transitive.iter().map(String::as_str)),
-        )
-        .filter(|module| module.starts_with("rlm."))
+                .map(|(stem, _)| *stem)
+                .filter(|stem| stem.split('.').next() != Some(capability.name))
+        })
         .collect();
-    assert_eq!((seed, chain), (manifest_seed, manifest_chain));
+    assert_eq!(
+        (files_on_disk("toml"), files_on_disk("md"), misfiled),
+        (
+            sorted(MANIFESTS.iter().map(|capability| capability.name)),
+            sorted(
+                MANIFESTS
+                    .iter()
+                    .flat_map(|capability| capability.docs.iter().map(|(stem, _)| *stem))
+            ),
+            Vec::new()
+        )
+    );
 }
 
-/// The bootstrap binds exactly the manifests' bound modules (`import rlm.<module> as <name>`).
+/// Every slot of `core.md` resolves and every doc file fills one.
+#[test]
+fn the_core_layer_splices() {
+    if let Err(error) =
+        crate::prompts::layers::splice_core_layer(crate::prompts::layers::CORE_TEMPLATE)
+    {
+        panic!("{error:#}");
+    }
+}
+
+/// The derived runtime-ready probe passes against this checkout's runtime source, and so does the
+/// core manifest's probe followed by each other manifest's alone: a manifest's statements need only
+/// core's imports and their own, so the derived order never puts a use before its import. Skipped
+/// without a Python that takes `-P` (3.11+), as the probe's own safe-path test is.
+#[test]
+fn the_derived_probe_passes_against_the_runtime_source() {
+    let Some(python) = ["python3.11", "python3"].into_iter().find(|python| {
+        std::process::Command::new(python)
+            .args(["-P", "-c", "pass"])
+            .status()
+            .is_ok_and(|status| status.success())
+    }) else {
+        eprintln!("no Python 3.11+ found; skipping the derived-probe run");
+        return;
+    };
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/src");
+    let passes = |program: &str| {
+        std::process::Command::new(python)
+            .args(["-P", "-s", "-c", program])
+            .env("PYTHONPATH", &source)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    let manifests = capabilities().expect("every embedded manifest parses");
+    let core = &manifests["core"].probe;
+    let failing: Vec<&str> = manifests
+        .iter()
+        .filter(|(name, manifest)| {
+            **name != "core"
+                && !passes(
+                    &[core.as_slice(), manifest.probe.as_slice()]
+                        .concat()
+                        .join("; "),
+                )
+        })
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        (
+            passes(&crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK),
+            failing
+        ),
+        (true, Vec::new())
+    );
+}
+
+/// The bootstrap binds exactly the manifests' bound modules (`import rlm.<module> as <name>`), and
+/// each is one its manifest lists among the core prompt's kernel-implemented tools (`<name>.*`), so
+/// a new kernel API ships bound and documented together. `ask` and `notify` are bound as functions
+/// under private module aliases, so they carry no `bound_module`.
 #[test]
 fn the_bootstrap_binds_the_manifests_modules() {
     let code = crate::kernel::bootstrap::build_rlm_bootstrap_code(&[], false);
@@ -150,46 +149,36 @@ fn the_bootstrap_binds_the_manifests_modules() {
             .filter_map(|line| line.split_once(" as ").map(|(_, name)| name))
             .filter(|name| !name.starts_with('_')),
     );
+    let manifests = manifests();
+    let unlisted: Vec<&str> = manifests
+        .iter()
+        .filter_map(|manifest| {
+            let name = manifest.bound_module.as_deref()?;
+            (!manifest.prompt_builtins.contains(&format!("{name}.*"))).then_some(name)
+        })
+        .collect();
     assert_eq!(
-        bound,
-        sorted(
-            manifests()
-                .into_iter()
-                .filter_map(|manifest| manifest.bound_module)
+        (bound, unlisted),
+        (
+            sorted(
+                manifests
+                    .iter()
+                    .filter_map(|manifest| manifest.bound_module.clone())
+            ),
+            Vec::new()
         )
     );
 }
 
-/// The core prompt's kernel-implemented list is the manifests' prompt builtins, and its bullet
-/// tokens under those namespaces are exactly the manifests' documented names; each manifest's
-/// host requests surface as names that same manifest documents.
-#[test]
-fn the_core_prompt_names_the_manifests_tools() {
-    let core_layer = crate::prompts::layers::CORE_LAYER;
-    let (_, built_in) = core_layer
-        .split_once("All programmatic tools described above except for ")
-        .expect("the core prompt's kernel-implemented list");
-    let (built_in, _) = built_in
-        .split_once(" are implemented")
-        .expect("the end of the kernel-implemented list");
-    let listed = sorted(
-        built_in
-            .split(", ")
-            .map(|name| name.trim_start_matches("and ").trim_matches('`')),
-    );
-
-    let manifests = manifests();
-    let builtins = sorted(
-        manifests
-            .iter()
-            .flat_map(|manifest| manifest.prompt_builtins.iter().map(String::as_str)),
-    );
-    let namespaces: BTreeSet<&str> = builtins
+/// The bullet tokens of `text` (`- `name(...)`...`) under one of the manifests' builtin
+/// namespaces (`rlm`, `schedule`, `ask`, ...).
+fn namespaced_bullets<'a>(text: &'a str, manifests: &[CapabilityManifest]) -> BTreeSet<&'a str> {
+    let namespaces: BTreeSet<&str> = manifests
         .iter()
+        .flat_map(|manifest| &manifest.prompt_builtins)
         .map(|name| name.trim_end_matches(".*"))
         .collect();
-    let bullets: BTreeSet<&str> = core_layer
-        .lines()
+    text.lines()
         .filter_map(|line| line.trim_start().strip_prefix("- `"))
         .filter_map(|rest| rest.split_once('`').map(|(token, _)| token))
         .filter_map(|token| token.split('(').next())
@@ -201,7 +190,15 @@ fn the_core_prompt_names_the_manifests_tools() {
                 })
         })
         .filter(|token| namespaces.contains(token.split('.').next().unwrap_or_default()))
-        .collect();
+        .collect()
+}
+
+/// The assembled core layer's bullet tokens under the builtin namespaces are exactly the
+/// manifests' documented names, each claimed once; each manifest's host requests surface as names
+/// that same manifest documents.
+#[test]
+fn the_core_prompt_names_the_manifests_tools() {
+    let manifests = manifests();
     let undocumented_requests: Vec<&str> = manifests
         .iter()
         .flat_map(|manifest| {
@@ -214,9 +211,14 @@ fn the_core_prompt_names_the_manifests_tools() {
         .collect();
 
     assert_eq!(
-        (listed, sorted(bullets), undocumented_requests),
         (
-            builtins,
+            sorted(namespaced_bullets(
+                crate::prompts::layers::CORE_LAYER.as_str(),
+                &manifests
+            )),
+            undocumented_requests
+        ),
+        (
             sorted(
                 manifests
                     .iter()
@@ -225,6 +227,28 @@ fn the_core_prompt_names_the_manifests_tools() {
             Vec::new()
         )
     );
+}
+
+/// Each capability's documented names are bulleted in its own doc files, so a capability with
+/// documented names has a doc file and its section documents nothing it does not own.
+#[test]
+fn each_capability_documents_its_own_names() {
+    let parsed = capabilities().expect("every embedded manifest parses");
+    let manifests: Vec<CapabilityManifest> = parsed.values().cloned().collect();
+    let mismatched: Vec<&str> = MANIFESTS
+        .iter()
+        .filter(|capability| {
+            let docs: String = capability.docs.iter().map(|(_, text)| *text).collect();
+            namespaced_bullets(&docs, &manifests)
+                != parsed[capability.name]
+                    .documented
+                    .iter()
+                    .map(String::as_str)
+                    .collect()
+        })
+        .map(|capability| capability.name)
+        .collect();
+    assert_eq!(mismatched, Vec::<&str>::new());
 }
 
 /// Every standalone session-scoped adoption event in the telemetry catalog is claimed by the

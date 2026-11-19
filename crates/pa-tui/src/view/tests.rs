@@ -696,7 +696,6 @@ fn a_stall_counts_as_shown_only_when_the_working_loader_owns_the_status_area() {
         max_attempts: 3,
         ends_at: now + std::time::Duration::from_secs(30),
         error_message: "429 Rate limit exceeded".to_string(),
-        reason: crate::snapshot::RetryStartReason::Quick,
         provider: None,
     });
     v.render_frame(80, 24);

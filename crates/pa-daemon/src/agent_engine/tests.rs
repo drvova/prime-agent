@@ -10,7 +10,6 @@ use serde_json::Map;
 mod abort;
 mod autonomous;
 mod compaction;
-mod failover_facts;
 mod goal;
 mod incomplete_reply;
 mod live_auth;

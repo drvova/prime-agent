@@ -140,24 +140,19 @@ pub enum EngineEvent {
         goal: Value,
     },
     /// `auto_retry_start`: a provider failure is being retried (TS wire
-    /// event; the interactive transcript shows the retry countdown). A
-    /// `Backup` reason is a provider-failover switch: the failed turn
-    /// re-routes to another configured provider serving the same model and
-    /// re-issues immediately.
+    /// event; the interactive transcript shows the retry countdown). Every
+    /// retry re-issues on the session's own provider.
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,
         delay_ms: u64,
         error_message: String,
-        reason: pa_core::session_engine::auto_retry::RetryStartReason,
     },
-    /// `auto_retry_end`: the retry loop settled. `restored_model` is the
-    /// `"provider/model-id"` primary restored after a failover switch.
+    /// `auto_retry_end`: the retry loop settled.
     AutoRetryEnd {
         success: bool,
         attempt: u32,
         final_error: Option<String>,
-        restored_model: Option<String>,
     },
     RefineComplete {
         result: Value,

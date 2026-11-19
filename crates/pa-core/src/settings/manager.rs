@@ -753,35 +753,6 @@ impl SettingsManager {
         }
     }
 
-    /// The provider-failover policy from settings (`retry.failover`).
-    #[must_use]
-    pub fn get_provider_failover_policy(
-        &self,
-    ) -> crate::session_engine::provider_failover::ProviderFailoverPolicy {
-        let defaults = crate::session_engine::provider_failover::DEFAULT_PROVIDER_FAILOVER_POLICY;
-        let failover = self
-            .merged
-            .retry
-            .as_ref()
-            .and_then(|retry| retry.failover.as_ref());
-        crate::session_engine::provider_failover::ProviderFailoverPolicy {
-            enabled: failover
-                .and_then(|failover| failover.enabled)
-                .unwrap_or(defaults.enabled),
-            max_retries: failover
-                .and_then(|failover| failover.max_retries)
-                .map_or(defaults.max_retries, |retries| {
-                    retries.min(u64::from(u32::MAX)) as u32
-                }),
-            base_delay_ms: failover
-                .and_then(|failover| failover.base_delay_ms)
-                .unwrap_or(defaults.base_delay_ms),
-            max_delay_ms: failover
-                .and_then(|failover| failover.max_delay_ms)
-                .unwrap_or(defaults.max_delay_ms),
-        }
-    }
-
     /// The quota-park policy from settings (`retry.provider.waitForUsage`): the
     /// park toggle, per-park ceiling (clamped to one week), and per-episode budget.
     #[must_use]

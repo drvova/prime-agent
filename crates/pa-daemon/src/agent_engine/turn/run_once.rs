@@ -1,12 +1,8 @@
-//! The once-runner: one model-turn attempt with its retry/failover
-//! selection and the wire-shape serializers for stream events, tool
+//! The once-runner: one model-turn attempt with its retry policy and the wire-shape serializers for stream events, tool
 //! results, and agent messages.
 use crate::engine::{session_wire_value, AssistantSnapshot};
 
-use super::{
-    json, json_round_trip, AgentSessionEngine, DaemonAllowlist, EngineEvent, TurnOnce, TurnPrompt,
-    Value,
-};
+use super::{json, json_round_trip, AgentSessionEngine, EngineEvent, TurnOnce, TurnPrompt, Value};
 
 impl AgentSessionEngine {
     pub(super) fn retry_policy(
@@ -16,64 +12,17 @@ impl AgentSessionEngine {
             .get_provider_retry_policy()
     }
 
-    /// The provider-failover policy from settings (`retry.failover`).
-    pub(super) fn failover_policy(
-        &self,
-    ) -> pa_core::session_engine::provider_failover::ProviderFailoverPolicy {
-        pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir)
-            .get_provider_failover_policy()
-    }
-
-    /// The failover chain for `model`: the other auth-configured providers
-    /// serving the same model id, in catalog order after the current one,
-    /// filtered by the daemon model allowlist. Faux-script sessions never
-    /// fail over.
-    pub(super) fn failover_candidates(
-        &self,
-        model: &pa_types::ai::Model,
-    ) -> Vec<pa_types::ai::Model> {
-        if self.config.faux_script.is_some() {
-            return Vec::new();
-        }
-        let auth = pa_core::auth::AuthStorage::create(&self.config.agent_dir);
-        let registry =
-            pa_core::models::ModelRegistry::create(auth, self.config.agent_dir.join("models.json"));
-        let available: Vec<pa_types::ai::Model> =
-            registry.get_available().into_iter().cloned().collect();
-        let candidates = pa_core::models::failover_candidates(model, &available);
-        match crate::model_allowlist::load(&self.cwd(), &self.config.agent_dir) {
-            DaemonAllowlist::Unrestricted => candidates,
-            DaemonAllowlist::Allowed(patterns) => candidates
-                .into_iter()
-                .filter(|candidate| {
-                    pa_core::models::model_allowed(
-                        &format!("{}/{}", candidate.provider, candidate.id),
-                        &patterns,
-                    )
-                })
-                .collect(),
-            // Fail closed on an unreadable policy.
-            DaemonAllowlist::Unreadable(_) => Vec::new(),
-        }
-    }
-
     /// Run one turn, streaming assistant updates through `emit` as they
     /// arrive. The first attempt prompts the session; retries continue the
     /// parked turn. Returns the final assistant message, `None` when none
     /// was produced, or `Aborted` when the emit cancelled or the cancel flag
     /// raced the admission.
-    // The model-change queue preserves the separate engine and worker stores
-    // at this run boundary; keep it alongside the existing delivery arguments.
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_turn_once(
         &self,
         agent: &std::sync::Arc<pa_agent::agent::Agent>,
         prompt: &TurnPrompt,
         first_attempt: bool,
         boundary_passed: &std::sync::Arc<std::sync::atomic::AtomicBool>,
-        pending_model_changes: &std::sync::Arc<
-            std::sync::Mutex<Vec<pa_types::session::ModelChangeEntry>>,
-        >,
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) -> anyhow::Result<TurnOnce> {
@@ -88,7 +37,6 @@ impl AgentSessionEngine {
         let boundary_passed = std::sync::Arc::clone(boundary_passed);
         let subscription = {
             let tx = tx.clone();
-            let pending_model_changes = pending_model_changes.clone();
             let boundary_passed = std::sync::Arc::clone(&boundary_passed);
             let autonomous_state = std::sync::Arc::clone(&self.autonomous);
             let autonomous_driver = std::sync::Arc::clone(
@@ -100,7 +48,6 @@ impl AgentSessionEngine {
             agent
                 .subscribe(move |event, _signal| {
                     let tx = tx.clone();
-                    let pending_model_changes = pending_model_changes.clone();
                     let boundary_passed = std::sync::Arc::clone(&boundary_passed);
                     let autonomous_state = std::sync::Arc::clone(&autonomous_state);
                     let autonomous_driver = std::sync::Arc::clone(&autonomous_driver);
@@ -218,11 +165,6 @@ impl AgentSessionEngine {
                                                 EngineEvent::AssistantMessage(value)
                                             };
                                             let _ = tx.send(event);
-                                            for change in pending_model_changes.lock()
-                                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                                .drain(..) {
-                                                let _ = tx.send(EngineEvent::ModelChange(change));
-                                            }
                                         }
                                     }
                                     // An in-run continuation's user row: the

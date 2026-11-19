@@ -64,16 +64,13 @@ pub enum TurnUpdate {
         max_attempts: u32,
         delay_ms: u64,
         error_message: String,
-        reason: RetryStartReason,
     },
     /// `auto_retry_end`: the retry loop settled; `final_error` when
-    /// retries were exhausted; `restored_model` after a successful
-    /// failover.
+    /// retries were exhausted.
     AutoRetryEnd {
         success: bool,
         attempt: u32,
         final_error: Option<String>,
-        restored_model: Option<String>,
     },
     /// `agent_end`: the agent run ended.
     Idle,
@@ -150,16 +147,6 @@ pub enum TurnUpdate {
     },
     /// Other state churn: the footer status only.
     StatusUpdate,
-}
-
-/// Why one `auto_retry_start` fired (the TS wire `reason` field).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RetryStartReason {
-    /// Ordinary quick retry on the current provider.
-    Quick,
-    /// Provider-failover switch: the failed turn re-routes to
-    /// `backup_model` ("provider/model-id").
-    Backup { backup_model: String },
 }
 
 /// Decode the `event` payload of a `session_event` frame.
@@ -320,16 +307,6 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown error")
                 .to_string(),
-            reason: match event.get("reason").and_then(Value::as_str) {
-                Some("backup") => RetryStartReason::Backup {
-                    backup_model: event
-                        .get("backupModel")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown")
-                        .to_string(),
-                },
-                _ => RetryStartReason::Quick,
-            },
         }),
         "auto_retry_end" => Some(TurnUpdate::AutoRetryEnd {
             success: event
@@ -342,10 +319,6 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
                 .unwrap_or_default() as u32,
             final_error: event
                 .get("finalError")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            restored_model: event
-                .get("restoredModel")
                 .and_then(Value::as_str)
                 .map(str::to_string),
         }),
