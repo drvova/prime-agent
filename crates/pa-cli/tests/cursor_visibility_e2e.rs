@@ -438,6 +438,10 @@ fn spawn_child(socket: &std::path::Path, slave: &OwnedFd) -> Child {
     command
         .arg("--exact")
         .arg("cursor_child_mode")
+        // libtest colours its summary on a tty with TERM set; the parent waits
+        // for the plain `test result: ok` text, so keep it uncoloured.
+        .arg("--color")
+        .arg("never")
         .env(CHILD_SOCKET_ENV, socket)
         .env_remove("TMUX")
         .stdin(slave_as_stdio(slave))
