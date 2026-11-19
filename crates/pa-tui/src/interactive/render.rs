@@ -327,6 +327,7 @@ impl Renderer {
                 // The raw-mode bracket takes the enhanced-key modes with it; `resume` re-enables
                 // both.
                 let _ = crate::enhanced_keys::disable(&mut std::io::stdout());
+                release_inline_images();
                 self.flush_to_main_screen(view)?;
                 crate::exit_restore::terminal_release_tail(&mut std::io::stdout());
                 Ok(())
@@ -363,6 +364,11 @@ impl Renderer {
                 // The cleared screen no longer holds the last painted frame: the next paint
                 // must not shift a scroll region against it.
                 crate::scroll_region::PAINTER
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .invalidate();
+                // Nor any picture the overlay drew before the suspend.
+                crate::inline_image::overlay::OVERLAY
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .invalidate();
@@ -510,6 +516,7 @@ impl Renderer {
         let _ = crate::enhanced_keys::disable(&mut std::io::stdout());
         match self {
             Renderer::Terminal { .. } => {
+                release_inline_images();
                 if preserve_alt_screen {
                     // ratatui's `Terminal` drop restores the cursor its last frame hid: run the
                     // drop before the hide so the hide is the handoff's final word — the
@@ -531,6 +538,15 @@ impl Renderer {
             Renderer::Headless { frames, .. } => frames,
         }
     }
+}
+
+/// Take back the pixel overlay's drawings before the surface hands the terminal on (a kitty
+/// placement would otherwise stay over the next surface's cells).
+fn release_inline_images() {
+    let _ = crate::inline_image::overlay::OVERLAY
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .release(&mut std::io::stdout());
 }
 
 /// Encode the flushed rows into `buffer` as one write: each row starts at column 0 (`\r`, required

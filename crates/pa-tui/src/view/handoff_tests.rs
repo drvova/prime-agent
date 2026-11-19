@@ -64,6 +64,7 @@ fn a_changed_link_base_rejects_the_held_layout() {
     let entry = || ChatEntry::User {
         text: "[link](url)".to_string(),
         sent_at: None,
+        images: Vec::new(),
     };
     let mut left = view();
     left.chrome.cwd = first_path.to_string_lossy().into_owned();

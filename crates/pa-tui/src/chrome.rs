@@ -283,27 +283,69 @@ impl ActivityDock {
     }
 }
 
-/// Context usage for the tray label (`N (P%)`).
+/// Context usage for the tray label (`N/W P%`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ContextUsage {
     pub tokens: u64,
     pub context_window: u64,
+    pub reading: ContextReading,
+}
+
+/// How current the tray's context usage is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ContextReading {
+    /// The daemon measured `tokens` for the context as it stands.
+    #[default]
+    Measured,
+    /// The last measured `tokens`, carried over while the daemon cannot measure the context
+    /// (right after a compaction, until the next reply) — the tray marks it `~`.
+    Stale,
+    /// Nothing measured yet (before the first reply): `tokens` is meaningless; the tray shows
+    /// `?/W`.
+    Unknown,
 }
 
 impl ContextUsage {
-    /// The wire shape (TS `SessionStats["contextUsage"]`, served by
-    /// `get_session_stats` and carried by the attach snapshot's state):
-    /// unknown tokens — a session right after a compaction — yield
-    /// `None`, which clears the tray display instead of keeping the
-    /// stale one (TS `patchConnectionState` replaces the snapshot).
+    /// The wire shape (TS `SessionStats["contextUsage"]`, served by `get_session_stats` and
+    /// carried by the attach snapshot's state). Unknown or zero tokens with a known window — a
+    /// session right after a compaction, or before its first reply — read as
+    /// [`ContextReading::Unknown`]; only a missing window yields `None`.
     #[must_use]
     pub fn from_wire(usage: &Value) -> Option<Self> {
-        let tokens = usage.get("tokens").and_then(Value::as_u64)?;
         let context_window = usage.get("contextWindow").and_then(Value::as_u64)?;
+        let tokens = usage
+            .get("tokens")
+            .and_then(Value::as_u64)
+            .filter(|tokens| *tokens > 0);
         Some(Self {
-            tokens,
+            tokens: tokens.unwrap_or_default(),
             context_window,
+            reading: match tokens {
+                Some(_) => ContextReading::Measured,
+                None => ContextReading::Unknown,
+            },
         })
+    }
+
+    /// Fold a fresh reading over the last one shown for the SAME session: an unknown reading,
+    /// or a reply without the field at all (a worker that restarted before its model resolved),
+    /// keeps the last known tokens marked stale instead of blanking the tray.
+    #[must_use]
+    pub fn settle(next: Option<Self>, previous: Option<Self>) -> Option<Self> {
+        let known = previous.filter(|previous| previous.reading != ContextReading::Unknown);
+        match (next, known) {
+            (Some(next), Some(previous)) if next.reading == ContextReading::Unknown => Some(Self {
+                tokens: previous.tokens,
+                context_window: next.context_window,
+                reading: ContextReading::Stale,
+            }),
+            (None, Some(previous)) => Some(Self {
+                reading: ContextReading::Stale,
+                ..previous
+            }),
+            (Some(next), Some(_) | None) => Some(next),
+            (None, None) => previous,
+        }
     }
 
     #[must_use]
@@ -630,16 +672,18 @@ pub fn conversation_detail_status(all_output: bool, details: bool, key_display: 
 /// right, over the full width.
 #[must_use]
 pub fn render_tray(state: &ChromeState, theme: &Theme, width: usize) -> Line {
-    render_tray_with_hint(state, theme, width).0
+    render_tray_with_hint(state, theme, width).line
 }
 
 /// The tray's shrink order as the width drops. Every step keeps all the previous steps'
 /// cuts and gives up one more segment, whole: the gauge (the gap between the lanes) shrinks
 /// first and vanishes below six cells, then the tier badge, the subagent depth, the context
-/// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking glyph), the `manage` word
-/// (the `←` stays), the context percent, the rate-limit reset chip, and the model last. The chip
-/// outlives the context percent: while the provider refuses requests, when it lets them through
-/// again is the tray's one actionable fact. Nothing is cut mid-word.
+/// label's `tokens/window` (the percent stays), the model's effort suffix (with its thinking
+/// glyph), the `manage` word (the `←` stays), the model, the context percent, and the rate-limit
+/// reset chip last. The context percent outlives the model: a crowded tray (a long model id on a
+/// narrow pane) must never lose the indicator of how full the context is. The chip outlives the
+/// percent: while the provider refuses requests, when it lets them through again is the tray's
+/// one actionable fact. Nothing is cut mid-word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum TrayShrink {
     Full,
@@ -648,9 +692,9 @@ enum TrayShrink {
     PercentOnly,
     NoEffort,
     BareManage,
+    NoModel,
     NoContext,
     NoResetChip,
-    NoModel,
 }
 
 const TRAY_SHRINK: [TrayShrink; 9] = [
@@ -660,32 +704,54 @@ const TRAY_SHRINK: [TrayShrink; 9] = [
     TrayShrink::PercentOnly,
     TrayShrink::NoEffort,
     TrayShrink::BareManage,
+    TrayShrink::NoModel,
     TrayShrink::NoContext,
     TrayShrink::NoResetChip,
-    TrayShrink::NoModel,
 ];
 
-/// The tray row plus the `← manage` hint's column span: a plain click on
-/// the hint's cells performs the hinted action. `None` when the left
-/// label is the override or the hint is hidden. The row degrades in the
-/// [`TrayShrink`] order until both lanes fit with a cell between them.
+/// The tray row with its two click regions' column spans (start inclusive, end exclusive).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayRow {
+    pub line: Line,
+    /// The `← manage` hint's cells: `None` when the left label is the override or the hint is
+    /// hidden.
+    pub manage: Option<std::ops::Range<usize>>,
+    /// The context gauge and its `tokens/window %` label (oh-my-pi's clickable context meter):
+    /// `None` while the session reports no context usage or the label shrank away.
+    pub context: Option<std::ops::Range<usize>>,
+}
+
+/// The tray's lanes at one shrink step, with the click spans inside them.
+struct TrayLanes {
+    left: Line,
+    right: Line,
+    /// The manage hint's cells within the left lane.
+    hint: Option<std::ops::Range<usize>>,
+    /// The context label's width at the right lane's start (0 when it is not shown).
+    context_label: usize,
+}
+
+/// The tray row plus its click regions: a plain click on the hint's cells performs the hinted
+/// action, one on the gauge or the context label opens the context window. The row degrades in
+/// the [`TrayShrink`] order until both lanes fit with a cell between them.
 #[must_use]
-pub fn render_tray_with_hint(
-    state: &ChromeState,
-    theme: &Theme,
-    width: usize,
-) -> (Line, Option<std::ops::Range<usize>>) {
+pub fn render_tray_with_hint(state: &ChromeState, theme: &Theme, width: usize) -> TrayRow {
     let lanes = |shrink: TrayShrink| tray_lanes(state, theme, shrink);
-    let fits = |(left, right, _): &(Line, Line, Option<std::ops::Range<usize>>)| {
-        let (left, right) = (line_width(left), line_width(right));
+    let fits = |lanes: &TrayLanes| {
+        let (left, right) = (line_width(&lanes.left), line_width(&lanes.right));
         let between = usize::from(left > 0 && right > 0);
         left + right + between <= width
     };
-    let (left, right, hint) = TRAY_SHRINK
+    let TrayLanes {
+        left,
+        right,
+        hint,
+        context_label,
+    } = TRAY_SHRINK
         .iter()
         .map(|shrink| lanes(*shrink))
         .find(fits)
-        .unwrap_or_else(|| lanes(TrayShrink::NoModel));
+        .unwrap_or_else(|| lanes(TrayShrink::NoResetChip));
     let left_width = line_width(&left);
     let right_width = line_width(&right);
     let gap = width.saturating_sub(left_width + right_width);
@@ -694,7 +760,8 @@ pub fn render_tray_with_hint(
     // The gap between the lanes is the context gauge: `━` for the used share, `─` for the
     // rest, amber from 70% and red from 90% (a space pads each end), with a `┃` tick at the
     // auto-compaction threshold.
-    if let Some(context) = state.context.as_ref().filter(|_| gap >= 6) {
+    let gauge = state.context.as_ref().filter(|_| gap >= 6);
+    if let Some(context) = gauge {
         let (cells, percent) = (gap - 2, context.percent());
         let used = ((cells as f64 * percent / 100.0).round() as usize).min(cells);
         let tone = if percent >= 90.0 {
@@ -732,17 +799,27 @@ pub fn render_tray_with_hint(
         line.push(Span::styled(" ".repeat(gap), Style::default()));
     }
     line.extend(right);
-    // Only an override label wider than the row itself can still overflow: clip it.
-    (truncate_line(&line, width, ""), hint)
+    // The context region spans the drawn gauge (its padding cells included) and the label.
+    let label_start = left_width + gap;
+    let context = (context_label > 0).then(|| {
+        let start = if gauge.is_some() {
+            left_width
+        } else {
+            label_start
+        };
+        start.min(width)..(label_start + context_label).min(width)
+    });
+    TrayRow {
+        // Only an override label wider than the row itself can still overflow: clip it.
+        line: truncate_line(&line, width, ""),
+        manage: hint,
+        context: context.filter(|span| !span.is_empty()),
+    }
 }
 
 /// The tray's two lanes at one shrink step: the location label (override, or the manage hint and
 /// depth) on the left with the hint's own cells, the context label, model, and tier on the right.
-fn tray_lanes(
-    state: &ChromeState,
-    theme: &Theme,
-    shrink: TrayShrink,
-) -> (Line, Line, Option<std::ops::Range<usize>>) {
+fn tray_lanes(state: &ChromeState, theme: &Theme, shrink: TrayShrink) -> TrayLanes {
     let dim = theme.fg_style(ThemeColor::Dim);
     let muted = theme.fg_style(ThemeColor::Muted);
     let mut hint: Option<std::ops::Range<usize>> = None;
@@ -791,18 +868,44 @@ fn tray_lanes(
         .as_ref()
         .filter(|_| shrink < TrayShrink::NoContext)
     {
-        let percent = format!("{:.0}%", context.percent());
-        let label = if shrink < TrayShrink::PercentOnly {
-            format!(
-                "{}/{} {percent}",
-                format_token_count(context.tokens),
-                format_token_count(context.context_window)
-            )
-        } else {
-            percent
-        };
-        right.push(Span::styled(label, dim));
+        let window = format_token_count(context.context_window);
+        let full = shrink < TrayShrink::PercentOnly;
+        match context.reading {
+            ContextReading::Unknown => {
+                let label = if full {
+                    format!("?/{window}")
+                } else {
+                    "?".to_string()
+                };
+                right.push(Span::styled(label, dim));
+            }
+            ContextReading::Measured | ContextReading::Stale => {
+                let marker = if context.reading == ContextReading::Stale {
+                    "~"
+                } else {
+                    ""
+                };
+                if full {
+                    right.push(Span::styled(
+                        format!("{marker}{}/{window} ", format_token_count(context.tokens)),
+                        dim,
+                    ));
+                } else {
+                    right.push(Span::styled(marker.to_string(), dim));
+                }
+                // Past the window the percent reads `>100%` in the warning tone.
+                if context.tokens > context.context_window {
+                    right.push(Span::styled(
+                        ">100%".to_string(),
+                        theme.fg_style(ThemeColor::Warning),
+                    ));
+                } else {
+                    right.push(Span::styled(format!("{:.0}%", context.percent()), dim));
+                }
+            }
+        }
     }
+    let context_label = line_width(&right);
     if let Some(model) = state
         .model_id
         .as_ref()
@@ -859,7 +962,12 @@ fn tray_lanes(
         }
         right.push(Span::styled(badge.to_string(), dim));
     }
-    (left, right, hint)
+    TrayLanes {
+        left,
+        right,
+        hint,
+        context_label,
+    }
 }
 
 /// The tray model label's thinking-effort suffix: a model without

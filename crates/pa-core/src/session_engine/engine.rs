@@ -127,6 +127,11 @@ pub struct SessionEngine {
     pub prompt_templates: Vec<PromptTemplate>,
     pub agents_files: Vec<crate::resources::ContextFile>,
     pub system_prompt: String,
+    /// Byte length of the system prompt's cache-stable static prefix (the context window's
+    /// static/dynamic split).
+    pub system_prompt_static_len: usize,
+    /// The request view's thinning settings (the context window's estimate replays them).
+    pub context_thinning: super::context_thinning::ThinningSettings,
     /// The same instance the kernel `goal.*` host handlers reach, so `/goal`
     /// and `goal.complete()` observe one state machine.
     pub goal_driver: std::sync::Arc<tokio::sync::Mutex<super::goal_driver::GoalDriver>>,
@@ -435,6 +440,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `usage.get`: the session's spend (and the no-daemon quota fallback);
+    // telemetry counts each read (never a number).
+    crate::usage_host::register_usage_host_handlers(
+        &mut handlers,
+        &wiring.session,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move || counters.note_usage_read())
+                as crate::usage_host::UsageObserver
+        }),
+    );
     let turn_boundary = Arc::new(super::turn_boundary::TurnBoundaryRequests::new());
     let _ = turn_boundary
         .refinement_settings
@@ -666,8 +682,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The static layers' byte span is the cache-stable prefix the cache
     // seam marks as its own block (shared by every session and subagent on
     // the same layers and model prompts).
+    let system_prompt_static_len = system_prompt_breakdown.cached_prefix_len;
     let static_system_prefix =
-        system_prompt_breakdown.assembled[..system_prompt_breakdown.cached_prefix_len].to_string();
+        system_prompt_breakdown.assembled[..system_prompt_static_len].to_string();
     let system_prompt = system_prompt_breakdown.assembled;
 
     // Captured before the digest context moves the local harness dir and
@@ -932,6 +949,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .runtime
         .goal_telemetry()
         .set(std::sync::Arc::clone(&session_counters));
+    let _ = wiring
+        .rlm
+        .telemetry
+        .set(std::sync::Arc::clone(&session_counters));
     wiring
         .runtime
         .goal_verifier()
@@ -1124,6 +1145,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         prompt_templates: resources.prompts,
         agents_files: resources.agents_files,
         system_prompt,
+        system_prompt_static_len,
+        context_thinning: thinning_settings,
         goal_driver,
         queued_goal_context_purge: config.queued_goal_context_purge.clone(),
         mcp_manager,

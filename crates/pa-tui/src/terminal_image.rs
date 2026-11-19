@@ -1,9 +1,9 @@
 //! Terminal image metadata: pixel-dimension parsing, the bounded-prefix
 //! dimension read the render path uses, and the textual fallback row.
-//! Every tool-result image row is the textual fallback (TS mounts `Image`
-//! components with `fallbackOnly`), so the TUI never decodes a whole
-//! payload: [`get_image_dimensions_prefix`] reads dimensions from a
-//! bounded prefix. [`is_image_line`] stays for the exit-flush scrollback.
+//! The render path never decodes a payload: [`get_image_dimensions_prefix`]
+//! reads dimensions from a bounded prefix, and the inline image's layout
+//! (`crate::inline_image`) rides them while its decode runs off the paint
+//! path. [`is_image_line`] stays for the exit-flush scrollback.
 
 /// Image pixel dimensions (TS `ImageDimensions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,8 +128,10 @@ fn webp_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
 }
 
 /// The bounded-prefix decode budget for [`get_image_dimensions_prefix`]:
-/// a payload whose header spills past the budget reports `None`.
-pub const IMAGE_DIMENSIONS_PREFIX_BYTES: usize = 1024;
+/// a payload whose header spills past the budget reports `None`. A JPEG's
+/// EXIF segment can push its frame header far past the first kilobyte, and
+/// the inline image's row count rides these dimensions.
+pub const IMAGE_DIMENSIONS_PREFIX_BYTES: usize = 64 * 1024;
 
 /// Read an image's pixel dimensions from a BOUNDED PREFIX of its base64
 /// payload (image-heavy tool results must never be decoded whole for a
@@ -298,7 +300,11 @@ mod tests {
         // A payload whose prefix decodes but whose tail (past the
         // budget) is invalid base64 still reports its dimensions.
         let header = tiny_png(640, 480);
-        let poisoned = format!("{header}{}{}", "A".repeat(4096), "!".repeat(64));
+        let poisoned = format!(
+            "{header}{}{}",
+            "A".repeat(IMAGE_DIMENSIONS_PREFIX_BYTES * 2),
+            "!".repeat(64)
+        );
         assert_eq!(
             get_image_dimensions_prefix(&poisoned, "image/png", IMAGE_DIMENSIONS_PREFIX_BYTES),
             Some(ImageDimensions {

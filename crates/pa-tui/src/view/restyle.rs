@@ -113,10 +113,12 @@ mod tests {
         view.push_entry(ChatEntry::User {
             text: "row zero text".into(),
             sent_at: None,
+            images: Vec::new(),
         });
         view.push_entry(ChatEntry::User {
             text: "row one text".into(),
             sent_at: None,
+            images: Vec::new(),
         });
         view
     }
@@ -146,6 +148,7 @@ mod tests {
             view.push_entry(ChatEntry::User {
                 text: format!("scroll body {index}"),
                 sent_at: None,
+                images: Vec::new(),
             });
         }
         view.render_frame(100, 30);
@@ -213,6 +216,7 @@ mod tests {
         view.push_entry(ChatEntry::User {
             text: "row two".into(),
             sent_at: None,
+            images: Vec::new(),
         });
         let (base, start) = base_rows(&mut view);
         view.selection_styled_window(base, start);

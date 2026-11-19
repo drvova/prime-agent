@@ -31,12 +31,14 @@ fn markdown_link_targets_use_the_owning_view_cwd() {
     first.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     let mut second = view();
     second.chrome.cwd = second_path.to_string_lossy().into_owned();
     second.push_entry(ChatEntry::User {
         text: "[link](url)".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     let targets =
         |v: &mut AgentView| crate::hyperlinks::frame_link_ranges(&v.render_transcript(80));
@@ -993,6 +995,7 @@ fn a_scrolled_layout_revalidates_the_hover() {
         entries.push(crate::chat::ChatEntry::User {
             text: format!("later user line {index}"),
             sent_at: None,
+            images: Vec::new(),
         });
     }
     let mut view = collapsed_view(entries);
@@ -1212,6 +1215,7 @@ fn a_prompt_shows_its_send_time_flush_right() {
         let mut view = view_with(vec![ChatEntry::User {
             text: text.to_string(),
             sent_at,
+            images: Vec::new(),
         }]);
         let text = transcript_text(&mut view, 40);
         text.lines().map(str::to_string).collect::<Vec<_>>()
@@ -1234,6 +1238,7 @@ fn cached_transcript_rows_match_fresh_render() {
         ChatEntry::User {
             text: "hello".to_string(),
             sent_at: None,
+            images: Vec::new(),
         },
         ChatEntry::Assistant(Box::new(AssistantMessage {
             blocks: vec![MessageBlock::Text("world".to_string())],
@@ -1402,6 +1407,7 @@ fn user_row() -> ChatEntry {
     ChatEntry::User {
         text: "hello".to_string(),
         sent_at: None,
+        images: Vec::new(),
     }
 }
 
@@ -1440,6 +1446,7 @@ fn tool_card_after_user_message_keeps_ts_two_blank_seam() {
         ChatEntry::User {
             text: "run the cell".to_string(),
             sent_at: None,
+            images: Vec::new(),
         },
         settled_tool_card("t1"),
     ]);
@@ -1489,6 +1496,7 @@ fn conversation_leading_matches_ts_spacing_rules() {
     let user = || ChatEntry::User {
         text: "hello".to_string(),
         sent_at: None,
+        images: Vec::new(),
     };
 
     // Nothing preceding: the collapsed form leads with a blank, the
@@ -1833,6 +1841,7 @@ fn the_collapsed_view_renders_every_activity_item_as_details_does() {
     entries.push(crate::chat::ChatEntry::User {
         text: "go".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     entries.extend(settled_cards(2));
     let mut view = collapsed_view(entries);
@@ -1880,6 +1889,7 @@ fn a_running_card_updates_between_frames() {
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "run_r".to_string(),
@@ -1926,6 +1936,7 @@ fn streamed_cards_render_their_own_rows_immediately() {
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     view.push_entry(streamed("c0"));
     let one = transcript_text(&mut view, 80);
@@ -1953,6 +1964,7 @@ fn a_landing_result_with_receipts_settles_the_card() {
     view.push_entry(crate::chat::ChatEntry::User {
         text: "go".to_string(),
         sent_at: None,
+        images: Vec::new(),
     });
     view.push_entry(ChatEntry::Tool(Box::new(ToolCallCard {
         id: "cell".to_string(),

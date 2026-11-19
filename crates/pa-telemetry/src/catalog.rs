@@ -1068,6 +1068,58 @@ const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One image paste attempt (v2): where the image came from (clipboard data, a clipboard file
+/// copy, a pasted or dropped path), how it ended (`text`: Ctrl+V found no image and pasted the
+/// clipboard's text), and the attached format. Standalone because
+/// `tui exit` sits at the backend's 128-key cap (an attach also counts `tui_image_paste_count`
+/// there). Never a path, a size, or image content.
+const TUI_IMAGE_PASTE: EventRule = EventRule {
+    name: "tui image paste",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(
+                &["clipboard", "clipboard_file", "path"],
+                "clipboard",
+            )),
+        ),
+        (
+            "outcome",
+            required(enum_rule(
+                &["attached", "text", "no_image", "too_large", "unreadable"],
+                "no_image",
+            )),
+        ),
+        (
+            "format",
+            required(enum_rule(&["png", "jpeg", "gif", "webp", "none"], "none")),
+        ),
+    ],
+};
+
+/// One interactive run showed inline transcript images (v2), emitted at the run's exit when
+/// any image was shown: the distinct images drawn per protocol and the protocol the terminal
+/// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
+/// never image content, dimensions, or a path.
+const TUI_INLINE_IMAGES_RENDERED: EventRule = EventRule {
+    name: "tui inline images rendered",
+    since: 2,
+    properties: &[
+        (
+            "protocol",
+            required(enum_rule(
+                &["kitty", "iterm2", "sixel", "half_block"],
+                "half_block",
+            )),
+        ),
+        ("kitty_count", required(count())),
+        ("iterm2_count", required(count())),
+        ("sixel_count", required(count())),
+        ("half_block_count", required(count())),
+    ],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1094,6 +1146,29 @@ const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
         ("details_opened", required(boolean())),
         ("refresh_count", required(count())),
         ("reset_chip_shown_count", required(count())),
+    ],
+};
+
+/// One context-window run ended (v2): where it opened from (the tray gauge's click, `/context`,
+/// or its key), how its breakdown request landed, and the category and subagent rows it showed.
+/// Standalone because `tui exit` sits at the backend's 128-key cap. Counts and enums only.
+const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
+    name: "tui context window closed",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(&["click", "command", "shortcut"], "command")),
+        ),
+        (
+            "breakdown",
+            required(enum_rule(
+                &["loaded", "unavailable", "failed", "loading"],
+                "loading",
+            )),
+        ),
+        ("category_count", required(count())),
+        ("subagent_count", required(count())),
     ],
 };
 
@@ -1557,6 +1632,33 @@ const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
     ],
 };
 
+/// Kernel `usage.get()` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session read
+/// its usage. A count only: never a cost, a token number, a provider, or a quota.
+const AGENT_USAGE_READS: EventRule = EventRule {
+    name: "agent usage reads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("usage_read_count", required(count())),
+    ],
+};
+
+/// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
+/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
+/// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
+/// child, and failed calls. Counts only: never a child id or name.
+const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
+    name: "agent rlm child abort",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_abort_aborted_count", required(count())),
+        ("rlm_abort_idle_count", required(count())),
+        ("rlm_abort_failed_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -1602,6 +1704,9 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &TUI_IMAGE_PASTE,
+        &TUI_CONTEXT_WINDOW_CLOSED,
+        &TUI_INLINE_IMAGES_RENDERED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
@@ -1609,6 +1714,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
+        &AGENT_USAGE_READS,
+        &AGENT_RLM_CHILD_ABORT,
         &AGENT_PROVIDER_OAUTH_LOGIN,
     ];
     all.extend(UPDATE_EVENTS.iter());

@@ -215,9 +215,17 @@ pub trait InteractionTelemetry: Send + Sync {
         menu: &'static str,
         source: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// An image was pasted into the editor from the clipboard (event `tui image pasted`);
-    /// `mime_type` is the attachment's sniffed format.
-    fn image_pasted(&self, mime_type: &str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One image paste attempt (event `tui image paste`; an attached one also counts
+    /// `tui_image_paste_count` on `tui exit`): `source` is `clipboard` / `clipboard_file` / `path`,
+    /// `outcome` is `attached` / `text` / `no_image` / `too_large` / `unreadable`, `format` the attached
+    /// image's sniffed format (`png` / `jpeg` / `gif` / `webp`, `none` when nothing attached).
+    /// Implementations return at once: the paste path spawns it and never waits.
+    fn image_paste(
+        &self,
+        source: &'static str,
+        outcome: &'static str,
+        format: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A submission parked in the follow-up queue behind a running turn: `lane` is `steering`
     /// (Enter) / `follow_up` (the follow-up key); `steering_mode` is the session's queue delivery
     /// mode (TS `steeringMode`: `all` = batched at the boundary, `one-at-a-time` = one steer per
@@ -303,6 +311,13 @@ pub trait InteractionTelemetry: Send + Sync {
         toggles: u64,
         outcome: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The run showed inline transcript images (`tui inline images rendered`, emitted at the
+    /// run's exit when any image was shown): the distinct images drawn per protocol and the
+    /// protocol the terminal resolved to — counts only, never image content or dimensions.
+    fn inline_images_rendered(
+        &self,
+        counts: InlineImageCounts,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One `/usage` page run ended (`tui usage page closed`): how each half landed, the card
     /// count, whether the details view opened, the refreshes, and the tray reset chips shown since
     /// the last close — primitives only, never an
@@ -310,6 +325,13 @@ pub trait InteractionTelemetry: Send + Sync {
     fn usage_page_closed(
         &self,
         summary: crate::usage_page::UsagePageSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One context-window run ended (`tui context window closed`): where it opened from, how its
+    /// breakdown request landed, and how many category and subagent rows it showed — counts and
+    /// enums only, never a label or an amount.
+    fn context_view_closed(
+        &self,
+        summary: crate::context_view::ContextViewSummary,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
@@ -570,6 +592,19 @@ pub struct InteractiveOutcome {
 
 /// Inputs consumed by the UI loop. Terminal keys arrive one event at a time; headless steps
 /// arrive as whole submissions.
+/// One run's inline-image adoption counts (`tui inline images rendered`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InlineImageCounts {
+    /// The protocol the terminal resolved to: `kitty`, `iterm2`, `sixel`, or `half_block`.
+    pub protocol: &'static str,
+    /// Distinct images drawn through each protocol (the half-block count covers terminals
+    /// without a pixel protocol).
+    pub kitty: u64,
+    pub iterm2: u64,
+    pub sixel: u64,
+    pub half_block: u64,
+}
+
 enum UiInput {
     Key(KeyEvent),
     Paste(String),

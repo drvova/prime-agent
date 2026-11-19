@@ -128,6 +128,15 @@ impl SessionManager {
         }
     }
 
+    /// A windowed load's folded accounting for the branch older than the
+    /// retained suffix; `None` when the whole history is loaded.
+    #[must_use]
+    pub fn older_path_stats(&self) -> Option<&super::window::WindowStats> {
+        self.window
+            .as_ref()
+            .map(super::window::WindowedSessionStore::older_path_stats)
+    }
+
     /// Loaded current-context records; not a whole-history view.
     #[must_use]
     pub fn retained_entries(&self) -> &[FileEntry] {

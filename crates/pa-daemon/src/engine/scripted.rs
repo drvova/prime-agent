@@ -288,11 +288,16 @@ impl SessionEngine for ScriptedEngine {
         };
         // An injected custom row replaces the accepted user message (the
         // real engine's injected-prompt contract, mirrored here).
+        // The prompt's images ride after its text, as the real engine admits them.
         let accepted_row = match &request.custom_message {
             Some(custom) => custom.clone(),
             None => json!({
                 "role": "user",
-                "content": request.message.clone(),
+                "content": if request.images.is_empty() {
+                    json!(request.message)
+                } else {
+                    user_row_content(&request.message, &request.images)
+                },
                 "timestamp": crate::util::now_ms(),
             }),
         };
@@ -308,20 +313,9 @@ impl SessionEngine for ScriptedEngine {
         // message, in delivery order — images ride after the text.
         let mut batch_rows = Vec::new();
         for row in &request.batch {
-            let mut content = vec![json!({ "type": "text", "text": row.text })];
-            for image in &row.images {
-                let mut block = match serde_json::to_value(image) {
-                    Ok(Value::Object(block)) => Value::Object(block),
-                    _ => continue,
-                };
-                if let Some(object) = block.as_object_mut() {
-                    object.insert("type".to_string(), json!("image"));
-                }
-                content.push(block);
-            }
             let accepted_row = json!({
                 "role": "user",
-                "content": content,
+                "content": user_row_content(&row.text, &row.images),
                 "timestamp": crate::util::now_ms(),
             });
             batch_rows.push(accepted_row.clone());
@@ -788,4 +782,20 @@ fn abortable_sleep(delay: std::time::Duration, aborted: &dyn Fn() -> bool) -> bo
         remaining = remaining.saturating_sub(slice);
     }
     !aborted()
+}
+
+/// An accepted user row's block content: the text block, then one image block per image.
+fn user_row_content(text: &str, images: &[pa_agent::types::ImageContent]) -> Value {
+    let mut content = vec![json!({ "type": "text", "text": text })];
+    for image in images {
+        let mut block = match serde_json::to_value(image) {
+            Ok(Value::Object(block)) => Value::Object(block),
+            _ => continue,
+        };
+        if let Some(object) = block.as_object_mut() {
+            object.insert("type".to_string(), json!("image"));
+        }
+        content.push(block);
+    }
+    Value::Array(content)
 }

@@ -1,0 +1,1 @@
+- When an edit's `old_str` is not found, the error now says where it stops matching (line, column, and about 60 characters of the file and of `old_str` there), with a hint for line-ending or whitespace differences, so the agent can fix the edit without re-reading the file.

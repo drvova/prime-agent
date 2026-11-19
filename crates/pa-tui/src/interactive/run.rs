@@ -236,6 +236,9 @@ async fn run_interactive_surface(
         .await
         .with_context(|| "the interactive UI could not attach to the daemon")?;
     let (notes_tx, mut notes_rx) = mpsc::unbounded_channel::<String>();
+    // The inline-image decode worker's completions: each one repaints the frame that waited.
+    let (images_tx, mut images_rx) = mpsc::unbounded_channel::<()>();
+    crate::inline_image::set_waker(images_tx);
     let (compaction_abort_tx, mut compaction_abort_rx) =
         mpsc::unbounded_channel::<crate::session_ui::CompactionAbortNote>();
     let (prompt_tx, mut prompt_rx) =
@@ -272,6 +275,9 @@ async fn run_interactive_surface(
     let (stats_tx, mut stats_rx) = mpsc::unbounded_channel::<crate::session_ui::StatsUpdate>();
     // The `/usage` page's halves land here, never ahead of a frame.
     let (usage_tx, mut usage_rx) = mpsc::unbounded_channel::<crate::session_ui::UsageUpdate>();
+    // The context window's breakdown lands here, never ahead of a frame.
+    let (context_tx, mut context_rx) =
+        mpsc::unbounded_channel::<crate::session_ui::ContextUpdate>();
     // The double-Ctrl+C force-quit guard: the terminal reader observes the pair while this loop is
     // wedged in a daemon request; a std-thread watchdog enforces the exit deadline without the
     // runtime.
@@ -443,6 +449,7 @@ async fn run_interactive_surface(
                     let page_tx = page_tx.clone();
                     let stats_tx = stats_tx.clone();
                     let usage_tx = usage_tx.clone();
+                    let context_tx = context_tx.clone();
                     async move {
                         let (client, events) = match first {
                             Some(first) => first,
@@ -472,6 +479,7 @@ async fn run_interactive_surface(
                                 thinking: thinking_tx,
                                 stats: stats_tx,
                                 usage: usage_tx,
+                                context: context_tx,
                             },
                             page_tx,
                         )
@@ -1219,7 +1227,7 @@ async fn run_interactive_surface(
                         if view.auth_panel.is_some() {
                             session.paste_to_auth_panel(&text, &mut view);
                         } else {
-                            session.handle_paste(&text, &mut view);
+                            session.handle_paste(&text, &mut view).await;
                         }
                     }
                     // A mouse report reaches the transcript scroll dispatch's wheel branch;
@@ -1573,6 +1581,10 @@ async fn run_interactive_surface(
                     }
                 }
             }
+            Some(()) = images_rx.recv() => {
+                while images_rx.try_recv().is_ok() {}
+                session.dirty = true;
+            }
             maybe_note = notes_rx.recv() => {
                 if let Some(note) = maybe_note {
                     session.apply_background_note(&note, &mut view);
@@ -1586,6 +1598,11 @@ async fn run_interactive_surface(
             maybe_usage = usage_rx.recv() => {
                 if let Some(update) = maybe_usage {
                     session.apply_usage_update(update, &mut view);
+                }
+            }
+            maybe_context = context_rx.recv() => {
+                if let Some(update) = maybe_context {
+                    session.apply_context_update(update, &mut view);
                 }
             }
             maybe_page = page_rx.recv() => {
@@ -2018,10 +2035,21 @@ async fn run_interactive_surface(
     let exit_reason = session.exit_reason();
     let turn_active_at_exit = session.turn_active;
     if let Some(telemetry) = session.telemetry.clone() {
+        let [kitty, iterm2, sixel, half_block] = crate::inline_image::shown_counts();
+        let images = crate::interactive::InlineImageCounts {
+            protocol: crate::inline_image::active_protocol().name(),
+            kitty,
+            iterm2,
+            sixel,
+            half_block,
+        };
         let exit_event = async move {
             let () = telemetry
                 .client_exit(exit_reason, turn_active_at_exit)
                 .await;
+            if images.kitty + images.iterm2 + images.sixel + images.half_block > 0 {
+                let () = telemetry.inline_images_rendered(images).await;
+            }
         };
         if session.open_agents_view {
             tokio::spawn(exit_event);

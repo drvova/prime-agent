@@ -601,7 +601,7 @@ enum Key {
     Enter,
     Escape,
     CtrlC,
-    AltV,
+    CtrlV,
 }
 
 impl Key {
@@ -615,14 +615,13 @@ impl Key {
             Key::Enter => b"\r".to_vec(),
             Key::Escape => b"\x1b".to_vec(),
             Key::CtrlC => b"\x03".to_vec(),
-            Key::AltV => b"\x1bv".to_vec(),
+            Key::CtrlV => b"\x16".to_vec(),
         }
     }
 
     fn win32(self) -> Vec<u8> {
         const SHIFT: u32 = 0x10;
         const LEFT_CTRL: u32 = 0x08;
-        const LEFT_ALT: u32 = 0x02;
         const ENHANCED: u32 = 0x100;
         match self {
             Key::Char(ch) => {
@@ -670,11 +669,11 @@ impl Key {
                 win32_key(0x11, 0x1d, 0, false, 0),
             ]
             .concat(),
-            Key::AltV => [
-                win32_key(0x12, 0x38, 0, true, LEFT_ALT),
-                win32_key(0x56, 0x2f, u16::from(b'v'), true, LEFT_ALT),
-                win32_key(0x56, 0x2f, u16::from(b'v'), false, LEFT_ALT),
-                win32_key(0x12, 0x38, 0, false, 0),
+            Key::CtrlV => [
+                win32_key(0x11, 0x1d, 0, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, false, LEFT_CTRL),
+                win32_key(0x11, 0x1d, 0, false, 0),
             ]
             .concat(),
         }
@@ -856,17 +855,49 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         &format!("only the typed prompt was submitted ({prompts:?})"),
         prompts == ["hello"],
     );
-    // Image paste: Windows terminals keep Ctrl+V for their own text paste, so Alt+V reads the
-    // clipboard's bitmap (converted to PNG) into an `[image #N]` marker; an empty clipboard
-    // says so; a pasted image file path attaches the file.
+    // Image paste is Ctrl+V (the user's spec; there is no Alt+V binding). A
+    // Ctrl+V the terminal passes on reads the clipboard's bitmap (converted
+    // to PNG) into an `[image #N]` marker; with no image, Ctrl+V pastes the
+    // clipboard's text, and an empty clipboard says so; a pasted image file
+    // path attaches the file. None of it submits.
     let bitmap = set_clipboard_bitmap();
     check(&mut term, "a bitmap lands on the clipboard", bitmap.is_ok());
-    term.key(Key::AltV);
+    term.key(Key::CtrlV);
     let marker = term.wait_for("[image #1]", Duration::from_secs(30));
-    check(&mut term, "alt+v pastes the clipboard image", marker);
+    check(&mut term, "ctrl+v pastes the clipboard image", marker);
+    // A terminal that intercepts Ctrl+V over an image-only clipboard sends an
+    // empty bracketed paste. Both console hosts consume the marker pair before
+    // the app reads a record (run 44467269683: no host delivered anything), so
+    // on the console it must leave the draft as it was; a VT terminal's empty
+    // paste attaching the image is pinned by pa-tui's image_paste_headless.
+    let composer = |term: &Terminal| {
+        term.screen
+            .text()
+            .lines()
+            .find(|line| line.contains("[image #1]"))
+            .map(str::to_string)
+    };
+    let draft = composer(&term);
+    term.pty.send(b"\x1b[200~\x1b[201~");
+    term.settle(Duration::from_millis(500));
+    let unchanged = draft.is_some() && composer(&term) == draft;
+    check(
+        &mut term,
+        "an empty bracketed paste leaves the draft as it was",
+        unchanged,
+    );
+    let text = set_clipboard_text("clip-text-fallback");
+    check(&mut term, "text lands on the clipboard", text.is_ok());
+    term.key(Key::CtrlV);
+    let fallback = term.wait_for("clip-text-fallback", Duration::from_secs(30));
+    check(
+        &mut term,
+        "ctrl+v without an image pastes the text",
+        fallback,
+    );
     let cleared = clear_clipboard();
     check(&mut term, "the clipboard clears", cleared.is_ok());
-    term.key(Key::AltV);
+    term.key(Key::CtrlV);
     let empty = term.wait_for("Clipboard has no image", Duration::from_secs(30));
     check(&mut term, "an empty clipboard says so", empty);
     let image_file = root.join("dropped shot.png");
@@ -875,6 +906,12 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     let dropped = term.wait_for("[image #2]", Duration::from_secs(30));
     check(&mut term, "a pasted image path attaches the file", dropped);
     term.settle(Duration::from_millis(500));
+    let prompts = submitted_prompts(&session_dir);
+    check(
+        &mut term,
+        &format!("image paste never submits ({prompts:?})"),
+        prompts == ["hello"],
+    );
     dump(
         &format!("tui-{scenario}"),
         &format!(
@@ -925,6 +962,12 @@ fn set_clipboard_bitmap() -> Result<(), String> {
          $graphics.Clear([System.Drawing.Color]::SteelBlue); \
          [System.Windows.Forms.Clipboard]::SetImage($bitmap)",
     )
+}
+
+fn set_clipboard_text(text: &str) -> Result<(), String> {
+    clipboard_script(&format!(
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::SetText('{text}')"
+    ))
 }
 
 fn clear_clipboard() -> Result<(), String> {
@@ -1187,11 +1230,18 @@ fn background_children_open_no_console_windows() {
     let mut term = Terminal::new(pty, 100, 30);
     let started = term.wait_for("prime", Duration::from_secs(120));
     term.settle(Duration::from_millis(500));
+    // Each typed line echoes and settles before its Enter, as a person's
+    // would: on Windows a key burst and an Enter right behind it read as
+    // one paste, so the Enter would land as a line break, never a submit.
     term.type_text("!git --version");
+    let shell_typed = term.wait_for("git --version", Duration::from_secs(30));
+    term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
     let shell_ran = term.wait_for("git version", Duration::from_secs(60));
     term.settle(Duration::from_millis(500));
     term.type_text("boot the kernel");
+    let prompt_typed = term.wait_for("boot the kernel", Duration::from_secs(30));
+    term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
     // The first kernel start bootstraps the venv (uv, a Python, the runtime).
     let turn_done = term.wait_for("kernel turn done", Duration::from_mins(15));
@@ -1240,12 +1290,14 @@ fn background_children_open_no_console_windows() {
     dump(
         "console-windows",
         &format!(
-            "started={started} shell_ran={shell_ran} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
+            "started={started} shell_typed={shell_typed} shell_ran={shell_ran} prompt_typed={prompt_typed} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
             console_windows::shown()
         ),
     );
     assert!(started, "the TUI started:\n{screen}");
+    assert!(shell_typed, "the shell command echoed:\n{screen}");
     assert!(shell_ran, "the user shell command ran git:\n{screen}");
+    assert!(prompt_typed, "the prompt echoed:\n{screen}");
     assert!(
         turn_done && !kernel_python.is_empty(),
         "the turn booted the kernel:\n{screen}"
@@ -1263,4 +1315,143 @@ fn background_children_open_no_console_windows() {
         titles.last().is_some_and(|title| title.ends_with("prime")),
         "the terminal keeps Prime's own title: {titles:?}"
     );
+}
+
+/// What an inline-image sequence looks like printed as text: the kitty APC, the iTerm2 OSC,
+/// a sixel raster header, and the transcript's own row sentinel.
+const IMAGE_ESCAPE_TEXT: &[&str] = &["_Ga=", "1337;File", "\"1;1;", "pa-img"];
+
+/// A pasted image renders inline in the user's row on a Windows pseudoconsole and never as
+/// escape text: through the inbox host (no pixel protocol: the half-block cells) and through
+/// the Windows Terminal host package with `WT_SESSION` set, as Windows Terminal sets it (sixel,
+/// which that host passes through to the terminal).
+#[test]
+fn a_pasted_image_renders_inline_without_escape_text_on_conpty() {
+    const LEFT_CTRL: u32 = 0x08;
+    let mut failures = Vec::new();
+    for host in hosts() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let root = dir.path().to_path_buf();
+        let agent_dir = root.join("agent");
+        let session_dir = agent_dir.join("sessions");
+        let cwd = root.join("project");
+        std::fs::create_dir_all(&session_dir).expect("sessions dir");
+        std::fs::create_dir_all(&cwd).expect("project dir");
+        pa_core::settings::SettingsManager::create(&cwd, &agent_dir)
+            .set_onboarding_shown(true)
+            .expect("onboarding flag");
+        let script = root.join("script.json");
+        std::fs::write(
+            &script,
+            json!({ "responses": ["conpty image reply"] }).to_string(),
+        )
+        .expect("script");
+        let image = root.join("clipboard.png");
+        std::fs::write(&image, ONE_PIXEL_PNG).expect("write the clipboard image");
+        let supervisor = spawn_supervisor(&agent_dir);
+        let mut env = base_env();
+        env.retain(|(key, _)| key != "WT_SESSION");
+        for (key, value) in [
+            (
+                "PRIME_AGENT_CODING_AGENT_DIR",
+                agent_dir.display().to_string(),
+            ),
+            ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
+            ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
+            (
+                "PRIME_AGENT_TEST_CLIPBOARD_IMAGE",
+                image.display().to_string(),
+            ),
+            ("PI_OFFLINE", "1".to_string()),
+            ("DO_NOT_TRACK", "1".to_string()),
+        ] {
+            env.push((key.to_string(), value));
+        }
+        let windows_terminal = matches!(host, Host::Package(_));
+        if windows_terminal {
+            env.push((
+                "WT_SESSION".to_string(),
+                "0f1d2c3b-4a59-6877-8695-a4b3c2d1e0f9".to_string(),
+            ));
+        }
+        let command = format!(
+            "\"{}\" --daemon-socket \"{}\"",
+            env!("CARGO_BIN_EXE_prime-agent"),
+            supervisor.socket.display()
+        );
+        let pty = PseudoConsole::spawn(&host, &command, &env, &cwd, 100, 30);
+        let mut term = Terminal::new(pty, 100, 30);
+        let scenario = format!("image-{}", host.label());
+        let mut check = |term: &mut Terminal, label: &str, ok: bool| {
+            if !ok {
+                failures.push(format!("[{scenario}] {label}\n{}", term.screen.text()));
+            }
+        };
+        let started = term.wait_for("prime", Duration::from_secs(60));
+        check(&mut term, "startup chrome", started);
+        term.settle(Duration::from_millis(500));
+        // Ctrl+V reads the clipboard image (the fixture stands in for the clipboard).
+        let ctrl_v = if term.win32_input {
+            [
+                win32_key(0x11, 0x1d, 0, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, true, LEFT_CTRL),
+                win32_key(0x56, 0x2f, 0x16, false, LEFT_CTRL),
+                win32_key(0x11, 0x1d, 0, false, 0),
+            ]
+            .concat()
+        } else {
+            vec![0x16]
+        };
+        term.pty.send(&ctrl_v);
+        let marker = term.wait_for("[image #1]", Duration::from_secs(30));
+        check(&mut term, "ctrl+v pastes the clipboard image", marker);
+        term.type_text(" describe");
+        let typed = term.wait_for("describe", Duration::from_secs(10));
+        check(&mut term, "the prompt echoes", typed);
+        term.settle(Duration::from_millis(500));
+        term.key(Key::Enter);
+        let replied = term.wait_for("conpty image reply", Duration::from_secs(60));
+        check(&mut term, "enter submits", replied);
+        // The 1x1 image is one half-block cell in the user's row.
+        let picture = term.wait_for("\u{2580}", Duration::from_secs(30));
+        check(&mut term, "the image renders in the user's row", picture);
+        term.settle(Duration::from_millis(500));
+        let screen = term.screen.text();
+        let leaked: Vec<&str> = ESCAPE_TEXT
+            .iter()
+            .chain(IMAGE_ESCAPE_TEXT)
+            .copied()
+            .filter(|needle| screen.contains(needle))
+            .collect();
+        check(
+            &mut term,
+            &format!("no escape text ({leaked:?})"),
+            leaked.is_empty(),
+        );
+        let stream = String::from_utf8_lossy(&term.stream).to_string();
+        let sixel = stream.contains("\x1bP0;1;0q");
+        check(
+            &mut term,
+            &format!(
+                "sixel reaches the terminal exactly under Windows Terminal (sixel={sixel}, wt={windows_terminal})"
+            ),
+            sixel == windows_terminal,
+        );
+        check(
+            &mut term,
+            "no kitty or iTerm2 sequence is ever sent",
+            !stream.contains("\x1b_G") && !stream.contains("\x1b]1337;"),
+        );
+        dump(
+            &format!("image-{}", host.label()),
+            &format!(
+                "--- screen\n{}\n--- host output\n{}",
+                term.screen.text(),
+                visible(&term.stream)
+            ),
+        );
+        drop(term);
+        drop(supervisor);
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
