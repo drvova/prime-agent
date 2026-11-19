@@ -21,7 +21,7 @@ pub(crate) mod stop;
 pub(crate) use format::format_daemon_list_table;
 pub(crate) use stop::{run_ps, run_reap, run_shutdown_all};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DiscoveredDaemonProcess {
     pub pid: u32,
     pub socket_path: PathBuf,
