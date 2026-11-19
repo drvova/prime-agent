@@ -83,6 +83,9 @@ pub enum StatusKind {
 pub enum ChatEntry {
     /// Startup notices, client notes, turn errors.
     Status { text: String, kind: StatusKind },
+    /// The run's dim summary row (`Worked for 12s · 3 tool calls · 18k tokens`), with the
+    /// prompt-cache segment it drops first on a narrow pane.
+    RunSummary(RunSummaryRow),
     /// The user's submitted prompt.
     /// A user prompt; `sent_at` (epoch ms) renders as the slab's right-aligned clock.
     User { text: String, sent_at: Option<i64> },
@@ -119,6 +122,31 @@ pub enum ChatEntry {
     RefinementOutcome(Box<crate::custom_message::RefinementOutcomeRow>),
     /// One generic custom row.
     CustomPanel(Box<crate::custom_message::CustomPanelRow>),
+}
+
+/// The run summary row: the fixed text plus the run's prompt-cache hit rate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunSummaryRow {
+    /// `Worked for 12s · 3 tool calls · 18k tokens`.
+    pub text: String,
+    /// The share of the run's prompt tokens read from the cache, in percent: `None` when the
+    /// run read nothing from it (no cache support, a cold cache, or no prompt at all).
+    pub cache_hit: Option<f64>,
+}
+
+impl RunSummaryRow {
+    /// The row's text at `width`: the `· 92% cached` segment rides along only while the whole
+    /// row fits on one line beside the margins; otherwise it is the first thing dropped.
+    #[must_use]
+    pub fn text_at(&self, width: usize) -> std::borrow::Cow<'_, str> {
+        self.cache_hit
+            .map(|hit| format!("{} \u{b7} {hit:.0}% cached", self.text))
+            .filter(|full| str_width(full) <= width.saturating_sub(2))
+            .map_or(
+                std::borrow::Cow::Borrowed(self.text.as_str()),
+                std::borrow::Cow::Owned,
+            )
+    }
 }
 
 impl ChatEntry {

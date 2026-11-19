@@ -12,7 +12,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 /// How the fake supervisor answers a child `kill`.
-enum FakeKill {
+pub(super) enum FakeKill {
     Success,
     /// The kill succeeds, but only after `ms` (the delete race window: the
     /// watcher wakes and tries to settle while the kill is in flight).
@@ -30,7 +30,7 @@ enum FakeKill {
 /// How the fake answers the child link: healthy, a failing `prompt`,
 /// or a failing `get_state` (unreachable).
 #[derive(Clone, Copy)]
-enum FakeChild {
+pub(super) enum FakeChild {
     Healthy,
     PromptFails,
     Unreachable,
@@ -335,7 +335,7 @@ async fn spawn_fake_supervisor(
     });
 }
 
-async fn sessions_with_fake_supervisor(
+pub(super) async fn sessions_with_fake_supervisor(
     follow_up_tx: mpsc::UnboundedSender<Value>,
     idle_delay_ms: u64,
     kill_behavior: FakeKill,
@@ -437,7 +437,7 @@ async fn sessions_with_fake_child_subagents(
     (tmp, sessions, kill_rx)
 }
 
-async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
+pub(super) async fn spawn_child(sessions: &SupervisorChildSessions) -> RlmSpawnHandle {
     sessions
         .spawn(RlmSpawnRequest {
             prompt: "f20 child task".to_string(),

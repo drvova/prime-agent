@@ -326,6 +326,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     ),
     ("app.subagents.focus", def!(&["alt+a"], "Focus activity")),
     (
+        "app.context.open",
+        def!(&["alt+x"], "Open the context window"),
+    ),
+    (
         "app.editor.external",
         def!(&["ctrl+g"], "Open external editor"),
     ),

@@ -553,12 +553,8 @@ async def progress_note(message: str) -> RLMProgressNoteResult:
     return RLMProgressNoteResult(accepted=accepted, retry_after_ms=retry_after_ms)
 
 
-async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
-    """Delete one running or retained direct child from the current parent session.
-
-    ``target`` selects the child: the spawn handle returned by ``rlm.spawn``, a
-    subagent row from ``list_subagents()``, or a child id/session name string.
-    """
+def _child_selector(target: str | RLMSubagent | RLMSpawnHandle) -> str:
+    """The host selector for a direct child: its id, or a trimmed id/name string."""
     if isinstance(target, RLMSpawnHandle):
         selector = target.rlm_child_id
     elif isinstance(target, RLMSubagent):
@@ -571,8 +567,43 @@ async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSuba
         raise TypeError(
             f"target must be RLMSpawnHandle, RLMSubagent, or str, got {type(target).__name__}"
         )
-    payload = await host_request("rlm.delete_subagent", {"target": selector})
+    return selector
+
+
+async def delete_subagent(target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
+    """Delete one running or retained direct child from the current parent session.
+
+    ``target`` selects the child: the spawn handle returned by ``rlm.spawn``, a
+    subagent row from ``list_subagents()``, or a child id/session name string.
+    """
+    payload = await host_request("rlm.delete_subagent", {"target": _child_selector(target)})
     return _subagent_from_payload(payload.get("subagent"), "rlm.delete_subagent")
+
+
+@dataclass(frozen=True)
+class RLMAbortResult:
+    """``outcome`` is ``"aborted"`` (a running turn was stopped) or ``"idle"`` (nothing was
+    running); ``subagent`` is the child's row afterwards. The child stays either way."""
+
+    subagent: RLMSubagent
+    outcome: str
+
+
+async def abort(target: str | RLMSubagent | RLMSpawnHandle) -> RLMAbortResult:
+    """Stop one direct child's current turn without deleting it.
+
+    The child keeps its session and roster row; message it again with
+    ``agent_message.send`` to give it new instructions. ``target`` selects the
+    child as in ``delete_subagent``. Only this session's own children match.
+    """
+    payload = await host_request("rlm.abort", {"target": _child_selector(target)})
+    outcome = payload.get("outcome")
+    if outcome not in ("aborted", "idle"):
+        raise RuntimeError(f"rlm.abort returned an unexpected result: {payload!r}")
+    return RLMAbortResult(
+        subagent=_subagent_from_payload(payload.get("subagent"), "rlm.abort"),
+        outcome=outcome,
+    )
 
 
 async def rename(new_name: str, *, session_id: str | RLMSpawnHandle | RLMSubagent | None = None) -> str:
@@ -917,6 +948,9 @@ class _RLMNamespace:
     async def delete_subagent(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMSubagent:
         return await delete_subagent(target)
 
+    async def abort(self, target: str | RLMSubagent | RLMSpawnHandle) -> RLMAbortResult:
+        return await abort(target)
+
     async def rename(
         self,
         new_name: str,
@@ -972,6 +1006,7 @@ __all__ = [
     "McpIntegration",
     "McpToolError",
     "NotEnabled",
+    "RLMAbortResult",
     "RLMCreateSessionHandle",
     "RLMMessage",
     "RLMModel",
@@ -983,6 +1018,7 @@ __all__ = [
     "RLMSubagentActivity",
     "create_session",
     "RefinementEvent",
+    "abort",
     "bash",
     "delete_subagent",
     "emit",

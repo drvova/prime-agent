@@ -396,9 +396,19 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
+    rlm_abort: RlmAbortCounts,
     /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
     /// `agent kernel login and recall`.
     login_recall: LoginRecallCounts,
+}
+
+/// `agent rlm child abort`: aborts by outcome.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RlmAbortCounts {
+    aborted: u64,
+    idle: u64,
+    failed: u64,
 }
 
 /// `agent kernel login and recall`: kernel MCP logins by outcome, and past-session searches,
@@ -721,6 +731,19 @@ impl SessionCounters {
     /// One kernel `usage.get()` read (a count: never a cost or a token number).
     pub(crate) fn note_usage_read(&self) {
         self.with(|values| values.usage_read_count += 1);
+    }
+
+    /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
+    pub(crate) fn note_rlm_abort(&self, outcome: Option<super::rlm_host::RlmAbortOutcome>) {
+        use super::rlm_host::RlmAbortOutcome;
+        self.with(|values| {
+            let counts = &mut values.rlm_abort;
+            *match outcome {
+                Some(RlmAbortOutcome::Aborted) => &mut counts.aborted,
+                Some(RlmAbortOutcome::Idle) => &mut counts.idle,
+                None => &mut counts.failed,
+            } += 1;
+        });
     }
 
     /// One kernel `mcp.login`: `Some(true)` logged in, `Some(false)` failed, `None` unavailable.
@@ -1356,6 +1379,20 @@ impl SessionTelemetry {
             let mut usage_properties = self.session_properties();
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
+        }
+        // A session that never aborted a child from the kernel sends no abort event.
+        let mut abort = RlmAbortCounts::default();
+        self.counters.with(|values| abort = values.rlm_abort);
+        if abort != RlmAbortCounts::default() {
+            let mut abort_properties = self.session_properties();
+            for (key, value) in [
+                ("rlm_abort_aborted_count", abort.aborted),
+                ("rlm_abort_idle_count", abort.idle),
+                ("rlm_abort_failed_count", abort.failed),
+            ] {
+                abort_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent rlm child abort", abort_properties);
         }
         // A session that neither logged in nor searched past sessions sends no recall event.
         let mut login_recall = LoginRecallCounts::default();

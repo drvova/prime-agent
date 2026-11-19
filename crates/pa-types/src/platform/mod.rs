@@ -9,6 +9,7 @@ pub mod identity;
 pub mod process;
 pub mod terminal;
 pub mod transport;
+pub mod windows_clipboard;
 pub mod windows_console;
 #[cfg(windows)]
 pub(crate) mod windows_pipe;
@@ -23,5 +24,8 @@ pub use process::{
 pub use transport::{
     bind_transport, connect_blocking, connect_transport, BlockingTransportStream,
     TransportListener, TransportStream,
+};
+pub use windows_clipboard::{
+    read_clipboard_image_formats, read_clipboard_text, ClipboardImageFormats,
 };
 pub use windows_console::{init as console_init, restore as console_restore, stdin_is_msys_pty};

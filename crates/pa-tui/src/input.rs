@@ -734,16 +734,25 @@ fn printable_text(event: &Event) -> Option<String> {
 
 /// Whether a marker-less text burst is a paste, so its line breaks land as text instead of
 /// dispatching Enter (a submit): the TS multi-line shape; a write of two or more presses carrying
-/// an LF (a typed Enter is a lone CR, so a CRLF or LF line break is pasted); or any line break or
-/// tab in [`RoundOrigin::PasteContinuation`] input. A single line plus a lone CR in one write
-/// stays keys off Windows: it is byte-identical to scripted typing (`/exit\r`), and a terminal
-/// with bracketed paste wraps a real paste anyway.
+/// an LF (a typed Enter is a lone CR, so a CRLF or LF line break is pasted); or any line break,
+/// tab, or image file path in [`RoundOrigin::PasteContinuation`] input. A single line plus a lone
+/// CR in one write stays keys off Windows: it is byte-identical to scripted typing (`/exit\r`),
+/// and a terminal with bracketed paste wraps a real paste anyway.
 fn is_pasted_burst(text: &str, presses: usize, origin: RoundOrigin) -> bool {
     match origin {
         RoundOrigin::Drained => {
             is_raw_multiline_paste(text) || (presses >= 2 && text.contains('\n'))
         }
-        RoundOrigin::PasteContinuation => text.contains(['\r', '\n', '\t']),
+        // A dropped file's path (Windows Terminal types it as keys) goes to the paste path too,
+        // where an image file attaches.
+        RoundOrigin::PasteContinuation => {
+            text.contains(['\r', '\n', '\t'])
+                || crate::pasted_image_path::pasted_image_path(
+                    text,
+                    crate::pasted_image_path::PathFlavor::CURRENT,
+                )
+                .is_some()
+        }
     }
 }
 
@@ -1361,6 +1370,17 @@ mod tests {
                 ReaderInput::BurstPaste("first line\rsecond".into()),
                 ReaderInput::BurstPaste("\r".into()),
             ]
+        );
+    }
+
+    /// Windows Terminal types a dropped file's path as keys: the held burst goes to the paste path,
+    /// where an image file attaches.
+    #[test]
+    fn a_dropped_image_path_is_a_paste() {
+        let path = r#""C:\Users\me\Pictures\shot 1.png""#;
+        assert_eq!(
+            drive(WINDOWS_WINDOW, vec![(0, windows_paste(path))]),
+            vec![ReaderInput::BurstPaste(path.into())]
         );
     }
 

@@ -1068,6 +1068,36 @@ const TUI_RESUME_PICKER_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One image paste attempt (v2): where the image came from (clipboard data, a clipboard file
+/// copy, a pasted or dropped path), how it ended (`text`: Ctrl+V found no image and pasted the
+/// clipboard's text), and the attached format. Standalone because
+/// `tui exit` sits at the backend's 128-key cap (an attach also counts `tui_image_paste_count`
+/// there). Never a path, a size, or image content.
+const TUI_IMAGE_PASTE: EventRule = EventRule {
+    name: "tui image paste",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(
+                &["clipboard", "clipboard_file", "path"],
+                "clipboard",
+            )),
+        ),
+        (
+            "outcome",
+            required(enum_rule(
+                &["attached", "text", "no_image", "too_large", "unreadable"],
+                "no_image",
+            )),
+        ),
+        (
+            "format",
+            required(enum_rule(&["png", "jpeg", "gif", "webp", "none"], "none")),
+        ),
+    ],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1094,6 +1124,29 @@ const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
         ("details_opened", required(boolean())),
         ("refresh_count", required(count())),
         ("reset_chip_shown_count", required(count())),
+    ],
+};
+
+/// One context-window run ended (v2): where it opened from (the tray gauge's click, `/context`,
+/// or its key), how its breakdown request landed, and the category and subagent rows it showed.
+/// Standalone because `tui exit` sits at the backend's 128-key cap. Counts and enums only.
+const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
+    name: "tui context window closed",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(&["click", "command", "shortcut"], "command")),
+        ),
+        (
+            "breakdown",
+            required(enum_rule(
+                &["loaded", "unavailable", "failed", "loading"],
+                "loading",
+            )),
+        ),
+        ("category_count", required(count())),
+        ("subagent_count", required(count())),
     ],
 };
 
@@ -1569,6 +1622,21 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
+/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
+/// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
+/// child, and failed calls. Counts only: never a child id or name.
+const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
+    name: "agent rlm child abort",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_abort_aborted_count", required(count())),
+        ("rlm_abort_idle_count", required(count())),
+        ("rlm_abort_failed_count", required(count())),
+    ],
+};
+
 /// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
 /// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
@@ -1614,6 +1682,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &TUI_IMAGE_PASTE,
+        &TUI_CONTEXT_WINDOW_CLOSED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
@@ -1622,6 +1692,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_RLM_CHILD_ABORT,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
     ];
     all.extend(UPDATE_EVENTS.iter());
