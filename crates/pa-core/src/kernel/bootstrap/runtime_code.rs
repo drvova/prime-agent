@@ -295,7 +295,18 @@ mod tests {
             .filter_map(|line| line.split_once(" as ").map(|(_, name)| name))
             .filter(|name| !name.starts_with('_'))
             .collect();
-        assert_eq!(bound, ["mcp", "web", "fs", "todo", "usage"]);
+        assert_eq!(
+            bound,
+            [
+                "mcp",
+                "web",
+                "fs",
+                "schedule",
+                "checkpoint",
+                "todo",
+                "usage"
+            ]
+        );
         let core_layer = crate::prompts::layers::CORE_LAYER;
         let (_, built_in) = core_layer
             .split_once("All programmatic tools described above except for ")
@@ -307,7 +318,18 @@ mod tests {
             .collect();
         assert_eq!(
             listed,
-            ["bash", "rlm.*", "mcp.*", "web.*", "fs.*", "todo.*", "usage.*", "ask"]
+            [
+                "bash",
+                "rlm.*",
+                "mcp.*",
+                "web.*",
+                "fs.*",
+                "schedule.*",
+                "checkpoint.*",
+                "todo.*",
+                "usage.*",
+                "ask"
+            ]
         );
     }
 
