@@ -8,6 +8,8 @@ use std::future::Future;
 use pa_agent::abort::AbortSignal;
 use pa_agent::types::{AssistantMessage, StopReason};
 
+use crate::models::QuotaFallback;
+
 use super::provider_retry::{
     backoff_attempt, has_provider_stream_failure, is_agent_lifecycle_failure,
     is_context_overflow_failure, is_permanent_provider_failure_kind, is_unsupported_tool_failure,
@@ -56,6 +58,15 @@ pub type AuthRecoveryFuture =
 /// Consulted before a credential rejection's one retry.
 pub type AuthRecoveryCallback<'a> = &'a mut dyn FnMut(&AssistantMessage) -> AuthRecoveryFuture;
 
+pub type QuotaFallbackFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = QuotaFallback> + Send>>;
+
+/// Consulted when a failure's reset lies beyond the retry cap (an exhausted
+/// quota), with the reset in milliseconds: the host arms the provider's
+/// declared quota fallback (`ModelRegistry::arm_quota_fallback`).
+pub type QuotaFallbackCallback<'a> =
+    &'a mut dyn FnMut(&AssistantMessage, u64) -> QuotaFallbackFuture;
+
 /// The failed turn carrying the recovery's error, when the recovery ends it.
 pub(super) async fn end_turn_on_auth_rejection(
     message: &AssistantMessage,
@@ -79,7 +90,11 @@ pub(super) async fn end_turn_on_auth_rejection(
 /// retry events, `wait` sleeps one delay (returning `false` aborts).
 ///
 /// A server-requested wait above the policy cap (a quota reset) fails the
-/// turn at once with the provider's raw error: nothing waits it out.
+/// turn at once with the provider's raw error: nothing waits it out. When
+/// `quota_fallback` arms the provider's declared fallback, the turn instead
+/// retries once, at once, on the fallback credential; a further quota
+/// failure, or a fallback that cannot serve, fails the turn with the raw
+/// error plus a note naming the fallback.
 /// `auth_recovery` is consulted before a credential rejection's retry.
 ///
 /// # Errors
@@ -95,6 +110,7 @@ pub async fn run_turn_with_auto_retry<A, AF, E, EF, W, WF>(
     mut emit: E,
     mut wait: W,
     mut auth_recovery: Option<AuthRecoveryCallback<'_>>,
+    mut quota_fallback: Option<QuotaFallbackCallback<'_>>,
 ) -> anyhow::Result<AssistantMessage>
 where
     A: FnMut() -> AF,
@@ -106,6 +122,7 @@ where
 {
     let max_retries = policy.max_retries.min(MAX_TOTAL_PROVIDER_RETRIES);
     let mut retries_performed = 0u32;
+    let mut fallback_retried = false;
     loop {
         let message = attempt().await?;
         if message.stop_reason != StopReason::Error {
@@ -185,9 +202,36 @@ where
                 }
                 jittered_delay_ms(delay_ms, retry_jitter_rand01())
             }
-            ProviderRetryDelay::ExceedsCap { .. } => {
+            ProviderRetryDelay::ExceedsCap { retry_after_ms } => {
                 // A reset beyond the cap is an exhausted quota: the turn
-                // fails now with the provider's own error text.
+                // fails now with the provider's own error text, unless the
+                // provider's declared fallback serves one immediate retry.
+                let decision = match quota_fallback.as_deref_mut() {
+                    Some(arm) => arm(&message, retry_after_ms).await,
+                    None => QuotaFallback::NotDeclared,
+                };
+                let mut message = message;
+                match decision {
+                    QuotaFallback::Armed { notice, .. } if !fallback_retried => {
+                        fallback_retried = true;
+                        emit(AutoRetryEvent::Start {
+                            attempt: retries_performed,
+                            max_attempts: max_retries,
+                            delay_ms: 0,
+                            error_message: notice,
+                        })
+                        .await?;
+                        continue;
+                    }
+                    QuotaFallback::Unavailable { reason } => {
+                        message.error_message = Some(format!(
+                            "{}\n\nQuota fallback: {reason}.",
+                            final_error_of(&message)
+                        ));
+                    }
+                    // One fallback retry per turn: a second arming fails raw.
+                    QuotaFallback::Armed { .. } | QuotaFallback::NotDeclared => {}
+                }
                 emit(AutoRetryEvent::End {
                     success: false,
                     attempt: retries_performed - 1,

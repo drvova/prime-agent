@@ -526,6 +526,22 @@ impl AgentSessionEngine {
             })
     }
 
+    /// Arm `model`'s declared quota fallback (models.json `auth.fallback`)
+    /// on the store the per-call resolution reads, after its request failed
+    /// with a quota reset `retry_after_ms` away: the retry and later calls
+    /// resolve through the fallback credential until the reset.
+    pub(crate) fn arm_quota_fallback(
+        &self,
+        model: &Model,
+        retry_after_ms: u64,
+    ) -> pa_core::models::QuotaFallback {
+        self.request_auth_registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(|| self.new_request_auth_registry(None))
+            .arm_quota_fallback(model, retry_after_ms)
+    }
+
     /// Request auth for a model call outside the session stream
     /// (compaction, branch summary, refine, the turn boundary, session
     /// slash commands): the live resolution's key and the model shaped for

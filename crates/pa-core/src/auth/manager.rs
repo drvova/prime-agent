@@ -274,6 +274,11 @@ pub struct AuthStorage {
     /// credential refreshes in the descriptor's resolver, never through
     /// [`OAuthIntegration::refresh`].
     descriptor_oauth_providers: std::collections::HashSet<String>,
+    /// In-memory quota exhaustion, per provider: the credential (its value
+    /// fingerprint; `None` when no tracked source serves) whose quota is
+    /// spent, and its reported reset (epoch ms). Never persisted: a new
+    /// process re-learns it from one quota failure.
+    quota_exhausted: HashMap<String, (Option<String>, i64)>,
 }
 
 /// The retained diagnostic cap: the newest [`AuthStorage::errors`] entries
@@ -297,6 +302,7 @@ impl AuthStorage {
             errors: Vec::new(),
             candidate_memos: std::sync::Mutex::new(HashMap::new()),
             descriptor_oauth_providers: std::collections::HashSet::new(),
+            quota_exhausted: HashMap::new(),
         };
         auth.reload();
         auth
@@ -370,6 +376,7 @@ impl AuthStorage {
             errors: Vec::new(),
             candidate_memos: std::sync::Mutex::new(HashMap::new()),
             descriptor_oauth_providers: std::collections::HashSet::new(),
+            quota_exhausted: HashMap::new(),
         };
         auth.reload();
         auth
@@ -478,6 +485,29 @@ impl AuthStorage {
         providers: std::collections::HashSet<String>,
     ) {
         self.descriptor_oauth_providers = providers;
+    }
+
+    /// Remember that `credential` (a value fingerprint) of `provider` spent
+    /// its quota until `until_ms` (epoch ms).
+    pub(crate) fn note_quota_exhausted(
+        &mut self,
+        provider: &str,
+        credential: Option<String>,
+        until_ms: i64,
+    ) {
+        self.quota_exhausted
+            .insert(provider.to_string(), (credential, until_ms));
+    }
+
+    /// Whether `credential` of `provider` is still inside a quota exhaustion
+    /// noted earlier: the same credential, before its reset. A rotated
+    /// credential or a passed reset clears it.
+    pub(crate) fn is_quota_exhausted(&self, provider: &str, credential: Option<&str>) -> bool {
+        self.quota_exhausted
+            .get(provider)
+            .is_some_and(|(exhausted, until_ms)| {
+                exhausted.as_deref() == credential && *until_ms > now_epoch_ms()
+            })
     }
 
     /// The backend under this store: a request-auth resolver reads,

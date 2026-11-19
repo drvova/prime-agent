@@ -179,6 +179,17 @@ short-lived token at the declared endpoint, cached in the same entry,
 single-flighted per provider and account across threads and processes, and
 invalidated once when the provider rejects it). Resolution runs only on the
 inference path, never at startup.
+The descriptor's optional `fallback` list (any strategy, built-in providers
+included through a models.json override) is the opt-in quota fallback
+(`models/registry/quota_fallback.rs`): `ModelRegistry::arm_quota_fallback`
+answers a `QuotaFallback` when a request failed with a reset beyond the retry
+cap, noting the serving credential exhausted in memory (`AuthStorage`) until
+the reset, and the per-call lookup then resolves through the first listed
+provider whose credential resolves and that serves the same model id: its
+credential and transport (base URL, API, compat) under the session's own
+provider and model id. The retry driver takes it as its `quota_fallback`
+seam: one immediate retry per turn, else the raw error with a note.
+Validation (known ids, no self-reference, repeats, or cycles) runs at load.
 
 The `oauth` descriptor strategy (`auth/descriptor_oauth.rs`,
 `auth/descriptor_oauth_login.rs`): `DescriptorOAuth` serves the provider's

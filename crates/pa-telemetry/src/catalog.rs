@@ -1517,6 +1517,20 @@ const AGENT_PROVIDER_ADMISSION: EventRule = EventRule {
     ],
 };
 
+/// The opt-in quota fallback for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when a provider's declared
+/// `auth.fallback` was consulted: fallbacks chosen for a quota-exhausted request, and quota
+/// failures no fallback could serve. Counts only: never a provider, model, or credential.
+const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
+    name: "agent quota fallback",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("quota_fallback_chosen_count", required(count())),
+        ("quota_fallback_exhausted_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1911,6 +1925,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_QUOTA_FALLBACK,
         &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());

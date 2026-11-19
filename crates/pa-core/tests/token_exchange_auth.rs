@@ -14,6 +14,7 @@ use pa_core::auth::AuthStorage;
 use pa_core::models::{ModelRegistry, ResolvedRequestAuth};
 use pa_core::session_engine::auto_retry::{
     run_turn_with_auto_retry, AuthRecovery, AuthRecoveryCallback, AuthRecoveryFuture,
+    AutoRetryEvent, QuotaFallbackCallback, QuotaFallbackFuture,
 };
 use pa_core::session_engine::provider_adapter::{
     switchable_stream_fn_with_live_auth, LiveAuthResolver, ProviderTarget,
@@ -596,12 +597,18 @@ fn two_processes_racing_a_rotation_never_send_a_spent_refresh() {
 struct Session {
     stream_fn: pa_agent::stream::StreamFn,
     registry: Arc<Mutex<ModelRegistry>>,
+    model: Model,
 }
 
 impl Session {
     fn new(dir: &std::path::Path) -> Self {
         let registry = registry(dir);
         let model = acme_model(&registry);
+        Session::serving(registry, model)
+    }
+
+    /// The session over `registry`, pinned to `model`.
+    fn serving(registry: ModelRegistry, model: Model) -> Self {
         let registry = Arc::new(Mutex::new(registry));
         let live_registry = Arc::clone(&registry);
         let live_auth: LiveAuthResolver = Arc::new(move |model: &Model| {
@@ -612,19 +619,26 @@ impl Session {
         });
         let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
             api_key: None,
-            model,
+            model: model.clone(),
             service_tier: None,
             headers: None,
         })));
         Session {
             stream_fn: switchable_stream_fn_with_live_auth(target, live_auth),
             registry,
+            model,
         }
     }
 
-    /// One turn under the retry driver (no waits), with the daemon's auth
-    /// recovery: refresh the rejected credential, then retry.
     async fn turn(&self) -> pa_agent::types::AssistantMessage {
+        self.turn_with_events().await.0
+    }
+
+    /// One turn under the retry driver (no waits), with the daemon's auth
+    /// recovery (refresh the rejected credential, then retry) and quota
+    /// fallback (arm the session model's declared fallback), and the retry
+    /// events it emitted.
+    async fn turn_with_events(&self) -> (pa_agent::types::AssistantMessage, Vec<AutoRetryEvent>) {
         let policy = ProviderRetryPolicy {
             enabled: true,
             max_retries: 3,
@@ -650,7 +664,27 @@ impl Session {
             })
         };
         let auth_recovery: AuthRecoveryCallback<'_> = &mut recover;
-        run_turn_with_auto_retry(
+        let fallback_registry = Arc::clone(&self.registry);
+        let fallback_model = self.model.clone();
+        let mut arm = move |_: &pa_agent::types::AssistantMessage,
+                            retry_after_ms: u64|
+              -> QuotaFallbackFuture {
+            let registry = Arc::clone(&fallback_registry);
+            let model = fallback_model.clone();
+            Box::pin(async move {
+                tokio::task::spawn_blocking(move || {
+                    registry
+                        .lock()
+                        .unwrap()
+                        .arm_quota_fallback(&model, retry_after_ms)
+                })
+                .await
+                .unwrap()
+            })
+        };
+        let quota_fallback: QuotaFallbackCallback<'_> = &mut arm;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let message = run_turn_with_auto_retry(
             &policy,
             128_000,
             None,
@@ -667,12 +701,18 @@ impl Session {
                 .await?;
                 stream.result().await
             },
-            |_| async { Ok(()) },
+            |event| {
+                events.lock().unwrap().push(event);
+                async { Ok(()) }
+            },
             |_| async { true },
             Some(auth_recovery),
+            Some(quota_fallback),
         )
         .await
-        .unwrap()
+        .unwrap();
+        let events = events.lock().unwrap().clone();
+        (message, events)
     }
 }
 
@@ -759,4 +799,242 @@ async fn a_rate_limit_surfaces_its_reset_without_retrying() {
         (pa_agent::types::StopReason::Error, Some(120_000))
     );
     assert_eq!(server.requests("/v1/chat/completions").len(), 1);
+}
+
+/// The free tier's quota answer: a 429 `FreeUsageLimitError` whose reset is
+/// 17,209 s away (beyond the retry cap).
+fn free_usage_exhausted() -> Vec<u8> {
+    json_response_with(
+        429,
+        &[("retry-after", "17209")],
+        &json!({"type": "error", "error": {"type": "FreeUsageLimitError",
+            "message": "429 Free usage limit reached. Free models work in OpenCode; subscribe to OpenCode Go"}}),
+    )
+}
+
+/// The built-in `opencode` provider (free key) and `opencode-go` (paid key)
+/// both serving `hy4-flash-free` at loopback, through models.json provider
+/// overrides; `opencode` declares the `opencode-go` fallback only when
+/// `declare_fallback`.
+fn opencode_session(server: &Server, declare_fallback: bool) -> (tempfile::TempDir, Session) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let model = json!([{ "id": "hy4-flash-free", "api": "openai-completions" }]);
+    let mut opencode = json!({ "baseUrl": server.url("/zen/v1"), "models": model });
+    if declare_fallback {
+        opencode["auth"] = json!({ "strategy": "api-key", "fallback": ["opencode-go"] });
+    }
+    std::fs::write(
+        dir.path().join("models.json"),
+        json!({ "providers": {
+            "opencode": opencode,
+            "opencode-go": { "baseUrl": server.url("/zen/go/v1"), "models": model },
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("auth.json"),
+        json!({
+            "opencode": { "type": "api_key", "key": "free-key" },
+            "opencode-go": { "type": "api_key", "key": "go-key" },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let registry = registry(dir.path());
+    let model = registry
+        .get_all()
+        .iter()
+        .find(|model| model.provider == "opencode" && model.id == "hy4-flash-free")
+        .cloned()
+        .expect("the models.json model loads");
+    (dir, Session::serving(registry, model))
+}
+
+/// Each inference request's path and credential, in order.
+fn inference_routes(server: &Server) -> Vec<(String, Option<String>)> {
+    server
+        .received
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|request| {
+            (
+                request.path.clone(),
+                request.headers.get("authorization").cloned(),
+            )
+        })
+        .collect()
+}
+
+/// The fallback notice with its reset clock masked (the reset is relative
+/// to now).
+fn masked(events: Vec<AutoRetryEvent>) -> Vec<AutoRetryEvent> {
+    events
+        .into_iter()
+        .map(|event| match event {
+            AutoRetryEvent::Start {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message,
+            } => AutoRetryEvent::Start {
+                attempt,
+                max_attempts,
+                delay_ms,
+                error_message: error_message
+                    .chars()
+                    .map(|c| if c.is_ascii_digit() { '#' } else { c })
+                    .collect(),
+            },
+            end @ AutoRetryEvent::End { .. } => end,
+        })
+        .collect()
+}
+
+const FALLBACK_NOTICE: &str =
+    "using opencode-go credential (opencode usage limit reached until ##:## UTC)";
+
+/// The regression: `opencode`'s free quota is exhausted (a 429 with a reset
+/// far beyond the retry cap) and it declares the `opencode-go` fallback, so
+/// exactly one immediate retry goes to the `opencode-go` transport with its
+/// credential and succeeds, under a fallback notice and no failure. The
+/// next turn goes straight to the fallback until the reset.
+#[tokio::test]
+async fn a_free_quota_429_retries_once_on_the_declared_fallback_credential() {
+    let server = Server::start(
+        TokenMode::Immediate,
+        vec![free_usage_exhausted(), sse_reply("one"), sse_reply("two")],
+    );
+    let (_dir, session) = opencode_session(&server, true);
+    let (first, first_events) = session.turn_with_events().await;
+    let (second, second_events) = session.turn_with_events().await;
+    assert_eq!(
+        (
+            (first.stop_reason, first.provider, first.model),
+            masked(first_events),
+            (second.stop_reason, second_events),
+            inference_routes(&server),
+        ),
+        (
+            (
+                pa_agent::types::StopReason::Stop,
+                "opencode".to_string(),
+                "hy4-flash-free".to_string()
+            ),
+            vec![
+                AutoRetryEvent::Start {
+                    attempt: 1,
+                    max_attempts: 3,
+                    delay_ms: 0,
+                    error_message: FALLBACK_NOTICE.to_string(),
+                },
+                AutoRetryEvent::End {
+                    success: true,
+                    attempt: 1,
+                    final_error: None,
+                },
+            ],
+            (pa_agent::types::StopReason::Stop, Vec::new()),
+            vec![
+                (
+                    "/zen/v1/chat/completions".to_string(),
+                    Some("Bearer free-key".to_string())
+                ),
+                (
+                    "/zen/go/v1/chat/completions".to_string(),
+                    Some("Bearer go-key".to_string())
+                ),
+                (
+                    "/zen/go/v1/chat/completions".to_string(),
+                    Some("Bearer go-key".to_string())
+                ),
+            ],
+        )
+    );
+}
+
+/// Without a declared fallback the same 429 fails the turn at once with the
+/// provider's raw error, and no request goes to another provider.
+#[tokio::test]
+async fn a_free_quota_429_without_a_fallback_fails_raw_on_its_provider() {
+    let server = Server::start(
+        TokenMode::Immediate,
+        vec![free_usage_exhausted(), sse_reply("never")],
+    );
+    let (_dir, session) = opencode_session(&server, false);
+    let (message, events) = session.turn_with_events().await;
+    let raw = message.error_message.clone().unwrap_or_default();
+    assert!(raw.contains("Free usage limit reached"), "{raw}");
+    assert!(!raw.contains("Quota fallback"), "{raw}");
+    assert_eq!(
+        (message.stop_reason, events, inference_routes(&server)),
+        (
+            pa_agent::types::StopReason::Error,
+            vec![AutoRetryEvent::End {
+                success: false,
+                attempt: 0,
+                final_error: Some(raw),
+            }],
+            vec![(
+                "/zen/v1/chat/completions".to_string(),
+                Some("Bearer free-key".to_string())
+            )],
+        )
+    );
+}
+
+/// A fallback whose quota is exhausted too fails the turn after exactly one
+/// fallback attempt, with the raw error and a note that it was tried.
+#[tokio::test]
+async fn an_exhausted_fallback_fails_raw_after_one_fallback_attempt() {
+    let server = Server::start(
+        TokenMode::Immediate,
+        vec![
+            free_usage_exhausted(),
+            free_usage_exhausted(),
+            sse_reply("never"),
+        ],
+    );
+    let (_dir, session) = opencode_session(&server, true);
+    let (message, events) = session.turn_with_events().await;
+    let final_error = message.error_message.clone().unwrap_or_default();
+    let note = "\n\nQuota fallback: the opencode-go fallback credential was tried and its usage limit is reached too.";
+    assert!(
+        final_error.ends_with(note) && final_error.contains("Free usage limit reached"),
+        "{final_error}"
+    );
+    assert_eq!(
+        (
+            message.stop_reason,
+            masked(events),
+            inference_routes(&server)
+        ),
+        (
+            pa_agent::types::StopReason::Error,
+            vec![
+                AutoRetryEvent::Start {
+                    attempt: 1,
+                    max_attempts: 3,
+                    delay_ms: 0,
+                    error_message: FALLBACK_NOTICE.to_string(),
+                },
+                AutoRetryEvent::End {
+                    success: false,
+                    attempt: 1,
+                    final_error: Some(final_error),
+                },
+            ],
+            vec![
+                (
+                    "/zen/v1/chat/completions".to_string(),
+                    Some("Bearer free-key".to_string())
+                ),
+                (
+                    "/zen/go/v1/chat/completions".to_string(),
+                    Some("Bearer go-key".to_string())
+                ),
+            ],
+        )
+    );
 }

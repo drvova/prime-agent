@@ -114,6 +114,10 @@ pub(crate) struct ProviderAuthConfig {
     pub(crate) audience: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) extra_auth_params: Option<BTreeMap<String, String>>,
+    /// Provider ids whose stored credential serves this provider's requests
+    /// once its own quota is exhausted, in order (any strategy).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fallback: Option<Vec<String>>,
 }
 
 /// A validated `auth` block.
@@ -122,6 +126,10 @@ pub(crate) struct ProviderAuthDescriptor {
     pub(crate) strategy: AuthStrategy,
     /// The request header that carries the harness session id (any strategy).
     pub(crate) session_header: Option<String>,
+    /// The quota-fallback provider ids, in order (empty: no fallback). The
+    /// load validates them against the whole models.json document: known
+    /// providers only, no cycles.
+    pub(crate) fallback: Vec<String>,
 }
 
 /// How the provider's request credential resolves.
@@ -553,6 +561,20 @@ impl ProviderAuthDescriptor {
                     .map(|name| valid_header_name("sessionHeader", name))
                     .transpose()?;
                 reject_foreign_fields(&config)?;
+                let fallback = config.fallback.clone().unwrap_or_default();
+                for (index, entry) in fallback.iter().enumerate() {
+                    if entry.trim().is_empty() {
+                        return Err("every \"fallback\" entry is a provider id".to_string());
+                    }
+                    if entry == provider {
+                        return Err(format!(
+                            "\"fallback\" may not name the provider itself (\"{provider}\")"
+                        ));
+                    }
+                    if fallback[..index].contains(entry) {
+                        return Err(format!("\"fallback\" names \"{entry}\" twice"));
+                    }
+                }
                 let strategy = match config.strategy {
                     StrategyName::ApiKey => AuthStrategy::ApiKey,
                     StrategyName::TokenExchange => {
@@ -712,6 +734,7 @@ impl ProviderAuthDescriptor {
                 Ok(ProviderAuthDescriptor {
                     strategy,
                     session_header,
+                    fallback,
                 })
             });
         validated.map_err(|error| format!("Provider {provider}: invalid \"auth\": {error}"))
@@ -763,6 +786,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                 })),
                 session_header: Some("x-example-session".to_string()),
+                fallback: Vec::new(),
             }
         );
     }
@@ -781,7 +805,7 @@ mod tests {
         assert_eq!(
             errors,
             vec![
-                "Provider acme: invalid \"auth\": unknown field `colour`, expected one of `strategy`, `tokenUrl`, `method`, `requestHeaders`, `requestBody`, `requestEncoding`, `tokenPath`, `refreshPath`, `expiresAtPath`, `expiresInPath`, `header`, `sessionHeader`, `timeoutMs`, `authorizationUrl`, `deviceAuthorizationUrl`, `clientId`, `clientSecret`, `scopes`, `redirect`, `audience`, `extraAuthParams`".to_string(),
+                "Provider acme: invalid \"auth\": unknown field `colour`, expected one of `strategy`, `tokenUrl`, `method`, `requestHeaders`, `requestBody`, `requestEncoding`, `tokenPath`, `refreshPath`, `expiresAtPath`, `expiresInPath`, `header`, `sessionHeader`, `timeoutMs`, `authorizationUrl`, `deviceAuthorizationUrl`, `clientId`, `clientSecret`, `scopes`, `redirect`, `audience`, `extraAuthParams`, `fallback`".to_string(),
                 "Provider acme: invalid \"auth\": \"tokenUrl\" must use https (plain http only for loopback hosts)".to_string(),
                 "Provider acme: invalid \"auth\": unknown template placeholder \"{{HOME}}\" (use {{refresh}}, {{accountId}}, or {{orgId}})".to_string(),
             ]
@@ -839,6 +863,7 @@ mod tests {
                     timeout: Duration::from_secs(5),
                 })),
                 session_header: None,
+                fallback: Vec::new(),
             }
         );
     }
@@ -877,6 +902,7 @@ mod tests {
                     timeout: Duration::from_secs(10),
                 })),
                 session_header: None,
+                fallback: Vec::new(),
             }
         );
     }
@@ -934,6 +960,62 @@ mod tests {
                 "\"clientId\" applies only to the \"oauth\" strategy",
                 "\"tokenUrl\" applies only to the \"token-exchange\" and \"oauth\" strategies",
                 "\"redirect\" needs an \"authorizationUrl\" (the browser sign-in)",
+            ]
+            .map(|error| format!("{prefix}{error}"))
+        );
+    }
+
+    /// A `fallback` list survives parse -> serialize unchanged; a block
+    /// without one serializes without the key and validates to no fallback;
+    /// a self-reference or a repeated id is a provider-named load error.
+    #[test]
+    fn a_fallback_list_round_trips_and_refuses_self_and_repeats() {
+        let with_fallback = serde_json::json!({
+            "strategy": "api-key",
+            "fallback": ["opencode-go", "openrouter"]
+        });
+        let without = serde_json::json!({ "strategy": "api-key" });
+        let round_trip = |block: &Value| {
+            let config: ProviderAuthConfig = serde_json::from_value(block.clone()).unwrap();
+            serde_json::to_value(&config).unwrap()
+        };
+        assert_eq!(
+            (round_trip(&with_fallback), round_trip(&without)),
+            (with_fallback.clone(), without.clone())
+        );
+        assert_eq!(
+            (
+                ProviderAuthDescriptor::parse("opencode", &with_fallback).unwrap(),
+                ProviderAuthDescriptor::parse("opencode", &without).unwrap(),
+            ),
+            (
+                ProviderAuthDescriptor {
+                    strategy: AuthStrategy::ApiKey,
+                    session_header: None,
+                    fallback: vec!["opencode-go".to_string(), "openrouter".to_string()],
+                },
+                ProviderAuthDescriptor {
+                    strategy: AuthStrategy::ApiKey,
+                    session_header: None,
+                    fallback: Vec::new(),
+                },
+            )
+        );
+        let errors: Vec<String> = [
+            serde_json::json!({ "strategy": "api-key", "fallback": ["opencode"] }),
+            serde_json::json!({ "strategy": "api-key", "fallback": ["opencode-go", "opencode-go"] }),
+            serde_json::json!({ "strategy": "api-key", "fallback": [""] }),
+        ]
+        .iter()
+        .map(|block| ProviderAuthDescriptor::parse("opencode", block).unwrap_err())
+        .collect();
+        let prefix = "Provider opencode: invalid \"auth\": ";
+        assert_eq!(
+            errors,
+            [
+                "\"fallback\" may not name the provider itself (\"opencode\")",
+                "\"fallback\" names \"opencode-go\" twice",
+                "every \"fallback\" entry is a provider id",
             ]
             .map(|error| format!("{prefix}{error}"))
         );

@@ -99,6 +99,7 @@ async fn transient_failure_is_retried_until_success_with_events() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -171,6 +172,7 @@ async fn exhausted_retries_surface_the_final_error() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -213,6 +215,7 @@ async fn a_retry_budget_above_the_episode_ceiling_gives_up_at_the_ceiling() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -254,6 +257,7 @@ async fn throttled_retries_do_not_grow_the_backoff() {
             waits.push(u64::try_from(delay.as_millis()).unwrap());
             async { true }
         },
+        None,
         None,
     )
     .await
@@ -335,6 +339,7 @@ async fn stream_drop_retries_until_the_turn_completes() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -391,6 +396,7 @@ async fn stream_drop_exhausts_retries_surfacing_the_class() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -442,6 +448,7 @@ async fn permanent_failures_never_retry_but_disclose() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -490,6 +497,7 @@ async fn payment_failures_settle_once_with_the_disclosure() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -532,6 +540,7 @@ async fn safety_failures_are_permanent_never_retry_but_disclose() {
             }
         },
         |_| async { true },
+        None,
         None,
     )
     .await
@@ -585,6 +594,7 @@ async fn context_overflow_never_enters_the_retry_loop() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -615,6 +625,7 @@ async fn cancelled_wait_aborts_with_retry_cancelled() {
         },
         |_| async { false },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -642,6 +653,7 @@ async fn aborted_signal_racing_failure_stops_aborted() {
         || async { Ok(error_message(Some("server_error"), None, None)) },
         |_| async { Ok(()) },
         |_| async { true },
+        None,
         None,
     )
     .await
@@ -685,6 +697,7 @@ async fn a_quota_reset_beyond_the_cap_fails_at_once_with_the_raw_error() {
             async { true }
         },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -704,6 +717,95 @@ async fn a_quota_reset_beyond_the_cap_fails_at_once_with_the_raw_error() {
                 attempt: 0,
                 final_error: Some("provider down".to_string()),
             }],
+        )
+    );
+}
+
+/// An armed quota fallback retries once, at once (no wait); the fallback's
+/// own quota failure ends the turn with the raw error plus the host's note,
+/// and the seam sees each failure's reset.
+#[tokio::test]
+async fn an_armed_quota_fallback_retries_once_at_once_then_fails_with_its_note() {
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let waits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let consulted = Arc::new(Mutex::new(Vec::new()));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_for_emit = Arc::clone(&events);
+    let waits_for_wait = Arc::clone(&waits);
+    let consulted_for_seam = Arc::clone(&consulted);
+    let mut arm = move |_message: &AssistantMessage, retry_after_ms: u64| -> QuotaFallbackFuture {
+        let mut consulted = consulted_for_seam.lock().unwrap();
+        consulted.push(retry_after_ms);
+        let decision = if consulted.len() == 1 {
+            QuotaFallback::Armed {
+                provider: "fallback".to_string(),
+                notice: "using fallback credential".to_string(),
+            }
+        } else {
+            QuotaFallback::Unavailable {
+                reason: "the fallback was tried too".to_string(),
+            }
+        };
+        Box::pin(async move { decision })
+    };
+    let message = run_turn_with_auto_retry(
+        &fast_policy(),
+        0,
+        None,
+        || {
+            let attempts = Arc::clone(&attempts);
+            async move {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(error_message(
+                    Some("rate_limit"),
+                    Some(429),
+                    Some(17_209_000),
+                ))
+            }
+        },
+        move |event| {
+            let events = Arc::clone(&events_for_emit);
+            async move {
+                events.lock().unwrap().push(event);
+                Ok(())
+            }
+        },
+        move |_| {
+            waits_for_wait.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async { true }
+        },
+        None,
+        Some(&mut arm),
+    )
+    .await
+    .unwrap();
+    let final_error = "provider down\n\nQuota fallback: the fallback was tried too.".to_string();
+    assert_eq!(
+        (
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            waits.load(std::sync::atomic::Ordering::SeqCst),
+            consulted.lock().unwrap().clone(),
+            message.error_message,
+            events.lock().unwrap().clone(),
+        ),
+        (
+            2,
+            0,
+            vec![17_209_000, 17_209_000],
+            Some(final_error.clone()),
+            vec![
+                AutoRetryEvent::Start {
+                    attempt: 1,
+                    max_attempts: 3,
+                    delay_ms: 0,
+                    error_message: "using fallback credential".to_string(),
+                },
+                AutoRetryEvent::End {
+                    success: false,
+                    attempt: 1,
+                    final_error: Some(final_error),
+                },
+            ],
         )
     );
 }
@@ -739,6 +841,7 @@ async fn disabled_policy_never_retries_but_discloses() {
         },
         |_| async { true },
         None,
+        None,
     )
     .await
     .unwrap();
@@ -763,6 +866,7 @@ async fn attempt_errors_propagate() {
         || async { Err(anyhow::anyhow!("turn crashed")) },
         |_| async { Ok(()) },
         |_| async { true },
+        None,
         None,
     )
     .await
@@ -801,6 +905,7 @@ async fn unsupported_tool_failures_surface_with_the_disclosure() {
             }
         },
         |_| async { true },
+        None,
         None,
     )
     .await
@@ -855,6 +960,7 @@ async fn an_auth_rejection_whose_recovery_ends_the_turn_never_retries() {
         },
         |_| async { true },
         Some(&mut recovery),
+        None,
     )
     .await
     .unwrap();

@@ -141,7 +141,9 @@ pub enum EngineEvent {
     },
     /// `auto_retry_start`: a provider failure is being retried (TS wire
     /// event; the interactive transcript shows the retry countdown). Every
-    /// retry re-issues on the session's own provider.
+    /// retry re-issues on the session's own provider; a declared quota
+    /// fallback changes only that retry's credential and transport, and its
+    /// start carries the fallback notice with no delay.
     AutoRetryStart {
         attempt: u32,
         max_attempts: u32,

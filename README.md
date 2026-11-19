@@ -319,6 +319,9 @@ Fields:
 - `sessionHeader` (any strategy): a header that carries the conversation's session id,
   the same on every request of one conversation.
 - `timeoutMs`: the token request deadline, 1 to 60000 (default 10000).
+- `fallback` (any strategy, optional): provider ids, in order, whose stored
+  credential serves this provider's requests once its own usage quota is spent. See
+  [Quota fallback](#quota-fallback) below.
 
 The exchange runs only before inference calls, never at startup. Concurrent sessions
 (including subagent workers) share one exchange per provider and account. When the
@@ -326,6 +329,36 @@ provider answers 401, the cached token is dropped and the call is retried once w
 fresh token; a second 401 is reported. A 429 reports the provider's reset time
 (`Retry-After` or `x-ratelimit-reset*`) under the usual retry policy. An unknown field
 or a malformed block is a `models.json` load error that names the provider.
+
+#### Quota fallback
+
+A provider can name other providers whose credential takes over when its own quota
+is spent. Built-in providers take an `auth` block too, as a `models.json` provider
+override; only the providers that declare `fallback` get it:
+
+```json
+{
+  "providers": {
+    "opencode": {
+      "auth": { "strategy": "api-key", "fallback": ["opencode-go"] }
+    }
+  }
+}
+```
+
+When a request fails with a usage-limit reset beyond `retry.provider.maxRetryDelayMs`
+(the case that otherwise fails the turn at once), Prime Agent picks the first
+listed provider that has a usable credential and serves the same model id, and
+retries the request once, right away, with that provider's credential, base URL,
+and API. The session keeps its provider and model; the retry status shows
+`using opencode-go credential (opencode usage limit reached until 14:47 UTC)`.
+Until that reset, later requests in the same process go straight to the fallback.
+A fallback provider must list the model id (in its catalog or in `models.json`).
+When no fallback can serve, or the fallback's quota is spent too, the turn fails
+with the provider's own error and a note saying which fallback was tried.
+Fallbacks are not chained: a fallback's own `fallback` is never followed. Each
+entry must be a built-in or `models.json` provider other than the provider
+itself, listed once, with no cycles.
 
 #### OAuth sign-in
 
