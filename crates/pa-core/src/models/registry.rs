@@ -9,6 +9,7 @@ use pa_types::ai::{
 };
 
 use crate::auth::descriptor::{AuthStrategy, ProviderAuthDescriptor};
+use crate::auth::descriptor_oauth::DescriptorOAuth;
 use crate::auth::manager::AuthStorage;
 use crate::auth::resolver::{AuthCounter, AuthResolveContext, ProviderAuthResolver, StaticKey};
 use crate::auth::token_exchange::TokenExchange;
@@ -334,6 +335,15 @@ impl ModelRegistry {
         if let Some(error) = &result.error {
             self.load_error = Some(error.clone());
         }
+        // The store leaves an `oauth` descriptor provider's refresh to the
+        // descriptor's resolver.
+        self.auth.set_descriptor_oauth_providers(
+            self.provider_auth
+                .iter()
+                .filter(|(_, descriptor)| matches!(descriptor.strategy, AuthStrategy::Oauth(_)))
+                .map(|(provider, _)| provider.clone())
+                .collect(),
+        );
         let credentials = self.prime_credentials();
         let built_in = self.load_built_in_models(&result, credentials.as_ref());
         self.models = Self::merge_custom_models(built_in, result.models);
@@ -594,9 +604,10 @@ impl ModelRegistry {
             }
         }
         // The one resolver seam: a provider whose `auth` descriptor declares
-        // `token-exchange` resolves an exchanged token (unless a runtime
-        // `--api-key` override serves); every other provider keeps its
-        // static key, which rides the provider's own key slot unchanged.
+        // `token-exchange` resolves an exchanged token, and one that declares
+        // `oauth` its signed-in access token (unless a runtime `--api-key`
+        // override serves); every other provider keeps its static key, which
+        // rides the provider's own key slot unchanged.
         let descriptor = self.provider_auth.get(&model.provider).cloned();
         let runtime_override = matches!(
             &stored.source_token,
@@ -609,7 +620,13 @@ impl ModelRegistry {
                     self.auth.storage_backend(),
                 ))
             }
-            Some(AuthStrategy::TokenExchange(_) | AuthStrategy::ApiKey) | None => {
+            Some(AuthStrategy::Oauth(spec)) if !runtime_override => ProviderAuthResolver::Oauth(
+                DescriptorOAuth::new(std::sync::Arc::clone(spec), self.auth.storage_backend()),
+            ),
+            Some(
+                AuthStrategy::TokenExchange(_) | AuthStrategy::Oauth(_) | AuthStrategy::ApiKey,
+            )
+            | None => {
                 if descriptor.is_some() {
                     AuthCounter::StaticDescriptorResolve.note();
                 }
@@ -620,9 +637,12 @@ impl ModelRegistry {
             provider: &model.provider,
         };
         let resolution = resolver.resolve_blocking(&ctx);
-        if matches!(resolver, ProviderAuthResolver::TokenExchange(_)) {
-            // The exchange may have written a fresh token: the store's
-            // last-read copy is what a provider rejection invalidates.
+        if matches!(
+            resolver,
+            ProviderAuthResolver::TokenExchange(_) | ProviderAuthResolver::Oauth(_)
+        ) {
+            // The exchange or refresh may have written a fresh token: the
+            // store's last-read copy is what a provider rejection invalidates.
             self.auth.reload();
         }
         let resolved_auth = match resolution {

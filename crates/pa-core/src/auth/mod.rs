@@ -1,6 +1,8 @@
 //! Auth subsystem: credential storage, resolution priority, stale-marking.
 
 pub(crate) mod descriptor;
+pub(crate) mod descriptor_oauth;
+pub(crate) mod descriptor_oauth_login;
 pub(crate) mod manager;
 pub(crate) mod prime_inference;
 pub(crate) mod prime_inference_login;
@@ -12,6 +14,10 @@ pub(crate) mod storage;
 pub(crate) mod token_exchange;
 pub(crate) mod types;
 
+pub use descriptor_oauth_login::{
+    oauth_descriptor_providers, sign_in_with_descriptor, OAuthSignInUi, SignInAttempt, SignInError,
+    SignInFlow, SignInMethod, SignInTiming,
+};
 pub use manager::{AuthApiKeyResult, AuthStorage, NoOAuth, OAuthIntegration, OAuthRefreshFailure};
 pub use prime_inference::{
     check_prime_inference_access, default_prime_cli_config_path, fetch_prime_teams,

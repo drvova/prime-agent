@@ -24,21 +24,21 @@ use super::storage::{parse_storage_data, AuthStorageBackend};
 use super::types::AuthCredential;
 
 /// A cached token within this margin of its expiry is refreshed instead.
-const REFRESH_MARGIN_MS: i64 = 60_000;
+pub(super) const REFRESH_MARGIN_MS: i64 = 60_000;
 
 /// Epoch values at or above this are milliseconds, below it seconds.
 const EPOCH_MS_THRESHOLD: f64 = 1e12;
 
-fn now_epoch_ms() -> i64 {
+pub(super) fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(i64::MAX, |d| d.as_millis() as i64)
 }
 
-/// The in-process half of the single flight: one async gate per
-/// (provider, account), held across the re-check, the exchange, and the
-/// write.
-fn exchange_flight(key: &str) -> Arc<tokio::sync::Mutex<()>> {
+/// The in-process half of the single flight: one async gate per key (a
+/// token exchange's (provider, account), an OAuth refresh's provider),
+/// held across the re-check, the token request, and the write.
+pub(super) fn exchange_flight(key: &str) -> Arc<tokio::sync::Mutex<()>> {
     static FLIGHTS: OnceLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
         OnceLock::new();
     let mut flights = FLIGHTS
@@ -70,12 +70,112 @@ impl StoredExchange {
     }
 }
 
-/// One exchange's answer. Holds secrets, so it has no `Debug`.
-struct ExchangedToken {
-    access: String,
-    expires_at: Option<i64>,
+/// One token response's answer. Holds secrets, so it has no `Debug`.
+pub(super) struct ExchangedToken {
+    pub(super) access: String,
+    pub(super) expires_at: Option<i64>,
     /// The rotated refresh credential, when the response carries one.
-    refresh: Option<String>,
+    pub(super) refresh: Option<String>,
+}
+
+/// The token-request transport failure as a fixed sentence (never the URL
+/// or the request).
+pub(super) fn send_failure(error: &reqwest::Error, timeout: std::time::Duration) -> String {
+    if error.is_timeout() {
+        format!(
+            "the token endpoint did not answer within {}ms",
+            timeout.as_millis()
+        )
+    } else {
+        "the token endpoint could not be reached".to_string()
+    }
+}
+
+/// Read a token response `body` through the descriptor's pointers: the
+/// token, its expiry, and a rotated refresh credential. Error texts name
+/// only the pointer, never a value.
+pub(super) fn parse_token_response(
+    body: &Value,
+    token_path: &str,
+    refresh_path: Option<&str>,
+    expiry: &ExpirySource,
+) -> Result<ExchangedToken, String> {
+    let access = body
+        .pointer(token_path)
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| format!("the token response has no token at {token_path}"))?;
+    let number_at = |path: &str| {
+        let value = body.pointer(path);
+        value
+            .and_then(Value::as_f64)
+            .or_else(|| {
+                value
+                    .and_then(Value::as_str)
+                    .and_then(|text| text.parse().ok())
+            })
+            .filter(|number: &f64| number.is_finite() && *number >= 0.0)
+    };
+    let required_number_at = |path: &str| {
+        number_at(path).ok_or_else(|| format!("the token response has no number at {path}"))
+    };
+    let expires_at = match expiry {
+        ExpirySource::AtPath(path) => {
+            let at = required_number_at(path)?;
+            Some(if at >= EPOCH_MS_THRESHOLD {
+                at as i64
+            } else {
+                (at * 1000.0) as i64
+            })
+        }
+        ExpirySource::InPath(path) => {
+            Some(now_epoch_ms() + (required_number_at(path)? * 1000.0) as i64)
+        }
+        ExpirySource::OptionalInPath(path) => {
+            number_at(path).map(|seconds| now_epoch_ms() + (seconds * 1000.0) as i64)
+        }
+        ExpirySource::Unknown => None,
+    };
+    // A rotated refresh credential replaces the stored one; an absent or
+    // empty value keeps it.
+    let refresh = refresh_path.and_then(|path| {
+        body.pointer(path)
+            .and_then(Value::as_str)
+            .filter(|refresh| !refresh.is_empty())
+            .map(str::to_string)
+    });
+    Ok(ExchangedToken {
+        access: access.to_string(),
+        expires_at,
+        refresh,
+    })
+}
+
+/// Persist `fresh` over `original` only while the stored entry is still
+/// `original` (a replaced or removed credential stays authoritative). A
+/// failed write is not an error: the token still serves this call and the
+/// next call refreshes again.
+pub(super) async fn commit_unchanged(
+    storage: Arc<dyn AuthStorageBackend>,
+    provider: &str,
+    original: AuthCredential,
+    fresh: AuthCredential,
+) {
+    let provider = provider.to_string();
+    let written = tokio::task::spawn_blocking(move || {
+        storage.with_lock(&mut |current| {
+            let mut data = parse_storage_data(current.as_deref())?;
+            if data.credential(&provider).as_ref() != Some(&original) {
+                return Ok(((), None));
+            }
+            data.insert(&provider, &fresh);
+            Ok(((), Some(serde_json::to_string_pretty(&data.0)?)))
+        })
+    })
+    .await;
+    if !matches!(written, Ok(Ok(()))) {
+        tracing::debug!("the refreshed token could not be cached in auth.json");
+    }
 }
 
 /// One provider's token-exchange resolver over the shared auth store.
@@ -204,16 +304,10 @@ impl TokenExchange {
             ),
             None => request,
         };
-        let response = request.send().await.map_err(|error| {
-            if error.is_timeout() {
-                format!(
-                    "the token endpoint did not answer within {}ms",
-                    spec.timeout.as_millis()
-                )
-            } else {
-                "the token endpoint could not be reached".to_string()
-            }
-        })?;
+        let response = request
+            .send()
+            .await
+            .map_err(|error| send_failure(&error, spec.timeout))?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!(
@@ -225,73 +319,12 @@ impl TokenExchange {
             .json()
             .await
             .map_err(|_| "the token endpoint answered without a JSON body".to_string())?;
-        let access = body
-            .pointer(&spec.token_path)
-            .and_then(Value::as_str)
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| format!("the token response has no token at {}", spec.token_path))?;
-        let number_at = |path: &str| {
-            let value = body.pointer(path);
-            value
-                .and_then(Value::as_f64)
-                .or_else(|| {
-                    value
-                        .and_then(Value::as_str)
-                        .and_then(|text| text.parse().ok())
-                })
-                .filter(|number: &f64| number.is_finite() && *number >= 0.0)
-                .ok_or_else(|| format!("the token response has no number at {path}"))
-        };
-        let expires_at = match &spec.expiry {
-            ExpirySource::AtPath(path) => {
-                let at = number_at(path)?;
-                Some(if at >= EPOCH_MS_THRESHOLD {
-                    at as i64
-                } else {
-                    (at * 1000.0) as i64
-                })
-            }
-            ExpirySource::InPath(path) => Some(now_epoch_ms() + (number_at(path)? * 1000.0) as i64),
-            ExpirySource::Unknown => None,
-        };
-        // A rotated refresh credential replaces the stored one; an absent or
-        // empty value keeps it.
-        let refresh = spec.refresh_path.as_deref().and_then(|path| {
-            body.pointer(path)
-                .and_then(Value::as_str)
-                .filter(|refresh| !refresh.is_empty())
-                .map(str::to_string)
-        });
-        Ok(ExchangedToken {
-            access: access.to_string(),
-            expires_at,
-            refresh,
-        })
-    }
-
-    /// Persist the fresh token into the credential it was exchanged from,
-    /// only while the stored entry is still that credential (a replaced or
-    /// removed credential stays authoritative).
-    async fn commit(&self, provider: &str, original: &StoredExchange, fresh: &StoredExchange) {
-        let storage = Arc::clone(&self.storage);
-        let provider = provider.to_string();
-        let original = original.credential();
-        let fresh = fresh.credential();
-        let written = tokio::task::spawn_blocking(move || {
-            storage.with_lock(&mut |current| {
-                let mut data = parse_storage_data(current.as_deref())?;
-                if data.credential(&provider).as_ref() != Some(&original) {
-                    return Ok(((), None));
-                }
-                data.insert(&provider, &fresh);
-                Ok(((), Some(serde_json::to_string_pretty(&data.0)?)))
-            })
-        })
-        .await;
-        if !matches!(written, Ok(Ok(()))) {
-            // The token still serves this call; the next call re-exchanges.
-            tracing::debug!("the exchanged token could not be cached in auth.json");
-        }
+        parse_token_response(
+            &body,
+            &spec.token_path,
+            spec.refresh_path.as_deref(),
+            &spec.expiry,
+        )
     }
 }
 
@@ -352,7 +385,13 @@ impl AuthResolver for TokenExchange {
             expires: expires_at,
             ..stored.clone()
         };
-        self.commit(ctx.provider, &stored, &fresh).await;
+        commit_unchanged(
+            Arc::clone(&self.storage),
+            ctx.provider,
+            stored.credential(),
+            fresh.credential(),
+        )
+        .await;
         Ok(self.headers_for(&access, expires_at))
     }
 }

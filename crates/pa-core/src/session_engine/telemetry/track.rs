@@ -113,6 +113,47 @@ pub fn track_worker_children_closed(client: &TelemetryClient, count: usize) {
     client.track("daemon event", properties);
 }
 
+/// The surface a descriptor `oauth` sign-in ran on (`agent provider oauth
+/// login` `surface`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OAuthLoginSurface {
+    /// `login <provider>`.
+    Cli,
+    /// The TUI's `/login` picker.
+    Tui,
+}
+
+/// Track a settled descriptor `oauth` sign-in (`agent provider oauth login`, schema v2): the
+/// surface, the flow it ran, how it ended, and its duration. Never the provider, a URL, a client
+/// id, or a token.
+pub fn track_provider_oauth_login(
+    client: &TelemetryClient,
+    surface: OAuthLoginSurface,
+    attempt: &crate::auth::SignInAttempt,
+    duration_ms: u64,
+) {
+    let (mode, surface) = match surface {
+        OAuthLoginSurface::Cli => ("cli", "cli"),
+        OAuthLoginSurface::Tui => ("interactive", "tui"),
+    };
+    let flow = match attempt.method {
+        Some(crate::auth::SignInMethod::Browser) => "browser",
+        Some(crate::auth::SignInMethod::DeviceCode) => "device_code",
+        None => "none",
+    };
+    let outcome = match &attempt.result {
+        Ok(()) => "completed",
+        Err(crate::auth::SignInError::Cancelled) => "canceled",
+        Err(crate::auth::SignInError::Failed(_)) => "failed",
+    };
+    let mut properties = base_properties(mode);
+    properties.set("surface", Value::from(surface));
+    properties.set("flow", Value::from(flow));
+    properties.set("outcome", Value::from(outcome));
+    properties.set("duration_ms", Value::from(duration_ms));
+    client.track("agent provider oauth login", properties);
+}
+
 /// Track a settled history import (`agent sessions imported`, schema v2): who ran it, how it
 /// ended, the counts, and the copied bytes as a coarse bucket. Never a path or a session id.
 /// `trigger` is `automatic` (the daemon's boot run, execution mode `daemon`) or `command`
@@ -153,4 +194,49 @@ pub fn track_sessions_imported(
     properties.set("bytes_bucket", Value::from(bucket));
     properties.set("duration_ms", Value::from(duration_ms));
     client.track("agent sessions imported", properties);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use pa_telemetry::{MockSink, TelemetryClient, TelemetryClientConfig};
+
+    use super::*;
+
+    /// The sign-in event carries exactly its catalogued enums and duration
+    /// (the catalog drops an unknown key or value, so a typo here would
+    /// silently lose the property).
+    #[tokio::test]
+    async fn a_descriptor_sign_in_tracks_its_catalogued_properties() {
+        let mock = Arc::new(MockSink::new());
+        let mut config = TelemetryClientConfig::new("install-1");
+        config.sinks = vec![mock.clone() as Arc<dyn pa_telemetry::TelemetrySink>];
+        let client = TelemetryClient::spawn(config).expect("spawn client");
+        track_provider_oauth_login(
+            &client,
+            OAuthLoginSurface::Tui,
+            &crate::auth::SignInAttempt {
+                method: Some(crate::auth::SignInMethod::DeviceCode),
+                result: Err(crate::auth::SignInError::Cancelled),
+            },
+            1_234,
+        );
+        client.shutdown().await.expect("flush");
+        let events = mock.events();
+        let properties = serde_json::to_value(&events[0].properties).expect("serialize");
+        let picked: serde_json::Map<String, serde_json::Value> =
+            ["surface", "flow", "outcome", "duration_ms"]
+                .iter()
+                .map(|key| ((*key).to_string(), properties[*key].clone()))
+                .collect();
+        assert_eq!(
+            (events[0].name.as_str(), serde_json::Value::Object(picked)),
+            (
+                "agent provider oauth login",
+                serde_json::json!({ "surface": "tui", "flow": "device_code",
+                    "outcome": "canceled", "duration_ms": 1234 })
+            )
+        );
+    }
 }

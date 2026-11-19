@@ -205,10 +205,13 @@ pub fn validate_config(
             .as_ref()
             .map(|block| ProviderAuthDescriptor::parse(provider_name, block))
             .transpose()?;
-        // A token-exchange provider authenticates from its auth.json
-        // credential, so it needs no `apiKey`.
+        // A token-exchange or oauth provider authenticates from its
+        // auth.json credential, so it needs no `apiKey`.
         let exchanges_tokens = descriptor.is_some_and(|descriptor| {
-            matches!(descriptor.strategy, AuthStrategy::TokenExchange(_))
+            matches!(
+                descriptor.strategy,
+                AuthStrategy::TokenExchange(_) | AuthStrategy::Oauth(_)
+            )
         });
         if models.is_empty() {
             if provider_config.base_url.is_none()
