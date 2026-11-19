@@ -1557,6 +1557,18 @@ const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
     ],
 };
 
+/// Kernel `usage.get()` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session read
+/// its usage. A count only: never a cost, a token number, a provider, or a quota.
+const AGENT_USAGE_READS: EventRule = EventRule {
+    name: "agent usage reads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("usage_read_count", required(count())),
+    ],
+};
+
 /// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
 /// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
@@ -1609,6 +1621,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
+        &AGENT_USAGE_READS,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
     ];
     all.extend(UPDATE_EVENTS.iter());
