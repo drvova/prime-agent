@@ -1255,7 +1255,7 @@ mod tests {
     #[tokio::test]
     async fn threshold_hold_mints_before_the_compaction_and_runs_after() {
         // Include faux cache-write usage in the threshold: the resumed history
-        // crosses the 25_904 ceiling (32k - 2_000 output - 4_096 headroom),
+        // crosses the 33_904 ceiling (40k - 2_000 output - 4_096 headroom),
         // while the compacted continuation stays below it.
         let mut model_script = script(
             &json!([
@@ -1263,7 +1263,7 @@ mod tests {
                 "the compaction summary",
                 "continuation reply",
             ]),
-            32_000,
+            40_000,
         );
         model_script["maxTokens"] = json!(2_000);
         let bed = goal_bed_with_resumed_goal(
