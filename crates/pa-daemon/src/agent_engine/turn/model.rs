@@ -1,5 +1,5 @@
 //! The model-turn runner: the streaming run over the built session agent,
-//! the same-provider retry policy application, and the quota-park mid-run arm.
+//! and the same-provider retry policy application.
 use super::{
     aborted_message, drop_trailing_assistant, retry_event_to_engine_event, AgentSessionEngine,
     EngineEvent, StopReason, TurnAdmission, TurnOnce, TurnPrompt, TurnResult,
@@ -111,18 +111,13 @@ impl AgentSessionEngine {
                     .and_then(|engine| engine.session.semantic_edges()),
             )
         };
-        // The quota-park seam (TS #2375): the retry chain consults the
-        // engine at its give-up; a quota failure whose reset exceeds
-        // the wait cap parks the session. The weak self keeps the
-        // callback `'static`.
-        let quota_parked_flag = std::sync::Arc::clone(&self.quota_parked_this_run);
-        let engine_weak = self
+        // The auth-retry seam: refresh the rejected credential before the retry.
+        // The weak self keeps the callback `'static`.
+        let recovery_engine = self
             .self_weak
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        // The auth-retry seam: refresh the rejected credential before the retry.
-        let recovery_engine = engine_weak.clone();
         let auth_recovery: Option<pa_core::session_engine::auto_retry::AuthRecoveryCallback> =
             Some(&mut move |message| {
                 let engine = recovery_engine.as_ref().and_then(std::sync::Weak::upgrade);
@@ -140,20 +135,6 @@ impl AgentSessionEngine {
                         Ok(Err(failure)) => AuthRecovery::EndTurn(failure.to_string()),
                         Ok(Ok(())) | Err(_) => AuthRecovery::Retry,
                     }
-                })
-            });
-        let park: Option<pa_core::session_engine::provider_park::ParkDecisionCallback> =
-            Some(&mut move |message, abort| {
-                let engine_weak = engine_weak.clone();
-                let abort = abort.to_string();
-                let quota_parked_flag = std::sync::Arc::clone(&quota_parked_flag);
-                Box::pin(async move {
-                    let engine = engine_weak.as_ref().and_then(std::sync::Weak::upgrade)?;
-                    let outcome = engine.park_for_quota_reset(&message, &abort).await;
-                    if outcome.is_some() {
-                        quota_parked_flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    }
-                    outcome
                 })
             });
         let overflow_window = match self.armed_image_route() {
@@ -322,7 +303,6 @@ impl AgentSessionEngine {
                         }
                     }
                 },
-                park,
                 auth_recovery,
             ),
         );

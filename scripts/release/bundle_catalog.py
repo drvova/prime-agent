@@ -417,28 +417,38 @@ def validate_bundled_catalog_dir(directory, allow_small_fixture: bool = False) -
 # Fixture: a synthetic snapshot that passes the FULL gates (offline builds)
 # --------------------------------------------------------------------------
 
-# The compiled transport tuples of the shipped registry (43 distinct
-# (provider, api, baseUrl) triples across 32 providers, from the compiled
+# The compiled transport tuples of the shipped registry (65 distinct
+# (provider, api, baseUrl) triples across 54 providers, from the compiled
 # model catalog, now the hand-maintained fallback table
 # crates/pa-ai/src/models_generated.rs). Fixture models use real tuples so
 # they survive runtime transport pinning; nothing here can introduce a
 # transport the client does not implement.
 FIXTURE_TRANSPORT_TUPLES = [
+    ("aiand", "openai-completions", "https://api.aiand.com/v1"),
+    ("aimlapi", "openai-completions", "https://api.aimlapi.com/v1"),
+    ("alibaba-coding-plan", "openai-completions", "https://coding-intl.dashscope.aliyuncs.com/v1"),
+    ("alibaba-coding-plan-cn", "openai-completions", "https://coding.dashscope.aliyuncs.com/v1"),
     ("amazon-bedrock", "bedrock-converse-stream", "https://bedrock-runtime.ap-northeast-1.amazonaws.com"),
     ("amazon-bedrock", "bedrock-converse-stream", "https://bedrock-runtime.ap-southeast-2.amazonaws.com"),
     ("amazon-bedrock", "bedrock-converse-stream", "https://bedrock-runtime.eu-central-1.amazonaws.com"),
     ("amazon-bedrock", "bedrock-converse-stream", "https://bedrock-runtime.us-east-1.amazonaws.com"),
     ("anthropic", "anthropic-messages", "https://api.anthropic.com"),
     ("azure-openai-responses", "azure-openai-responses", ""),
+    ("baseten", "openai-completions", "https://inference.baseten.co/v1"),
     ("cerebras", "openai-completions", "https://api.cerebras.ai/v1"),
+    ("charm-hyper", "openai-completions", "https://hyper.charm.land/v1"),
+    ("chutes", "openai-completions", "https://llm.chutes.ai/v1"),
     ("cloudflare-ai-gateway", "anthropic-messages", "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/anthropic"),
     ("cloudflare-ai-gateway", "openai-responses", "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/openai"),
     ("cloudflare-workers-ai", "openai-completions", "https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1"),
+    ("deepinfra", "openai-completions", "https://api.deepinfra.com/v1/openai"),
     ("deepseek", "openai-completions", "https://api.deepseek.com"),
+    ("firepass", "openai-completions", "https://api.fireworks.ai/inference/v1"),
     ("fireworks", "anthropic-messages", "https://api.fireworks.ai/inference"),
     ("github-copilot", "anthropic-messages", "https://api.individual.githubcopilot.com"),
     ("github-copilot", "openai-completions", "https://api.individual.githubcopilot.com"),
     ("github-copilot", "openai-responses", "https://api.individual.githubcopilot.com"),
+    ("gmi-cloud", "openai-completions", "https://api.gmi-serving.com/v1"),
     ("google", "google-generative-ai", "https://generativelanguage.googleapis.com/v1beta"),
     ("google-vertex", "google-vertex", "https://{location}-aiplatform.googleapis.com"),
     ("groq", "openai-completions", "https://api.groq.com/openai/v1"),
@@ -449,6 +459,9 @@ FIXTURE_TRANSPORT_TUPLES = [
     ("mistral", "mistral-conversations", "https://api.mistral.ai"),
     ("moonshotai", "openai-completions", "https://api.moonshot.ai/v1"),
     ("moonshotai-cn", "openai-completions", "https://api.moonshot.cn/v1"),
+    ("nanogpt", "openai-completions", "https://api.nano-gpt.com/api/v1"),
+    ("novita", "openai-completions", "https://api.novita.ai/openai"),
+    ("nvidia", "openai-completions", "https://integrate.api.nvidia.com/v1"),
     ("openai", "openai-responses", "https://api.openai.com/v1"),
     ("openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api"),
     ("opencode", "anthropic-messages", "https://opencode.ai/zen"),
@@ -460,13 +473,22 @@ FIXTURE_TRANSPORT_TUPLES = [
     ("opencode-go", "openai-responses", "https://opencode.ai/zen/go/v1"),
     ("openrouter", "openai-completions", "https://openrouter.ai/api/v1"),
     ("prime-inference", "openai-completions", "https://api.pinference.ai/api/v1"),
+    ("qianfan", "openai-completions", "https://qianfan.baidubce.com/v2"),
+    ("sambanova", "openai-completions", "https://api.sambanova.ai/v1"),
+    ("scaleway", "openai-completions", "https://api.scaleway.ai/v1"),
+    ("siliconflow", "openai-completions", "https://api.siliconflow.com/v1"),
+    ("siliconflow-cn", "openai-completions", "https://api.siliconflow.cn/v1"),
+    ("stepfun", "openai-completions", "https://api.stepfun.ai/v1"),
+    ("together", "openai-completions", "https://api.together.ai/v1"),
+    ("venice", "openai-completions", "https://api.venice.ai/api/v1"),
     ("vercel-ai-gateway", "anthropic-messages", "https://ai-gateway.vercel.sh"),
     ("xai", "openai-completions", "https://api.x.ai/v1"),
     ("xiaomi", "anthropic-messages", "https://api.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-ams", "anthropic-messages", "https://token-plan-ams.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-cn", "anthropic-messages", "https://token-plan-cn.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-sgp", "anthropic-messages", "https://token-plan-sgp.xiaomimimo.com/anthropic"),
-    ("zai", "openai-completions", "https://api.z.ai/api/coding/paas/v4")
+    ("zai", "openai-completions", "https://api.z.ai/api/coding/paas/v4"),
+    ("zhipu-coding-plan", "openai-completions", "https://open.bigmodel.cn/api/coding/paas/v4")
 ]
 
 

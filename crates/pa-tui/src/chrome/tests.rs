@@ -830,6 +830,7 @@ fn speed_footer_is_one_dim_row_truncated_to_width() {
 
 use super::*;
 use crate::theme::{ColorMode, Theme};
+use pa_types::context_breakdown::RequestCache;
 use serde_json::json;
 
 /// `count` placeholder detail items for one dock group.
@@ -951,6 +952,7 @@ fn tray_left_and_right_labels() {
             tokens: 6_123,
             context_window: 128_000,
             reading: ContextReading::Measured,
+            last_request: None,
         }),
         ..Default::default()
     };
@@ -1122,6 +1124,7 @@ fn tray_never_repeats_the_heartbeat_counts() {
             tokens: 190,
             context_window: 128_000,
             reading: ContextReading::Measured,
+            last_request: None,
         }),
         ..Default::default()
     };
@@ -1135,6 +1138,48 @@ fn tray_never_repeats_the_heartbeat_counts() {
     assert_eq!(str_width(&text), 120);
 }
 
+/// The last request's prompt-cache hit rides beside the context label (`· cache H%`), hides
+/// when the provider reported no cache fields, and is the first segment the narrowing tray drops,
+/// before the context label or the model.
+#[test]
+fn tray_shows_the_cache_hit_beside_the_context_and_drops_it_first() {
+    let tray = |last_request: RequestCache, width: usize| {
+        let state = ChromeState {
+            show_manage: true,
+            model_id: Some("faux-1".to_string()),
+            context: Some(ContextUsage {
+                tokens: 42_000,
+                context_window: 200_000,
+                reading: ContextReading::Measured,
+                last_request: Some(last_request),
+            }),
+            ..Default::default()
+        };
+        let line = render_tray(&state, &theme(), width);
+        line.iter().map(|s| s.content.as_str()).collect::<String>()
+    };
+    let cached = RequestCache {
+        input: 1_000,
+        cache_read: 13_300,
+        cache_write: 0,
+    };
+    let uncached = RequestCache {
+        input: 14_300,
+        cache_read: 0,
+        cache_write: 0,
+    };
+    assert_eq!(
+        [tray(cached, 42), tray(cached, 32), tray(uncached, 42)],
+        [
+            "\u{2190} manage 42k/200k 21% \u{b7} cache 93% \u{b7} faux-1".to_string(),
+            "\u{2190} manage   42k/200k 21% \u{b7} faux-1".to_string(),
+            // The gap the hidden figure leaves is the gauge: 11 cells, 21% used.
+            "\u{2190} manage \u{2501}\u{2501}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500} 42k/200k 21% \u{b7} faux-1"
+                .to_string(),
+        ]
+    );
+}
+
 /// The gap between the lanes is the context gauge: the used share in `━` (accent, amber from
 /// 70%, red from 90%), the rest in `─`, a space at each end.
 #[test]
@@ -1146,6 +1191,7 @@ fn tray_gap_is_the_context_gauge() {
                 tokens,
                 context_window: 200_000,
                 reading: ContextReading::Measured,
+                last_request: None,
             }),
             ..Default::default()
         };
@@ -1273,6 +1319,7 @@ fn the_gauge_ticks_the_compaction_threshold() {
                 tokens: 50_000,
                 context_window: 200_000,
                 reading: ContextReading::Measured,
+                last_request: None,
             }),
             compaction_percent,
             ..Default::default()
@@ -1307,6 +1354,7 @@ fn the_tray_degrades_in_its_shrink_order() {
             tokens: 50_000,
             context_window: 200_000,
             reading: ContextReading::Measured,
+            last_request: None,
         }),
         model_id: Some("claude-sonnet-4-5".to_string()),
         thinking_suffix: Some("high".to_string()),
@@ -1366,6 +1414,7 @@ fn the_reset_chip_renders_and_outlives_the_model() {
             tokens: 50_000,
             context_window: 200_000,
             reading: ContextReading::Measured,
+            last_request: None,
         }),
         model_id: Some("claude-sonnet-4-5".to_string()),
         reset_chip: chip.map(str::to_string),

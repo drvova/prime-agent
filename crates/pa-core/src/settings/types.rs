@@ -140,6 +140,10 @@ pub struct AutoRefineSettings {
     pub cooldown_ms: Option<u64>,
 }
 
+/// Retired quota-wait settings (`retry.provider.waitForUsage`), kept so
+/// existing settings files still load. Nothing reads them: a quota-exhausted
+/// turn fails at once with the provider's raw error; no session parks until
+/// a reset or resumes on its own.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderWaitSettings {
@@ -148,11 +152,8 @@ pub struct ProviderWaitSettings {
     pub max_delay_ms: Option<u64>,
     pub max_attempts: Option<u64>,
     pub max_wait_ms: Option<u64>,
-    /// Park sessions for provider-reported resets beyond the bounded wait (default true).
     pub pause_until_reset: Option<bool>,
-    /// Maximum single park duration (default 24h, clamped to 7d).
     pub max_pause_ms: Option<u64>,
-    /// Maximum parks per quota episode (default 8).
     pub max_parks: Option<u64>,
 }
 

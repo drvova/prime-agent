@@ -375,42 +375,6 @@ fn the_mint_refuses_and_finishes_on_an_errored_turn() {
     );
 }
 
-/// A rate-limited corpse never triggers the hard finish; it counts toward the no-output backoff.
-#[test]
-fn a_rate_limited_turn_keeps_the_goal_alive() {
-    let (_tmp, mut session) = persisted_session();
-    let mut driver = GoalDriver::new();
-    driver.start(&mut session, "work", None).unwrap();
-    let created_at = driver.state().created_at.unwrap();
-    let parked = test_error_turn(
-        "rate_limit",
-        Some(429),
-        "429 Too many concurrent requests",
-        created_at as i64 + 1,
-    );
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&parked))
-        .unwrap()
-        .is_none());
-    assert_eq!(driver.state().status, GoalStatus::Active);
-    assert!(driver.state().last_error.is_none());
-    // Inside the refusal's backoff window even a progress row refuses.
-    let wake_progress = test_progress_turn(created_at as i64 + 2);
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&wake_progress))
-        .unwrap()
-        .is_none());
-    // The park's wake, minutes later: both refusal windows have
-    // elapsed, and the NEW progress turn mints.
-    driver.no_progress_backoff_until_ms = 0;
-    driver.parked_refusal_until_ms = 0;
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&wake_progress))
-        .unwrap()
-        .is_some());
-    assert_eq!(driver.state().continuations_used, 1);
-}
-
 #[test]
 fn no_output_turns_count_to_the_cap_and_backoff() {
     let (_tmp, mut session) = persisted_session();
@@ -550,29 +514,13 @@ fn a_replacement_goal_starts_with_a_fresh_streak() {
 }
 
 #[test]
-fn rate_limit_and_empty_text_corpses_and_the_examined_gate() {
+fn empty_text_corpses_and_the_examined_gate() {
     let (_tmp, mut session) = persisted_session();
     let mut driver = GoalDriver::new();
     driver.start(&mut session, "work", None).unwrap();
     let created_at = driver.state().created_at.unwrap();
 
-    // (1) Three parked corpses: no strikes, the goal stays alive.
-    for offset in 1..=3 {
-        let parked = test_error_turn(
-            "rate_limit",
-            Some(429),
-            "429 Too many concurrent requests",
-            created_at as i64 + offset,
-        );
-        assert!(driver
-            .next_continuation_message(&mut session, Some(&parked))
-            .unwrap()
-            .is_none());
-    }
-    assert_eq!(driver.no_progress_streak(), 0);
-    assert_eq!(driver.state().status, GoalStatus::Active);
-
-    // (2) The abort conversion's empty-text corpse counts as no-output
+    // (1) The abort conversion's empty-text corpse counts as no-output
     // (the bare is_empty check would have mistaken it for progress).
     let mut empty_text = test_progress_turn(created_at as i64 + 10);
     empty_text.content = vec![pa_agent::types::AssistantContent::Text(
@@ -587,7 +535,7 @@ fn rate_limit_and_empty_text_corpses_and_the_examined_gate() {
         .is_none());
     assert_eq!(driver.no_progress_streak(), 1);
 
-    // (3) The drop-revealed OLDER progress row: the examined gate
+    // (2) The drop-revealed OLDER progress row: the examined gate
     // skips it — the strike survives.
     let older_progress = test_progress_turn(created_at as i64 + 5);
     assert!(driver
@@ -669,7 +617,7 @@ fn a_terminal_error_sharing_the_millisecond_still_refuses() {
 }
 
 /// A same-ms pre-goal row never judges the new goal — the gate requires a
-/// STRICTLY later turn — and a parked refusal clears an earlier strike's window.
+/// STRICTLY later turn.
 #[test]
 fn a_same_ms_pre_goal_corpse_never_judges_the_new_goal() {
     let (_tmp, mut session) = persisted_session();
@@ -706,41 +654,6 @@ fn a_same_ms_pre_goal_corpse_never_judges_the_new_goal() {
     assert_eq!(driver.state().status, GoalStatus::Error);
 }
 
-#[test]
-fn a_parked_refusal_clears_an_earlier_strikes_window() {
-    let (_tmp, mut session) = persisted_session();
-    let mut driver = GoalDriver::new();
-    driver.start(&mut session, "work", None).unwrap();
-    let created_at = driver.state().created_at.unwrap();
-
-    // Strike one: the backoff window arms.
-    let empty = test_empty_turn(created_at as i64 + 1);
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&empty))
-        .unwrap()
-        .is_none());
-    assert_eq!(driver.no_progress_streak(), 1);
-    assert!(driver.backoff_wake_at().is_some());
-
-    // The parked refusal CLEARS the strike's window: no wake during
-    // the park.
-    let parked = test_error_turn(
-        "rate_limit",
-        Some(429),
-        "429 Too many concurrent requests",
-        created_at as i64 + 2,
-    );
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&parked))
-        .unwrap()
-        .is_none());
-    assert!(
-        driver.backoff_wake_at().is_none(),
-        "no wake during the park"
-    );
-    assert_eq!(driver.no_progress_streak(), 1, "the strike stays durable");
-}
-
 /// The print surface's wake take owns an armed window even after its
 /// deadline passed during the settled run: the take still yields the
 /// overdue deadline once — the sleep saturates to zero — and consuming
@@ -767,40 +680,6 @@ fn the_print_wake_take_yields_an_overdue_window_once() {
     // The take yields the overdue deadline once, and consumes it.
     assert_eq!(driver.take_backoff_wake_at(), Some(overdue));
     assert_eq!(driver.take_backoff_wake_at(), None);
-}
-
-#[test]
-fn the_rate_limit_refusal_sticks_across_reconsults() {
-    let (_tmp, mut session) = persisted_session();
-    let mut driver = GoalDriver::new();
-    driver.start(&mut session, "work", None).unwrap();
-    let created_at = driver.state().created_at.unwrap();
-    let parked = test_error_turn(
-        "rate_limit",
-        Some(429),
-        "429 Too many concurrent requests",
-        created_at as i64 + 1,
-    );
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&parked))
-        .unwrap()
-        .is_none());
-    assert_eq!(driver.state().status, GoalStatus::Active);
-    assert_eq!(driver.no_progress_streak(), 0);
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&parked))
-        .unwrap()
-        .is_none());
-    let older_progress = test_progress_turn(created_at as i64 - 1);
-    assert!(driver
-        .next_continuation_message(&mut session, Some(&older_progress))
-        .unwrap()
-        .is_none());
-    assert_eq!(
-        driver.no_progress_streak(),
-        0,
-        "no strikes for parked corpses"
-    );
 }
 
 #[test]
@@ -856,26 +735,6 @@ fn load_persisted_adopts_the_stale_active_failure() {
     assert_eq!(
         rehydrated.state().last_error.as_deref(),
         Some("402 Insufficient balance")
-    );
-    // The rate-limit corpse is the park's pause: the goal
-    // resurrects.
-    let (_tmp, mut session) = persisted_session();
-    let mut driver = GoalDriver::new();
-    driver.start(&mut session, "work", None).unwrap();
-    driver
-        .next_continuation_message(&mut session, None)
-        .unwrap();
-    session
-        .append_message(pa_types::session::AgentMessage::Assistant(wire_error_turn(
-            "rate_limit",
-            Some(429),
-            "429 Too many requests",
-            0,
-        )))
-        .unwrap();
-    assert_eq!(
-        GoalDriver::load_persisted(&session).state().status,
-        GoalStatus::Active
     );
     // A settled terminal row is the newest row: no stale adoption.
     let (_tmp, mut session) = persisted_session();

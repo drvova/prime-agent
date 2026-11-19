@@ -436,7 +436,6 @@ pub(crate) struct SummaryInputs {
     pub(crate) model: Option<Value>,
     pub(crate) model_fallback_message: Option<String>,
     pub(crate) bash_running: bool,
-    pub(crate) quota_parked: bool,
     pub(crate) subagents_running: bool,
     pub(crate) progress_note: Option<String>,
 }
@@ -472,7 +471,6 @@ impl SummaryInputs {
             model,
             model_fallback_message: engine.model_fallback_message(),
             bash_running: user_bash.is_running(),
-            quota_parked: engine.is_quota_parked(),
             subagents_running: engine.has_running_subagents(),
             progress_note: engine.progress_note(),
         }
@@ -598,7 +596,6 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         thinking_level: Some(inputs.thinking_level),
         is_streaming: streaming,
         is_compacting: compacting,
-        is_quota_parked: Some(inputs.quota_parked),
         is_bash_running: Some(inputs.bash_running),
         is_running_tools: streaming && !core.running_tool_calls.is_empty(),
         has_running_subagents: inputs.subagents_running,

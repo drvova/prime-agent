@@ -406,6 +406,9 @@ struct CounterValues {
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
+    /// `agent_message.send` deliveries the per-sender rate bucket refused, reported by
+    /// `agent messages`.
+    agent_message_throttled_count: u64,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
     rlm_abort: RlmAbortCounts,
     /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
@@ -830,6 +833,11 @@ impl SessionCounters {
     /// One recorded assistant call's billing mode (a count: never its cost or provider).
     pub(crate) fn note_billing_mode(&self, mode: pa_types::billing::BillingMode) {
         self.with(|values| values.billing_modes.add(Some(&mode), 0.0));
+    }
+
+    /// `agent_message.send` deliveries the rate bucket refused (a count: never a target or body).
+    pub(crate) fn note_agent_message_throttled(&self, count: u64) {
+        self.with(|values| values.agent_message_throttled_count += count);
     }
 
     /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
@@ -1624,6 +1632,15 @@ impl SessionTelemetry {
                 billing_properties.set(key, Value::from(spend.calls));
             }
             self.client.track("agent billing modes", billing_properties);
+        }
+        // A session whose sends were never throttled sends no agent-message event.
+        let mut throttled = 0;
+        self.counters
+            .with(|values| throttled = values.agent_message_throttled_count);
+        if throttled > 0 {
+            let mut message_properties = self.session_properties();
+            message_properties.set("agent_message_throttled_count", Value::from(throttled));
+            self.client.track("agent messages", message_properties);
         }
         // A session that never aborted a child from the kernel sends no abort event.
         let mut abort = RlmAbortCounts::default();

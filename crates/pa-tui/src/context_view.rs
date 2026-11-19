@@ -408,13 +408,17 @@ impl ContextView {
             ),
         ];
         let mut rows = vec![truncate_line(&headline, width, "…")];
-        if context.reading == ContextReading::Stale {
-            rows.extend(note(
-                theme,
-                width,
-                ThemeColor::Dim,
-                "Last known value: the next reply measures the context again.",
-            ));
+        let caveat = match context.reading {
+            ContextReading::Stale => {
+                Some("Last known value: the next reply measures the context again.")
+            }
+            ContextReading::Estimated => {
+                Some("Estimated while the reply streams: its usage measures the context.")
+            }
+            ContextReading::Measured | ContextReading::Unknown => None,
+        };
+        if let Some(caveat) = caveat {
+            rows.extend(note(theme, width, ThemeColor::Dim, caveat));
         }
         rows.push(usage_bar(theme, width, percent, chrome.compaction_percent));
         rows.retain(|row| !row.is_empty());
