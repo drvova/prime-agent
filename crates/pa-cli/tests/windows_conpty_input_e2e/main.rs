@@ -857,22 +857,34 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     );
     // Image paste is Ctrl+V (the user's spec; there is no Alt+V binding). A
     // Ctrl+V the terminal passes on reads the clipboard's bitmap (converted
-    // to PNG) into an `[image #N]` marker; a terminal that intercepts Ctrl+V
-    // over an image-only clipboard sends an empty bracketed paste, which
-    // attaches the image too; with no image, Ctrl+V pastes the clipboard's
-    // text, and an empty clipboard says so; a pasted image file path
-    // attaches the file. None of it submits.
+    // to PNG) into an `[image #N]` marker; with no image, Ctrl+V pastes the
+    // clipboard's text, and an empty clipboard says so; a pasted image file
+    // path attaches the file. None of it submits.
     let bitmap = set_clipboard_bitmap();
     check(&mut term, "a bitmap lands on the clipboard", bitmap.is_ok());
     term.key(Key::CtrlV);
     let marker = term.wait_for("[image #1]", Duration::from_secs(30));
     check(&mut term, "ctrl+v pastes the clipboard image", marker);
+    // A terminal that intercepts Ctrl+V over an image-only clipboard sends an
+    // empty bracketed paste. Both console hosts consume the marker pair before
+    // the app reads a record (run 44467269683: no host delivered anything), so
+    // on the console it must leave the draft as it was; a VT terminal's empty
+    // paste attaching the image is pinned by pa-tui's image_paste_headless.
+    let composer = |term: &Terminal| {
+        term.screen
+            .text()
+            .lines()
+            .find(|line| line.contains("[image #1]"))
+            .map(str::to_string)
+    };
+    let draft = composer(&term);
     term.pty.send(b"\x1b[200~\x1b[201~");
-    let intercepted = term.wait_for("[image #2]", Duration::from_secs(30));
+    term.settle(Duration::from_millis(500));
+    let unchanged = draft.is_some() && composer(&term) == draft;
     check(
         &mut term,
-        "an empty bracketed paste attaches the clipboard image",
-        intercepted,
+        "an empty bracketed paste leaves the draft as it was",
+        unchanged,
     );
     let text = set_clipboard_text("clip-text-fallback");
     check(&mut term, "text lands on the clipboard", text.is_ok());
@@ -891,7 +903,7 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     let image_file = root.join("dropped shot.png");
     std::fs::write(&image_file, ONE_PIXEL_PNG).expect("write the dropped image");
     term.paste(&format!("\"{}\"", image_file.display()));
-    let dropped = term.wait_for("[image #3]", Duration::from_secs(30));
+    let dropped = term.wait_for("[image #2]", Duration::from_secs(30));
     check(&mut term, "a pasted image path attaches the file", dropped);
     term.settle(Duration::from_millis(500));
     let prompts = submitted_prompts(&session_dir);

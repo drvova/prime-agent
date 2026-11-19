@@ -71,11 +71,6 @@ const PLATFORM_EVENT_SOURCE: EventSource = if cfg!(windows) {
 pub(crate) struct SequenceGuard {
     source: EventSource,
     pending: Option<PendingEscape>,
-    /// A reassembled paste-start marker (`ESC[200~`) with nothing behind it yet: a paste-end
-    /// marker next is an empty bracketed paste, which a terminal sends when it intercepts Ctrl+V
-    /// over an image-only clipboard. It is reported as an empty [`Event::Paste`] so the paste
-    /// path can look for the clipboard image.
-    paste_open: bool,
 }
 
 impl Default for SequenceGuard {
@@ -89,7 +84,6 @@ impl SequenceGuard {
         Self {
             source,
             pending: None,
-            paste_open: false,
         }
     }
 
@@ -105,13 +99,7 @@ impl SequenceGuard {
                     });
                     Vec::new()
                 }
-                _ => {
-                    // A console release record is not input: it never breaks an open paste.
-                    if !matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Release) {
-                        self.paste_open = false;
-                    }
-                    vec![GuardOutput::Event(event)]
-                }
+                _ => vec![GuardOutput::Event(event)],
             },
             Some(mut pending) => {
                 // The hold expired before this event arrived: the held `ESC` already stood alone,
@@ -143,17 +131,7 @@ impl SequenceGuard {
                 // Every chunk that extends the buffer resets the flush timeout.
                 pending.deadline = now + HOLD;
                 if is_complete_sequence(&pending.assembled) {
-                    let paste_was_open = std::mem::take(&mut self.paste_open);
-                    match pending.assembled.as_slice() {
-                        b"\x1b[200~" => {
-                            self.paste_open = true;
-                            Vec::new()
-                        }
-                        b"\x1b[201~" if paste_was_open => {
-                            vec![GuardOutput::Event(Event::Paste(String::new()))]
-                        }
-                        _ => classify(&pending),
-                    }
+                    classify(&pending)
                 } else {
                     self.pending = Some(pending);
                     Vec::new()

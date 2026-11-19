@@ -211,9 +211,10 @@ mod win32 {
     pub(super) fn read_text() -> std::io::Result<Option<String>> {
         let clipboard = OpenClipboardGuard::open()?;
         Ok(clipboard.bytes(CF_UNICODETEXT).map(|bytes| {
-            let units: Vec<u16> = bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            let (pairs, _) = bytes.as_chunks::<2>();
+            let units: Vec<u16> = pairs
+                .iter()
+                .map(|&pair| u16::from_le_bytes(pair))
                 .take_while(|&unit| unit != 0)
                 .collect();
             String::from_utf16_lossy(&units)
