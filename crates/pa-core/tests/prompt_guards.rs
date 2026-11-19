@@ -12,7 +12,7 @@
 //! is byte-identical across sessions) and tool surface (the core layer's documented tools match the
 //! real registered surface; a tool change without a prompt update fails here).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use pa_core::prompts::layers::{CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER};
@@ -525,6 +525,89 @@ fn core_layer_documents_the_real_tool_surface() {
              document it: update prompts/layers/core.md"
         );
     }
+}
+
+/// The kernel capability manifests (`prime-agent-runtime/capabilities/`) declare exactly this
+/// file's host-request mapping for every registered request that surfaces as a name a manifest
+/// documents, and their internal requests are registered host plumbing.
+#[test]
+fn capability_manifests_declare_the_host_request_mapping() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/capabilities");
+    let mut declared = BTreeMap::new();
+    let mut documented = BTreeSet::new();
+    let mut internal = BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {dir:?}: {error}")) {
+        let path = entry.expect("directory entry").path();
+        if path.extension().is_none_or(|ext| ext != "toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("manifest text");
+        let manifest: toml::Table = toml::from_str(&text)
+            .unwrap_or_else(|error| panic!("unparseable manifest {path:?}: {error}"));
+        let strings = |key: &str| -> Vec<String> {
+            manifest
+                .get(key)
+                .and_then(toml::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_string)
+                .collect()
+        };
+        documented.extend(strings("documented"));
+        internal.extend(strings("internal_host_requests"));
+        for (request, token) in manifest
+            .get("host_requests")
+            .and_then(toml::Value::as_table)
+            .into_iter()
+            .flatten()
+        {
+            declared.insert(
+                request.clone(),
+                token.as_str().expect("documented token").to_string(),
+            );
+        }
+    }
+
+    // `registered_host_requests` sees literal registrations only; these handlers register under a
+    // `pub const <NAME>_REQUEST_TYPE: &str = "<type>"` constant instead.
+    let mut registered = registered_host_requests();
+    let mut stack = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("source dir").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                let source = std::fs::read_to_string(&path).expect("read source");
+                registered.extend(
+                    source
+                        .split("_REQUEST_TYPE: &str = ")
+                        .skip(1)
+                        .filter_map(first_string_literal),
+                );
+            }
+        }
+    }
+    let mapped: BTreeMap<String, String> = registered
+        .iter()
+        .filter_map(|request| {
+            prompt_token_for_host_request(request)
+                .filter(|token| documented.contains(token))
+                .map(|token| (request.clone(), token))
+        })
+        .collect();
+    let unregistered_internal: Vec<&String> = internal
+        .iter()
+        .filter(|request| {
+            !(registered.contains(*request) && INTERNAL_HOST_REQUESTS.contains(&request.as_str()))
+        })
+        .collect();
+    assert_eq!(
+        (mapped, unregistered_internal),
+        (declared, Vec::new()),
+        "a host request and its capability manifest disagree"
+    );
 }
 
 // Packaged-set parity (TS packages/coding-agent/skills)

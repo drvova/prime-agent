@@ -1,0 +1,14 @@
+module = "rlm.bash"
+closure_seed = true
+prompt_builtins = ["bash"]
+documented = ["bash"]
+internal_host_requests = ["bash.completed", "bash.consumed"]
+probe = [
+  "from rlm.bash import BashHandle, BashResult",
+  "assert callable(rlm.bash)",
+  "assert list(inspect.signature(rlm.bash).parameters) == ['command', 'persistent']",
+  "assert callable(rlm.persistent_shells)",
+  "assert callable(rlm._set_completion_notices_wired)",
+  "assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill'))",
+  "assert {'exit_code', 'output', 'duration'} <= set(BashResult.__dataclass_fields__)",
+]

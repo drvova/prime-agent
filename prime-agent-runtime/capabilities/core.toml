@@ -1,0 +1,55 @@
+module = "rlm"
+closure_seed = true
+prompt_builtins = ["rlm.*"]
+documented = [
+  "rlm.spawn",
+  "rlm.create_session",
+  "rlm.find_models",
+  "rlm.list_subagents",
+  "rlm.delete_subagent",
+  "rlm.abort",
+  "rlm.rename",
+  "rlm.collect",
+  "rlm.progress_note",
+  "rlm.end_turn",
+]
+probe = [
+  "import inspect",
+  "import rlm",
+  "assert callable(rlm.spawn)",
+  "assert hasattr(rlm, 'rlm')",
+  "assert callable(rlm.rlm.spawn)",
+  "assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty",
+  "assert not hasattr(rlm, 'run')",
+  "assert not hasattr(rlm.rlm, 'run')",
+  "assert callable(rlm.end_turn)",
+  "assert callable(rlm.rlm.end_turn)",
+  "assert callable(rlm.find_models)",
+  "assert callable(rlm.rlm.find_models)",
+  "assert callable(rlm.create_session)",
+  "assert callable(rlm.rlm.create_session)",
+  "assert callable(rlm.progress_note)",
+  "assert callable(rlm.rlm.progress_note)",
+  "assert callable(rlm.rename)",
+  "assert callable(rlm.rlm.rename)",
+  "assert callable(rlm.abort)",
+  "assert callable(rlm.rlm.abort)",
+  "assert not hasattr(rlm, 'background')",
+  "assert not hasattr(rlm.rlm, 'background')",
+]
+
+[host_requests]
+"rlm.end_turn" = "rlm.end_turn"
+"rlm.run" = "rlm.spawn"
+"rlm.create_session" = "rlm.create_session"
+"rlm.find_models" = "rlm.find_models"
+"rlm.list_subagents" = "rlm.list_subagents"
+"rlm.collect" = "rlm.collect"
+"rlm.progress.note" = "rlm.progress_note"
+"rlm.delete_subagent" = "rlm.delete_subagent"
+"rlm.abort" = "rlm.abort"
+"rlm.rename" = "rlm.rename"
+
+[[telemetry]]
+event = "agent rlm child abort"
+properties = ["rlm_abort_aborted_count", "rlm_abort_idle_count", "rlm_abort_failed_count"]

@@ -1,0 +1,17 @@
+module = "rlm.cells"
+closure_seed = true
+documented = ["rlm.cells.get"]
+internal_host_requests = ["cell.completed", "cell.consumed"]
+probe = [
+  "import rlm.cells as _cells",
+  "assert all(callable(getattr(_cells, _m, None)) for _m in ('get', 'handles'))",
+]
+
+[[telemetry]]
+event = "agent repl background cells"
+properties = [
+  "cell_backgrounded_count",
+  "cell_background_ok_count",
+  "cell_background_error_count",
+  "cell_background_interrupted_count",
+]
