@@ -425,10 +425,16 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
                 return;
             };
             let mut properties = pa_telemetry::base_properties("interactive");
-            properties.set(
-                "todo_tray_toggle_count",
-                serde_json::Value::from(counts.todo_tray_toggles),
-            );
+            for (key, count) in [
+                ("todo_tray_toggle_count", counts.todo_tray_toggles),
+                ("question_answer_count", counts.question_answers),
+                ("question_digit_answer_count", counts.question_digit_answers),
+                ("question_other_answer_count", counts.question_other_answers),
+                ("question_decline_count", counts.question_declines),
+                ("question_click_count", counts.question_clicks),
+            ] {
+                properties.set(key, serde_json::Value::from(count));
+            }
             client.track("tui todos and questions", properties);
             let _ = client.shutdown().await;
         })

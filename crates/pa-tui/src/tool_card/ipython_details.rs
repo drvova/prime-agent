@@ -21,6 +21,18 @@ pub(crate) struct IpythonDetails {
     pub(crate) transcript_reads: Vec<TranscriptRead>,
     /// The todo list the cell's last `todo.set`/`todo.update` left (`todoList`).
     pub(crate) todo_list: Option<pa_types::todo::TodoList>,
+    /// The cell's settled `ask(...)` questions, in order (`questions`).
+    pub(crate) questions: Vec<AskedQuestion>,
+}
+
+/// One settled `ask(...)` question the cell card records: what was asked, how it settled
+/// (`answered`, `declined`, `timed_out`, `no_user`, `cancelled`), and the answer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub(crate) struct AskedQuestion {
+    pub(crate) text: String,
+    pub(crate) status: String,
+    #[serde(default)]
+    pub(crate) answer: Vec<String>,
 }
 
 pub(crate) struct IpythonError {
@@ -182,6 +194,7 @@ impl IpythonDetails {
             bash_commands: None,
             transcript_reads: Vec::new(),
             todo_list: None,
+            questions: Vec::new(),
         };
         let Some(record) = details.as_object() else {
             return empty;
@@ -235,6 +248,16 @@ impl IpythonDetails {
             todo_list: record
                 .get("todoList")
                 .and_then(|list| serde_json::from_value(list.clone()).ok()),
+            questions: record
+                .get("questions")
+                .and_then(Value::as_array)
+                .map(|questions| {
+                    questions
+                        .iter()
+                        .filter_map(|question| serde_json::from_value(question.clone()).ok())
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }

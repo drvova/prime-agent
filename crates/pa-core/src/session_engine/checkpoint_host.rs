@@ -224,6 +224,8 @@ impl CheckpointHost {
                     choices: vec![RESTORE_CHOICE.to_string(), KEEP_CHOICE.to_string()],
                     default: vec![KEEP_CHOICE.to_string()],
                     timeout_seconds: None,
+                    allow_other: false,
+                    expires_at_ms: None,
                 };
                 let (status, answer) = self.interaction.ask(question).await?;
                 let confirmed = match status {
@@ -431,6 +433,8 @@ mod tests {
                 choices: vec![RESTORE_CHOICE.to_string(), KEEP_CHOICE.to_string()],
                 default: vec![KEEP_CHOICE.to_string()],
                 timeout_seconds: None,
+                allow_other: false,
+                expires_at_ms: None,
             }]
         );
 

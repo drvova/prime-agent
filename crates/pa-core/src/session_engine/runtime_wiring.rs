@@ -478,6 +478,7 @@ fn convert_execute_result(
         bash_waits: result.bash_waits,
         transcript_reads: result.transcript_reads.unwrap_or_default(),
         todo_list: result.todo_list,
+        questions: result.questions.unwrap_or_default(),
         backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
     }

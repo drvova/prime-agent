@@ -1,0 +1,1 @@
+- Questions the agent asks from the Python REPL are quicker to answer: the panel numbers its choices (press a digit to pick), offers `Other…` to type your own answer, counts the timeout down live, takes mouse clicks, and the transcript records each question with your answer.

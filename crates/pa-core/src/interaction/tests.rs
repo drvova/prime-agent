@@ -226,27 +226,32 @@ async fn ask_returns_the_users_answer() {
         choices: vec!["a".to_string(), "b".to_string(), "c".to_string()],
         default: Vec::new(),
         timeout_seconds: None,
+        allow_other: true,
+        expires_at_ms: None,
     };
     assert_eq!(hub.open_question(), Some(open.clone()));
-    // An answer outside the choices is refused and the question stays open.
-    assert!(hub
-        .answer(
-            "q1",
-            QuestionReply::Answered {
-                answer: vec!["z".to_string()]
-            }
-        )
-        .is_err());
+    // Beside the choices the user may type one answer of their own; two, or a blank one, are
+    // refused and the question stays open.
+    for refused in [vec!["y", "z"], vec!["a", " "]] {
+        assert!(hub
+            .answer(
+                "q1",
+                QuestionReply::Answered {
+                    answer: refused.iter().map(ToString::to_string).collect(),
+                }
+            )
+            .is_err());
+    }
     hub.answer(
         "q1",
         QuestionReply::Answered {
-            answer: vec!["a".to_string(), "c".to_string()],
+            answer: vec!["a".to_string(), "c".to_string(), "my own".to_string()],
         },
     )
     .unwrap();
     assert_eq!(
         within(asking).await.unwrap(),
-        json!({"status": "answered", "answer": ["a", "c"]})
+        json!({"status": "answered", "answer": ["a", "c", "my own"]})
     );
     assert_eq!(
         surface.events.lock().unwrap().clone(),
@@ -271,9 +276,23 @@ async fn ask_settles_on_timeout_detach_and_cancel() {
 
     let mut timed = question(QuestionKind::Text, &[], &["keep going"]);
     timed["timeoutSeconds"] = json!(30);
+    let before = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
     assert_eq!(
         call(&handlers, "question.ask", timed).await,
         json!({"status": "timed_out", "answer": ["keep going"]})
+    );
+    // The open question carried its deadline, so every surface counts down to one moment.
+    let expires = match surface.events.lock().unwrap().first() {
+        Some(InteractionEvent::QuestionOpened(question)) => question.expires_at_ms,
+        other => panic!("the question opened first: {other:?}"),
+    };
+    let expires = u128::from(expires.expect("a timed question carries its deadline"));
+    assert!(
+        (before + 30_000..before + 31_000).contains(&expires),
+        "{expires} vs {before}"
     );
 
     let detach = tokio::spawn({

@@ -1124,7 +1124,14 @@ const TUI_INLINE_IMAGES_RENDERED: EventRule = EventRule {
 const TUI_TODOS_AND_QUESTIONS: EventRule = EventRule {
     name: "tui todos and questions",
     since: 2,
-    properties: &[("todo_tray_toggle_count", required(count()))],
+    properties: &[
+        ("todo_tray_toggle_count", required(count())),
+        ("question_answer_count", required(count())),
+        ("question_digit_answer_count", required(count())),
+        ("question_other_answer_count", required(count())),
+        ("question_decline_count", required(count())),
+        ("question_click_count", required(count())),
+    ],
 };
 
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend

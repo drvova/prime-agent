@@ -200,7 +200,10 @@ supplies the `InteractionSurface` (the daemon worker's attached clients); withou
 session is headless and `ask` settles as `no_user` at once. Adoption counts ride the
 `agent todos and questions` telemetry event. The kernel's `todo.set`/`todo.update` also show the
 new list on the running cell (the `todo` display MIME; the cell keeps its last as the tool
-result's `todoList` detail), so the transcript records each plan change.
+result's `todoList` detail), so the transcript records each plan change; a settled `ask(...)`
+shows likewise (the `question` display MIME, every one kept as the `questions` detail). A choice
+question also takes the user's own typed answer (`allowOther`; a host confirmation never does),
+and a timed question carries its deadline (`expiresAtMs`) for the surfaces' countdown.
 The kernel's `notify(...)` rides the same hub (`notify.send`: an
 `InteractionEvent::Notified` published fire-and-forget, `delivered` answered at once from the
 surface's presence). The opt-in `model.set_effort` (`session_engine::effort_switch`) is gated on
