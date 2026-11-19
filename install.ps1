@@ -70,7 +70,8 @@ $ReleaseChannelDefault = 'stable'
 # official copy leaves all four empty): the versioned-asset URL
 # (<this>/v<version>/<file>; empty = <base>/releases), the default prefix
 # relative to $HOME (empty = .local), the variant whose launchers pin their
-# own daemon pipe and kernel venv, and the command its launchers answer as
+# own agent dir (~/.prime/agent-<variant>), daemon pipe, and kernel venv,
+# and the command its launchers answer as
 # (bin\<command>.cmd + bin\<command>; empty = prime-agent).
 $ReleaseAssetsUrlDefault = ''
 $PrefixDefault = ''
@@ -610,11 +611,12 @@ if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%U
 "%~dp0..\share\prime-agent\prime-agent.exe" %*
 '@
         # THE DISTRIBUTION PINS (install-rust.sh parity): the variant's own
-        # kernel venv under the prefix and its own daemon pipe, both
-        # yielding to an explicit env value.
+        # agent dir (~/.prime/agent-<variant>, never the official
+        # ~/.prime/agent), its own kernel venv under the prefix, and its own
+        # daemon pipe, all yielding to an explicit env value.
         $variantVenv = Join-Path ([IO.Path]::GetFullPath($prefix)) 'kernel-venv'
         if ($VariantName) {
-            $cmdShim = $cmdShim.Replace("%USERPROFILE%\.prime\agent`"`r`n", "%USERPROFILE%\.prime\agent`"`r`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`r`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`r`n").Replace("%USERPROFILE%\.prime\agent`"`n", "%USERPROFILE%\.prime\agent`"`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`n")
+            $cmdShim = $cmdShim.Replace("%USERPROFILE%\.prime\agent`"`r`n", "%USERPROFILE%\.prime\agent`"`r`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`r`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`r`n").Replace("%USERPROFILE%\.prime\agent`"`n", "%USERPROFILE%\.prime\agent`"`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`n").Replace("%USERPROFILE%\.prime\agent`"", "%USERPROFILE%\.prime\agent-$VariantName`"")
         }
         Set-Content -LiteralPath $launcher -Value $cmdShim
 
@@ -627,7 +629,7 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
         if ($VariantName) {
             $shVenv = $variantVenv.Replace('\', '/').Replace("'", "'\''")
             $shPins = "[ -n `"`${PRIME_AGENT_KERNEL_VENV:-}`" ] || PRIME_AGENT_KERNEL_VENV='$shVenv'; export PRIME_AGENT_KERNEL_VENV`n[ -n `"`${PRIME_AGENT_DAEMON_SOCKET:-}`" ] || PRIME_AGENT_DAEMON_SOCKET='$variantPipe'; export PRIME_AGENT_DAEMON_SOCKET`n"
-            $shBody = $shBody.Replace("`r`n", "`n").Replace("/.prime/agent}`"`nexec", "/.prime/agent}`"`n${shPins}exec")
+            $shBody = $shBody.Replace("`r`n", "`n").Replace("/.prime/agent}`"`nexec", "/.prime/agent-$VariantName}`"`n${shPins}exec")
         }
         # LF endings + no BOM: the sh launcher must stay a POSIX file.
         [IO.File]::WriteAllText($shLauncher, $shBody.Replace("`r`n", "`n"))

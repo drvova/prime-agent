@@ -3,7 +3,7 @@
 //! `HOME` when set, then on Windows `USERPROFILE`, else `HOMEDRIVE` + `HOMEPATH`. Where
 //! `os.homedir()` throws, this port returns `None` and each caller owns its fallback.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The user's home directory, Node `os.homedir()` semantics: `HOME` first (always wins, matching
 /// the
@@ -34,18 +34,99 @@ pub fn home_dir() -> Option<PathBuf> {
 /// (byte-compatible with the TS product).
 pub const ENV_AGENT_DIR: &str = "PRIME_AGENT_CODING_AGENT_DIR";
 
-/// The agent state directory name (TS `CONFIG_DIR_NAME`, `.prime/agent`).
+/// The agent state directory name (TS `CONFIG_DIR_NAME`, `.prime/agent`): the official build's
+/// per-user agent dir under the home directory, and every build's project config dir under a
+/// working directory.
 pub const CONFIG_DIR_NAME: &str = ".prime/agent";
 
-/// The agent state directory: the env override with a leading `~`/`~/` expanded, else
-/// `<home>/.prime/agent`; `None` when the home directory does not resolve (each caller owns its
-/// fallback).
+/// `PRIME_AGENT_DIST_VARIANT` as this binary was compiled: a distribution build's variant name
+/// (its release workflow sets it with the other `PRIME_AGENT_DIST_*` stamps), `None` for the
+/// official build.
+pub const DIST_VARIANT_STAMP: Option<&str> = option_env!("PRIME_AGENT_DIST_VARIANT");
+
+/// Which per-user state a build owns. The official build keeps the product's shared names
+/// (`~/.prime/agent`, the `prime-agent-<uid>` socket dir, the `prime-agent-daemon` pipe), which
+/// the TypeScript product reads and writes too. A distribution build owns its own set, named by
+/// its variant, so it never lists, resumes, or leases the official products' sessions and never
+/// reaches their daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateLayout {
+    /// `~/.prime/agent`, the `prime-agent` endpoint names.
+    Official,
+    /// `~/.prime/agent-<variant>`, the `prime-agent-<variant>` endpoint names.
+    Distribution { variant: &'static str },
+}
+
+impl StateLayout {
+    /// The layout this binary was compiled with.
+    pub const BUILD: Self = Self::from_stamp(DIST_VARIANT_STAMP);
+
+    /// The layout a variant stamp names.
+    ///
+    /// # Panics
+    ///
+    /// Panics (a compile error for [`Self::BUILD`]) when the variant is empty or holds anything
+    /// but `a-z`, `0-9`, and `-` (the installers' own variant rule: it names files, sockets,
+    /// and pipes).
+    #[must_use]
+    pub const fn from_stamp(variant: Option<&'static str>) -> Self {
+        let Some(variant) = variant else {
+            return Self::Official;
+        };
+        let bytes = variant.as_bytes();
+        assert!(!bytes.is_empty(), "PRIME_AGENT_DIST_VARIANT is empty");
+        let mut index = 0;
+        while index < bytes.len() {
+            assert!(
+                matches!(bytes[index], b'a'..=b'z' | b'0'..=b'9' | b'-'),
+                "PRIME_AGENT_DIST_VARIANT allows only a-z, 0-9, and -"
+            );
+            index += 1;
+        }
+        Self::Distribution { variant }
+    }
+
+    /// The last component of the per-user agent dir under `~/.prime`: `agent`, or
+    /// `agent-<variant>`.
+    #[must_use]
+    pub fn agent_dir_leaf(self) -> String {
+        match self {
+            Self::Official => "agent".to_string(),
+            Self::Distribution { variant } => format!("agent-{variant}"),
+        }
+    }
+
+    /// The per-user agent dir under `home` (no env override): `<home>/.prime/agent` (the
+    /// official spelling, joined exactly as it always was), or `<home>/.prime/agent-<variant>`.
+    #[must_use]
+    pub fn home_agent_dir(self, home: &Path) -> PathBuf {
+        match self {
+            Self::Official => home.join(CONFIG_DIR_NAME),
+            Self::Distribution { .. } => home.join(".prime").join(self.agent_dir_leaf()),
+        }
+    }
+
+    /// The prefix of the daemon endpoint names (the Unix socket dir `<prefix>-<uid>`, the
+    /// Windows pipe `<prefix>-daemon`): `prime-agent`, or `prime-agent-<variant>` (the
+    /// installers' distribution launchers pin the same names).
+    #[must_use]
+    pub fn endpoint_prefix(self) -> String {
+        match self {
+            Self::Official => "prime-agent".to_string(),
+            Self::Distribution { variant } => format!("prime-agent-{variant}"),
+        }
+    }
+}
+
+/// The agent state directory: the env override with a leading `~`/`~/` expanded, else this
+/// build's per-user dir ([`StateLayout::home_agent_dir`]); `None` when the home directory does
+/// not resolve (each caller owns its fallback).
 #[must_use]
 pub fn agent_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os(ENV_AGENT_DIR).filter(|dir| !dir.is_empty()) {
         return Some(expand_tilde(&dir.to_string_lossy()));
     }
-    home_dir().map(|home| home.join(CONFIG_DIR_NAME))
+    home_dir().map(|home| StateLayout::BUILD.home_agent_dir(&home))
 }
 
 /// Expand a leading `~`/`~/` - and on Windows `~\` - against [`home_dir`]; other values pass
@@ -140,6 +221,37 @@ mod tests {
                     Some(PathBuf::from("/home/tester/.prime/agent"))
                 );
             },
+        );
+    }
+
+    /// A distribution stamp moves the per-user agent dir and the daemon endpoints off the
+    /// official products' shared names; no stamp keeps them.
+    #[test]
+    #[cfg(unix)]
+    fn a_distribution_layout_owns_its_agent_dir_and_endpoints() {
+        let home = Path::new("/home/tester");
+        let resolved = [None, Some("fork")].map(|stamp| {
+            let layout = StateLayout::from_stamp(stamp);
+            (
+                layout,
+                layout.home_agent_dir(home),
+                layout.endpoint_prefix(),
+            )
+        });
+        assert_eq!(
+            resolved,
+            [
+                (
+                    StateLayout::Official,
+                    PathBuf::from("/home/tester/.prime/agent"),
+                    "prime-agent".to_string()
+                ),
+                (
+                    StateLayout::Distribution { variant: "fork" },
+                    PathBuf::from("/home/tester/.prime/agent-fork"),
+                    "prime-agent-fork".to_string()
+                ),
+            ]
         );
     }
 

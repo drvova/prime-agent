@@ -171,9 +171,12 @@ RELEASE_CHANNEL_DEFAULT="stable"
 #   PREFIX_DEFAULT              the default prefix (empty = ~/.local)
 #   VARIANT_NAME                a distribution's own daemon socket
 #                               (prime-agent-<variant>-<uid>, never the
-#                               official prime-agent-rust-<uid>) and its own
-#                               kernel venv (<prefix>/kernel-venv), both pinned
-#                               by the launcher; empty = the official build
+#                               official prime-agent-rust-<uid>), its own
+#                               kernel venv (<prefix>/kernel-venv), and its own
+#                               agent dir (~/.prime/agent-<variant>: sessions,
+#                               settings, auth - never the official
+#                               ~/.prime/agent), all pinned by the launcher;
+#                               empty = the official build
 #   COMMAND_NAME                the command a distribution build installs
 #                               instead of prime-agent (its launcher is
 #                               $PREFIX/bin/<command>, plus ~/.local/bin/<command>
@@ -2942,11 +2945,15 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent" "$@"
 EOF
 fi
 # THE DISTRIBUTION PINS (VARIANT_NAME set): the launcher keeps the official
-# text and gains two pins — its own daemon socket (the official pin's
-# directory renamed, so the two builds never share a live daemon) and its
-# own kernel venv under the prefix (each build's readiness probe matches
-# its own runtime, so switching builds never rebuilds a shared venv). Both
-# honor an explicit env value, like the official pins.
+# text with three pins of its own — its own agent dir
+# ($HOME/.prime/agent-<variant>, the binary's stamped default too: the
+# distribution never lists, resumes, or leases the official products'
+# sessions; its first run imports the official configuration, never the
+# sessions), its own daemon socket (the official pin's directory renamed,
+# so the two builds never share a live daemon), and its own kernel venv
+# under the prefix (each build's readiness probe matches its own runtime,
+# so switching builds never rebuilds a shared venv). All honor an explicit
+# env value, like the official pins.
 if [ -n "${VARIANT_NAME:-}" ]; then
   variant_prefix="$(cd "$PREFIX" && pwd -P)"
   # The payload is a native Windows exe: it reads the venv path in the
@@ -2960,8 +2967,13 @@ if [ -n "${VARIANT_NAME:-}" ]; then
     variant_line="${variant_line}
 [ -n \"\${PRIME_AGENT_DAEMON_SOCKET:-}\" ] || PRIME_AGENT_DAEMON_SOCKET='\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon'; export PRIME_AGENT_DAEMON_SOCKET"
   fi
-  VARIANT_LINE="$variant_line" awk -v from="prime-agent-rust-" -v to="${DAEMON_SOCKET_DIR_NAME}-" '
-    { while ((i = index($0, from)) > 0) { $0 = substr($0, 1, i - 1) to substr($0, i + length(from)) } print }
+  VARIANT_LINE="$variant_line" awk -v from="prime-agent-rust-" -v to="${DAEMON_SOCKET_DIR_NAME}-" \
+    -v store="/.prime/agent}" -v own_store="/.prime/agent-${VARIANT_NAME}}" '
+    { while ((i = index($0, from)) > 0) { $0 = substr($0, 1, i - 1) to substr($0, i + length(from)) } }
+    /^export PRIME_AGENT_CODING_AGENT_DIR=/ && (i = index($0, store)) > 0 {
+      $0 = substr($0, 1, i - 1) own_store substr($0, i + length(store))
+    }
+    { print }
     /^export PRIME_AGENT_CODING_AGENT_DIR=/ { print ENVIRON["VARIANT_LINE"] }
   ' "$launcher_tmp" > "${launcher_tmp}.variant"
   mv -f "${launcher_tmp}.variant" "$launcher_tmp"
@@ -3008,7 +3020,12 @@ EOF
     cmd_venv="$(cygpath -w "${variant_prefix}/kernel-venv" 2>/dev/null || printf '%s' "${variant_prefix}/kernel-venv")"
     CMD_PINS="if not defined PRIME_AGENT_KERNEL_VENV set \"PRIME_AGENT_KERNEL_VENV=${cmd_venv}\"
 if not defined PRIME_AGENT_DAEMON_SOCKET set \"PRIME_AGENT_DAEMON_SOCKET=\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon\"" \
-      awk '{ print } /^if not defined PRIME_AGENT_CODING_AGENT_DIR / { print ENVIRON["CMD_PINS"] }' \
+      awk -v store='\\.prime\\agent"' -v own_store="\\\\.prime\\\\agent-${VARIANT_NAME}\"" '
+        /^if not defined PRIME_AGENT_CODING_AGENT_DIR / && (i = index($0, store)) > 0 {
+          $0 = substr($0, 1, i - 1) own_store substr($0, i + length(store))
+        }
+        { print }
+        /^if not defined PRIME_AGENT_CODING_AGENT_DIR / { print ENVIRON["CMD_PINS"] }' \
       "$cmd_tmp" > "${cmd_tmp}.variant"
     mv -f "${cmd_tmp}.variant" "$cmd_tmp"
   fi
