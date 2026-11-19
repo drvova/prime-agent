@@ -417,8 +417,8 @@ def validate_bundled_catalog_dir(directory, allow_small_fixture: bool = False) -
 # Fixture: a synthetic snapshot that passes the FULL gates (offline builds)
 # --------------------------------------------------------------------------
 
-# The compiled transport tuples of the shipped registry (65 distinct
-# (provider, api, baseUrl) triples across 54 providers, from the compiled
+# The compiled transport tuples of the shipped registry (76 distinct
+# (provider, api, baseUrl) triples across 60 providers, from the compiled
 # model catalog, now the hand-maintained fallback table
 # crates/pa-ai/src/models_generated.rs). Fixture models use real tuples so
 # they survive runtime transport pinning; nothing here can introduce a
@@ -445,6 +445,7 @@ FIXTURE_TRANSPORT_TUPLES = [
     ("deepseek", "openai-completions", "https://api.deepseek.com"),
     ("firepass", "openai-completions", "https://api.fireworks.ai/inference/v1"),
     ("fireworks", "anthropic-messages", "https://api.fireworks.ai/inference"),
+    ("fireworks", "openai-completions", "https://api.fireworks.ai/inference/v1"),
     ("github-copilot", "anthropic-messages", "https://api.individual.githubcopilot.com"),
     ("github-copilot", "openai-completions", "https://api.individual.githubcopilot.com"),
     ("github-copilot", "openai-responses", "https://api.individual.githubcopilot.com"),
@@ -454,8 +455,11 @@ FIXTURE_TRANSPORT_TUPLES = [
     ("groq", "openai-completions", "https://api.groq.com/openai/v1"),
     ("huggingface", "openai-completions", "https://router.huggingface.co/v1"),
     ("kimi-coding", "anthropic-messages", "https://api.kimi.com/coding"),
+    ("meta", "openai-responses", "https://api.meta.ai/v1"),
     ("minimax", "anthropic-messages", "https://api.minimax.io/anthropic"),
     ("minimax-cn", "anthropic-messages", "https://api.minimaxi.com/anthropic"),
+    ("minimax-code", "anthropic-messages", "https://api.minimax.io/anthropic"),
+    ("minimax-code-cn", "anthropic-messages", "https://api.minimax.cn/anthropic"),
     ("mistral", "mistral-conversations", "https://api.mistral.ai"),
     ("moonshotai", "openai-completions", "https://api.moonshot.ai/v1"),
     ("moonshotai-cn", "openai-completions", "https://api.moonshot.cn/v1"),
@@ -474,19 +478,26 @@ FIXTURE_TRANSPORT_TUPLES = [
     ("openrouter", "openai-completions", "https://openrouter.ai/api/v1"),
     ("prime-inference", "openai-completions", "https://api.pinference.ai/api/v1"),
     ("qianfan", "openai-completions", "https://qianfan.baidubce.com/v2"),
+    ("sakana", "openai-responses", "https://api.sakana.ai/v1"),
     ("sambanova", "openai-completions", "https://api.sambanova.ai/v1"),
     ("scaleway", "openai-completions", "https://api.scaleway.ai/v1"),
     ("siliconflow", "openai-completions", "https://api.siliconflow.com/v1"),
     ("siliconflow-cn", "openai-completions", "https://api.siliconflow.cn/v1"),
     ("stepfun", "openai-completions", "https://api.stepfun.ai/v1"),
+    ("synthetic", "anthropic-messages", "https://api.synthetic.new/anthropic"),
+    ("synthetic", "openai-completions", "https://api.synthetic.new/openai/v1"),
     ("together", "openai-completions", "https://api.together.ai/v1"),
+    ("umans", "anthropic-messages", "https://api.code.umans.ai"),
     ("venice", "openai-completions", "https://api.venice.ai/api/v1"),
     ("vercel-ai-gateway", "anthropic-messages", "https://ai-gateway.vercel.sh"),
+    ("vercel-ai-gateway", "openai-completions", "https://ai-gateway.vercel.sh/v1"),
+    ("vercel-ai-gateway", "openai-responses", "https://ai-gateway.vercel.sh/v1"),
     ("xai", "openai-completions", "https://api.x.ai/v1"),
     ("xiaomi", "anthropic-messages", "https://api.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-ams", "anthropic-messages", "https://token-plan-ams.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-cn", "anthropic-messages", "https://token-plan-cn.xiaomimimo.com/anthropic"),
     ("xiaomi-token-plan-sgp", "anthropic-messages", "https://token-plan-sgp.xiaomimimo.com/anthropic"),
+    ("zai", "anthropic-messages", "https://api.z.ai/api/anthropic"),
     ("zai", "openai-completions", "https://api.z.ai/api/coding/paas/v4"),
     ("zhipu-coding-plan", "openai-completions", "https://open.bigmodel.cn/api/coding/paas/v4")
 ]

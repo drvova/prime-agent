@@ -48,6 +48,11 @@ pub fn default_model_per_provider(provider: &str) -> Option<&'static str> {
         "stepfun" => "step-5-preview",
         "venice" => "z-ai-glm-5-3",
         "zhipu-coding-plan" => "glm-5.2",
+        "meta" => "muse-spark-1.1",
+        "minimax-code" | "minimax-code-cn" => "MiniMax-M3.1-Flash",
+        "sakana" => "fugu-max",
+        "synthetic" => "hf:zai-org/GLM-5.3",
+        "umans" => "umans-coder",
         _ => return None,
     })
 }

@@ -9,6 +9,10 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
         // ANTHROPIC_OAUTH_TOKEN takes precedence over ANTHROPIC_API_KEY.
         "anthropic" => Some(vec!["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"]),
         "charm-hyper" => Some(vec!["CHARM_HYPER_API_KEY", "HYPER_API_KEY"]),
+        // MODEL_API_KEY is Meta's documented name; META_API_KEY is the explicit alternative.
+        "meta" => Some(vec!["MODEL_API_KEY", "META_API_KEY"]),
+        "sakana" => Some(vec!["SAKANA_API_KEY", "FUGU_API_KEY"]),
+        "umans" => Some(vec!["UMANS_AI_CODING_PLAN_API_KEY", "UMANS_AI_API_KEY"]),
         // SCW_SECRET_KEY is Scaleway's documented name; SCW_API_KEY is the legacy one.
         "scaleway" => Some(vec!["SCW_SECRET_KEY", "SCW_API_KEY"]),
         other => {
@@ -58,6 +62,9 @@ pub fn get_api_key_env_vars(provider: &str) -> Option<Vec<&'static str>> {
                 "together" => "TOGETHER_API_KEY",
                 "venice" => "VENICE_API_KEY",
                 "zhipu-coding-plan" => "ZHIPU_API_KEY",
+                "minimax-code" => "MINIMAX_CODE_API_KEY",
+                "minimax-code-cn" => "MINIMAX_CODE_CN_API_KEY",
+                "synthetic" => "SYNTHETIC_API_KEY",
                 _ => return None,
             };
             Some(vec![env_var])
