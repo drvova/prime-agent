@@ -879,6 +879,11 @@ impl AgentSessionEngine {
         register_agent_message_host_handlers(sender, &mut handlers);
         register_agent_observe_host_handlers(observer, &mut handlers);
         self.register_kernel_notice_host_handlers(&mut handlers);
+        crate::usage_report::register_quota_host_handler(
+            &mut handlers,
+            self.config.agent_dir.clone(),
+            crate::usage_report::quotas::QuotaFetchConfig::from_env(),
+        );
         // `checkpoint.*` on the worker's store (replacing the engine's refusing default); the
         // restore confirmation asks through the worker's question hub.
         let checkpoints = self

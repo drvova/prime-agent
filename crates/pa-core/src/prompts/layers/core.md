@@ -37,6 +37,7 @@ The following programmatic tools are available in the REPL for subagent manageme
 - `rlm.find_models(query: str = '', limit: int = 8) -> list[RLMModel]`
 - `rlm.list_subagents() -> list[RLMSubagent]`: direct child handles
 - `rlm.delete_subagent(target: str | RLMSubagent) -> RLMSubagent`
+- `rlm.abort(target: str | RLMSubagent) -> RLMAbortResult`: stop a direct child's current turn without deleting it, to steer it: then send new instructions with `agent_message.send`; `result.outcome` is `aborted` or `idle` (nothing was running), `result.subagent` its row
 - `rlm.rename(new_name: str, *, session_id=None) -> str`: rename the calling session (omit `session_id`) or a direct child (spawn handle, `list_subagents()` row, or session id; never the child's name); names must be unique among siblings, and the renamed session sees a transcript line for the change
 - `rlm.collect(targets=None, *, timeout_ms: int = 0) -> list[RLMChildResult]`: typed snapshots of direct children (status, settled flag, answer preview, error) without steering anyone; `timeout_ms=0` returns a non-blocking snapshot; a positive timeout blocks only this call until the children settle or the deadline passes
 - `rlm.progress_note(message: str) -> dict`: report brief in-flight progress to the parent orchestrator (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply
@@ -229,8 +230,14 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 - `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
 - `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
 
+## Usage and quotas
+
+Read-only, for budgeting long runs: check before expensive work and back off before a quota runs out.
+
+- `usage.get(*, refresh: bool = False) -> Usage`: `str(usage)` summarizes it; `usage.cost` holds `Cost(total, own, subagents)` in USD (`subagents` is your children's rolled-up spend); `usage.tokens` holds `Tokens(input, output, cache_read, cache_write, total)`; `usage.quotas` lists `ProviderQuota(provider, plan, state, windows, resets_at, error)` for each signed-in subscription provider, `state` being `windows`, `rate_limited`, or `failed`, with `QuotaWindow(label, used, limit, unit, resets_at)` (`unit` is `percent`/`requests`, `resets_at` a UTC datetime, `window.used_fraction`). Quota cards are cached for a few minutes; `refresh=True` re-reads them. `usage.quotas_unavailable` says why `quotas` is empty when no daemon serves the session.
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `schedule.*`, `checkpoint.*`, `todo.*`, `usage.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

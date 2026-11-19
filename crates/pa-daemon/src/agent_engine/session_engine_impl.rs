@@ -1231,6 +1231,27 @@ impl SessionEngine for AgentSessionEngine {
         })
     }
 
+    fn context_categories(
+        &self,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = anyhow::Result<Option<pa_types::context_breakdown::ContextCategories>>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(async move {
+            // Like the prompt read, the estimate builds the lazy core session: a fresh session's
+            // prompt and tool schemas are most of what its first request carries.
+            let model = self.resolve_model()?;
+            self.ensure_core_session_async(&model).await?;
+            let guard = self.session.lock().await;
+            let engine = guard.as_deref().expect("session built above");
+            Ok(Some(engine.context_categories().await))
+        })
+    }
+
     fn tool_definition(
         &self,
         name: &str,

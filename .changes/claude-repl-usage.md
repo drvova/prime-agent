@@ -1,0 +1,1 @@
+- The Python REPL can read the session's usage: `await usage.get()` reports the session cost (with the subagents' rolled-up share), token counts including cache reads and writes, and each signed-in provider's quota windows with their reset times, the same cards `/usage` shows, so long autonomous runs can budget and back off before a quota runs out.

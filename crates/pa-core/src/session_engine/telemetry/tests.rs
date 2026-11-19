@@ -1966,3 +1966,76 @@ async fn repl_checkpoints_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `usage.get()` reads ride their own `agent usage reads` event at session end (a count,
+/// never a cost or a token number), and a session that never read its usage sends none.
+#[tokio::test]
+async fn usage_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_usage_read();
+    counters.note_usage_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent usage reads"]
+    );
+    let reads = &event_properties(&fixture.mock, "agent usage reads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reads
+        .iter()
+        .filter(|(key, _)| key.starts_with("usage_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({"usage_read_count": 2})
+    );
+}
+
+/// Kernel `rlm.abort` calls ride their own `agent rlm child abort` event at session end (counts
+/// by outcome, never a child id), and a session that never aborted sends none.
+#[tokio::test]
+async fn rlm_child_aborts_ride_their_own_event() {
+    use crate::session_engine::rlm_host::RlmAbortOutcome;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for outcome in [
+        Some(RlmAbortOutcome::Aborted),
+        Some(RlmAbortOutcome::Aborted),
+        Some(RlmAbortOutcome::Idle),
+        None,
+    ] {
+        counters.note_rlm_abort(outcome);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent rlm child abort"]
+    );
+    let abort = &event_properties(&fixture.mock, "agent rlm child abort").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = abort
+        .iter()
+        .filter(|(key, _)| key.starts_with("rlm_abort_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "rlm_abort_aborted_count": 2,
+            "rlm_abort_idle_count": 1,
+            "rlm_abort_failed_count": 1,
+        })
+    );
+}
