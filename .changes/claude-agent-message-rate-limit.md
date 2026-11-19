@@ -1,0 +1,1 @@
+- Agent messaging now enforces its advertised per-sender rate limit (a burst of 3, then 1 message per second; a broadcast spends one per recipient), refusing excess sends with a retry-after hint.
