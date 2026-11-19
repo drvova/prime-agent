@@ -582,6 +582,11 @@ impl Worker {
                 .or_else(|| core.store.as_ref().and_then(SessionFile::rlm_depth))
                 .unwrap_or(0);
             core.rlm_depth = rlm_depth;
+            // One worker hosts one session: a subagent's provider requests yield to the
+            // foreground turn the user waits on when the shared budget is tight.
+            if rlm_depth > 0 {
+                pa_ai::admission::set_process_priority(pa_ai::admission::Priority::Subagent);
+            }
             core.runtime_kind = if rlm_child_id.is_some() {
                 "subagent".to_string()
             } else {

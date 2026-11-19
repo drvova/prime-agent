@@ -17,6 +17,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent goal verification",
     // The provider layer's Responses transport counts (no kernel capability).
     "agent responses transport",
+    // Provider request admission is engine plumbing, not a kernel capability.
+    "agent provider admission",
     // The worker's background endpoint discovery (no kernel capability).
     "agent endpoint discovery",
 ];

@@ -297,6 +297,7 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
                     },
                 },
             ],
+            pacing: Vec::new(),
         }
     );
 }
@@ -353,6 +354,7 @@ async fn the_kernel_quota_request_answers_the_page_cards_without_the_token() {
                     }],
                 },
             }],
+            pacing: Vec::new(),
         }
     );
 }

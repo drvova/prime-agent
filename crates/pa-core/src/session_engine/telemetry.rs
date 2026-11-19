@@ -1453,6 +1453,23 @@ impl SessionTelemetry {
             self.client
                 .track("agent responses transport", transport_properties);
         }
+        // A process whose provider requests never waited and never met pushback sends no
+        // admission event. Fire-and-forget like every event here: the counts are read, never
+        // awaited.
+        let admission = pa_ai::admission::take_stats();
+        if admission != pa_ai::admission::AdmissionStats::default() {
+            let mut admission_properties = self.session_properties();
+            for (key, value) in [
+                ("admission_waited_count", admission.waited_count),
+                ("admission_wait_ms", admission.wait_ms),
+                ("provider_throttled_count", admission.throttled_count),
+                ("admission_decrease_count", admission.decrease_count),
+            ] {
+                admission_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent provider admission", admission_properties);
+        }
         // A worker whose discovery never probed or moved an endpoint sends no discovery event.
         // Only a session installed on a live agent reads the worker's process-wide counts.
         let discovered = pa_ai::responses_transport::discovery_counts();

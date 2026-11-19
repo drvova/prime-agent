@@ -1034,6 +1034,34 @@ impl Supervisor {
                 self.handle_get_usage(command, &command_id, &type_name)
                     .await
             }
+            DaemonCommand::ProviderAdmissionAcquire { worker_token, .. }
+            | DaemonCommand::ProviderAdmissionRelease { worker_token, .. } => {
+                // A worker's provider permit from the daemon-wide budget.
+                let response = if self.registry.find_by_token(worker_token).await.is_none() {
+                    response_failure(
+                        Some(&command_id),
+                        &type_name,
+                        "Worker authentication failed",
+                        None,
+                    )
+                } else {
+                    match crate::provider_admission::handle_admission_command(
+                        &self.admission,
+                        command,
+                    )
+                    .await
+                    {
+                        Ok(data) => response_success(Some(&command_id), &type_name, Some(data)),
+                        Err(error) => response_failure(
+                            Some(&command_id),
+                            &type_name,
+                            &format!("{error:#}"),
+                            None,
+                        ),
+                    }
+                };
+                (vec![response_line(&response)], false)
+            }
             DaemonCommand::ListAgentPeers { .. } => {
                 // `list_agent_peers`: the worker-token-authenticated peer roster.
                 self.handle_list_agent_peers(command, &command_id, &type_name)

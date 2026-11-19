@@ -10,10 +10,11 @@ use pa_agent::types::{AssistantMessage, StopReason};
 
 use super::provider_park::{is_quota_block_failure, ParkDecisionCallback};
 use super::provider_retry::{
-    has_provider_stream_failure, is_agent_lifecycle_failure, is_context_overflow_failure,
-    is_permanent_provider_failure_kind, is_unsupported_tool_failure, jittered_delay_ms,
-    provider_retry_delay, provider_stream_failure_kind, provider_stream_failure_retry_after_ms,
-    provider_stream_failure_status, retry_jitter_rand01, ProviderRetryDelay, ProviderRetryPolicy,
+    backoff_attempt, has_provider_stream_failure, is_agent_lifecycle_failure,
+    is_context_overflow_failure, is_permanent_provider_failure_kind, is_unsupported_tool_failure,
+    jittered_delay_ms, provider_retry_delay, provider_stream_failure_kind,
+    provider_stream_failure_retry_after_ms, provider_stream_failure_status, retry_jitter_rand01,
+    ProviderRetryDelay, ProviderRetryPolicy,
 };
 
 /// The whole-episode retry ceiling (SANCTIONED DIVERGENCE, operator
@@ -166,7 +167,7 @@ where
         // check compares past the (ceiling-capped) `max_retries`.
         retries_performed += 1;
         let delay = provider_retry_delay(
-            retries_performed,
+            backoff_attempt(&message, retries_performed),
             provider_stream_failure_retry_after_ms(&message),
             policy,
         );

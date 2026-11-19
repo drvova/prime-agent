@@ -1500,6 +1500,23 @@ const AGENT_TODOS_AND_QUESTIONS: EventRule = EventRule {
     ],
 };
 
+/// Provider request admission for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when any request waited for a permit or
+/// a provider pushed back: requests that waited, their summed wait, throttled/overloaded
+/// responses seen, and the adaptive controller's multiplicative decreases. Counts only: never a
+/// provider URL, model, or credential.
+const AGENT_PROVIDER_ADMISSION: EventRule = EventRule {
+    name: "agent provider admission",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("admission_waited_count", required(count())),
+        ("admission_wait_ms", required(duration())),
+        ("provider_throttled_count", required(count())),
+        ("admission_decrease_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1861,6 +1878,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
+        &AGENT_PROVIDER_ADMISSION,
         &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());

@@ -9,6 +9,7 @@
 pub mod ai;
 pub mod compaction;
 pub mod context_breakdown;
+pub mod control;
 pub mod daemon;
 pub mod goal;
 pub mod incident;

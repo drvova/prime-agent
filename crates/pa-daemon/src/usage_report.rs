@@ -12,7 +12,7 @@ mod tests;
 use std::sync::Arc;
 
 use pa_types::daemon::DaemonCommand;
-use pa_types::provider_usage::UsageSection;
+use pa_types::provider_usage::{QuotaReport, UsageSection};
 use serde_json::Value;
 
 use crate::protocol::{response_failure, response_line, response_success};
@@ -86,7 +86,10 @@ impl Supervisor {
                     now_ms,
                 )
                 .await;
-                serde_json::to_value(report)
+                serde_json::to_value(QuotaReport {
+                    pacing: self.admission.pacing(),
+                    ..report
+                })
             }
             UsageSection::Spend => {
                 let sessions_root = match crate::paths::sessions_dir(&agent_dir) {
