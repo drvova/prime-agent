@@ -28,6 +28,7 @@ impl AgentView {
             && self.bash_view.is_none()
             && self.info_panel.is_none()
             && self.usage_page.is_none()
+            && self.context_view.is_none()
             && self.tree_selector.is_none()
             && self.fork_selector.is_none()
             && self.share_loader.is_none()
@@ -68,6 +69,7 @@ impl AgentView {
         // computes it.
         self.click.clear();
         self.scroll_region = None;
+        self.image_placements.clear();
         // The onboarding splash covers the pane (TS `showOverlay` 100%); its rows select, so
         // the frame-selection regions span the whole frame.
         if let Some(screen) = self.onboarding.as_mut() {
@@ -165,6 +167,21 @@ impl AgentView {
                 &pa_types::platform::local_civil,
             ));
             Some(dock)
+        } else if let Some(page) = self.context_view.as_mut() {
+            // The window takes the frame down to the transcript's minimum rows, like `/usage`.
+            let rows = height.saturating_sub(
+                1 + crate::view::FULLSCREEN_MIN_TRANSCRIPT_ROWS + prompt_context.len(),
+            );
+            let mut dock = prompt_context;
+            dock.extend(page.render(
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                &self.chrome,
+                rows,
+                crate::usage_page::now_ms(),
+            ));
+            Some(dock)
         } else if let Some(prompt) = &self.question {
             // A kernel question waiting for the user replaces the composer; the todo tray
             // stays above it.
@@ -250,8 +267,16 @@ impl AgentView {
         let window_height = height
             .saturating_sub(top_rows + dock.len())
             .max(FULLSCREEN_MIN_TRANSCRIPT_ROWS.min(height.saturating_sub(top_rows + dock.len())));
-        let (window_rows, start) = self.visible_transcript_window(width, window_height);
+        let (mut window_rows, start) = self.visible_transcript_window(width, window_height);
         self.window_rows = window_height;
+        // The window's image rows resolve to their half-block cells (a pending render paints
+        // the reserved blanks); the wholly visible ones are the pixel overlay's candidates.
+        let image_protocol = crate::inline_image::active_protocol();
+        let window_images = crate::inline_image::resolve_rows(
+            &mut window_rows,
+            image_protocol,
+            crate::inline_image::OnMiss::Render,
+        );
         // The selection restyle diff: only the rows the selection change
         // touched re-style.
         let window_rows = self.selection_styled_window(window_rows, start);
@@ -281,7 +306,11 @@ impl AgentView {
                 // The dock's hover affordance (operator directive 2026-09-29): the hovered
                 // segment or tray hint carries the ONE light band; the focused group's
                 // selection band stays.
-                Some(click::ClickAction::OpenDockGroup(_) | click::ClickAction::OpenAgentsView) => {
+                Some(
+                    click::ClickAction::OpenDockGroup(_)
+                    | click::ClickAction::OpenAgentsView
+                    | click::ClickAction::OpenContextView,
+                ) => {
                     if let Some(region) = self.dock_region_at(row, col) {
                         if let Some(line) = frame.get_mut(row) {
                             self.theme.paint_hover_band(line, region.cols.clone());
@@ -330,6 +359,29 @@ impl AgentView {
                     bottom: (top_rows + window_height) as u16,
                 }
             });
+        // The pixel overlay draws only what the frame shows unobstructed: no selection wash
+        // (the highlight must stay visible), no toast or follow hint over the image's rows.
+        let toast_rows = top_rows..top_rows + toasts.len().min(window_height);
+        let hint_row = (!self.following && !self.window_shows_tail).then_some(window_height);
+        self.image_placements = if self.has_selection() {
+            Vec::new()
+        } else {
+            window_images
+                .into_iter()
+                .filter_map(|image| {
+                    let top = top_rows + image.top;
+                    let rows = top..top + usize::from(image.key.geometry.rows);
+                    let covered = rows.clone().any(|row| toast_rows.contains(&row))
+                        || hint_row.is_some_and(|hint| rows.contains(&hint));
+                    (!covered).then(|| crate::inline_image::overlay::Placement {
+                        key: image.key,
+                        row: u16::try_from(top).unwrap_or(u16::MAX),
+                        col: u16::try_from(image.col).unwrap_or(u16::MAX),
+                        rendered: image.rendered,
+                    })
+                })
+                .collect()
+        };
         if !toasts.is_empty() {
             // The action ack renders as the brand-purple pill (the
             // operator directive): the theme's Accent token flipped onto
@@ -354,6 +406,11 @@ impl AgentView {
         frame
     }
 
+    /// The last composed frame's wholly visible images (the pixel overlay's placements).
+    pub(crate) fn image_placements(&self) -> &[crate::inline_image::overlay::Placement] {
+        &self.image_placements
+    }
+
     /// The last composed frame's transcript rows a paint may shift as a
     /// terminal scroll region.
     pub(crate) fn transcript_scroll_region(&self) -> Option<crate::scroll_region::ScrollRegion> {
@@ -372,6 +429,7 @@ impl AgentView {
             || self.bash_view.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
+            || self.context_view.is_some()
             || self.tree_selector.is_some()
             || self.fork_selector.is_some()
             || self.share_loader.is_some()
@@ -393,6 +451,13 @@ impl AgentView {
     /// scrollback.
     pub fn render_inline_frame(&mut self, width: usize) -> Vec<Line> {
         let mut rows = self.render_transcript(width);
+        // The main screen gets the half-block cells already rendered, never a pixel protocol
+        // (scrollback outlives every placement) and never a wait on the decode worker.
+        crate::inline_image::resolve_rows(
+            &mut rows,
+            crate::inline_image::ImageProtocol::HalfBlock,
+            crate::inline_image::OnMiss::Skip,
+        );
         rows.extend(self.render_dock(width));
         // The inline layout has no fullscreen window on screen: a click
         // must never resolve against a dock the terminal does not show.

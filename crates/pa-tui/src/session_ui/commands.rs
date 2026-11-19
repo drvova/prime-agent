@@ -625,17 +625,24 @@ impl SessionUi {
                     }
                 }
             }
-            // `/context`: the agent tree with token/cost columns and
-            // context utilization. The optional `all` argument is a deliberate TS delta (TS takes
-            // none): past the row budget the default view collapses to the highest-usage agents;
-            // `all` renders the whole tree.
+            // `/context`: the context window (the tray gauge's click opens the same one).
+            // `tree` is the agent tree with token/cost columns and context utilization, and `all`
+            // (a deliberate TS delta: TS takes no argument) renders that tree past the row budget
+            // the collapsed view keeps to its highest-usage agents.
             "context" => {
                 let scope = match resolved.args.as_str() {
-                    "" => info_commands::ContextTreeScope::Collapsed,
+                    "" => {
+                        self.open_context_view(
+                            view,
+                            crate::context_view::ContextViewSource::Command,
+                        );
+                        return Ok(());
+                    }
+                    "tree" => info_commands::ContextTreeScope::Collapsed,
                     "all" => info_commands::ContextTreeScope::EveryAgent,
                     _ => {
                         view.editor.set_text(text);
-                        self.error_row("Usage: /context [all]", view);
+                        self.error_row("Usage: /context [tree|all]", view);
                         return Ok(());
                     }
                 };

@@ -92,22 +92,86 @@ fn prompt_may_have_been_sent(error: &anyhow::Error) -> bool {
 impl SessionUi {
     const MAX_PASTED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 
-    /// Read the clipboard image and register it behind a new editor marker.
+    /// The image-paste key (Ctrl+V): register the clipboard image behind a new editor marker,
+    /// else paste the clipboard's text (the terminal passed the key on instead of pasting); a
+    /// clipboard with neither, or with an image over the size limit, reports why instead.
     pub(super) async fn handle_clipboard_image_paste(&mut self, view: &mut AgentView) {
-        let Some(attachment) = crate::clipboard_image::read_clipboard_image().await else {
-            return;
-        };
-        let marker_id = self.next_image_marker_id;
-        self.next_image_marker_id += 1;
-        let mime_type = attachment.mime_type.clone();
-        self.remember_pasted_image(marker_id, attachment, view);
-        view.editor
-            .insert_text_at_cursor(&format_image_marker(marker_id));
+        let source = crate::clipboard_image::ImagePasteSource::Clipboard;
+        match crate::clipboard_image::read_clipboard_image().await {
+            Ok(pasted) => self.attach_pasted_image(pasted, view),
+            Err(crate::clipboard_image::ImagePasteError::NoImage) => {
+                match crate::clipboard_image::read_clipboard_text()
+                    .await
+                    .filter(|text| !text.is_empty())
+                {
+                    Some(text) => {
+                        self.track_image_paste(source, "text", "none");
+                        self.paste_text(&text, view);
+                    }
+                    None => self.report_image_paste_error(
+                        source,
+                        crate::clipboard_image::ImagePasteError::NoImage,
+                        view,
+                    ),
+                }
+            }
+            Err(error) => self.report_image_paste_error(source, error, view),
+        }
+    }
+
+    /// Report one image paste attempt (`tui image paste`); delivery never blocks the paste.
+    fn track_image_paste(
+        &self,
+        source: crate::clipboard_image::ImagePasteSource,
+        outcome: &'static str,
+        format: &'static str,
+    ) {
         if let Some(telemetry) = self.telemetry.clone() {
             tokio::spawn(async move {
-                telemetry.image_pasted(&mime_type).await;
+                telemetry.image_paste(source.label(), outcome, format).await;
             });
         }
+    }
+
+    /// Show why a paste attached no image and report the outcome.
+    pub(super) fn report_image_paste_error(
+        &mut self,
+        source: crate::clipboard_image::ImagePasteSource,
+        error: crate::clipboard_image::ImagePasteError,
+        view: &mut AgentView,
+    ) {
+        self.note_as(&error.message(), StatusKind::Warning, view);
+        self.track_image_paste(source, error.outcome(), "none");
+        self.dirty = true;
+    }
+
+    /// Register a pasted image behind a new `[image #N]` editor marker and confirm it.
+    pub(super) fn attach_pasted_image(
+        &mut self,
+        pasted: crate::clipboard_image::PastedImage,
+        view: &mut AgentView,
+    ) {
+        let marker_id = self.next_image_marker_id;
+        self.next_image_marker_id += 1;
+        let format = match pasted.image.mime_type.as_str() {
+            "image/png" => "png",
+            "image/jpeg" => "jpeg",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            _ => "none",
+        };
+        self.remember_pasted_image(marker_id, pasted.image, view);
+        view.editor
+            .insert_text_at_cursor(&format_image_marker(marker_id));
+        self.toast(
+            &format!(
+                "Attached image #{marker_id} ({}, {})",
+                format.to_uppercase(),
+                crate::clipboard_image::format_image_size(pasted.bytes)
+            ),
+            view,
+        );
+        self.track_image_paste(pasted.source, "attached", format);
         if !self.model_supports_images(view) {
             // The attachment is never silently omitted: the routed note or the refusal
             // names the fix; host-blocked images surface the block.

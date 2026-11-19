@@ -115,3 +115,14 @@ Two Windows-only changes, found with the pseudoconsole battery
 
 Neither can be tested in place on Linux (both are `cfg(windows)`); the parse test runs from a
 copy as described above on a Windows host, and the battery covers both on the CI runner.
+
+# The DA1 sixel attribute (2026-11-19, tui-inline-images lane)
+
+The keyboard probe's query already asks for the primary device attributes
+(`ESC [ c`); upstream parsed the reply into an attribute-free event. The
+patch records the one attribute the inline-image renderer reads, 4 (sixel
+graphics), in a process-global, exported as
+`terminal::reported_sixel_graphics() -> Option<bool>` (`None` until a reply
+was parsed). The event, its filters, parse order and the probe's timing are
+unchanged; only `parse_csi_primary_device_attributes` reads its own
+parameters now (the first, the conformance class, is skipped).

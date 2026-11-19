@@ -397,6 +397,7 @@ mod tests {
             &crate::chat::ChatEntry::User {
                 text: "find parity tuis".to_string(),
                 sent_at: None,
+                images: Vec::new(),
             }
         );
     }

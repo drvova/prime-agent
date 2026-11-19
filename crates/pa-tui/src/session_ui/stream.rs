@@ -17,12 +17,16 @@ pub(super) struct LoaderTokenTracker {
     /// The run's tool calls and total tokens (each message's `usage.totalTokens`,
     /// context re-reads included), for the summary row at its end.
     pub(super) run: (u64, u64),
+    /// The run's prompt split summed over its settled messages (fresh input, cache reads and
+    /// writes), for the summary row's `N% cached` segment.
+    pub(super) run_cache: pa_types::context_breakdown::RequestCache,
 }
 
 impl LoaderTokenTracker {
     /// A fresh run counts from zero.
     fn reset(&mut self) {
         (self.completed_tokens, self.run) = (0, (0, 0));
+        self.run_cache = pa_types::context_breakdown::RequestCache::default();
         self.start_message();
     }
 

@@ -2,7 +2,7 @@
 
 use ratatui::style::Style;
 
-use super::{eligible_images, image_rows, panel_header, panel_line, ToolCallCard, ToolResultView};
+use super::{image_rows, image_rows_count, panel_header, panel_line, ToolCallCard, ToolResultView};
 use crate::theme::{Theme, ThemeBg};
 use crate::width::{wrap_line, wrap_text, wrapped_line_count, wrapped_text_count};
 use crate::Line;
@@ -71,10 +71,11 @@ impl RowOutput {
         result: Option<&ToolResultView>,
         show_images: bool,
         theme: &Theme,
+        width: usize,
     ) {
         match self {
-            Self::Paint(rows) => rows.extend(image_rows(result, show_images, theme)),
-            Self::Count(count) => *count += eligible_images(result, show_images).count(),
+            Self::Paint(rows) => rows.extend(image_rows(result, show_images, theme, width)),
+            Self::Count(count) => *count += image_rows_count(result, show_images, width),
         }
     }
     pub(super) fn panel(&mut self, card: &ToolCallCard, frame: usize, theme: &Theme, width: usize) {

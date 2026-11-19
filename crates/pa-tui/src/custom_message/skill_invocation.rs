@@ -31,6 +31,7 @@ pub fn skill_invocation_entries(text: &str) -> Option<Vec<ChatEntry>> {
         entries.push(ChatEntry::User {
             text: user_message,
             sent_at: None,
+            images: Vec::new(),
         });
     }
     Some(entries)
@@ -127,6 +128,7 @@ mod tests {
                 ChatEntry::User {
                     text: "find parity tuis".to_string(),
                     sent_at: None,
+                    images: Vec::new(),
                 },
             ]
         );

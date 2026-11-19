@@ -174,6 +174,9 @@ impl SessionUi {
             usage_generation: 0,
             usage_quotas: None,
             usage_spend: None,
+            context_updates: activity_updates.context,
+            context_generation: 0,
+            context_breakdown: None,
             rate_limit_reset: None,
             reset_chips_shown: 0,
             factory_graph: serde_json::json!({"runs": []}),
@@ -444,6 +447,10 @@ impl SessionUi {
                 )
                 .await;
         }
+        // The durable id survives a worker restart's new active id: the tray's usage carries over
+        // only within one session.
+        let same_session =
+            !self.session_id.is_empty() && self.session_id == reconstructed.session_id;
         self.session_id = reconstructed.session_id;
         self.attach_event_generation
             .clone_from(&reconstructed.event_generation);
@@ -515,7 +522,13 @@ impl SessionUi {
         // fetch — `refreshConnectionContextUsage` runs only after a turn
         // or compaction settles): the rebuild below re-syncs it into the
         // chrome exactly like the other reconstructed session fields.
-        self.context = reconstructed.context_usage;
+        // A reattach to the SAME session (a worker restart, a reconnect) keeps the last known
+        // usage, marked stale, when the snapshot cannot measure it; another session starts over.
+        self.context = if same_session {
+            crate::chrome::ContextUsage::settle(reconstructed.context_usage, self.context)
+        } else {
+            reconstructed.context_usage
+        };
         self.auto_compaction = reconstructed.auto_compaction.unwrap_or(true);
         self.last_assistant_text = last_assistant_text_of(&reconstructed.chat);
         self.pending_queue = Some(reconstructed.queued);
@@ -781,11 +794,13 @@ impl SessionUi {
         else {
             return;
         };
-        // Unknown usage (tokens null right after a compaction, or a
-        // response without the field) clears the tray display.
-        self.context = data
-            .get("contextUsage")
-            .and_then(crate::chrome::ContextUsage::from_wire);
+        // Unknown usage (tokens null right after a compaction, or a response without the
+        // field) keeps the last known value, marked stale, until a reply measures it again.
+        self.context = crate::chrome::ContextUsage::settle(
+            data.get("contextUsage")
+                .and_then(crate::chrome::ContextUsage::from_wire),
+            self.context,
+        );
         self.dirty = true;
     }
 
@@ -828,7 +843,7 @@ impl SessionUi {
         if update.generation != self.stats_generation {
             return;
         }
-        self.context = update.context;
+        self.context = crate::chrome::ContextUsage::settle(update.context, self.context);
         self.rebuild_tray(view);
     }
 
@@ -950,6 +965,7 @@ mod backfill_tests {
                 thinking: mpsc::unbounded_channel().0,
                 stats: mpsc::unbounded_channel().0,
                 usage: mpsc::unbounded_channel().0,
+                context: mpsc::unbounded_channel().0,
             },
             backfill_tx,
         )
@@ -1146,6 +1162,7 @@ mod backfill_tests {
                 thinking: mpsc::unbounded_channel().0,
                 stats: mpsc::unbounded_channel().0,
                 usage: mpsc::unbounded_channel().0,
+                context: mpsc::unbounded_channel().0,
             },
             mpsc::unbounded_channel().0,
         )

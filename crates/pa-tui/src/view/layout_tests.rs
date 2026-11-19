@@ -103,6 +103,7 @@ fn cached_packed_rows_render_identical_to_a_fresh_layout() {
     v.push_entry(ChatEntry::User {
         text: "hello wrapped text ".repeat(9),
         sent_at: None,
+        images: Vec::new(),
     });
     v.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
         blocks: vec![
@@ -121,6 +122,7 @@ fn cached_packed_rows_render_identical_to_a_fresh_layout() {
     fresh.push_entry(ChatEntry::User {
         text: "hello wrapped text ".repeat(9),
         sent_at: None,
+        images: Vec::new(),
     });
     fresh.push_entry(ChatEntry::Assistant(Box::new(AssistantMessage {
         blocks: vec![
@@ -493,6 +495,7 @@ fn mixed_100k_paused_toggle_materializes_only_viewport_entries() {
             0 => ChatEntry::User {
                 text: format!("message {index}"),
                 sent_at: None,
+                images: Vec::new(),
             },
             1 => ChatEntry::Assistant(Box::new(AssistantMessage {
                 blocks: vec![
@@ -619,6 +622,7 @@ fn a_push_after_a_user_row_folds_at_its_own_slot() {
     view.push_entry(ChatEntry::User {
         text: "the question".into(),
         sent_at: None,
+        images: Vec::new(),
     });
     for index in 0..30 {
         view.push_entry(ChatEntry::Status {
@@ -720,6 +724,7 @@ fn a_card_push_folds_at_the_pushed_slot() {
     view.push_entry(ChatEntry::User {
         text: "the question".into(),
         sent_at: None,
+        images: Vec::new(),
     });
     for index in 0..30 {
         view.push_entry(ChatEntry::Status {
@@ -1101,4 +1106,63 @@ fn a_spinner_frame_replays_the_streaming_entry_and_an_append_renders_it_once() {
         .map(|line| line.iter().map(|span| span.content.as_str()).collect())
         .collect();
     assert!(text.iter().any(|row| row.contains("three")), "{text:#?}");
+}
+
+#[test]
+fn inline_images_lay_out_the_rows_they_paint_and_render_once_decoded() {
+    // A pasted image in the user slab and an `attach_image` picture in the python card: the
+    // count-only geometry must equal the painted rows in every detail level (a mismatch tears
+    // the cached window), and the decoded picture lands in the frame as half-block cells.
+    let payload = crate::inline_image::tests::png_payload(64);
+    let mut view = view();
+    view.push_entry(ChatEntry::User {
+        text: "look [image #1]".to_string(),
+        sent_at: None,
+        images: vec![crate::chat::MessageImage {
+            data: std::sync::Arc::from(payload.as_str()),
+            mime_type: "image/png".to_string(),
+        }],
+    });
+    view.push_entry(ChatEntry::Tool(Box::new(crate::chat::ToolCallCard {
+        id: "c1".to_string(),
+        name: "ipython".to_string(),
+        args: serde_json::json!({"code": "attach_image('shot.png')"}),
+        started: true,
+        result: Some(crate::chat::ToolResultView {
+            content: vec![
+                serde_json::json!({"type": "text", "text": "Loaded 1 image(s) into context"}),
+                serde_json::json!({"type": "image", "data": payload, "mimeType": "image/png"}),
+            ],
+            details: serde_json::Value::Null,
+            is_error: false,
+        }),
+        ..Default::default()
+    })));
+    for detail in [Detail::Overview, Detail::Details, Detail::All] {
+        view.detail = detail;
+        for index in 0..view.chat.len() {
+            let rows = view.render_entry(index, &view.chat[index], 60, index == 0, false);
+            assert_eq!(
+                view.count_entry_rows(index, 60),
+                rows.len(),
+                "entry {index} at {detail:?}"
+            );
+        }
+    }
+    // 64 px is 8 native columns: an 8 x 4 picture in each entry once the worker rendered it.
+    view.detail = Detail::Overview;
+    let picture_rows = |view: &mut AgentView| {
+        crate::app::render_frame_text(view, 60, 40)
+            .iter()
+            .filter(|row| row.contains("\u{2580}\u{2580}\u{2580}\u{2580}"))
+            .count()
+    };
+    let _ = picture_rows(&mut view);
+    crate::inline_image::tests::wait_for_renders();
+    assert_eq!(picture_rows(&mut view), 8);
+    // Off, the rows go and the text keeps its marker.
+    view.show_images = false;
+    let frame = crate::app::render_frame_text(&mut view, 60, 40);
+    assert_eq!(picture_rows(&mut view), 0);
+    assert!(frame.iter().any(|row| row.contains("look [image #1]")));
 }

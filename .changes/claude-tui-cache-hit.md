@@ -1,0 +1,1 @@
+- The turn summary row now shows the turn's prompt-cache hit rate (`Worked for 12s · 3 tool calls · 18k tokens · 92% cached`) when the provider served anything from the cache; it is hidden on turns without cache reads and is the first segment dropped on a narrow pane.
