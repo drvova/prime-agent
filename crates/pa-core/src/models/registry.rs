@@ -101,6 +101,9 @@ pub struct ModelRegistry {
     /// The process-shared live catalog chain (`catalog_chain::catalog_for`);
     /// `resolve()` sources built-ins from it.
     catalog: std::sync::Arc<pa_models::ModelCatalog>,
+    /// `provider/id` of every models.json model at the last load: their declared API never
+    /// moves, so background discovery never checks their route.
+    custom_model_keys: std::collections::HashSet<(String, String)>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -194,6 +197,7 @@ impl ModelRegistry {
             model_request_headers: HashMap::new(),
             xai_model_sources: HashMap::new(),
             catalog,
+            custom_model_keys: std::collections::HashSet::new(),
         };
         registry.load_models();
         registry
@@ -354,6 +358,11 @@ impl ModelRegistry {
         );
         let credentials = self.prime_credentials();
         let built_in = self.load_built_in_models(&result, credentials.as_ref());
+        self.custom_model_keys = result
+            .models
+            .iter()
+            .map(|model| (model.provider.clone(), model.id.clone()))
+            .collect();
         self.models = Self::merge_custom_models(built_in, result.models);
         self.apply_subscription_model_adaptations();
     }
@@ -552,9 +561,11 @@ impl ModelRegistry {
     }
 
     /// The credentialed endpoints background discovery checks: one per base URL of the
-    /// auth-configured models on the Responses or a plain Chat Completions wire (a model with a
-    /// compat quirk never moves wires, so its endpoint needs no route check), with the headers
-    /// its requests carry. Resolving the credentials may refresh a token, so this runs on the
+    /// auth-configured models on the Responses wire, or of built-in models on a plain Chat
+    /// Completions wire (only those can move wires: a compat quirk or a models.json API pins a
+    /// model, so its route needs no check), with the headers its requests carry. Loopback
+    /// endpoints (local servers, test mocks) are never checked in the background: a request's
+    /// own `auto` attempt learns them. Resolving the credentials may refresh a token, so this runs on the
     /// discovery task, never on a user-facing path.
     pub fn discovery_targets(&mut self) -> Vec<pa_ai::responses_transport::DiscoveryTarget> {
         use pa_ai::responses_transport::{DiscoveryTarget, DiscoveryWire};
@@ -563,9 +574,23 @@ impl ModelRegistry {
             .get_available()
             .into_iter()
             .filter_map(|model| {
+                let loopback = url::Url::parse(&model.base_url)
+                    .ok()
+                    .and_then(|url| url.host().map(|host| host.to_owned()))
+                    .is_none_or(|host| match host {
+                        url::Host::Domain(domain) => domain == "localhost",
+                        url::Host::Ipv4(address) => address.is_loopback(),
+                        url::Host::Ipv6(address) => address.is_loopback(),
+                    });
+                if loopback {
+                    return None;
+                }
+                let custom = self
+                    .custom_model_keys
+                    .contains(&(model.provider.clone(), model.id.clone()));
                 let wire = match model.api.as_str() {
                     "openai-responses" => DiscoveryWire::Responses,
-                    "openai-completions" if model.compat.is_none() => {
+                    "openai-completions" if model.compat.is_none() && !custom => {
                         DiscoveryWire::ChatCompletions
                     }
                     _ => return None,

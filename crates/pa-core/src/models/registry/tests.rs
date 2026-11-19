@@ -729,3 +729,38 @@ fn a_known_responses_endpoint_upgrades_built_ins_but_never_a_declared_models_jso
         )
     );
 }
+
+/// Background discovery checks only endpoints whose wire can move or whose WebSocket mode can be
+/// learned: a models.json Chat Completions model keeps its API, so its route is never probed,
+/// and loopback endpoints (local servers, test mocks) are never probed in the background.
+#[test]
+fn discovery_targets_skip_declared_chat_completions_and_loopback_endpoints() {
+    let dir = tempfile::tempdir().unwrap();
+    let models_path = dir.path().join("models.json");
+    std::fs::write(
+        &models_path,
+        r#"{ "providers": {
+            "remote-chat": { "baseUrl": "https://chat.example/v1", "apiKey": "k",
+                "api": "openai-completions", "models": [ { "id": "c" } ] },
+            "local-responses": { "baseUrl": "http://127.0.0.1:9/v1", "apiKey": "k",
+                "api": "openai-responses", "models": [ { "id": "l" } ] },
+            "remote-responses": { "baseUrl": "https://responses.example/v1", "apiKey": "k",
+                "api": "openai-responses", "models": [ { "id": "r" } ] }
+        } }"#,
+    )
+    .unwrap();
+    let mut registry =
+        ModelRegistry::create(auth_without_env(&serde_json::json!({})), &models_path);
+    let targets: Vec<_> = registry
+        .discovery_targets()
+        .into_iter()
+        .map(|target| (target.base_url, target.wire))
+        .collect();
+    assert_eq!(
+        targets,
+        vec![(
+            "https://responses.example/v1".to_string(),
+            pa_ai::responses_transport::DiscoveryWire::Responses
+        )]
+    );
+}
