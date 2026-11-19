@@ -152,6 +152,9 @@ const INTERNAL_HOST_REQUESTS: &[&str] = &[
     // fires them; the model never calls them).
     "bash.completed",
     "bash.consumed",
+    // The same pair for a cell that ended in the background (`rlm.cells`).
+    "cell.completed",
+    "cell.consumed",
     // The factory module reports run milestones; the model never calls it.
     "factory.progress",
     // The kernel's `ask` withdraws its own question when its cell is interrupted.
