@@ -39,6 +39,9 @@ class RLMModel:
     id: str
     name: str
     selector: str
+    # The model accepts image input (it can `attach_image`); hosts that
+    # predate the field report none, read as text-only.
+    image_input: bool = False
 
 
 @dataclass(frozen=True)
@@ -254,9 +257,12 @@ def _model_from_payload(payload: Any) -> RLMModel:
     model_id = payload.get("id")
     name = payload.get("name")
     selector = payload.get("selector")
+    image_input = payload.get("image_input", False)
     if not all(isinstance(value, str) and value for value in (provider, model_id, name, selector)):
         raise RuntimeError("rlm.find_models returned an invalid model entry")
-    return RLMModel(provider=provider, id=model_id, name=name, selector=selector)
+    if not isinstance(image_input, bool):
+        raise RuntimeError("rlm.find_models returned an invalid model entry")
+    return RLMModel(provider=provider, id=model_id, name=name, selector=selector, image_input=image_input)
 
 
 async def create_session(

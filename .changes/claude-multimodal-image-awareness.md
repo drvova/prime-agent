@@ -1,0 +1,1 @@
+- Fixed a model switch leaving the agent told it could not see images (or that it could): the prompt now follows the new model, `rlm.find_models()` rows report `image_input`, and a text-only model asked to `attach_image` is pointed at a vision-capable subagent.

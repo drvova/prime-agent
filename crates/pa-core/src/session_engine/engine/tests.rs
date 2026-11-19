@@ -968,3 +968,81 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         "the receipt persists as a custom entry"
     );
 }
+
+/// A model switch rewrites the prompt's image-input line: a session that
+/// starts on a text-only model and switches to a vision model must be told
+/// it can now see images, or it never calls `attach_image` (the stale line
+/// says it errors).
+#[tokio::test]
+async fn a_model_switch_rewrites_the_image_input_line() {
+    let model = pa_agent::types::Model {
+        id: "m".into(),
+        name: "m".into(),
+        api: "test".into(),
+        provider: "test".into(),
+        base_url: "http://localhost".into(),
+        reasoning: false,
+        cost: pa_agent::types::UsageCost::default(),
+        context_window: 100_000,
+        max_tokens: 100,
+        max_tokens_explicit: false,
+    };
+    let registry_model = |input: serde_json::Value| -> pa_types::ai::Model {
+        serde_json::from_value(serde_json::json!({
+            "id": "m", "name": "m", "api": "test", "provider": "test",
+            "baseUrl": "http://localhost", "reasoning": false, "input": input,
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 100_000, "maxTokens": 100
+        }))
+        .unwrap()
+    };
+    let provider = Arc::new(ScriptedProvider::new(model.clone()));
+    provider.push_text_turn("before the switch");
+    provider.push_text_turn("after the switch");
+    let tmp = tempfile::tempdir().unwrap();
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let engine = create_session(SessionEngineConfig {
+        cwd,
+        agent_dir: tmp.path().join("agent"),
+        model: Some(model),
+        model_info: Some(registry_model(serde_json::json!(["text"]))),
+        stream_fn: Some(provider.stream_fn()),
+        daemonless: true,
+        prewarm_ipython_kernel: Some(false),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    engine
+        .prompt("first", PromptOptions::default())
+        .await
+        .unwrap();
+    engine.session.agent().wait_for_idle().await;
+    engine
+        .update_model_facts(&registry_model(serde_json::json!(["text", "image"])))
+        .await;
+    engine
+        .prompt("second", PromptOptions::default())
+        .await
+        .unwrap();
+    engine.session.agent().wait_for_idle().await;
+
+    let prompts: Vec<String> = provider
+        .calls()
+        .into_iter()
+        .map(|context| context.system_prompt.unwrap_or_default())
+        .collect();
+    let text_only = "Image input: this model cannot see images; `attach_image` errors for it.";
+    let vision = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `attach_image(path)`: reading its bytes with `open()` or `bash` does not show it to you.";
+    assert!(
+        prompts[0].contains(text_only),
+        "the text-only session states it: {}",
+        prompts[0]
+    );
+    assert_eq!(
+        prompts,
+        vec![prompts[0].clone(), prompts[0].replace(text_only, vision)],
+        "after the switch only the image-input line changes"
+    );
+}
