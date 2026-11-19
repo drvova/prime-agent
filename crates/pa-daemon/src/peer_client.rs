@@ -43,8 +43,9 @@ pub(crate) async fn deliver_message_over_peer_transport(
     message: &str,
     sender: &Value,
     delivery_mode: Option<&str>,
+    kind: pa_core::session_engine::agent_messaging::AgentMessageKind,
 ) -> PeerDeliveryOutcome {
-    let future = deliver_once(ticket, message, sender, delivery_mode);
+    let future = deliver_once(ticket, message, sender, delivery_mode, kind);
     match tokio::time::timeout(
         std::time::Duration::from_millis(DELIVERY_TIMEOUT_MS),
         future,
@@ -61,6 +62,7 @@ async fn deliver_once(
     message: &str,
     sender: &Value,
     delivery_mode: Option<&str>,
+    kind: pa_core::session_engine::agent_messaging::AgentMessageKind,
 ) -> PeerDeliveryOutcome {
     // Link establishment: connect, hello, and the grant burn. Any failure
     // here means nothing was delivered.
@@ -102,6 +104,9 @@ async fn deliver_once(
     });
     if let Some(mode) = delivery_mode {
         payload["deliveryMode"] = json!(mode);
+    }
+    if let Some(kind) = kind.to_wire() {
+        payload["messageKind"] = json!(kind);
     }
     match request(&mut writer, &mut reader, "worker_deliver_message", &payload).await {
         Ok(response) => PeerDeliveryOutcome::Answered(Box::new(response)),

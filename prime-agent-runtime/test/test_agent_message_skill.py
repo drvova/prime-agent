@@ -35,6 +35,24 @@ class AgentMessageSkillTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'mode'"):
             asyncio.run(module.send("hello", receiver_role="parent", mode="follow_up"))
 
+    def test_wait_requires_a_bounded_timeout_and_forwards_the_selector(self) -> None:
+        spec = importlib.util.spec_from_file_location("agent_message_wait", SKILL)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with self.assertRaisesRegex(TypeError, "timeout_ms"):
+            asyncio.run(module.wait(sender="scout"))
+        with self.assertRaisesRegex(ValueError, "from 1 to 600000"):
+            asyncio.run(module.wait(sender="scout", timeout_ms=600_001))
+        host = AsyncMock(return_value={"outcome": "timeout"})
+        with patch.object(module, "host_request", host):
+            result = asyncio.run(module.wait(sender_role="child", timeout_ms=50))
+        self.assertEqual(result, {"outcome": "timeout"})
+        host.assert_awaited_once_with(
+            "agent_message.wait",
+            {"sender": None, "sender_role": "child", "timeout_ms": 50},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

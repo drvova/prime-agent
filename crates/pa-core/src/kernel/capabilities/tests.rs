@@ -9,7 +9,7 @@ use super::{capabilities, CapabilityManifest, MANIFESTS};
 
 /// Session-scoped catalog events that are not a kernel capability's standalone adoption event:
 /// the session lifecycle, goal verification (`goal` is an executable skill), and agent messaging
-/// (the `agent-message` skill).
+/// and waiting (the `agent-message` skill).
 const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent started",
     "agent run completed",
@@ -17,6 +17,7 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "session archived",
     "agent goal verification",
     "agent messages",
+    "agent message waits",
     // The provider layer's Responses transport counts (no kernel capability).
     "agent responses transport",
     // Provider request admission is engine plumbing, not a kernel capability.

@@ -74,12 +74,44 @@ impl AgentMessageDeliveryStatus {
     }
 }
 
+/// How one delivery was addressed: a broadcast (`send("all", ...)`) never ends an
+/// `agent_message.wait`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMessageKind {
+    Direct,
+    Broadcast,
+}
+
+impl AgentMessageKind {
+    /// The delivery payload's `messageKind` value; a direct delivery omits the field.
+    pub const BROADCAST_WIRE: &'static str = "broadcast";
+
+    /// The `messageKind` a delivery payload carries (`None`: a direct delivery).
+    #[must_use]
+    pub fn from_wire(value: Option<&str>) -> Self {
+        match value {
+            Some(Self::BROADCAST_WIRE) => AgentMessageKind::Broadcast,
+            Some(_) | None => AgentMessageKind::Direct,
+        }
+    }
+
+    /// The `messageKind` a delivery payload carries (`None` for a direct delivery).
+    #[must_use]
+    pub fn to_wire(self) -> Option<&'static str> {
+        match self {
+            AgentMessageKind::Direct => None,
+            AgentMessageKind::Broadcast => Some(Self::BROADCAST_WIRE),
+        }
+    }
+}
+
 /// `agent_message.send` input.
 #[derive(Debug, Clone)]
 pub struct AgentMessageSendInput {
     pub target: String,
     pub message: String,
     pub receiver_role: Option<AgentFamilyRelationship>,
+    pub kind: AgentMessageKind,
 }
 
 #[derive(Debug, Clone)]
@@ -122,7 +154,7 @@ impl AgentFamilyMember {
         self.name.as_deref().unwrap_or(&self.id)
     }
 
-    fn matches_selector(&self, selector: &str) -> bool {
+    pub(crate) fn matches_selector(&self, selector: &str) -> bool {
         self.member_name() == selector
             || self.id == selector
             || self.aliases.iter().any(|alias| alias == selector)
@@ -138,6 +170,21 @@ pub trait AgentMessageController: Send + Sync {
         &self,
         input: AgentMessageSendInput,
     ) -> impl Future<Output = anyhow::Result<AgentMessageReceipt>> + Send;
+    /// Park until a direct message matching `request` arrives at THIS session (a broadcast never
+    /// ends it), `request.timeout` passes, or the awaited session waits (transitively) on this
+    /// one, answered at once as a cycle. While parked, the session reports `waitingOn` (the one
+    /// awaited member, when the request names one) and holds no admission slot; the message body
+    /// still arrives once, as the ordinary agent-message turn. Controllers without a receiving
+    /// side keep this default refusal.
+    fn wait_for_agent_message(
+        &self,
+        request: AgentMessageWaitRequest,
+    ) -> impl Future<Output = anyhow::Result<AgentMessageWaitOutcome>> + Send {
+        let _ = request;
+        std::future::ready(Err(anyhow::anyhow!(
+            "agent_message.wait needs a daemon session"
+        )))
+    }
 }
 
 /// Message payload for the rendered `[agent-message from ...]` prompt.
@@ -468,6 +515,16 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
             })
         }),
     );
+    let waiter = controller.clone();
+    handlers.register(
+        "agent_message.wait",
+        host_handler(move |payload| {
+            let controller = waiter.clone();
+            Box::pin(async move {
+                wait::handle_agent_message_wait(controller.as_ref(), &payload.data).await
+            })
+        }),
+    );
     handlers.register(
         "agent_message.send",
         host_handler(move |payload| {
@@ -514,6 +571,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                                 target: member.id.clone(),
                                 message: message.clone(),
                                 receiver_role: Some(member.relationship),
+                                kind: AgentMessageKind::Broadcast,
                             })
                             .await;
                         receipts.push(match result {
@@ -602,6 +660,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
                         target: member.id.clone(),
                         message: message.clone(),
                         receiver_role: Some(role),
+                        kind: AgentMessageKind::Direct,
                     })
                     .await?;
                 Ok(receipt_value(&receipt))
@@ -609,6 +668,14 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
         }),
     );
 }
+
+mod wait;
+pub(crate) use wait::observe_agent_message_waits;
+pub use wait::{
+    create_agent_message_preview, AgentMessageWaitArrival, AgentMessageWaitFilter,
+    AgentMessageWaitOutcome, AgentMessageWaitRequest, AGENT_MESSAGE_PREVIEW_MAX_CHARS,
+    AGENT_MESSAGE_WAIT_MAX_TIMEOUT_MS,
+};
 
 mod rate_limit;
 pub(crate) use rate_limit::observe_agent_message_throttles;

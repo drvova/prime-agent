@@ -2111,6 +2111,43 @@ async fn agent_message_throttles_ride_their_own_event() {
     );
 }
 
+/// `agent_message.wait` outcomes ride their own `agent message waits` event at session end
+/// (counts by outcome, never a sender).
+#[tokio::test]
+async fn agent_message_waits_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for outcome in ["message", "timeout", "timeout", "cycle"] {
+        counters.note_agent_message_wait(outcome);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent message waits"]
+    );
+    let waits = &event_properties(&fixture.mock, "agent message waits").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = waits
+        .iter()
+        .filter(|(key, _)| key.starts_with("agent_message_wait_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "agent_message_wait_message_count": 1,
+            "agent_message_wait_timeout_count": 2,
+            "agent_message_wait_cycle_count": 1,
+            "agent_message_wait_no_sender_count": 0,
+        })
+    );
+}
+
 /// Kernel `rlm.abort` calls ride their own `agent rlm child abort` event at session end (counts
 /// by outcome, never a child id), and a session that never aborted sends none.
 #[tokio::test]

@@ -951,6 +951,12 @@ impl SessionEngine for AgentSessionEngine {
 
     /// An agent message from one of this session's children arrived: the
     /// registry records it so the child's no-reply notice is withheld.
+    fn agent_message_waits(
+        &self,
+    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+        Some(std::sync::Arc::clone(&self.agent_message_waits))
+    }
+
     fn mark_child_reply(&self, child_active_session_id: &str) {
         if let Some(children) = &self.children {
             let children = Arc::clone(children);

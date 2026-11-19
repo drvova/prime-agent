@@ -1773,6 +1773,22 @@ const AGENT_MESSAGES: EventRule = EventRule {
     ],
 };
 
+/// Kernel `agent_message.wait` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session waited:
+/// the waits by outcome (a message arrived, the timeout passed, the wait would have closed a
+/// cycle, no family member matched the sender). Counts only: never a sender, a name, or a body.
+const AGENT_MESSAGE_WAITS: EventRule = EventRule {
+    name: "agent message waits",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("agent_message_wait_message_count", required(count())),
+        ("agent_message_wait_timeout_count", required(count())),
+        ("agent_message_wait_cycle_count", required(count())),
+        ("agent_message_wait_no_sender_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
 /// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
 /// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
@@ -1921,6 +1937,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_USAGE_READS,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
+        &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_PROVIDER_OAUTH_LOGIN,
