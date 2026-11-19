@@ -196,23 +196,6 @@ impl AgentSessionEngine {
         *self.provider_target.write().expect("provider target lock") = Some(route.target);
     }
 
-    /// Install the armed route's target as the serving slot: the route
-    /// lock is held through the slot write, so the clone and its install
-    /// are one critical section (the failover switch and restore install
-    /// through here too). Returns `false` when no route is armed.
-    pub(crate) fn install_armed_route_target(&self) -> bool {
-        let slot = self
-            .image_route
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(route) = slot.as_ref() else {
-            return false;
-        };
-        let target = route.target.clone();
-        *self.provider_target.write().expect("provider target lock") = Some(target);
-        true
-    }
-
     /// Clear the armed route and restore the session's serving target (a
     /// fresh model resolution, so a mid-episode model switch is honored):
     /// the next dispatched batch re-evaluates the routing against it.
@@ -262,9 +245,7 @@ impl AgentSessionEngine {
         }
     }
 
-    /// Whether an image-model route is armed for the running episode (the
-    /// failover primary capture keys off it: a routed episode's failover
-    /// restores the routed target).
+    /// The image-model route armed for the running episode, if any.
     pub(crate) fn armed_image_route(&self) -> Option<ImageRoute> {
         self.image_route
             .lock()

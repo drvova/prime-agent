@@ -289,8 +289,31 @@ impl AgentSessionEngine {
         // model keeps resolving when no credential is visible; run-start auth
         // validation reports it.
         let all: Vec<Model> = registry.get_all().to_vec();
-        let resolved =
-            pa_core::models::resolve_cli_model(selection.provider.as_deref(), model_name, &all);
+        // A bare id several providers serve resolves deterministically, and
+        // this runs before every turn: the provider serving the session now
+        // wins, then the user's default provider, then catalog order, so a
+        // catalog refresh never moves a live session to another provider.
+        let provider = selection.provider.clone().or_else(|| {
+            let serving = self
+                .provider_target
+                .read()
+                .expect("provider target lock")
+                .as_ref()
+                .map(|target| target.model.provider.clone());
+            let default =
+                pa_core::settings::SettingsManager::create(self.cwd(), &self.config.agent_dir)
+                    .get_default_provider()
+                    .map(str::to_string);
+            let preferred: Vec<&str> = serving.iter().chain(&default).map(String::as_str).collect();
+            pa_core::models::pick_bare_model_id(
+                model_name,
+                &all,
+                |model| (model.provider.as_str(), model.id.as_str()),
+                &preferred,
+            )
+            .map(|model| model.provider.clone())
+        });
+        let resolved = pa_core::models::resolve_cli_model(provider.as_deref(), model_name, &all);
         if let Some(error) = resolved.error {
             anyhow::bail!("{error}");
         }
@@ -538,23 +561,6 @@ impl AgentSessionEngine {
             )
         });
         pa_core::models::ModelRegistry::create(auth, self.config.agent_dir.join("models.json"))
-    }
-
-    /// The primary target a failover episode restores: the captured
-    /// model with the serving service tier. Request auth needs no
-    /// restore — the live session's stream re-resolves it from the
-    /// credential store on every provider call, so the slot's auth half
-    /// is write-only for the daemon's stream.
-    pub(crate) fn restored_primary_target(
-        &self,
-        primary: &Model,
-    ) -> pa_core::session_engine::provider_adapter::ProviderTarget {
-        pa_core::session_engine::provider_adapter::ProviderTarget {
-            service_tier: *self.service_tier.read().expect("service tier lock"),
-            api_key: None,
-            model: primary.clone(),
-            headers: None,
-        }
     }
 }
 

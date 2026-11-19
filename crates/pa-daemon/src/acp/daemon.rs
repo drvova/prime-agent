@@ -352,8 +352,8 @@ pub async fn run_daemon_attached_acp_mode(options: DaemonAcpOptions) -> anyhow::
                 match frame {
                     LinkFrame::Event(frame) => {
                         let event = frame.get("event").cloned().unwrap_or(Value::Null);
-                        // The refresh triggers: runs that can restore a
-                        // failover model or clamp a level. Captured under
+                        // The refresh triggers: runs that can change the
+                        // session model or clamp a level. Captured under
                         // the guard, spawned once released.
                         let mut refresh: Option<(Arc<HostedConfig>, Arc<UpdateProducer>, String)> =
                             None;
