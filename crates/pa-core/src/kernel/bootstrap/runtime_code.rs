@@ -45,6 +45,8 @@ try:
     import rlm.web as web
     import rlm.fs as fs
     import rlm.todo as todo
+    import rlm.settings as settings
+    import rlm.model as model
     import rlm.ask as _prime_agent_ask_module
     ask = _prime_agent_ask_module.ask
 ";

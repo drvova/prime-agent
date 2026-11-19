@@ -148,6 +148,8 @@ async fn model_info_reports_the_bound_model() {
     assert_eq!(response["id"], "faux-1");
     assert_eq!(response["provider"], "faux");
     assert_eq!(response["input"], json!(["text"]));
+    assert_eq!(response["contextWindow"], Value::Null);
+    assert_eq!(response["thinkingLevel"], Value::Null);
     // A bound runtime stays authoritative.
     let session = Arc::new(Mutex::new(SessionManager::in_memory(std::path::Path::new(
         "/tmp",
@@ -176,9 +178,16 @@ async fn model_info_reports_the_bound_model() {
     let response = handler(&handlers, "model.info")(payload(json!({})))
         .await
         .unwrap();
-    assert_eq!(response["id"], "other-1");
-    assert_eq!(response["provider"], "other");
-    assert_eq!(response["input"], json!([]));
+    assert_eq!(
+        response,
+        json!({
+            "id": "other-1",
+            "provider": "other",
+            "input": [],
+            "contextWindow": 100_000,
+            "thinkingLevel": "off",
+        })
+    );
 }
 
 #[tokio::test]

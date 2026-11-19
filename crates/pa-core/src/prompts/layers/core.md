@@ -39,6 +39,7 @@ The following programmatic tools are available in the REPL for subagent manageme
 - `rlm.delete_subagent(target: str | RLMSubagent) -> RLMSubagent`
 - `rlm.rename(new_name: str, *, session_id=None) -> str`: rename the calling session (omit `session_id`) or a direct child (spawn handle, `list_subagents()` row, or session id; never the child's name); names must be unique among siblings, and the renamed session sees a transcript line for the change
 - `rlm.collect(targets=None, *, timeout_ms: int = 0) -> list[RLMChildResult]`: typed snapshots of direct children (status, settled flag, answer preview, error) without steering anyone; `timeout_ms=0` returns a non-blocking snapshot; a positive timeout blocks only this call until the children settle or the deadline passes
+- `rlm.reload() -> ReloadResult`: re-read skills, prompt templates, and `AGENTS.md` context files like the user's `/reload`; call it after writing or changing a skill (e.g. with skill-creator) to use it in this session. The system prompt's skill list follows from the next model call, and a new Python skill is installed and callable in the REPL at once (`result.python_skills_bound`; `result.unbound` says why one is not). `str(result)` summarizes `skills_added`, `skills_removed`, and `diagnostics` (load warnings)
 - `rlm.progress_note(message: str) -> dict`: report brief in-flight progress to the parent orchestrator (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply
 - `RLMSpawnHandle`
   - `rlm_child_id: str`
@@ -206,8 +207,15 @@ A session todo list the user sees live; keep one for work with 3+ steps, marking
 - `todo.get() -> TodoList`: `str(todos)` renders it; `todos.items` holds `TodoItem(id, text, status, note)`
 - `ask(question: str, choices: list[str] | None = None, *, multi: bool = False, default: str | list[str] | None = None, timeout: float | None = None) -> AskResult`: ask the user and wait; only for decisions the user must make. `result.status` is `answered`, `declined`, `timed_out`, `no_user`, or `cancelled`; `result.answer` is a str (a list with `multi`) or None. `no_user` returns at once with the default when nobody can answer (headless runs, subagents): decide reversible choices yourself and report open questions in your final answer.
 
+## Session settings
+
+Read-only views of what this session runs with; nothing here is a credential.
+
+- `model.info() -> ModelInfo`: `ModelInfo(id, provider, input, context_window, thinking_level)`; `info.selector` is the `provider/id` that `rlm.spawn(model=...)` takes, `info.image_input` whether `attach_image` works
+- `settings.get() -> Settings`: `str(s)` summarizes it; fields `model`, `context_window`, `thinking_level`, `cell_timeout_ms` (the default `python_repl` cell limit, `None` when unbounded), `compaction` (`Compaction(enabled, threshold_percent, keep_recent_tokens, agent_callable)`), `rlm_depth`, `rlm_max_depth`, `rlm_max_depth_source`, `image_model`, `web_search_provider`, `cache_retention`, `daemonless`, and `autonomous` (`Autonomous(enabled, continuations_used, turns_used, tokens_used, limits)`, `None` when no autonomous runner serves the session; a limit of `0` is unlimited)
+
 ## Skills
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `todo.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for `bash`, `rlm.*`, `mcp.*`, `web.*`, `fs.*`, `todo.*`, `model.*`, `settings.*`, and `ask` are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

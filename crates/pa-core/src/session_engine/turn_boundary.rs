@@ -201,12 +201,16 @@ impl TurnBoundaryRequests {
                     // The bound runtime is authoritative once live; the
                     // registration-time facts cover pre-bind probes and a
                     // dropped session (model.info always answers).
-                    let model_info = requests
-                        .upgrade()
-                        .and_then(|requests| {
-                            requests.bound().map(|runtime| runtime.model_info.clone())
-                        })
-                        .unwrap_or(model_info);
+                    let bound = requests.upgrade().and_then(|requests| requests.bound());
+                    let model_info = bound
+                        .as_ref()
+                        .map_or(model_info, |runtime| runtime.model_info.clone());
+                    // The live context window and thinking level, once bound
+                    // (null before: a pre-bind probe has no agent to ask).
+                    let live = match &bound {
+                        Some(runtime) => super::settings_view::live_model_facts(runtime).await,
+                        None => json!({"contextWindow": null, "thinkingLevel": null}),
+                    };
                     Ok(json!({
                         "id": model_info.id,
                         "provider": model_info.provider,
@@ -214,6 +218,8 @@ impl TurnBoundaryRequests {
                             pa_types::ai::ModelInput::Text => "text",
                             pa_types::ai::ModelInput::Image => "image",
                         }).collect::<Vec<&str>>(),
+                        "contextWindow": live["contextWindow"],
+                        "thinkingLevel": live["thinkingLevel"],
                     }))
                 })
             }),

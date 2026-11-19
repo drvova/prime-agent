@@ -1500,6 +1500,21 @@ const AGENT_FS_SEARCH: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
+/// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
+/// session reloaded or read its settings: reloads, the skills they added, and settings reads.
+/// Counts only: never a skill name, a path, or a setting value.
+const AGENT_REPL_RELOAD: EventRule = EventRule {
+    name: "agent repl reload",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("repl_reload_count", required(count())),
+        ("repl_reload_skills_added_count", required(count())),
+        ("repl_settings_get_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1528,6 +1543,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
+        &AGENT_REPL_RELOAD,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all

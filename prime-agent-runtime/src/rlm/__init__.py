@@ -866,6 +866,12 @@ class _RLMNamespace:
     async def end_turn(self) -> dict[str, Any]:
         return await end_turn()
 
+    async def reload(self) -> Any:
+        """Re-read the skills, prompt templates and context files like ``/reload`` (see ``rlm.resource_reload``)."""
+        from .resource_reload import reload as _reload
+
+        return await _reload()
+
     factory = _RLMFactoryNamespace()
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:

@@ -1819,3 +1819,39 @@ async fn fs_searches_ride_their_own_event() {
         })
     );
 }
+
+/// Kernel `rlm.reload()` and `settings.get()` calls ride their own `agent repl reload` event at
+/// session end (counts only, never a skill name or a setting value).
+#[tokio::test]
+async fn repl_reloads_and_settings_reads_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_repl_reload(2);
+    counters.note_repl_reload(0);
+    counters.note_repl_settings_read();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl reload"]
+    );
+    let reload = &event_properties(&fixture.mock, "agent repl reload").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = reload
+        .iter()
+        .filter(|(key, _)| key.starts_with("repl_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "repl_reload_count": 2,
+            "repl_reload_skills_added_count": 2,
+            "repl_settings_get_count": 1,
+        })
+    );
+}

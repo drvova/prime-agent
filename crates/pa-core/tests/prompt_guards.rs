@@ -144,7 +144,6 @@ fn cached_prefix_is_stable_across_sessions() {
 /// Host-request types that are host-internal plumbing, not model-facing
 /// programmatic tools (the prompt must not document them).
 const INTERNAL_HOST_REQUESTS: &[&str] = &[
-    "model.info",
     "mcp.config",
     "mcp.refresh",
     "mcp.begin_login",
@@ -173,6 +172,8 @@ fn prompt_token_for_host_request(request: &str) -> Option<String> {
             "agent_observe.get" => "agent_observe.get_agent",
             "agent_observe.recent" => "agent_observe.recent_messages",
             "agent_observe.session_messages" => "rlm.session.messages",
+            // `settings.get()` reads the session half, then the host half.
+            "settings.session" | "settings.host" => "settings.get",
             other => other,
         }
         .to_string(),

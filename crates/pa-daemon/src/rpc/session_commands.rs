@@ -579,7 +579,7 @@ async fn get_commands(state: &Arc<RpcState>) -> Result<ResponseData, String> {
     let handle = state.session.handle().await;
     let engine = &handle.engine;
     let mut commands: Vec<Value> = Vec::new();
-    for template in &engine.prompt_templates {
+    for template in &engine.resource_reload.prompt_templates() {
         let mut entry = json!({
             "name": template.name,
             "source": "prompt",
@@ -593,7 +593,7 @@ async fn get_commands(state: &Arc<RpcState>) -> Result<ResponseData, String> {
         }
         commands.push(entry);
     }
-    for skill in &engine.skills {
+    for skill in &engine.resource_reload.skills() {
         let mut entry = json!({
             "name": format!("skill:{}", skill.name),
             "source": "skill",

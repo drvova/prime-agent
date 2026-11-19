@@ -388,6 +388,16 @@ struct CounterValues {
     web_read: WebReadCounts,
     /// The kernel `fs.*` search counters, reported by `agent fs search`.
     fs_search: FsSearchCounts,
+    /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
+    repl_reload: ReplReloadCounts,
+}
+
+/// `agent repl reload`: reloads, the skills they added, and settings reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ReplReloadCounts {
+    reloads: u64,
+    skills_added: u64,
+    settings_reads: u64,
 }
 
 /// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
@@ -599,6 +609,19 @@ impl SessionCounters {
                 .max_ms
                 .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
         });
+    }
+
+    /// One kernel `rlm.reload()` and the count of skills it added (never a name).
+    pub(crate) fn note_repl_reload(&self, skills_added: usize) {
+        self.with(|values| {
+            values.repl_reload.reloads += 1;
+            values.repl_reload.skills_added += skills_added as u64;
+        });
+    }
+
+    /// One kernel `settings.get()` read (never a value).
+    pub(crate) fn note_repl_settings_read(&self) {
+        self.with(|values| values.repl_reload.settings_reads += 1);
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1136,6 +1159,21 @@ impl SessionTelemetry {
                 search_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs search", search_properties);
+        }
+        // A session that never reloaded or read its settings sends no reload event.
+        let mut repl_reload = ReplReloadCounts::default();
+        self.counters
+            .with(|values| repl_reload = values.repl_reload);
+        if repl_reload != ReplReloadCounts::default() {
+            let mut reload_properties = self.session_properties();
+            for (key, value) in [
+                ("repl_reload_count", repl_reload.reloads),
+                ("repl_reload_skills_added_count", repl_reload.skills_added),
+                ("repl_settings_get_count", repl_reload.settings_reads),
+            ] {
+                reload_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl reload", reload_properties);
         }
         self.client.flush().await
     }
