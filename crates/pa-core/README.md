@@ -83,6 +83,16 @@ relative to the REPL's cwd; each call runs on a blocking thread. Adoption
 counts ride the `agent fs search` event. Non-goals: a shell or coreutils
 replacement, file watching, and indexing.
 
+Kernel workspace checkpoints (`session_engine::checkpoint_host`): the
+`checkpoint.create`/`checkpoint.list`/`checkpoint.restore` host requests
+over the embedding's `WorkspaceCheckpointController` (the daemon worker's
+shadow-git store). Restore is gated by the global-only
+`replCanRestoreCheckpoints` setting (default off), limited to the session's
+own checkpoints, and confirmed by the user through the interaction hub's
+question flow; nobody to ask means refuse. Without a controller every
+request answers why. Adoption counts ride the `agent repl checkpoint`
+event. Non-goals: the store itself (pa-daemon) and the per-turn rewind.
+
 Provider auth descriptors (`auth/descriptor.rs`, `auth/resolver.rs`,
 `auth/token_exchange.rs`): the optional models.json provider `auth` block,
 validated at load, and the one request-auth seam (`AuthResolver`, crate

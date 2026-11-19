@@ -234,6 +234,11 @@ pub struct AgentSessionEngine {
     /// The worker's todo/question hub, threaded into every session build
     /// (each build adopts its branch's todo list); `None` without a worker.
     interaction_hub: std::sync::Mutex<Option<Arc<pa_core::interaction::InteractionHub>>>,
+    /// The worker's workspace checkpoint store behind the kernel's `checkpoint.*`; `None`
+    /// without a worker (the session then answers why it cannot checkpoint).
+    workspace_checkpoints: std::sync::Mutex<
+        Option<Arc<dyn pa_core::session_engine::checkpoint_host::WorkspaceCheckpointController>>,
+    >,
     /// The attribution producer the children registry's sink last got:
     /// children outlive a rebuild, so their spawn registrations are adopted
     /// forward.
