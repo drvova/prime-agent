@@ -596,6 +596,7 @@ enum Key {
     Enter,
     Escape,
     CtrlC,
+    AltV,
 }
 
 impl Key {
@@ -609,12 +610,14 @@ impl Key {
             Key::Enter => b"\r".to_vec(),
             Key::Escape => b"\x1b".to_vec(),
             Key::CtrlC => b"\x03".to_vec(),
+            Key::AltV => b"\x1bv".to_vec(),
         }
     }
 
     fn win32(self) -> Vec<u8> {
         const SHIFT: u32 = 0x10;
         const LEFT_CTRL: u32 = 0x08;
+        const LEFT_ALT: u32 = 0x02;
         const ENHANCED: u32 = 0x100;
         match self {
             Key::Char(ch) => {
@@ -660,6 +663,13 @@ impl Key {
                 win32_key(0x43, 0x2e, 0x03, true, LEFT_CTRL),
                 win32_key(0x43, 0x2e, 0x03, false, LEFT_CTRL),
                 win32_key(0x11, 0x1d, 0, false, 0),
+            ]
+            .concat(),
+            Key::AltV => [
+                win32_key(0x12, 0x38, 0, true, LEFT_ALT),
+                win32_key(0x56, 0x2f, u16::from(b'v'), true, LEFT_ALT),
+                win32_key(0x56, 0x2f, u16::from(b'v'), false, LEFT_ALT),
+                win32_key(0x12, 0x38, 0, false, 0),
             ]
             .concat(),
         }
@@ -841,6 +851,24 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
         &format!("only the typed prompt was submitted ({prompts:?})"),
         prompts == ["hello"],
     );
+    // Image paste: Windows terminals keep Ctrl+V for their own text paste, so Alt+V reads the
+    // clipboard's bitmap (converted to PNG) into an `[image #N]` marker; an empty clipboard
+    // says so; a pasted image file path attaches the file.
+    let bitmap = set_clipboard_bitmap();
+    check(&mut term, "a bitmap lands on the clipboard", bitmap.is_ok());
+    term.key(Key::AltV);
+    let marker = term.wait_for("[image #1]", Duration::from_secs(30));
+    check(&mut term, "alt+v pastes the clipboard image", marker);
+    let cleared = clear_clipboard();
+    check(&mut term, "the clipboard clears", cleared.is_ok());
+    term.key(Key::AltV);
+    let empty = term.wait_for("Clipboard has no image", Duration::from_secs(30));
+    check(&mut term, "an empty clipboard says so", empty);
+    let image_file = root.join("dropped shot.png");
+    std::fs::write(&image_file, ONE_PIXEL_PNG).expect("write the dropped image");
+    term.paste(&format!("\"{}\"", image_file.display()));
+    let dropped = term.wait_for("[image #2]", Duration::from_secs(30));
+    check(&mut term, "a pasted image path attaches the file", dropped);
     term.settle(Duration::from_millis(500));
     dump(
         &format!("tui-{scenario}"),
@@ -858,6 +886,46 @@ fn run_tui_scenario(host: &Host, input_mode: InputMode, scenario: &str) -> Vec<S
     drop(term);
     drop(supervisor);
     failures
+}
+
+/// A 1x1 opaque PNG.
+const ONE_PIXEL_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+    0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x70, 0x6b, 0xda, 0x02,
+    0x00, 0x02, 0x8e, 0x01, 0x7d, 0xc8, 0x73, 0x8d, 0x1c, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e,
+    0x44, 0xae, 0x42, 0x60, 0x82,
+];
+
+/// Run one PowerShell clipboard script (STA: the clipboard is an OLE object).
+fn clipboard_script(script: &str) -> Result<(), String> {
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).into_owned())
+    }
+}
+
+/// Put a 16x8 bitmap on the clipboard the way a screenshot tool does (`SetImage`: the system
+/// offers it as `CF_BITMAP`, `CF_DIB` and `CF_DIBV5`, no PNG).
+fn set_clipboard_bitmap() -> Result<(), String> {
+    clipboard_script(
+        "Add-Type -AssemblyName System.Windows.Forms, System.Drawing; \
+         $bitmap = New-Object System.Drawing.Bitmap 16, 8; \
+         $graphics = [System.Drawing.Graphics]::FromImage($bitmap); \
+         $graphics.Clear([System.Drawing.Color]::SteelBlue); \
+         [System.Windows.Forms.Clipboard]::SetImage($bitmap)",
+    )
+}
+
+fn clear_clipboard() -> Result<(), String> {
+    clipboard_script(
+        "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Clipboard]::Clear()",
+    )
 }
 
 /// The user prompts every session file under `dir` stored, in file order.
