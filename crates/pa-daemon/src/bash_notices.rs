@@ -18,14 +18,14 @@ impl AgentSessionEngine {
     pub fn set_kernel_notice_sinks(
         &self,
         notice: crate::engine::KernelNoticeSink,
-        consumed: crate::engine::BashConsumedSink,
+        consumed: crate::engine::BackgroundJobConsumedSink,
     ) {
         *self
             .kernel_notice_sink
             .lock()
             .expect("kernel notice sink lock") = Some(notice);
         *self
-            .bash_consumed_sink
+            .job_consumed_sink
             .lock()
             .expect("bash consumed sink lock") = Some(consumed);
     }
@@ -43,7 +43,7 @@ impl AgentSessionEngine {
             return;
         };
         let Some(consumed) = self
-            .bash_consumed_sink
+            .job_consumed_sink
             .lock()
             .expect("bash consumed sink lock")
             .clone()

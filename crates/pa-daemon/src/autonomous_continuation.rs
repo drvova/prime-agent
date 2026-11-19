@@ -98,13 +98,13 @@ impl AgentSessionEngine {
             return Vec::new();
         }
         // Unsettled RLM work or a live background bash handle holds the continuation.
-        if self.has_unsettled_rlm_work().await || self.has_live_background_bash_handles() {
+        if self.has_unsettled_rlm_work().await || self.has_live_background_jobs() {
             self.autonomous_awaits_rlm_work
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             // A handle that settles between the probe above and this store
             // raced the callback out of its retry: the owed turn would wait
             // for a wake that already fired - re-arm the retry once.
-            if !self.has_live_background_bash_handles() && !self.has_unsettled_rlm_work().await {
+            if !self.has_live_background_jobs() && !self.has_unsettled_rlm_work().await {
                 self.retry_owed_autonomous_continuation();
             }
             return Vec::new();
@@ -230,7 +230,7 @@ impl AgentSessionEngine {
         // background bash handle runs, or queued input owns the boundary.
         if self.has_unsettled_rlm_work().await
             || self.session_input_queued()
-            || self.has_live_background_bash_handles()
+            || self.has_live_background_jobs()
         {
             self.autonomous_awaits_rlm_work
                 .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -238,7 +238,7 @@ impl AgentSessionEngine {
             // that would deliver the owed turn: with every blocker gone the
             // deferral has no wake left - re-arm. Only the fully-cleared
             // deferral re-arms, so the loop cannot spin.
-            if !self.has_live_background_bash_handles()
+            if !self.has_live_background_jobs()
                 && !self.has_unsettled_rlm_work().await
                 && !self.session_input_queued()
             {

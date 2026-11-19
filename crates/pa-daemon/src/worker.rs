@@ -28,8 +28,8 @@ pub(crate) use queue::{
     admit_autonomous_follow_up, admit_goal_follow_up, admit_kernel_notice,
     checkpoint_queue_recovery, clear_withdrawn_progress_note, enqueue_priority,
     gather_delivery_batch, parse_custom_message, parse_prompt_images, queue_lanes,
-    queued_bash_completion_notices, restore_queue_snapshot, restored_turn_policy,
-    withdraw_bash_completion_notice, QueueCheckpoint, QueueLanes, QueuedItem, TurnPolicy,
+    queued_background_completion_notices, restore_queue_snapshot, restored_turn_policy,
+    withdraw_background_completion_notice, QueueCheckpoint, QueueLanes, QueuedItem, TurnPolicy,
     TurnSettle, ABORTED_TURN_SETTLE_ERROR, PROMPT_ABORTED_BEFORE_DELIVERY, QUEUED_INPUT_SUSPENDED,
     QUEUED_PROMPT_DELETED, SIDE_QUESTION_SETTLE_TIMEOUT,
 };
@@ -667,9 +667,9 @@ impl Worker {
                 let withdraw_core = Arc::clone(&core);
                 let withdraw_recovery = Arc::clone(&recovery);
                 let withdraw_engine = Arc::downgrade(concrete);
-                let consumed: crate::engine::BashConsumedSink = Arc::new(move |notice| {
+                let consumed: crate::engine::BackgroundJobConsumedSink = Arc::new(move |notice| {
                     let engine = withdraw_engine.upgrade();
-                    withdraw_bash_completion_notice(
+                    withdraw_background_completion_notice(
                         &withdraw_recovery,
                         &withdraw_core,
                         &notice,

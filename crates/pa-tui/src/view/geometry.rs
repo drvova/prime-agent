@@ -73,8 +73,8 @@ impl AgentView {
                     spacing,
                 )
             }
-            ChatEntry::ShellCompletion(row) => {
-                crate::custom_message::geometry::shell_completion_row_count(
+            ChatEntry::BackgroundCompletion(row) => {
+                crate::custom_message::geometry::background_completion_row_count(
                     row, detail, width, spacing,
                 )
             }
@@ -375,9 +375,8 @@ mod tests {
                 markdown_text()
             )
                 .prop_map(|(pid, exit_code, content)| {
-                    ChatEntry::ShellCompletion(Box::new(ShellCompletionRow {
-                        pid,
-                        exit_code,
+                    ChatEntry::BackgroundCompletion(Box::new(BackgroundCompletionRow {
+                        outcome: crate::custom_message::BackgroundOutcome::Shell { pid, exit_code },
                         content,
                     }))
                 }),

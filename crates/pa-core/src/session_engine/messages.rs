@@ -34,6 +34,9 @@ pub const HEARTBEAT_PROMPT_CUSTOM_TYPE: &str = "heartbeat_prompt";
 /// The durable row a detached kernel bash completion admits as the
 /// woken turn's injected prompt.
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
+/// The durable row a backgrounded kernel cell's end (`cell.completed`)
+/// admits as the woken turn's injected prompt.
+pub const ASYNC_CELL_COMPLETION_CUSTOM_TYPE: &str = "async_cell_completion";
 /// TS `SESSION_RENAMED_CUSTOM_TYPE` (#2529): the displayed notice a
 /// rename that changed an existing name leaves in the renamed session's
 /// transcript.
@@ -42,6 +45,8 @@ pub const SESSION_RENAMED_CUSTOM_TYPE: &str = "session_renamed";
 /// notice's queued row carries (the TUI renders it with its own label,
 /// no lane prefix).
 pub const ASYNC_BASH_COMPLETION_PREVIEW_LABEL: &str = "Background command finished";
+/// The queue-strip label a backgrounded cell's completion row carries.
+pub const ASYNC_CELL_COMPLETION_PREVIEW_LABEL: &str = "Background cell finished";
 /// The durable row a factory run milestone (`factory.progress`) admits on
 /// the owning session's steering lane.
 pub const FACTORY_PROGRESS_NOTICE_CUSTOM_TYPE: &str = "factory_progress_notice";
@@ -210,14 +215,32 @@ pub fn create_heartbeat_prompt_message(
     }
 }
 
-/// The newest output a finished detached command's notice carries (the kernel
+/// The newest output a finished background job's notice carries (the kernel
 /// bounds it to its snapshot tail limits).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BashOutputTail<'a> {
-    /// The command's whole output.
+pub enum BackgroundOutputTail<'a> {
+    /// The job's whole output.
     Complete(&'a str),
     /// Only the newest output; older output was cut.
     Truncated(&'a str),
+}
+
+/// The notice's output section: none, fenced, or the newest lines with
+/// `full` naming where the whole output is.
+fn push_output_tail(content: &mut String, output: BackgroundOutputTail<'_>, full: &str) {
+    match output {
+        BackgroundOutputTail::Complete("") => content.push_str("\n\nOutput: (none)"),
+        BackgroundOutputTail::Complete(text) => {
+            let _ = write!(content, "\n\nOutput:\n{}", fenced(text));
+        }
+        BackgroundOutputTail::Truncated(text) => {
+            let _ = write!(
+                content,
+                "\n\nOutput (truncated, newest lines only; {full} for the full output):\n{}",
+                fenced(text)
+            );
+        }
+    }
 }
 
 /// The detached kernel bash completion notice: the `[bash-done pid:N exit:M]` header,
@@ -229,26 +252,14 @@ pub fn create_async_bash_completion_message(
     pid: u32,
     command: &str,
     exit_code: i64,
-    output: BashOutputTail<'_>,
+    output: BackgroundOutputTail<'_>,
     timestamp: u64,
 ) -> pa_types::session::CustomMessage {
     // TS `JSON.stringify(details.command)`: the quoted, escaped command.
     let encoded_command = serde_json::to_string(command).unwrap_or_default();
     let mut content =
         format!("[bash-done pid:{pid} exit:{exit_code}]\n\nCommand: {encoded_command}");
-    match output {
-        BashOutputTail::Complete("") => content.push_str("\n\nOutput: (none)"),
-        BashOutputTail::Complete(text) => {
-            let _ = write!(content, "\n\nOutput:\n{}", fenced(text));
-        }
-        BashOutputTail::Truncated(text) => {
-            let _ = write!(
-                content,
-                "\n\nOutput (truncated, newest lines only; `await h` on the saved handle for the full output):\n{}",
-                fenced(text)
-            );
-        }
-    }
+    push_output_tail(&mut content, output, "`await h` on the saved handle");
     pa_types::session::CustomMessage {
         custom_type: ASYNC_BASH_COMPLETION_CUSTOM_TYPE.to_string(),
         content: UserContent::Text(content),
@@ -258,6 +269,65 @@ pub fn create_async_bash_completion_message(
             "command": command,
             "exitCode": exit_code,
         })),
+        timestamp,
+        rest: serde_json::Map::default(),
+    }
+}
+
+/// How a backgrounded kernel cell ended (`cell.completed` `status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellEnd {
+    Ok,
+    Error,
+    Interrupted,
+}
+
+impl CellEnd {
+    /// The kernel's wire word.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Error => "error",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// The backgrounded kernel cell notice: the `[cell-done cell:ID status:S]`
+/// header, the value's repr (or the traceback) and the tail of what the cell
+/// printed in the background, the same output section `[bash-done]` carries.
+/// A later kernel read that reaches the model first withdraws it through its
+/// details (`cell.consumed`).
+#[must_use]
+pub fn create_async_cell_completion_message(
+    cell: &str,
+    end: CellEnd,
+    text: &str,
+    output: BackgroundOutputTail<'_>,
+    timestamp: u64,
+) -> pa_types::session::CustomMessage {
+    let header_cell = sanitize_message_header_value(cell);
+    let mut content = format!("[cell-done cell:{header_cell} status:{}]", end.as_str());
+    let label = match end {
+        CellEnd::Ok => "Value",
+        CellEnd::Error | CellEnd::Interrupted => "Error",
+    };
+    let text = text.trim_end_matches('\n');
+    if !text.is_empty() {
+        let _ = write!(content, "\n\n{label}:\n{}", fenced(text));
+    }
+    let encoded_cell = serde_json::to_string(cell).unwrap_or_default();
+    push_output_tail(
+        &mut content,
+        output,
+        &format!("`await rlm.cells.get({encoded_cell})`"),
+    );
+    pa_types::session::CustomMessage {
+        custom_type: ASYNC_CELL_COMPLETION_CUSTOM_TYPE.to_string(),
+        content: UserContent::Text(content),
+        display: true,
+        details: Some(serde_json::json!({ "cell": cell, "status": end.as_str() })),
         timestamp,
         rest: serde_json::Map::default(),
     }
@@ -771,7 +841,7 @@ state
             4321,
             "sleep 12; echo RW_WAKE_DONE",
             0,
-            BashOutputTail::Truncated("line 19\nRW_WAKE_DONE"),
+            BackgroundOutputTail::Truncated("line 19\nRW_WAKE_DONE"),
             1_000,
         );
         assert_eq!(
@@ -798,13 +868,54 @@ state
             11,
             "echo \"done\" && exit 2",
             2,
-            BashOutputTail::Complete(""),
+            BackgroundOutputTail::Complete(""),
             2_000,
         );
         assert_eq!(
             message.content,
             UserContent::Text(
                 "[bash-done pid:11 exit:2]\n\nCommand: \"echo \\\"done\\\" && exit 2\"\n\nOutput: (none)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn async_cell_completion_message_carries_its_value_and_output_tail() {
+        let message = create_async_cell_completion_message(
+            "cell-7",
+            CellEnd::Ok,
+            "'finished'",
+            BackgroundOutputTail::Truncated("step 19\nstep 20"),
+            3_000,
+        );
+        assert_eq!(
+            message,
+            pa_types::session::CustomMessage {
+                custom_type: "async_cell_completion".to_string(),
+                content: UserContent::Text(
+                    "[cell-done cell:cell-7 status:ok]\n\nValue:\n```\n'finished'\n```\n\n\
+                     Output (truncated, newest lines only; `await rlm.cells.get(\"cell-7\")` for the full output):\n\
+                     ```\nstep 19\nstep 20\n```"
+                        .to_string()
+                ),
+                display: true,
+                details: Some(serde_json::json!({ "cell": "cell-7", "status": "ok" })),
+                timestamp: 3_000,
+                rest: serde_json::Map::default(),
+            }
+        );
+        let message = create_async_cell_completion_message(
+            "cell-8",
+            CellEnd::Interrupted,
+            "Traceback (most recent call last):\nKeyboardInterrupt\n",
+            BackgroundOutputTail::Complete(""),
+            4_000,
+        );
+        assert_eq!(
+            message.content,
+            UserContent::Text(
+                "[cell-done cell:cell-8 status:interrupted]\n\nError:\n```\nTraceback (most recent call last):\nKeyboardInterrupt\n```\n\nOutput: (none)"
                     .to_string()
             )
         );

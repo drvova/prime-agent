@@ -245,7 +245,7 @@ pub type SessionInputProbe = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 // (`session_engine::bash_notices`); the re-export keeps the
 // `crate::engine::*` paths the worker's queue lanes compile against.
 pub use pa_core::session_engine::bash_notices::{
-    BashConsumedNotice, BashConsumedSink, KernelNotice, KernelNoticeSink,
+    BackgroundJobConsumed, BackgroundJobConsumedSink, KernelNotice, KernelNoticeSink,
 };
 
 /// The worker's goal admission sink: the queue lanes admit a minted goal

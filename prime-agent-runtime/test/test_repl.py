@@ -724,6 +724,10 @@ class ReplTest(unittest.TestCase):
             "print('after')\n'finished'",
         )
         self.assertEqual(stream_text(events, "stdout"), "before\n")
+        # The host counts it as live background work until its notice is in.
+        announce = one(events, "display")["data"]["application/vnd.prime-agent.bash-activity+json"]
+        activity_id = announce.pop("id")
+        self.assertEqual((len(activity_id), announce), (32, {"cell": "bg-sync", "active": True}))
         # The kernel serves the next cell while the first one still runs.
         self._host_requests = []
         self.assertEqual(
@@ -740,6 +744,14 @@ class ReplTest(unittest.TestCase):
                 "outputTruncated": False,
                 "text": "'finished'",
             },
+        )
+        while True:
+            event = self.repl.read_event()
+            if event.get("event") == "display":
+                break
+        self.assertEqual(
+            event["data"],
+            {"application/vnd.prime-agent.bash-activity+json": {"id": activity_id, "cell": "bg-sync", "active": False}},
         )
         # A read of the handle after the notice landed withdraws it.
         read = self.repl.execute("bg-sync-read", "from rlm import cells\n(await cells.get('bg-sync')).value")

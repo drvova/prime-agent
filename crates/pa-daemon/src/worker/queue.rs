@@ -585,12 +585,12 @@ pub(crate) fn admit_kernel_notice(
     work_notify.notify_one();
 }
 
-/// Withdraw one queued bash completion notice: the kernel read the result
-/// before the notice delivered (pids are reused, so the command disambiguates).
-pub(crate) fn withdraw_bash_completion_notice(
+/// Withdraw one queued background-job completion notice: the kernel read
+/// the result before the notice delivered.
+pub(crate) fn withdraw_background_completion_notice(
     recovery: &std::sync::Mutex<Option<WorkerRecoveryJournal>>,
     core: &Arc<Mutex<SessionCore>>,
-    notice: &crate::engine::BashConsumedNotice,
+    notice: &crate::engine::BackgroundJobConsumed,
     engine: Option<&dyn crate::engine::SessionEngine>,
 ) {
     let removed = {
@@ -600,7 +600,7 @@ pub(crate) fn withdraw_bash_completion_notice(
         // whole set.
         let mut withdrawn = false;
         let mut withdraw_one = |item: &QueuedItem| {
-            if !withdrawn && is_bash_completion_notice_for(item, notice) {
+            if !withdrawn && is_completion_notice_for(item, notice) {
                 withdrawn = true;
                 false
             } else {
@@ -627,41 +627,33 @@ pub(crate) fn withdraw_bash_completion_notice(
     }
 }
 
-/// Whether one queued item is the completion notice for this pid+command
-/// (the details carry both — pids alone are reused).
-fn is_bash_completion_notice_for(
+/// Whether one queued item is this job's completion notice.
+fn is_completion_notice_for(
     item: &QueuedItem,
-    notice: &crate::engine::BashConsumedNotice,
+    notice: &crate::engine::BackgroundJobConsumed,
 ) -> bool {
     let Some(row) = item.custom_message.as_ref() else {
         return false;
     };
-    if !is_bash_completion_row(row) {
-        return false;
-    }
-    let details = row.get("details").unwrap_or(&Value::Null);
-    details.get("pid").and_then(Value::as_u64) == Some(u64::from(notice.pid))
-        && details.get("command").and_then(Value::as_str) == Some(notice.command.as_str())
+    notice.matches_row(
+        row.get("customType").and_then(Value::as_str),
+        row.get("details").unwrap_or(&Value::Null),
+    )
 }
 
-/// Whether one queued row is an admitted `[bash-done]` notice: completed
-/// bash work whose wake is still pending delivery.
-fn is_bash_completion_row(row: &Value) -> bool {
-    row.get("customType").and_then(Value::as_str)
-        == Some(pa_core::session_engine::messages::ASYNC_BASH_COMPLETION_CUSTOM_TYPE)
-}
-
-/// The `[bash-done]` notices still queued for delivery across the
-/// steering and follow-up lanes: completed bash work the bash lane will
-/// still wake the session for.
-pub(crate) fn queued_bash_completion_notices(core: &SessionCore) -> usize {
+/// The `[bash-done]`/`[cell-done]` notices still queued for delivery across
+/// the steering and follow-up lanes: completed background work the session
+/// will still be woken for.
+pub(crate) fn queued_background_completion_notices(core: &SessionCore) -> usize {
     core.steering
         .iter()
         .chain(core.follow_up.iter())
         .filter(|item| {
-            item.custom_message
-                .as_ref()
-                .is_some_and(is_bash_completion_row)
+            item.custom_message.as_ref().is_some_and(|row| {
+                pa_core::session_engine::bash_notices::is_background_completion_type(
+                    row.get("customType").and_then(Value::as_str),
+                )
+            })
         })
         .count()
 }

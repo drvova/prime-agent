@@ -103,7 +103,7 @@ impl SessionEngine for AgentSessionEngine {
         let continuation = self.runtime.block_on(async {
             let mut driver = handles.driver.lock().await;
             // The quiescence arm: unsettled work defers the mint (owed, not consumed).
-            if self.has_unsettled_rlm_work().await || self.has_live_background_bash_handles() {
+            if self.has_unsettled_rlm_work().await || self.has_live_background_jobs() {
                 driver.mark_continuation_owed();
                 return None;
             }

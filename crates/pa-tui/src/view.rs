@@ -261,7 +261,7 @@ impl AgentView {
             entry,
             ChatEntry::Tool(_)
                 | ChatEntry::AgentMessage(_)
-                | ChatEntry::ShellCompletion(_)
+                | ChatEntry::BackgroundCompletion(_)
                 | ChatEntry::BashExecution(_)
         )
     }
@@ -737,7 +737,9 @@ impl AgentView {
         for (offset, entry) in self.chat.iter().enumerate().skip(index + 1) {
             if matches!(
                 entry,
-                ChatEntry::AgentMessage(_) | ChatEntry::ShellCompletion(_) | ChatEntry::Tool(_)
+                ChatEntry::AgentMessage(_)
+                    | ChatEntry::BackgroundCompletion(_)
+                    | ChatEntry::Tool(_)
             ) {
                 if let Some(slot) = self.entry_layout.get_mut(offset) {
                     *slot = [None, None, None];

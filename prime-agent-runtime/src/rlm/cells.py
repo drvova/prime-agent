@@ -353,7 +353,10 @@ class CellRun:
     def __init__(self, cell_id: str, codes: list[Any], has_trailing: bool, ns: dict[str, Any]) -> None:
         from . import repl
 
+        import secrets
+
         self.cell_id = cell_id
+        self.activity_id = secrets.token_hex(16)
         self.ns = ns
         self._codes = codes
         self._has_trailing = has_trailing
@@ -688,9 +691,31 @@ def _schedule_completion_notice(run: CellRun) -> None:
     task.add_done_callback(lambda done: done.cancelled() or done.exception())
 
 
+_ACTIVITY_MIME = "application/vnd.prime-agent.bash-activity+json"
+
+
+def announce_background(run: CellRun) -> None:
+    """Tell the host a backgrounded cell is live background work (the
+    activity track bash() handles ride), before its request ends."""
+    from . import repl
+
+    repl.emit({_ACTIVITY_MIME: {"id": run.activity_id, "cell": run.cell_id, "active": True}})
+
+
 async def _notify_completion(run: CellRun) -> None:
     """The ``cell.completed`` host request, once, unless the model already read
-    the result; a read after the host accepted it withdraws it (``cell.consumed``)."""
+    the result; a read after the host accepted it withdraws it (``cell.consumed``).
+    The activity is released after it, so the wake is admitted first."""
+    from . import repl
+
+    try:
+        await _send_completion(run)
+    finally:
+        if repl.is_active():
+            repl.emit({_ACTIVITY_MIME: {"id": run.activity_id, "cell": run.cell_id, "active": False}})
+
+
+async def _send_completion(run: CellRun) -> None:
     from . import repl
     from .bash import _output_tail
 

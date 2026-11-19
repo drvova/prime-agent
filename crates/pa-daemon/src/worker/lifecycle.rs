@@ -1,7 +1,7 @@
 //! Session lifecycle on the worker: shutdown, replacement handoff,
 //! resume, compaction triggers, and the wait-for-settled arms.
 use super::{
-    json, queue_lanes, queued_bash_completion_notices, response_failure, response_success,
+    json, queue_lanes, queued_background_completion_notices, response_failure, response_success,
     session_snapshot, AgentSessionEngine, DaemonResponse, QueueCheckpoint, QueuePriority,
     QueuedItem, SessionFile, TurnPolicy, Value, Worker, SIDE_QUESTION_SETTLE_TIMEOUT,
 };
@@ -750,8 +750,8 @@ impl Worker {
         let live = self
             .agent_engine
             .as_ref()
-            .map_or(0, |engine| engine.background_bash_handle_count());
-        let queued = queued_bash_completion_notices(&self.core.lock().unwrap());
+            .map_or(0, |engine| engine.background_job_count());
+        let queued = queued_background_completion_notices(&self.core.lock().unwrap());
         (live + queued) as u64
     }
 

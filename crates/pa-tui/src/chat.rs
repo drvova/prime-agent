@@ -122,7 +122,7 @@ pub enum ChatEntry {
     /// `bashExecution` row, and the pending-while-streaming hold all render through this card.
     BashExecution(Box<crate::bash_card::BashExecutionCard>),
     /// One background-shell completion row.
-    ShellCompletion(Box<crate::custom_message::ShellCompletionRow>),
+    BackgroundCompletion(Box<crate::custom_message::BackgroundCompletionRow>),
     /// One refinement outcome row.
     RefinementOutcome(Box<crate::custom_message::RefinementOutcomeRow>),
     /// One generic custom row.

@@ -134,7 +134,7 @@ impl AgentSessionEngine {
                 return;
             }
         }
-        if self.has_unsettled_rlm_work().await || self.has_live_background_bash_handles() {
+        if self.has_unsettled_rlm_work().await || self.has_live_background_jobs() {
             return;
         }
         // Queued input or the post-abort suspension owns the boundary.
@@ -226,15 +226,15 @@ impl AgentSessionEngine {
     /// of the quiescence observation. The probe reads the kernel manager
     /// without the session mutex (the consult can run inside a
     /// compaction turn, which holds it). An unbuilt session answers `0`.
-    pub(crate) fn background_bash_handle_count(&self) -> usize {
+    pub(crate) fn background_job_count(&self) -> usize {
         self.live_handles()
             .map_or(0, |live| (live.background_bash_probe)())
     }
 
     /// Whether a live background `bash()` handle holds the boundary: its
     /// completion notice is the wake-up a held continuation waits for.
-    pub(crate) fn has_live_background_bash_handles(&self) -> bool {
-        self.background_bash_handle_count() > 0
+    pub(crate) fn has_live_background_jobs(&self) -> bool {
+        self.background_job_count() > 0
     }
 
     /// The settled passivation gates (the kernel release and the whole-worker idle
@@ -244,7 +244,7 @@ impl AgentSessionEngine {
     /// relaunch-on-fire, so the port BLOCKS while any job is armed. An unwired jobs
     /// probe passes.
     pub(crate) async fn settled_passivation_gates_pass(&self) -> bool {
-        if self.has_unsettled_rlm_work().await || self.has_live_background_bash_handles() {
+        if self.has_unsettled_rlm_work().await || self.has_live_background_jobs() {
             return false;
         }
         let probe = self
@@ -297,7 +297,7 @@ impl AgentSessionEngine {
             }
             // The quiescence gate: the continuation waits (not consumed)
             // until the descendants settle or the bash handles finish.
-            if self.has_unsettled_rlm_work().await || self.has_live_background_bash_handles() {
+            if self.has_unsettled_rlm_work().await || self.has_live_background_jobs() {
                 driver.mark_continuation_owed();
                 return GoalBoundary::End;
             }

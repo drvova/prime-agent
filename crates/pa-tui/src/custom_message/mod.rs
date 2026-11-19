@@ -56,6 +56,8 @@ pub const PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "python_skills_unavailab
 pub const RLM_CHILD_FAILURE_CUSTOM_TYPE: &str = "rlm_child_failure";
 pub const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE: &str = "rlm_child_terminal_notice";
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
+/// Wire twin of `pa_core::session_engine::messages::ASYNC_CELL_COMPLETION_CUSTOM_TYPE`.
+pub const ASYNC_CELL_COMPLETION_CUSTOM_TYPE: &str = "async_cell_completion";
 pub const COMPACTION_OUTCOME_CUSTOM_TYPE: &str = "compaction_outcome";
 pub const REFINEMENT_OUTCOME_CUSTOM_TYPE: &str = "refinement_outcome";
 /// The durable single-line outcome of one provider-retry episode (SANCTIONED DIVERGENCE,
@@ -99,14 +101,26 @@ pub struct AgentMessageRow {
     pub message: String,
 }
 
-/// One background-shell completion row, standalone form (the TS live path attaches
-/// the completion to a tool card, which the Rust engine never emits).
+/// One background-job completion row, standalone form (the TS live path attaches
+/// a shell completion to a tool card, which the Rust engine never emits).
 #[derive(Debug, Clone, PartialEq)]
-pub struct ShellCompletionRow {
-    pub pid: Option<i64>,
-    pub exit_code: Option<i64>,
-    /// Raw content (`[bash-done pid:N exit:M] ...`).
+pub struct BackgroundCompletionRow {
+    pub outcome: BackgroundOutcome,
+    /// Raw content (`[bash-done pid:N exit:M] ...` or `[cell-done cell:ID status:S] ...`).
     pub content: String,
+}
+
+/// Which background job finished and how; `None` fields mark invalid details,
+/// which render the default finished row.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundOutcome {
+    /// A detached shell command.
+    Shell {
+        pid: Option<i64>,
+        exit_code: Option<i64>,
+    },
+    /// A backgrounded Python cell and its end (`ok`, `error`, `interrupted`).
+    Cell { status: Option<String> },
 }
 
 /// One refinement outcome row (TS `RefinementOutcomeMessageComponent`).
@@ -203,9 +217,22 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
             || vec![generic_panel_entry(custom_type, message)],
             |entry| vec![entry],
         ),
-        ASYNC_BASH_COMPLETION_CUSTOM_TYPE => vec![ChatEntry::ShellCompletion(Box::new(
+        ASYNC_BASH_COMPLETION_CUSTOM_TYPE => vec![ChatEntry::BackgroundCompletion(Box::new(
             shell_completion_row(message, details),
         ))],
+        ASYNC_CELL_COMPLETION_CUSTOM_TYPE => {
+            let status = details
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|status| matches!(*status, "ok" | "error" | "interrupted"))
+                .map(str::to_string);
+            vec![ChatEntry::BackgroundCompletion(Box::new(
+                BackgroundCompletionRow {
+                    outcome: BackgroundOutcome::Cell { status },
+                    content,
+                },
+            ))]
+        }
         HEARTBEAT_PROMPT_CUSTOM_TYPE
         | GOAL_CONTEXT_CUSTOM_TYPE
         | IPYTHON_STATE_RESTORED_CUSTOM_TYPE
@@ -389,7 +416,7 @@ fn rlm_child_session_name(details: &Value, content: &str) -> String {
 /// completion needs an object details block with a positive-integer `pid`,
 /// a string `command`, and an integer `exitCode`; anything else renders the
 /// default finished row (the expanded raw text follows the same validity).
-fn shell_completion_row(message: &Value, details: &Value) -> ShellCompletionRow {
+fn shell_completion_row(message: &Value, details: &Value) -> BackgroundCompletionRow {
     let pid = details.get("pid").and_then(Value::as_i64);
     let command = details.get("command").and_then(Value::as_str);
     let exit_code = details.get("exitCode").and_then(Value::as_i64);
@@ -398,15 +425,16 @@ fn shell_completion_row(message: &Value, details: &Value) -> ShellCompletionRow 
         && command.is_some()
         && exit_code.is_some();
     if valid {
-        ShellCompletionRow {
-            pid,
-            exit_code,
+        BackgroundCompletionRow {
+            outcome: BackgroundOutcome::Shell { pid, exit_code },
             content: custom_content_text(message),
         }
     } else {
-        ShellCompletionRow {
-            pid: None,
-            exit_code: None,
+        BackgroundCompletionRow {
+            outcome: BackgroundOutcome::Shell {
+                pid: None,
+                exit_code: None,
+            },
             content: match message.get("content") {
                 Some(Value::String(_)) => custom_content_text(message),
                 Some(value) => serde_json::to_string(value).unwrap_or_default(),
@@ -732,8 +760,8 @@ mod tests {
         }));
         assert!(matches!(
             entries.as_slice(),
-            [ChatEntry::ShellCompletion(row)]
-                if row.pid == Some(4371) && row.exit_code == Some(0)
+            [ChatEntry::BackgroundCompletion(row)]
+                if row.outcome == BackgroundOutcome::Shell { pid: Some(4371), exit_code: Some(0) }
         ));
         // An invalid details block keeps the default finished row and the JSON
         // content fallback.
@@ -746,8 +774,38 @@ mod tests {
         }));
         assert!(matches!(
             entries.as_slice(),
-            [ChatEntry::ShellCompletion(row)]
-                if row.pid.is_none() && row.exit_code.is_none()
+            [ChatEntry::BackgroundCompletion(row)]
+                if row.outcome == BackgroundOutcome::Shell { pid: None, exit_code: None }
+        ));
+    }
+
+    #[test]
+    fn cell_completion_decodes_its_status() {
+        let row = |status: Value| {
+            decoded(&json!({
+                "role": "custom",
+                "customType": ASYNC_CELL_COMPLETION_CUSTOM_TYPE,
+                "content": "[cell-done cell:c1 status:ok]",
+                "display": true,
+                "details": { "cell": "c1", "status": status },
+            }))
+        };
+        assert_eq!(
+            row(json!("interrupted")),
+            vec![ChatEntry::BackgroundCompletion(Box::new(
+                BackgroundCompletionRow {
+                    outcome: BackgroundOutcome::Cell {
+                        status: Some("interrupted".to_string())
+                    },
+                    content: "[cell-done cell:c1 status:ok]".to_string(),
+                }
+            ))]
+        );
+        // An unknown status keeps the default finished row.
+        assert!(matches!(
+            row(json!("done")).as_slice(),
+            [ChatEntry::BackgroundCompletion(row)]
+                if row.outcome == BackgroundOutcome::Cell { status: None }
         ));
     }
 
@@ -869,9 +927,11 @@ mod tests {
             },
             body: Some(body.clone()),
         };
-        let shell = ShellCompletionRow {
-            pid: None,
-            exit_code: Some(0),
+        let shell = BackgroundCompletionRow {
+            outcome: BackgroundOutcome::Shell {
+                pid: None,
+                exit_code: Some(0),
+            },
             content: body.clone(),
         };
         let panel = CustomPanelRow {
@@ -906,10 +966,16 @@ mod tests {
             ),
             (
                 Some((
-                    render::render_shell_completion(&shell, Detail::Overview, &theme, 60, false),
+                    render::render_background_completion(
+                        &shell,
+                        Detail::Overview,
+                        &theme,
+                        60,
+                        false,
+                    ),
                     vec![" \u{2713} Background shell command finished"],
                 )),
-                render::render_shell_completion(&shell, Detail::All, &theme, 60, false),
+                render::render_background_completion(&shell, Detail::All, &theme, 60, false),
                 vec![" \u{2713} Background shell command finished"],
             ),
             (

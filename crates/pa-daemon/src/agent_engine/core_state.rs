@@ -51,7 +51,7 @@ impl BuiltHandles {
                 provisioner
                     .upgrade()
                     .and_then(|provisioner| provisioner.manager())
-                    .map_or(0, |manager| manager.background_bash_handle_count())
+                    .map_or(0, |manager| manager.background_job_count())
             }),
             kernel_release: Arc::new(move || {
                 let provisioner = release_provisioner.clone();

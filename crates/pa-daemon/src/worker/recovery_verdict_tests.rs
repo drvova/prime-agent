@@ -92,7 +92,7 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
             4321,
             "sleep 12; echo RW_WAKE_DONE",
             0,
-            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+            pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
         ),
         || false,
     );
@@ -158,7 +158,7 @@ async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row()
             99,
             "make gates",
             2,
-            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+            pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
         ),
         || false,
     );
@@ -184,7 +184,7 @@ async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
             4321,
             "sleep 12; echo RW_WAKE_DONE",
             0,
-            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+            pa_core::session_engine::messages::BackgroundOutputTail::Complete(""),
         ),
         || false,
     );
@@ -194,10 +194,10 @@ async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
     );
     // A different command under a reused pid must not withdraw (TS
     // `_isAsyncBashCompletionActionFor` matches both).
-    withdraw_bash_completion_notice(
+    withdraw_background_completion_notice(
         &worker.recovery,
         &worker.core,
-        &crate::engine::BashConsumedNotice {
+        &crate::engine::BackgroundJobConsumed::Bash {
             pid: 4321,
             command: "another command".to_string(),
         },
@@ -211,10 +211,10 @@ async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
         WorkerRecoveryJournal::read_interrupted(&worker.config.recovery_journal_path),
         "the kept row stays live work"
     );
-    withdraw_bash_completion_notice(
+    withdraw_background_completion_notice(
         &worker.recovery,
         &worker.core,
-        &crate::engine::BashConsumedNotice {
+        &crate::engine::BackgroundJobConsumed::Bash {
             pid: 4321,
             command: "sleep 12; echo RW_WAKE_DONE".to_string(),
         },

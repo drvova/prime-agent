@@ -777,6 +777,7 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
                 await asyncio.wait({run.window_closed}, timeout=yield_s)
                 if not run.window_closed.done() and run.background():
                     backgrounded = True
+                    cells.announce_background(run)
                     _drain_output()
                     _finish_request(cell_id)
                     _send({"event": "done", "id": cell_id, "status": "backgrounded", "cell": cell_id})
