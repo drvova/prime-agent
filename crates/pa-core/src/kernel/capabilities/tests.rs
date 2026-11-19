@@ -17,6 +17,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent session ended",
     "session archived",
     "agent goal verification",
+    // The provider layer's Responses transport counts (no kernel capability).
+    "agent responses transport",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {

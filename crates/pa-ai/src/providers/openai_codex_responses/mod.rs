@@ -31,6 +31,9 @@ use crate::providers::openai_responses_shared::{
     ConvertResponsesToolsOptions, ReasoningSummary, ResponsesStreamHooks, ResponsesStreamProcessor,
     OPENAI_TOOL_CALL_PROVIDERS,
 };
+use crate::providers::responses_websocket::{
+    is_visible_response_event as is_codex_visible_response_event, note_counts, transport_debug_name,
+};
 use crate::providers::simple_options::build_base_options;
 use crate::registry::Provider;
 use crate::types::{
@@ -268,6 +271,11 @@ async fn run_stream(
                         && is_stale_codex_continuation_error(&error)
                     {
                         chain_reset_retried = true;
+                        if let Some(session_id) = session_id.as_deref() {
+                            note_counts(session_id, |counts| {
+                                counts.stale_continuation_retries += 1;
+                            });
+                        }
                         // A failed attempt may have supplied response metadata before rejecting the
                         // continuation; do not retain that dead anchor (TS #2374).
                         output.response_id = None;
@@ -357,25 +365,6 @@ async fn run_stream(
     }
 
     Ok(())
-}
-
-/// Whether one parsed Codex WebSocket event can produce assistant output: lifecycle,
-/// telemetry, and vendor metadata stay internal and never mark the attempt user-visible.
-fn is_codex_visible_response_event(event: &Value) -> bool {
-    let Some(event_type) = event.get("type").and_then(Value::as_str) else {
-        return false;
-    };
-    // `response.done` normalizes to `response.completed` before the TS classifier sees a mapped
-    // event, so the raw-type check here must accept it too (a terminal-only stream still starts
-    // visibly).
-    event_type == "response.completed"
-        || event_type == "response.done"
-        || event_type == "response.incomplete"
-        || event_type.starts_with("response.output_")
-        || event_type.starts_with("response.reasoning_")
-        || event_type.starts_with("response.content_")
-        || event_type.starts_with("response.refusal.")
-        || event_type.starts_with("response.function_")
 }
 
 /// One WebSocket attempt.
@@ -720,16 +709,6 @@ fn thinking_level_wire_name(level: ModelThinkingLevel) -> &'static str {
         ModelThinkingLevel::High => "high",
         ModelThinkingLevel::Xhigh => "xhigh",
         ModelThinkingLevel::Max => "max",
-    }
-}
-
-/// Debug name for the transport in diagnostics.
-fn transport_debug_name(transport: Transport) -> &'static str {
-    match transport {
-        Transport::Sse => "sse",
-        Transport::Websocket => "websocket",
-        Transport::WebsocketCached => "websocket-cached",
-        Transport::Auto => "auto",
     }
 }
 

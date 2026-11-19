@@ -1537,6 +1537,38 @@ const AGENT_SESSIONS_IMPORTED: EventRule = EventRule {
     ],
 };
 
+/// Responses transport adoption for one session (v2), emitted at session end beside `agent session
+/// ended` (which sits at the backend's 128-key cap) only when a request chose a Responses
+/// transport: WebSocket requests (continuation deltas vs full context), SSE fallbacks, dropped
+/// continuations resent in full, the `auto` choice by reason, endpoint capability probes, and
+/// WebSocket requests on providers without the mode. Counts only: never an endpoint or a body.
+const AGENT_RESPONSES_TRANSPORT: EventRule = EventRule {
+    name: "agent responses transport",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("responses_websocket_request_count", required(count())),
+        ("responses_delta_request_count", required(count())),
+        ("responses_full_context_request_count", required(count())),
+        ("responses_sse_fallback_count", required(count())),
+        (
+            "responses_stale_continuation_retry_count",
+            required(count()),
+        ),
+        ("responses_auto_websocket_count", required(count())),
+        ("responses_auto_sse_one_shot_count", required(count())),
+        (
+            "responses_auto_sse_no_websocket_wire_count",
+            required(count()),
+        ),
+        ("responses_auto_sse_unsupported_count", required(count())),
+        ("responses_auto_sse_demoted_count", required(count())),
+        ("responses_probe_count", required(count())),
+        ("responses_probe_failed_count", required(count())),
+        ("responses_websocket_without_wire_count", required(count())),
+    ],
+};
+
 /// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
 /// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
 /// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
@@ -1789,6 +1821,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
+        &AGENT_RESPONSES_TRANSPORT,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
