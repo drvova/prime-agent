@@ -1500,27 +1500,6 @@ const AGENT_FS_SEARCH: EventRule = EventRule {
     ],
 };
 
-/// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
-/// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
-/// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
-/// outcome (logged in, failed, no interactive login in the run), searches, the hits they
-/// returned, saved-transcript reads, and failed recall calls. Counts only: never a server, a
-/// query, a session, or a snippet.
-const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
-    name: "agent kernel login and recall",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("kernel_mcp_login_count", required(count())),
-        ("kernel_mcp_login_failed_count", required(count())),
-        ("kernel_mcp_login_unavailable_count", required(count())),
-        ("session_search_count", required(count())),
-        ("session_search_hit_count", required(count())),
-        ("session_search_read_count", required(count())),
-        ("session_search_failed_count", required(count())),
-    ],
-};
-
 /// Kernel anchored (hashline) file reads and edits (`fs.read`/`fs.edit`) adoption for one session
 /// (v2), emitted at session end beside `agent session ended` (which sits near the backend's 128-key
 /// cap) only when the session used them: reads and lines shown, failed reads, patches applied and
@@ -1559,6 +1538,46 @@ const AGENT_REPL_SCHEDULE: EventRule = EventRule {
     ],
 };
 
+/// Kernel workspace checkpoints (`checkpoint.create/list/restore`) adoption for one session (v2),
+/// emitted at session end beside `agent session ended` (which sits at the backend's 128-key cap)
+/// only when the session used them: checkpoints taken, listings, and restores by outcome
+/// (restored, declined or unanswered, refused by the off-by-default setting) plus failed calls.
+/// Counts only: never a label, an id, or a path.
+const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
+    name: "agent repl checkpoint",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("checkpoint_created_count", required(count())),
+        ("checkpoint_list_count", required(count())),
+        ("checkpoint_restored_count", required(count())),
+        ("checkpoint_restore_declined_count", required(count())),
+        ("checkpoint_restore_disabled_count", required(count())),
+        ("checkpoint_failed_count", required(count())),
+    ],
+};
+
+/// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
+/// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
+/// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
+/// outcome (logged in, failed, no interactive login in the run), searches, the hits they
+/// returned, saved-transcript reads, and failed recall calls. Counts only: never a server, a
+/// query, a session, or a snippet.
+const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
+    name: "agent kernel login and recall",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("kernel_mcp_login_count", required(count())),
+        ("kernel_mcp_login_failed_count", required(count())),
+        ("kernel_mcp_login_unavailable_count", required(count())),
+        ("session_search_count", required(count())),
+        ("session_search_hit_count", required(count())),
+        ("session_search_read_count", required(count())),
+        ("session_search_failed_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1589,6 +1608,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_SEARCH,
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
+        &AGENT_REPL_CHECKPOINT,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
     ];
     all.extend(UPDATE_EVENTS.iter());

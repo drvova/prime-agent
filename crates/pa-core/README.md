@@ -106,6 +106,16 @@ minimum recurring interval; an embedding without a scheduler answers with
 an error. Adoption counts ride the `agent repl schedule` event. Non-goals:
 managing the user's own jobs.
 
+Kernel workspace checkpoints (`session_engine::checkpoint_host`): the
+`checkpoint.create`/`checkpoint.list`/`checkpoint.restore` host requests
+over the embedding's `WorkspaceCheckpointController` (the daemon worker's
+shadow-git store). Restore is gated by the global-only
+`replCanRestoreCheckpoints` setting (default off), limited to the session's
+own checkpoints, and confirmed by the user through the interaction hub's
+question flow; nobody to ask means refuse. Without a controller every
+request answers why. Adoption counts ride the `agent repl checkpoint`
+event. Non-goals: the store itself (pa-daemon) and the per-turn rewind.
+
 Past-session recall (`session_engine::session_search`, crate-internal): the
 `rlm.session.search` and `rlm.session.saved_messages` host requests behind the
 kernel's `rlm.session.search(query)` and `rlm.session.messages(session=...)`.
