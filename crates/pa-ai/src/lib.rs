@@ -16,6 +16,7 @@ pub mod quota;
 pub mod registry;
 pub mod types;
 
+mod base_url;
 mod event_stream;
 mod loop_guard;
 mod providers;

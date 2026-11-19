@@ -1,20 +1,64 @@
 //! Public streaming facade.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::event_stream::AssistantMessageEventStream;
+use crate::event_stream::{create_assistant_message_event_stream, AssistantMessageEventStream};
 use crate::loop_guard::{ArmedLoopGuard, StreamLoopGuard};
 use crate::providers::simple_options::default_request_max_tokens;
 use crate::registry::{ensure_builtins, get_api_provider};
-use crate::types::{AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions};
+use crate::types::{
+    AssistantMessage, AssistantMessageEvent, Context, ErrorStopReason, Model, SimpleStreamOptions,
+    StopReason, StreamOptions, Usage,
+};
 use crate::utils_inner::ProviderError;
 
 fn resolve_provider(api: &str) -> Result<Arc<dyn crate::registry::Provider>, ProviderError> {
     ensure_builtins();
     get_api_provider(api)
         .ok_or_else(|| ProviderError::Message(format!("No API provider registered for api: {api}")))
+}
+
+/// The request's model with its base URL placeholders filled (`crate::base_url`); a model whose
+/// URL cannot be filled fails the request with a message naming the missing variable.
+fn resolve_base_url(model: &Model) -> Result<Cow<'_, Model>, String> {
+    match crate::base_url::resolve_placeholders(&model.base_url) {
+        Ok(Cow::Borrowed(_)) => Ok(Cow::Borrowed(model)),
+        Ok(Cow::Owned(base_url)) => Ok(Cow::Owned(Model {
+            base_url,
+            ..model.clone()
+        })),
+        Err(message) => Err(format!("{} {message}", model.provider)),
+    }
+}
+
+/// A stream that settles at once with `message` as its error, the way a provider reports a
+/// request it cannot send (a missing API key).
+fn failed_stream(model: &Model, message: String) -> AssistantMessageEventStream {
+    let (writer, reader) = create_assistant_message_event_stream();
+    let error = AssistantMessage {
+        content: Vec::new(),
+        api: model.api.clone(),
+        provider: model.provider.clone(),
+        model: model.id.clone(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: Usage::default(),
+        stop_reason: StopReason::Error,
+        stop_reason_raw: None,
+        error_message: Some(message),
+        timestamp: crate::utils_inner::diagnostics::now_ms(),
+        rest: serde_json::Map::default(),
+    };
+    writer.push(AssistantMessageEvent::Error {
+        reason: ErrorStopReason::Error,
+        error: error.clone(),
+    });
+    writer.end(Some(error));
+    reader
 }
 
 /// Estimate a request's input tokens before it is sent: chars/4 over the text the provider will
@@ -192,6 +236,11 @@ pub fn stream(
     options: Option<StreamOptions>,
 ) -> Result<AssistantMessageEventStream, ProviderError> {
     let provider = resolve_provider(&model.api)?;
+    let model = match resolve_base_url(model) {
+        Ok(model) => model,
+        Err(message) => return Ok(failed_stream(model, message)),
+    };
+    let model = model.as_ref();
     let mut options = options;
     clamp_output_budget(model, context, options.as_mut());
     declare_session_identity(options.as_mut());
@@ -237,6 +286,11 @@ pub fn stream_simple(
     options: Option<SimpleStreamOptions>,
 ) -> Result<AssistantMessageEventStream, ProviderError> {
     let provider = resolve_provider(&model.api)?;
+    let model = match resolve_base_url(model) {
+        Ok(model) => model,
+        Err(message) => return Ok(failed_stream(model, message)),
+    };
+    let model = model.as_ref();
     // A `None` caller still gets the default output budget downstream
     // (`build_base_options` fills the per-model default: an explicit
     // `maxTokens` unchanged, a catalog value `min(model.maxTokens, 32000)`),
