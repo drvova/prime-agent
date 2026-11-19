@@ -412,7 +412,8 @@ struct CounterValues {
     notify_effort: NotifyEffortCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
-    /// Cells that continued in the background, reported by `agent repl background cells`.
+    /// Cells that continued in the background, and where each cell's yield
+    /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
 }
 
@@ -433,13 +434,18 @@ struct NotifyEffortCounts {
     effort_refused: u64,
 }
 
-/// `agent repl background cells`: cells that outlived their yield window, and how they ended.
+/// `agent repl background cells`: cells that outlived their yield window, how they ended, and
+/// where each armed window came from.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct BackgroundCellCounts {
     backgrounded: u64,
     ended_ok: u64,
     ended_with_error: u64,
     interrupted: u64,
+    window_learned: u64,
+    window_timeout: u64,
+    window_setting: u64,
+    window_default: u64,
 }
 
 /// `agent rlm child abort`: aborts by outcome.
@@ -792,9 +798,23 @@ impl SessionCounters {
             let counts = &mut values.background_cells;
             *match fact {
                 BackgroundCellFact::Backgrounded => &mut counts.backgrounded,
-                BackgroundCellFact::EndedOk => &mut counts.ended_ok,
-                BackgroundCellFact::EndedWithError => &mut counts.ended_with_error,
+                BackgroundCellFact::EndedOk { .. } => &mut counts.ended_ok,
+                BackgroundCellFact::EndedWithError { .. } => &mut counts.ended_with_error,
                 BackgroundCellFact::Interrupted => &mut counts.interrupted,
+            } += 1;
+        });
+    }
+
+    /// One cell armed with a yield window, by the window's source (a count: never a duration).
+    pub(crate) fn note_cell_window(&self, source: crate::kernel::cell_window::CellWindowSource) {
+        use crate::kernel::cell_window::CellWindowSource;
+        self.with(|values| {
+            let counts = &mut values.background_cells;
+            *match source {
+                CellWindowSource::Learned => &mut counts.window_learned,
+                CellWindowSource::ModelTimeout => &mut counts.window_timeout,
+                CellWindowSource::Setting => &mut counts.window_setting,
+                CellWindowSource::ColdDefault => &mut counts.window_default,
             } += 1;
         });
     }
@@ -1632,7 +1652,8 @@ impl SessionTelemetry {
             }
             self.client.track("agent repl notify", notify_properties);
         }
-        // A session whose cells all ended inside their window sends no background-cell event.
+        // A session that armed no cell window and backgrounded no cell sends no background-cell
+        // event.
         let mut cells = BackgroundCellCounts::default();
         self.counters.with(|values| cells = values.background_cells);
         if cells != BackgroundCellCounts::default() {
@@ -1642,6 +1663,10 @@ impl SessionTelemetry {
                 ("cell_background_ok_count", cells.ended_ok),
                 ("cell_background_error_count", cells.ended_with_error),
                 ("cell_background_interrupted_count", cells.interrupted),
+                ("cell_window_learned_count", cells.window_learned),
+                ("cell_window_timeout_count", cells.window_timeout),
+                ("cell_window_setting_count", cells.window_setting),
+                ("cell_window_default_count", cells.window_default),
             ] {
                 cell_properties.set(key, Value::from(value));
             }

@@ -14,4 +14,8 @@ properties = [
   "cell_background_ok_count",
   "cell_background_error_count",
   "cell_background_interrupted_count",
+  "cell_window_learned_count",
+  "cell_window_timeout_count",
+  "cell_window_setting_count",
+  "cell_window_default_count",
 ]

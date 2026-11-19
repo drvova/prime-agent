@@ -12,7 +12,15 @@ use crate::session_engine::turn_boundary::{ModelInfo, TurnBoundaryRequests, Turn
 
 fn armed() -> ArmedSettings {
     ArmedSettings {
-        cell_timeout_ms: Some(60_000),
+        cell_window: crate::kernel::cell_window::CellWindow::for_session(
+            crate::kernel::cell_window::CellWindowConfig {
+                daemonless: false,
+                configured_ms: Some(60_000),
+                agent_dir: std::path::Path::new("/nonexistent"),
+                project_dir: std::path::Path::new("/nonexistent"),
+                on_armed: None,
+            },
+        ),
         compaction_enabled: true,
         compaction_threshold_percent: 80.0,
         compaction_keep_recent_tokens: 20_000,

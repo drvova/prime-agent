@@ -2,8 +2,8 @@
 //! `rlm.settings` client): the limits this session actually runs with.
 //!
 //! - `settings.session {}`: the session-owned facts. The model, its context
-//!   window, and the current thinking level are live; the cell time limit,
-//!   compaction, image model, web-search provider, and prompt-cache retention
+//!   window, the current thinking level, and the cell yield window (learned
+//!   per project unless the user set one) are live; compaction, image model, web-search provider, and prompt-cache retention
 //!   are the values the session armed at creation.
 //! - `settings.host {}`: the embedding-owned facts (the RLM depth bound and
 //!   its source, autonomous mode with its budget). The daemon worker
@@ -26,10 +26,11 @@ use crate::kernel::shared::{host_handler, HostRequestHandlers};
 pub const SETTINGS_HOST_REQUEST_TYPE: &str = "settings.host";
 
 /// The creation-time values the session armed (see the module docs).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct ArmedSettings {
-    /// The armed `python_repl` cell yield window (`None`: the cell runs to its end in the call).
-    pub(crate) cell_timeout_ms: Option<u64>,
+    /// The `python_repl` cell yield window policy; `cellTimeoutMs` reports the
+    /// window it arms now (`None`: cells run to their end in the call).
+    pub(crate) cell_window: crate::kernel::cell_window::CellWindow,
     pub(crate) compaction_enabled: bool,
     pub(crate) compaction_threshold_percent: f64,
     pub(crate) compaction_keep_recent_tokens: u64,
@@ -87,7 +88,7 @@ pub(crate) fn register_settings_handlers(
                 }
                 Ok(json!({
                     "model": model,
-                    "cellTimeoutMs": armed.cell_timeout_ms,
+                    "cellTimeoutMs": armed.cell_window.current_ms(),
                     "compaction": {
                         "enabled": armed.compaction_enabled,
                         "thresholdPercent": armed.compaction_threshold_percent,

@@ -668,14 +668,13 @@ impl SettingsManager {
         self.merged.recent_models.clone().unwrap_or_default()
     }
 
-    /// The default yield window for user `python_repl` cells, in
-    /// milliseconds (`0` disables; the default is 60s). Daemonless
-    /// sessions never use it.
+    /// The yield window for user `python_repl` cells the user set in a
+    /// settings file, in milliseconds (`0` disables); `None` when unset, and
+    /// the window is then learned per project. Daemonless sessions never use
+    /// it.
     #[must_use]
-    pub fn get_python_cell_timeout_ms(&self) -> u64 {
-        self.merged
-            .python_cell_timeout_ms
-            .unwrap_or(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS)
+    pub fn get_python_cell_timeout_ms(&self) -> Option<u64> {
+        self.merged.python_cell_timeout_ms
     }
 
     /// The steering queue's delivery mode: `all` co-delivers every queued message at
@@ -1062,7 +1061,7 @@ fn load_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::types::{MarkdownSettings, DEFAULT_PYTHON_CELL_TIMEOUT_MS};
+    use crate::settings::types::MarkdownSettings;
 
     #[test]
     #[cfg(unix)]
@@ -1364,24 +1363,21 @@ mod tests {
         assert!(!manager.get_compaction_enabled());
     }
 
+    /// An unset `pythonCellTimeoutMs` stays unset (the window is then learned),
+    /// distinct from any value the user wrote, zero (the disable) included.
     #[test]
-    fn python_cell_timeout_reads_setting_or_default() {
-        let manager = SettingsManager::in_memory(&Settings::default());
+    fn python_cell_timeout_distinguishes_unset_from_set() {
+        let read = |python_cell_timeout_ms| {
+            SettingsManager::in_memory(&Settings {
+                python_cell_timeout_ms,
+                ..Settings::default()
+            })
+            .get_python_cell_timeout_ms()
+        };
         assert_eq!(
-            manager.get_python_cell_timeout_ms(),
-            DEFAULT_PYTHON_CELL_TIMEOUT_MS
+            [read(None), read(Some(60_000)), read(Some(0))],
+            [None, Some(60_000), Some(0)]
         );
-        let manager = SettingsManager::in_memory(&Settings {
-            python_cell_timeout_ms: Some(90_000),
-            ..Settings::default()
-        });
-        assert_eq!(manager.get_python_cell_timeout_ms(), 90_000);
-        // Zero is the explicit disable, not the default.
-        let manager = SettingsManager::in_memory(&Settings {
-            python_cell_timeout_ms: Some(0),
-            ..Settings::default()
-        });
-        assert_eq!(manager.get_python_cell_timeout_ms(), 0);
     }
 
     #[test]
