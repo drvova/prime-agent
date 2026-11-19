@@ -34,6 +34,11 @@ ignore = [
   # with the ratatui upgrade.
   { id = "RUSTSEC-2026-0002", reason = "lru via ratatui 0.29; its layout cache never constructs IterMut (reviewed 2026-11-11)" },
   { id = "RUSTSEC-2026-0253", reason = "lru via ratatui 0.29; its layout cache never calls pop, keys have no custom Drop (reviewed 2026-11-11)" },
+  # ttf-parser is unmaintained (no known vulnerability); lopdf 0.42 depends on
+  # it unconditionally to read embedded fonts, and pa-core reaches lopdf only
+  # through pdf-extract for `web.read`'s PDF text, on a dedicated big-stack
+  # thread. Reviewed 2026-11-19; drop with the lopdf release that moves off it.
+  { id = "RUSTSEC-2026-0192", reason = "unmaintained, no vulnerability; via lopdf/pdf-extract for web.read PDF text (reviewed 2026-11-19)" },
 ]
 
 [licenses]

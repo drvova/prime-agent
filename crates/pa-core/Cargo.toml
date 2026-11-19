@@ -33,12 +33,14 @@ getrandom = "0.3"
 url = "2"
 globset = "0.4"
 toml.workspace = true
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json", "stream"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots", "json", "stream", "gzip"] }
 tar = "0.4"
 flate2 = "1"
 unicode-normalization = "0.1"
 serde_yaml = { package = "yaml_serde", version = "0.10.7" }
 ignore = "0.4"
+# `web.read`'s PDF text (arXiv papers and any PDF URL), page by page.
+pdf-extract = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
