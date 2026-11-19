@@ -326,7 +326,7 @@ fn set_model_rebinds_the_kernel_model_facts() {
     let facts_on_a = read_receipt(&mut client, &session_id, &on_a, "gm-a");
     assert_eq!(
         facts_on_a["model_info"],
-        json!({ "id": "text-a", "provider": "battery", "input": ["text"] }),
+        json!({ "id": "text-a", "provider": "battery", "input": ["text"], "contextWindow": 100_000, "thinkingLevel": "off" }),
         "model.info before the switch: {facts_on_a}"
     );
     assert_eq!(
@@ -351,7 +351,7 @@ fn set_model_rebinds_the_kernel_model_facts() {
     let facts_on_b = read_receipt(&mut client, &session_id, &on_b, "gm-b");
     assert_eq!(
         facts_on_b["model_info"],
-        json!({ "id": "vision-b", "provider": "battery", "input": ["text", "image"] }),
+        json!({ "id": "vision-b", "provider": "battery", "input": ["text", "image"], "contextWindow": 200_000, "thinkingLevel": "off" }),
         "model.info must follow the switched-to model: {facts_on_b}"
     );
     assert_eq!(

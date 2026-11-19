@@ -234,7 +234,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
 
     assert_eq!(
         payload["model_info"],
-        json!({ "id": "faux-1", "provider": "faux", "input": ["text"] }),
+        json!({ "id": "faux-1", "provider": "faux", "input": ["text"], "contextWindow": 200_000, "thinkingLevel": "off" }),
         "model_info: {}",
         payload["model_info"]
     );
