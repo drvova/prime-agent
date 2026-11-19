@@ -249,7 +249,61 @@ pub(crate) fn sanitize_message_header_value(value: &str) -> String {
     out
 }
 
-/// The rendered prompt a receiving context sees.
+/// The heads of the bracket notices the harness renders into a model context (`[agent-message
+/// from ...]`, `[child-exited: ...]`, `[cell-done ...]`, `[task from parent]`, `[loop guard]`,
+/// ...), lowercase. A delivered body line that opens with one is fenced, so a body can never
+/// impersonate the harness or another sender. Prefix matches: `python-state` also covers
+/// `[python-state-restored]`.
+const HARNESS_NOTICE_HEADS: &[&str] = &[
+    "agent-message",
+    "autonomous-continuation",
+    "autonomous-status",
+    "bash-done",
+    "branch-summary",
+    "cell-done",
+    "child-exited",
+    "child-failed",
+    "compaction-summary",
+    "factory-progress",
+    "from ",
+    "goal",
+    "harness-digest",
+    "heartbeat",
+    "loop guard",
+    "model-prompt-error",
+    "python-skills-unavailable",
+    "python-state",
+    "self-refinement",
+    "task from",
+    "update-complete",
+    "user-refinement",
+];
+
+/// Quote (`> `) every body line that opens, after any indentation and in any letter case, with a
+/// harness notice head; every other line stays verbatim.
+fn fence_agent_message_body(body: &str) -> String {
+    body.split('\n')
+        .map(|line| {
+            let head = line
+                .trim_start()
+                .strip_prefix('[')
+                .map(str::to_ascii_lowercase);
+            if head.is_some_and(|head| {
+                HARNESS_NOTICE_HEADS
+                    .iter()
+                    .any(|notice| head.starts_with(notice))
+            }) {
+                format!("> {line}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The rendered prompt a receiving context sees: the daemon-derived header, then the body with
+/// any line that could pass for a harness notice fenced.
 #[must_use]
 pub fn create_agent_session_message_prompt(payload: &AgentMessagePromptPayload) -> String {
     let sender = sanitize_message_header_value(&payload.sender_name);
@@ -262,7 +316,8 @@ pub fn create_agent_session_message_prompt(payload: &AgentMessagePromptPayload) 
         Some(relationship) => format!("{}:{sender}", relationship.as_str()),
         None => sender,
     };
-    format!("[agent-message from {sender}]\n\n{}", payload.message)
+    let body = fence_agent_message_body(&payload.message);
+    format!("[agent-message from {sender}]\n\n{body}")
 }
 
 /// The receiving side's custom-row inputs.
