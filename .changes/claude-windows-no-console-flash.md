@@ -1,0 +1,1 @@
+- Fixed console windows titled `git.exe` or the kernel venv's `python.exe` popping up on Windows while Prime Agent runs: the daemon and its session workers now keep a hidden console that their git, shell, and Python children share.
