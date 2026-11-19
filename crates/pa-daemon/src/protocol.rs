@@ -95,6 +95,7 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "get_rlm_children",
     "get_session_stats",
     "get_context_tree",
+    "get_context_breakdown",
     "get_commands",
     "get_resource_snapshot",
     "replace_acp_mcp_servers",
@@ -726,6 +727,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::GetContextTree {
             active_session_id, ..
         }
+        | DaemonCommand::GetContextBreakdown {
+            active_session_id, ..
+        }
         | DaemonCommand::GetCommands {
             active_session_id, ..
         }
@@ -1010,6 +1014,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::GetRlmChildren { .. } => "get_rlm_children",
         DaemonCommand::GetSessionStats { .. } => "get_session_stats",
         DaemonCommand::GetContextTree { .. } => "get_context_tree",
+        DaemonCommand::GetContextBreakdown { .. } => "get_context_breakdown",
         DaemonCommand::GetCommands { .. } => "get_commands",
         DaemonCommand::GetResourceSnapshot { .. } => "get_resource_snapshot",
         DaemonCommand::GetMcpConnections { .. } => "get_mcp_connections",

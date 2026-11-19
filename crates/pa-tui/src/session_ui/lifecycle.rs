@@ -174,6 +174,9 @@ impl SessionUi {
             usage_generation: 0,
             usage_quotas: None,
             usage_spend: None,
+            context_updates: activity_updates.context,
+            context_generation: 0,
+            context_breakdown: None,
             rate_limit_reset: None,
             reset_chips_shown: 0,
             factory_graph: serde_json::json!({"runs": []}),
@@ -950,6 +953,7 @@ mod backfill_tests {
                 thinking: mpsc::unbounded_channel().0,
                 stats: mpsc::unbounded_channel().0,
                 usage: mpsc::unbounded_channel().0,
+                context: mpsc::unbounded_channel().0,
             },
             backfill_tx,
         )
@@ -1146,6 +1150,7 @@ mod backfill_tests {
                 thinking: mpsc::unbounded_channel().0,
                 stats: mpsc::unbounded_channel().0,
                 usage: mpsc::unbounded_channel().0,
+                context: mpsc::unbounded_channel().0,
             },
             mpsc::unbounded_channel().0,
         )

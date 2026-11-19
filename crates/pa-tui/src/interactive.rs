@@ -311,6 +311,13 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         summary: crate::usage_page::UsagePageSummary,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One context-window run ended (`tui context window closed`): where it opened from, how its
+    /// breakdown request landed, and how many category and subagent rows it showed — counts and
+    /// enums only, never a label or an amount.
+    fn context_view_closed(
+        &self,
+        summary: crate::context_view::ContextViewSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
     /// of the cell and the command count — primitives only, never command

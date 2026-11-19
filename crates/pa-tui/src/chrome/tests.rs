@@ -85,7 +85,9 @@ fn the_tray_reports_the_manage_hints_own_cells() {
         tray_depth: Some(2),
         ..Default::default()
     };
-    let (line, hint) = render_tray_with_hint(&state, &theme, 120);
+    let TrayRow {
+        line, manage: hint, ..
+    } = render_tray_with_hint(&state, &theme, 120);
     let hint = hint.expect("the manage hint reports its cells");
     let text = line
         .iter()
@@ -108,10 +110,10 @@ fn the_tray_reports_the_manage_hints_own_cells() {
         tray_override: Some("Press ctrl+c again to exit".to_string()),
         ..Default::default()
     };
-    let (_, hint) = render_tray_with_hint(&state, &theme, 120);
+    let hint = render_tray_with_hint(&state, &theme, 120).manage;
     assert_eq!(hint, None, "an override label carries no hint region");
     let state = ChromeState::default();
-    let (_, hint) = render_tray_with_hint(&state, &theme, 120);
+    let hint = render_tray_with_hint(&state, &theme, 120).manage;
     assert_eq!(hint, None, "a hidden manage hint carries no region");
 }
 

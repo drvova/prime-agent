@@ -1097,6 +1097,29 @@ const TUI_USAGE_PAGE_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One context-window run ended (v2): where it opened from (the tray gauge's click, `/context`,
+/// or its key), how its breakdown request landed, and the category and subagent rows it showed.
+/// Standalone because `tui exit` sits at the backend's 128-key cap. Counts and enums only.
+const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
+    name: "tui context window closed",
+    since: 2,
+    properties: &[
+        (
+            "source",
+            required(enum_rule(&["click", "command", "shortcut"], "command")),
+        ),
+        (
+            "breakdown",
+            required(enum_rule(
+                &["loaded", "unavailable", "failed", "loading"],
+                "loading",
+            )),
+        ),
+        ("category_count", required(count())),
+        ("subagent_count", required(count())),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1524,6 +1547,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IPYTHON_BASH_RENDERED,
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
+        &TUI_CONTEXT_WINDOW_CLOSED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
