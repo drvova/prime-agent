@@ -87,11 +87,13 @@ pub(crate) fn highlight_line(line: &Line, from: usize, to: usize) -> Line {
     out
 }
 
-/// Plain text of a rendered row: styling, OSC zone markers, and hyperlinks stripped, spans joined.
+/// Plain text of a rendered row: styling, OSC zone markers, hyperlinks, and inline-image row
+/// sentinels stripped, spans joined.
 fn row_text(line: &[Span]) -> String {
     let mut stripped = line.to_vec();
     crate::osc133::strip(&mut stripped);
     crate::hyperlinks::strip_osc8(&mut stripped);
+    crate::inline_image::strip_sentinels(&mut stripped);
     stripped.iter().map(|s| s.content.as_str()).collect()
 }
 
@@ -650,6 +652,7 @@ mod tests {
         v.push_entry(ChatEntry::User {
             text: "select this line".to_string(),
             sent_at: None,
+            images: Vec::new(),
         });
         let frame = v.render_frame(80, 12);
         let row = (1..frame.len())
@@ -669,6 +672,34 @@ mod tests {
         let text = v.end_active_selection().expect("copied text");
         assert_eq!(text, "select");
         assert!(!v.has_selection(), "release cleared the selection");
+    }
+
+    /// A copy across a user row's inline image carries the text, never the image rows'
+    /// zero-width sentinels (they would land in the clipboard and shift the column slices).
+    #[test]
+    fn a_drag_across_an_inline_image_copies_text_only() {
+        let mut v = view();
+        v.push_entry(ChatEntry::User {
+            text: "look at this".to_string(),
+            sent_at: None,
+            images: vec![crate::chat::MessageImage {
+                data: std::sync::Arc::from(crate::inline_image::tests::png_payload(16).as_str()),
+                mime_type: "image/png".to_string(),
+            }],
+        });
+        let frame = v.render_frame(80, 16);
+        let row = (1..frame.len())
+            .find(|row| rendered_row(&frame, *row).contains("look at this"))
+            .expect("the user row rendered");
+        let col = rendered_row(&frame, row)
+            .find("look")
+            .expect("text present");
+        assert!(v.begin_selection(row, col));
+        v.extend_active_selection(row + 3, 20);
+        v.render_frame(80, 16);
+        let text = v.end_active_selection().expect("copied text");
+        // The text row, then the blank separator, image and closing rows (no sentinel text).
+        assert_eq!(text, "look at this\n\n\n");
     }
 
     /// A multi-row drag anchors to transcript lines: the span follows the

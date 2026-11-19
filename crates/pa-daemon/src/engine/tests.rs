@@ -36,6 +36,39 @@ fn scripted_engine_replays_then_echoes() {
 }
 
 #[test]
+fn the_scripted_engine_accepts_a_prompt_with_its_images_like_the_real_engine() {
+    let engine = ScriptedEngine::default();
+    let image: pa_agent::types::ImageContent =
+        serde_json::from_value(json!({"data": "QUJD", "mimeType": "image/png"})).unwrap();
+    let mut accepted = None;
+    engine.run_prompt(
+        0,
+        PromptRequest {
+            batch: Vec::new(),
+            images: vec![image],
+            message: "look".into(),
+            source: "test".into(),
+            agent_message_id: None,
+            custom_message: None,
+        },
+        &|| false,
+        &mut |event| {
+            if let EngineEvent::UserMessage(row) = event {
+                accepted = Some(row["content"].clone());
+            }
+            true
+        },
+    );
+    assert_eq!(
+        accepted,
+        Some(json!([
+            { "type": "text", "text": "look" },
+            { "type": "image", "data": "QUJD", "mimeType": "image/png" }
+        ]))
+    );
+}
+
+#[test]
 fn cancellation_stops_the_prompt() {
     let engine = ScriptedEngine::default();
     let seen = Arc::new(AtomicUsize::new(0));

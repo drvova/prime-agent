@@ -41,8 +41,15 @@ impl AgentView {
         sink.feed(out, &layout.splash)?;
         let mut preceded_by_tool_activity = false;
         for (index, entry) in self.chat.iter().enumerate() {
-            let rows =
+            let mut rows =
                 self.render_entry(index, entry, width, index == 0, preceded_by_tool_activity);
+            // Scrollback gets the half-block cells already rendered (never a pixel protocol,
+            // never a wait on the decode worker), and never an unresolved row sentinel.
+            crate::inline_image::resolve_rows(
+                &mut rows,
+                crate::inline_image::ImageProtocol::HalfBlock,
+                crate::inline_image::OnMiss::Skip,
+            );
             sink.feed(out, &rows)?;
             preceded_by_tool_activity = Self::is_compact_neighbor(entry);
         }

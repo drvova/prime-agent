@@ -166,7 +166,11 @@ impl AgentView {
                 ));
                 rows
             }
-            ChatEntry::User { text, sent_at } => {
+            ChatEntry::User {
+                text,
+                sent_at,
+                images,
+            } => {
                 let mut md = crate::markdown::MarkdownStyle::from_theme(&self.theme);
                 md.code_block_indent.clone_from(&self.code_block_indent);
                 md.link_base_url = url::Url::from_directory_path(&self.chrome.cwd).ok();
@@ -180,6 +184,14 @@ impl AgentView {
                 }
                 let start = rows.len();
                 rows.extend(render_user_block_with_style(text, &self.theme, &md, width));
+                if self.show_images {
+                    // The pasted images render inside the slab, above its closing blank row.
+                    let closing = rows.len().saturating_sub(1).max(start);
+                    rows.splice(
+                        closing..closing,
+                        crate::chat::render_user_images(images, &self.theme, width),
+                    );
+                }
                 // The send time, flush right on the first text row when it fits beside the
                 // text; it never adds a row, so the entry's height is unchanged.
                 let clock = sent_at.and_then(pa_types::platform::local_clock);

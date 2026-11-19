@@ -262,15 +262,18 @@ pub fn format_size(bytes: usize) -> String {
     }
 }
 
-/// Image result blocks render their metadata row below the card;
-/// blocks without data or a mime type, and every image while
-/// `show_images` is false, render nothing here. The row is built from
-/// the block's metadata only (a bounded prefix read supplies the
-/// dimensions; a header that does not parse renders the size instead).
+/// Image result blocks render below the card: the metadata row, then the image itself inline
+/// (its half-block cells, with the terminal's pixel protocol drawn over them when it has one;
+/// see [`crate::inline_image`]) sized to `max_cols`. Blocks without data or a mime type, and
+/// every image while `show_images` is false, render nothing here; an elided payload (an
+/// attach snapshot's marker) or an unreadable header renders the metadata row alone. The rows
+/// are built from the block's metadata only (a bounded prefix read supplies the dimensions);
+/// the decode runs off the paint path.
 pub(crate) fn image_rows(
     result: Option<&ToolResultView>,
     show_images: bool,
     theme: &Theme,
+    max_cols: usize,
 ) -> Vec<Line> {
     let fallback = theme.fg_style(ThemeColor::ToolOutput);
     let mut rows: Vec<Line> = Vec::new();
@@ -279,9 +282,31 @@ pub(crate) fn image_rows(
             format!("    \u{2570}\u{2500} {}", image_block_row_text(block)),
             fallback,
         )]);
+        if let (Some(data), Some(mime)) = (
+            block.get("data").and_then(Value::as_str),
+            block.get("mimeType").and_then(Value::as_str),
+        ) {
+            rows.extend(
+                crate::inline_image::image_rows(
+                    data,
+                    mime,
+                    max_cols.saturating_sub(IMAGE_INDENT.len()),
+                    ratatui::style::Style::default(),
+                )
+                .into_iter()
+                .map(|row| {
+                    let mut line = vec![Span::raw(IMAGE_INDENT)];
+                    line.extend(row);
+                    line
+                }),
+            );
+        }
     }
     rows
 }
+
+/// The inline image's indent under its metadata row.
+const IMAGE_INDENT: &str = "    ";
 
 /// The metadata-row text for one shown image block: `[mime · WxH]`, or
 /// `[mime · 140.1KB omitted]` when the dimensions are not available.
@@ -335,9 +360,8 @@ fn eligible_image_blocks(
         .into_iter()
         .flat_map(|result| result.content.iter())
         .filter(move |block| {
-            // The paint eligibility mirrors the geometry count's
-            // (`eligible_images`): a `data: null` block renders no row on
-            // either path, so cached card heights cannot diverge.
+            // The paint and the geometry count share this eligibility: a `data: null` block
+            // renders no row on either path, so cached card heights cannot diverge.
             show_images
                 && block.get("type").and_then(Value::as_str) == Some("image")
                 && block.get("data").and_then(Value::as_str).is_some()
@@ -345,22 +369,24 @@ fn eligible_image_blocks(
         })
 }
 
-fn eligible_images(
-    result: Option<&ToolResultView>,
-    show_images: bool,
-) -> impl Iterator<Item = (&str, &str)> {
-    result
-        .into_iter()
-        .flat_map(|result| &result.content)
-        .filter_map(move |block| {
-            if !show_images || block.get("type").and_then(Value::as_str) != Some("image") {
-                return None;
-            }
-            Some((
-                block.get("data")?.as_str()?,
-                block.get("mimeType")?.as_str()?,
-            ))
+/// The row count [`image_rows`] paints (the count-only geometry pass).
+fn image_rows_count(result: Option<&ToolResultView>, show_images: bool, max_cols: usize) -> usize {
+    eligible_image_blocks(result, show_images)
+        .map(|block| {
+            let inline = match (
+                block.get("data").and_then(Value::as_str),
+                block.get("mimeType").and_then(Value::as_str),
+            ) {
+                (Some(data), Some(mime)) => crate::inline_image::image_row_count(
+                    data,
+                    mime,
+                    max_cols.saturating_sub(IMAGE_INDENT.len()),
+                ),
+                _ => 0,
+            };
+            1 + inline
         })
+        .sum()
 }
 
 /// Exact row geometry for every tool shell without painting output rows.
@@ -420,14 +446,22 @@ mod tests {
         // The tail past the bounded prefix is invalid base64: the row
         // still renders dimensions, proving the payload was never decoded
         // in full.
-        let payload = format!("{}{}{}", tiny_png(64, 32), "A".repeat(4096), "!".repeat(64));
-        let result = image_result(&payload, "image/png");
-        let rows = image_rows(result.as_ref(), true, &theme());
-        let flat: Vec<String> = rows.iter().map(text_of).collect();
-        assert_eq!(
-            flat,
-            vec!["    \u{2570}\u{2500} [image/png \u{b7} 64\u{d7}32]".to_string()]
+        let payload = format!(
+            "{}{}{}",
+            tiny_png(64, 32),
+            "A".repeat(crate::terminal_image::IMAGE_DIMENSIONS_PREFIX_BYTES * 2),
+            "!".repeat(64)
         );
+        let result = image_result(&payload, "image/png");
+        let rows = image_rows(result.as_ref(), true, &theme(), 100);
+        let flat: Vec<String> = rows.iter().map(text_of).collect();
+        // The metadata row, then the image's reserved 8 x 2 cells (64 px wide, 32 tall).
+        assert_eq!(
+            flat[0],
+            "    \u{2570}\u{2500} [image/png \u{b7} 64\u{d7}32]".to_string()
+        );
+        assert_eq!(rows.len(), 3);
+        assert_eq!(image_rows_count(result.as_ref(), true, 100), rows.len());
         assert!(flat.iter().all(|row| !row.contains("AAAA")));
     }
 
@@ -435,7 +469,7 @@ mod tests {
     fn shown_image_rows_render_the_size_placeholder_when_the_header_does_not_parse() {
         let payload = "x".repeat(186_328);
         let result = image_result(&payload, "image/jpeg");
-        let rows = image_rows(result.as_ref(), true, &theme());
+        let rows = image_rows(result.as_ref(), true, &theme(), 100);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
         assert_eq!(
             flat,
@@ -455,7 +489,7 @@ mod tests {
             details: serde_json::Value::Null,
             is_error: false,
         });
-        let rows = image_rows(result.as_ref(), true, &theme());
+        let rows = image_rows(result.as_ref(), true, &theme(), 100);
         let flat: Vec<String> = rows.iter().map(text_of).collect();
         assert_eq!(
             flat,
@@ -498,8 +532,8 @@ mod tests {
             details: serde_json::Value::Null,
             is_error: false,
         });
-        assert!(image_rows(result.as_ref(), true, &theme()).is_empty());
-        assert_eq!(eligible_images(result.as_ref(), true).count(), 0);
+        assert!(image_rows(result.as_ref(), true, &theme(), 100).is_empty());
+        assert_eq!(image_rows_count(result.as_ref(), true, 100), 0);
         let elided = Some(ToolResultView {
             content: vec![serde_json::json!({
                 "type": "image",
@@ -510,8 +544,8 @@ mod tests {
             details: serde_json::Value::Null,
             is_error: false,
         });
-        assert_eq!(image_rows(elided.as_ref(), true, &theme()).len(), 1);
-        assert_eq!(eligible_images(elided.as_ref(), true).count(), 1);
+        assert_eq!(image_rows(elided.as_ref(), true, &theme(), 100).len(), 1);
+        assert_eq!(image_rows_count(elided.as_ref(), true, 100), 1);
     }
 
     #[test]

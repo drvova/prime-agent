@@ -545,6 +545,7 @@ mod retry_collapse_tests {
             ChatEntry::User {
                 text: "hi".to_string(),
                 sent_at: None,
+                images: Vec::new(),
             },
             failed_attempt("429 Too many concurrent requests"),
         ]);

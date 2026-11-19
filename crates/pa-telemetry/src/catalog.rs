@@ -211,7 +211,7 @@ pub const TOOL_CATEGORIES: &[&str] = &[
 
 /// How a provider auth descriptor resolved the session's request
 /// credentials (`agent session ended` `auth_strategy`).
-pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "unknown"];
+pub const AUTH_STRATEGIES: &[&str] = &["api_key", "token_exchange", "oauth", "unknown"];
 
 pub const TERMINAL_OUTCOMES: &[&str] = &[
     "success",
@@ -1098,6 +1098,28 @@ const TUI_IMAGE_PASTE: EventRule = EventRule {
     ],
 };
 
+/// One interactive run showed inline transcript images (v2), emitted at the run's exit when
+/// any image was shown: the distinct images drawn per protocol and the protocol the terminal
+/// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
+/// never image content, dimensions, or a path.
+const TUI_INLINE_IMAGES_RENDERED: EventRule = EventRule {
+    name: "tui inline images rendered",
+    since: 2,
+    properties: &[
+        (
+            "protocol",
+            required(enum_rule(
+                &["kitty", "iterm2", "sixel", "half_block"],
+                "half_block",
+            )),
+        ),
+        ("kitty_count", required(count())),
+        ("iterm2_count", required(count())),
+        ("sixel_count", required(count())),
+        ("half_block_count", required(count())),
+    ],
+};
+
 /// One `/usage` page run ended (v2): how each half landed (the quota cards and the local spend
 /// history), the card count, whether the details view opened, the refreshes, and the tray's
 /// rate-limit reset chips shown since the last close. Standalone
@@ -1637,6 +1659,27 @@ const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
     ],
 };
 
+/// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
+/// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
+/// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
+/// ended, and how long it took. Never a provider id, a URL, a client id, a code, or a token.
+const AGENT_PROVIDER_OAUTH_LOGIN: EventRule = EventRule {
+    name: "agent provider oauth login",
+    since: 2,
+    properties: &[
+        ("surface", required(enum_rule(&["cli", "tui"], "cli"))),
+        (
+            "flow",
+            required(enum_rule(&["browser", "device_code", "none"], "none")),
+        ),
+        (
+            "outcome",
+            required(enum_rule(&["completed", "failed", "canceled"], "failed")),
+        ),
+        ("duration_ms", required(duration())),
+    ],
+};
+
 /// Kernel `notify(...)` and `model.set_effort(...)` adoption for one session (v2), emitted at
 /// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
 /// the session pinged or switched effort: pings, pings nobody was attached to see, and effort
@@ -1679,6 +1722,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
         &TUI_CONTEXT_WINDOW_CLOSED,
+        &TUI_INLINE_IMAGES_RENDERED,
         &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
         &AGENT_WEB_READS,
@@ -1688,6 +1732,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
         &AGENT_RLM_CHILD_ABORT,
+        &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
     ];
     all.extend(UPDATE_EVENTS.iter());

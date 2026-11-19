@@ -78,6 +78,7 @@ mod image_markers;
 pub mod incident_notices;
 pub mod info_commands;
 pub mod info_panel;
+mod inline_image;
 mod input;
 pub mod interactive;
 pub mod keybindings;

@@ -908,6 +908,7 @@ mod tests {
             vec![ChatEntry::User {
                 text: "run".to_string(),
                 sent_at: Some(1),
+                images: Vec::new(),
             }],
             "the tail's retry outcome supersedes the attempt the head page ends with"
         );
@@ -986,6 +987,7 @@ mod tests {
                 .map(|index| ChatEntry::User {
                     text: format!("{prefix} {index}"),
                     sent_at: None,
+                    images: Vec::new(),
                 })
                 .collect()
         };

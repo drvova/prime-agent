@@ -16,8 +16,11 @@ pub enum TurnUpdate {
     SessionInfoChanged { name: Option<String> },
     /// `service_tier_changed`: the session's effective service tier.
     ServiceTierChanged { tier: String },
-    /// `message_start` with a user message.
-    UserMessage(String),
+    /// `message_start` with a user message: its display text and the images it carries.
+    UserMessage {
+        text: String,
+        images: Vec<crate::chat::MessageImage>,
+    },
     /// An assistant message; `streaming` distinguishes in-flight from
     /// final.
     AssistantMessage {
@@ -246,7 +249,10 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
                     Some(TurnUpdate::StatusUpdate)
                 }
                 Some("user") => Some(match user_display_text(&message) {
-                    Some(text) => TurnUpdate::UserMessage(text),
+                    Some(text) => TurnUpdate::UserMessage {
+                        text,
+                        images: crate::chat::MessageImage::from_message(&message),
+                    },
                     // Nothing to show: no blank row.
                     None => TurnUpdate::StatusUpdate,
                 }),
@@ -553,6 +559,7 @@ pub fn message_value_to_entries(message: &Value) -> Vec<ChatEntry> {
                     vec![ChatEntry::User {
                         text,
                         sent_at: message.get("timestamp").and_then(Value::as_i64),
+                        images: crate::chat::MessageImage::from_message(message),
                     }]
                 })
             })
