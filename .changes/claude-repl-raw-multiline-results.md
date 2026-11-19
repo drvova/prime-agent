@@ -1,0 +1,1 @@
+- A Python cell whose final value is multi-line text (a string, or a finished `bash()` result with multi-line output) now prints it raw under a `[text: N lines, M chars]` header instead of an escaped one-line repr, so the agent reads it like a file.

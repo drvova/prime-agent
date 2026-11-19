@@ -575,6 +575,21 @@ def _safe_str(exc: BaseException) -> str:
         return "<exception str() failed>"
 
 
+def _result_text(value: object) -> str:
+    """A cell's final value as the model reads it: multi-line text (a `str`,
+    or an object whose `_repl_text_()` returns its display text) prints raw
+    under a `[text: N lines, M chars]` header, the way a file reads, instead
+    of an escaped one-line repr; anything else keeps `repr`."""
+    hook = getattr(type(value), "_repl_text_", None)
+    text = value if isinstance(value, str) else hook(value) if callable(hook) else None
+    if not isinstance(text, str):
+        return repr(value)
+    lines = len(text.splitlines())
+    if lines < 2:
+        return repr(value)
+    return f"[text: {lines} lines, {len(text)} chars]\n{text}"
+
+
 def _cap_text(text: str) -> str:
     if len(text) > _RESULT_TEXT_CAP:
         return text[:_RESULT_TEXT_CAP] + _RESULT_TRUNCATION_MARKER
@@ -725,7 +740,7 @@ async def _handle_execute(req: dict[str, Any], ns: dict[str, Any]) -> None:
             if status == "ok" and has_trailing and value is not None:
                 try:
                     ns["_"] = value
-                    result_text = repr(value)
+                    result_text = _result_text(value)
                 except BaseException as exc:  # noqa: BLE001 - a broken __repr__ is a cell error
                     status, error = "error", _error_event(cell_id, exc)
             if result_text is not None:
