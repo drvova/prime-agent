@@ -88,7 +88,12 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
         &worker.recovery,
         &worker.core,
         &notify,
-        crate::engine::KernelNotice::bash_completion(4321, "sleep 12; echo RW_WAKE_DONE", 0),
+        crate::engine::KernelNotice::bash_completion(
+            4321,
+            "sleep 12; echo RW_WAKE_DONE",
+            0,
+            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+        ),
         || false,
     );
     let core = worker.core.lock().unwrap();
@@ -134,7 +139,7 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
     .expect("the admission flushed its snapshot");
     assert_eq!(
         steering[0].message,
-        "[bash-done pid:4321 exit:0]\n\nCommand: \"sleep 12; echo RW_WAKE_DONE\""
+        "[bash-done pid:4321 exit:0]\n\nCommand: \"sleep 12; echo RW_WAKE_DONE\"\n\nOutput: (none)"
     );
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }
@@ -149,7 +154,12 @@ async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row()
         &worker.recovery,
         &worker.core,
         &notify,
-        crate::engine::KernelNotice::bash_completion(99, "make gates", 2),
+        crate::engine::KernelNotice::bash_completion(
+            99,
+            "make gates",
+            2,
+            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+        ),
         || false,
     );
     let core = worker.core.lock().unwrap();
@@ -170,7 +180,12 @@ async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
         &worker.recovery,
         &worker.core,
         &notify,
-        crate::engine::KernelNotice::bash_completion(4321, "sleep 12; echo RW_WAKE_DONE", 0),
+        crate::engine::KernelNotice::bash_completion(
+            4321,
+            "sleep 12; echo RW_WAKE_DONE",
+            0,
+            pa_core::session_engine::messages::BashOutputTail::Complete(""),
+        ),
         || false,
     );
     assert!(

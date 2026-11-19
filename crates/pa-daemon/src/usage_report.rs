@@ -4,7 +4,7 @@
 //! client's read loop: the file scan on the blocking pool, the fetches as bounded requests.
 
 mod history;
-mod quotas;
+pub(crate) mod quotas;
 
 #[cfg(test)]
 mod tests;
@@ -17,6 +17,34 @@ use serde_json::Value;
 
 use crate::protocol::{response_failure, response_line, response_success};
 use crate::supervisor::Supervisor;
+
+/// Register the worker's `usage.quotas` kernel host request (the REPL's `usage.get()`): the
+/// same quota cards as the page's `quotas` half, from the same fetch and cache. Payload
+/// `{refresh?}` bypasses the cache like the page's refresh key. The reply is the wire's
+/// `QuotaReport`: provider ids, plans, and windows, never a credential.
+pub(crate) fn register_quota_host_handler(
+    handlers: &mut pa_core::kernel::shared::HostRequestHandlers,
+    agent_dir: std::path::PathBuf,
+    config: quotas::QuotaFetchConfig,
+) {
+    handlers.register(
+        pa_core::usage_host::USAGE_QUOTAS_REQUEST_TYPE,
+        pa_core::kernel::shared::host_handler(move |payload| {
+            let agent_dir = agent_dir.clone();
+            let config = config.clone();
+            async move {
+                let policy = if payload.data.get("refresh").and_then(Value::as_bool) == Some(true) {
+                    quotas::CachePolicy::Bypass
+                } else {
+                    quotas::CachePolicy::UseFresh
+                };
+                let now_ms = i64::try_from(crate::util::now_ms()).unwrap_or(i64::MAX);
+                let report = quotas::quota_report(agent_dir, &config, policy, now_ms).await;
+                Ok(serde_json::to_value(report)?)
+            }
+        }),
+    );
+}
 
 impl Supervisor {
     /// `get_usage`: one half of the page, as the wire's `QuotaReport` or `SpendHistory`.

@@ -1560,6 +1560,37 @@ const AGENT_REPL_SCHEDULE: EventRule = EventRule {
     ],
 };
 
+/// Kernel workspace checkpoints (`checkpoint.create/list/restore`) adoption for one session (v2),
+/// emitted at session end beside `agent session ended` (which sits at the backend's 128-key cap)
+/// only when the session used them: checkpoints taken, listings, and restores by outcome
+/// (restored, declined or unanswered, refused by the off-by-default setting) plus failed calls.
+/// Counts only: never a label, an id, or a path.
+const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
+    name: "agent repl checkpoint",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("checkpoint_created_count", required(count())),
+        ("checkpoint_list_count", required(count())),
+        ("checkpoint_restored_count", required(count())),
+        ("checkpoint_restore_declined_count", required(count())),
+        ("checkpoint_restore_disabled_count", required(count())),
+        ("checkpoint_failed_count", required(count())),
+    ],
+};
+
+/// Kernel `usage.get()` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session read
+/// its usage. A count only: never a cost, a token number, a provider, or a quota.
+const AGENT_USAGE_READS: EventRule = EventRule {
+    name: "agent usage reads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("usage_read_count", required(count())),
+    ],
+};
+
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
@@ -1591,6 +1622,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_FS_SEARCH,
         &AGENT_FS_EDIT,
         &AGENT_REPL_SCHEDULE,
+        &AGENT_REPL_CHECKPOINT,
+        &AGENT_USAGE_READS,
     ];
     all.extend(UPDATE_EVENTS.iter());
     all
