@@ -1,24 +1,29 @@
 //! The terminal's answers to the inline-image capability query: the DA1 reply's sixel attribute
-//! and the `CSI 16 t` cell pixel size. The query goes out once per process at the first surface
-//! start ([`take_capability_query`], written by `enhanced_keys::enable` while raw mode holds);
-//! the answers arrive on the input path, never awaited:
+//! and the `CSI 16 t` cell pixel size. The query is lazy: it is decided when the first inline
+//! image is about to render ([`request_query`], from the live frame's row resolve), and only
+//! where a pixel protocol is a candidate for this terminal (its environment or DA1 answer names
+//! one) while the cell pixel size is still unknown (no pty pixel size, no fixed Windows
+//! Terminal sixel cell). A terminal or harness that advertises nothing is never asked, and no
+//! startup or first-paint path writes it. The frame paint writes a queued query after its own
+//! bytes ([`take_pending_query`]); the answers arrive on the input path, never awaited:
 //! - on a Unix tty the vendored crossterm parser records them as it reads
 //!   (`crossterm::terminal::reported_sixel_graphics` / `reported_cell_pixels`);
 //! - a reply the reader split, and every reply on the Windows console (which relays a VT reply
 //!   as one key record per character), is reassembled by the sequence guard, which hands it to
 //!   [`note_reply`].
 //!
-//! The paint path reads the recorded answers with two atomic loads.
+//! The paint path reads the recorded answers with atomic loads.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 
-/// The query on a Unix tty: the cell pixel size (`CSI 16 t`). The keyboard probe already asks
-/// for DA1 (`enhanced_keys`), so asking again would only duplicate its reply.
-const UNIX_QUERY: &[u8] = b"\x1b[16t";
-/// The query on the Windows console: the cell pixel size and DA1. No keyboard probe runs there,
-/// so DA1 is asked here; the console host answers for itself where it renders the screen
-/// (`ESC [ ? 1 ; 0 c`, no sixel) and relays the terminal's answer under a pseudoconsole.
-const WINDOWS_QUERY: &[u8] = b"\x1b[16t\x1b[c";
+use super::detect::{select_protocol, CellReports, ImageProtocol, Platform, TerminalHints};
+
+/// The cell pixel size query (`CSI 16 t`). On a Unix tty the keyboard probe already asks for
+/// DA1 (`enhanced_keys`).
+const CELL_QUERY: &[u8] = b"\x1b[16t";
+/// The cell pixel size and DA1, for the Windows console where no keyboard probe asks DA1 and
+/// the terminal's own answer is still needed to confirm sixel (`WezTerm`'s pseudoconsole).
+const CELL_AND_DA1_QUERY: &[u8] = b"\x1b[16t\x1b[c";
 
 /// One reply the input path recognised.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,17 +99,73 @@ pub(crate) fn cell_pixels() -> Option<(u16, u16)> {
     }
 }
 
-/// The capability query to write at the first surface start, once per process; `None` after
-/// the first call, and wherever no answer could enable a pixel protocol (a multiplexer pane).
-pub(crate) fn take_capability_query() -> Option<&'static [u8]> {
-    if !super::detect::pixel_protocol_possible() || QUERIED.swap(true, Ordering::SeqCst) {
+/// The query a terminal needs before its inline images can draw at its pixel scale, or `None`
+/// when nothing is to be asked: no pixel protocol is a candidate (a multiplexer pane, a plain
+/// terminal or harness that advertises nothing), or the cell size is already known.
+pub(crate) fn query_needed(
+    hints: &TerminalHints<'_>,
+    platform: Platform,
+    da1_sixel: Option<bool>,
+    reports: CellReports,
+) -> Option<&'static [u8]> {
+    let selected = select_protocol(hints, platform, da1_sixel);
+    // On Windows only Windows Terminal is named by the environment; `WezTerm` draws sixel
+    // through its bundled pseudoconsole, which its own DA1 answer confirms.
+    let unconfirmed = platform == Platform::Windows
+        && selected == ImageProtocol::HalfBlock
+        && hints.wezterm_pane.is_some()
+        && da1_sixel.is_none();
+    if selected == ImageProtocol::HalfBlock && !unconfirmed {
         return None;
     }
-    Some(if cfg!(windows) {
-        WINDOWS_QUERY
-    } else {
-        UNIX_QUERY
-    })
+    let fixed_cell = selected == ImageProtocol::Sixel && hints.wt_session.is_some();
+    let known = fixed_cell || reports.winsize.or(reports.reply).is_some();
+    match (unconfirmed, known) {
+        (true, _) => Some(CELL_AND_DA1_QUERY),
+        (false, true) => None,
+        (false, false) => Some(CELL_QUERY),
+    }
+}
+
+/// The queued query: `0` none, `1` the cell size, `2` the cell size and DA1.
+static PENDING: AtomicU8 = AtomicU8::new(0);
+
+/// Decide the query for an inline image about to render (the live frame calls this): queued
+/// once per process, when [`query_needed`] asks for one.
+pub(crate) fn request_query() {
+    if QUERIED.load(Ordering::Relaxed) {
+        return;
+    }
+    let reports = super::live_cell_reports();
+    let needed = query_needed(
+        &super::detect::process_hints(),
+        super::detect::PLATFORM,
+        sixel_attribute(),
+        reports,
+    );
+    if let Some(query) = needed {
+        if !QUERIED.swap(true, Ordering::SeqCst) {
+            PENDING.store(
+                if query == CELL_AND_DA1_QUERY { 2 } else { 1 },
+                Ordering::SeqCst,
+            );
+        }
+    }
+}
+
+/// The queued query's bytes for the frame paint to write (taken once), and only while raw mode
+/// holds: a cooked tty would echo the answer onto the screen.
+pub(crate) fn take_pending_query() -> Option<&'static [u8]> {
+    if PENDING.load(Ordering::Relaxed) == 0
+        || !crossterm::terminal::is_raw_mode_enabled().unwrap_or(false)
+    {
+        return None;
+    }
+    match PENDING.swap(0, Ordering::SeqCst) {
+        1 => Some(CELL_QUERY),
+        2 => Some(CELL_AND_DA1_QUERY),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -141,6 +202,104 @@ mod tests {
                 None,
                 None,
                 None,
+            ]
+        );
+    }
+
+    /// The lifecycle PTY harness shape (`TERM=xterm-256color`, no pixel size, a DA1 answer
+    /// without sixel or none) and every other terminal that advertises nothing is never asked;
+    /// a candidate whose cell size is already known is not asked either.
+    #[test]
+    fn only_a_pixel_candidate_with_an_unknown_cell_size_is_asked() {
+        let none = CellReports::default();
+        let winsize = CellReports {
+            winsize: Some((9, 18)),
+            reply: None,
+        };
+        let plain = TerminalHints {
+            term: Some("xterm-256color"),
+            ..TerminalHints::default()
+        };
+        let kitty = TerminalHints {
+            kitty_window_id: Some("1"),
+            ..TerminalHints::default()
+        };
+        let windows_terminal = TerminalHints {
+            wt_session: Some("5b1e"),
+            ..TerminalHints::default()
+        };
+        let wezterm = TerminalHints {
+            wezterm_pane: Some("0"),
+            ..TerminalHints::default()
+        };
+        let tmux = TerminalHints {
+            tmux: Some("/tmp/tmux-0/default,1,0"),
+            ..kitty
+        };
+        let cases = [
+            ("harness, no DA1", plain, Platform::Unix, None, none),
+            (
+                "harness, DA1 without sixel",
+                plain,
+                Platform::Unix,
+                Some(false),
+                none,
+            ),
+            (
+                "conhost",
+                TerminalHints::default(),
+                Platform::Windows,
+                None,
+                none,
+            ),
+            ("tmux inside kitty", tmux, Platform::Unix, Some(true), none),
+            (
+                "kitty with a pixel size",
+                kitty,
+                Platform::Unix,
+                None,
+                winsize,
+            ),
+            (
+                "windows terminal hosting WSL",
+                windows_terminal,
+                Platform::Unix,
+                None,
+                none,
+            ),
+            (
+                "windows terminal",
+                windows_terminal,
+                Platform::Windows,
+                None,
+                none,
+            ),
+            ("kitty over mosh", kitty, Platform::Unix, None, none),
+            (
+                "vscode with images",
+                plain,
+                Platform::Unix,
+                Some(true),
+                none,
+            ),
+            ("wezterm on windows", wezterm, Platform::Windows, None, none),
+        ];
+        assert_eq!(
+            cases.map(|(name, hints, platform, da1, reports)| (
+                name,
+                query_needed(&hints, platform, da1, reports)
+            )),
+            [
+                ("harness, no DA1", None),
+                ("harness, DA1 without sixel", None),
+                ("conhost", None),
+                ("tmux inside kitty", None),
+                ("kitty with a pixel size", None),
+                ("windows terminal hosting WSL", None),
+                ("windows terminal", None),
+                ("kitty over mosh", Some(CELL_QUERY)),
+                ("vscode with images", Some(CELL_QUERY)),
+                ("wezterm on windows", Some(CELL_AND_DA1_QUERY)),
             ]
         );
     }
