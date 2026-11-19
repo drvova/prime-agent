@@ -121,7 +121,7 @@ impl AgentSessionEngine {
         // The quota-fallback seam: a quota failure arms the serving model's
         // declared fallback credential for one immediate retry.
         let fallback_engine = recovery_engine.clone();
-        let fallback_model = preflight_model.clone();
+        let fallback_model = preflight_model;
         let quota_fallback: Option<pa_core::session_engine::auto_retry::QuotaFallbackCallback> =
             Some(&mut move |_message, retry_after_ms| {
                 let engine = fallback_engine.as_ref().and_then(std::sync::Weak::upgrade);

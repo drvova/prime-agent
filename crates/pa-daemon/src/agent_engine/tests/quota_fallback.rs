@@ -6,18 +6,21 @@ use std::io::{Read as _, Write as _};
 
 use super::*;
 
+/// Each request's path and `Authorization` header, in arrival order.
+type Routes = std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>;
+
 /// A loopback inference server answering from a queue, recording each
 /// request's path and `Authorization` header. Nothing leaves loopback.
 struct InferenceServer {
     port: u16,
-    routes: std::sync::Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>,
+    routes: Routes,
 }
 
 impl InferenceServer {
     fn start(responses: Vec<Vec<u8>>) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let routes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let routes: Routes = std::sync::Arc::default();
         let queue = std::sync::Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
             responses,
         )));
