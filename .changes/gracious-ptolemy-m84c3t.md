@@ -1,0 +1,1 @@
+- A Python cell that calls an async kernel API without `await` (for example `todo.set([...])`, `ask(...)`, `rlm.spawn(...)`, `web.read(...)`) no longer finishes as a silent success: the cell now fails with an error naming each missed call and its cell line and the fix (`await todo.set(...)`), so the model retries instead of believing the call ran.
