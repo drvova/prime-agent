@@ -6,8 +6,9 @@ switches. The first cell builds the kernel; later probes must use its surviving
 namespace, exercising the daemon's live-core rebind rather than fresh startup.
 All provider requests and daemon responses are saved. Model facts and context
 windows must match the selected model exactly; token estimates are not checked.
-A retryable primary failure then exercises backup-provider facts and automatic
-primary restoration.
+A retryable primary failure then stays on the primary: a second configured
+provider serves the same model id, yet no request reaches it, the same-provider
+retry answers, and the facts stay the primary's.
 """
 import argparse
 import http.server
@@ -35,8 +36,10 @@ MODELS = [
     {'id': 'facts-vision', 'name': 'Facts vision', 'reasoning': False,
      'input': ['text', 'image'], 'contextWindow': 256000, 'maxTokens': 4096},
 ]
-BACKUP = {**MODELS[1], 'id': 'facts-text', 'name': 'Facts backup'}
-SEQUENCE = [MODELS[0], MODELS[1], MODELS[0], BACKUP, MODELS[0]]
+# Another provider serving the session's model id: it must never be called.
+OTHER_PROVIDER_MODEL = {**MODELS[1], 'id': 'facts-text', 'name': 'Facts other provider'}
+SEQUENCE = [MODELS[0], MODELS[1], MODELS[0], MODELS[0], MODELS[0]]
+RETRY_PHASE = 3
 
 
 class Server(http.server.ThreadingHTTPServer):
@@ -47,6 +50,7 @@ class Server(http.server.ThreadingHTTPServer):
         self.requests = []
         self.phase = 0
         self.phase_requests = 0
+        self.fail_next_primary = False
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -59,7 +63,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
         self.server.requests.append({'phase': self.server.phase, 'path': self.path, 'body': body})
-        if self.server.phase == 3 and self.path.startswith('/primary/'):
+        if self.server.fail_next_primary and self.path.startswith('/primary/'):
+            self.server.fail_next_primary = False
             wire = json.dumps({'error': {'message': 'Fixture primary temporarily unavailable', 'type': 'server_error'}}).encode()
             self.send_response(503)
             self.send_header('Content-Type', 'application/json')
@@ -170,11 +175,12 @@ def run_case(binary, root, observation):
         'api': 'openai-completions', 'apiKey': 'fixture-only',
         'baseUrl': 'http://127.0.0.1:%s/primary/v1' % server.server_address[1], 'models': MODELS},
         'fixture-backup': {'api': 'openai-completions', 'apiKey': 'fixture-only',
-        'baseUrl': 'http://127.0.0.1:%s/backup/v1' % server.server_address[1], 'models': [BACKUP]}}}))
+        'baseUrl': 'http://127.0.0.1:%s/backup/v1' % server.server_address[1], 'models': [OTHER_PROVIDER_MODEL]}}}))
     (root / 'agent/settings.json').write_text(json.dumps({
         'defaultProvider': 'fixture', 'defaultModel': 'facts-text',
         'prewarmPythonKernel': False, 'compaction': {'agentCallable': True},
         'providerBackupModel': 'fixture-backup/facts-text',
+        # The retired `retry.failover` block still loads and changes nothing.
         'retry': {'enabled': True, 'maxRetries': 1, 'baseDelayMs': 1,
                   'failover': {'enabled': True, 'maxRetries': 0, 'baseDelayMs': 1, 'maxDelayMs': 1}},
         'onboardingCompleted': True, 'telemetry': {'noticeShown': True}}))
@@ -208,37 +214,29 @@ def run_case(binary, root, observation):
                     client.request({'type': 'set_model', 'activeSessionId': session_id,
                                     'provider': 'fixture', 'modelId': model['id']})
                 server.phase, server.phase_requests = phase, 0
+                server.fail_next_primary = phase == RETRY_PHASE
                 client.request({'type': 'prompt_and_wait', 'activeSessionId': session_id,
                                 'message': 'Observe the model facts.'})
                 rows = [row for row in server.requests if row['phase'] == phase]
-                if phase == 3:
-                    primary = [row for row in rows if row['path'].startswith('/primary/')]
-                    assert primary, 'No actual retryable primary request'
-                    assert all(row['body']['model'] == 'facts-text' for row in primary), primary
-                    rows = [row for row in rows if row['path'].startswith('/backup/')]
-                else:
-                    assert all(row['path'].startswith('/primary/') for row in rows), rows
+                # No request ever reaches the other provider serving the same id.
+                assert all(row['path'].startswith('/primary/') for row in rows), rows
+                if phase == RETRY_PHASE:
+                    # The 503 and its same-provider retry: one extra primary request.
+                    assert len(rows) == 3, rows
+                    rows = rows[1:]
                 requests = [row['body'] for row in rows]
                 assert len(requests) == 2, requests
                 assert all(body['model'] == model['id'] for body in requests), requests
                 probe = latest_probe(requests[-1], 'call_facts_%s' % phase)
                 observation['probes'].append(probe)
-                if phase == 3:
-                    # The failover driver restores primary facts at turn settlement;
-                    # the persisted model changes below check that restore.
-                    assert probe['kernel_probe_count'] == phase + 1, probe
-                    assert probe['compact_status']['scheduled'] is False, probe
-                else:
-                    verify_probe(probe, model, phase + 1)
+                verify_probe(probe, model, phase + 1)
             session_rows = [json.loads(line) for path in (root / 'agent/sessions').rglob('*.jsonl')
                             for line in path.read_text().splitlines()]
             changes = [{'provider': row['provider'], 'modelId': row['modelId']}
                        for row in session_rows if row.get('type') == 'model_change']
             observation['persisted_model_changes'] = changes
-            backup_changes = [i for i, row in enumerate(changes) if row['provider'] == 'fixture-backup']
-            assert len(backup_changes) == 1, changes
-            assert changes[backup_changes[0] + 1:] == [
-                {'provider': 'fixture', 'modelId': 'facts-text'}], 'Duplicate or missing persisted primary restore: %s' % changes
+            assert all(row['provider'] == 'fixture' for row in changes), (
+                'The session moved to another provider: %s' % changes)
     finally:
         observation['provider_requests'] = server.requests
         if client is not None:
@@ -257,7 +255,7 @@ def main():
     args = parser.parse_args()
     result = {'verified': False, 'scope':
               'Actual daemon set_model, surviving kernel, model.info and compact.status context_window. '
-              'Retryable primary failure -> backup-provider probe -> automatic primary restoration probe. '
+              'Retryable primary failure -> same-provider retry, no request to the other provider serving the id. '
               'Full compact.status values retained; token/percent estimates are not checked.'}
     try:
         assert sys.platform == 'linux', 'Requires hosted Linux binaries and kernel'
