@@ -1125,6 +1125,7 @@ pub(crate) mod tests {
                     input_tokens: 11,
                     output_tokens: 7,
                     cost: 0.5,
+                    billing: None,
                 },
                 /*by_model*/ None,
             )

@@ -69,6 +69,10 @@ fn parse_deleted_usage(
         input_tokens,
         output_tokens,
         cost,
+        // Older records carry no split; a malformed one reads as none.
+        billing: usage
+            .get("billing")
+            .and_then(|split| serde_json::from_value(split.clone()).ok()),
     })
 }
 

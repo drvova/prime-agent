@@ -279,6 +279,7 @@ async fn placement_rig(
             cache_write: 0,
             total_tokens: 120,
             cost: pa_types::ai::UsageCost::default(),
+            billing: None,
         },
         stop_reason: pa_types::ai::StopReason::Stop,
         stop_reason_raw: None,

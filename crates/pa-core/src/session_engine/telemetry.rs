@@ -403,6 +403,9 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// Recorded assistant calls by billing mode (only the calls count), reported by
+    /// `agent billing modes`.
+    billing_modes: pa_types::billing::BillingSplit,
     /// `agent_message.send` deliveries the per-sender rate bucket refused, reported by
     /// `agent messages`.
     agent_message_throttled_count: u64,
@@ -825,6 +828,11 @@ impl SessionCounters {
     /// One kernel `usage.get()` read (a count: never a cost or a token number).
     pub(crate) fn note_usage_read(&self) {
         self.with(|values| values.usage_read_count += 1);
+    }
+
+    /// One recorded assistant call's billing mode (a count: never its cost or provider).
+    pub(crate) fn note_billing_mode(&self, mode: pa_types::billing::BillingMode) {
+        self.with(|values| values.billing_modes.add(Some(&mode), 0.0));
     }
 
     /// `agent_message.send` deliveries the rate bucket refused (a count: never a target or body).
@@ -1608,6 +1616,22 @@ impl SessionTelemetry {
             let mut usage_properties = self.session_properties();
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
+        }
+        // A session that recorded no classified call sends no billing event.
+        let mut billing = pa_types::billing::BillingSplit::default();
+        self.counters.with(|values| billing = values.billing_modes);
+        if billing != pa_types::billing::BillingSplit::default() {
+            let mut billing_properties = self.session_properties();
+            for (key, spend) in [
+                ("billing_pay_as_you_go_count", billing.pay_as_you_go),
+                ("billing_plan_count", billing.plan),
+                ("billing_flat_rate_count", billing.flat_rate),
+                ("billing_free_count", billing.free),
+                ("billing_unknown_count", billing.unknown),
+            ] {
+                billing_properties.set(key, Value::from(spend.calls));
+            }
+            self.client.track("agent billing modes", billing_properties);
         }
         // A session whose sends were never throttled sends no agent-message event.
         let mut throttled = 0;

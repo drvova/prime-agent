@@ -14,7 +14,9 @@ pub(crate) use pa_core::session::billed_row::{billed_line, BilledRow, ScanUsage}
 use pa_core::session_engine::compaction_exec::{add_assistant_usage, subtract_assistant_usage};
 
 /// The token/cost summary the rows publish: `inputTokens` folds cache reads
-/// and writes into the input total; `cost` is the provider-billed total.
+/// and writes into the input total; `cost` is the recorded total (a plan's
+/// calls count at their API-equivalent value), and `billing` splits the
+/// session's own calls by billing mode.
 ///
 /// `Eq` is manual: `cost` is the f64 under `JsNumber`, and JSON numbers are
 /// always finite (a NaN never round-trips `serde_json`), so equality is
@@ -25,6 +27,8 @@ pub struct SessionUsageSummary {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub billing: Option<pa_types::billing::BillingSplit>,
 }
 
 impl Eq for SessionUsageSummary {}
@@ -57,6 +61,7 @@ pub fn session_usage_summary_from(usage: &Usage) -> Option<SessionUsageSummary> 
         input_tokens,
         output_tokens: usage.output,
         cost: usage.cost.total.as_f64(),
+        billing: None,
     })
 }
 
@@ -141,6 +146,8 @@ struct PersistedUsage {
     cost_cache_read: u64,
     cost_cache_write: u64,
     cost_total: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    billing: Option<pa_types::billing::BillingMode>,
 }
 
 impl From<Usage> for PersistedUsage {
@@ -156,6 +163,7 @@ impl From<Usage> for PersistedUsage {
             cost_cache_read: usage.cost.cache_read.as_f64().to_bits(),
             cost_cache_write: usage.cost.cache_write.as_f64().to_bits(),
             cost_total: usage.cost.total.as_f64().to_bits(),
+            billing: usage.billing,
         }
     }
 }
@@ -175,6 +183,7 @@ impl From<PersistedUsage> for Usage {
                 cache_write: JsNumber(f64::from_bits(persisted.cost_cache_write)),
                 total: JsNumber(f64::from_bits(persisted.cost_total)),
             },
+            billing: persisted.billing,
         }
     }
 }
@@ -215,11 +224,16 @@ mod usage_bits {
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct UsageScan {
     assistant_usage_by_id: AssistantUsageById,
+    /// Each assistant row's own usage as recorded (an attribution's aggregate never replaces
+    /// it): the billing split's source.
+    recorded_assistant_usage: AssistantUsageById,
     #[serde(with = "usage_bits")]
     attributed_child_usage: Usage,
     attributed_child_ids: std::collections::HashSet<String>,
     #[serde(with = "usage_bits")]
     billed_row_usage: Usage,
+    /// Billed rows: model calls outside the agent loop, recorded without a billing mode.
+    billed_row_count: u64,
 }
 
 impl UsageScan {
@@ -236,6 +250,7 @@ impl UsageScan {
         }
         if let Some(usage) = usage {
             self.assistant_usage_by_id.set(id, usage);
+            self.recorded_assistant_usage.set(id, usage);
         }
     }
 
@@ -267,6 +282,7 @@ impl UsageScan {
     pub(crate) fn fold_billed_row(&mut self, row: Option<BilledRow>) {
         if let Some(row) = row {
             add_assistant_usage(&mut self.billed_row_usage, &row.usage);
+            self.billed_row_count += 1;
         }
     }
 
@@ -288,7 +304,25 @@ impl UsageScan {
     /// attributed child block (clamped at zero to absorb attribution drift).
     #[must_use]
     pub fn summary(&self) -> Option<SessionUsageSummary> {
-        session_usage_summary_from(&self.totals().own)
+        session_usage_summary_from(&self.totals().own).map(|summary| {
+            let mut billing = pa_types::billing::BillingSplit::default();
+            for (_, usage) in &self.recorded_assistant_usage.entries {
+                billing.add(usage.billing.as_ref(), usage.cost.total.as_f64());
+            }
+            // A session of unclassified calls only (recorded before modes) keeps the summary's
+            // pre-split shape: readers bill its whole cost as they always did.
+            let classified = billing
+                != pa_types::billing::BillingSplit {
+                    unclassified: billing.unclassified,
+                    ..Default::default()
+                };
+            billing.unclassified.calls += self.billed_row_count;
+            billing.unclassified.cost += self.billed_row_usage.cost.total.as_f64();
+            SessionUsageSummary {
+                billing: classified.then_some(billing),
+                ..summary
+            }
+        })
     }
 }
 
@@ -544,7 +578,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 150,
                 output_tokens: 15,
-                cost: 1.5
+                cost: 1.5,
+                billing: None,
             })
         );
     }
@@ -569,7 +604,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 40,
                 output_tokens: 4,
-                cost: 0.4
+                cost: 0.4,
+                billing: None,
             })
         );
         // After the assistant entry the same attribution DOES fold — the same
@@ -579,7 +615,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 40,
                 output_tokens: 4,
-                cost: 0.7 - 0.3
+                cost: 0.7 - 0.3,
+                billing: None,
             })
         );
     }
@@ -627,7 +664,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 385,
                 output_tokens: 38,
-                cost: 1.0 + (0.3 + 0.1 + 0.05)
+                cost: 1.0 + (0.3 + 0.1 + 0.05),
+                billing: None,
             })
         );
     }
@@ -706,7 +744,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 5,
                 output_tokens: 1,
-                cost: 0.0
+                cost: 0.0,
+                billing: None,
             })
         );
     }
@@ -730,7 +769,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: u64::MAX,
                 output_tokens: 2,
-                cost: 0.0
+                cost: 0.0,
+                billing: None,
             })
         );
     }
@@ -755,7 +795,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 100,
                 output_tokens: 10,
-                cost: 1.0
+                cost: 1.0,
+                billing: None,
             })
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -777,7 +818,8 @@ mod tests {
             Some(SessionUsageSummary {
                 input_tokens: 1_505_509,
                 output_tokens: 14_472,
-                cost: 0.0
+                cost: 0.0,
+                billing: None,
             })
         );
     }

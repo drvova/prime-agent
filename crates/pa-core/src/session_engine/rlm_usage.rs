@@ -552,6 +552,7 @@ mod tests {
                 cache_write: pa_types::JsNumber(0.0),
                 total: pa_types::JsNumber(cost_total),
             },
+            billing: None,
         }
     }
 

@@ -198,8 +198,9 @@ pub(crate) fn append_deleted_child_usage_amendments(
         // Not a deleted child: nothing to capture, no sweep to arm.
         return None;
     }
-    let summary = crate::session_usage::read_session_usage(&path)
-        .and_then(|totals| crate::session_usage::session_usage_summary_from(&totals.own));
+    // The own summary with its billing split: the parent's deleted-descendant bucket keeps how
+    // the child's calls were paid for.
+    let summary = crate::session_usage::read_own_usage_summary(&path);
     let by_model = summary
         .as_ref()
         .and_then(|summary| crate::state_getters::own_usage_by_model_of(&path, summary));

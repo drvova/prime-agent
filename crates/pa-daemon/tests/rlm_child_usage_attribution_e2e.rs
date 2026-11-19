@@ -435,8 +435,16 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
 
     // The whole row (minus id/parentId/timestamp) matches the TS shape: the
     // child's settled usage and the folded aggregate over the parent row.
-    let child_usage = settled_child_usage(&child_session_file);
-    let aggregate = add_usage(&target["message"]["usage"], &child_usage);
+    let mut child_usage = settled_child_usage(&child_session_file);
+    let mut aggregate = add_usage(&target["message"]["usage"], &child_usage);
+    // The aggregate keeps the target call's billing mode (it replaces that row's usage); the
+    // child's summed usage carries none.
+    if let Some(billing) = target["message"]["usage"].get("billing") {
+        aggregate["billing"] = billing.clone();
+    }
+    if let Some(usage) = child_usage.as_object_mut() {
+        usage.remove("billing");
+    }
     let expected = json!({
         "type": "child_usage_attributed",
         "targetId": target_id,

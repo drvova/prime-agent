@@ -479,6 +479,7 @@ mod tests {
             cache_write: 0,
             total_tokens: 110,
             cost: pa_types::ai::UsageCost::default(),
+            billing: None,
         };
         let result = CompactionResult {
             summary: "the overflow summary".to_string(),
@@ -672,6 +673,7 @@ mod tests {
                 cache_write: 0.0.into(),
                 total: pa_types::JsNumber::from(cost),
             },
+            billing: None,
         };
         // Binary-exact costs so the sum assertion compares exactly.
         let (first_cost, second_cost) = (0.25, 0.5);

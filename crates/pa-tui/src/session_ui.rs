@@ -367,6 +367,8 @@ pub(crate) struct SessionUi {
     rate_limit_reset: Option<usage::RateLimitReset>,
     /// Reset chips shown since the last `/usage` close (its adoption event carries the count).
     reset_chips_shown: u64,
+    /// When the title's plan quota window resets (its countdown's repaint deadline).
+    plan_quota_resets_at_ms: Option<i64>,
     /// The last `factory_activity` graph reply (the dock count's cache and
     /// the page open's mount, the `bash_activities` pattern): the
     /// always-on 2s poll keeps it current whether or not the page is

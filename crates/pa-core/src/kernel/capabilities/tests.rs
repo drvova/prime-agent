@@ -23,6 +23,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent provider admission",
     // The worker's background endpoint discovery (no kernel capability).
     "agent endpoint discovery",
+    // The session's recorded calls by billing mode (no kernel capability).
+    "agent billing modes",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {

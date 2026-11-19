@@ -268,6 +268,7 @@ impl GoogleStreamState {
                 cache_write: 0,
                 total_tokens: get("totalTokenCount"),
                 cost: UsageCost::default(),
+                billing: None,
             };
             calculate_cost(model, &mut output.usage, None);
         }

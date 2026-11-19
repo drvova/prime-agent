@@ -85,14 +85,16 @@ impl SessionUi {
         )
     }
 
-    /// Refresh the activity dock and the title's cost (the only writer
-    /// of `chrome.cost_usd`).
+    /// Refresh the activity dock and the title's spend (the only writer
+    /// of `chrome.cost_usd` and `chrome.billing`).
     pub(super) fn update_subagent_summary(&mut self, view: &mut AgentView) {
         let identity = self.session_identity();
         self.subagent_counts = crate::subagents::count_descendants(&self.roster, &identity);
         // The title's spend is the family rollup the agents view bills the
         // session's row.
-        view.chrome.cost_usd = crate::subagents::family_cost(&self.roster, &identity);
+        let family = crate::subagents::family_rollup(&self.roster, &identity);
+        view.chrome.cost_usd = family.map(|rollup| rollup.cost);
+        view.chrome.billing = family.map(|rollup| rollup.billing);
         let dock = self.activity_dock_state();
         // A focused selection must stay on a rendered group: only the goal group can leave the dock
         // (its goal ended), and the selection steps back to the group that is now last.

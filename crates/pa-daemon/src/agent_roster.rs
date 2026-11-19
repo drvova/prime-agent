@@ -685,6 +685,7 @@ mod tests {
                 input_tokens: 1_000,
                 output_tokens: 100,
                 cost: 0.30,
+                billing: None,
             },
         )]);
         let newer = HashMap::from([(
@@ -693,6 +694,7 @@ mod tests {
                 input_tokens: 2_000,
                 output_tokens: 200,
                 cost: 0.55,
+                billing: None,
             },
         )]);
         // Two folds read the ledger; the newer one applies first (the

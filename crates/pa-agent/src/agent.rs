@@ -874,6 +874,11 @@ impl Agent {
         }
     }
 
+    /// The session model (a cheap read beside [`Agent::state`], which clones the transcript).
+    pub async fn model(&self) -> Model {
+        self.inner.shared.lock().await.state.model.clone()
+    }
+
     pub async fn set_system_prompt(&self, system_prompt: impl Into<String>) {
         self.inner.shared.lock().await.state.system_prompt = system_prompt.into();
     }

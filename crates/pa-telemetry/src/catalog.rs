@@ -1725,6 +1725,23 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// How a session's recorded assistant calls are paid for (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) when the session recorded a
+/// classified call: the calls per billing mode. Counts only: never a cost, a provider, a model,
+/// or a credential.
+const AGENT_BILLING_MODES: EventRule = EventRule {
+    name: "agent billing modes",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("billing_pay_as_you_go_count", required(count())),
+        ("billing_plan_count", required(count())),
+        ("billing_flat_rate_count", required(count())),
+        ("billing_free_count", required(count())),
+        ("billing_unknown_count", required(count())),
+    ],
+};
+
 /// Agent-to-agent messaging (`agent_message.send`) for one session (v2), emitted at session end
 /// beside `agent session ended` (which sits near the backend's 128-key cap) only when the sender's
 /// per-session rate bucket refused a delivery: the refused deliveries (a broadcast counts each
@@ -1884,6 +1901,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,

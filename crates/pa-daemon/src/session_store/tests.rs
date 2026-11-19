@@ -715,7 +715,8 @@ fn scan_folds_the_saved_row_usage_summary() {
         Some(crate::session_usage::SessionUsageSummary {
             input_tokens: 170,
             output_tokens: 15,
-            cost: 0.625
+            cost: 0.625,
+            billing: None,
         })
     );
     let _ = fs::remove_dir_all(&dir);
@@ -745,7 +746,8 @@ fn scan_keeps_messages_with_partial_usage_objects() {
         Some(crate::session_usage::SessionUsageSummary {
             input_tokens: 5,
             output_tokens: 1,
-            cost: 0.0
+            cost: 0.0,
+            billing: None,
         })
     );
     let _ = fs::remove_dir_all(&dir);
@@ -906,6 +908,7 @@ fn durable_compaction_row_serializes_in_the_ts_key_order() {
             cache_write: 0,
             total_tokens: 110,
             cost: pa_types::ai::UsageCost::default(),
+            billing: None,
         }),
         harness_digest: Some("# Continual Harness State".to_string()),
         harness_state_fingerprint: None,
@@ -1087,6 +1090,7 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
         input_tokens: 100,
         output_tokens: 10,
         cost: 8.0,
+        billing: None,
     });
     assert_eq!(read_session_info(&path).unwrap().usage, expected);
     let prefix_len = fs::metadata(&path).unwrap().len();

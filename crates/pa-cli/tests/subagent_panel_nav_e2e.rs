@@ -589,6 +589,7 @@ async fn the_title_bills_a_deleted_subagents_spend() {
                 input_tokens: 50,
                 output_tokens: 5,
                 cost: 0.3,
+                billing: None,
             },
             None,
         )

@@ -806,6 +806,7 @@ fn usage_summary(cost: f64) -> crate::session_usage::SessionUsageSummary {
         input_tokens: 1_000,
         output_tokens: 100,
         cost,
+        billing: None,
     }
 }
 
@@ -1259,6 +1260,7 @@ fn bucket_bills_tombstoned_children_without_catalog_rows() {
                 input_tokens: 2_000,
                 output_tokens: 200,
                 cost: 0.55,
+                billing: None,
             },
         )]),
         "the captured snapshot 0.30 + the legacy transcript's own fold 0.25; only the parent bills"
@@ -1438,6 +1440,7 @@ fn the_bucket_updates_after_an_append_on_the_same_ledger() {
                 input_tokens: 2_000,
                 output_tokens: 200,
                 cost: 0.75,
+                billing: None,
             }
         )]),
         "the appended delete bills on the same instance: {bucket:?}"

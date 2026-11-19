@@ -116,9 +116,15 @@ pub struct ChromeState {
     pub extra_metadata: Vec<(String, String)>,
     /// Top-bar chat name (session name or the cwd basename).
     pub chat_name: String,
-    /// Session spend (USD) beside the chat name: the family rollup (the
-    /// session's spend plus every subagent descendant's).
+    /// Session spend (USD): the family rollup (the session's spend plus every subagent
+    /// descendant's), a plan's calls at their API-equivalent value.
     pub cost_usd: Option<f64>,
+    /// The family's calls by billing mode: the label beside the chat name (`$1.23`, the plan's
+    /// quota, `$—` when no price is known, nothing for free calls). `None` shows `cost_usd`.
+    pub billing: Option<pa_types::billing::BillingSplit>,
+    /// The tightest cached quota window of the current provider's plan (`5h 42% · 1h 20m`):
+    /// a plan-only family shows it instead of `plan`.
+    pub plan_quota: Option<String>,
     /// Context usage: tokens, window, percent (tray right label).
     pub context: Option<ContextUsage>,
     /// The auto-compaction threshold (percent of the window) the gauge marks with a `┃` tick;
@@ -528,9 +534,39 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
     let start = (width.saturating_sub(name_width)) / 2;
     line.push(Span::styled(" ".repeat(start), Style::default()));
     line.push(Span::styled(name, text));
-    if let Some(cost) = state.cost_usd.filter(|cost| *cost >= 0.0) {
+    let spend = match &state.billing {
+        // A plan's calls are never billed: they show the plan (its quota when cached), not a `$`.
+        Some(billing) => {
+            let billed = billing.pay_as_you_go.calls + billing.unclassified.calls > 0;
+            let plan = billing.plan.calls > 0;
+            let only_plan = plan && !billed && billing.unknown.calls + billing.flat_rate.calls == 0;
+            let mut parts = Vec::new();
+            if billed {
+                let cost = billing.pay_as_you_go.cost + billing.unclassified.cost;
+                parts.push(format!("${cost:.2}"));
+            }
+            if billing.unknown.calls > 0 {
+                parts.push("$\u{2014}".to_string());
+            }
+            if plan {
+                parts.push(match (&state.plan_quota, only_plan) {
+                    (Some(quota), true) => quota.clone(),
+                    (Some(_) | None, _) => "plan".to_string(),
+                });
+            }
+            if billing.flat_rate.calls > 0 {
+                parts.push("flat rate".to_string());
+            }
+            (!parts.is_empty()).then(|| parts.join(" + "))
+        }
+        None => state
+            .cost_usd
+            .filter(|cost| *cost >= 0.0)
+            .map(|cost| format!("${cost:.2}")),
+    };
+    if let Some(spend) = spend {
         line.push(Span::styled("  ".to_string(), Style::default()));
-        line.push(Span::styled(format!("${cost:.2}"), dim));
+        line.push(Span::styled(spend, dim));
     }
     line
 }
