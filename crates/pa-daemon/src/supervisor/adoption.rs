@@ -103,8 +103,9 @@ impl Supervisor {
     }
 
     /// Adopt or relaunch persisted workers, concurrently: one dead worker's relaunch must
-    /// not delay adopting live sessions; the fan-out is capped at
-    /// [`crate::recovery_pacing::ADOPTION_CONCURRENCY`] to avoid a relaunch storm.
+    /// not delay adopting live sessions. Each adoption is a session boot at background class
+    /// on the daemon-wide boot budget, so a relaunch storm paces with the host's load and
+    /// never jumps ahead of a session the user is starting.
     pub(super) async fn adopt_persisted_workers(self: &Arc<Self>, boot: AdoptionBoot) {
         let descriptors = load_descriptors(&self.descriptor_dir, &self.options.socket_path);
         let adopted_live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -112,9 +113,11 @@ impl Supervisor {
         let skipped_idle = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let stopped = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let boots = self.admission.boot_source();
         let jobs: Vec<_> = descriptors
             .into_iter()
             .map(|(path, descriptor)| {
+                let boots = Arc::clone(&boots);
                 let supervisor = Arc::clone(self);
                 let boot = boot.clone();
                 let adopted_live = Arc::clone(&adopted_live);
@@ -122,10 +125,21 @@ impl Supervisor {
                 let skipped_idle = Arc::clone(&skipped_idle);
                 let stopped = Arc::clone(&stopped);
                 let failed = Arc::clone(&failed);
-                move || async move {
-                    let outcome = supervisor
-                        .adopt_persisted_worker(path, descriptor, boot)
-                        .await;
+                async move {
+                    let outcome = pa_core::kernel::boot_admission::admitted_boot(
+                        boots,
+                        pa_ai::admission::Priority::Background,
+                        async move {
+                            anyhow::Ok(
+                                supervisor
+                                    .adopt_persisted_worker(path, descriptor, boot)
+                                    .await,
+                            )
+                        },
+                    )
+                    .await
+                    .result
+                    .unwrap_or(AdoptionOutcome::Failed);
                     let counter = match outcome {
                         AdoptionOutcome::AdoptedLive => adopted_live,
                         AdoptionOutcome::Revived => revived,
@@ -137,8 +151,9 @@ impl Supervisor {
                 }
             })
             .collect();
-        crate::recovery_pacing::run_bounded(jobs, crate::recovery_pacing::ADOPTION_CONCURRENCY)
-            .await;
+        // Every job waits on the boot budget, never on a task slot: a waiting adoption holds
+        // nothing.
+        futures::future::join_all(jobs.into_iter().map(tokio::spawn)).await;
         let adopted_live = adopted_live.load(std::sync::atomic::Ordering::Relaxed);
         let revived = revived.load(std::sync::atomic::Ordering::Relaxed);
         let skipped_idle = skipped_idle.load(std::sync::atomic::Ordering::Relaxed);

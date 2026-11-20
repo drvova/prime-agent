@@ -351,6 +351,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for SubscriptionAuth {
                 flow: pa_tui::provider_auth::AuthFlow::TerminalFlow,
                 configured: false,
                 available: true,
+                credential: pa_tui::provider_auth::RowCredential::Default,
             }]
         })
     }
@@ -363,6 +364,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for SubscriptionAuth {
         &self,
         _provider: &pa_tui::provider_auth::ProviderRow,
         _api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
     }
@@ -371,6 +373,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for SubscriptionAuth {
         &self,
         _provider: &pa_tui::provider_auth::ProviderRow,
         _panel: pa_tui::auth_panel::AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         Box::pin(async move {
             pa_tui::provider_auth::ProviderAuthOutcome::Status("Connected to Anthropic".to_string())

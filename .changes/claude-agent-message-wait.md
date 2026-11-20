@@ -1,0 +1,1 @@
+- Agents can now wait for a family member's message with `agent_message.wait(sender=..., timeout_ms=...)`: it returns the message id and a short preview, times out, or answers `cycle` at once when the other agent is already waiting on the caller.
