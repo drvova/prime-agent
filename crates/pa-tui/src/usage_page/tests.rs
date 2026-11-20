@@ -135,6 +135,7 @@ fn quota_report() -> QuotaReport {
             ProviderQuota {
                 provider: "anthropic".into(),
                 plan: None,
+                account: None,
                 source: QuotaSource::Provider,
                 fetched_at_ms: NOW - 2 * MINUTE,
                 state: QuotaState::Windows {
@@ -159,6 +160,7 @@ fn quota_report() -> QuotaReport {
             ProviderQuota {
                 provider: "github-copilot".into(),
                 plan: Some("individual".into()),
+                account: None,
                 source: QuotaSource::Provider,
                 fetched_at_ms: NOW - 2 * MINUTE,
                 state: QuotaState::Failed {
@@ -591,6 +593,38 @@ fn a_loading_quota_half_shows_beside_an_observed_card() {
             String::new(),
             "  ● ChatGPT (Codex) · observed on last response".into(),
             "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
+        ]
+    );
+}
+
+/// A provider holding several credentials shows one card per credential, titled
+/// `Provider · label · plan`.
+#[test]
+fn each_credential_of_a_provider_gets_its_own_titled_card() {
+    let card = |account: &str| ProviderQuota {
+        provider: "github-copilot".into(),
+        plan: Some("individual".into()),
+        account: Some(account.into()),
+        source: QuotaSource::Provider,
+        fetched_at_ms: NOW - 2 * MINUTE,
+        state: QuotaState::Failed {
+            error: "the usage endpoint did not answer in time".into(),
+        },
+    };
+    let mut page = UsagePage::new(None, None);
+    page.apply_quotas(Ok(QuotaReport {
+        providers: vec![card("default"), card("work")],
+        pacing: Vec::new(),
+    }));
+    let titles: Vec<String> = render(&mut page, 80, 40)
+        .into_iter()
+        .filter(|line| line.contains("GitHub Copilot"))
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            "  ● GitHub Copilot · default · individual · from provider".to_string(),
+            "  ● GitHub Copilot · work · individual · from provider".to_string(),
         ]
     );
 }

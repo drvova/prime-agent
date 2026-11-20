@@ -1,0 +1,52 @@
+FAIL ./math.test.js
+  add
+    ✕ adds two numbers (4 ms)
+    ✕ adds objects (4 ms)
+    ✓ zero is fine
+    ○ skipped later
+
+  ● add › adds two numbers
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 4
+    Received: 5
+
+    [0m [90m 3 |[39m describe([32m"add"[39m[33m,[39m () [33m=>[39m {
+     [90m 4 |[39m   test([32m"adds two numbers"[39m[33m,[39m () [33m=>[39m {
+    [31m[1m>[22m[39m[90m 5 |[39m     expect(add([35m2[39m[33m,[39m [35m2[39m))[33m.[39mtoBe([35m4[39m)[33m;[39m
+     [90m   |[39m                       [31m[1m^[22m[39m
+     [90m 6 |[39m   })[33m;[39m
+     [90m 7 |[39m
+     [90m 8 |[39m   test([32m"adds objects"[39m[33m,[39m () [33m=>[39m {[0m
+
+      at Object.toBe (math.test.js:5:23)
+
+  ● add › adds objects
+
+    expect(received).toEqual(expected) // deep equality
+
+    - Expected  - 1
+    + Received  + 1
+
+      Object {
+        "a": 1,
+    -   "b": 0,
+    +   "b": 1,
+      }
+
+    [0m [90m  7 |[39m
+     [90m  8 |[39m   test([32m"adds objects"[39m[33m,[39m () [33m=>[39m {
+    [31m[1m>[22m[39m[90m  9 |[39m     expect({ a[33m:[39m [35m1[39m[33m,[39m b[33m:[39m add([35m0[39m[33m,[39m [35m0[39m) })[33m.[39mtoEqual({ a[33m:[39m [35m1[39m[33m,[39m b[33m:[39m [35m0[39m })[33m;[39m
+     [90m    |[39m                                    [31m[1m^[22m[39m
+     [90m 10 |[39m   })[33m;[39m
+     [90m 11 |[39m
+     [90m 12 |[39m   test([32m"zero is fine"[39m[33m,[39m () [33m=>[39m {[0m
+
+      at Object.toEqual (math.test.js:9:36)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 1 skipped, 1 passed, 4 total
+Snapshots:   0 total
+Time:        0.333 s
+Ran all test suites matching /math.test.js/i.

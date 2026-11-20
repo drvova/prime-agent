@@ -33,6 +33,7 @@ pub fn command_plane(command_type: &str) -> DaemonCommandPlane {
         | "abort_and_send_queued"
         | "start_side_question"
         | "abort_side_question"
+        | "record_better_outcome"
         | "answer_question"
         | "execute_bash"
         | "abort_bash"
@@ -125,6 +126,10 @@ const READ_ONLY_DAEMON_COMMANDS: &[&str] = &[
     "reattach",
     "roster_subscribe",
     "roster_unsubscribe",
+    // The traffic feed is display-only: no subscription or report mutates daemon state.
+    "agent_traffic_subscribe",
+    "agent_traffic_unsubscribe",
+    "worker_agent_traffic",
     "agent_messages_status",
     "wait_for_idle",
     "list_kernel_bash",
