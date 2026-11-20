@@ -60,6 +60,9 @@ pub struct ModelPickerOptions {
     pub current: Option<CurrentModel>,
     /// Providers with configured auth (`configuredProviders`).
     pub configured_providers: HashSet<String>,
+    /// The account each multi-credential provider serves this session with (`accounts`: the
+    /// pinned credential's label, else `default`); providers with one credential are absent.
+    pub accounts: std::collections::BTreeMap<String, String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     pub recent_models: Vec<String>,
     /// The session's scoped models as `provider/id` keys: the picker opens on them when non-empty,
@@ -100,6 +103,7 @@ pub struct ModelPicker {
     all_models: Vec<Model>,
     current: Option<CurrentModel>,
     configured_providers: HashSet<String>,
+    accounts: std::collections::BTreeMap<String, String>,
     recent_rank: HashMap<String, usize>,
     /// The effort a fresh selection starts from; `None` resolves to "off" per model.
     initial_thinking_level: Option<ModelThinkingLevel>,
@@ -137,6 +141,7 @@ impl ModelPicker {
             all_models: Vec::new(),
             current: options.current,
             configured_providers: options.configured_providers,
+            accounts: options.accounts,
             recent_rank: options
                 .recent_models
                 .iter()
@@ -184,9 +189,11 @@ impl ModelPicker {
         current: Option<CurrentModel>,
         models: Vec<Model>,
         configured_providers: HashSet<String>,
+        accounts: std::collections::BTreeMap<String, String>,
     ) {
         self.current = current;
         self.configured_providers = configured_providers;
+        self.accounts = accounts;
         let selected_key = self
             .selected_model()
             .map(|model| Self::model_key_provider(&model.provider, &model.id));
@@ -791,7 +798,8 @@ impl ModelPicker {
         empty
     }
 
-    /// The trailing segments of one row: `current`, `require sign in`, then the provider.
+    /// The trailing segments of one row: `current`, `require sign in`, the session's account for a
+    /// provider holding several credentials, then the provider.
     pub(crate) fn trailing_segments(&self, model: &Model) -> Vec<String> {
         let mut segments: Vec<String> = Vec::new();
         if self.is_current(model) {
@@ -799,6 +807,9 @@ impl ModelPicker {
         }
         if !self.is_configured(model) {
             segments.push("require sign in".to_string());
+        }
+        if let Some(account) = self.accounts.get(&model.provider) {
+            segments.push(format!("account: {account}"));
         }
         segments.push(provider_label(model).to_string());
         segments

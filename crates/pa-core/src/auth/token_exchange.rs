@@ -339,9 +339,10 @@ impl AuthResolver for TokenExchange {
         // The flight key: provider and account (a unit separator keeps the
         // pair unambiguous); the cross-process lock file hashes it.
         let flight_key = format!(
-            "{}\u{1f}{}",
+            "{}\u{1f}{}{}",
             ctx.provider,
-            stored.account_id.as_deref().unwrap_or_default()
+            stored.account_id.as_deref().unwrap_or_default(),
+            ctx.credential.flight_suffix()
         );
         let _flight = exchange_flight(&flight_key).lock_owned().await;
         let storage = Arc::clone(&self.storage);

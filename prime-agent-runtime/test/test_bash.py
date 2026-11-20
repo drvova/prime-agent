@@ -1938,3 +1938,30 @@ class PersistentBashTest(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CommandFailureDisplayTest(unittest.IsolatedAsyncioTestCase):
+    async def test_a_failed_await_ships_its_whole_output_for_enrichment(self):
+        # The host's error enrichment reads failed commands from this display:
+        # one payload per await that returned a non-zero exit, none for a success.
+        repl_module = importlib.import_module("rlm.repl")
+        with mock.patch.object(repl_module, "emit") as emit:
+            await bash("echo fine")
+            await bash("printf 'src/lib.rs:6:22: broken\\n'; exit 3")
+        failures = [
+            call.args[0]
+            for call in emit.call_args_list
+            if "application/vnd.prime-agent.command-failure+json" in call.args[0]
+        ]
+        self.assertEqual(
+            failures,
+            [
+                {
+                    "application/vnd.prime-agent.command-failure+json": {
+                        "command": "printf 'src/lib.rs:6:22: broken\\n'; exit 3",
+                        "exitCode": 3,
+                        "output": "src/lib.rs:6:22: broken\n",
+                    }
+                }
+            ],
+        )

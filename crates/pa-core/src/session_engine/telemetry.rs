@@ -47,6 +47,11 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
+mod error_enrichment;
+mod readonly_cache;
+mod test_summaries;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -396,6 +401,8 @@ struct CounterValues {
     interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+    /// The `/better` counters, reported by `agent better prompt`.
+    better: BetterCounts,
     /// The kernel `web.read` counters, reported by `agent web reads`.
     web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
@@ -412,6 +419,8 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// Spills and `ctx.*` reads, reported by `agent context paging`.
+    context_paging: ContextPagingCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -432,6 +441,15 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Failed cells and commands given their error locations' source lines,
+    /// reported by `agent error enrichment`.
+    error_enrichment: error_enrichment::ErrorEnrichmentCounts,
+    /// Read-only command cache lookups, reported by `agent readonly cache`.
+    readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
+    edit_checks: edit_checks::EditCheckCounts,
+    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
+    test_summaries: test_summaries::TestSummaryCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -498,6 +516,34 @@ struct FsEditCounts {
     rejected: u64,
     stale_anchors: u64,
     edit_failed: u64,
+}
+
+/// `agent context paging`: spills with their bytes, refusals, evictions, and `ctx.*` reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ContextPagingCounts {
+    spills: u64,
+    spill_bytes: u64,
+    not_stored: u64,
+    evicted: u64,
+    page: u64,
+    grep: u64,
+    tail: u64,
+    info: u64,
+}
+
+impl ContextPagingCounts {
+    /// The spilled bytes as a size bucket (never the size itself).
+    fn bytes_bucket(&self) -> &'static str {
+        const MB: u64 = 1024 * 1024;
+        match self.spill_bytes {
+            0 => "none",
+            bytes if bytes < MB => "lt_1mb",
+            bytes if bytes < 16 * MB => "lt_16mb",
+            bytes if bytes < 64 * MB => "lt_64mb",
+            bytes if bytes < 256 * MB => "lt_256mb",
+            _ => "ge_256mb",
+        }
+    }
 }
 
 /// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
@@ -575,6 +621,42 @@ pub enum GoalTelemetryFact {
     TokenBudgetStop,
     /// The dollar cap stopped the goal.
     CostBudgetStop,
+}
+
+/// One `/better` fact, counted into `agent better prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetterTelemetryFact {
+    /// A run started.
+    Run,
+    Completed,
+    Cancelled,
+    Failed,
+    /// The user sent an inserted rewrite as is.
+    SentAsIs,
+    /// The user sent an inserted rewrite after editing it.
+    Edited,
+    /// The user never sent an inserted rewrite (or replaced most of it).
+    Discarded,
+    /// A brief-mode run started (`better(mode="brief")`, `rlm.spawn(better=True)`).
+    BriefRun,
+    /// A brief-mode run found nothing to fix.
+    BriefUnchanged,
+    /// A verification found unresolved references and ran a refine pass.
+    VerificationPass,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BetterCounts {
+    runs: u64,
+    completed: u64,
+    cancelled: u64,
+    failed: u64,
+    sent_as_is: u64,
+    edited: u64,
+    discarded: u64,
+    brief_runs: u64,
+    brief_unchanged: u64,
+    verification_passes: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -679,6 +761,26 @@ impl SessionCounters {
                 GoalTelemetryFact::JudgeNotMet => &mut counts.judge_not_met,
                 GoalTelemetryFact::TokenBudgetStop => &mut counts.token_budget_stops,
                 GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
+            };
+            *counter += 1;
+        });
+    }
+
+    /// One `/better` fact (counts only: never a prompt, a rewrite, or a path).
+    pub fn note_better(&self, fact: BetterTelemetryFact) {
+        self.with(|values| {
+            let counts = &mut values.better;
+            let counter = match fact {
+                BetterTelemetryFact::Run => &mut counts.runs,
+                BetterTelemetryFact::Completed => &mut counts.completed,
+                BetterTelemetryFact::Cancelled => &mut counts.cancelled,
+                BetterTelemetryFact::Failed => &mut counts.failed,
+                BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
+                BetterTelemetryFact::Edited => &mut counts.edited,
+                BetterTelemetryFact::Discarded => &mut counts.discarded,
+                BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
+                BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
+                BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
             };
             *counter += 1;
         });
@@ -832,6 +934,36 @@ impl SessionCounters {
                 CellWindowSource::ModelTimeout => &mut counts.window_timeout,
                 CellWindowSource::Setting => &mut counts.window_setting,
                 CellWindowSource::ColdDefault => &mut counts.window_default,
+            } += 1;
+        });
+    }
+
+    /// One spill-store event of this session (counts and bytes: never a handle or text).
+    pub(crate) fn note_spill(&self, fact: crate::kernel::spill::SpillFact) {
+        use crate::kernel::spill::SpillFact;
+        self.with(|values| {
+            let counts = &mut values.context_paging;
+            match fact {
+                SpillFact::Queued { bytes } => {
+                    counts.spills += 1;
+                    counts.spill_bytes += bytes;
+                }
+                SpillFact::NotStored => counts.not_stored += 1,
+                SpillFact::Evicted => counts.evicted += 1,
+            }
+        });
+    }
+
+    /// One kernel `ctx.*` read (a count: never a handle or a pattern).
+    pub(crate) fn note_ctx_read(&self, read: crate::kernel::spill::host::CtxRead) {
+        use crate::kernel::spill::host::CtxRead;
+        self.with(|values| {
+            let counts = &mut values.context_paging;
+            *match read {
+                CtxRead::Page => &mut counts.page,
+                CtxRead::Grep => &mut counts.grep,
+                CtxRead::Tail => &mut counts.tail,
+                CtxRead::Info => &mut counts.info,
             } += 1;
         });
     }
@@ -1445,6 +1577,27 @@ impl SessionTelemetry {
             self.client
                 .track("agent goal verification", goal_properties);
         }
+        // A session that never ran `/better` sends no better event.
+        let mut better = BetterCounts::default();
+        self.counters.with(|values| better = values.better);
+        if better != BetterCounts::default() {
+            let mut better_properties = self.session_properties();
+            for (key, value) in [
+                ("better_run_count", better.runs),
+                ("better_completed_count", better.completed),
+                ("better_cancelled_count", better.cancelled),
+                ("better_failed_count", better.failed),
+                ("better_sent_as_is_count", better.sent_as_is),
+                ("better_edited_count", better.edited),
+                ("better_discarded_count", better.discarded),
+                ("better_brief_run_count", better.brief_runs),
+                ("better_brief_unchanged_count", better.brief_unchanged),
+                ("better_verification_pass_count", better.verification_passes),
+            ] {
+                better_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent better prompt", better_properties);
+        }
         // A session whose requests never chose a Responses transport sends no transport event.
         if let Some(counts) = self
             .agent_session_id
@@ -1701,6 +1854,25 @@ impl SessionTelemetry {
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
         }
+        // A session that neither spilled nor read paged-out output sends no paging event.
+        let mut paging = ContextPagingCounts::default();
+        self.counters.with(|values| paging = values.context_paging);
+        if paging != ContextPagingCounts::default() {
+            let mut paging_properties = self.session_properties();
+            for (key, value) in [
+                ("spill_count", paging.spills),
+                ("spill_not_stored_count", paging.not_stored),
+                ("spill_evicted_count", paging.evicted),
+                ("ctx_page_count", paging.page),
+                ("ctx_grep_count", paging.grep),
+                ("ctx_tail_count", paging.tail),
+                ("ctx_info_count", paging.info),
+            ] {
+                paging_properties.set(key, Value::from(value));
+            }
+            paging_properties.set("spill_bytes_bucket", Value::from(paging.bytes_bucket()));
+            self.client.track("agent context paging", paging_properties);
+        }
         // A session that recorded no classified call sends no billing event.
         let mut billing = pa_types::billing::BillingSplit::default();
         self.counters.with(|values| billing = values.billing_modes);
@@ -1838,6 +2010,10 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_error_enrichment();
+        self.track_readonly_cache();
+        self.track_edit_checks();
+        self.track_test_summaries();
         self.client.flush().await
     }
 
