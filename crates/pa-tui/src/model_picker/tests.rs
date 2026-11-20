@@ -619,9 +619,10 @@ fn a_multi_credential_provider_names_its_account() {
         .unwrap_or_default();
     assert_eq!(
         (
-            grouped
-                .iter()
-                .any(|row| row == "  anthropic \u{b7} account: work"),
+            grouped.iter().any(
+                |row| row.trim_end_matches(['\u{2588}', '\u{2502}']).trim_end()
+                    == "  anthropic \u{b7} account: work"
+            ),
             haiku.ends_with("anthropic \u{b7} work"),
         ),
         (true, true),
