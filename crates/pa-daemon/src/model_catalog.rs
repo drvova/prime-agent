@@ -37,7 +37,11 @@ impl Worker {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        let served = catalog_payload(&registry, &available);
+        let served = catalog_payload(
+            &registry,
+            &available,
+            &pa_core::auth::AuthStorage::create(&agent_dir).get_all(),
+        );
         // An observed credential-scope change forces the refresh; the
         // observation consumes the scope, so one change forces exactly once.
         let credentials = pa_core::models::prime_credentials_for_dir(&agent_dir);
@@ -74,7 +78,11 @@ impl Worker {
                 let available = registry
                     .refresh_available_models_with_trigger(trigger)
                     .await;
-                let refreshed = catalog_payload(&registry, &available);
+                let refreshed = catalog_payload(
+                    &registry,
+                    &available,
+                    &pa_core::auth::AuthStorage::create(&agent_dir).get_all(),
+                );
                 if refreshed != baseline {
                     events.send(OutboundFrame::model_catalog_changed());
                 }
@@ -97,10 +105,13 @@ impl Worker {
 }
 
 /// The wire payload of one catalog snapshot: the full catalog minus
-/// unauthorized private Prime Inference models, plus sorted providers.
+/// unauthorized private Prime Inference models, plus sorted providers and
+/// each listed model's billing mode under the stored credentials
+/// (`billing`, keyed `provider/id`: the picker's price column and filter).
 fn catalog_payload(
     registry: &pa_core::models::ModelRegistry,
     available: &[pa_types::ai::Model],
+    credentials: &pa_core::auth::AuthStorageData,
 ) -> Value {
     let mut providers: Vec<String> = available
         .iter()
@@ -123,6 +134,16 @@ fn catalog_payload(
         })
         .collect();
     entries.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+    let billing: serde_json::Map<String, Value> = entries
+        .iter()
+        .map(|model| {
+            let mode = pa_core::session_engine::billing::catalog_billing_mode(credentials, model);
+            (
+                format!("{}/{}", model.provider, model.id),
+                serde_json::to_value(mode).unwrap_or(Value::Null),
+            )
+        })
+        .collect();
     let models: Vec<Value> = entries
         .into_iter()
         .map(|model| serde_json::to_value(model).unwrap_or(Value::Null))
@@ -130,6 +151,7 @@ fn catalog_payload(
     json!({
         "models": models,
         "configuredProviders": providers,
+        "billing": billing,
     })
 }
 

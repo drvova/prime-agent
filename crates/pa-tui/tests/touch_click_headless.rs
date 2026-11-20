@@ -606,7 +606,8 @@ fn a_click_selects_a_model_picker_row() {
             release,
             // Hold until the frame shows the marker on the clicked row.
             HeadlessStep::WaitRender {
-                needle: "\u{203a} Mock Two".to_string(),
+                // The marker, then the row's two-cell current-model mark.
+                needle: "\u{203a}   Mock Two".to_string(),
                 timeout_ms: 5_000,
             },
         ],

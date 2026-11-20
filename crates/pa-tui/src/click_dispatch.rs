@@ -64,7 +64,7 @@ impl SessionUi {
             ClickAction::SelectModelRow(position) => {
                 if let Some(picker) = view.model_picker.as_mut() {
                     self.track_click("picker");
-                    picker.select_filtered(position);
+                    picker.select_display_row(position);
                     self.dirty = true;
                 }
             }

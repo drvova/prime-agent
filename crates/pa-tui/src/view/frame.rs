@@ -2,9 +2,7 @@
 //! window, dock at the bottom), the inline exit layout, the hardware-
 //! cursor query, and the compose free helpers.
 
-use super::click::{
-    self, PickerClickSurface, PickerKind, CHOICE_PICKER_CHROME_ROWS, MODEL_PICKER_CHROME_ROWS,
-};
+use super::click::{self, PickerClickSurface, PickerKind, CHOICE_PICKER_CHROME_ROWS};
 use super::AgentView;
 use super::FULLSCREEN_MIN_TRANSCRIPT_ROWS;
 use crate::chrome::{render_prompt_context, render_top_bar};
@@ -93,8 +91,8 @@ impl AgentView {
             // covers the filtered window the render drew.
             self.click.record_picker(PickerClickSurface {
                 dock_row: pane_row,
-                chrome_rows: MODEL_PICKER_CHROME_ROWS,
-                items: picker.filtered_window(),
+                chrome_rows: picker.rows_above_list(),
+                items: picker.display_window(),
                 kind: PickerKind::Model,
             });
             Some(dock)

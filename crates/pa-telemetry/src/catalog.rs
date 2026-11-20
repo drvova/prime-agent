@@ -1216,6 +1216,28 @@ const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
     ],
 };
 
+/// One `/model` picker run ended (v2): whether it switched models, the filter-chip and sort key
+/// presses, whether a chip was active at the close, and the closing sort. Standalone because
+/// `tui exit` sits at the backend's 128-key cap. Counts and enums only: never a model, a
+/// provider, or the search text.
+const TUI_MODEL_PICKER_CLOSED: EventRule = EventRule {
+    name: "tui model picker closed",
+    since: 2,
+    properties: &[
+        (
+            "outcome",
+            required(enum_rule(&["switched", "closed"], "closed")),
+        ),
+        ("chip_change_count", required(count())),
+        ("sort_change_count", required(count())),
+        ("filters_active", required(boolean())),
+        (
+            "sort",
+            required(enum_rule(&["recent", "name", "price", "context"], "recent")),
+        ),
+    ],
+};
+
 /// `tui exit` (v1, enriched): one per interactive session run (each agents
 /// view handoff ends one), carrying that run's adoption counters (the TUI
 /// interactions, the client-side feature outcomes, the input-stage counts
@@ -1986,6 +2008,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
         &TUI_CONTEXT_WINDOW_CLOSED,
+        &TUI_MODEL_PICKER_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
         &AGENT_TODOS_AND_QUESTIONS,

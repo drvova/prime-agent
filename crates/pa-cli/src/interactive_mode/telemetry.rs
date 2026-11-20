@@ -532,6 +532,36 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn model_picker_closed(
+        &self,
+        summary: pa_tui::model_picker::ModelPickerSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui usage page closed`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the close path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("outcome", serde_json::Value::from(summary.outcome.as_str()));
+            properties.set(
+                "chip_change_count",
+                serde_json::Value::from(summary.chip_change_count),
+            );
+            properties.set(
+                "sort_change_count",
+                serde_json::Value::from(summary.sort_change_count),
+            );
+            properties.set(
+                "filters_active",
+                serde_json::Value::from(summary.filters_active),
+            );
+            properties.set("sort", serde_json::Value::from(summary.sort));
+            client.track("tui model picker closed", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn command_used(&self, command: &'static str) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         // `agent command used` (TS `captureAgentCommandUsed`): every
         // submitted builtin reports from the client, session commands

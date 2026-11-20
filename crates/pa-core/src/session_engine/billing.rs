@@ -53,32 +53,10 @@ impl BillingStamp {
         let model = serving
             .iter()
             .find(|model| model.provider == message.provider && model.id == message.model)?;
-        // The stored sign-in wins over an environment key, as in request auth.
-        let key_shape = |key: &str| {
-            if key.starts_with("sk-ant-oat") {
-                KeyShape::AnthropicSubscriptionToken
-            } else {
-                KeyShape::Metered
-            }
-        };
-        let credential = match crate::auth::AuthStorage::create(agent_dir)
-            .get_all()
-            .credential(&model.provider)
-        {
-            Some(crate::auth::AuthCredential::Oauth { .. }) => Credential::OAuth,
-            Some(crate::auth::AuthCredential::TokenExchange { .. }) => Credential::TokenExchange,
-            Some(crate::auth::AuthCredential::ApiKey { key, .. }) => Credential::ApiKey {
-                shape: key_shape(&key),
-            },
-            Some(crate::auth::AuthCredential::McpStaticToken { .. }) | None => {
-                match pa_ai::env_api_keys::get_env_api_key(&model.provider) {
-                    Some(key) => Credential::ApiKey {
-                        shape: key_shape(&key),
-                    },
-                    None => Credential::None,
-                }
-            }
-        };
+        let credential = credential_kind(
+            &crate::auth::AuthStorage::create(agent_dir).get_all(),
+            &model.provider,
+        );
         let catalog_cost = pa_types::ai::ModelCost {
             input: model.cost.input.into(),
             output: model.cost.output.into(),
@@ -93,6 +71,50 @@ impl BillingStamp {
             recorded_cost: message.usage.cost.total.as_f64(),
         }))
     }
+}
+
+/// The kind of `provider`'s credential as request auth resolves it: the stored sign-in wins over
+/// an environment key. Only the kind leaves here, never the secret.
+fn credential_kind(credentials: &crate::auth::AuthStorageData, provider: &str) -> Credential {
+    let key_shape = |key: &str| {
+        if key.starts_with("sk-ant-oat") {
+            KeyShape::AnthropicSubscriptionToken
+        } else {
+            KeyShape::Metered
+        }
+    };
+    match credentials.credential(provider) {
+        Some(crate::auth::AuthCredential::Oauth { .. }) => Credential::OAuth,
+        Some(crate::auth::AuthCredential::TokenExchange { .. }) => Credential::TokenExchange,
+        Some(crate::auth::AuthCredential::ApiKey { key, .. }) => Credential::ApiKey {
+            shape: key_shape(&key),
+        },
+        Some(crate::auth::AuthCredential::McpStaticToken { .. }) | None => {
+            match pa_ai::env_api_keys::get_env_api_key(provider) {
+                Some(key) => Credential::ApiKey {
+                    shape: key_shape(&key),
+                },
+                None => Credential::None,
+            }
+        }
+    }
+}
+
+/// How a call to a catalog `model` would be paid for before any call is made (the `/model`
+/// picker's price column and billing filter): the classifier over the provider's stored
+/// credential kind (`credentials`, the auth store's document) with no recorded cost yet.
+#[must_use]
+pub fn catalog_billing_mode(
+    credentials: &crate::auth::AuthStorageData,
+    model: &pa_types::ai::Model,
+) -> BillingMode {
+    pa_ai::billing::classify(&BillingInputs {
+        provider: &model.provider,
+        base_url: &model.base_url,
+        credential: credential_kind(credentials, &model.provider),
+        catalog_cost: &model.cost,
+        recorded_cost: 0.0,
+    })
 }
 
 /// The session's billing stamp bound to its agent loop: what a host that writes its own copy of
@@ -156,6 +178,47 @@ mod tests {
             timestamp: 1,
             rest: pa_types::JsonMap::new(),
         }
+    }
+
+    /// The picker's catalog mode reads the stored credential's kind: a Claude sign-in is the
+    /// plan, a pasted OpenRouter key is billed as the provider prices it, and a provider with no
+    /// credential and no rates has no known price.
+    #[test]
+    fn the_catalog_mode_follows_the_stored_credential_kind() {
+        let credentials: crate::auth::AuthStorageData = serde_json::from_value(serde_json::json!({
+            "anthropic": { "type": "oauth", "access": "a", "refresh": "r", "expires": 4_102_444_800_000_i64 },
+            "openrouter": { "type": "api_key", "key": "sk-or-test" },
+        }))
+        .unwrap();
+        let model = |provider: &str, base_url: &str| -> pa_types::ai::Model {
+            serde_json::from_value(serde_json::json!({
+                "id": "m", "name": "M", "api": "openai-completions", "provider": provider,
+                "baseUrl": base_url, "reasoning": false, "input": ["text"],
+                "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+                "contextWindow": 128_000, "maxTokens": 4096,
+            }))
+            .unwrap()
+        };
+        let modes: Vec<BillingMode> = [
+            model("anthropic", "https://api.anthropic.com"),
+            model("openrouter", "https://openrouter.ai/api/v1"),
+            model("unpriced-provider-e2e", "https://example.invalid/v1"),
+        ]
+        .iter()
+        .map(|model| catalog_billing_mode(&credentials, model))
+        .collect();
+        assert_eq!(
+            modes,
+            vec![
+                BillingMode::Plan {
+                    provider_quota: true
+                },
+                BillingMode::PayAsYouGo {
+                    source: pa_ai::billing::CostSource::ProviderReported
+                },
+                BillingMode::Unknown,
+            ]
+        );
     }
 
     /// A stamped mode survives the session file, and a row recorded without one (the legacy

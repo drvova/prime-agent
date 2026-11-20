@@ -1,7 +1,10 @@
-//! The `/model` inline selector: a bordered "Search models" field over `›`-marker rows with effort
-//! squares and a right-aligned `current · provider` trailing, a price-detail block, and the
-//! model/effort key hint. The daemon supplies the catalog (bundled fallback); this module owns
-//! ordering, filtering, effort state, and the inline geometry.
+//! The `/model` inline selector: a bordered "Search models" field and a filter-chip row over
+//! `›`-marker rows — the current-model mark, the name with its effort squares, and right-aligned
+//! columns (capability glyphs, context window, price or billing class, the provider's cached
+//! quota) — grouped by provider under the recent models, a price-detail block, and the key hint.
+//! The daemon supplies the catalog (bundled fallback) and each model's billing mode; the quota is
+//! the last cached `/usage` card. This module owns ordering, grouping, filtering, sorting, effort
+//! state, and the inline geometry; nothing here fetches.
 
 mod render;
 
@@ -11,6 +14,7 @@ use pa_types::ai::{
     clamp_thinking_level, get_supported_thinking_levels, Model, ModelServing, ModelThinkingLevel,
     PRIME_INFERENCE_PROVIDER_ID,
 };
+use pa_types::billing::BillingMode;
 
 use crate::keybindings::KeybindingsManager;
 use crate::search_input::SearchInput;
@@ -70,15 +74,60 @@ pub struct ModelPickerOptions {
     pub thinking_level: Option<ModelThinkingLevel>,
     /// The viewport height the list sizes itself against (already the `getRows` value).
     pub viewport_rows: usize,
+    /// Each model's billing mode (`provider/id` keys) from the daemon's catalog response; a model
+    /// without one is classed by its catalog rates.
+    pub billing: HashMap<String, BillingMode>,
+    /// The tightest cached quota window per provider id (`5h 42%`), from the last `/usage` cards.
+    pub quota_labels: HashMap<String, String>,
 }
 
+mod facts;
+mod filters;
+mod rows;
 mod scope;
 mod search;
 mod sort;
 
+use facts::{billing_class, BillingClass};
+use filters::{Chip, PickerFilters, SortKey};
+use rows::ListRow;
 use scope::ModelScope;
 use search::{score_model_search, SearchMatch};
 use sort::{natural_cmp, version_desc, version_key};
+
+/// How one picker run ended (the adoption event's `outcome`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelPickerOutcome {
+    /// Enter applied a model.
+    Switched,
+    /// The picker closed without applying.
+    Closed,
+}
+
+impl ModelPickerOutcome {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelPickerOutcome::Switched => "switched",
+            ModelPickerOutcome::Closed => "closed",
+        }
+    }
+}
+
+/// The adoption event's primitives (`tui model picker closed`): counts and enums only, never a
+/// model, a provider, or the search text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelPickerSummary {
+    pub outcome: ModelPickerOutcome,
+    /// Filter-chip key presses.
+    pub chip_change_count: u64,
+    /// Sort key presses.
+    pub sort_change_count: u64,
+    /// Whether any chip was active when the picker closed.
+    pub filters_active: bool,
+    /// The sort the picker closed on (`recent`, `name`, `price`, `context`).
+    pub sort: &'static str,
+}
 
 #[cfg(test)]
 mod tests;
@@ -128,6 +177,21 @@ pub struct ModelPicker {
     /// The version runs parsed from each `all_models` entry's id, indexed alike
     /// (the search sort's recency tier: the ids' versions stand in for release recency).
     version_keys: Vec<Vec<String>>,
+    /// Each model's billing mode from the catalog response (`provider/id` keys).
+    billing: HashMap<String, BillingMode>,
+    /// The tightest cached quota window per provider id.
+    quota_labels: HashMap<String, String>,
+    /// The filter chips.
+    filters: PickerFilters,
+    /// The browse order.
+    sort: SortKey,
+    /// The display rows: group headers and the filtered models (by filtered position).
+    rows: Vec<ListRow>,
+    /// The browse list's row count (the height a search holds).
+    browse_rows: usize,
+    /// Chip and sort key presses this run (the adoption event).
+    chip_changes: u64,
+    sort_changes: u64,
 }
 
 impl ModelPicker {
@@ -158,6 +222,14 @@ impl ModelPicker {
             scoped_positions: Vec::new(),
             scope: ModelScope::All,
             version_keys: Vec::new(),
+            billing: options.billing,
+            quota_labels: options.quota_labels,
+            filters: PickerFilters::default(),
+            sort: SortKey::Recent,
+            rows: Vec::new(),
+            browse_rows: 0,
+            chip_changes: 0,
+            sort_changes: 0,
         };
         picker.load_models(options.models);
         picker.resolve_scope_positions();
@@ -166,9 +238,7 @@ impl ModelPicker {
         }
         let query = picker.search.value().to_string();
         picker.filter_models(&query);
-        if matches!(picker.scope, ModelScope::Scoped) {
-            picker.select_current_or_top();
-        }
+        picker.select_current_or_top();
         picker
     }
 
@@ -184,19 +254,30 @@ impl ModelPicker {
         current: Option<CurrentModel>,
         models: Vec<Model>,
         configured_providers: HashSet<String>,
+        billing: HashMap<String, BillingMode>,
     ) {
         self.current = current;
         self.configured_providers = configured_providers;
-        let selected_key = self
-            .selected_model()
-            .map(|model| Self::model_key_provider(&model.provider, &model.id));
+        self.billing = billing;
+        let selected_key = self.selected_key();
         self.load_models(models);
         // The refresh re-resolves the scoped keys against it: an entry missing
         // from the loaded catalog is not listed, and one the refresh brings appears.
         self.resolve_scope_positions();
+        self.refilter_keeping(selected_key);
+    }
+
+    /// The selected model's `provider/id` key.
+    fn selected_key(&self) -> Option<String> {
+        self.selected_model()
+            .map(|model| Self::model_key_provider(&model.provider, &model.id))
+    }
+
+    /// Re-filter with the live query and keep the selection on `key` when it is still listed.
+    fn refilter_keeping(&mut self, key: Option<String>) {
         let query = self.search.value().to_string();
         self.filter_models(&query);
-        if let Some(key) = selected_key {
+        if let Some(key) = key {
             if let Some(index) = self
                 .filtered
                 .iter()
@@ -204,6 +285,18 @@ impl ModelPicker {
             {
                 self.selected = index;
             }
+        }
+    }
+
+    /// The adoption event's primitives for this run, ended with `outcome`.
+    #[must_use]
+    pub fn summary(&self, outcome: ModelPickerOutcome) -> ModelPickerSummary {
+        ModelPickerSummary {
+            outcome,
+            chip_change_count: self.chip_changes,
+            sort_change_count: self.sort_changes,
+            filters_active: self.filters != PickerFilters::default(),
+            sort: self.sort.label(),
         }
     }
 
@@ -232,6 +325,26 @@ impl ModelPicker {
                     scoped: self.scoped_side(),
                 };
             }
+            return ModelPickerAction::None;
+        }
+        for (binding, chip) in [
+            ("app.model.filterProvider", Chip::Provider),
+            ("app.model.filterBilling", Chip::Billing),
+            ("app.model.filterCapability", Chip::Capability),
+            ("app.model.filterContext", Chip::Context),
+        ] {
+            if kb.matches(key, binding) {
+                let providers = self.active_providers();
+                self.filters.cycle(chip, &providers);
+                self.chip_changes += 1;
+                self.refilter_keeping(self.selected_key());
+                return ModelPickerAction::None;
+            }
+        }
+        if kb.matches(key, "app.model.sort") {
+            self.sort = self.sort.next();
+            self.sort_changes += 1;
+            self.refilter_keeping(self.selected_key());
             return ModelPickerAction::None;
         }
         if self.search.value().is_empty() || self.navigated_into_list {
@@ -324,7 +437,7 @@ impl ModelPicker {
     /// 2026-09-24 spacing directive) rides the reserved rows: the list shrinks first on a
     /// height-limited terminal, never the frame's own head.
     pub(crate) fn list_layout(&self) -> usize {
-        self.list_layout_over(self.filtered.len())
+        self.list_layout_over(self.rows.len())
     }
 
     /// The list layout over `rows` candidate rows: the filtered list for the frame, the whole
@@ -335,9 +448,10 @@ impl ModelPicker {
             Some(self.viewport_rows),
             8,
             rows,
-            // The frame's fixed rows (the title, the search field, the Enter line, the footer,
-            // the trailing blank) plus the scope row when the session has scoped models.
-            6 + usize::from(self.has_scoped_models()) + detail_rows,
+            // The frame's fixed rows (the title, the search field, the chip row, the Enter line,
+            // the footer, the trailing blank) plus the scope row when the session has scoped
+            // models.
+            7 + usize::from(self.has_scoped_models()) + detail_rows,
             // The scrollbar rides the rows' right edge, so overflow costs no row.
             0,
         )
@@ -379,27 +493,95 @@ impl ModelPicker {
         self.filtered.len()
     }
 
-    pub(crate) fn filtered_window(&self) -> (usize, usize) {
+    /// The display rows the list window shows (`rows` positions): the selected model's row
+    /// centered where the list allows.
+    pub(crate) fn display_window(&self) -> (usize, usize) {
         let max_visible = self.visible_items.max(1);
-        let selected_index = self.selected.min(self.filtered.len().saturating_sub(1));
-        let start = selected_index
+        let selected_row = self.selected_row();
+        let start = selected_row
             .saturating_sub(max_visible / 2)
-            .min(self.filtered.len().saturating_sub(max_visible));
-        let end = (start + max_visible).min(self.filtered.len());
+            .min(self.rows.len().saturating_sub(max_visible));
+        let end = (start + max_visible).min(self.rows.len());
         (start, end)
+    }
+
+    /// The display row holding the selected model.
+    fn selected_row(&self) -> usize {
+        let selected = self.selected_index();
+        self.rows
+            .iter()
+            .position(|row| *row == ListRow::Model(selected))
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn display_rows(&self) -> &[ListRow] {
+        &self.rows
+    }
+
+    /// The browse list's row count: the height a search holds the list at.
+    pub(crate) fn browse_row_count(&self) -> usize {
+        self.browse_rows
+    }
+
+    /// The frame rows above the list (the click surface's chrome): the title, the scope row when
+    /// scoped, the bordered search field, and the chip row.
+    pub(crate) fn rows_above_list(&self) -> usize {
+        5 + usize::from(self.has_scoped_models())
     }
 
     pub(crate) fn selected_index(&self) -> usize {
         self.selected.min(self.filtered.len().saturating_sub(1))
     }
 
-    /// Move the selection to one filtered position: a position past the filtered list keeps the
-    /// selection; a click lands the user in the list, so arrows adjust the clicked row's effort.
-    pub(crate) fn select_filtered(&mut self, position: usize) {
-        if position < self.filtered.len() {
-            self.selected = position;
+    /// Move the selection to the model on one display row: a group header or a row past the list
+    /// keeps the selection; a click lands the user in the list, so arrows adjust the clicked row's
+    /// effort.
+    pub(crate) fn select_display_row(&mut self, row: usize) {
+        if let Some(ListRow::Model(position)) = self.rows.get(row) {
+            self.selected = *position;
             self.navigated_into_list = true;
         }
+    }
+
+    /// The active list's providers in display order (the provider chip's cycle).
+    fn active_providers(&self) -> Vec<String> {
+        let mut providers: Vec<String> = Vec::new();
+        for index in self.active_indices() {
+            let provider = &self.all_models[index].provider;
+            if !providers.contains(provider) {
+                providers.push(provider.clone());
+            }
+        }
+        providers
+    }
+
+    /// One model's billing class.
+    pub(crate) fn class_of(&self, model: &Model) -> BillingClass {
+        billing_class(
+            self.billing
+                .get(&Self::model_key_provider(&model.provider, &model.id)),
+            model,
+        )
+    }
+
+    pub(crate) fn filters(&self) -> &PickerFilters {
+        &self.filters
+    }
+
+    pub(crate) fn sort_key(&self) -> SortKey {
+        self.sort
+    }
+
+    pub(crate) fn quota_label(&self, model: &Model) -> Option<&str> {
+        self.quota_labels.get(&model.provider).map(String::as_str)
+    }
+
+    /// Whether the browse list groups by provider under the recent models: the whole catalog,
+    /// no query, the recent sort.
+    pub(crate) fn grouped(&self) -> bool {
+        matches!(self.scope, ModelScope::All)
+            && self.search.value().trim().is_empty()
+            && self.sort == SortKey::Recent
     }
 
     /// The provider-sorted catalog (TS `sortModels`).
@@ -481,11 +663,25 @@ impl ModelPicker {
     fn filter_models(&mut self, query: &str) {
         let query_changed = query != self.last_query;
         self.last_query = query.to_string();
+        let candidates: Vec<usize> = self
+            .active_indices()
+            .into_iter()
+            .filter(|&index| {
+                let model = &self.all_models[index];
+                self.filters.admits(model, self.class_of(model))
+            })
+            .collect();
         if query.trim().is_empty() {
-            self.filtered = self.active_indices();
+            let (filtered, rows) = self.browse_order(candidates);
+            self.filtered = filtered;
+            self.rows = rows;
+            self.browse_rows = self.rows.len();
         } else {
-            let mut matches: Vec<(usize, SearchMatch)> = self
-                .active_indices()
+            if self.browse_rows == 0 {
+                // A prefilled search holds the list at the candidates' height.
+                self.browse_rows = candidates.len();
+            }
+            let mut matches: Vec<(usize, SearchMatch)> = candidates
                 .into_iter()
                 .filter_map(|index| {
                     score_model_search(&self.all_models[index], query).map(|match_| (index, match_))
@@ -548,6 +744,7 @@ impl ModelPicker {
                 )
             });
             self.filtered = matches.into_iter().map(|(index, _)| index).collect();
+            self.rows = (0..self.filtered.len()).map(ListRow::Model).collect();
         }
         self.selected = if query_changed {
             0
@@ -657,7 +854,7 @@ impl ModelPicker {
         true
     }
 
-    fn is_current(&self, model: &Model) -> bool {
+    pub(crate) fn is_current(&self, model: &Model) -> bool {
         self.current.as_ref().is_some_and(|current| {
             current.provider == model.provider && current.model_id == model.id
         })
@@ -686,7 +883,14 @@ impl ModelPicker {
         self.search.cursor()
     }
 
-    pub(crate) fn effort_layout(&self, start: usize, end: usize) -> EffortLayout {
+    /// The effort cluster's layout over the window's `models` in a `width`-wide row, beside a
+    /// `trailing_width`-wide column cell.
+    pub(crate) fn effort_layout(
+        &self,
+        models: &[&Model],
+        width: usize,
+        trailing_width: usize,
+    ) -> EffortLayout {
         /// Wide detail columns must fit "Cached input".
         const EFFORT_NAME_COLUMN_MAX: usize = 30;
         const EFFORT_NAME_COLUMN_MIN: usize = 12;
@@ -700,34 +904,18 @@ impl ModelPicker {
             show_label: false,
             show_cluster: false,
         };
-        let reasoning: Vec<&Model> = (start..end)
-            .filter_map(|index| {
-                let model_index = self.filtered.get(index).copied()?;
-                self.all_models.get(model_index)
-            })
+        let reasoning: Vec<&Model> = models
+            .iter()
+            .copied()
             .filter(|model| !Self::selectable_levels(model).is_empty())
             .collect();
         if reasoning.is_empty() {
             return empty;
         }
-        let width = self.render_width;
-        let mut max_trailing_width = 0;
-        for index in start..end {
-            let Some(model_index) = self.filtered.get(index).copied() else {
-                continue;
-            };
-            let Some(model) = self.all_models.get(model_index) else {
-                continue;
-            };
-            let segments = self.trailing_segments(model);
-            let refs: Vec<crate::menu_panel::MenuSegment> = segments
-                .iter()
-                .map(|segment| crate::menu_panel::MenuSegment::muted(segment))
-                .collect();
-            max_trailing_width =
-                max_trailing_width.max(crate::menu_panel::trailing_width(&refs, width));
-        }
-        let available = width.saturating_sub(2 + max_trailing_width + 2).max(1);
+        // The row's marker cell (`● `) sits before the name.
+        let available = width
+            .saturating_sub(2 + MARK_WIDTH + trailing_width + 2)
+            .max(1);
 
         let max_name_column = reasoning
             .iter()
@@ -757,10 +945,11 @@ impl ModelPicker {
         // Sit the cluster near the row's horizontal center, clamped between
         // the name column and the trailing zone.
         let place = |name_column: usize, show_label: bool| {
-            let span = cluster_width + if show_label { label_width + 5 } else { 4 };
+            // The arrows, their spaces, and the space after the squares (plus the label cell).
+            let span = cluster_width + if show_label { label_width + 5 } else { 5 };
             let desired = (width / 2)
                 .saturating_sub(span / 2)
-                .saturating_sub(2 + name_column);
+                .saturating_sub(2 + MARK_WIDTH + name_column);
             let gap = desired
                 .min(available.saturating_sub(name_column + span))
                 .max(1);
@@ -790,25 +979,15 @@ impl ModelPicker {
         }
         empty
     }
-
-    /// The trailing segments of one row: `current`, `require sign in`, then the provider.
-    pub(crate) fn trailing_segments(&self, model: &Model) -> Vec<String> {
-        let mut segments: Vec<String> = Vec::new();
-        if self.is_current(model) {
-            segments.push("current".to_string());
-        }
-        if !self.is_configured(model) {
-            segments.push("require sign in".to_string());
-        }
-        segments.push(provider_label(model).to_string());
-        segments
-    }
 }
+
+/// The current-model mark's cell before each row's name (`● `).
+pub(crate) const MARK_WIDTH: usize = 2;
 
 /// The provider a row displays (and search matches): Prime Inference routes
 /// split into their serving class (the live catalog labels each route hosted
 /// or gateway); unlabeled routes and every other provider show the provider id.
-fn provider_label(model: &Model) -> &str {
+pub(crate) fn provider_label(model: &Model) -> &str {
     match (model.provider.as_str(), model.serving) {
         (PRIME_INFERENCE_PROVIDER_ID, Some(ModelServing::Hosted)) => "prime-hosted",
         (PRIME_INFERENCE_PROVIDER_ID, Some(ModelServing::Gateway)) => "prime-gateway",

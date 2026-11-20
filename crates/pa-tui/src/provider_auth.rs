@@ -1455,6 +1455,13 @@ mod tests {
             Box::pin(std::future::ready(()))
         }
 
+        fn model_picker_closed(
+            &self,
+            _summary: crate::model_picker::ModelPickerSummary,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
         fn ipython_bash_rendered(
             &self,
             _bash_lines: usize,

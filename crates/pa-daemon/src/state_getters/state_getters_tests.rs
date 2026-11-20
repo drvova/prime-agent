@@ -752,6 +752,11 @@ async fn model_catalog_and_available_models_match_the_ts_shapes() {
         1
     );
     assert_eq!(catalog["configuredProviders"], json!(["prime-inference"]));
+    // Each listed model carries its billing mode: the loopback endpoint bills nothing.
+    assert_eq!(
+        catalog["billing"]["prime-inference/mock-1"],
+        json!({ "mode": "free" })
+    );
 
     let response = worker
         .dispatch(

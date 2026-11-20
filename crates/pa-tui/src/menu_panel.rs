@@ -55,18 +55,6 @@ fn segments_text(segments: &[MenuSegment<'_>]) -> String {
         .join(" · ")
 }
 
-/// Rendered width of a trailing cluster at the given row width, mirroring how the row degrades and
-/// truncates it.
-pub(crate) fn trailing_width(segments: &[MenuSegment<'_>], width: usize) -> usize {
-    let inner_width = width.saturating_sub(2).max(1);
-    let budget = inner_width.saturating_sub(5).max(1);
-    let reduced = reduce_trailing_segments(segments, budget);
-    if reduced.is_empty() {
-        return 0;
-    }
-    str_width(&segments_text(&reduced)).min(budget)
-}
-
 /// Render the trailing cluster: segments joined with `" · "`, shrunk from the front and truncated
 /// to the row's trailing budget.
 pub(crate) fn trailing_spans(
@@ -724,8 +712,19 @@ mod tests {
             MenuSegment::muted("end"),
         ];
         // At a narrow width the front segments drop off until the joined cluster fits the budget
-        // (width 12 -> inner 10 -> budget 5: only "end" survives).
-        assert_eq!(trailing_width(&segments, 12), 3);
-        assert_eq!(trailing_width(&segments, 60), 32);
+        // (inner 10 -> budget 5: only "end" survives).
+        let text = |inner: usize| {
+            trailing_spans(&theme(), &segments, inner)
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        };
+        assert_eq!(
+            (text(10), text(58)),
+            (
+                "end".to_string(),
+                "a-long-first-segment \u{b7} mid \u{b7} end".to_string()
+            )
+        );
     }
 }

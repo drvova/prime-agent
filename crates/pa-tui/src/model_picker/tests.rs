@@ -1,6 +1,7 @@
 use super::*;
 use crate::keybindings::KeybindingsManager;
 use crate::theme::{ColorMode, Theme};
+use pa_types::billing::BillingMode;
 
 fn theme() -> Theme {
     Theme::builtin("prime", ColorMode::TrueColor)
@@ -121,6 +122,8 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         scoped_models: Vec::new(),
         thinking_level: Some(ModelThinkingLevel::Medium),
         viewport_rows: 19,
+        billing: HashMap::new(),
+        quota_labels: HashMap::new(),
     }
 }
 
@@ -231,7 +234,7 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
     );
     let mut refreshed = battery_catalog();
     refreshed.push(model("prime-inference", "mock-9", "Mock 9", false, None));
-    picker.update_state(None, refreshed, configured());
+    picker.update_state(None, refreshed, configured(), HashMap::new());
     assert_eq!(
         picker.filtered_len(),
         1,
@@ -239,92 +242,393 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
     );
 }
 
-/// The frame matches the TS inline menu panel row for row (the f17 model-selector capture
-/// geometry): bordered search field, `›` rows with the effort cluster centered (squares at column
-/// 54, label at 62), trailing flush right, a right-edge scrollbar (9 models in 8 rows: a 7-row `█`
-/// thumb over a `│` track), price detail, key hint.
-#[test]
-fn renders_the_ts_inline_panel_shape() {
-    let mut picker = ModelPicker::new(picker_options(battery_catalog()));
-    let rows = frame_text(&mut picker);
-    assert_eq!(rows[0], "  Model", "the shared title row opens the frame");
-    let rows = rows[1..].to_vec();
-    let border = "\u{2500}".repeat(120);
-    assert_eq!(rows[0], border, "top rule");
-    assert_eq!(rows[2], border, "bottom rule");
-    // The search field: prompt, caret cell, dim placeholder.
-    assert_eq!(rows[1], " >  Search models");
-    // The current model leads, marked `current · provider`, no effort cluster
-    // (no thinking surface); the trailing sits flush right.
-    assert_eq!(
-        rows[3],
-        format!(
-            "\u{203a} Mock 1{}current \u{b7} prime-inference \u{2588}",
-            " ".repeat(85)
-        )
-    );
-    // The effort cluster: name cell (17), centered gap (33), arrow slots,
-    // squares, label cell (6), then the trailing provider.
-    let effort_row = |name: &str, squares: &str, label: &str| {
-        let name_pad = " ".repeat(17 - name.chars().count());
-        let label_pad = " ".repeat(6 - label.chars().count());
-        format!(
-            "  {name}{name_pad}{}  {squares}   {label}{label_pad}{}prime-inference \u{2588}",
-            " ".repeat(33),
-            " ".repeat(35),
-        )
-    };
-    assert_eq!(
-        rows[4],
-        effort_row(
-            "Claude Fable 5",
-            "\u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1}",
-            "medium"
-        )
-    );
-    assert_eq!(
-        rows[5],
-        effort_row("Claude Haiku 4.5", "\u{25a0}    ", "high")
-    );
-    assert_eq!(
-        rows[6],
-        effort_row(
-            "Claude Opus 4.6",
-            "\u{25a0}\u{25a0}\u{25a1}\u{25a1} ",
-            "medium"
-        )
-    );
-    assert!(
-        rows[10].ends_with("\u{2502}"),
-        "the track below the thumb: {:?}",
-        rows[10]
-    );
-    assert_eq!(
-        rows[11], "",
-        "no `(n/m)` row: the scrollbar marks the overflow"
-    );
-    assert_eq!(
-        rows[12],
-        format!(
-            " Input{}Cached input{}Output {}$ / 1M tokens",
-            " ".repeat(34 - 5),
-            " ".repeat(34 - 12),
-            " ".repeat(34 - 6),
-        )
-    );
-    assert_eq!(
-        rows[13],
-        format!(" $0{}$0{}$0", " ".repeat(32), " ".repeat(32))
-    );
-    assert_eq!(rows[14], "");
-    assert_eq!(rows[15], "  enter switches to Mock 1", "the Enter line");
-    assert_eq!(
-        rows[16],
-        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close"
-    );
+/// One priced catalog model: its capabilities, context window, and $/1M rates.
+#[allow(clippy::too_many_arguments)] // A fixture row: every field is a column the frame shows.
+fn rich_model(
+    provider: &str,
+    id: &str,
+    name: &str,
+    map: Option<&str>,
+    vision: bool,
+    context_window: u64,
+    input: f64,
+    output: f64,
+) -> Model {
+    let mut model = model(provider, id, name, map.is_some(), map);
+    if vision {
+        model.input.push(pa_types::ai::ModelInput::Image);
+    }
+    model.context_window = context_window;
+    model.cost.input = input.into();
+    model.cost.output = output.into();
+    model
+}
 
-    assert_eq!(rows.len(), 18, "the frame ends on the blank: {rows:?}");
-    assert_eq!(rows[17], "");
+/// A catalog across billing classes: a Claude plan (with a cached 5-hour quota), metered
+/// OpenRouter rows, a free local model, and an unconfigured provider with no price.
+fn rich_options() -> ModelPickerOptions {
+    let models = vec![
+        rich_model(
+            "anthropic",
+            "claude-fable-5",
+            "Claude Fable 5",
+            Some(fable_map()),
+            true,
+            1_000_000,
+            5.0,
+            25.0,
+        ),
+        rich_model(
+            "anthropic",
+            "claude-haiku-5",
+            "Claude Haiku 5",
+            Some(high_only_map()),
+            true,
+            200_000,
+            1.0,
+            5.0,
+        ),
+        rich_model(
+            "openrouter",
+            "z-ai/glm-5.3",
+            "GLM 5.3",
+            Some(opus_map()),
+            false,
+            200_000,
+            0.6,
+            2.2,
+        ),
+        rich_model(
+            "openrouter",
+            "qwen/qwen3-coder",
+            "Qwen3 Coder",
+            None,
+            false,
+            262_144,
+            0.22,
+            0.95,
+        ),
+        rich_model(
+            "local-llm",
+            "llama-4",
+            "Llama 4 Local",
+            None,
+            true,
+            128_000,
+            0.0,
+            0.0,
+        ),
+        rich_model(
+            "other",
+            "unknown-1",
+            "Unknown One",
+            None,
+            false,
+            32_000,
+            0.0,
+            0.0,
+        ),
+    ];
+    let billing = [
+        (
+            "anthropic/claude-fable-5",
+            BillingMode::Plan {
+                provider_quota: true,
+            },
+        ),
+        (
+            "anthropic/claude-haiku-5",
+            BillingMode::Plan {
+                provider_quota: true,
+            },
+        ),
+        (
+            "openrouter/z-ai/glm-5.3",
+            BillingMode::PayAsYouGo {
+                source: pa_types::billing::CostSource::ProviderReported,
+            },
+        ),
+        (
+            "openrouter/qwen/qwen3-coder",
+            BillingMode::PayAsYouGo {
+                source: pa_types::billing::CostSource::ProviderReported,
+            },
+        ),
+        ("local-llm/llama-4", BillingMode::Free),
+    ]
+    .into_iter()
+    .map(|(key, mode)| (key.to_string(), mode))
+    .collect();
+    ModelPickerOptions {
+        models,
+        current: Some(CurrentModel {
+            provider: "anthropic".to_string(),
+            model_id: "claude-fable-5".to_string(),
+        }),
+        configured_providers: ["anthropic", "openrouter", "local-llm"]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        recent_models: vec![
+            "openrouter/z-ai/glm-5.3".to_string(),
+            "anthropic/claude-fable-5".to_string(),
+        ],
+        scoped_models: Vec::new(),
+        thinking_level: Some(ModelThinkingLevel::Medium),
+        viewport_rows: 19,
+        billing,
+        quota_labels: [("anthropic".to_string(), "5h 42%".to_string())]
+            .into_iter()
+            .collect(),
+    }
+}
+
+/// The search field's rule row at `width`.
+fn rule(width: usize) -> String {
+    "\u{2500}".repeat(width)
+}
+
+/// Rendered frame rows at `width` as trimmed plain text (tmux-capture shape).
+fn frame_at(picker: &mut ModelPicker, width: usize) -> Vec<String> {
+    picker
+        .render(&theme(), width, &kb())
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+        })
+        .map(|row| row.trim_end().to_string())
+        .collect()
+}
+
+/// The grouped frame at a wide terminal: the chip row with its keys, the recent group (the
+/// current model first, marked, then the newest use), one group per provider (the unconfigured
+/// one marked `sign in`), and each row's capability glyphs, context, price or billing class, and
+/// the provider's cached quota.
+#[test]
+fn the_grouped_frame_at_120_columns() {
+    let mut picker = ModelPicker::new(rich_options());
+    assert_eq!(frame_at(&mut picker, 120), vec![
+        "  Model",
+        &rule(120),
+        " >  Search models",
+        &rule(120),
+        "  Alt+O sort: recent  Alt+1 provider: all  Alt+2 billing: any  Alt+3 caps: any  Alt+4 ctx: any",
+        "  recent                                                                                                               \u{2588}",
+        "\u{203a} \u{25cf} Claude Fable 5                                 \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium                       \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
+        "    GLM 5.3                                          \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium                       \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
+        "  anthropic                                                                                                            \u{2588}",
+        "    Claude Haiku 5                                   \u{25a0}       high                         \u{25c9}\u{25c6}\u{192}  200k  plan       5h 42% \u{2588}",
+        "  local-llm                                                                                                            \u{2502}",
+        "    Llama 4 Local                                                                         \u{25c9}\u{b7}\u{192}  128k  free              \u{2502}",
+        "  openrouter                                                                                                           \u{2502}",
+        "",
+        " Input                             Cached input                      Output                             $ / 1M tokens",
+        " $5                                $0                                $25",
+        "",
+        "  enter switches to Claude Fable 5",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "",
+    ]);
+}
+
+/// At 80 columns the chips drop their keys (the keyed row no longer fits); every column stays.
+#[test]
+fn the_grouped_frame_at_80_columns() {
+    let mut picker = ModelPicker::new(rich_options());
+    assert_eq!(frame_at(&mut picker, 80), vec![
+        "  Model",
+        &rule(80),
+        " >  Search models",
+        &rule(80),
+        "  sort: recent  provider: all  billing: any  caps: any  ctx: any",
+        "  recent                                                                       \u{2588}",
+        "\u{203a} \u{25cf} Claude Fable 5             \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium   \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
+        "    GLM 5.3                      \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium   \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
+        "  anthropic                                                                    \u{2588}",
+        "    Claude Haiku 5               \u{25a0}       high     \u{25c9}\u{25c6}\u{192}  200k  plan       5h 42% \u{2588}",
+        "  local-llm                                                                    \u{2502}",
+        "    Llama 4 Local                                 \u{25c9}\u{b7}\u{192}  128k  free              \u{2502}",
+        "  openrouter                                                                   \u{2502}",
+        "",
+        " Input                Cached input         Output                $ / 1M tokens",
+        " $5                   $0                   $25",
+        "",
+        "  enter switches to Claude Fable 5",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "",
+    ]);
+}
+
+/// At 60 columns the effort label and the chips' tail give way; the names truncate.
+#[test]
+fn the_grouped_frame_at_60_columns() {
+    let mut picker = ModelPicker::new(rich_options());
+    assert_eq!(frame_at(&mut picker, 60), vec![
+        "  Model",
+        &rule(60),
+        " >  Search models",
+        &rule(60),
+        "  sort: recent  provider: all  billing: any  caps: any  ctx\u{2026}",
+        "  recent                                                   \u{2588}",
+        "\u{203a} \u{25cf} Claude Fable\u{2026} \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192}   \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
+        "    GLM 5.3         \u{25a0}\u{25a0}\u{25a1}\u{25a1}      \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
+        "  anthropic                                                \u{2588}",
+        "    Claude Haiku\u{2026}   \u{25a0}         \u{25c9}\u{25c6}\u{192}  200k  plan       5h 42% \u{2588}",
+        "  local-llm                                                \u{2502}",
+        "    Llama 4 Local             \u{25c9}\u{b7}\u{192}  128k  free              \u{2502}",
+        "  openrouter                                               \u{2502}",
+        "",
+        " Input         Cached input  Output         $ / 1M tokens",
+        " $5            $0            $25",
+        "",
+        "  enter switches to Claude Fable 5",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close",
+        "",
+    ]);
+}
+
+/// The billing chip on `plan` and the price sort: one flat list across providers with the
+/// provider column, the plan models only.
+#[test]
+fn the_plan_filter_and_price_sort_frame() {
+    let mut picker = ModelPicker::new(rich_options());
+    assert_eq!(
+        picker.handle_key("alt+2", &kb()),
+        ModelPickerAction::None,
+        "alt+2 cycles billing to plan"
+    );
+    for _ in 0..2 {
+        picker.handle_key("alt+o", &kb());
+    }
+    assert_eq!(frame_at(&mut picker, 100), vec![
+        "  Model",
+        &rule(100),
+        " >  Search models",
+        &rule(100),
+        "  Alt+O sort: price  Alt+1 provider: all  Alt+2 billing: plan  Alt+3 caps: any  Alt+4 ctx: any",
+        "\u{203a} \u{25cf} Claude Fable 5                        \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium        \u{25c9}\u{25c6}\u{192}    1M  plan  5h 42%  anthropic",
+        "    Claude Haiku 5                          \u{25a0}       high          \u{25c9}\u{25c6}\u{192}  200k  plan  5h 42%  anthropic",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        " Input                       Cached input                Output                       $ / 1M tokens",
+        " $5                          $0                          $25",
+        "",
+        "  enter switches to Claude Fable 5",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "",
+    ]);
+}
+
+/// The pay-as-you-go chip with the context sort and the vision chip: the chips compose.
+#[test]
+fn the_chips_compose_with_the_context_sort() {
+    let mut picker = ModelPicker::new(rich_options());
+    for key in ["alt+2", "alt+2", "alt+o", "alt+o", "alt+o"] {
+        picker.handle_key(key, &kb());
+    }
+    let ids = |picker: &ModelPicker| filtered_ids(picker);
+    assert_eq!(
+        ids(&picker),
+        vec!["qwen/qwen3-coder", "z-ai/glm-5.3"],
+        "pay-as-you-go by context, widest first"
+    );
+    picker.handle_key("alt+3", &kb());
+    assert_eq!(
+        ids(&picker),
+        Vec::<String>::new(),
+        "no metered model reads images"
+    );
+    assert_eq!(
+        picker.summary(ModelPickerOutcome::Closed),
+        ModelPickerSummary {
+            outcome: ModelPickerOutcome::Closed,
+            chip_change_count: 3,
+            sort_change_count: 3,
+            filters_active: true,
+            sort: "context",
+        }
+    );
+}
+
+/// The provider chip steps through the active list's providers in display order, then back to
+/// every provider; the minimum-context chip keeps the wide windows.
+#[test]
+fn the_provider_and_context_chips_cycle() {
+    let mut picker = ModelPicker::new(rich_options());
+    let mut seen = Vec::new();
+    for _ in 0..5 {
+        picker.handle_key("alt+1", &kb());
+        seen.push(picker.filters().provider.clone());
+    }
+    assert_eq!(
+        seen,
+        vec![
+            Some("anthropic".to_string()),
+            Some("openrouter".to_string()),
+            Some("local-llm".to_string()),
+            Some("other".to_string()),
+            None,
+        ]
+    );
+    for _ in 0..2 {
+        picker.handle_key("alt+4", &kb());
+    }
+    assert_eq!(
+        filtered_ids(&picker),
+        vec![
+            "claude-fable-5",
+            "z-ai/glm-5.3",
+            "claude-haiku-5",
+            "qwen/qwen3-coder"
+        ],
+        "at least 200k: the recent group, then the provider groups"
+    );
+}
+
+/// A click on a group header selects nothing; a click on a model row selects it.
+#[test]
+fn a_header_click_keeps_the_selection_and_a_row_click_moves_it() {
+    let mut picker = ModelPicker::new(rich_options());
+    picker.render(&theme(), 120, &kb());
+    let before = picker.selected_index();
+    picker.select_display_row(0);
+    assert_eq!(
+        picker.selected_index(),
+        before,
+        "row 0 is the recent header"
+    );
+    picker.select_display_row(4);
+    assert_eq!(
+        picker.selected_model().map(|model| model.id.as_str()),
+        Some("claude-haiku-5"),
+        "row 4 is the anthropic group's first model"
+    );
+}
+
+/// Pinning the paint path: the picker paints from the options it was opened with and nothing it
+/// awaits, so a catalog or quota source that never answers cannot hold the first frame.
+#[test]
+fn the_picker_paints_without_a_catalog_or_quota_answer() {
+    let mut options = rich_options();
+    options.billing.clear();
+    options.quota_labels.clear();
+    let mut picker = ModelPicker::new(options);
+    let rows = frame_at(&mut picker, 120);
+    let fable = rows
+        .iter()
+        .find(|row| row.contains("Claude Fable 5"))
+        .expect("the fable row");
+    assert!(
+        fable.contains("$5/$25"),
+        "without a billing answer the row falls back to the catalog rates: {fable}"
+    );
 }
 
 #[test]
@@ -376,7 +680,7 @@ fn a_row_click_lands_the_arrows_on_the_clicked_rows_effort() {
         picker.search.value().contains("fable"),
         "the query prefilled"
     );
-    picker.select_filtered(0);
+    picker.select_display_row(0);
     let before = picker.search.value().to_string();
     picker.handle_key("left", &kb);
     assert_eq!(
@@ -489,7 +793,7 @@ fn a_nonempty_filter_keeps_arrows_on_the_search_cursor() {
 }
 
 #[test]
-fn unconfigured_providers_mark_require_sign_in_and_sort_last() {
+fn unconfigured_providers_head_a_sign_in_group_and_sort_last() {
     let catalog = vec![
         model("prime-inference", "mock-1", "Mock 1", false, None),
         model(
@@ -504,11 +808,12 @@ fn unconfigured_providers_mark_require_sign_in_and_sort_last() {
     options.current = None;
     let mut picker = ModelPicker::new(options);
     let rows = frame_text(&mut picker);
-
-    assert!(rows
+    let headers: Vec<&str> = rows
         .iter()
-        .any(|row| row.contains("require sign in \u{b7} other")));
-    assert!(rows.iter().any(|row| row.contains("Mock 1")));
+        .map(String::as_str)
+        .filter(|row| *row == "  prime-inference" || *row == "  other \u{b7} sign in")
+        .collect();
+    assert_eq!(headers, vec!["  prime-inference", "  other \u{b7} sign in"]);
 }
 
 #[test]
@@ -525,7 +830,7 @@ fn update_state_keeps_the_selection_on_the_surviving_model() {
         false,
         None,
     ));
-    picker.update_state(Some(current()), catalog, configured());
+    picker.update_state(Some(current()), catalog, configured(), HashMap::new());
     let selected = picker.selected_model().expect("selection").clone();
     assert_eq!(selected.id, "anthropic/claude-fable-5");
 }
@@ -922,8 +1227,8 @@ fn search_preserves_overlong_version_runs() {
     );
 }
 
-/// Prime Inference rows name their serving class (unlabeled ones keep the provider id), and the
-/// non-Prime row renders byte-identical: the effort layout sizes against the widest trailing.
+/// Prime Inference routes group under their serving class (unlabeled ones keep the provider
+/// id), and the non-Prime row renders byte-identical: the columns size against the window.
 #[test]
 fn prime_rows_name_the_serving_class_without_moving_other_rows() {
     let catalog = |served: bool| {
@@ -955,10 +1260,21 @@ fn prime_rows_name_the_serving_class_without_moving_other_rows() {
             .cloned()
             .expect(name)
     };
+    let headers = |rows: &[String]| -> Vec<String> {
+        rows.iter()
+            .filter(|row| row.starts_with("  prime") || *row == "  openrouter")
+            .cloned()
+            .collect()
+    };
     let (served, unserved) = (rows(true), rows(false));
-    assert!(row(&served, "GLM 5.3").contains("prime-hosted"));
-    assert!(row(&served, "Claude Fable 5").contains("prime-gateway"));
-    assert!(row(&unserved, "GLM 5.3").contains("prime-inference"));
+    assert_eq!(
+        headers(&served),
+        vec!["  prime-gateway", "  prime-hosted", "  openrouter"]
+    );
+    assert_eq!(
+        headers(&unserved),
+        vec!["  prime-inference", "  openrouter"]
+    );
     assert_eq!(row(&served, "Other"), row(&unserved, "Other"));
 
     // Search matches the displayed serving label.

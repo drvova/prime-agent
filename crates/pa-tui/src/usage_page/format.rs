@@ -3,6 +3,7 @@
 //! rules are tested without touching the process's time zone.
 
 use pa_types::platform::LocalCivil;
+use pa_types::provider_usage::{ProviderQuota, QuotaState, QuotaWindow};
 
 const MINUTE_MS: i64 = 60_000;
 const HOUR_MS: i64 = 3_600_000;
@@ -36,6 +37,34 @@ pub(crate) fn countdown(span_ms: i64) -> String {
         0 => format!("{}d", span / DAY_MS),
         hours => format!("{}d {hours}h", span / DAY_MS),
     }
+}
+
+/// The provider card's most-used limit window that has not reset by `now_ms`, with its used
+/// fraction: the title's plan quota and the `/model` picker's inline quota. A rate-limited or
+/// failed card has none.
+#[must_use]
+pub(crate) fn tightest_window(card: &ProviderQuota, now_ms: i64) -> Option<(&QuotaWindow, f64)> {
+    match &card.state {
+        QuotaState::Windows { windows } => windows
+            .iter()
+            .filter(|window| window.resets_at_ms.is_none_or(|at| at > now_ms))
+            .filter_map(|window| Some((window, window.used_fraction()?)))
+            .max_by(|left, right| left.1.total_cmp(&right.1)),
+        QuotaState::RateLimited { .. } | QuotaState::Failed { .. } => None,
+    }
+}
+
+/// A window and its used fraction as the compact label: `5h 42%`, `7d 10%`, else the window's own
+/// name.
+#[must_use]
+pub(crate) fn window_label(window: &QuotaWindow, fraction: f64) -> String {
+    let name = match window.label.as_str() {
+        "5-hour" => "5h",
+        "Weekly" => "7d",
+        label => label,
+    };
+    let percent = (fraction * 100.0).round();
+    format!("{name} {percent}%")
 }
 
 /// How much of a reset label a narrow row keeps (the drop order runs top to bottom).

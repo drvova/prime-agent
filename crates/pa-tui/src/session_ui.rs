@@ -191,6 +191,9 @@ pub(crate) struct SessionUi {
     /// fallback), replaced by the daemon's `get_model_catalog` response.
     model_catalog: Vec<pa_types::ai::Model>,
     model_configured_providers: std::collections::HashSet<String>,
+    /// Each catalog model's billing mode (`provider/id` keys) from the last `get_model_catalog`
+    /// response; empty until the first refresh lands.
+    model_billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
     default_thinking_level: Option<String>,

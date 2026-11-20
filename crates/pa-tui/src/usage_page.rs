@@ -19,7 +19,7 @@ use crate::theme::{Theme, ThemeColor};
 use crate::Line;
 
 pub(crate) use cards::CivilClock;
-pub(crate) use format::{countdown, next_label_change};
+pub(crate) use format::{countdown, next_label_change, tightest_window, window_label};
 
 /// The frame's rows outside the content window: the rule, the title, the status row, the blank
 /// under it, the footer, and the trailing blank.

@@ -1,15 +1,18 @@
-//! The inline panel frame of the `/model` picker: bordered search field,
-//! effort rows, right-edge scrollbar, selection detail, key hint, one blank
-//! line below the hint (the operator's 2026-09-24 spacing directive).
-//! Geometry is the TS `ModelSelectorComponent` inline path.
+//! The inline panel frame of the `/model` picker: bordered search field, the filter-chip row,
+//! group headers over the model rows (the current-model mark, the name with its effort squares,
+//! the right-aligned columns), right-edge scrollbar, selection detail, key hint, one blank line
+//! below the hint (the operator's 2026-09-24 spacing directive). The search field and rows are
+//! the shared inline menu panel's.
 
 use pa_types::ai::{Model, ModelThinkingLevel};
 use std::fmt::Write;
 
+use super::filters::{BillingFilter, CapabilityFilter, ContextFilter, SortKey};
+use super::rows::{ListRow, RowColumns, SignIn};
 use super::{EffortLayout, ModelPicker};
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank};
-use crate::menu_panel::{menu_row, search_field_lines};
+use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_panel::{finish_menu_row, menu_row, search_field_lines, MenuSegment};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
 use crate::{Line, Span};
@@ -67,39 +70,79 @@ pub(super) fn render(
         SEARCH_PLACEHOLDER,
     ));
 
-    // While searching, the list keeps the height of the whole active list (the height it had
-    // when the query started), so filtering never moves the rows around it. The overflow
-    // scrollbar rides the rows' right edge, so the held height is the rows alone.
+    lines.push(chip_row(picker, theme, width, kb));
+
+    // While searching, the list keeps the height of the browse list (the height it had when the
+    // query started), so filtering never moves the rows around it. The overflow scrollbar rides
+    // the rows' right edge, so the held height is the rows alone.
+    let picker: &ModelPicker = picker;
     let list_start = lines.len();
-    let held = picker.list_layout_over(picker.active_indices().len());
-    let (start, end) = picker.filtered_window();
-    let effort_layout = picker.effort_layout(start, end);
+    let held = picker.list_layout_over(picker.browse_row_count());
+    let (start, end) = picker.display_window();
+    let rows = &picker.display_rows()[start..end];
+    let total_rows = picker.display_rows().len();
     let filtered_len = picker.filtered_len();
+    let window_models: Vec<&Model> = rows
+        .iter()
+        .filter_map(|row| match row {
+            ListRow::Model(position) => picker
+                .filtered_index(*position)
+                .and_then(|index| picker.model_at(index)),
+            ListRow::Header { .. } => None,
+        })
+        .collect();
     // An overflowing window carries the slash menu's one-cell scrollbar on its right edge instead
     // of an `(n/m)` row; the rows give up that column plus a one-space gap, so the flush-right
-    // provider never touches the bar.
-    let scrollbar = (start > 0 || end < filtered_len)
-        .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, filtered_len, start));
+    // columns never touch the bar.
+    let scrollbar = (start > 0 || end < total_rows)
+        .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, total_rows, start));
     let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
-    for index in start..end {
-        let Some(model_index) = picker.filtered_index(index) else {
-            continue;
+    let columns = RowColumns::fit(picker, &window_models, row_width);
+    let effort_layout = picker.effort_layout(&window_models, row_width, columns.width());
+    let selected_position = picker.selected_index();
+    for (offset, display_row) in rows.iter().enumerate() {
+        let mut row = match display_row {
+            ListRow::Header { label, sign_in } => {
+                let mut header: Line = vec![
+                    Span::raw(CHROME_INDENT),
+                    theme.fg_span(ThemeColor::Muted, label.clone()),
+                ];
+                match sign_in {
+                    SignIn::Ready => {}
+                    SignIn::Required => {
+                        header.push(theme.fg_span(ThemeColor::Dim, " \u{b7} sign in"));
+                    }
+                }
+                finish_menu_row(theme, &header, row_width, false)
+            }
+            ListRow::Model(position) => {
+                let Some(model) = picker
+                    .filtered_index(*position)
+                    .and_then(|index| picker.model_at(index))
+                else {
+                    continue;
+                };
+                let selected = *position == selected_position;
+                let mut primary: Line = if picker.is_current(model) {
+                    vec![
+                        theme.fg_span(ThemeColor::Accent, "\u{25cf}"),
+                        Span::raw(" "),
+                    ]
+                } else {
+                    vec![Span::raw("  ")]
+                };
+                primary.extend(row_primary(picker, theme, model, selected, effort_layout));
+                let cell = columns.cell(picker, model);
+                menu_row(
+                    theme,
+                    row_width,
+                    primary,
+                    &[MenuSegment::muted(&cell)],
+                    selected,
+                )
+            }
         };
-        let Some(model) = picker.model_at(model_index).cloned() else {
-            continue;
-        };
-        let selected = index == picker.selected_index();
-        let primary = row_primary(picker, theme, &model, selected, effort_layout);
-        let trailing = picker.trailing_segments(&model);
-        let trailing_refs: Vec<crate::menu_panel::MenuSegment> = trailing
-            .iter()
-            .map(|segment| crate::menu_panel::MenuSegment::muted(segment))
-            .collect();
-        let mut row = menu_row(theme, row_width, primary, &trailing_refs, selected);
-        if let Some(cell) = scrollbar
-            .as_ref()
-            .and_then(|cells| cells.get(index - start))
-        {
+        if let Some(cell) = scrollbar.as_ref().and_then(|cells| cells.get(offset)) {
             row.push(Span::raw(" "));
             row.push(cell.clone());
         }
@@ -141,12 +184,81 @@ pub(super) fn render(
                 HintRank::Useful,
             )
             .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            .bound(kb, &["app.model.sort"], "sort", HintRank::Extra)
             .esc(kb, EscVerb::Close)
             .rows(theme, width),
     );
 
     lines.push(Vec::new());
     lines
+}
+
+/// The chip row under the search field: the sort and each filter chip, a non-default value in
+/// the accent. The chips carry their keys when the whole row fits, else the bare chips.
+fn chip_row(picker: &ModelPicker, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Line {
+    let filters = picker.filters();
+    let provider = filters.provider.as_deref().unwrap_or("all");
+    let chips: [(&str, &str, &str, bool); 5] = [
+        (
+            "app.model.sort",
+            "sort",
+            picker.sort_key().label(),
+            picker.sort_key() != SortKey::Recent,
+        ),
+        (
+            "app.model.filterProvider",
+            "provider",
+            provider,
+            filters.provider.is_some(),
+        ),
+        (
+            "app.model.filterBilling",
+            "billing",
+            filters.billing.label(),
+            filters.billing != BillingFilter::Any,
+        ),
+        (
+            "app.model.filterCapability",
+            "caps",
+            filters.capability.label(),
+            filters.capability != CapabilityFilter::Any,
+        ),
+        (
+            "app.model.filterContext",
+            "ctx",
+            filters.context.label(),
+            filters.context != ContextFilter::Any,
+        ),
+    ];
+    let build = |keyed: bool| -> Line {
+        let mut line: Line = vec![Span::raw(CHROME_INDENT)];
+        for (index, (binding, name, value, active)) in chips.iter().enumerate() {
+            if index > 0 {
+                line.push(Span::raw("  "));
+            }
+            if keyed {
+                if let Some(key) = kb.first_key(binding) {
+                    line.push(theme.fg_span(
+                        ThemeColor::Dim,
+                        format!("{} ", crate::keybindings::format_key_text(&key)),
+                    ));
+                }
+            }
+            line.push(theme.fg_span(ThemeColor::Muted, format!("{name}: ")));
+            let color = if *active {
+                ThemeColor::Accent
+            } else {
+                ThemeColor::Muted
+            };
+            line.push(theme.fg_span(color, (*value).to_string()));
+        }
+        line
+    };
+    let keyed = build(true);
+    if crate::width::spans_width(&keyed) <= width {
+        return keyed;
+    }
+    crate::width::truncate_line(&build(false), width, "\u{2026}")
 }
 
 /// The primary cell of one row: the model name, or the name with the inline
