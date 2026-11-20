@@ -166,29 +166,9 @@ impl Worker {
         // for the session's provider (the create's `--provider`, else the profile's default
         // provider, else its one named credential), then `--credential <label|id>`.
         let profile_credential = profile.as_ref().and_then(|(_, profile)| {
-            let provider = payload.get("provider").and_then(Value::as_str).or_else(|| {
-                profile
-                    .settings
-                    .get("defaultProvider")
-                    .and_then(Value::as_str)
-            });
-            let mut named = profile
-                .credentials
-                .iter()
-                .filter(|(_, id)| id.as_str() != pa_core::settings::DEFAULT_CREDENTIAL);
-            if let Some(provider) = provider {
-                named
-                    .find(|(mapped, _)| mapped.as_str() == provider)
-                    .map(|(_, id)| id.clone())
-            } else {
-                match (named.next(), named.next()) {
-                    (Some((_, id)), None) => Some(id.clone()),
-                    (Some(_), Some(_)) | (None, _) => None,
-                }
-            }
+            profile.credential_for(payload.get("provider").and_then(Value::as_str))
         });
         let requested_pin = match profile_credential
-            .as_deref()
             .or_else(|| payload.get("credential").and_then(Value::as_str))
         {
             Some(selector) => {

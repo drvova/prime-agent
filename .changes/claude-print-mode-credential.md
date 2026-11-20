@@ -1,0 +1,1 @@
+- Print and RPC modes honour `--credential <label|id>` and a profile's credential mapping like interactive sessions: the run serves exactly the pinned credential, and a deleted one fails with the same "no longer stored" message.

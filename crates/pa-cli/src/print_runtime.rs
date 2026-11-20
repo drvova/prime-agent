@@ -682,6 +682,33 @@ pub(crate) async fn build_headless_engine_with(
     let auth = pa_core::auth::AuthStorage::create(&config.agent_dir);
     let mut registry =
         pa_core::models::ModelRegistry::create(auth, config.agent_dir.join("models.json"));
+    // The session's credential pin, in the daemon create's order: a resumed session's header pin
+    // as-is, else the profile's mapping for the provider, else `--credential <label|id>`. The
+    // pinned provider then resolves through exactly that credential or fails with its error.
+    let resumed_pin = session_manager
+        .as_ref()
+        .and_then(pa_core::session::manager::SessionManager::get_header)
+        .and_then(pa_types::session::SessionHeader::credential_pin);
+    let credential_pin = match resumed_pin {
+        Some(pin) => Some(pin),
+        None => {
+            let profile = match config.profile.as_deref() {
+                Some(name) => pa_core::settings::load_profile(&config.agent_dir, name)
+                    .map_err(|error| format!("{error:#}"))?,
+                None => None,
+            };
+            profile
+                .as_ref()
+                .and_then(|profile| profile.credential_for(config.provider.as_deref()))
+                .or(config.credential.as_deref())
+                .map(|selector| {
+                    pa_core::auth::AuthAccounts::create(&config.agent_dir).select(selector)
+                })
+                .transpose()?
+        }
+    };
+    let pinned = credential_pin.is_some();
+    registry.set_credential_pin(&config.agent_dir, credential_pin);
     let model = match embedding {
         HeadlessEmbedding::Child(overrides) => match &overrides.lane {
             ChildLane::Real(model) => (**model).clone(),
@@ -701,6 +728,13 @@ pub(crate) async fn build_headless_engine_with(
     // Resolve request auth once: the stored team / `PRIME_TEAM_ID` reach the wire through these
     // headers (children resolve against the same catalog the spawn used).
     let resolved = registry.get_api_key_and_headers(&model, model.headers.as_ref());
+    // A pin that cannot serve (its credential was deleted, or its refresh failed) fails the run
+    // with its own sentence: nothing falls back to another key.
+    if pinned && !resolved.ok {
+        return Err(resolved
+            .error
+            .unwrap_or_else(|| "the pinned credential cannot serve".to_string()));
+    }
 
     let provider_target: ProviderTargetSlot =
         std::sync::Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
