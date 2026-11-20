@@ -348,6 +348,18 @@ pub struct SessionCounters {
     telemetry_enabled: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+/// The kernel `worktree` operations for one session (counts only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WorktreeCounts {
+    created: u64,
+    diffed: u64,
+    merged: u64,
+    branched: u64,
+    conflicted: u64,
+    removed: u64,
+    failed: u64,
+}
+
 #[derive(Default)]
 struct CounterValues {
     skill_use_count: u64,
@@ -403,6 +415,8 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// The kernel `worktree` operations, reported by `agent worktrees`.
+    worktrees: WorktreeCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -826,6 +840,23 @@ impl SessionCounters {
     }
 
     /// One kernel `usage.get()` read (a count: never a cost or a token number).
+    /// One kernel `worktree` operation (counts only: never a name, a path, or a diff).
+    pub(crate) fn note_worktree(&self, fact: crate::worktree_host::WorktreeFact) {
+        use crate::worktree_host::WorktreeFact;
+        self.with(|values| {
+            let counts = &mut values.worktrees;
+            match fact {
+                WorktreeFact::Created => counts.created += 1,
+                WorktreeFact::Diffed => counts.diffed += 1,
+                WorktreeFact::Merged => counts.merged += 1,
+                WorktreeFact::Branched => counts.branched += 1,
+                WorktreeFact::Conflicted => counts.conflicted += 1,
+                WorktreeFact::Removed => counts.removed += 1,
+                WorktreeFact::Failed => counts.failed += 1,
+            }
+        });
+    }
+
     pub(crate) fn note_usage_read(&self) {
         self.with(|values| values.usage_read_count += 1);
     }
@@ -1652,6 +1683,24 @@ impl SessionTelemetry {
             let mut usage_properties = self.session_properties();
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
+        }
+        // A session that never used a worktree sends no worktree event.
+        let mut worktrees = WorktreeCounts::default();
+        self.counters.with(|values| worktrees = values.worktrees);
+        if worktrees != WorktreeCounts::default() {
+            let mut worktree_properties = self.session_properties();
+            for (key, value) in [
+                ("worktree_created_count", worktrees.created),
+                ("worktree_diff_count", worktrees.diffed),
+                ("worktree_merged_count", worktrees.merged),
+                ("worktree_branched_count", worktrees.branched),
+                ("worktree_conflict_count", worktrees.conflicted),
+                ("worktree_removed_count", worktrees.removed),
+                ("worktree_failed_count", worktrees.failed),
+            ] {
+                worktree_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent worktrees", worktree_properties);
         }
         // A session that recorded no classified call sends no billing event.
         let mut billing = pa_types::billing::BillingSplit::default();
