@@ -81,28 +81,28 @@ fn the_action_menu_frame_at_100_and_40_columns() {
             vec![
                 "  Model \u{b7} Claude Fable 5".to_string(),
                 "  anthropic/claude-fable-5 \u{b7} plan \u{b7} 1M context".to_string(),
-                "".to_string(),
+                String::new(),
                 "\u{203a} Switch this session to it (current)".to_string(),
                 "  Set as default for new sessions".to_string(),
                 "  Effort \u{2190} medium \u{2192}".to_string(),
                 "  Add to favorites".to_string(),
                 "  Details".to_string(),
-                "".to_string(),
+                String::new(),
                 "  \u{2191}/\u{2193} action \u{b7} Enter select \u{b7} Esc back".to_string(),
-                "".to_string(),
+                String::new(),
             ],
             vec![
                 "  Model \u{b7} Claude Fable 5".to_string(),
                 "  anthropic/claude-fable-5 \u{b7} plan \u{b7} 1M \u{2026}".to_string(),
-                "".to_string(),
+                String::new(),
                 "\u{203a} Switch this session to it (current)".to_string(),
                 "  Set as default for new sessions".to_string(),
                 "  Effort \u{2190} medium \u{2192}".to_string(),
                 "  Add to favorites".to_string(),
                 "  Details".to_string(),
-                "".to_string(),
+                String::new(),
                 "  \u{2191}/\u{2193} action \u{b7} Enter select \u{b7} Esc back".to_string(),
-                "".to_string(),
+                String::new(),
             ]
         )
     );
@@ -119,7 +119,7 @@ fn the_details_view_frame() {
         vec![
             "  Model \u{b7} Claude Fable 5".to_string(),
             "  anthropic/claude-fable-5 \u{b7} plan \u{b7} 1M context".to_string(),
-            "".to_string(),
+            String::new(),
             "  api       openai-completions".to_string(),
             "  context   1M \u{b7} max output 4k".to_string(),
             "  input     text, image".to_string(),
@@ -130,9 +130,9 @@ fn the_details_view_frame() {
             "  spend     today $1.23 \u{b7} 7 days $3.40 \u{b7} all time $4.50 (40 requests)"
                 .to_string(),
             "  quota     5h 42% \u{b7} resets in 2h 13m; 7d 10% \u{b7} resets in 4d".to_string(),
-            "".to_string(),
+            String::new(),
             "  Esc back".to_string(),
-            "".to_string(),
+            String::new(),
         ]
     );
 }
@@ -257,13 +257,13 @@ fn favoriting_moves_a_model_to_the_top_group() {
         "  local-llm                                                                                                            \u{2502}".to_string(),
         "    Llama 4 Local                                                                         \u{25c9}\u{b7}\u{192}  128k  free              \u{2502}".to_string(),
         "  openrouter                                                                                                           \u{2502}".to_string(),
-        "".to_string(),
+        String::new(),
         " Input                             Cached input                      Output                             $ / 1M tokens".to_string(),
         " $1                                $0                                $5".to_string(),
-        "".to_string(),
+        String::new(),
         "  enter switches to Claude Haiku 5".to_string(),
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close".to_string(),
-        "".to_string(),
+        String::new(),
     ]);
     let removed = press(&mut picker, &["tab", "down", "down", "down", "enter"]);
     assert_eq!(
