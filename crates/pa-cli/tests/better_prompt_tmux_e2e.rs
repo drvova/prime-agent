@@ -3,8 +3,10 @@
 //! tmux user-level verifier for `/better`: the real `prime-agent` binary runs in a private tmux
 //! server against its own daemon, an isolated HOME, and the scripted faux provider. `/better fix
 //! the parser` sends the read-only helper off (it reads `src/parser.rs` through its `python_repl`,
-//! then answers with a rewrite); the rewrite fills the composer with the ready notice, and nothing
-//! is sent: the session records no user message and the model is never asked to answer.
+//! then answers with a rewrite). Its first rewrite cites `cargo test`, which the pane's `PATH`
+//! does not have, so verification sends it back for one refine pass; the refined rewrite fills
+//! the composer with the ready notice, and nothing is sent: the session records no user message
+//! and the model is never asked to answer.
 //!
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
@@ -17,7 +19,12 @@ use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(60);
 
-const REWRITE: &str = "Fix `parse_expr` in `src/parser.rs`; prove it with `cargo test` first.";
+/// The first rewrite: it cites a program the pane's `PATH` (`/usr/bin:/bin`) does not have.
+const FIRST_REWRITE: &str =
+    "Fix `parse_expr` in `src/parser.rs`; prove it with `cargo test` first.";
+
+/// The refined rewrite, after verification named `cargo test`: every reference resolves.
+const REWRITE: &str = "Fix `parse_expr` in `src/parser.rs`; prove it with a failing case first.";
 
 /// A reply the model would give only if the prompt had been sent.
 const SENT_MARKER: &str = "THE PROMPT WAS SENT";
@@ -96,8 +103,8 @@ fn start(dir: &Path) -> Pane {
         .to_string(),
     )
     .expect("settings");
-    // The helper's two turns (a read, then the rewrite), then the answer the model would give
-    // if anything were sent.
+    // The helper's turns (a read, the first rewrite, the refined one after verification), then
+    // the answer the model would give if anything were sent.
     let script = dir.join("faux.json");
     std::fs::write(
         &script,
@@ -106,6 +113,8 @@ fn start(dir: &Path) -> Pane {
                             "arguments": { "code": "print(await fs.read('src/parser.rs'))" } }] },
             { "text": format!("<depth>(1) a failing case first (2) the parser source (3) cargo \
                                test (4) the test</depth>\n<unresolved>\n</unresolved>\n\
+                               <rewrite>\n{FIRST_REWRITE}\n</rewrite>") },
+            { "text": format!("<depth>(4) a failing case</depth>\n<unresolved>\n</unresolved>\n\
                                <rewrite>\n{REWRITE}\n</rewrite>") },
             { "text": SENT_MARKER },
         ] })

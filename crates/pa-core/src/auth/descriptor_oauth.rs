@@ -257,9 +257,12 @@ impl AuthResolver for DescriptorOAuth {
         if let Some(headers) = self.fresh(&stored) {
             return Ok(headers);
         }
-        let _flight = exchange_flight(&format!("oauth\u{1f}{provider}"))
-            .lock_owned()
-            .await;
+        let _flight = exchange_flight(&format!(
+            "oauth\u{1f}{provider}{}",
+            ctx.credential.flight_suffix()
+        ))
+        .lock_owned()
+        .await;
         let storage = Arc::clone(&self.storage);
         let lock_key = provider.to_string();
         let _cross_process = tokio::task::spawn_blocking(move || storage.refresh_lock(&lock_key))

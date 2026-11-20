@@ -621,6 +621,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
+        Some(&config.agent_dir),
         config
             .telemetry
             .is_some()
@@ -636,6 +637,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::command_cache::CacheObserver
         }),
     );
+    super::better::register_better_handler(&mut handlers, &better);
     // `tests.summary`: an awaited test run's output and failures get handles
     // in the same store; telemetry counts each summarized run.
     crate::kernel::test_runs::register_test_summary_handler(
