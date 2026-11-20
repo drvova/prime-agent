@@ -5,9 +5,9 @@ use super::{register_ctx_handlers, SLICE_CHARS_CAP};
 use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload};
 use crate::kernel::spill::{SpillCopy, SpillLookup, SpillStore, SPILL_DIR};
 
-fn handlers_over(store: Option<SpillStore>) -> HostRequestHandlers {
+fn handlers_over(store: Option<&SpillStore>) -> HostRequestHandlers {
     let mut handlers = HostRequestHandlers::new();
-    register_ctx_handlers(&mut handlers, store.as_ref(), /*observer*/ None);
+    register_ctx_handlers(&mut handlers, store, /*observer*/ None);
     handlers
 }
 
@@ -28,10 +28,10 @@ fn numbered(count: usize) -> String {
 async fn page_reads_the_middle_of_a_megabyte_output_whole() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let store = SpillStore::unregistered(dir.path().join(SPILL_DIR), u64::MAX);
-    let text = numbered(21_000);
+    let text = numbered(23_000);
     assert!(text.len() > 1_000_000);
     let handle = format!("out:{}", store.spill(SpillCopy::of_text(&text)).id);
-    let handlers = handlers_over(Some(store));
+    let handlers = handlers_over(Some(&store));
 
     let reply = ask(
         &handlers,
@@ -45,8 +45,8 @@ async fn page_reads_the_middle_of_a_megabyte_output_whole() {
             "handle": handle,
             "state": "stored",
             "totalChars": text.len(),
-            "lines": 21_000,
-            "storedLines": 21_000,
+            "lines": 23_000,
+            "storedLines": 23_000,
             "start": 10_500,
             "end": 10_503,
             "text": "row 010500 of a megabyte of build output, kept\nrow 010501 of a megabyte of build output, kept\nrow 010502 of a megabyte of build output, kept\n",
@@ -81,7 +81,7 @@ async fn grep_and_tail_answer_within_the_cap() {
     let store = SpillStore::unregistered(dir.path().join(SPILL_DIR), u64::MAX);
     let text = "ok 0\nok 1\nerror: a\nok 3\nok 4\nok 5\nok 6\nerror: b\nok 8\nerror: c\n";
     let handle = format!("out:{}", store.spill(SpillCopy::of_text(text)).id);
-    let handlers = handlers_over(Some(store));
+    let handlers = handlers_over(Some(&store));
 
     let grep = ask(
         &handlers,
@@ -125,7 +125,7 @@ async fn handles_without_text_answer_their_state() {
         store.lookup(&second).await,
         SpillLookup::Stored(_)
     ));
-    let handlers = handlers_over(Some(store));
+    let handlers = handlers_over(Some(&store));
     let ephemeral = handlers_over(None);
 
     let answers = (
@@ -235,7 +235,7 @@ async fn a_handle_row_survives_resume() {
             .join(SPILL_DIR),
         u64::MAX,
     );
-    let handlers = handlers_over(Some(fresh));
+    let handlers = handlers_over(Some(&fresh));
     let reply = ask(&handlers, "ctx.tail", json!({"handle": handle, "n": 1})).await;
     assert_eq!(
         (reply["state"].clone(), reply["text"].clone()),
