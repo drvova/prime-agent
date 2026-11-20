@@ -41,6 +41,12 @@ async def run(path: str, old_str: str, new_str: str) -> str:
     match_index = content.index(old_str)
     start_line = content.count("\n", 0, match_index) + 1
     filepath.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
+    try:
+        from rlm.command_cache import invalidate
+    except ImportError:
+        pass
+    else:
+        invalidate()
     resolved_path = str(filepath.resolve())
     _emit_diff(resolved_path, old_str, new_str, start_line)
     return f"Edited {resolved_path}"

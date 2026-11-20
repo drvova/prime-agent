@@ -600,6 +600,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .as_ref(),
         /*observer*/ None,
     );
+    // `command_cache.fact`: read-only cache lookups (telemetry counts).
+    crate::kernel::command_cache::register_command_cache_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |lookup| counters.note_cache_lookup(lookup))
+                as crate::kernel::command_cache::CacheObserver
+        }),
+    );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the

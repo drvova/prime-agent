@@ -2383,3 +2383,40 @@ async fn kernel_login_and_recall_ride_their_own_event() {
         })
     );
 }
+
+/// Read-only cache lookups ride their own `agent readonly cache` event at session end (counts only: never a command or a path).
+#[tokio::test]
+async fn readonly_cache_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    use crate::kernel::command_cache::CacheLookup;
+    for (file_read, hit) in [(false, true), (false, true), (false, false), (true, true)] {
+        counters.note_cache_lookup(CacheLookup { file_read, hit });
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent readonly cache"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent readonly cache").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("readonly_cache_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "readonly_cache_hit_count": 2,
+            "readonly_cache_miss_count": 1,
+            "readonly_cache_fs_read_hit_count": 1,
+            "readonly_cache_fs_read_miss_count": 0,
+        })
+    );
+}

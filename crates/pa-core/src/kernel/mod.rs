@@ -9,6 +9,7 @@ pub mod bootstrap;
 pub mod cancellation;
 pub(crate) mod capabilities;
 pub mod cell_window;
+pub(crate) mod command_cache;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;

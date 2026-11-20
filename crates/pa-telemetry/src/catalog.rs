@@ -1886,6 +1886,23 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// The kernel's read-only command cache (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a lookup ran: allowlisted read-only
+/// `bash()` commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) answered from the cache
+/// or run, and `fs.read` calls answered from the cache or read. Counts only: never a command, a
+/// path, or output.
+const AGENT_READONLY_CACHE: EventRule = EventRule {
+    name: "agent readonly cache",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("readonly_cache_hit_count", required(count())),
+        ("readonly_cache_miss_count", required(count())),
+        ("readonly_cache_fs_read_hit_count", required(count())),
+        ("readonly_cache_fs_read_miss_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2001,6 +2018,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_READONLY_CACHE,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,
