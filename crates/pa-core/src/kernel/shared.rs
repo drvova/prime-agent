@@ -287,6 +287,10 @@ pub struct ExecuteOptions {
     pub on_late_sent_agent_message: Option<LateSentAgentMessageCallback>,
     /// Cap stdout / stderr / result at this many characters. Default 65536.
     pub max_output_chars: Option<usize>,
+    /// Where a cut stream or result pages out: with a store, the cut text is
+    /// kept whole and its marker is the spill's handle; without one the cut
+    /// text is dropped behind a plain truncation marker.
+    pub spill: Option<crate::kernel::spill::SpillStore>,
     /// Synthetic host cell (snapshot/restore/list); excluded from lastCellCode attribution.
     pub internal: bool,
     /// The protocol repair's own request; exempt from waiting on the repair it belongs to.
