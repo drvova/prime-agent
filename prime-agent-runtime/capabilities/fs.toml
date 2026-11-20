@@ -40,3 +40,7 @@ properties = [
   "fs_edit_stale_anchor_count",
   "fs_edit_failed_count",
 ]
+
+[[telemetry]]
+event = "agent fs rereads"
+properties = ["fs_reread_unchanged_count", "fs_reread_diff_count", "fs_reread_full_count"]

@@ -406,6 +406,8 @@ struct CounterValues {
     fs_search: FsSearchCounts,
     /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
     fs_edit: FsEditCounts,
+    /// Whole-file re-reads of seen files, reported by `agent fs rereads`.
+    rereads: RereadCounts,
     /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
     repl_schedule: ReplScheduleCounts,
     /// The kernel `checkpoint.*` counters, reported by `agent repl checkpoint`.
@@ -484,6 +486,14 @@ struct LoginRecallCounts {
     search_hits: u64,
     reads: u64,
     recall_failed: u64,
+}
+
+/// `agent fs rereads`: whole-file re-reads of seen files shown as unchanged, as a diff, or whole.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RereadCounts {
+    unchanged: u64,
+    diff: u64,
+    full: u64,
 }
 
 /// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
@@ -751,6 +761,16 @@ impl SessionCounters {
     }
 
     /// One kernel `fs.read`/`fs.edit` (counts only: never a path or content).
+    /// One whole-file re-read of a seen file and how it was shown (never a path or content).
+    pub(crate) fn note_reread(&self, fact: crate::fs_edit::RereadFact) {
+        use crate::fs_edit::RereadFact;
+        self.with(|values| match fact {
+            RereadFact::Unchanged => values.rereads.unchanged += 1,
+            RereadFact::Diff => values.rereads.diff += 1,
+            RereadFact::Full => values.rereads.full += 1,
+        });
+    }
+
     pub(crate) fn note_fs_edit(&self, fact: crate::fs_edit::EditFact) {
         use crate::fs_edit::{EditFact, FsEditOperation};
         self.with(|values| {
@@ -1649,6 +1669,20 @@ impl SessionTelemetry {
                 edit_properties.set(key, Value::from(value));
             }
             self.client.track("agent fs edit", edit_properties);
+        }
+        // A session that never re-read a seen file sends no rereads event.
+        let mut rereads = RereadCounts::default();
+        self.counters.with(|values| rereads = values.rereads);
+        if rereads != RereadCounts::default() {
+            let mut reread_properties = self.session_properties();
+            for (key, value) in [
+                ("fs_reread_unchanged_count", rereads.unchanged),
+                ("fs_reread_diff_count", rereads.diff),
+                ("fs_reread_full_count", rereads.full),
+            ] {
+                reread_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent fs rereads", reread_properties);
         }
         // A session that never scheduled from the kernel sends no schedule event.
         let mut schedule = ReplScheduleCounts::default();

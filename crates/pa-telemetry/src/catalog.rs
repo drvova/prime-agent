@@ -1753,6 +1753,21 @@ const AGENT_FS_EDIT: EventRule = EventRule {
     ],
 };
 
+/// Diff-only re-reads for one session (v2), emitted at session end beside `agent session ended`
+/// only when the session re-read a file it had seen: whole-file re-reads shown as one
+/// "unchanged" line, as a diff against the seen version, or whole (the seen version left the
+/// context, or the diff was no smaller). Counts only: never a path or file content.
+const AGENT_FS_REREADS: EventRule = EventRule {
+    name: "agent fs rereads",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("fs_reread_unchanged_count", required(count())),
+        ("fs_reread_diff_count", required(count())),
+        ("fs_reread_full_count", required(count())),
+    ],
+};
+
 /// Kernel session-owned scheduled jobs (`schedule.add/list/cancel`) adoption for one session
 /// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
 /// cap) only when the session used them: jobs added by kind, listings, cancels, and refused calls.
@@ -1993,6 +2008,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_WEB_READS,
         &AGENT_FS_SEARCH,
         &AGENT_FS_EDIT,
+        &AGENT_FS_REREADS,
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,

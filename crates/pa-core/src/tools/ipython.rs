@@ -15,6 +15,7 @@ use crate::tools::tool_definition::{
     AbortSignal, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolExecutionResult,
     ToolUpdate,
 };
+pub(crate) use diff::diff_lines;
 use diff::generate_diff_string;
 
 /// Mime types the model context accepts as images.

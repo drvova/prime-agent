@@ -36,11 +36,12 @@ fn anchor_at(dir: &Path, name: &str, line: usize) -> String {
 
 fn run_edit(dir: &Path, name: &str, edits: &Value) -> anyhow::Result<(Value, EditFact)> {
     let root = dir.to_string_lossy();
-    edit(&parse_edit(&json!({
+    let (reply, fact, _) = edit(&parse_edit(&json!({
         "path": dir.join(name).to_string_lossy(),
         "cwd": root,
         "edits": edits,
-    }))?)
+    }))?)?;
+    Ok((reply, fact))
 }
 
 /// Every file name in `dir` (a failed or refused edit leaves no temp file).
@@ -589,6 +590,7 @@ async fn the_host_requests_round_trip_and_report_facts() {
     let mut handlers = HostRequestHandlers::new();
     FsEditHost {
         observer: Some(Arc::new(move |fact| recorded.lock().unwrap().push(fact))),
+        seen: None,
     }
     .register(&mut handlers);
     let root = dir.path().to_string_lossy().to_string();

@@ -456,16 +456,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
-    // `fs.read`/`fs.edit`: the kernel's anchored (hashline) reads and edits;
-    // telemetry folds each call (never a path or content) into the counters.
-    crate::fs_edit::FsEditHost {
-        observer: config.telemetry.is_some().then(|| {
-            let counters = std::sync::Arc::clone(&session_counters);
-            std::sync::Arc::new(move |fact| counters.note_fs_edit(fact))
-                as crate::fs_edit::EditObserver
-        }),
-    }
-    .register(&mut handlers);
     // `usage.get`: the session's spend (and the no-daemon quota fallback);
     // telemetry counts each read (never a number).
     crate::usage_host::register_usage_host_handlers(
@@ -590,6 +580,31 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .as_deref()
                 .and_then(super::harness_digest::session_artifact_dir_for_log)
         });
+    // `fs.read`/`fs.edit`: the kernel's anchored (hashline) reads and edits;
+    // telemetry folds each call (never a path or content) into the counters.
+    // Whole-file re-reads of files the model has seen shrink to "unchanged" or
+    // a diff, with the full view in the spill store; the context probe binds
+    // once the agent exists.
+    let seen_files = std::sync::Arc::new(crate::fs_edit::SeenFiles::new(
+        session_artifact_dir
+            .as_deref()
+            .map(crate::kernel::spill::SpillStore::for_session_dir),
+        thinning_settings.keep_recent_rounds.max(1) as u64,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_reread(fact))
+                as crate::fs_edit::RereadObserver
+        }),
+    ));
+    crate::fs_edit::FsEditHost {
+        observer: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_fs_edit(fact))
+                as crate::fs_edit::EditObserver
+        }),
+        seen: Some(std::sync::Arc::clone(&seen_files)),
+    }
+    .register(&mut handlers);
     // `ctx.*`: page a cut cell output back in by its handle, from the
     // session's spill store (an ephemeral session answers `unavailable`).
     crate::kernel::spill::host::register_ctx_handlers(
@@ -1143,6 +1158,46 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
             wiring.rlm_usage.store(),
         ));
+    // The seen-files probe: the assistant turns so far and the newest compaction, read from
+    // the live context (weakly: the kernel's handlers hold the probe).
+    let probe_agent = Arc::downgrade(&agent);
+    seen_files.bind(std::sync::Arc::new(move || {
+        let agent = probe_agent.clone();
+        Box::pin(async move {
+            let Some(agent) = agent.upgrade() else {
+                return crate::fs_edit::ContextMark {
+                    turn: 0,
+                    compacted_at_ms: Some(u64::MAX),
+                };
+            };
+            let messages = agent.state().await.messages;
+            crate::fs_edit::ContextMark {
+                turn: messages
+                    .iter()
+                    .filter(|message| {
+                        matches!(
+                            message,
+                            pa_agent::types::AgentMessage::Standard(
+                                pa_agent::types::Message::Assistant(_)
+                            )
+                        )
+                    })
+                    .count() as u64,
+                compacted_at_ms: messages
+                    .iter()
+                    .filter_map(|message| match message {
+                        pa_agent::types::AgentMessage::Custom(custom)
+                            if custom.role == "compactionSummary" =>
+                        {
+                            custom.payload["timestamp"].as_u64()
+                        }
+                        pa_agent::types::AgentMessage::Custom(_)
+                        | pa_agent::types::AgentMessage::Standard(_) => None,
+                    })
+                    .max(),
+            }
+        })
+    }));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),

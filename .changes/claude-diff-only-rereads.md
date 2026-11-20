@@ -1,0 +1,1 @@
+- Re-reading a file with `fs.read` that is unchanged since the model last saw it now shows a single "unchanged since turn N" line with a handle to the full view, and a changed file shows only a diff against the version it saw; the returned view still holds every line.
