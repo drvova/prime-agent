@@ -2436,6 +2436,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// Previews ride their own `agent previews` event at session end, with the `ctx.*` reads that followed one (counts only: never a line or a pattern).
 #[tokio::test]
 async fn previews_ride_their_own_event() {
+    use crate::kernel::spill::PreviewFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2444,7 +2445,6 @@ async fn previews_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::kernel::spill::PreviewFact;
     counters.note_preview_followup();
     counters.note_preview(PreviewFact {
         kept_lines: 10,

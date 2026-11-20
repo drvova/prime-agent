@@ -20,6 +20,7 @@
 //! function of history.
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use fancy_regex::Regex;
@@ -161,7 +162,7 @@ pub(crate) fn build(text: &str, budget: usize, noise: &NoiseSet) -> Option<Previ
             None => line.to_string(),
         };
         if count[at] > 1 {
-            out.push_str(&format!("  ×{}", count[at]));
+            let _ = write!(out, "  ×{}", count[at]);
         }
         out
     };
