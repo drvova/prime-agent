@@ -587,14 +587,16 @@ async fn the_rate_gate_reports_the_wait_and_serializes() {
             }
         })),
     };
-    // The first slot arms the interval; the second waits it out.
-    gate.before_request(options.cancel, options.on_upload_delay.as_ref())
+    // The first slot takes the only token; the second waits out the interval.
+    let _first = gate
+        .before_request(options.cancel, options.on_upload_delay.as_ref())
         .await
         .expect("the first slot");
     gate.before_request(None, options.on_upload_delay.as_ref())
         .await
         .expect("the second slot");
-    assert!(delays.load(Ordering::SeqCst) >= TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS - 1000);
+    // The trace controller starts at the platform's 5 requests a minute: a 12 s interval.
+    assert_eq!(delays.load(Ordering::SeqCst), 12_000);
 }
 
 #[tokio::test]
