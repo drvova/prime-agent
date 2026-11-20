@@ -2,9 +2,10 @@
 //! module drives, installed after the venv is ready rather than inside its build.
 //!
 //! They are default packages of the kernel venv, installed by uv like the others, but they are
-//! large (about 55 MB to download, 166 MB on disk on Linux x86_64) and Frida publishes wheels for
-//! only some platforms. Inside the venv build every first run and every runtime upgrade would wait
-//! on the download, and a platform without a wheel would fail the whole build. So:
+//! large (about 55 MB to download, 166 MB on disk on 64-bit x86 Linux), and Frida publishes
+//! wheels for only some platforms. Inside the venv build every first run and every runtime
+//! upgrade would wait on the download, and a platform without a wheel would fail the whole
+//! build. So:
 //!
 //! - Kernel starts never wait on it ([`KernelFrida::InstallInBackground`]): a detached process
 //!   runs the install and records its progress in the venv's `.frida-install`, which the REPL's
@@ -89,7 +90,8 @@ finally:
 static LAUNCHED: Mutex<Option<HashSet<PathBuf>>> = Mutex::new(None);
 
 /// Why Frida publishes no wheel for this platform, or `None` when it does (the pinned release
-/// ships manylinux x86/x86_64/armv7/aarch64, macOS x86_64/arm64, and Windows x86/x64/arm64).
+/// ships manylinux `x86`/`x86_64`/`armv7`/`aarch64`, macOS `x86_64`/`arm64`, and Windows
+/// `x86`/`x64`/`arm64`).
 fn missing_wheel(os: &str, arch: &str, musl: bool) -> Option<String> {
     let published = match os {
         "linux" => !musl && matches!(arch, "x86" | "x86_64" | "arm" | "aarch64"),
