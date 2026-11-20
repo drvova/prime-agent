@@ -32,7 +32,7 @@
 mod budget;
 pub(crate) mod host;
 mod index;
-mod marker;
+pub(crate) mod marker;
 pub(crate) mod noise;
 pub(crate) mod preview;
 #[cfg(test)]

@@ -11,6 +11,7 @@ pub(crate) mod capabilities;
 pub mod cell_window;
 pub(crate) mod command_cache;
 pub(crate) mod edit_checks;
+pub mod error_context;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;
