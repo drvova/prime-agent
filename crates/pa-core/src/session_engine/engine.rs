@@ -592,13 +592,24 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     // `ctx.*`: page a cut cell output back in by its handle, from the
     // session's spill store (an ephemeral session answers `unavailable`).
+    let spill_store = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
-        session_artifact_dir
-            .as_deref()
-            .map(crate::kernel::spill::SpillStore::for_session_dir)
-            .as_ref(),
+        spill_store.as_ref(),
         /*observer*/ None,
+    );
+    // `tests.summary`: an awaited test run's output and failures get handles
+    // in the same store; telemetry counts each summarized run.
+    crate::kernel::test_runs::register_test_summary_handler(
+        &mut handlers,
+        spill_store.as_ref(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_test_summary(fact))
+                as crate::kernel::test_runs::TestRunObserver
+        }),
     );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
