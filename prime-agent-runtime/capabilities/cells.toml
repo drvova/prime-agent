@@ -5,6 +5,7 @@ internal_host_requests = ["cell.completed", "cell.consumed"]
 probe = [
   "import rlm.cells as _cells",
   "assert all(callable(getattr(_cells, _m, None)) for _m in ('get', 'handles'))",
+  "assert rlm.rlm.cells is _cells",
 ]
 
 [[telemetry]]
