@@ -268,15 +268,14 @@ pub fn thin_context(
                     // (same budget) before its handle; a pure function of the
                     // text and the session's noise snapshot.
                     ThinnedRecall::Spill(store) => {
-                        match store.preview(&text, HEAD_CHARS + TAIL_CHARS, &result.tool_name) {
-                            Some(preview) => {
-                                let _ = write!(thinned, "{preview}\n{}", store.retain(&text).thinned_marker());
-                            }
-                            None => {
-                                thinned.push_str(&text[..head_end]);
-                                let _ = write!(thinned, "\n{}\n", store.retain(&text).thinned_marker());
-                                thinned.push_str(&text[tail_start..]);
-                            }
+                        if let Some(preview) =
+                            store.preview(&text, HEAD_CHARS + TAIL_CHARS, &result.tool_name)
+                        {
+                            let _ = write!(thinned, "{preview}\n{}", store.retain(&text).thinned_marker());
+                        } else {
+                            thinned.push_str(&text[..head_end]);
+                            let _ = write!(thinned, "\n{}\n", store.retain(&text).thinned_marker());
+                            thinned.push_str(&text[tail_start..]);
                         }
                     }
                     ThinnedRecall::ToolResult => {

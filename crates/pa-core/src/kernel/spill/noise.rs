@@ -167,11 +167,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl NoiseLearner {
-    /// A learner that remembers nothing across sessions (tests, ephemeral sessions).
-    pub(crate) fn in_memory() -> Self {
-        Self::at(None)
-    }
-
     /// The learner of the project at `project`, stored under `agent_dir`.
     pub(crate) fn for_project(agent_dir: &Path, project: &Path) -> Self {
         let digest = Sha256::digest(project.to_string_lossy().as_bytes());

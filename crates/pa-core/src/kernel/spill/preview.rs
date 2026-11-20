@@ -269,7 +269,7 @@ mod tests {
         ])
     }
 
-    /// A is_noise failed build previews its error, warning, and location lines,
+    /// A noisy failed build previews its error, warning, and location lines,
     /// folds a repeated line into `×N` and the learned banners into one
     /// marker, keeps under its budget, and is the same preview every time.
     #[test]
