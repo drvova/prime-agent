@@ -1,0 +1,1 @@
+- Read-only commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) and `fs.read` now answer instantly from a cache, marked `cached`, while the files they read are unchanged; edits and any write seen through mtime refresh them, and nothing with side effects is ever cached.

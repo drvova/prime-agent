@@ -628,6 +628,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .then(|| std::sync::Arc::clone(&session_counters)),
         spill_store.clone(),
     ));
+    // `command_cache.fact`: read-only cache lookups (telemetry counts).
+    crate::kernel::command_cache::register_command_cache_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |lookup| counters.note_cache_lookup(lookup))
+                as crate::kernel::command_cache::CacheObserver
+        }),
+    );
     super::better::register_better_handler(&mut handlers, &better);
     // `tests.summary`: an awaited test run's output and failures get handles
     // in the same store; telemetry counts each summarized run.

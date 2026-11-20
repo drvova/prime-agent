@@ -149,6 +149,14 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Read-only command cache (`kernel::command_cache`): the kernel answers an allowlisted read-only
+`bash()` command (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`: one simple command, no shell
+syntax, no writing option) or an `fs.read` from its last result while the files it read keep their
+size, mtime, and inode (`rlm.command_cache`), marked `cached`; `fs.edit` and the `edit` skill clear
+it. Each lookup is reported through the fire-and-forget `command_cache.fact` host request.
+Adoption counts ride the `agent readonly cache` event. Non-goals: caching anything with side
+effects, and a setting.
+
 Edit checks (`kernel::edit_checks`): the kernel runs the touched file's cheapest check after
 `fs.edit` and the `edit` skill (`rlm.edit_check`: fatal-rule `ruff` or `py_compile`, `cargo check
 -p`, `tsc --noEmit`, `go vet`), learns per project which checks pay for themselves, and reports

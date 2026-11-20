@@ -18,10 +18,10 @@ whole patch is rejected (``StaleAnchorsError``) and nothing is written.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from . import edit_check, host_request
+from . import command_cache, edit_check, host_request
 
 __all__ = [
     "AnchoredLine",
@@ -327,6 +327,8 @@ class FileView:
     encoding: str = "utf-8"
     final_newline: bool = True
     text: str = ""
+    # Answered from the read-only cache: the file is unchanged since the same read.
+    cached: bool = field(default=False, compare=False)
 
     def anchor(self, line: int) -> str:
         """The anchor of 1-based ``line`` (which this view must show)."""
@@ -416,10 +418,20 @@ async def read(path: str | os.PathLike[str], *, start: int | None = None, end: i
         payload["start"] = _count("start", start, minimum=1)
     if end is not None:
         payload["end"] = _count("end", end, minimum=1)
+    # The same read of an unchanged file answers from the cache, marked `cached`.
+    key = ("fs.read", payload["path"], payload.get("start"), payload.get("end"))
+    stamps = command_cache.fingerprint("", command_cache.plan_files(payload["path"]))
+    if stamps is not None and None in stamps[0]:
+        stamps = None  # a file that is not there is never cached
+    hit = command_cache.lookup(key, stamps) if stamps is not None else None
+    command_cache.note("fs.read", hit is not None)
+    if hit is not None:
+        return hit
+    epoch = command_cache.current_epoch()
     reply = await host_request("fs.read", payload)
     if not isinstance(reply, dict):
         raise RuntimeError(f"fs.read returned a non-object result: {reply!r}")
-    return FileView(
+    view = FileView(
         path=str(reply.get("path") or ""),
         lines=_rows(reply.get("lines")),
         total_lines=int(reply.get("totalLines") or 0),
@@ -431,6 +443,11 @@ async def read(path: str | os.PathLike[str], *, start: int | None = None, end: i
         final_newline=bool(reply.get("finalNewline")),
         text=str(reply.get("text") or ""),
     )
+    if stamps is not None:
+        header, _, rows = view.text.partition("\n")
+        cached = replace(view, cached=True, text=f"{header} · cached\n{rows}" if rows else f"{header} · cached")
+        command_cache.remember(key, stamps, epoch, cached, chars=len(view.text))
+    return view
 
 
 def _anchor(value: Any, number: int) -> str:
@@ -496,6 +513,8 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
     if not isinstance(items, (list, tuple)) or not items:
         raise TypeError("edits must be a non-empty list of edit dicts (or one dict)")
     payload = {**_target(path), "edits": [_wire_edit(item, number) for number, item in enumerate(items, 1)]}
+    # Any write ends every cached read (a rejected patch wrote nothing, but costs one re-read).
+    command_cache.invalidate()
     reply = await host_request("fs.edit", payload)
     if not isinstance(reply, dict):
         raise RuntimeError(f"fs.edit returned a non-object result: {reply!r}")
