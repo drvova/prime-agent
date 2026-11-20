@@ -1,0 +1,1 @@
+- Streaming replies no longer stutter over slow terminals: while a turn streams, the TUI learns how long the terminal takes to take a frame and paints between 60 and 20 frames a second to match, so frames stop piling up over SSH. Typing, the first frame, and idle screens keep painting immediately. No settings.

@@ -17,7 +17,9 @@ use anyhow::Context;
 /// drains would otherwise park the run forever; green settles take milliseconds.
 const HEADLESS_SETTLE_TIMEOUT_MS: u64 = 60_000;
 
-const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
+/// The input and first-paint frame interval; a streaming turn's frames follow the learned
+/// [`super::render_pacing::RenderPacer`] interval instead.
+const MIN_RENDER_INTERVAL: Duration = super::render_pacing::MIN_FRAME_INTERVAL;
 /// The most already-queued terminal inputs one select wake drains into the batch: a burst
 /// applies as one batch with one paint, and the bound keeps a flood from starving the other
 /// arms (stream events, timers) for longer than one batch.
@@ -927,6 +929,10 @@ async fn run_interactive_surface(
     // is armed while a dirty frame waits out the interval.
     let mut last_render_at: Option<Instant> = None;
     let mut render_deadline: Option<Instant> = None;
+    // The streaming frame interval, learned from frame write times; an input since the last
+    // frame keeps the next one at the floor.
+    let mut render_pacer = super::render_pacing::RenderPacer::new(Instant::now());
+    let mut input_since_paint = false;
     let mut quiet_tick_deadline: Option<Instant> = None;
     let mut anim_started: Option<Instant> = None;
     // The spinner phase painted by the last frame (`usize::MAX` before the first): a quiet turn
@@ -1119,6 +1125,7 @@ async fn run_interactive_surface(
                 let chunk_end = matches!(input, UiInput::InputChunkEnd);
                 if !chunk_end {
                     session.dirty = true;
+                    input_since_paint = true;
                 }
                 match input {
                     UiInput::Key(key) => {
@@ -1945,12 +1952,31 @@ async fn run_interactive_surface(
         // now.
         if session.dirty {
             if let Some(renderer) = renderer.is_terminal_mut() {
-                let interval_elapsed =
-                    last_render_at.is_none_or(|at| at.elapsed() >= MIN_RENDER_INTERVAL);
+                let cause = if input_since_paint {
+                    super::render_pacing::PaintCause::Input
+                } else if session.turn_active {
+                    super::render_pacing::PaintCause::Streaming
+                } else {
+                    super::render_pacing::PaintCause::Idle
+                };
+                let interval = render_pacer.interval(cause);
+                let interval_elapsed = last_render_at.is_none_or(|at| at.elapsed() >= interval);
                 if interval_elapsed {
+                    let drawing = Instant::now();
                     crate::app::draw(renderer, &mut view)?;
+                    let painted = Instant::now();
+                    // Only streaming frames teach the interval: an input or idle frame's write
+                    // says nothing about a sustained stream.
+                    match cause {
+                        super::render_pacing::PaintCause::Streaming => {
+                            render_pacer.observe_write(painted - drawing, painted);
+                        }
+                        super::render_pacing::PaintCause::Input
+                        | super::render_pacing::PaintCause::Idle => {}
+                    }
+                    input_since_paint = false;
                     session.dirty = false;
-                    last_render_at = Some(Instant::now());
+                    last_render_at = Some(painted);
                     last_pulse_phase = view.pulse_frame;
                     render_deadline = None;
                     // The attach fold arms this once: the first frame that renders the rebuilt
@@ -1960,7 +1986,7 @@ async fn run_interactive_surface(
                         pa_types::memory_release::trim_freed_heap();
                     }
                 } else {
-                    render_deadline = Some(last_render_at.unwrap() + MIN_RENDER_INTERVAL);
+                    render_deadline = Some(last_render_at.unwrap() + interval);
                 }
             } else {
                 // Headless capture keeps the per-change frame sequence
