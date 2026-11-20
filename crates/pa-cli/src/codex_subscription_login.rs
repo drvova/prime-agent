@@ -5,15 +5,16 @@
 //! checks it before the credential write.
 
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 
 use pa_ai::oauth::{
     login_openai_codex, CodexHttp, CodexLoginUi, DEFAULT_ORIGINATOR, LOGIN_CANCELLED,
 };
-use pa_core::auth::{AuthCredential, AuthStorage, OPENAI_CODEX_PROVIDER_ID};
+use pa_core::auth::{AuthCredential, OPENAI_CODEX_PROVIDER_ID};
 use pa_tui::auth_panel::{AuthPanelHandle, PastePromptTone, PasteStyle};
 use pa_tui::provider_auth::ProviderAuthOutcome;
+
+use crate::provider_login::store::LoginStore;
 
 pub(crate) struct PanelCodexLoginUi {
     panel: AuthPanelHandle,
@@ -62,7 +63,7 @@ impl CodexLoginUi for PanelCodexLoginUi {
 /// Run the flow, store the credential, and report the status; a
 /// cancelled surface stays silent.
 pub(crate) async fn run_codex_subscription_login(
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     provider_name: &str,
     http: &dyn CodexHttp,
     ui: &dyn CodexLoginUi,
@@ -82,8 +83,7 @@ pub(crate) async fn run_codex_subscription_login(
     if ui.is_cancelled() {
         return ProviderAuthOutcome::Cancelled;
     }
-    let mut auth = AuthStorage::create(agent_dir);
-    auth.set(
+    if let Err(error) = store.save(
         OPENAI_CODEX_PROVIDER_ID,
         AuthCredential::Oauth {
             access: credentials.access,
@@ -98,21 +98,21 @@ pub(crate) async fn run_codex_subscription_login(
             audience_mode: None,
             enterprise_url: None,
         },
-    );
-    if let Some(error) = auth.drain_errors().pop() {
+    ) {
         return ProviderAuthOutcome::Error(format!(
             "Failed to login to {provider_name}: could not save the login: {error}"
         ));
     }
     ProviderAuthOutcome::Status(format!(
-        "Logged in to {provider_name}. Credentials saved to {}",
-        agent_dir.join("auth.json").display()
+        "Logged in to {provider_name}. {}",
+        store.saved_note()
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pa_core::auth::AuthStorage;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
@@ -217,7 +217,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(i64::MAX, |elapsed| elapsed.as_millis() as i64);
         match run_codex_subscription_login(
-            &agent,
+            &LoginStore::Default { agent_dir: &agent },
             "ChatGPT Plus/Pro (Codex Subscription)",
             &http,
             &ui,
@@ -281,7 +281,7 @@ mod tests {
         ui.flag().store(true, Ordering::Relaxed);
         assert_eq!(
             run_codex_subscription_login(
-                &agent,
+                &LoginStore::Default { agent_dir: &agent },
                 "ChatGPT Plus/Pro (Codex Subscription)",
                 &http,
                 &ui
@@ -304,7 +304,7 @@ mod tests {
         let ui = ScriptedUi::new();
         assert_eq!(
             run_codex_subscription_login(
-                &agent,
+                &LoginStore::Default { agent_dir: &agent },
                 "ChatGPT Plus/Pro (Codex Subscription)",
                 &http,
                 &ui
@@ -327,7 +327,13 @@ mod tests {
         std::fs::create_dir_all(&agent).expect("agent dir");
         let http = token_http(&account_jwt("acct-1"));
         let ui = ScriptedUi::new();
-        run_codex_subscription_login(&agent, "Codex", &http, &ui).await;
+        run_codex_subscription_login(
+            &LoginStore::Default { agent_dir: &agent },
+            "Codex",
+            &http,
+            &ui,
+        )
+        .await;
         // An unexpired credential resolves its access token through the
         // default integration (the daemon's path).
         let mut auth = AuthStorage::create(&agent);

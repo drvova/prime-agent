@@ -9,6 +9,7 @@ fn inputs() -> SummaryInputs {
         bash_running: false,
         subagents_running: false,
         progress_note: None,
+        waiting_on: None,
     }
 }
 

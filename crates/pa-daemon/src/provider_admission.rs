@@ -152,6 +152,12 @@ impl AdmissionService {
         cut
     }
 
+    /// The shared pool as an in-process permit source: the supervisor's own session boots
+    /// (crash-recovery adoption) take the same budget as the workers' boots.
+    pub(crate) fn boot_source(&self) -> Arc<dyn AdmissionSource> {
+        Arc::new(self.pool.clone())
+    }
+
     /// The read-only controller view for the `/usage` page.
     pub(crate) fn pacing(&self) -> Vec<ProviderPacing> {
         self.pool.pacing()

@@ -4,6 +4,7 @@
   - `name: str`
   - `session_dir: Path`
   - `model: str`: provider/model, full resolved model name
+  - `queued_ms: int`: how long the spawn waited for a free session-boot slot under load (0 when none was needed)
 - `RLMCreateSessionHandle`
   - `active_session_id: str`: live daemon-instance id
   - `session_id: str`: durable on-disk session identity

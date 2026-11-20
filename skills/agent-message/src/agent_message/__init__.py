@@ -61,6 +61,33 @@ async def send(
     return receipt
 
 
+async def wait(
+    *,
+    sender: str | None = None,
+    sender_role: ReceiverRole | str | None = None,
+    timeout_ms: int,
+) -> dict[str, Any]:
+    """Wait until a family member's direct message arrives at this session.
+
+    Returns ``{outcome, messageId, senderName, senderRole, preview, blockedVia}``;
+    ``outcome`` is ``"message"``, ``"timeout"``, ``"cycle"``, or ``"no_sender"``.
+    """
+    if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
+        raise TypeError(f"timeout_ms must be int, got {type(timeout_ms).__name__}")
+    if not 1 <= timeout_ms <= 600_000:
+        raise ValueError("timeout_ms must be from 1 to 600000")
+    if sender_role is not None and sender_role not in ("parent", "sibling", "child"):
+        raise ValueError('sender_role must be "parent", "sibling", or "child"')
+    if sender is not None and (not isinstance(sender, str) or not sender.strip()):
+        raise ValueError("sender must be a non-empty str")
+    if sender_role == "parent" and sender is not None:
+        raise ValueError("sender must be omitted for the parent")
+    return await host_request(
+        "agent_message.wait",
+        {"sender": sender, "sender_role": sender_role, "timeout_ms": timeout_ms},
+    )
+
+
 def _emit_sent_message(receipt: dict[str, Any], receiver_role: str | None = None) -> None:
     try:
         from rlm import emit
