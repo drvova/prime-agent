@@ -633,6 +633,12 @@ pub enum BetterTelemetryFact {
     BriefUnchanged,
     /// A verification found unresolved references and ran a refine pass.
     VerificationPass,
+    /// An acceptance-check round started at a run's end.
+    CheckRound,
+    /// One acceptance check of a round passed.
+    CheckPassed,
+    /// One acceptance check of a round failed.
+    CheckFailed,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -647,6 +653,9 @@ struct BetterCounts {
     brief_runs: u64,
     brief_unchanged: u64,
     verification_passes: u64,
+    check_rounds: u64,
+    checks_passed: u64,
+    checks_failed: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -771,6 +780,9 @@ impl SessionCounters {
                 BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
                 BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
                 BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
+                BetterTelemetryFact::CheckRound => &mut counts.check_rounds,
+                BetterTelemetryFact::CheckPassed => &mut counts.checks_passed,
+                BetterTelemetryFact::CheckFailed => &mut counts.checks_failed,
             };
             *counter += 1;
         });
@@ -1583,6 +1595,9 @@ impl SessionTelemetry {
                 ("better_brief_run_count", better.brief_runs),
                 ("better_brief_unchanged_count", better.brief_unchanged),
                 ("better_verification_pass_count", better.verification_passes),
+                ("better_check_round_count", better.check_rounds),
+                ("better_check_passed_count", better.checks_passed),
+                ("better_check_failed_count", better.checks_failed),
             ] {
                 better_properties.set(key, Value::from(value));
             }

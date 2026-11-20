@@ -33,6 +33,17 @@ pub struct KernelNotice {
     pub row: CustomMessage,
     /// The queue strip's label for the row's preview.
     pub preview_label: &'static str,
+    pub delivery: NoticeDelivery,
+}
+
+/// What admitting a notice does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeDelivery {
+    /// The row steers onto the session: a busy turn takes it next, an idle session wakes into it.
+    Steer,
+    /// The row is only recorded: persisted and shown in the transcript, with no turn behind it.
+    /// A daemonless embedding has no transcript to show it in and drops it.
+    Record,
 }
 
 impl KernelNotice {
@@ -53,6 +64,7 @@ impl KernelNotice {
                 crate::autonomous::now_millis(),
             ),
             preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+            delivery: NoticeDelivery::Steer,
         }
     }
 
@@ -73,6 +85,7 @@ impl KernelNotice {
                 crate::autonomous::now_millis(),
             ),
             preview_label: ASYNC_CELL_COMPLETION_PREVIEW_LABEL,
+            delivery: NoticeDelivery::Steer,
         }
     }
 }
@@ -307,6 +320,7 @@ fn validate_factory_progress(data: &Value) -> anyhow::Result<KernelNotice> {
             crate::autonomous::now_millis(),
         ),
         preview_label: FACTORY_PROGRESS_PREVIEW_LABEL,
+        delivery: NoticeDelivery::Steer,
     })
 }
 
@@ -315,6 +329,31 @@ fn validate_factory_progress(data: &Value) -> anyhow::Result<KernelNotice> {
 /// exists, and weak so the handler -> agent -> kernel -> handler graph
 /// stays acyclic (a dropped session's handlers bind nothing).
 pub type BashNoticeAgentSlot = Arc<Mutex<Option<Weak<pa_agent::agent::Agent>>>>;
+
+/// The in-process notice sink over one session's own agent: a [`NoticeDelivery::Steer`] notice
+/// steers its row onto the agent's steering queue and fires the embedding's wake; a
+/// [`NoticeDelivery::Record`] notice has no transcript to land in and drops.
+pub fn in_process_notice_sink(
+    wake: &BashNoticeWake,
+    agent_slot: &BashNoticeAgentSlot,
+) -> KernelNoticeSink {
+    let notice_wake = Arc::clone(wake);
+    let notice_slot = Arc::clone(agent_slot);
+    Arc::new(move |notice| {
+        match notice.delivery {
+            NoticeDelivery::Steer => {}
+            NoticeDelivery::Record => return,
+        }
+        let Some(agent) = bound_agent(&notice_slot) else {
+            return;
+        };
+        let Some(row) = session_message_to_loop(&SessionAgentMessage::Custom(notice.row)) else {
+            return;
+        };
+        agent.steer(row);
+        notice_wake();
+    })
+}
 
 /// The in-process sinks over one session's own agent (the daemonless
 /// embeddings): a notice steers its row (`[bash-done]` or
@@ -327,18 +366,7 @@ pub fn register_in_process_kernel_notice_handlers(
     agent_slot: &BashNoticeAgentSlot,
     handlers: &mut HostRequestHandlers,
 ) {
-    let notice_wake = Arc::clone(wake);
-    let notice_slot = Arc::clone(agent_slot);
-    let notice: KernelNoticeSink = Arc::new(move |notice| {
-        let Some(agent) = bound_agent(&notice_slot) else {
-            return;
-        };
-        let Some(row) = session_message_to_loop(&SessionAgentMessage::Custom(notice.row)) else {
-            return;
-        };
-        agent.steer(row);
-        notice_wake();
-    });
+    let notice = in_process_notice_sink(wake, agent_slot);
     let consumed_slot = Arc::clone(agent_slot);
     let consumed: BackgroundJobConsumedSink = Arc::new(move |notice| {
         let Some(agent) = bound_agent(&consumed_slot) else {

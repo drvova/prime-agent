@@ -62,6 +62,7 @@ async fn queue_withdrawals_clear_only_the_last_idle_notes() {
                 admit_kernel_notice(
                     &worker.recovery,
                     &worker.core,
+                    &worker.events,
                     &Arc::new(Notify::new()),
                     crate::engine::KernelNotice::bash_completion(
                         4321,
@@ -173,6 +174,7 @@ async fn headless_completion_counts_the_background_lane() {
     admit_kernel_notice(
         &worker.recovery,
         &worker.core,
+        &worker.events,
         &Arc::new(Notify::new()),
         crate::engine::KernelNotice::bash_completion(
             4321,
@@ -215,6 +217,7 @@ async fn headless_completion_counts_the_background_lane() {
     admit_kernel_notice(
         &worker.recovery,
         &worker.core,
+        &worker.events,
         &Arc::new(Notify::new()),
         crate::engine::KernelNotice::cell_completion(
             "cell-a",

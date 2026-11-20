@@ -1175,6 +1175,16 @@ impl AgentSessionEngine {
         })
         .await
         .inspect(|engine| {
+            // A failed acceptance-check round steers through the worker's notice lane; a passed
+            // one records its row there.
+            if let Some(sink) = self
+                .kernel_notice_sink
+                .lock()
+                .expect("kernel notice sink lock")
+                .clone()
+            {
+                engine.better.bind_notice_sink(sink);
+            }
             // A queue-mode switch that landed mid-build wrote only the live slot: re-apply the
             // modes so the first build never serves a stale one.
             let (steering_mode, follow_up_mode) = {

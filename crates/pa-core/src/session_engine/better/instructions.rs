@@ -19,6 +19,14 @@ glob=\"*.rs\"))`, `print(await fs.glob(\"**/*.toml\"))`, `print(await fs.find(\"
 `bash` runs only one read-only git command (`git log`, `show`, `diff`, `status`, `ls-files`, \
 `grep`, `rev-parse`). `edit` and every write are refused. Do not carry out the task.";
 
+/// The acceptance-check block every rewrite and brief ends with (see [`super::checks`]).
+const ACCEPTANCE_RULES: &str = "\
+End the rewrite with an <acceptance> block: one check per line that passes only once the task is \
+done, each `run: <command>` (a test, build, or lint command that exits 0), `exists: <path>`, or \
+`grep: <path> <literal text>`. Prefer the narrowest test that proves the change. Use only \
+programs you located; a path may name a file the task creates. The host runs these checks when \
+the work's turn ends and reports any that fail.";
+
 /// The reply contract (see [`super::reply`]).
 const REPLY_FORMAT: &str = "\
 Reply with exactly these blocks:
@@ -76,6 +84,8 @@ Rewrite the prompt below into the version a top professional in its field would 
 2. Answer briefly: (1) what a top professional would do here that the prompt does not ask for; (2) the rawest material they would start from, rather than something already summarized; (3) the specific methods and tools they would use; (4) what, other than the model or the user, would show the result is right (a test, a command, a measurement, a file to compare against).
 3. Rewrite the prompt to ask for exactly that. Keep the user's goal and voice. Name the concrete files, symbols, and commands you found, each in `backticks`, and say what will prove the result right. Cite only what you located; never invent a path, name, or command.
 
+{ACCEPTANCE_RULES}
+
 {REPLY_FORMAT}
 
 <prompt>
@@ -85,11 +95,13 @@ Rewrite the prompt below into the version a top professional in its field would 
         ),
         BetterMode::Brief => format!(
             "<prime_better mode=\"brief\">
-The brief below will be handed to a subagent that works in `{cwd}`. Check it against the repository before it goes out: every path, name, and command it mentions must exist there (or run read-only). Fix what is wrong or missing: a wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is done. Keep everything else as written.
+The brief below will be handed to a subagent that works in `{cwd}`. Check it against the repository before it goes out: every path, name, and command it mentions must exist there (or run read-only). Fix what is wrong or missing: a wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is done (a brief with no <acceptance> block has none). Keep everything else as written.
 
 {READ_ONLY_RULES} You have {read_budget} reads for this pass.
 
 When nothing needs fixing, reply with `<unchanged/>` alone. Otherwise answer (1)-(4) briefly in <depth> (what a top professional would add, the rawest material, the methods and tools, what would show the result is right) and return the fixed brief.
+
+{ACCEPTANCE_RULES}
 
 {REPLY_FORMAT}
 
