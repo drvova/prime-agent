@@ -1,0 +1,2 @@
+# example.com/sample
+vet: ./calc.go:8:14: cannot use "x" (untyped string constant) as int value in variable declaration

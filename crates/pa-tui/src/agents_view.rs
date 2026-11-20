@@ -62,6 +62,7 @@ use reply::{
 
 mod status;
 use status::Status;
+mod traffic;
 pub(crate) use status::StatusTone;
 
 /// Which session trees the resume picker lists, by their ROOT session's saved cwd.
@@ -326,6 +327,13 @@ enum UiInput {
         generation: u64,
         outcome: Result<String, String>,
     },
+    /// The traffic feed's subscribe landed: the ring's entries so far, or the error.
+    TrafficSubscribed(Result<Vec<pa_types::agent_traffic::AgentTrafficEntry>, String>),
+    /// One ingest pause/resume landed: whether the session is now paused, or the error.
+    TrafficPauseResult {
+        active_session_id: String,
+        outcome: Result<bool, String>,
+    },
     /// A persistent-shell kill settled.
     PersistentShellKilled {
         id: String,
@@ -534,6 +542,8 @@ struct AgentsViewMode {
     folder_hidden: usize,
     /// The folder toggle's flips this run.
     folder_toggles: u64,
+    /// The scoped view's Traffic pane (display only; never a model's context).
+    traffic: traffic::TrafficPane,
 }
 
 /// The press state of one left click, row-scoped: the release must land on the same row.
@@ -642,6 +652,7 @@ impl AgentsViewMode {
             folder_matches: std::collections::HashMap::new(),
             folder_hidden: 0,
             folder_toggles: 0,
+            traffic: traffic::TrafficPane::default(),
         }
     }
 }
@@ -1044,6 +1055,21 @@ async fn run_agents_view_surface(
                     if let Some((key, active_session_id)) = mode.pending_headline.take() {
                         spawn_headline_fetch(&client, ui_tx.clone(), key, active_session_id);
                     }
+                    // The Traffic pane's opt-in and the ingest pause run off the key loop: the
+                    // frame after this key paints without waiting on the daemon.
+                    // The subscribe is detached (never an exit-drained action): a hanging
+                    // daemon answer can delay neither a frame nor the view's exit.
+                    if mode.traffic.take_subscribe() {
+                        traffic::spawn_traffic_subscribe(&client, ui_tx.clone());
+                    }
+                    if let Some((active_session_id, pause)) = mode.traffic.take_pause() {
+                        action_dispatches.push(traffic::spawn_pause_dispatch(
+                            &client,
+                            ui_tx.clone(),
+                            active_session_id,
+                            pause,
+                        ));
+                    }
                 }
                 // A plain click opens the row under it; drags and wheel turns are consumed inside.
                 UiInput::Mouse(event) => {
@@ -1175,6 +1201,24 @@ async fn run_agents_view_surface(
                         }
                     }
                 },
+                UiInput::TrafficSubscribed(result) => mode.traffic.subscribed(result),
+                UiInput::TrafficPauseResult {
+                    active_session_id,
+                    outcome,
+                } => match outcome {
+                    Ok(paused) => {
+                        mode.set_status(if paused {
+                            "Agent messages paused (queued messages dropped)"
+                        } else {
+                            "Agent messages resumed"
+                        });
+                        mode.traffic.pause_settled(active_session_id, paused);
+                    }
+                    Err(error) => mode.set_status_tone(
+                        &format!("Agent message pause failed: {error}"),
+                        StatusTone::Error,
+                    ),
+                },
                 UiInput::ContentSearchLoaded { generation, hits } => {
                     mode.content_search_loaded(generation, hits);
                 }
@@ -1218,6 +1262,10 @@ async fn run_agents_view_surface(
                         match maybe_event {
                             Some(DaemonClientEvent::RosterUpdate { changed, removed, resync }) => {
                                 mode.apply_roster_update(changed, removed, resync);
+                                redraw = true;
+                            }
+                            Some(DaemonClientEvent::AgentTraffic(entry)) => {
+                                mode.traffic.push(*entry);
                                 redraw = true;
                             }
                             // The scan streams its rows: one rebuild per batch window, so
@@ -1442,6 +1490,7 @@ async fn run_agents_view_surface(
     // the subscription with the socket), so no handoff ever waits on it.
     {
         let client = client.clone();
+        let traffic_subscribed = mode.traffic.subscription != traffic::TrafficSubscription::Off;
         tokio::spawn(async move {
             let _ = client
                 .request(DaemonCommand::RosterUnsubscribe {
@@ -1449,6 +1498,15 @@ async fn run_agents_view_surface(
                     rest: serde_json::Map::default(),
                 })
                 .await;
+            // The traffic feed is per view run: a link kept for the next run stops receiving it.
+            if traffic_subscribed {
+                let _ = client
+                    .request(DaemonCommand::AgentTrafficUnsubscribe {
+                        id: None,
+                        rest: serde_json::Map::default(),
+                    })
+                    .await;
+            }
         });
     }
     let opened = mode.opened.take();
