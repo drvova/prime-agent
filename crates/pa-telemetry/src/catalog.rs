@@ -1934,6 +1934,24 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Typed test-run summaries (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the kernel summarized an awaited test run (cargo test,
+/// pytest, unittest, go test, jest, vitest): runs summarized, runs with failures, the failed tests
+/// they counted, the failures that got their own output handle, and runs whose whole output got a
+/// handle. Counts only: never a test name, a path, a command, or output.
+const AGENT_TEST_SUMMARIES: EventRule = EventRule {
+    name: "agent test summaries",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("test_summary_count", required(count())),
+        ("test_summary_failing_count", required(count())),
+        ("test_summary_failed_test_count", required(count())),
+        ("test_summary_failure_handle_count", required(count())),
+        ("test_summary_stored_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2051,6 +2069,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,
