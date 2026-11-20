@@ -297,6 +297,9 @@ impl Supervisor {
                                 ClientRouting::RosterSubscribers => {
                                     roster_subscribed.load(std::sync::atomic::Ordering::SeqCst)
                                 }
+                                ClientRouting::AgentTrafficSubscribers => connection
+                                    .agent_traffic_subscribed
+                                    .load(std::sync::atomic::Ordering::SeqCst),
                             };
                             if deliver {
                                 if let Err(error) = write_line(&mut writer, &payload).await {
@@ -697,6 +700,30 @@ impl Supervisor {
             DaemonCommand::RosterUnsubscribe { .. } => {
                 roster_subscribed.store(false, std::sync::atomic::Ordering::SeqCst);
                 let response = Self::handle_roster_unsubscribe(&command_id, &type_name);
+                (vec![response_line(&response)], false)
+            }
+            DaemonCommand::AgentTrafficSubscribe { .. } => {
+                connection
+                    .agent_traffic_subscribed
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let response = self.handle_agent_traffic_subscribe(&command_id, &type_name);
+                (vec![response_line(&response)], false)
+            }
+            DaemonCommand::AgentTrafficUnsubscribe { .. } => {
+                connection
+                    .agent_traffic_subscribed
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+                let response = response_success(Some(&command_id), &type_name, None);
+                (vec![response_line(&response)], false)
+            }
+            DaemonCommand::WorkerAgentTraffic {
+                worker_token,
+                entry,
+                ..
+            } => {
+                let response = self
+                    .handle_worker_agent_traffic(&command_id, &type_name, worker_token, entry)
+                    .await;
                 (vec![response_line(&response)], false)
             }
             DaemonCommand::WorkerIdlePassivation {
