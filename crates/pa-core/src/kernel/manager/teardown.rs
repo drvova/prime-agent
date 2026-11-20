@@ -64,6 +64,8 @@ impl Inner {
         let mut performed_cleanup = false;
         let mut request_id: Option<String> = None;
         if opts.drain_host_requests {
+            // Queued background requests are answered too, before the drain.
+            self.start_queued_host_requests();
             let in_flight = {
                 let mut g = lock(&self.guarded);
                 std::mem::take(&mut g.host_inflight)

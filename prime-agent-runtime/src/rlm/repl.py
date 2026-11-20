@@ -204,6 +204,17 @@ def active_cell_task() -> asyncio.Task[Any] | None:
     return cells.window_task()
 
 
+def _request_origin() -> str:
+    """`cell` for an await of the live cell's own body, `background` for everything else
+    (detached tasks, backgrounded cells, a cell's gathered fan-out): the host answers the
+    cell's requests first and bounds the background ones."""
+    try:
+        current = asyncio.current_task()
+    except RuntimeError:
+        current = None
+    return "cell" if current is not None and current is active_cell_task() else "background"
+
+
 async def host_request(data: dict[str, Any]) -> dict[str, Any]:
     """Send one typed request to the host and await its raw reply dict."""
     if _loop is None:
@@ -216,7 +227,7 @@ async def host_request(data: dict[str, Any]) -> dict[str, Any]:
     future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
     _pending_host[rid] = future
     try:
-        _send({"event": "host_request", "id": rid, "data": data})
+        _send({"event": "host_request", "id": rid, "data": data, "origin": _request_origin()})
         return await future
     finally:
         _pending_host.pop(rid, None)
