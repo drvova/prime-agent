@@ -270,6 +270,7 @@ pub fn kernel_provisioner(
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_window: crate::kernel::cell_window::CellWindow,
+    output_budget: crate::kernel::spill::OutputBudget,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
@@ -326,6 +327,7 @@ pub fn kernel_provisioner(
             // The engine-resolved cell yield window policy (daemonless: none;
             // the runtime bootstrap and state ops never use it).
             cell_window,
+            output_budget,
             ready_gate,
             on_restore,
             on_background_work_settled,
@@ -374,6 +376,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
                 cell_window: this.cell_window().clone(),
                 spill: this.spill_store(),
                 project_card: crate::project_card::ProjectCard::registered(this.cwd()),
+                output_budget: this.output_budget().clone(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -395,6 +398,8 @@ struct KernelManagerExecutor {
     spill: Option<crate::kernel::spill::SpillStore>,
     /// The project card, which learns the build/test commands cells run.
     project_card: Option<crate::project_card::ProjectCard>,
+    /// The session's output cap policy, read when each cell starts.
+    output_budget: crate::kernel::spill::OutputBudget,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -415,6 +420,11 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
         let project_card = self.project_card.clone();
+        // Only a session that keeps cut text tightens the cap: without a
+        // store a tighter cap would destroy more.
+        let max_output_chars = spill
+            .is_some()
+            .then(|| self.output_budget.max_output_chars());
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -424,6 +434,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         on_late_sent_agent_message,
                         cell_yield_ms,
                         spill,
+                        max_output_chars,
                         ..Default::default()
                     },
                 )

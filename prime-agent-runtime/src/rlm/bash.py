@@ -17,9 +17,11 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Generator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NoReturn, cast
+
+from . import test_results
 
 if TYPE_CHECKING:
     from . import _winjob
@@ -324,6 +326,9 @@ class BashResult:
     exit_code: int
     output: str
     duration: float
+    # An awaited test run's typed summary (counts, each failure's name, location, message, and
+    # output handle); None for any other command. Out of the repr, which stays the one-line shape.
+    tests: test_results.TestSummary | None = field(default=None, repr=False)
 
     @property
     def running(self) -> bool:
@@ -337,7 +342,8 @@ class BashResult:
         # a one-line output keeps the dataclass repr.
         if len(self.output.splitlines()) < 2:
             return None
-        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f})\n{self.output}"
+        summary = f"\n{self.tests}" if self.tests is not None else ""
+        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f}){summary}\n{self.output}"
 
 
 @dataclass(frozen=True)
@@ -1192,7 +1198,17 @@ class BashHandle:
         if degraded:
             _note_degrade(self, cast("float", bound))
             return self._degrade_snapshot()
-        return cast("BashResult", result)
+        finished = cast("BashResult", result)
+        if finished.tests is None and test_results.looks_like_test_run(self.command):
+            summary = test_results.summarize(finished.output)
+            if summary is not None:
+                # The summary prints with the cell's output, so a test run reads as its counts
+                # and failures without another look at the raw output.
+                summary = yield from test_results.attach_handles(summary, finished.output).__await__()
+                finished = replace(finished, tests=summary)
+                self._result = finished
+                sys.stdout.write(f"{summary}\n")
+        return finished
 
     def _degrade_snapshot(self) -> BashSnapshot:
         """Read the internal buffer directly: the public readers count as a
