@@ -2433,6 +2433,55 @@ async fn kernel_login_and_recall_ride_their_own_event() {
     );
 }
 
+/// Summarized test runs ride their own `agent test summaries` event at session end (counts only: never a test name or output).
+#[tokio::test]
+async fn test_summaries_ride_their_own_event() {
+    use crate::kernel::test_runs::TestRunFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        TestRunFact {
+            failed: 2,
+            failures: 2,
+            stored: true,
+        },
+        TestRunFact {
+            failed: 0,
+            failures: 0,
+            stored: false,
+        },
+    ] {
+        counters.note_test_summary(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent test summaries"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent test summaries").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("test_summary_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "test_summary_count": 2,
+            "test_summary_failing_count": 1,
+            "test_summary_failed_test_count": 2,
+            "test_summary_failure_handle_count": 2,
+            "test_summary_stored_count": 1,
+        })
+    );
+}
+
 /// Previews ride their own `agent previews` event at session end, with the `ctx.*` reads that followed one (counts only: never a line or a pattern).
 #[tokio::test]
 async fn previews_ride_their_own_event() {

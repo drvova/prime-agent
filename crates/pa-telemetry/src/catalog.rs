@@ -1613,6 +1613,25 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
     ],
 };
 
+/// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
+/// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
+/// edited, discarded). Counts only: never a prompt, a rewrite, or a path.
+const AGENT_BETTER_PROMPT: EventRule = EventRule {
+    name: "agent better prompt",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("better_run_count", required(count())),
+        ("better_completed_count", required(count())),
+        ("better_cancelled_count", required(count())),
+        ("better_failed_count", required(count())),
+        ("better_sent_as_is_count", required(count())),
+        ("better_edited_count", required(count())),
+        ("better_discarded_count", required(count())),
+    ],
+};
+
 /// A distribution build's one-time history import (v2), emitted by the daemon once the import
 /// that copies the official build's chats into the build's own agent dir settles (its automatic
 /// run after boot, or `import-sessions`). Counts and a size bucket only: never a path, a session
@@ -1935,6 +1954,24 @@ const AGENT_PREVIEWS: EventRule = EventRule {
     ],
 };
 
+/// Typed test-run summaries (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the kernel summarized an awaited test run (cargo test,
+/// pytest, unittest, go test, jest, vitest): runs summarized, runs with failures, the failed tests
+/// they counted, the failures that got their own output handle, and runs whose whole output got a
+/// handle. Counts only: never a test name, a path, a command, or output.
+const AGENT_TEST_SUMMARIES: EventRule = EventRule {
+    name: "agent test summaries",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("test_summary_count", required(count())),
+        ("test_summary_failing_count", required(count())),
+        ("test_summary_failed_test_count", required(count())),
+        ("test_summary_failure_handle_count", required(count())),
+        ("test_summary_stored_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2013,6 +2050,7 @@ const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
 pub fn catalog() -> Vec<&'static EventRule> {
     let mut all: Vec<&'static EventRule> = vec![
         &AGENT_GOAL_VERIFICATION,
+        &AGENT_BETTER_PROMPT,
         &HARNESS_REFINEMENTS_CHANGED,
         &WEB_SEARCH_PROVIDER_CHANGED,
         &AGENT_STARTED,
@@ -2052,6 +2090,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_PREVIEWS,
+        &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

@@ -48,6 +48,7 @@ mod classify;
 pub use classify::provider_category;
 
 mod previews;
+mod test_summaries;
 
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
@@ -398,6 +399,8 @@ struct CounterValues {
     interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+    /// The `/better` counters, reported by `agent better prompt`.
+    better: BetterCounts,
     /// The kernel `web.read` counters, reported by `agent web reads`.
     web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
@@ -438,6 +441,8 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
+    test_summaries: test_summaries::TestSummaryCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -611,6 +616,33 @@ pub enum GoalTelemetryFact {
     CostBudgetStop,
 }
 
+/// One `/better` fact, counted into `agent better prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetterTelemetryFact {
+    /// A run started.
+    Run,
+    Completed,
+    Cancelled,
+    Failed,
+    /// The user sent an inserted rewrite as is.
+    SentAsIs,
+    /// The user sent an inserted rewrite after editing it.
+    Edited,
+    /// The user never sent an inserted rewrite (or replaced most of it).
+    Discarded,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BetterCounts {
+    runs: u64,
+    completed: u64,
+    cancelled: u64,
+    failed: u64,
+    sent_as_is: u64,
+    edited: u64,
+    discarded: u64,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct GoalVerificationCounts {
     check_runs: u64,
@@ -713,6 +745,23 @@ impl SessionCounters {
                 GoalTelemetryFact::JudgeNotMet => &mut counts.judge_not_met,
                 GoalTelemetryFact::TokenBudgetStop => &mut counts.token_budget_stops,
                 GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
+            };
+            *counter += 1;
+        });
+    }
+
+    /// One `/better` fact (counts only: never a prompt, a rewrite, or a path).
+    pub fn note_better(&self, fact: BetterTelemetryFact) {
+        self.with(|values| {
+            let counts = &mut values.better;
+            let counter = match fact {
+                BetterTelemetryFact::Run => &mut counts.runs,
+                BetterTelemetryFact::Completed => &mut counts.completed,
+                BetterTelemetryFact::Cancelled => &mut counts.cancelled,
+                BetterTelemetryFact::Failed => &mut counts.failed,
+                BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
+                BetterTelemetryFact::Edited => &mut counts.edited,
+                BetterTelemetryFact::Discarded => &mut counts.discarded,
             };
             *counter += 1;
         });
@@ -1509,6 +1558,24 @@ impl SessionTelemetry {
             self.client
                 .track("agent goal verification", goal_properties);
         }
+        // A session that never ran `/better` sends no better event.
+        let mut better = BetterCounts::default();
+        self.counters.with(|values| better = values.better);
+        if better != BetterCounts::default() {
+            let mut better_properties = self.session_properties();
+            for (key, value) in [
+                ("better_run_count", better.runs),
+                ("better_completed_count", better.completed),
+                ("better_cancelled_count", better.cancelled),
+                ("better_failed_count", better.failed),
+                ("better_sent_as_is_count", better.sent_as_is),
+                ("better_edited_count", better.edited),
+                ("better_discarded_count", better.discarded),
+            ] {
+                better_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent better prompt", better_properties);
+        }
         // A session whose requests never chose a Responses transport sends no transport event.
         if let Some(counts) = self
             .agent_session_id
@@ -1922,6 +1989,7 @@ impl SessionTelemetry {
                 .track("agent repl background cells", cell_properties);
         }
         self.track_previews();
+        self.track_test_summaries();
         self.client.flush().await
     }
 
