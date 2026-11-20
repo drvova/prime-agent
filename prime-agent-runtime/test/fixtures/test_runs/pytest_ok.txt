@@ -1,0 +1,8 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.1.1, pluggy-1.6.0
+rootdir: /work/app
+collected 5 items / 4 deselected / 1 selected
+
+test_calc.py .                                                           [100%]
+
+======================= 1 passed, 4 deselected in 0.01s ========================

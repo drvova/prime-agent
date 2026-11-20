@@ -629,6 +629,17 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         spill_store.clone(),
     ));
     super::better::register_better_handler(&mut handlers, &better);
+    // `tests.summary`: an awaited test run's output and failures get handles
+    // in the same store; telemetry counts each summarized run.
+    crate::kernel::test_runs::register_test_summary_handler(
+        &mut handlers,
+        spill_store.as_ref(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_test_summary(fact))
+                as crate::kernel::test_runs::TestRunObserver
+        }),
+    );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the

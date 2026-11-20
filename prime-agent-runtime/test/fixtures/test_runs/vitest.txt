@@ -1,0 +1,33 @@
+
+ RUN  v2.1.9 /work/app
+
+ ❯ math.spec.mjs (3 tests | 1 failed | 1 skipped) 8ms
+   × add > adds two numbers 6ms
+     → expected 5 to be 4 // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  math.spec.mjs > add > adds two numbers
+AssertionError: expected 5 to be 4 // Object.is equality
+
+- Expected
++ Received
+
+- 4
++ 5
+
+ ❯ math.spec.mjs:8:23
+      6| describe("add", () => {
+      7|   test("adds two numbers", () => {
+      8|     expect(add(2, 2)).toBe(4);
+       |                       ^
+      9|   });
+     10|   test("zero is fine", () => {
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed | 1 skipped (3)
+   Start at  04:16:53
+   Duration  257ms (transform 24ms, setup 0ms, collect 13ms, tests 8ms, environment 0ms, prepare 52ms)
+
