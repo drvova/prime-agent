@@ -864,3 +864,47 @@ fn dropping_the_engine_stops_its_kernel_before_the_drop_returns() {
         "kernel {pid} still runs after its engine dropped"
     );
 }
+
+/// `/better` on the worker: the helper's rewrite comes back as the side run's answer, and the
+/// composer's outcome report, which the worker's command loop delivers from inside its runtime,
+/// counts without blocking that runtime.
+#[test]
+fn a_better_run_answers_the_rewrite_and_its_outcome_counts_from_the_command_loop() {
+    use crate::engine::SessionEngine as _;
+    let _faux = FAUX_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_dir, engine) = faux_engine_with_settings(
+        &json!({ "responses": [
+            { "text": "warm ok" },
+            { "text": "<depth>(4) a test</depth>\n<unresolved>\n</unresolved>\n<rewrite>\nFix the parser; prove it with a failing test.\n</rewrite>" },
+        ] }),
+        u64::MAX,
+    );
+    admit(&engine, "warm".to_string(), &mut Vec::new());
+    let sink: pa_core::session_engine::side_question::SideQuestionSink =
+        std::sync::Arc::new(|_| true);
+    let outcome = engine.run_side_question(
+        crate::engine::SideQuestionRequest {
+            side_question_id: "better-1".to_string(),
+            question: "fix the parser".to_string(),
+            kind: pa_types::better::SideRunKind::Better,
+            previous_turns: Vec::new(),
+        },
+        &pa_agent::abort::AbortController::new().signal(),
+        &sink,
+    );
+    assert_eq!(
+        outcome,
+        crate::engine::SideQuestionOutcome::Complete {
+            answer: "Fix the parser; prove it with a failing test.".to_string(),
+        }
+    );
+    // The worker's dispatch runs on a runtime; the report must not block it.
+    let command_loop = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("command loop runtime");
+    command_loop.block_on(async {
+        engine.note_better_outcome(pa_types::better::ComposerOutcome::SentAsIs);
+    });
+}

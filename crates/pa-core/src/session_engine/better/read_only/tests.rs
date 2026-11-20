@@ -57,12 +57,30 @@ fn a_cell_of_literal_fs_calls_parses_to_its_calls() {
 #[test]
 fn anything_but_a_literal_fs_read_is_refused_by_the_parser() {
     for (code, reason) in [
-        ("x = await fs.read('a')", "each line must be one fs.read/grep/glob/find call"),
-        ("open('a', 'w').write('x')", "each line must be one fs.read/grep/glob/find call"),
-        ("import os", "each line must be one fs.read/grep/glob/find call"),
-        ("await fs.edit('a', [])", "fs.edit is not a read; only read/grep/glob/find"),
-        ("fs.read(path)", "`path` is a name, and only literal arguments are accepted"),
-        ("fs.read('a', mode='w')", "fs.read() has no parameter `mode`"),
+        (
+            "x = await fs.read('a')",
+            "each line must be one fs.read/grep/glob/find call",
+        ),
+        (
+            "open('a', 'w').write('x')",
+            "each line must be one fs.read/grep/glob/find call",
+        ),
+        (
+            "import os",
+            "each line must be one fs.read/grep/glob/find call",
+        ),
+        (
+            "await fs.edit('a', [])",
+            "fs.edit is not a read; only read/grep/glob/find",
+        ),
+        (
+            "fs.read(path)",
+            "`path` is a name, and only literal arguments are accepted",
+        ),
+        (
+            "fs.read('a', mode='w')",
+            "fs.read() has no parameter `mode`",
+        ),
         ("fs.read('a') + fs.read('b')", "`+` is not accepted here"),
         ("", "the cell holds no fs call"),
     ] {
@@ -97,13 +115,34 @@ fn git_commands_parse_without_a_shell_and_carry_the_hardening() {
     );
     for (command, reason) in [
         ("rm -rf src", "`rm` is not read-only git"),
-        ("git checkout .", "`git checkout` is not one of the read-only subcommands"),
-        ("git -c core.pager=sh log", "`git -c` is not one of the read-only subcommands"),
-        ("git log > out.txt", "`>` is a shell operator and is not accepted"),
-        ("git log | sh", "`|` is a shell operator and is not accepted"),
-        ("git log $(touch x)", "`$` is a shell operator and is not accepted"),
-        ("git diff --output=x", "`--output=x` can write a file or start a program"),
-        ("git grep -Ovim foo", "`-Ovim` can write a file or start a program"),
+        (
+            "git checkout .",
+            "`git checkout` is not one of the read-only subcommands",
+        ),
+        (
+            "git -c core.pager=sh log",
+            "`git -c` is not one of the read-only subcommands",
+        ),
+        (
+            "git log > out.txt",
+            "`>` is a shell operator and is not accepted",
+        ),
+        (
+            "git log | sh",
+            "`|` is a shell operator and is not accepted",
+        ),
+        (
+            "git log $(touch x)",
+            "`$` is a shell operator and is not accepted",
+        ),
+        (
+            "git diff --output=x",
+            "`--output=x` can write a file or start a program",
+        ),
+        (
+            "git grep -Ovim foo",
+            "`-Ovim` can write a file or start a program",
+        ),
     ] {
         assert_eq!(git_arguments(command), Err(reason.to_string()), "{command}");
     }
@@ -144,10 +183,16 @@ async fn every_write_the_helper_attempts_is_refused_and_nothing_changes() {
         run(1, json!({ "command": "echo hi > parser.rs" })).await,
         run(1, json!({ "command": "rm parser.rs" })).await,
         run(2, json!({ "code": "open('parser.rs', 'w').write('')" })).await,
-        run(2, json!({ "code": "await fs.edit('parser.rs', {'append': 'x'})" })).await,
+        run(
+            2,
+            json!({ "code": "await fs.edit('parser.rs', {'append': 'x'})" }),
+        )
+        .await,
     ];
     assert_eq!(
-        refusals.each_ref().map(|text| text.starts_with("Refused: ")),
+        refusals
+            .each_ref()
+            .map(|text| text.starts_with("Refused: ")),
         [true; 5],
         "{refusals:#?}"
     );

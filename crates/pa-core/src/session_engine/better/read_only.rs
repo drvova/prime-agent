@@ -44,7 +44,13 @@ const GIT_TIMEOUT_MS: u64 = 15_000;
 
 /// The git subcommands the helper may run: each only reads the repository.
 const GIT_READ_SUBCOMMANDS: [&str; 7] = [
-    "log", "show", "diff", "status", "ls-files", "grep", "rev-parse",
+    "log",
+    "show",
+    "diff",
+    "status",
+    "ls-files",
+    "grep",
+    "rev-parse",
 ];
 
 /// Flag prefixes refused on any git subcommand: each writes a file (`--output`), opens a pager
@@ -619,7 +625,10 @@ impl FsCall {
                 })
                 .collect::<Result<Vec<_>, _>>()
                 .map(Some),
-            Some(_) => Err(format!("{}: `{name}` must be a string or a list", self.op.name())),
+            Some(_) => Err(format!(
+                "{}: `{name}` must be a string or a list",
+                self.op.name()
+            )),
         }
     }
 
@@ -627,7 +636,10 @@ impl FsCall {
         match self.get(name) {
             None => Ok(default),
             Some(Literal::Bool(value)) => Ok(*value),
-            Some(_) => Err(format!("{}: `{name}` must be True or False", self.op.name())),
+            Some(_) => Err(format!(
+                "{}: `{name}` must be True or False",
+                self.op.name()
+            )),
         }
     }
 
@@ -683,7 +695,9 @@ impl FsCall {
                 set("cwd", json!(cwd_text));
                 set(
                     "case",
-                    json!(self.string("case")?.unwrap_or_else(|| "sensitive".to_string())),
+                    json!(self
+                        .string("case")?
+                        .unwrap_or_else(|| "sensitive".to_string())),
                 );
                 for (key, wire) in [
                     ("literal", "literal"),
@@ -696,8 +710,14 @@ impl FsCall {
                 set("gitignore", json!(self.flag("gitignore", true)?));
                 set("before", json!(self.count("before")?.unwrap_or(context)));
                 set("after", json!(self.count("after")?.unwrap_or(context)));
-                set("maxResults", json!(self.count("max_results")?.unwrap_or(100)));
-                set("maxColumns", json!(self.count("max_columns")?.unwrap_or(300)));
+                set(
+                    "maxResults",
+                    json!(self.count("max_results")?.unwrap_or(100)),
+                );
+                set(
+                    "maxColumns",
+                    json!(self.count("max_columns")?.unwrap_or(300)),
+                );
                 if let Some(globs) = self.strings("glob")? {
                     set("globs", json!(globs));
                 }
@@ -717,7 +737,10 @@ impl FsCall {
                 set("cwd", json!(cwd_text));
                 set("hidden", json!(self.flag("hidden", false)?));
                 set("gitignore", json!(self.flag("gitignore", true)?));
-                set("maxResults", json!(self.count("max_results")?.unwrap_or(500)));
+                set(
+                    "maxResults",
+                    json!(self.count("max_results")?.unwrap_or(500)),
+                );
             }
             FsOp::Find => {
                 set("root", json!(resolve(&path)));
@@ -734,7 +757,10 @@ impl FsCall {
                 set("ignoreCase", json!(self.flag("ignore_case", false)?));
                 set("hidden", json!(self.flag("hidden", false)?));
                 set("gitignore", json!(self.flag("gitignore", true)?));
-                set("maxResults", json!(self.count("max_results")?.unwrap_or(500)));
+                set(
+                    "maxResults",
+                    json!(self.count("max_results")?.unwrap_or(500)),
+                );
             }
         }
         Ok(Value::Object(payload))
@@ -743,28 +769,31 @@ impl FsCall {
 
 /// Run one parsed call through the in-process readers: its rendered text, or the error.
 fn run_fs_call(call: &FsCall, cwd: &Path) -> String {
-    let outcome = call.payload(cwd).map_err(anyhow::Error::msg).and_then(|payload| {
-        let reply = match call.op {
-            FsOp::Read => crate::fs_edit::read(&crate::fs_edit::parse_read(&payload)?)?.0,
-            FsOp::Grep => {
-                let request = crate::fs_search::parse_grep(&payload)?;
-                crate::fs_search::grep(&request)?.to_json(request.max_results)
-            }
-            FsOp::Glob => {
-                let request = crate::fs_search::parse_glob(&payload)?;
-                crate::fs_search::glob(&request)?.to_json(request.max_results)
-            }
-            FsOp::Find => {
-                let request = crate::fs_search::parse_find(&payload)?;
-                crate::fs_search::find(&request)?.to_json(request.max_results)
-            }
-        };
-        Ok(reply
-            .get("text")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string())
-    });
+    let outcome = call
+        .payload(cwd)
+        .map_err(anyhow::Error::msg)
+        .and_then(|payload| {
+            let reply = match call.op {
+                FsOp::Read => crate::fs_edit::read(&crate::fs_edit::parse_read(&payload)?)?.0,
+                FsOp::Grep => {
+                    let request = crate::fs_search::parse_grep(&payload)?;
+                    crate::fs_search::grep(&request)?.to_json(request.max_results)
+                }
+                FsOp::Glob => {
+                    let request = crate::fs_search::parse_glob(&payload)?;
+                    crate::fs_search::glob(&request)?.to_json(request.max_results)
+                }
+                FsOp::Find => {
+                    let request = crate::fs_search::parse_find(&payload)?;
+                    crate::fs_search::find(&request)?.to_json(request.max_results)
+                }
+            };
+            Ok(reply
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string())
+        });
     outcome.unwrap_or_else(|error| format!("{} failed: {error:#}", call.op.name()))
 }
 
@@ -871,7 +900,9 @@ pub(crate) fn git_arguments(command: &str) -> Result<Vec<String>, String> {
         return Err("name a git subcommand".to_string());
     };
     if !GIT_READ_SUBCOMMANDS.contains(&subcommand.as_str()) {
-        return Err(format!("`git {subcommand}` is not one of the read-only subcommands"));
+        return Err(format!(
+            "`git {subcommand}` is not one of the read-only subcommands"
+        ));
     }
     if let Some(flag) = arguments.iter().find(|argument| {
         GIT_REFUSED_FLAGS

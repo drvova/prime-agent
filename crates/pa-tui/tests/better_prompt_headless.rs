@@ -54,12 +54,18 @@ fn serve(supervisor: &MockSupervisor, helper: Helper, seen: &Arc<Mutex<Vec<Value
                     writer,
                     &json!({ "type": "response", "id": id, "command": kind, "success": true }),
                 );
-                let run = command["sideQuestionId"].as_str().unwrap_or_default().to_string();
+                let run = command["sideQuestionId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 let mut events = writer.try_clone().expect("clone event socket");
                 if helper == Helper::Hangs {
                     return true;
                 }
-                write_json(&mut events, &side_event(&run, "running", "fs.read src/parser.rs"));
+                write_json(
+                    &mut events,
+                    &side_event(&run, "running", "fs.read src/parser.rs"),
+                );
                 if helper == Helper::Rewrites {
                     std::thread::spawn(move || {
                         // The draft is typed well inside this window (the plan waits on the
@@ -194,7 +200,12 @@ fn esc_cancels_the_run_and_says_nothing_was_sent() {
         .expect("the run started");
     let aborts: Vec<(&str, Value)> = commands
         .iter()
-        .filter(|command| matches!(command["type"].as_str(), Some("abort_side_question" | "abort")))
+        .filter(|command| {
+            matches!(
+                command["type"].as_str(),
+                Some("abort_side_question" | "abort")
+            )
+        })
         .map(|command| {
             (
                 command["type"].as_str().unwrap_or_default(),
@@ -218,7 +229,14 @@ fn a_hanging_helper_never_holds_the_composer() {
         ],
     );
     let last = frames.last().expect("a frame painted");
-    assert!(last.contains("Improving your prompt: reading the code"), "{last}");
-    assert_eq!(composer_rows(last), vec![" still typing".to_string()], "{last}");
+    assert!(
+        last.contains("Improving your prompt: reading the code"),
+        "{last}"
+    );
+    assert_eq!(
+        composer_rows(last),
+        vec![" still typing".to_string()],
+        "{last}"
+    );
     assert!(!kinds(&commands).contains(&"prompt"));
 }

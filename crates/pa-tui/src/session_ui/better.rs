@@ -53,7 +53,10 @@ impl SessionUi {
             self.side_question_counter
         );
         self.better_run = Some(id.clone());
-        self.note("Improving your prompt: reading the code (Esc cancels)", view);
+        self.note(
+            "Improving your prompt: reading the code (Esc cancels)",
+            view,
+        );
         let started = self
             .bounded_request(
                 Duration::from_millis(super::UI_REQUEST_TIMEOUT_MS),
@@ -92,7 +95,10 @@ impl SessionUi {
             "running" => {
                 let reading = text("answer");
                 if !reading.is_empty() {
-                    self.note(&format!("Improving your prompt: {reading} (Esc cancels)"), view);
+                    self.note(
+                        &format!("Improving your prompt: {reading} (Esc cancels)"),
+                        view,
+                    );
                 }
             }
             "complete" => {
