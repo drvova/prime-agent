@@ -1,0 +1,1 @@
+- `fs.read` now pages the file's likely next reads (its test file, its imports, and its callers from the symbol index) out as handles named in the result, so the model can read a neighbour with `ctx.page` without another lookup; per project it learns whether those handles get used and scales the prefetch down when they do not.

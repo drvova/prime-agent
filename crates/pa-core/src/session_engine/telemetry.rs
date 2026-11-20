@@ -47,6 +47,7 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod prefetch;
 mod symbol_index;
 
 mod status;
@@ -436,6 +437,8 @@ struct CounterValues {
     background_cells: BackgroundCellCounts,
     /// `fs.symbol` queries, reported by `agent symbol index`.
     symbol_index: symbol_index::SymbolIndexCounts,
+    /// Neighbour handles `fs.read` paged out and their use, reported by `agent prefetch`.
+    prefetch: prefetch::PrefetchCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -1843,6 +1846,7 @@ impl SessionTelemetry {
                 .track("agent repl background cells", cell_properties);
         }
         self.track_symbol_index();
+        self.track_prefetch();
         self.client.flush().await
     }
 

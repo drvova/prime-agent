@@ -56,6 +56,7 @@ pub mod mcp;
 pub mod models;
 pub mod packages;
 pub mod platform;
+pub(crate) mod prefetch;
 pub mod prompts;
 pub mod refinement;
 pub mod resources;
