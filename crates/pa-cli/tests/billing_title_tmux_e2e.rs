@@ -10,6 +10,9 @@
 //! the plan's calls out as API-equivalent value (not billed), the quota card keeps its reset
 //! countdown, and the title then shows the cached 5-hour window instead of `plan`.
 //!
+//! A third walks the `/usage` page into its details view and back: the quota card keeps its
+//! gauge row cell for cell, the details add the card's age, and Esc returns to the overview.
+//!
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
 
@@ -256,17 +259,18 @@ fn the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota() {
         .status
         .success());
     let usage_screen = pane.wait("the split spend and the quota card", |screen| {
-        screen.contains("Plan usage (API-equivalent value, not billed)")
+        screen.contains("API-equivalent value")
             && screen.contains("5-hour")
             && screen.contains("resets")
     });
     let plan_row = usage_screen
         .lines()
-        .find(|line| line.contains("Plan usage"))
-        .map(str::trim);
+        .find(|line| line.contains("Plan (not billed)"))
+        // The table's column padding depends on the token counts; the cells are what matter.
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "));
     assert_eq!(
         plan_row,
-        Some("Plan usage (API-equivalent value, not billed)  $0.00  1 call"),
+        Some("Plan (not billed) $0.00 1 call API-equivalent value".to_string()),
         "the page:\n{usage_screen}"
     );
     assert!(pane
@@ -280,4 +284,70 @@ fn the_usage_page_splits_plan_spend_and_the_title_shows_the_cached_quota() {
             line.starts_with("billing-chat  5h 42% \u{b7} 1h")
         })
     });
+}
+
+/// The details view reuses the overview's card: the 5-hour gauge row is the same cells in both
+/// views, the details title the card with its age, and Esc comes back to the same overview.
+#[test]
+fn the_usage_details_keep_the_overview_card_and_esc_returns_to_it() {
+    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
+        .expect("temp dir");
+    let pane = start(dir.path(), &quota_fixture());
+    pane.wait("the composer", |screen| screen.contains("claude-fable-5"));
+    for (keys, ready) in [
+        (["-l", "hello"], "planned answer"),
+        (["-l", "/usage"], "Esc close"),
+    ] {
+        assert!(pane
+            .tmux(&["send-keys", "-t", "main", keys[0], keys[1]])
+            .status
+            .success());
+        assert!(pane
+            .tmux(&["send-keys", "-t", "main", "Enter"])
+            .status
+            .success());
+        pane.wait(ready, |screen| screen.contains(ready));
+    }
+    // A row up to its reset countdown, which may tick between two captures.
+    let row = |screen: &str, needle: &str| {
+        screen
+            .lines()
+            .find(|line| line.contains(needle))
+            .map(|line| {
+                line.split("resets")
+                    .next()
+                    .unwrap_or(line)
+                    .trim_end()
+                    .to_string()
+            })
+    };
+    let overview = pane.wait("the overview's quota card", |screen| {
+        screen.contains("Esc close")
+            && row(screen, "5-hour").is_some_and(|row| row.contains('\u{2501}'))
+    });
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "Enter"])
+        .status
+        .success());
+    let details = pane.wait("the details view", |screen| {
+        screen.contains("Usage \u{203a} Details") && screen.contains("Esc back")
+    });
+    assert_eq!(
+        (
+            row(&details, "5-hour"),
+            row(&details, "Anthropic").map(|title| title.contains("fetched")),
+        ),
+        (row(&overview, "5-hour"), Some(true)),
+        "the overview:\n{overview}\nthe details:\n{details}"
+    );
+    assert!(pane
+        .tmux(&["send-keys", "-t", "main", "Escape"])
+        .status
+        .success());
+    let back = pane.wait("the overview again", |screen| screen.contains("Esc close"));
+    assert_eq!(
+        (row(&back, "5-hour"), row(&back, "Anthropic")),
+        (row(&overview, "5-hour"), row(&overview, "Anthropic")),
+        "the overview:\n{overview}\nback:\n{back}"
+    );
 }
