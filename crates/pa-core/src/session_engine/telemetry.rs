@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
+mod readonly_cache;
 mod test_summaries;
 
 mod status;

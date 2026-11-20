@@ -88,6 +88,9 @@ pub enum DaemonClientEvent {
         active_session_id: String,
         event: Value,
     },
+    /// `agent_traffic`: one display-only family traffic entry (only after
+    /// `agent_traffic_subscribe`).
+    AgentTraffic(Box<pa_types::agent_traffic::AgentTrafficEntry>),
     /// `roster_update`: live roster deltas — changed entries upsert by agent
     /// id, `removed` deletes, `resync` replaces the whole roster.
     RosterUpdate {
@@ -202,6 +205,11 @@ pub(crate) fn client_event_from_value(value: &Value) -> Option<DaemonClientEvent
                 })
             }),
         }),
+        "agent_traffic" => value
+            .get("entry")
+            .cloned()
+            .and_then(|entry| serde_json::from_value(entry).ok())
+            .map(|entry| DaemonClientEvent::AgentTraffic(Box::new(entry))),
         "roster_update" => Some(DaemonClientEvent::RosterUpdate {
             changed: value
                 .get("changed")

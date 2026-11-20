@@ -15,6 +15,8 @@ fn drive(counters: &SessionCounters) {
     use crate::fs_edit::{EditFact, FsEditOperation};
     use crate::fs_search::{FsOperation, SearchFact};
     use crate::kernel::cell_window::CellWindowSource;
+    use crate::kernel::command_cache::CacheLookup;
+    use crate::kernel::edit_checks::EditCheckOutcome;
     use crate::kernel::shared::BackgroundCellFact;
     use crate::kernel::spill::host::CtxRead;
     use crate::kernel::spill::SpillFact;
@@ -235,6 +237,28 @@ fn drive(counters: &SessionCounters) {
             stored,
         });
     }
+    for (file_read, hit) in [
+        (false, true),
+        (false, true),
+        (false, false),
+        (true, true),
+        (true, false),
+        (true, false),
+        (true, false),
+    ] {
+        counters.note_cache_lookup(CacheLookup { file_read, hit });
+    }
+    for outcome in [
+        EditCheckOutcome::Clean,
+        EditCheckOutcome::Clean,
+        EditCheckOutcome::Found,
+        EditCheckOutcome::Late,
+        EditCheckOutcome::Skipped,
+        EditCheckOutcome::Skipped,
+        EditCheckOutcome::Failed,
+    ] {
+        counters.note_edit_check(outcome);
+    }
     // The non-capability events that main emitted between the capability events: they keep
     // their own counter structs, and the move must leave their bytes alone too.
     for mode in [
@@ -355,6 +379,10 @@ const EXPECTED: &[(&str, &str)] = &[
         r#"{"spill_count":2,"spill_not_stored_count":1,"spill_evicted_count":2,"ctx_page_count":2,"ctx_grep_count":1,"ctx_tail_count":1,"ctx_info_count":3,"spill_bytes_bucket":"lt_16mb"}"#,
     ),
     (
+        "agent edit checks",
+        r#"{"edit_check_run_count":4,"edit_check_found_count":1,"edit_check_late_count":1,"edit_check_skipped_count":2,"edit_check_failed_count":1}"#,
+    ),
+    (
         "agent fs edit",
         r#"{"fs_read_count":2,"fs_read_line_count":123,"fs_read_failed_count":1,"fs_edit_count":1,"fs_edit_op_count":4,"fs_edit_rejected_count":1,"fs_edit_stale_anchor_count":2,"fs_edit_failed_count":2}"#,
     ),
@@ -373,6 +401,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent messages",
         r#"{"agent_message_throttled_count":3,"agent_message_wake_refused_count":5}"#,
+    ),
+    (
+        "agent readonly cache",
+        r#"{"readonly_cache_hit_count":2,"readonly_cache_miss_count":1,"readonly_cache_fs_read_hit_count":1,"readonly_cache_fs_read_miss_count":3}"#,
     ),
     (
         "agent repl background cells",

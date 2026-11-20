@@ -41,5 +41,7 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &mcp_session::AGENT_KERNEL_LOGIN_AND_RECALL,
     &notify_model::AGENT_REPL_NOTIFY,
     &cells::AGENT_REPL_BACKGROUND_CELLS,
+    &bash::AGENT_READONLY_CACHE,
+    &fs::AGENT_EDIT_CHECKS,
     &bash::AGENT_TEST_SUMMARIES,
 ];

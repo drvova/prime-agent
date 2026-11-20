@@ -429,8 +429,10 @@ impl SessionUi {
                 });
                 self.dirty = true;
             }
+            // The traffic feed is the agents view's own opt-in: the chat never subscribes.
             DaemonClientEvent::SessionListItem { .. }
-            | DaemonClientEvent::SessionListProgress { .. } => {}
+            | DaemonClientEvent::SessionListProgress { .. }
+            | DaemonClientEvent::AgentTraffic(_) => {}
         }
     }
 
