@@ -9,15 +9,24 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use super::{
-    DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY, DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
+    AGENT_MESSAGE_WAKE_REFUSED_STATUS, DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY,
+    DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
 };
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 
 /// The clock the bucket reads: `Instant::now` in production, a manual clock in tests.
 pub(crate) type AgentMessageClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// Hears how many deliveries one `agent_message.send` call had throttled (counts only).
-pub(crate) type AgentMessageThrottleObserver = Arc<dyn Fn(u64) + Send + Sync>;
+/// The deliveries one `agent_message.send` call had refused (counts only): the sender's rate
+/// bucket throttled them, or an idle receiver's wake budget refused them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AgentMessageRefusals {
+    pub(crate) throttled: u64,
+    pub(crate) wake_refused: u64,
+}
+
+/// Hears the refusals of one `agent_message.send` call that had any.
+pub(crate) type AgentMessageRefusalObserver = Arc<dyn Fn(AgentMessageRefusals) + Send + Sync>;
 
 /// The broadcast receipt field naming a throttled recipient's retry hint.
 pub(crate) const RETRY_AFTER_MS_FIELD: &str = "retryAfterMs";
@@ -98,12 +107,13 @@ impl AgentMessageRateLimiter {
     }
 }
 
-/// Count the deliveries each `agent_message.send` call had throttled into `observer`: wraps the
-/// registered send handler (a no-op when none is registered). A refused direct send is one; a
-/// broadcast counts its receipts that carry a retry hint.
-pub(crate) fn observe_agent_message_throttles(
+/// Count the deliveries each `agent_message.send` call had refused into `observer`: wraps the
+/// registered send handler (a no-op when none is registered). A throttled direct send is one
+/// error; a broadcast counts its receipts that carry a retry hint and no delivery status. A
+/// wake-refused receipt (direct, or a broadcast entry) carries the `wake_refused` status.
+pub(crate) fn observe_agent_message_refusals(
     handlers: &mut HostRequestHandlers,
-    observer: AgentMessageThrottleObserver,
+    observer: AgentMessageRefusalObserver,
 ) {
     let Some(send) = handlers.get("agent_message.send").cloned() else {
         return;
@@ -115,24 +125,39 @@ pub(crate) fn observe_agent_message_throttles(
             let observer = Arc::clone(&observer);
             async move {
                 let result = send(payload).await;
-                let throttled = match &result {
-                    Ok(value) => {
-                        value
-                            .get("receipts")
-                            .and_then(Value::as_array)
-                            .map_or(0, |receipts| {
-                                receipts
-                                    .iter()
-                                    .filter(|receipt| receipt.get(RETRY_AFTER_MS_FIELD).is_some())
-                                    .count() as u64
-                            })
-                    }
-                    Err(error) => {
-                        u64::from(error.downcast_ref::<AgentMessageThrottled>().is_some())
-                    }
+                let wake_refused = |receipt: &Value| {
+                    receipt.get("deliveryStatus").and_then(Value::as_str)
+                        == Some(AGENT_MESSAGE_WAKE_REFUSED_STATUS)
                 };
-                if throttled > 0 {
-                    observer(throttled);
+                let refusals = match &result {
+                    Ok(value) => match value.get("receipts").and_then(Value::as_array) {
+                        Some(receipts) => AgentMessageRefusals {
+                            throttled: receipts
+                                .iter()
+                                .filter(|receipt| {
+                                    receipt.get(RETRY_AFTER_MS_FIELD).is_some()
+                                        && receipt.get("deliveryStatus").is_none()
+                                })
+                                .count() as u64,
+                            wake_refused: receipts
+                                .iter()
+                                .filter(|receipt| wake_refused(receipt))
+                                .count() as u64,
+                        },
+                        None => AgentMessageRefusals {
+                            throttled: 0,
+                            wake_refused: u64::from(wake_refused(value)),
+                        },
+                    },
+                    Err(error) => AgentMessageRefusals {
+                        throttled: u64::from(
+                            error.downcast_ref::<AgentMessageThrottled>().is_some(),
+                        ),
+                        wake_refused: 0,
+                    },
+                };
+                if refusals != AgentMessageRefusals::default() {
+                    observer(refusals);
                 }
                 result
             }

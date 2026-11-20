@@ -330,7 +330,8 @@ fn spend_history_splits_spend_by_billing_mode() {
 }
 
 /// Serve every request by path until the test ends: `/api/oauth/usage` never answers (a hung
-/// provider), `/copilot_internal/user` answers its recorded shape.
+/// provider), `/v2/quotas` answers Synthetic's documented shape, and every other path the
+/// recorded `/copilot_internal/user` shape.
 async fn quota_server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
@@ -353,7 +354,11 @@ async fn quota_server() -> String {
                     // Hold the connection open without a reply.
                     std::future::pending::<()>().await;
                 }
-                let body = r#"{"copilot_plan":"business","quota_reset_date":"2026-12-01","quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":0,"unlimited":false}}}"#;
+                let body = if head.starts_with("GET /v2/quotas ") {
+                    r#"{"subscription":{"limit":135,"requests":135,"renewsAt":"2026-12-01T00:00:00Z"}}"#
+                } else {
+                    r#"{"copilot_plan":"business","quota_reset_date":"2026-12-01","quota_snapshots":{"premium_interactions":{"entitlement":300,"remaining":0,"unlimited":false}}}"#
+                };
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -376,6 +381,8 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
             "anthropic": {"type": "oauth", "access": "oat", "refresh": "r", "expires": 9_999_999_999_999_i64},
             "github-copilot": {"type": "oauth", "access": "copilot-api", "refresh": "gho_x", "expires": 9_999_999_999_999_i64},
             "prime-inference": {"type": "api_key", "key": "pi-key"},
+            // A plan sold on an API key reads its usage with the key.
+            "synthetic": {"type": "api_key", "key": "syn-key"},
             // A token-exchange sign-in has no usage endpoint: no card, no request.
             "openai-codex": {"type": "token_exchange", "refresh": "rt", "access": "at"},
         })
@@ -423,6 +430,21 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
                             label: "Premium requests".into(),
                             used: 300.0,
                             limit: Some(300.0),
+                            unit: QuotaUnit::Requests,
+                            resets_at_ms: Some(1_796_083_200_000),
+                        }],
+                    },
+                },
+                ProviderQuota {
+                    provider: "synthetic".into(),
+                    plan: None,
+                    source: QuotaSource::Provider,
+                    fetched_at_ms: 1_795_003_200_000,
+                    state: QuotaState::Windows {
+                        windows: vec![QuotaWindow {
+                            label: "Subscription".into(),
+                            used: 135.0,
+                            limit: Some(135.0),
                             unit: QuotaUnit::Requests,
                             resets_at_ms: Some(1_796_083_200_000),
                         }],

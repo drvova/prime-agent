@@ -23,6 +23,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent provider admission",
     // Session-boot admission paces worker spawns and kernel starts (no kernel capability).
     "agent session boot admission",
+    // The turn-start provider connection re-warm is provider plumbing, not a kernel capability.
+    "agent connection rewarm",
     // The opt-in quota fallback is request-auth plumbing, not a kernel capability.
     "agent quota fallback",
     // The worker's background endpoint discovery (no kernel capability).

@@ -1,7 +1,7 @@
 //! Agent-message command tests.
 use super::*;
 
-fn test_worker() -> (tempfile::TempDir, Arc<Worker>) {
+fn test_worker(active_session_id: &str) -> (tempfile::TempDir, Arc<Worker>) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().to_path_buf();
     let config = WorkerConfig {
@@ -9,7 +9,7 @@ fn test_worker() -> (tempfile::TempDir, Arc<Worker>) {
         supervisor_socket_path: PathBuf::new(),
         token: "token".to_string(),
         worker_instance_id: String::new(),
-        active_session_id: "target-session".to_string(),
+        active_session_id: active_session_id.to_string(),
         agent_dir: dir.join("agent"),
         recovery_journal_path: dir.join("recovery.jsonl"),
         telemetry_disabled: None,
@@ -18,16 +18,20 @@ fn test_worker() -> (tempfile::TempDir, Arc<Worker>) {
     (tmp, Arc::new(Worker::new(config, None)))
 }
 
-async fn created_worker() -> Arc<Worker> {
-    let (_tmp, worker) = test_worker();
+async fn created_named_worker(active_session_id: &str, name: &str) -> Arc<Worker> {
+    let (_tmp, worker) = test_worker(active_session_id);
     let created = worker
         .dispatch(
             "create",
-            &json!({ "noSession": true, "cwd": "/tmp", "name": "target" }),
+            &json!({ "noSession": true, "cwd": "/tmp", "name": name }),
         )
         .await;
     assert!(created.success, "create failed: {created:?}");
     worker
+}
+
+async fn created_worker() -> Arc<Worker> {
+    created_named_worker("target-session", "target").await
 }
 
 fn queue_texts(core: &Mutex<SessionCore>, lane: Lane) -> Vec<String> {
@@ -218,6 +222,88 @@ async fn deliver_message_while_busy_queues() {
     assert!(
         data.get("deliveredAt").is_none(),
         "deliveredAt while queued: {data}"
+    );
+}
+
+/// Two idle siblings that answer each other's every message: each receiving worker wakes for
+/// exactly the per-sender budget, then refuses the next idle wake with a `wake_refused` receipt
+/// (nothing queued); the same sender's message to the receiver while it is busy still queues.
+#[tokio::test]
+async fn auto_replying_idle_siblings_stop_at_the_wake_budget() {
+    let sibling_a = created_named_worker("sib-a", "sib-a").await;
+    let sibling_b = created_named_worker("sib-b", "sib-b").await;
+    let sender = |id: &str| {
+        json!({
+            "activeSessionId": id,
+            "sessionId": format!("{id}-file"),
+            "sessionName": id,
+            "runtimeKind": "subagent",
+            "parentActiveSessionId": "root",
+        })
+    };
+    let deliver = |worker: &Arc<Worker>, target: &str, from: &str| {
+        let worker = Arc::clone(worker);
+        let payload = json!({
+            "targetActiveSessionId": target,
+            "message": format!("reply from {from}"),
+            "sender": sender(from),
+        });
+        async move {
+            let response = worker.dispatch("worker_deliver_message", &payload).await;
+            assert!(response.success, "deliver failed: {response:?}");
+            response.data.expect("receipt data")
+        }
+    };
+    // The receiver's turn consumes the delivered message and it goes idle again.
+    let run_turn = |worker: &Arc<Worker>| worker.core.lock().unwrap().steering.clear();
+    let mut wakes = 0;
+    let refused = loop {
+        let to_b = deliver(&sibling_b, "sib-b", "sib-a").await;
+        if to_b["deliveryStatus"] != "delivered" {
+            break to_b;
+        }
+        run_turn(&sibling_b);
+        let to_a = deliver(&sibling_a, "sib-a", "sib-b").await;
+        assert_eq!(to_a["deliveryStatus"], "delivered", "{to_a}");
+        run_turn(&sibling_a);
+        wakes += 1;
+        assert!(wakes <= 100, "the ping-pong never stopped");
+    };
+    assert_eq!(wakes, 20);
+    let retry_after_ms = refused["retryAfterMs"].as_u64().expect("retry hint");
+    assert!(
+        (590_000..=600_000).contains(&retry_after_ms),
+        "the oldest wake leaves the 10-minute window: {refused}"
+    );
+    let session_id = refused["target"]["sessionId"].clone();
+    assert!(
+        session_id.as_str().is_some_and(|id| !id.is_empty()),
+        "{refused}"
+    );
+    assert_eq!(
+        refused,
+        json!({
+            "id": refused["id"],
+            "source": "agent_message",
+            "target": {
+                "activeSessionId": "sib-b",
+                "sessionId": session_id,
+                "runtimeKind": "top-level",
+                "sessionName": "sib-b",
+            },
+            "message": "reply from sib-a",
+            "deliveryMode": "steer",
+            "deliveryStatus": "wake_refused",
+            "retryAfterMs": retry_after_ms,
+            "from": sender("sib-a"),
+        })
+    );
+    assert!(queue_texts(&sibling_b.core, Lane::Steering).is_empty());
+    // A busy receiver is not woken: the over-budget sender's message queues.
+    sibling_b.core.lock().unwrap().busy = true;
+    assert_eq!(
+        deliver(&sibling_b, "sib-b", "sib-a").await["deliveryStatus"],
+        "queued"
     );
 }
 
