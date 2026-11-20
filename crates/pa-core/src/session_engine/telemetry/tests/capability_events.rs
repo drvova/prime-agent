@@ -16,6 +16,9 @@ fn drive(counters: &SessionCounters) {
     use crate::fs_search::{FsOperation, SearchFact};
     use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::shared::BackgroundCellFact;
+    use crate::kernel::spill::host::CtxRead;
+    use crate::kernel::spill::SpillFact;
+    use crate::kernel::test_runs::TestRunFact;
     use crate::session_engine::checkpoint_host::CheckpointFact;
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
@@ -186,6 +189,51 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_cell_window(source);
     }
+    for fact in [
+        BetterTelemetryFact::Run,
+        BetterTelemetryFact::Run,
+        BetterTelemetryFact::Run,
+        BetterTelemetryFact::Completed,
+        BetterTelemetryFact::Cancelled,
+        BetterTelemetryFact::Failed,
+        BetterTelemetryFact::SentAsIs,
+        BetterTelemetryFact::Edited,
+        BetterTelemetryFact::Edited,
+        BetterTelemetryFact::Discarded,
+        BetterTelemetryFact::BriefRun,
+        BetterTelemetryFact::BriefRun,
+        BetterTelemetryFact::BriefUnchanged,
+        BetterTelemetryFact::VerificationPass,
+    ] {
+        counters.note_better(fact);
+    }
+    for fact in [
+        SpillFact::Queued { bytes: 2 << 20 },
+        SpillFact::Queued { bytes: 1_000 },
+        SpillFact::NotStored,
+        SpillFact::Evicted,
+        SpillFact::Evicted,
+    ] {
+        counters.note_spill(fact);
+    }
+    for read in [
+        CtxRead::Page,
+        CtxRead::Page,
+        CtxRead::Grep,
+        CtxRead::Tail,
+        CtxRead::Info,
+        CtxRead::Info,
+        CtxRead::Info,
+    ] {
+        counters.note_ctx_read(read);
+    }
+    for (failed, failures, stored) in [(0, 0, false), (3, 2, true), (1, 1, false)] {
+        counters.note_test_summary(TestRunFact {
+            failed,
+            failures,
+            stored,
+        });
+    }
     // The non-capability events that main emitted between the capability events: they keep
     // their own counter structs, and the move must leave their bytes alone too.
     use pa_types::billing::{BillingMode, CostSource};
@@ -295,8 +343,16 @@ async fn capability_events_stay_byte_identical() {
 /// against origin/main's counters).
 const EXPECTED: &[(&str, &str)] = &[
     (
+        "agent better prompt",
+        r#"{"better_run_count":3,"better_completed_count":1,"better_cancelled_count":1,"better_failed_count":1,"better_sent_as_is_count":1,"better_edited_count":2,"better_discarded_count":1,"better_brief_run_count":2,"better_brief_unchanged_count":1,"better_verification_pass_count":1}"#,
+    ),
+    (
         "agent billing modes",
         r#"{"billing_pay_as_you_go_count":1,"billing_plan_count":2,"billing_flat_rate_count":1,"billing_free_count":3,"billing_unknown_count":1}"#,
+    ),
+    (
+        "agent context paging",
+        r#"{"spill_count":2,"spill_not_stored_count":1,"spill_evicted_count":2,"ctx_page_count":2,"ctx_grep_count":1,"ctx_tail_count":1,"ctx_info_count":3,"spill_bytes_bucket":"lt_16mb"}"#,
     ),
     (
         "agent fs edit",
@@ -345,6 +401,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent todos and questions",
         r#"{"todo_list_set_count":1,"todo_item_done_count":2,"question_asked_count":6,"question_answered_count":2,"question_declined_count":1,"question_timed_out_count":1,"question_no_user_count":1,"question_cancelled_count":1}"#,
+    ),
+    (
+        "agent test summaries",
+        r#"{"test_summary_count":3,"test_summary_failing_count":2,"test_summary_failed_test_count":4,"test_summary_failure_handle_count":3,"test_summary_stored_count":1}"#,
     ),
     ("agent usage reads", r#"{"usage_read_count":3}"#),
     (

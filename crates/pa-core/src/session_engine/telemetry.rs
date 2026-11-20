@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod test_summaries;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -432,6 +434,28 @@ pub enum GoalTelemetryFact {
     CostBudgetStop,
 }
 
+/// One `/better` fact, counted into `agent better prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetterTelemetryFact {
+    /// A run started.
+    Run,
+    Completed,
+    Cancelled,
+    Failed,
+    /// The user sent an inserted rewrite as is.
+    SentAsIs,
+    /// The user sent an inserted rewrite after editing it.
+    Edited,
+    /// The user never sent an inserted rewrite (or replaced most of it).
+    Discarded,
+    /// A brief-mode run started (`better(mode="brief")`, `rlm.spawn(better=True)`).
+    BriefRun,
+    /// A brief-mode run found nothing to fix.
+    BriefUnchanged,
+    /// A verification found unresolved references and ran a refine pass.
+    VerificationPass,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct GoalVerificationCounts {
     check_runs: u64,
@@ -545,6 +569,25 @@ impl SessionCounters {
             };
             *counter += 1;
         });
+    }
+
+    /// One `/better` fact (counts only: never a prompt, a rewrite, or a path).
+    pub fn note_better(&self, fact: BetterTelemetryFact) {
+        self.note_capability(
+            match fact {
+                BetterTelemetryFact::Run => "better_run_count",
+                BetterTelemetryFact::Completed => "better_completed_count",
+                BetterTelemetryFact::Cancelled => "better_cancelled_count",
+                BetterTelemetryFact::Failed => "better_failed_count",
+                BetterTelemetryFact::SentAsIs => "better_sent_as_is_count",
+                BetterTelemetryFact::Edited => "better_edited_count",
+                BetterTelemetryFact::Discarded => "better_discarded_count",
+                BetterTelemetryFact::BriefRun => "better_brief_run_count",
+                BetterTelemetryFact::BriefUnchanged => "better_brief_unchanged_count",
+                BetterTelemetryFact::VerificationPass => "better_verification_pass_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `web.read` (counts only: never the URL or the content).
@@ -703,6 +746,34 @@ impl SessionCounters {
                 CellWindowSource::ModelTimeout => "cell_window_timeout_count",
                 CellWindowSource::Setting => "cell_window_setting_count",
                 CellWindowSource::ColdDefault => "cell_window_default_count",
+            },
+            1,
+        );
+    }
+
+    /// One spill-store event of this session (counts and bytes: never a handle or text).
+    pub(crate) fn note_spill(&self, fact: crate::kernel::spill::SpillFact) {
+        use crate::kernel::spill::SpillFact;
+        match fact {
+            SpillFact::Queued { bytes } => {
+                self.note_capability("spill_count", 1);
+                // The raw bytes stay in the session: `agent context paging` reports their bucket.
+                self.note_capability(capability_counts::SPILL_BYTES, bytes);
+            }
+            SpillFact::NotStored => self.note_capability("spill_not_stored_count", 1),
+            SpillFact::Evicted => self.note_capability("spill_evicted_count", 1),
+        }
+    }
+
+    /// One kernel `ctx.*` read (a count: never a handle or a pattern).
+    pub(crate) fn note_ctx_read(&self, read: crate::kernel::spill::host::CtxRead) {
+        use crate::kernel::spill::host::CtxRead;
+        self.note_capability(
+            match read {
+                CtxRead::Page => "ctx_page_count",
+                CtxRead::Grep => "ctx_grep_count",
+                CtxRead::Tail => "ctx_tail_count",
+                CtxRead::Info => "ctx_info_count",
             },
             1,
         );
@@ -1511,10 +1582,10 @@ impl SessionTelemetry {
         self.counters
             .with(|values| capabilities = values.capabilities.clone());
         for rule in rules {
-            if let Some(counts) = capabilities.event_counts(rule) {
+            if let Some(values) = capabilities.event_properties(rule) {
                 let mut properties = self.session_properties();
-                for (key, value) in counts {
-                    properties.set(key, Value::from(value));
+                for (key, value) in values {
+                    properties.set(key, value);
                 }
                 self.client.track(rule.name, properties);
             }
