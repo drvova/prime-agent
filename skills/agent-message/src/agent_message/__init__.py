@@ -92,11 +92,10 @@ def _emit_sent_message(receipt: dict[str, Any], receiver_role: str | None = None
     try:
         from rlm import emit
 
-        label = (
-            "Agent message queued"
-            if receipt.get("deliveryStatus") == "queued"
-            else "Agent message sent"
-        )
+        label = {
+            "queued": "Agent message queued",
+            "wake_refused": "Agent message refused: wake budget spent",
+        }.get(receipt.get("deliveryStatus"), "Agent message sent")
         display_receipt = dict(receipt)
         if receiver_role in ("parent", "sibling", "child"):
             display_receipt["receiverRole"] = receiver_role
