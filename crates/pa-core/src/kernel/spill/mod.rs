@@ -357,6 +357,11 @@ impl SpillStore {
         handle
     }
 
+    /// The file a stored spill's text lives in (the user can open it while no reader exists).
+    pub(crate) fn stored_path(&self, id: &str) -> PathBuf {
+        self.inner.state.spill_path(id)
+    }
+
     /// Report this store's spills, refusals, and evictions to `observer`
     /// (the session's telemetry).
     pub(crate) fn set_observer(&self, observer: SpillObserver) {
