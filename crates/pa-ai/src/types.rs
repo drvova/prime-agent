@@ -91,6 +91,10 @@ pub struct StreamOptions {
     /// The request's admission class ([`crate::admission`]); `None` takes the process's class
     /// (a subagent worker's requests are [`pa_types::control::Priority::Subagent`]).
     pub priority: Option<pa_types::control::Priority>,
+    /// The stable credential identity request admission keys on
+    /// ([`crate::admission::credential_identity`] of a pinned named credential); `None` keys on
+    /// the api key's own hash.
+    pub admission_credential: Option<String>,
 }
 
 impl std::fmt::Debug for StreamOptions {
@@ -112,6 +116,7 @@ impl std::fmt::Debug for StreamOptions {
             .field("metadata", &self.metadata)
             .field("loop_guard", &self.loop_guard)
             .field("priority", &self.priority)
+            .field("admission_credential", &self.admission_credential)
             .finish()
     }
 }

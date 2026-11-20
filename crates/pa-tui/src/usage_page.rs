@@ -136,6 +136,8 @@ pub struct UsagePageSummary {
 pub struct UsagePage {
     view: UsageView,
     scroll: usize,
+    /// The overview's scroll while the details view is open: back returns to the same rows.
+    overview_scroll: usize,
     /// The content window's height at the last paint (the scroll keys walk the painted window).
     visible_rows: usize,
     quotas: Section<QuotaReport>,
@@ -153,6 +155,7 @@ impl UsagePage {
         Self {
             view: UsageView::Overview,
             scroll: 0,
+            overview_scroll: 0,
             visible_rows: 0,
             quotas: Section::loading(quotas),
             spend: Section::loading(spend),
@@ -234,12 +237,18 @@ impl UsagePage {
         UsagePageAction::None
     }
 
+    /// Switch views: the details open at their top, and the overview comes back at the rows it
+    /// showed when the details opened.
     fn switch_view(&mut self, view: UsageView) {
-        if view == UsageView::Details {
-            self.details_opened = true;
+        match view {
+            UsageView::Details => {
+                self.details_opened = true;
+                self.overview_scroll = self.scroll;
+                self.scroll = 0;
+            }
+            UsageView::Overview => self.scroll = self.overview_scroll,
         }
         self.view = view;
-        self.scroll = 0;
     }
 
     /// When the painted text next changes (a countdown's unit, the `checked` age): the run
@@ -343,7 +352,7 @@ impl UsagePage {
         let end = (self.scroll + visible).min(total);
         let title = match self.view {
             UsageView::Overview => "Usage",
-            UsageView::Details => "Usage · Details",
+            UsageView::Details => "Usage \u{203a} Details",
         };
         let (status_color, status) = self.status_text(now_ms);
         let mut lines: Vec<Line> = Vec::with_capacity(FIXED_FRAME_ROWS + visible + 1);

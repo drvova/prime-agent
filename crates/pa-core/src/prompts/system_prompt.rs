@@ -99,6 +99,9 @@ pub struct BuildSystemPromptOptions<'a> {
     pub can_spawn: bool,
     /// Enabled user-configured generic MCP servers.
     pub generic_mcp_servers: Vec<String>,
+    /// The project card (build/test commands, key dirs, learned commands),
+    /// as the session read it at start.
+    pub project_card: Option<String>,
 }
 
 /// Build the system prompt (assembled text only).
@@ -153,7 +156,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         + 2 * segments.len().saturating_sub(1);
 
     // The dynamic tail, in fixed order: packages -> project context ->
-    // skills inventory -> MCP servers -> environment -> session role ->
+    // project card -> skills inventory -> MCP servers -> environment -> session role ->
     // additional guidance -> appended prompt.
     let tools: Vec<&str> = options
         .selected_tools
@@ -174,6 +177,18 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
             "project-context",
             "AGENTS.md discovery",
             context,
+        ));
+    }
+
+    if let Some(card) = options
+        .project_card
+        .as_deref()
+        .filter(|card| !card.is_empty())
+    {
+        segments.push(PromptSegment::dynamic_segment(
+            "project-card",
+            "repository manifests and learned commands",
+            card.to_string(),
         ));
     }
 

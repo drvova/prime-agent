@@ -61,6 +61,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
         docs = ["core", "core.end_turn", "core.progress_note"]
     ),
     manifest!("ctx", docs = ["ctx"]),
+    manifest!("decision", docs = ["decision"]),
     manifest!("fs", docs = ["fs"]),
     manifest!("harness", docs = ["harness"]),
     manifest!("mcp", docs = ["mcp"]),
@@ -74,6 +75,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
     manifest!("todo", docs = ["todo"]),
     manifest!("usage", docs = ["usage"]),
     manifest!("web", docs = ["web"]),
+    manifest!("worktree", docs = ["worktree"]),
 ];
 
 /// One capability's manifest, as the README's schema table describes it.

@@ -434,6 +434,78 @@ class _BoundedBuffer:
         return head.decode("utf-8", errors="replace") + marker + tail.decode("utf-8", errors="replace")
 
 
+_BASH_JOBS_ENV = "PRIME_AGENT_BASH_MAX_JOBS"
+_DEFAULT_BASH_MAX_JOBS = 8
+
+
+def _host_bash_job_limit() -> int:
+    """The host-provided cap on concurrently running commands (the kernel's env)."""
+    try:
+        value = int(os.environ.get(_BASH_JOBS_ENV, ""))
+    except ValueError:
+        return _DEFAULT_BASH_MAX_JOBS
+    return max(1, min(value, 256))
+
+
+class _JobAdmission:
+    """The cap on concurrently running `bash()` commands.
+
+    A command over the cap is spawned but held at its start gate (the child shell waits for
+    the gate byte before it runs anything), so its handle exists and says `queued`; it starts
+    when a running command's process group exits. A queued handle holds no slot, and the cell
+    that created it awaiting it directly starts it at once (a foreground `await bash(cmd)`
+    never waits behind background jobs; a fan-out the cell gathers takes its turn). POSIX only: on Windows the job-object resume is the
+    construction's fail-closed last step, so commands start unqueued.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running = 0
+        self._queue: deque[BashHandle] = deque()
+
+    def admit(self, handle: "BashHandle") -> bool:
+        """Count `handle` as running when there is room; otherwise queue it."""
+        with self._lock:
+            if not _IS_POSIX or self._running < _host_bash_job_limit():
+                self._running += 1
+                return True
+            self._queue.append(handle)
+            return False
+
+    def promote(self, handle: "BashHandle") -> bool:
+        """Start a queued `handle` now, over the cap; `False` when it was not queued."""
+        with self._lock:
+            try:
+                self._queue.remove(handle)
+            except ValueError:
+                return False
+            self._running += 1
+        return True
+
+    def release(self, handle: "BashHandle") -> list["BashHandle"]:
+        """`handle` ended: free its slot (or drop it from the queue) and return the queued
+        handles that now start."""
+        with self._lock:
+            try:
+                self._queue.remove(handle)
+                return []
+            except ValueError:
+                pass
+            self._running = max(0, self._running - 1)
+            started: list[BashHandle] = []
+            while self._queue and self._running < _host_bash_job_limit():
+                self._running += 1
+                started.append(self._queue.popleft())
+            return started
+
+    def queued(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+
+_job_admission = _JobAdmission()
+
+
 class BashHandle:
     """Live handle to a shell command; await it for the BashResult.
 
@@ -564,12 +636,13 @@ class BashHandle:
             )
         if _IS_POSIX:
             # Journal first, then open the gate: the child does not run the user
-            # command until this byte arrives. A failed write means the child
-            # already died; the status/EOF paths report that normally.
-            try:
-                os.write(self._status_read, b"\n")
-            except OSError:
-                pass
+            # command until this byte arrives. Over the job cap the gate stays shut
+            # until a slot frees (the handle reports `queued`).
+            self._gate_lock = threading.Lock()
+            self._status_open = True
+            self._queued = not _job_admission.admit(self)
+            if not self._queued:
+                self._open_gate()
         else:
             # The child is already job-contained and journaled; resume is the
             # last step. A failed resume would strand a permanently suspended
@@ -586,6 +659,28 @@ class BashHandle:
     def pid(self) -> int:
         self._released = True
         return self._pid
+
+    @property
+    def queued(self) -> bool:
+        """Whether the command is still waiting for a free job slot (it has not started)."""
+        return getattr(self, "_queued", False)
+
+    def _open_gate(self) -> None:
+        # A failed write means the child already died; the status/EOF paths
+        # report that normally. A status channel already closed (the child died
+        # while queued) is never written.
+        with self._gate_lock:
+            self._queued = False
+            if not self._status_open:
+                return
+            try:
+                os.write(self._status_read, b"\n")
+            except OSError:
+                pass
+
+    def _start_if_queued(self) -> None:
+        if self.queued and _job_admission.promote(self):
+            self._open_gate()
 
     @property
     def running(self) -> bool:
@@ -760,6 +855,9 @@ class BashHandle:
             if not _IS_POSIX:
                 # Reaped: pid fallbacks are gone, so the handle may finally close.
                 cast("_winjob.JobProcess", self._proc).close()
+        # The group is gone: its job slot goes to the next queued command.
+        for started in _job_admission.release(self):
+            started._open_gate()
         with self._callback_lock:
             callback, self._reap_callback = self._reap_callback, None
         if callback is not None:
@@ -819,7 +917,9 @@ class BashHandle:
         except (OSError, ValueError):
             return None
         finally:
-            os.close(self._status_read)
+            with self._gate_lock:
+                self._status_open = False
+                os.close(self._status_read)
             os.close(self._wake_read)
 
     def _drain_grace(self) -> None:
@@ -1162,6 +1262,10 @@ class BashHandle:
         except RuntimeError:
             current_task = None
         creating_cell_waited = _creating_cell_waits_for(self._creating_cell_task, current_task)
+        # The creating cell awaiting its own command directly (a foreground one-shot) starts it
+        # even over the job cap; a fan-out it gathers waits its turn.
+        if self._creating_cell_task is not None and self._creating_cell_task is current_task:
+            self._start_if_queued()
         bound: float | None = None
         if _completion_notices_wired:
             if requested is None:
@@ -1254,7 +1358,12 @@ class BashHandle:
         raise TypeError("cannot pickle 'BashHandle' object: live process handle")
 
     def __repr__(self) -> str:
-        state = f"exit_code={self._result.exit_code}" if self._result else "running"
+        if self._result:
+            state = f"exit_code={self._result.exit_code}"
+        elif self.queued:
+            state = "queued (waiting for a free job slot)"
+        else:
+            state = "running"
         return f"<BashHandle pid={self._pid} {state} command={self.command!r}>"
 
 

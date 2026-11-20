@@ -354,6 +354,18 @@ pub struct SessionCounters {
     telemetry_enabled: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+/// The kernel `worktree` operations for one session (counts only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct WorktreeCounts {
+    created: u64,
+    diffed: u64,
+    merged: u64,
+    branched: u64,
+    conflicted: u64,
+    removed: u64,
+    failed: u64,
+}
+
 /// `agent_message.wait` outcomes for one session (counts only).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AgentMessageWaitCounts {
@@ -420,6 +432,8 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// The kernel `worktree` operations, reported by `agent worktrees`.
+    worktrees: WorktreeCounts,
     /// Spills and `ctx.*` reads, reported by `agent context paging`.
     context_paging: ContextPagingCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
@@ -437,6 +451,8 @@ struct CounterValues {
     login_recall: LoginRecallCounts,
     /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
     notify_effort: NotifyEffortCounts,
+    /// Kernel `rlm.decide(...)` calls, reported by `agent repl decide`.
+    decisions: DecideCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
     /// Cells that continued in the background, and where each cell's yield
@@ -470,6 +486,14 @@ struct NotifyEffortCounts {
     undelivered: u64,
     effort_set: u64,
     effort_refused: u64,
+}
+
+/// `agent repl decide`: decisions made, refused at the per-cell bound, and failed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DecideCounts {
+    decided: u64,
+    limited: u64,
+    failed: u64,
 }
 
 /// `agent repl background cells`: cells that outlived their yield window, how they ended, and
@@ -971,6 +995,23 @@ impl SessionCounters {
         });
     }
 
+    /// One kernel `worktree` operation (counts only: never a name, a path, or a diff).
+    pub(crate) fn note_worktree(&self, fact: crate::worktree_host::WorktreeFact) {
+        use crate::worktree_host::WorktreeFact;
+        self.with(|values| {
+            let counts = &mut values.worktrees;
+            match fact {
+                WorktreeFact::Created => counts.created += 1,
+                WorktreeFact::Diffed => counts.diffed += 1,
+                WorktreeFact::Merged => counts.merged += 1,
+                WorktreeFact::Branched => counts.branched += 1,
+                WorktreeFact::Conflicted => counts.conflicted += 1,
+                WorktreeFact::Removed => counts.removed += 1,
+                WorktreeFact::Failed => counts.failed += 1,
+            }
+        });
+    }
+
     /// One kernel `usage.get()` read (a count: never a cost or a token number).
     pub(crate) fn note_usage_read(&self) {
         self.with(|values| values.usage_read_count += 1);
@@ -1067,6 +1108,15 @@ impl SessionCounters {
         self.with(|values| {
             values.notify_effort.notified += 1;
             values.notify_effort.undelivered += u64::from(!delivered);
+        });
+    }
+
+    /// One kernel `rlm.decide(...)` outcome (never the question, the options, or the choice).
+    pub(crate) fn note_decision(&self, fact: super::decision::DecideFact) {
+        self.with(|values| match fact {
+            super::decision::DecideFact::Decided => values.decisions.decided += 1,
+            super::decision::DecideFact::Limited => values.decisions.limited += 1,
+            super::decision::DecideFact::Failed => values.decisions.failed += 1,
         });
     }
 
@@ -1675,6 +1725,20 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A process whose scraped search engines were never skipped or blocked sends no engine
+        // event (counts only: never a query).
+        let engines = crate::web_search::engine_limits::take_stats();
+        if engines != crate::web_search::engine_limits::EngineLimitStats::default() {
+            let mut engine_properties = self.session_properties();
+            for (key, value) in [
+                ("web_search_engine_skipped_count", engines.skipped_count),
+                ("web_search_engine_blocked_count", engines.blocked_count),
+            ] {
+                engine_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent web search engines", engine_properties);
+        }
         // A process whose session boots never waited and never met host pressure sends no
         // boot admission event (counts only).
         let boots = crate::kernel::boot_admission::take_stats();
@@ -1857,6 +1921,24 @@ impl SessionTelemetry {
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
         }
+        // A session that never used a worktree sends no worktree event.
+        let mut worktrees = WorktreeCounts::default();
+        self.counters.with(|values| worktrees = values.worktrees);
+        if worktrees != WorktreeCounts::default() {
+            let mut worktree_properties = self.session_properties();
+            for (key, value) in [
+                ("worktree_created_count", worktrees.created),
+                ("worktree_diff_count", worktrees.diffed),
+                ("worktree_merged_count", worktrees.merged),
+                ("worktree_branched_count", worktrees.branched),
+                ("worktree_conflict_count", worktrees.conflicted),
+                ("worktree_removed_count", worktrees.removed),
+                ("worktree_failed_count", worktrees.failed),
+            ] {
+                worktree_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent worktrees", worktree_properties);
+        }
         // A session that neither spilled nor read paged-out output sends no paging event.
         let mut paging = ContextPagingCounts::default();
         self.counters.with(|values| paging = values.context_paging);
@@ -1991,6 +2073,20 @@ impl SessionTelemetry {
                 notify_properties.set(key, Value::from(value));
             }
             self.client.track("agent repl notify", notify_properties);
+        }
+        // A session that never called `rlm.decide` sends no decide event.
+        let mut decisions = DecideCounts::default();
+        self.counters.with(|values| decisions = values.decisions);
+        if decisions != DecideCounts::default() {
+            let mut decide_properties = self.session_properties();
+            for (key, value) in [
+                ("decide_count", decisions.decided),
+                ("decide_limited_count", decisions.limited),
+                ("decide_failed_count", decisions.failed),
+            ] {
+                decide_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl decide", decide_properties);
         }
         // A session that armed no cell window and backgrounded no cell sends no background-cell
         // event.

@@ -165,6 +165,55 @@ class _StderrTail(io.TextIOBase):
         super().close()
 
 
+# The host-provided ceiling of concurrent calls to one HTTP MCP server (the kernel's env).
+_MCP_CONCURRENCY_ENV = "PRIME_AGENT_MCP_MAX_CONCURRENCY"
+_DEFAULT_MCP_MAX_CONCURRENCY = 4
+
+
+def _host_mcp_concurrency() -> int:
+    raw = os.environ.get(_MCP_CONCURRENCY_ENV, "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_MCP_MAX_CONCURRENCY
+    return max(1, min(value, 64))
+
+
+class _CallGate:
+    """Concurrent calls to one MCP server: additive increase, reset on a protocol error.
+
+    A stdio server is one pipe, so it stays at one call at a time. An HTTP server starts at
+    one call and earns one more slot per full window of clean calls (up to the host-provided
+    ceiling); any protocol error (a failed or timed-out request, not a tool's own error
+    result) drops it straight back to one. A waiting call holds no slot.
+    """
+
+    def __init__(self, ceiling: int):
+        self.ceiling = max(1, ceiling)
+        self.limit = 1
+        self.in_flight = 0
+        self._clean = 0
+        self._changed = asyncio.Condition()
+
+    async def __aenter__(self) -> None:
+        async with self._changed:
+            await self._changed.wait_for(lambda: self.in_flight < self.limit)
+            self.in_flight += 1
+
+    async def __aexit__(self, kind: Any, error: Any, traceback: Any) -> None:
+        async with self._changed:
+            self.in_flight -= 1
+            if error is not None and not isinstance(error, asyncio.CancelledError):
+                self.limit = 1
+                self._clean = 0
+            elif error is None:
+                self._clean += 1
+                if self._clean >= self.limit and self.limit < self.ceiling:
+                    self.limit += 1
+                    self._clean = 0
+            self._changed.notify_all()
+
+
 class _Generation:
     def __init__(self, server: str, config: dict[str, Any]):
         self.server = server
@@ -173,7 +222,7 @@ class _Generation:
         self.session: Any = None
         self.tools: dict[str, dict[str, Any]] = {}
         self.closed = False
-        self._call_lock = asyncio.Lock()
+        self._call_gate = _CallGate(_host_mcp_concurrency() if config.get("type") == "http" else 1)
         self._stderr: _StderrTail | None = None
         self._stderr_secrets: tuple[str, ...] = ()
         self._stderr_disclosable = True
@@ -394,7 +443,7 @@ class _Generation:
             raise PermissionError(f"MCP tool '{tool}' is disabled for server '{self.server}'")
         if tool not in self.tools:
             raise KeyError(f"MCP server '{self.server}' has no tool '{tool}'")
-        async with self._call_lock:
+        async with self._call_gate:
             async with asyncio.timeout(self.call_timeout):
                 result = await self.session.call_tool(tool, arguments)
         return _parse_result(result)

@@ -50,6 +50,8 @@ pub(crate) struct PromptInputs {
     pub(crate) daemonless: bool,
     pub(crate) can_spawn: bool,
     pub(crate) generic_mcp_servers: Vec<String>,
+    /// The project card the session started with (a reload keeps it).
+    pub(crate) project_card: Option<String>,
 }
 
 /// The session's current resources.
@@ -273,6 +275,7 @@ impl ResourceReload {
                 daemonless: prompt.daemonless,
                 can_spawn: prompt.can_spawn,
                 generic_mcp_servers: prompt.generic_mcp_servers.clone(),
+                project_card: prompt.project_card.clone(),
                 append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
                 ..Default::default()
             },

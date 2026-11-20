@@ -22,6 +22,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent responses transport",
     // Provider request admission is engine plumbing, not a kernel capability.
     "agent provider admission",
+    // The scraped engines' limits are web search plumbing beside the capability's own counts.
+    "agent web search engines",
     // Session-boot admission paces worker spawns and kernel starts (no kernel capability).
     "agent session boot admission",
     // The turn-start provider connection re-warm is provider plumbing, not a kernel capability.

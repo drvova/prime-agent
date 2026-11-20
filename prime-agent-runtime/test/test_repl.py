@@ -3545,3 +3545,32 @@ class StartupImportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HostRequestOriginTest(unittest.TestCase):
+    def test_the_live_cells_own_request_is_tagged_cell_and_everything_else_background(self):
+        from unittest import mock
+
+        from rlm import repl
+
+        previous_loop = repl._loop
+        self.addCleanup(setattr, repl, "_loop", previous_loop)
+        sent = []
+
+        async def main():
+            repl._loop = asyncio.get_running_loop()
+            cell = asyncio.create_task(repl.host_request({"type": "rlm.run"}))
+            with mock.patch.object(repl, "active_cell_task", return_value=cell):
+                detached = asyncio.create_task(repl.host_request({"type": "rlm.run"}))
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+            for task in (cell, detached):
+                task.cancel()
+            await asyncio.gather(cell, detached, return_exceptions=True)
+
+        with mock.patch.object(repl, "_send", sent.append):
+            asyncio.run(main())
+        self.assertEqual(
+            [frame["origin"] for frame in sent if frame.get("event") == "host_request"],
+            ["cell", "background"],
+        )

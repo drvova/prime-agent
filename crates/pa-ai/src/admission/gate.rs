@@ -71,10 +71,7 @@ pub(crate) fn admitted_stream(
         return options.start(provider.as_ref(), model, context);
     }
     let request = AdmissionRequest {
-        key: AdmissionKey::for_request(
-            model,
-            options.base().and_then(|base| base.api_key.as_deref()),
-        ),
+        key: AdmissionKey::for_request(model, options.base()),
         priority: options
             .base()
             .and_then(|base| base.priority)

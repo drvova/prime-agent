@@ -128,6 +128,7 @@ impl AgentSessionEngine {
                         api_key: None,
                         model: resolved.model.clone(),
                         headers: None,
+                        admission_credential: None,
                     },
                     agent_override: pa_agent::agent::AgentModelOverride {
                         thinking_level: map_thinking_level(resolved.thinking_level),
@@ -237,6 +238,7 @@ impl AgentSessionEngine {
                 api_key: None,
                 headers: None,
                 model,
+                admission_credential: None,
             }),
             Err(_) => route.session_target,
         };

@@ -1,0 +1,1 @@
+- Sessions pinned to different stored credentials that hold the same key now keep separate learned rate limits; the admission key comes from each session's pin.

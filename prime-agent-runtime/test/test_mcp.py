@@ -271,6 +271,49 @@ class McpRegistryTest(unittest.TestCase):
             run(generation.call("slow", {}))
         self.assertTrue(cancelled)
 
+    def test_http_calls_widen_to_parallel_and_a_protocol_error_drops_to_one(self):
+        tool = SimpleNamespace(name="echo", description="", inputSchema={})
+
+        class Overlapping(FakeSession):
+            def __init__(self, tools):
+                super().__init__(tools, result=CallToolResult(content=[]))
+                self.active = 0
+                self.widest = 0
+                self.fail_next = False
+
+            async def call_tool(self, name, arguments):
+                self.active += 1
+                self.widest = max(self.widest, self.active)
+                try:
+                    await asyncio.sleep(0.01)
+                    if self.fail_next:
+                        self.fail_next = False
+                        raise ConnectionError("transport reset")
+                    return self.result
+                finally:
+                    self.active -= 1
+
+        async def scenario(generation):
+            session = Overlapping([tool])
+            generation.session = session
+            limits = []
+            for burst in (1, 1, 2, 3):
+                await asyncio.gather(*(generation.call("echo", {}) for _ in range(burst)))
+                limits.append(generation._call_gate.limit)
+            session.fail_next = True
+            with self.assertRaises(ConnectionError):
+                await generation.call("echo", {})
+            limits.append(generation._call_gate.limit)
+            return limits, session.widest
+
+        with mock.patch.dict(os.environ, {"PRIME_AGENT_MCP_MAX_CONCURRENCY": "4"}):
+            http = self.generation({"type": "http"}, [tool])
+            stdio = self.generation({"type": "stdio"}, [tool])
+        self.assertEqual(
+            (run(scenario(http)), run(scenario(stdio))),
+            (([2, 2, 3, 4, 1], 3), ([1, 1, 1, 1, 1], 1)),
+        )
+
     def test_cross_loop_dispatch_does_not_impose_a_second_deadline(self):
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever)

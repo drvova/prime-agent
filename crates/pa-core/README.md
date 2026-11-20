@@ -63,7 +63,11 @@ and a lenient post-filter, the normalized result shape and its rendering,
 and the `web.search` host request the kernel's `rlm.web` client and the
 bundled websearch skill reach. One process-wide engine serves every
 session; credentials resolve per search on the host and never enter the
-kernel; the HTTP client is built on the first search, never at startup.
+kernel; the HTTP client is built on the first search, never at startup. The scraped keyless engines run under per-engine
+limits (`web_search::engine_limits`: a `pa_types::control` controller per engine through pa-ai's
+permit pool; an engine with no permit now is skipped, never waited on; a block, CAPTCHA, or 429
+cools it down for 60 s doubling to 15 min; the public aggregate's soft deadline per engine is
+twice its recent latency, 1..=5 s), counted by `agent web search engines`.
 
 URL reading (`web_read`, crate-internal): the `web.read` host request the
 kernel's `rlm.web.read` reaches — one URL to markdown with its outline of
@@ -135,6 +139,13 @@ daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
 
+Session worktrees (`worktree_host`): the kernel `worktree` capability runs its git work in
+the kernel (`rlm.worktree`) and reports each operation through `worktree.record`; the host
+keeps the session's `WorktreeLedger` (exposed as `SessionEngine.worktrees`) of the worktrees
+made and not removed, which `dispose_kernel` names in the session-end notice. Adoption counts
+ride the `agent worktrees` event. Non-goals: git operations on the host, and any name, path,
+or diff in telemetry.
+
 Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
 `session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside
 the call (the model's `timeout`, else a `pythonCellTimeoutMs` the user set, else a window learned
@@ -148,6 +159,15 @@ project's cell times, in 10 s..600 s, cold 60 s; its state lives in
 counts (including each window's source) ride the `agent repl background cells` event.
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
+
+Project card (`project_card`): a compact card (build/test/check commands from Cargo, npm, Python,
+and Go manifests, the Makefile, and CI `run:` steps; the largest top-level directories; the
+build/test commands this project's cells ran, counted) joins the system prompt's dynamic tail as
+the `project-card` segment, after the project context and never in the cached static prefix. Its
+full detail pages out to the spill store behind a handle; it stays under 1,500 characters. A
+session reads the card the previous refresh stored under `<agent dir>/project-cards/` within a
+50 ms budget, then re-derives it on a background thread for the next session; a reload keeps the
+session's card. Non-goals: running the commands, and deriving on the session-start path.
 
 Symbol index (`symbol_index`): the kernel's `fs.symbol` host request answers one name's
 definitions, references, and a spill handle to each definition's source, from a per-project index
