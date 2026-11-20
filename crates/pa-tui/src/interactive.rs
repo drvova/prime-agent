@@ -137,6 +137,8 @@ pub struct ModelSelection {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// `--credential <label|id>`: the stored named credential a new session pins.
+    pub credential: Option<String>,
     /// The requested thinking level (`--thinking`); the worker clamps it to the supported levels.
     pub thinking: Option<pa_types::ai::ModelThinkingLevel>,
 }
@@ -237,6 +239,13 @@ pub trait InteractionTelemetry: Send + Sync {
         slot: &'static str,
         surface: &'static str,
         outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The run's new session was pinned to a stored named credential (event `agent credential
+    /// pinned`): `source` is `flag` (`--credential`). Never a provider, a label, or a credential
+    /// id. Implementations return at once: the run spawns it and never waits.
+    fn credential_pinned(
+        &self,
+        source: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A submission parked in the follow-up queue behind a running turn: `lane` is `steering`
     /// (Enter) / `follow_up` (the follow-up key); `steering_mode` is the session's queue delivery
@@ -531,6 +540,9 @@ impl InteractiveOptions {
         }
         if let Some(script) = &self.script_path {
             config["script"] = json!(script.display().to_string());
+            // A scripted root's spawned children run the same script (the daemon carries
+            // `childScript` down the recursion; the print runtime's create sets it too).
+            config["childScript"] = json!(script.display().to_string());
         }
         if let Some(provider) = &self.model_selection.provider {
             config["provider"] = json!(provider);
@@ -540,6 +552,9 @@ impl InteractiveOptions {
         }
         if let Some(api_key) = &self.model_selection.api_key {
             config["apiKey"] = json!(api_key);
+        }
+        if let Some(credential) = &self.model_selection.credential {
+            config["credential"] = json!(credential);
         }
         if let Some(thinking) = self.model_selection.thinking {
             config["thinking"] = json!(thinking.wire_name());

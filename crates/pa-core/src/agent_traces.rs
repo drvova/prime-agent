@@ -21,9 +21,11 @@ use http::{is_retriable_transport_error, trace_upload_retry_delay, RETRIABLE_HTT
 
 mod upload_all;
 pub use upload_all::{
-    find_trace_files, session_artifacts_root, upload_all_traces, TraceRequestGate,
-    TraceUploadAllOptions,
+    find_trace_files, session_artifacts_root, upload_all_traces, TraceUploadAllOptions,
 };
+
+mod pacing;
+pub use pacing::TraceRequestGate;
 
 mod continuous;
 pub use continuous::{ContinuousTraceUpload, TraceConsentSnapshot};
@@ -42,15 +44,9 @@ const TRACE_UPLOAD_MAX_RETRIES: u32 = 3;
 const TRACE_UPLOAD_RETRY_JITTER: f64 = 0.2;
 const TRACE_PREVIEW_MAX_CHARS: usize = 8_000;
 const TRACE_UPLOAD_ALL_CONCURRENCY: usize = 4;
-const TRACE_UPLOAD_RATE_LIMIT_REQUESTS: u64 = 5;
 const TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS: u64 = 60_000;
-const TRACE_UPLOAD_RATE_LIMIT_SAFETY_MS: u64 = 100;
 /// The cap a `Retry-After` date is clamped to.
 const MAX_TIMER_DELAY_MS: u64 = (1_u64 << 31) - 1;
-/// The ceil of the rate window over the request count, plus the safety margin.
-const TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS: u64 = TRACE_UPLOAD_RATE_LIMIT_WINDOW_MS
-    / TRACE_UPLOAD_RATE_LIMIT_REQUESTS
-    + TRACE_UPLOAD_RATE_LIMIT_SAFETY_MS;
 const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 
 pub const PRIME_AGENT_TRACES_PROVIDER_ID: &str = "prime-agent-traces";

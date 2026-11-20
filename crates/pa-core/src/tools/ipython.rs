@@ -81,6 +81,9 @@ pub struct ExecuteResult {
     /// the host marked the execution, and this result terminates the tool
     /// batch (the "turn ended" note on the tool-result text).
     pub ended_turn: bool,
+    /// The `[error context]` block of a failed cell or awaited command: the
+    /// source lines around each error location, and handles to full outputs.
+    pub error_context: Option<String>,
 }
 
 /// The wire form of one sent agent message (TS `KernelSentAgentMessage`):
@@ -208,6 +211,10 @@ fn format_execute_text(result: &ExecuteResult, background_output: Option<&str>) 
             text,
             "{separator}[background output (unattributed)]\n{background}"
         );
+    }
+    if let Some(context) = &result.error_context {
+        text.push_str(if text.is_empty() { "" } else { "\n" });
+        text.push_str(context);
     }
     text
 }

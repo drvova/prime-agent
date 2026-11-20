@@ -79,10 +79,13 @@ pub fn estimate_context_categories(snapshot: ContextSnapshot<'_>) -> ContextCate
         );
     }
 
+    // The breakdown sizes the view without paging anything out: the
+    // transcript pointer stands in for the spill handle (a line of similar size).
     let view = thin_context(
         snapshot.messages,
         snapshot.context_window,
         &snapshot.thinning,
+        &super::context_thinning::ThinnedRecall::ToolResult,
     );
     let mut messages = Tally::default();
     let mut tool_calls = Tally::default();

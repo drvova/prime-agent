@@ -141,6 +141,17 @@ impl Worker {
             .get("parentSessionPath")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // `--credential <label|id>` resolves before any file is created: an unknown selector
+        // fails the create instead of leaving an empty session behind.
+        let requested_pin = match payload.get("credential").and_then(Value::as_str) {
+            Some(selector) => {
+                match pa_core::auth::AuthAccounts::create(&self.config.agent_dir).select(selector) {
+                    Ok(pin) => Some(pin),
+                    Err(error) => return response_failure(None, "create", &error, None),
+                }
+            }
+            None => None,
+        };
         // The subagent runtime identity (TS `runtimeMetadata` on the create
         // command): the child id and the parent's live/persisted ids ride
         // the session summaries so the roster can key children
@@ -392,6 +403,26 @@ impl Worker {
         if !store.path.as_os_str().is_empty() {
             self.engine.set_session_file(store.path.clone());
         }
+        // The credential pin: a reopened session's header pin is restored as-is; a new session
+        // takes the create's `--credential` pin, else its parent's (a subagent inherits it), and
+        // writes it into the fresh header (persisted with the creation rewrite).
+        let credential_pin = if opened_existing_session {
+            store.header.credential_pin()
+        } else {
+            let pin = requested_pin.or_else(|| {
+                parent_session_path
+                    .as_deref()
+                    .and_then(|path| {
+                        pa_core::session::manager::read_session_header(std::path::Path::new(path))
+                    })
+                    .and_then(|parent| parent.credential_pin())
+            });
+            if let Some(pin) = &pin {
+                store.header.set_credential_pin(pin);
+            }
+            pin
+        };
+        self.engine.set_credential_pin(credential_pin);
 
         // The `models` patterns (else settings `enabledModels`) resolve once into
         // the scoped list, AFTER the store open (the saved-model restore's wait
@@ -883,3 +914,6 @@ fn append_creation_prefix(
 #[cfg(test)]
 #[path = "create_collapse_tests.rs"]
 mod create_collapse_tests;
+#[cfg(test)]
+#[path = "credential_pin_tests.rs"]
+mod credential_pin_tests;

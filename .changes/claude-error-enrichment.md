@@ -1,0 +1,1 @@
+- A failed cell or awaited `bash()` command now carries the source lines around each error location its output names (rustc/cargo, pytest, Python tracebacks, tsc, go, gcc/clang), plus a handle to the full output, so the model reads the failing code without another round.
