@@ -481,6 +481,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
         parent_worker_token(&agent_dir, &parent_active_session_id),
         Arc::new(std::sync::Mutex::new(Some(own_summary.clone()))),
         Some(Arc::clone(&children)),
+        Arc::default(),
     ));
     let family_controller = LinkAgentMessageController::new(
         Arc::clone(&link),
@@ -488,6 +489,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
         parent_worker_token(&agent_dir, &parent_active_session_id),
         Arc::new(std::sync::Mutex::new(Some(own_summary))),
         Some(children),
+        Arc::default(),
     );
     let mut handlers = HostRequestHandlers::default();
     register_agent_message_host_handlers(Arc::clone(&controller) as Arc<_>, &mut handlers);

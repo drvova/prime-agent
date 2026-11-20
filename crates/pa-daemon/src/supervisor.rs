@@ -455,7 +455,7 @@ impl Supervisor {
         // Descriptor adoption runs concurrently with the accept loop: a
         // supervisor restarted over live sessions must accept their
         // self-registrations immediately, not behind the whole descriptor
-        // scan. The fan-out is capped (recovery_pacing) so a large
+        // scan. The fan-out is paced by the session-boot budget so a large
         // sessions dir cannot starve the control plane. The restore pass
         // awaits this task (spec §6 step 2's create-or-adopt order: kept
         // workers relaunch from their descriptors first, the roster covers

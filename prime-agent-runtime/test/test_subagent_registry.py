@@ -625,3 +625,26 @@ class RlmCollectTest(unittest.TestCase):
         with patch.object(rlm_module, "host_request", host_request):
             with self.assertRaisesRegex(RuntimeError, "invalid status"):
                 asyncio.run(rlm_module.rlm.collect())
+
+
+class RlmSpawnQueueTest(unittest.TestCase):
+    def test_a_spawn_handle_and_collect_result_carry_the_boot_queue_time(self):
+        rlm = importlib.import_module("rlm")
+        payload = {"rlm_child_id": "sub-1", "name": "w", "session_dir": "/tmp/s", "model": "p/m"}
+        queued = rlm._spawn_handle_from_payload({**payload, "queued_ms": 1200})
+        free = rlm._spawn_handle_from_payload(payload)
+        result = rlm._child_result_from_payload(
+            {"rlm_child_id": "sub-1", "status": "running", "settled": False, "queued_ms": 1200}
+        )
+        self.assertEqual(
+            (queued, free.queued_ms, result.queued_ms),
+            (
+                rlm.RLMSpawnHandle(
+                    rlm_child_id="sub-1", name="w", session_dir=Path("/tmp/s"), model="p/m", queued_ms=1200
+                ),
+                0,
+                1200,
+            ),
+        )
+        with self.assertRaises(RuntimeError):
+            rlm._spawn_handle_from_payload({**payload, "queued_ms": -1})
