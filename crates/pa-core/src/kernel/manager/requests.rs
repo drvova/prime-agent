@@ -8,6 +8,7 @@ use super::{
     DEFAULT_MAX_OUTPUT_CHARS, KERNEL_ABORT_GRACE_MS,
 };
 
+use crate::kernel::spill::{SpillCopy, SpillStore};
 pub(crate) use crate::platform::process::Signal;
 
 /// Append stream text up to `max_chars` Unicode scalars, keeping the buffered count in sync.
@@ -58,9 +59,21 @@ pub(crate) struct HeadTailBuffer {
     tail_chars: usize,
     /// Chars dropped from the middle, named by [`Self::finish`].
     omitted: usize,
+    /// The whole stream, kept for its spill when the cell runs with a spill
+    /// store ([`Self::spilling`]).
+    spill_copy: Option<SpillCopy>,
 }
 
 impl HeadTailBuffer {
+    /// A buffer that also keeps the whole stream (up to its copy cap), so a
+    /// cut middle can be paged out instead of dropped.
+    pub(crate) fn spilling() -> Self {
+        Self {
+            spill_copy: Some(SpillCopy::default()),
+            ..Self::default()
+        }
+    }
+
     /// The stream's head and tail budgets within `max_chars`: the tail gets a
     /// quarter, the head the rest. The one owner of the split.
     fn split_cap(max_chars: usize) -> (usize, usize) {
@@ -77,6 +90,9 @@ impl HeadTailBuffer {
     /// tail window at its cap, counting the chars that fall out of it.
     pub(crate) fn push(&mut self, text: &str, max_chars: usize) {
         let (head_cap, tail_cap) = Self::split_cap(max_chars);
+        if let Some(copy) = &mut self.spill_copy {
+            copy.push(text, text.chars().count());
+        }
         if self.head_chars < head_cap {
             let remaining = head_cap - self.head_chars;
             let text_chars = text.chars().count();
@@ -141,7 +157,30 @@ impl HeadTailBuffer {
 
     /// Resolve the buffered text: trim the tail to its cap, then return head,
     /// marker, and tail. Text that fit the cap passes through unchanged.
-    pub(crate) fn finish(mut self, max_chars: usize) -> String {
+    pub(crate) fn finish(self, max_chars: usize) -> String {
+        self.finish_with(max_chars, |omitted, _| {
+            format!("[... {omitted} chars omitted ...]")
+        })
+    }
+
+    /// [`Self::finish`], paging a cut stream out to `store`: the marker
+    /// becomes the spill's handle. A buffer without its copy (not built by
+    /// [`Self::spilling`]) keeps the plain marker.
+    pub(crate) fn finish_spilled(self, max_chars: usize, store: &SpillStore) -> String {
+        self.finish_with(max_chars, |omitted, copy| match copy {
+            Some(copy) => store.spill(copy).marker(omitted),
+            None => format!("[... {omitted} chars omitted ...]"),
+        })
+    }
+
+    /// Trim the tail to its cap, then join head, marker, and tail; the
+    /// marker (from the omitted count and the stream's copy) only when
+    /// something was cut.
+    fn finish_with(
+        mut self,
+        max_chars: usize,
+        marker: impl FnOnce(usize, Option<SpillCopy>) -> String,
+    ) -> String {
         let (_, tail_cap) = Self::split_cap(max_chars);
         if self.tail_chars > tail_cap {
             self.drop_tail_front(self.tail_chars - tail_cap);
@@ -151,10 +190,8 @@ impl HeadTailBuffer {
             text.push_str(&self.tail);
             return text;
         }
-        format!(
-            "{}\n[... {} chars omitted ...]\n{}",
-            self.head, self.omitted, self.tail
-        )
+        let marker = marker(self.omitted, self.spill_copy.take());
+        format!("{}\n{marker}\n{}", self.head, self.tail)
     }
 }
 
@@ -286,6 +323,10 @@ impl ReplKernelManager {
             status: ExecuteStatus::Ok,
             ..ExecBuffers::default()
         };
+        if opts.spill.is_some() {
+            buffers.stdout = HeadTailBuffer::spilling();
+            buffers.stderr = HeadTailBuffer::spilling();
+        }
         {
             let mut g = lock(&self.inner.guarded);
             buffers.background_output = std::mem::take(&mut g.pending_background_output);
