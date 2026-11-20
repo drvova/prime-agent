@@ -85,6 +85,9 @@ pub struct IpythonKernelProvisionerOptions {
     /// `timeout` argument wins. The runtime bootstrap and internal state ops
     /// never use it.
     pub cell_window: crate::kernel::cell_window::CellWindow,
+    /// How a failed user cell or awaited command gets the source lines around
+    /// its error locations (off by default, as without a workspace).
+    pub error_context: crate::kernel::error_context::ErrorContext,
     /// The per-stream output cap user cells run with, scaled to the context
     /// the session has left; the default keeps the fixed cap.
     pub output_budget: crate::kernel::spill::OutputBudget,
@@ -283,6 +286,12 @@ impl IpythonKernelProvisioner {
     #[must_use]
     pub(crate) fn cwd(&self) -> &std::path::Path {
         &self.inner.cwd
+    }
+
+    /// The error enrichment the kernel executor applies to user cell results.
+    #[must_use]
+    pub(crate) fn error_context(&self) -> &crate::kernel::error_context::ErrorContext {
+        &self.inner.options.error_context
     }
 
     /// The output cap policy the kernel executor sizes user cells with.

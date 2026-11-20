@@ -270,6 +270,7 @@ pub fn kernel_provisioner(
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_window: crate::kernel::cell_window::CellWindow,
+    error_context: crate::kernel::error_context::ErrorContext,
     output_budget: crate::kernel::spill::OutputBudget,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
@@ -327,6 +328,7 @@ pub fn kernel_provisioner(
             // The engine-resolved cell yield window policy (daemonless: none;
             // the runtime bootstrap and state ops never use it).
             cell_window,
+            error_context,
             output_budget,
             ready_gate,
             on_restore,
@@ -374,6 +376,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_window: this.cell_window().clone(),
+                error_context: this.error_context().clone(),
                 spill: this.spill_store(),
                 project_card: crate::project_card::ProjectCard::registered(this.cwd()),
                 output_budget: this.output_budget().clone(),
@@ -398,6 +401,8 @@ struct KernelManagerExecutor {
     spill: Option<crate::kernel::spill::SpillStore>,
     /// The project card, which learns the build/test commands cells run.
     project_card: Option<crate::project_card::ProjectCard>,
+    /// The source lines a failed cell or awaited command gets.
+    error_context: crate::kernel::error_context::ErrorContext,
     /// The session's output cap policy, read when each cell starts.
     output_budget: crate::kernel::spill::OutputBudget,
 }
@@ -420,6 +425,7 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
         let project_card = self.project_card.clone();
+        let error_context = self.error_context.clone();
         // Only a session that keeps cut text tightens the cap: without a
         // store a tighter cap would destroy more.
         let max_output_chars = spill
@@ -433,7 +439,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
                         cell_yield_ms,
-                        spill,
+                        spill: spill.clone(),
                         max_output_chars,
                         ..Default::default()
                     },
@@ -454,7 +460,26 @@ impl KernelExecutor for KernelManagerExecutor {
             if let (Some(card), Some(commands)) = (&project_card, &result.bash_commands) {
                 card.observe_command(&commands.first);
             }
-            Ok(convert_execute_result(result))
+            // A failed cell or awaited command carries its error locations'
+            // source lines; the reads wait at most a short budget.
+            let traceback = result
+                .error
+                .as_ref()
+                .filter(|_| result.status == crate::kernel::shared::ExecuteStatus::Error)
+                .map(|error| error.traceback.concat());
+            let context = error_context
+                .enrich(
+                    crate::kernel::error_context::CellFailure {
+                        traceback: traceback.as_deref(),
+                        streams: [&result.stdout, &result.stderr],
+                        commands: &result.command_failures,
+                    },
+                    spill.as_ref(),
+                )
+                .await;
+            let mut converted = convert_execute_result(result);
+            converted.error_context = context;
+            Ok(converted)
         })
     }
 }
@@ -504,6 +529,7 @@ fn convert_execute_result(
         questions: result.questions.unwrap_or_default(),
         backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
+        error_context: None,
     }
 }
 
