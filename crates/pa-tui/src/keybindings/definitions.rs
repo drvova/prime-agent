@@ -309,6 +309,36 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["alt+s"], "Toggle model selector scope"),
     ),
     (
+        "app.model.filterProvider",
+        def!(&["alt+1"], "Model selector: cycle the provider filter"),
+    ),
+    (
+        "app.model.filterBilling",
+        def!(&["alt+2"], "Model selector: cycle the billing filter"),
+    ),
+    (
+        "app.model.filterCapability",
+        def!(&["alt+3"], "Model selector: cycle the capability filter"),
+    ),
+    (
+        "app.model.filterContext",
+        def!(
+            &["alt+4"],
+            "Model selector: cycle the minimum context filter"
+        ),
+    ),
+    (
+        "app.model.sort",
+        def!(&["alt+o"], "Model selector: cycle the sort"),
+    ),
+    (
+        "app.model.actions",
+        def!(
+            &["tab"],
+            "Model selector: open the highlighted model's actions"
+        ),
+    ),
+    (
         "app.model.cycleForward",
         def!(&["alt+m"], "Cycle to the next scoped model"),
     ),

@@ -37,7 +37,11 @@ impl Worker {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        let served = catalog_payload(&registry, &available);
+        let served = catalog_payload(
+            &registry,
+            &available,
+            &pa_core::auth::AuthStorage::create(&agent_dir).get_all(),
+        );
         // An observed credential-scope change forces the refresh; the
         // observation consumes the scope, so one change forces exactly once.
         let credentials = pa_core::models::prime_credentials_for_dir(&agent_dir);
@@ -54,6 +58,7 @@ impl Worker {
             &agent_dir,
             self.engine.credential_pin().as_ref(),
         );
+        answer["accountChoices"] = account_choices(&registry.auth.get_all(), &agent_dir);
         response_success(None, "get_model_catalog", Some(answer))
     }
 
@@ -80,7 +85,11 @@ impl Worker {
                 let available = registry
                     .refresh_available_models_with_trigger(trigger)
                     .await;
-                let refreshed = catalog_payload(&registry, &available);
+                let refreshed = catalog_payload(
+                    &registry,
+                    &available,
+                    &pa_core::auth::AuthStorage::create(&agent_dir).get_all(),
+                );
                 if refreshed != baseline {
                     events.send(OutboundFrame::model_catalog_changed());
                 }
@@ -130,11 +139,38 @@ fn session_accounts(
     Value::Object(accounts)
 }
 
+/// The named credentials a new session can pin for each multi-credential provider (the `/model`
+/// action menu's account row): each one's id and label, in store order, never the secret. A
+/// provider holding one credential is absent; without a pin a session serves the provider's
+/// `default` credential.
+fn account_choices(stored: &pa_core::auth::AuthStorageData, agent_dir: &std::path::Path) -> Value {
+    let named = pa_core::auth::AuthAccounts::create(agent_dir)
+        .all()
+        .unwrap_or_default();
+    let choices: serde_json::Map<String, Value> = named
+        .into_iter()
+        .filter(|(provider, accounts)| {
+            accounts.len() + usize::from(stored.credential(provider).is_some()) > 1
+        })
+        .map(|(provider, accounts)| {
+            let listed: Vec<Value> = accounts
+                .iter()
+                .map(|account| json!({ "id": account.id, "label": account.label }))
+                .collect();
+            (provider, Value::Array(listed))
+        })
+        .collect();
+    Value::Object(choices)
+}
+
 /// The wire payload of one catalog snapshot: the full catalog minus
-/// unauthorized private Prime Inference models, plus sorted providers.
+/// unauthorized private Prime Inference models, plus sorted providers and
+/// each listed model's billing mode under the stored credentials
+/// (`billing`, keyed `provider/id`: the picker's price column and filter).
 fn catalog_payload(
     registry: &pa_core::models::ModelRegistry,
     available: &[pa_types::ai::Model],
+    credentials: &pa_core::auth::AuthStorageData,
 ) -> Value {
     let mut providers: Vec<String> = available
         .iter()
@@ -157,6 +193,16 @@ fn catalog_payload(
         })
         .collect();
     entries.sort_by(|a, b| (&a.provider, &a.id).cmp(&(&b.provider, &b.id)));
+    let billing: serde_json::Map<String, Value> = entries
+        .iter()
+        .map(|model| {
+            let mode = pa_core::session_engine::billing::catalog_billing_mode(credentials, model);
+            (
+                format!("{}/{}", model.provider, model.id),
+                serde_json::to_value(mode).unwrap_or(Value::Null),
+            )
+        })
+        .collect();
     let models: Vec<Value> = entries
         .into_iter()
         .map(|model| serde_json::to_value(model).unwrap_or(Value::Null))
@@ -164,12 +210,40 @@ fn catalog_payload(
     json!({
         "models": models,
         "configuredProviders": providers,
+        "billing": billing,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The account row's choices: a provider with two named credentials lists both (id and
+    /// label), a provider whose one named credential sits beside its `default` lists it, and a
+    /// provider holding a single credential is absent.
+    #[test]
+    fn account_choices_list_each_multi_credential_providers_named_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = pa_core::auth::AuthAccounts::create(dir.path());
+        let key = |key: &str| pa_core::auth::AuthCredential::ApiKey {
+            key: key.to_string(),
+            prime_team: None,
+        };
+        let work = accounts.add("anthropic", "work", key("a"), 0).unwrap();
+        let home = accounts.add("anthropic", "home", key("b"), 1).unwrap();
+        let side = accounts.add("openai", "side", key("c"), 2).unwrap();
+        accounts.add("xai", "only", key("d"), 3).unwrap();
+        let stored: pa_core::auth::AuthStorageData =
+            serde_json::from_value(json!({ "openai": { "type": "api_key", "key": "main" } }))
+                .unwrap();
+        assert_eq!(
+            account_choices(&stored, dir.path()),
+            json!({
+                "anthropic": [{ "id": work, "label": "work" }, { "id": home, "label": "home" }],
+                "openai": [{ "id": side, "label": "side" }],
+            })
+        );
+    }
     use crate::worker::WorkerConfig;
     use serde_json::json;
     use std::collections::VecDeque;

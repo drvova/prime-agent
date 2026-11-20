@@ -3,10 +3,12 @@
 //! channel, so neither a slow provider nor a long session scan ever holds a frame (AGENTS.md
 //! "Performance and the critical path").
 
-use pa_types::provider_usage::{QuotaReport, QuotaState, SpendHistory, UsageSection};
+use pa_types::provider_usage::{QuotaReport, SpendHistory, UsageSection};
 
 use super::{key_event_to_id, AgentView, DaemonCommand, Duration, KeyEvent, Map, SessionUi, Value};
-use crate::usage_page::{countdown, next_label_change, now_ms, UsagePage, UsagePageAction};
+use crate::usage_page::{
+    countdown, next_label_change, now_ms, tightest_window, window_label, UsagePage, UsagePageAction,
+};
 
 /// The request bound: above the daemon's own per-provider bound, so a hung provider reaches the
 /// page as its card's error rather than as a lost half.
@@ -136,24 +138,12 @@ impl SessionUi {
                     .iter()
                     .find(|card| Some(card.provider.as_str()) == provider)
             })
-            .and_then(|card| match &card.state {
-                QuotaState::Windows { windows } => windows
-                    .iter()
-                    .filter(|window| window.resets_at_ms.is_none_or(|at| at > now_ms))
-                    .filter_map(|window| Some((window, window.used_fraction()?)))
-                    .max_by(|left, right| left.1.total_cmp(&right.1)),
-                QuotaState::RateLimited { .. } | QuotaState::Failed { .. } => None,
-            });
+            .and_then(|card| tightest_window(card, now_ms));
         let quota = tightest.map(|(window, fraction)| {
-            let name = match window.label.as_str() {
-                "5-hour" => "5h",
-                "Weekly" => "7d",
-                label => label,
-            };
-            let percent = (fraction * 100.0).round();
+            let label = window_label(window, fraction);
             match window.resets_at_ms {
-                Some(at) => format!("{name} {percent}% \u{b7} {}", countdown(at - now_ms)),
-                None => format!("{name} {percent}%"),
+                Some(at) => format!("{label} \u{b7} {}", countdown(at - now_ms)),
+                None => label,
             }
         });
         self.plan_quota_resets_at_ms = tightest.and_then(|(window, _)| window.resets_at_ms);

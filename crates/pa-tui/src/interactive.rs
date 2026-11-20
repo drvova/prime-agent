@@ -366,6 +366,13 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         summary: crate::context_view::ContextViewSummary,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One `/model` picker run ended (`tui model picker closed`): whether it switched, the chip
+    /// and sort key presses, whether a chip was active, and the closing sort — counts and enums
+    /// only, never a model, a provider, or the search text.
+    fn model_picker_closed(
+        &self,
+        summary: crate::model_picker::ModelPickerSummary,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// One live ipython result whose collapsed card renders as bash
     /// (event `tui ipython bash rendered`): the executed `bash()` line share
     /// of the cell and the command count — primitives only, never command

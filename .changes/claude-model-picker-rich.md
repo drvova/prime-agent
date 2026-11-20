@@ -1,0 +1,1 @@
+- The `/model` picker groups models by provider under your recent ones and shows each model's context window, price per 1M tokens (or `plan`/`free`), capability glyphs, and a cached quota window, with Alt+1-4 filter chips (provider, billing, capability, minimum context) and Alt+O sorting by recent use, name, price, or context.

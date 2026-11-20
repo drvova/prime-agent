@@ -6,6 +6,7 @@ use super::{
     DaemonCommand, Duration, KeyEvent, Map, ModelPicker, ModelPickerAction, ModelPickerOptions,
     Result, SessionUi, SetModelOutcome, StatusKind, UI_REQUEST_TIMEOUT_MS,
 };
+use crate::model_picker::ModelPickerOutcome;
 use serde_json::Value;
 
 /// How long a fetched model catalog stays fresh; a `/model` open past it
@@ -20,13 +21,17 @@ pub(crate) struct ThinkingCycleNote {
     outcome: Result<Value>,
 }
 
-/// A landed `get_model_catalog` refresh: the full catalog and the providers
-/// with configured auth.
+/// A landed `get_model_catalog` refresh: the full catalog, the providers
+/// with configured auth, and each model's billing mode.
 pub(crate) struct ModelCatalogUpdate {
     pub models: Vec<pa_types::ai::Model>,
     pub configured_providers: std::collections::HashSet<String>,
+    pub billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
     /// The session's account per multi-credential provider (`accounts`).
     pub accounts: std::collections::BTreeMap<String, String>,
+    /// Each multi-credential provider's named credentials (`accountChoices`).
+    pub account_choices:
+        std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
 }
 
 impl SessionUi {
@@ -72,15 +77,33 @@ impl SessionUi {
                     .collect()
             })
             .unwrap_or_default();
+        let now_ms = crate::usage_page::now_ms();
         let options = ModelPickerOptions {
             models: self.model_catalog.clone(),
             current,
             configured_providers: self.model_configured_providers.clone(),
             accounts: self.model_accounts.clone(),
+            account_choices: self.model_account_choices.clone(),
             recent_models: self.model_recent_models.clone(),
             thinking_level,
             scoped_models,
             viewport_rows: picker_viewport_rows(view.terminal_rows()),
+            billing: self.model_billing.clone(),
+            quota_labels: self.cached_quota_labels(now_ms),
+            favorite_models: self.model_favorite_models.clone(),
+            usage: crate::model_picker::PickerUsage {
+                spend: self
+                    .usage_spend
+                    .as_ref()
+                    .map(|spend| spend.models.clone())
+                    .unwrap_or_default(),
+                quotas: self
+                    .usage_quotas
+                    .as_ref()
+                    .map(|report| report.providers.clone())
+                    .unwrap_or_default(),
+                now_ms,
+            },
         };
         // Always open the menu (an empty catalog renders the empty panel).
         let crate::model_picker::ModelCommandOutcome::Open(picker) =
@@ -132,12 +155,53 @@ impl SessionUi {
                     });
                 }
             }
+            Some(ModelPickerAction::SetDefault { provider, model_id }) => {
+                let saved = match &self.client_settings {
+                    Some(settings) => settings.set_default_model(&provider, &model_id),
+                    None => Err(anyhow::anyhow!("Model defaults are unavailable")),
+                };
+                match saved {
+                    Ok(()) => {
+                        // `/new` creates from this selection: the next session starts on the
+                        // default; this session keeps its model.
+                        self.model_selection.provider = Some(provider.clone());
+                        self.model_selection.model = Some(model_id.clone());
+                        self.note(&format!("Default model: {provider}/{model_id}"), view);
+                    }
+                    Err(error) => self.error_row(&format!("{error:#}"), view),
+                }
+            }
+            Some(ModelPickerAction::SetAccount { provider, account }) => {
+                // `/new` creates with this pin (the create's `credential`); the running session
+                // keeps the credential it was created with.
+                let label = account
+                    .as_ref()
+                    .map_or("default", |choice| choice.label.as_str())
+                    .to_string();
+                self.model_selection.credential = account.map(|choice| choice.id);
+                self.note(&format!("New sessions: {provider} account {label}"), view);
+            }
+            Some(ModelPickerAction::SetEffort(level)) => {
+                self.apply_thinking_level(&level, view).await;
+            }
+            Some(ModelPickerAction::FavoritesChanged(favorites)) => {
+                let saved = match &self.client_settings {
+                    Some(settings) => settings.set_favorite_models(&favorites),
+                    None => Err(anyhow::anyhow!("Model favorites are unavailable")),
+                };
+                match saved {
+                    Ok(()) => self.model_favorite_models = favorites,
+                    Err(error) => self.error_row(&format!("{error:#}"), view),
+                }
+            }
             Some(ModelPickerAction::Cancel) => {
+                self.report_model_picker_closed(view, ModelPickerOutcome::Closed);
                 view.model_picker = None;
                 self.picker_restored_draft = false;
                 self.dirty = true;
             }
             Some(ModelPickerAction::Apply(applied)) => {
+                self.report_model_picker_closed(view, ModelPickerOutcome::Switched);
                 view.model_picker = None;
                 // Applying fulfills the command either way, so the editor clears (a Cancel keeps
                 // the partial), except the browse-restore path: the user's restored draft stays.
@@ -171,6 +235,40 @@ impl SessionUi {
         }
         self.update_model_eligibility_filters(view);
         Ok(())
+    }
+
+    /// The picker run's adoption event (`tui model picker closed`), spawned off the key path.
+    fn report_model_picker_closed(&self, view: &AgentView, outcome: ModelPickerOutcome) {
+        let Some(summary) = view
+            .model_picker
+            .as_ref()
+            .map(|picker| picker.summary(outcome))
+        else {
+            return;
+        };
+        if let Some(telemetry) = self.telemetry.clone() {
+            tokio::spawn(async move {
+                telemetry.model_picker_closed(summary).await;
+            });
+        }
+    }
+
+    /// The tightest cached quota window per provider at `now_ms` (`5h 42%`), from the last
+    /// `/usage` cards: for a provider holding several credentials, the card of the account this
+    /// session serves it with. Nothing is fetched here.
+    fn cached_quota_labels(&self, now_ms: i64) -> std::collections::HashMap<String, String> {
+        self.usage_quotas
+            .iter()
+            .flat_map(|report| report.providers.iter())
+            .filter(|card| card.account.as_ref() == self.model_accounts.get(&card.provider))
+            .filter_map(|card| {
+                let (window, fraction) = crate::usage_page::tightest_window(card, now_ms)?;
+                Some((
+                    card.provider.clone(),
+                    crate::usage_page::window_label(window, fraction),
+                ))
+            })
+            .collect()
     }
 
     /// The session's current model, resolved with the same provider-aware match as
@@ -217,15 +315,55 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default();
+            // A mode this build does not know (written by a newer daemon) leaves its model
+            // classed by its catalog rates.
+            let billing: std::collections::HashMap<String, pa_types::billing::BillingMode> = value
+                .get("billing")
+                .and_then(Value::as_object)
+                .map(|modes| {
+                    modes
+                        .iter()
+                        .filter_map(|(key, mode)| {
+                            Some((key.clone(), serde_json::from_value(mode.clone()).ok()?))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let accounts = value
                 .get("accounts")
                 .cloned()
                 .and_then(|accounts| serde_json::from_value(accounts).ok())
                 .unwrap_or_default();
+            // Ids and labels only; an entry missing either is skipped.
+            let account_choices = value
+                .get("accountChoices")
+                .and_then(Value::as_object)
+                .map(|providers| {
+                    providers
+                        .iter()
+                        .map(|(provider, choices)| {
+                            let listed = choices
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|choice| {
+                                    Some(crate::model_picker::AccountChoice {
+                                        id: choice.get("id")?.as_str()?.to_string(),
+                                        label: choice.get("label")?.as_str()?.to_string(),
+                                    })
+                                })
+                                .collect();
+                            (provider.clone(), listed)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,
+                billing,
                 accounts,
+                account_choices,
             });
         });
     }
@@ -255,7 +393,9 @@ impl SessionUi {
         self.model_catalog = update.models;
         self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
+        self.model_billing = update.billing;
         self.model_accounts = update.accounts;
+        self.model_account_choices = update.account_choices;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
         if let Some(picker) = view.model_picker.as_mut() {
@@ -264,6 +404,8 @@ impl SessionUi {
                 self.model_catalog.clone(),
                 self.model_configured_providers.clone(),
                 self.model_accounts.clone(),
+                self.model_account_choices.clone(),
+                self.model_billing.clone(),
             );
         }
         self.update_model_eligibility_filters(view);
@@ -323,6 +465,11 @@ impl SessionUi {
                 // sessions start on it too.
                 self.model_selection.provider = Some(provider.to_string());
                 self.model_selection.model = Some(model_id.to_string());
+                // The daemon records the switch as the newest recent model; the picker's
+                // recent group follows without a settings re-read.
+                let key = ModelPicker::model_key_provider(provider, model_id);
+                self.model_recent_models.retain(|recent| *recent != key);
+                self.model_recent_models.insert(0, key);
                 self.refresh_model_label(provider, model_id, view).await;
                 self.note(&format!("Model: {model_id}"), view);
                 self.maybe_warn_anthropic_subscription_auth_if_subscribed(Some(provider), view)

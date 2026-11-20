@@ -338,6 +338,8 @@ pub struct Settings {
     pub subagent_default_model: Option<String>,
     pub update_channel: Option<UpdateChannel>,
     pub recent_models: Option<Vec<String>>,
+    /// The `/model` picker's favorites (`provider/id` keys, in the order they were added).
+    pub favorite_models: Option<Vec<String>>,
     pub auxiliary_model: Option<String>,
     pub default_thinking_level: Option<ThinkingLevelSetting>,
     pub default_service_tier: Option<String>,

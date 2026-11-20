@@ -160,7 +160,7 @@ fn run_plan(steps: Vec<HeadlessStep>) -> Vec<String> {
 }
 
 /// The operator's duplicate-id repro: the session runs `prime-inference/z-ai/glm-5.3`, the catalog
-/// lists the same id under openrouter FIRST — the prime-inference row carries `current`.
+/// lists the same id under openrouter FIRST — the prime-inference row carries the current mark.
 #[test]
 fn the_picker_marks_the_sessions_own_provider_current() {
     let frames = run_plan(vec![
@@ -177,8 +177,8 @@ fn the_picker_marks_the_sessions_own_provider_current() {
         .find(|row| row.contains("GLM 5.3 Prime"))
         .expect("the prime-inference row renders");
     assert!(
-        prime_row.contains("current") && prime_row.contains("prime-inference"),
-        "the session's own provider's row is the current model: {prime_row}"
+        prime_row.contains("\u{25cf}"),
+        "the session's own provider's row carries the current mark: {prime_row}"
     );
     assert!(
         prime_row.starts_with("\u{203a}"),
@@ -189,7 +189,7 @@ fn the_picker_marks_the_sessions_own_provider_current() {
         .find(|row| row.contains("GLM 5.3 Open"))
         .expect("the openrouter row renders");
     assert!(
-        !open_row.contains("current"),
+        !open_row.contains("\u{25cf}"),
         "another provider's same-id row is NOT the current model: {open_row}"
     );
     assert!(

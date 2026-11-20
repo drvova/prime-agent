@@ -19,7 +19,8 @@ pub(crate) enum ClickAction {
         col: usize,
         content_width: usize,
     },
-    /// Move the `/model` picker's selection to the clicked filtered row.
+    /// Move the `/model` picker's selection to the model on the clicked display row (a group
+    /// header selects nothing).
     SelectModelRow(usize),
     /// Move the `/effort` picker's selection to the
     /// clicked filtered row.
@@ -91,10 +92,6 @@ pub(crate) enum PickerKind {
     Choice,
     Question,
 }
-
-/// The `/model` picker's chrome rows: the title row and the bordered
-/// search field's three rows.
-pub(crate) const MODEL_PICKER_CHROME_ROWS: usize = 4;
 
 /// The `/effort` picker's chrome rows: the config
 /// selector's header block plus the bordered search field.

@@ -673,6 +673,22 @@ impl SettingsManager {
         self.merged.recent_models.clone().unwrap_or_default()
     }
 
+    /// The `/model` picker's favorites (`provider/id` keys, in the order they were added).
+    #[must_use]
+    pub fn get_favorite_models(&self) -> Vec<String> {
+        self.merged.favorite_models.clone().unwrap_or_default()
+    }
+
+    /// Replace the favorite-model list.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the global settings file cannot be written.
+    pub fn set_favorite_models(&mut self, models: Vec<String>) -> Result<()> {
+        self.global.favorite_models = Some(models);
+        self.save_global(&["favoriteModels"])
+    }
+
     /// The yield window for user `python_repl` cells the user set in a
     /// settings file, in milliseconds (`0` disables); `None` when unset, and
     /// the window is then learned per project. Daemonless sessions never use

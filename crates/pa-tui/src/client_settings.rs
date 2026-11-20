@@ -284,6 +284,30 @@ pub trait ClientSettings: Send + Sync {
     fn set_composer_hint_uses(&self, _uses: u64) -> Result<()> {
         Ok(())
     }
+    /// The favorite models (settings `favoriteModels`, `provider/id` keys in the order they were
+    /// added): the `/model` picker lists them first. Defaults to none: a client without the store
+    /// has no favorites.
+    #[must_use]
+    fn favorite_models(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Persist the whole favorite-model list.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the store is unavailable or the save fails.
+    fn set_favorite_models(&self, _models: &[String]) -> Result<()> {
+        anyhow::bail!("Model favorites are unavailable")
+    }
+    /// Persist `provider`/`model` as the default for new sessions (settings `defaultProvider` and
+    /// `defaultModel`) without switching any session.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` when the store is unavailable or the save fails.
+    fn set_default_model(&self, _provider: &str, _model: &str) -> Result<()> {
+        anyhow::bail!("Model defaults are unavailable")
+    }
     /// Persist the notice-shown marker once the disclosure renders
     /// (TS `setTelemetryNoticeShown`).
     ///

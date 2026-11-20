@@ -57,7 +57,8 @@ create), the `get_model_catalog` command (the TS `refreshModelCatalog`:
 registry refresh — live Prime Inference catalog fetch, disk cache at
 `<agent-dir>/prime-inference-models-cache.json`, bundled fallback — then
 the full catalog minus unauthorized private models plus the configured
-providers; the worker create path fires the same refresh at startup), the
+providers and each listed model's billing mode under the stored credentials
+(`billing`, keyed `provider/id`, from pa-core's `catalog_billing_mode`), the session's account per multi-credential provider (`accounts`), and each such provider's named credentials as ids and labels (`accountChoices`, the `/model` action menu's account row); the worker create path fires the same refresh at startup), the
 agent-roster arms
 (`roster_subscribe`/`roster_unsubscribe` with the full snapshot, live
 `roster_update` pushes keyed by the TS roster `agentId` = session id, and

@@ -192,10 +192,19 @@ pub(crate) struct SessionUi {
     /// fallback), replaced by the daemon's `get_model_catalog` response.
     model_catalog: Vec<pa_types::ai::Model>,
     model_configured_providers: std::collections::HashSet<String>,
+    /// Each catalog model's billing mode (`provider/id` keys) from the last `get_model_catalog`
+    /// response; empty until the first refresh lands.
+    model_billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
     /// The session's account per multi-credential provider, from the daemon's catalog answer.
     model_accounts: std::collections::BTreeMap<String, String>,
+    /// Each multi-credential provider's named credentials, from the daemon's catalog answer.
+    model_account_choices:
+        std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
+    /// The settings favorite-model list (`provider/id` keys, in the order they were added), read
+    /// once when the UI starts and kept in step with each toggle the picker persists.
+    model_favorite_models: Vec<String>,
     default_thinking_level: Option<String>,
     models_fetched_at: Option<std::time::Instant>,
     pasted_images: std::collections::BTreeMap<u64, LoadedImage>,
