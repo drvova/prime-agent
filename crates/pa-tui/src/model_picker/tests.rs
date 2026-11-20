@@ -267,7 +267,7 @@ fn rich_model(
 }
 
 /// A catalog across billing classes: a Claude plan (with a cached 5-hour quota), metered
-/// OpenRouter rows, a free local model, and an unconfigured provider with no price.
+/// `OpenRouter` rows, a free local model, and an unconfigured provider with no price.
 pub(super) fn rich_options() -> ModelPickerOptions {
     let models = vec![
         rich_model(

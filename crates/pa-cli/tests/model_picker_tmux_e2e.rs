@@ -300,13 +300,13 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
     let home = dir.path().join("home");
     let deadline = Instant::now() + WAIT;
     loop {
-        let switches = recorded_switches(&home);
-        if switches.contains(&"anthropic/claude-e2e-plan-two".to_string()) {
+        let recorded = recorded_switches(&home);
+        if recorded.contains(&"anthropic/claude-e2e-plan-two".to_string()) {
             break;
         }
         assert!(
             Instant::now() < deadline,
-            "the session file never recorded the switch: {switches:?}"
+            "the session file never recorded the switch: {recorded:?}"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
