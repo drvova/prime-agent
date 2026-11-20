@@ -1,7 +1,7 @@
 use super::*;
 
-fn answered() -> ProviderResult<SearchResponse> {
-    Ok(SearchResponse::from_sources(Vec::new()))
+fn answered() -> SearchResponse {
+    SearchResponse::from_sources(Vec::new())
 }
 
 fn failed(status: Option<u16>) -> ProviderResult<SearchResponse> {
@@ -11,12 +11,12 @@ fn failed(status: Option<u16>) -> ProviderResult<SearchResponse> {
 #[test]
 fn blocks_cool_an_engine_down_longer_each_time_and_an_answer_resets_it() {
     let steps = [
-        (answered(), 400),
-        (answered(), 800),
+        (Ok(answered()), 400),
+        (Ok(answered()), 800),
         (failed(Some(429)), 50),
         (failed(Some(429)), 50),
         (failed(Some(503)), 50),
-        (answered(), 600),
+        (Ok(answered()), 600),
     ];
     let mut health = Health::default();
     let observed: Vec<(Outcome, Option<u64>, Option<u64>, Health)> = steps
@@ -107,9 +107,11 @@ async fn a_blocking_engine_is_skipped_until_its_cooldown_passes() {
     let first = limits
         .run(ProviderId::Startpage, call(failed(Some(429))))
         .await;
-    let second = limits.run(ProviderId::Startpage, call(answered())).await;
+    let second = limits
+        .run(ProviderId::Startpage, call(Ok(answered())))
+        .await;
     // Another engine is unaffected.
-    let other = limits.run(ProviderId::Mojeek, call(answered())).await;
+    let other = limits.run(ProviderId::Mojeek, call(Ok(answered()))).await;
     assert_eq!(
         (
             first.map(|_| ()).map_err(|error| error.status),
