@@ -702,9 +702,12 @@ class KernelTest(unittest.TestCase):
         self.assertEqual(
             repl.until_done("waiting")[-1], {"event": "done", "id": "waiting", "status": "backgrounded", "cell": "waiting"}
         )
-        repl.execute("hook", "threading.Thread(target=raw.emit, args=({'type': 'send', 'payload': 'hooked'},)).start()")
+        # The notice can land before the hook cell's own done event, so look in its events first.
+        pending = repl.execute(
+            "hook", "threading.Thread(target=raw.emit, args=({'type': 'send', 'payload': 'hooked'},)).start()"
+        )
         while True:
-            event = repl.read_event()
+            event = pending.pop(0) if pending else repl.read_event()
             if event.get("event") == "host_request" and event["data"].get("type") == "cell.completed":
                 reply_ok(repl, event)
                 break
