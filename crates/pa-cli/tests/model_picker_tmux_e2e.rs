@@ -283,7 +283,13 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
     pane.keys(&["Escape"]);
     let favorited = pane.wait("the favorites group", |screen| {
         screen.contains("enter switches to Claude Plan Two")
-            && screen.lines().any(|line| line.trim() == "favorites")
+            // The header row ends in the list's scrollbar cell.
+            && screen.lines().any(|line| {
+                line.trim()
+                    .trim_end_matches(['\u{2588}', '\u{2502}'])
+                    .trim_end()
+                    == "favorites"
+            })
             && row(screen, "Claude Plan Two").is_some_and(|line| line.contains("\u{2605}"))
     });
     println!("--- favorited ---\n{favorited}");
