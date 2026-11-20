@@ -263,20 +263,32 @@ pub fn thin_context(
                     .map_or(text.len(), |(at, _)| at);
                 let omitted = total - HEAD_CHARS - TAIL_CHARS;
                 let mut thinned = String::with_capacity(HEAD_CHARS + TAIL_CHARS + 192);
-                thinned.push_str(&text[..head_end]);
                 match recall {
+                    // A paged-out result previews its most informative lines
+                    // (same budget) before its handle; a pure function of the
+                    // text and the session's noise snapshot.
                     ThinnedRecall::Spill(store) => {
-                        let _ = write!(thinned, "\n{}\n", store.retain(&text).thinned_marker());
+                        match store.preview(&text, HEAD_CHARS + TAIL_CHARS, &result.tool_name) {
+                            Some(preview) => {
+                                let _ = write!(thinned, "{preview}\n{}", store.retain(&text).thinned_marker());
+                            }
+                            None => {
+                                thinned.push_str(&text[..head_end]);
+                                let _ = write!(thinned, "\n{}\n", store.retain(&text).thinned_marker());
+                                thinned.push_str(&text[tail_start..]);
+                            }
+                        }
                     }
                     ThinnedRecall::ToolResult => {
+                        thinned.push_str(&text[..head_end]);
                         let _ = write!(
                             thinned,
                             "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: await rlm.session.tool_result({:?}) ...]\n",
                             result.tool_call_id
                         );
+                        thinned.push_str(&text[tail_start..]);
                     }
                 }
-                thinned.push_str(&text[tail_start..]);
                 let kept = thinned.chars().count();
                 if kept >= total {
                     return AgentMessage::Standard(Message::ToolResult(result));

@@ -171,13 +171,23 @@ impl Inner {
             // it has one: the marker becomes its handle. The spill only queues
             // the write; the result never waits on disk.
             let spill = execution.opts.spill.as_ref();
+            // A preview's noise patterns are learned per command family: the
+            // program of the cell's first `bash()` command, else the REPL.
+            let family = buffers
+                .bash_commands
+                .as_ref()
+                .and_then(|commands| {
+                    let last = commands.first.rsplit(["&", ";", "|"]).next()?;
+                    last.split_whitespace().next().map(str::to_string)
+                })
+                .unwrap_or_else(|| "python_repl".to_string());
             let (stdout, stderr) = {
                 let stdout = std::mem::take(&mut buffers.stdout);
                 let stderr = std::mem::take(&mut buffers.stderr);
                 match spill {
                     Some(store) => (
-                        stdout.finish_spilled(execution.max_chars, store),
-                        stderr.finish_spilled(execution.max_chars, store),
+                        stdout.finish_spilled(execution.max_chars, store, &family),
+                        stderr.finish_spilled(execution.max_chars, store, &family),
                     ),
                     None => (
                         stdout.finish(execution.max_chars),

@@ -431,10 +431,17 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
         let at = 2 + 2 * index;
         let original = result_text(&messages[at]);
         let chars: Vec<char> = original.chars().collect();
-        let head: String = chars[..240].iter().collect();
-        let tail: String = chars[chars.len() - 120..].iter().collect();
+        // The result's surprise-weighted preview (pinned by the preview's own
+        // tests), within the same 360-char budget, then its handle.
+        let preview = crate::kernel::spill::preview::build(
+            &original,
+            360,
+            &crate::kernel::spill::noise::NoiseSet::default(),
+        )
+        .expect("a 4,000-char result previews")
+        .text;
         let thinned = format!(
-            "{head}\n[out:{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]\n{tail}",
+            "{preview}\n[out:{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]",
             content_id(&original),
             crate::kernel::spill::group_digits(chars.len()),
             original.lines().count(),

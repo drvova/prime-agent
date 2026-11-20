@@ -2432,3 +2432,49 @@ async fn kernel_login_and_recall_ride_their_own_event() {
         })
     );
 }
+
+/// Previews ride their own `agent previews` event at session end, with the `ctx.*` reads that followed one (counts only: never a line or a pattern).
+#[tokio::test]
+async fn previews_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    use crate::kernel::spill::PreviewFact;
+    counters.note_preview_followup();
+    counters.note_preview(PreviewFact {
+        kept_lines: 10,
+        dropped_lines: 1,
+        repeats_collapsed: 1,
+        noise_lines: 11,
+        patterns_learned: 2,
+    });
+    counters.note_preview_followup();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent previews"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent previews").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("preview_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "preview_count": 1,
+            "preview_kept_line_count": 10,
+            "preview_dropped_line_count": 1,
+            "preview_repeat_collapsed_count": 1,
+            "preview_noise_line_count": 11,
+            "preview_noise_pattern_learned_count": 2,
+            "preview_followup_read_count": 1,
+        })
+    );
+}

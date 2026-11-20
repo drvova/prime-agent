@@ -1915,6 +1915,26 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Surprise-weighted previews (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the session built one: previews of spilled cell
+/// output and thinned tool results, the lines they kept, dropped, folded as repeats, and folded as
+/// learned noise, the noise patterns the session learned, and the `ctx.*` reads that followed
+/// (fewer means the previews chose well). Counts only: never a line, a pattern, or output.
+const AGENT_PREVIEWS: EventRule = EventRule {
+    name: "agent previews",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("preview_count", required(count())),
+        ("preview_kept_line_count", required(count())),
+        ("preview_dropped_line_count", required(count())),
+        ("preview_repeat_collapsed_count", required(count())),
+        ("preview_noise_line_count", required(count())),
+        ("preview_noise_pattern_learned_count", required(count())),
+        ("preview_followup_read_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2031,6 +2051,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_PREVIEWS,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

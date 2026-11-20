@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod previews;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -414,6 +416,8 @@ struct CounterValues {
     usage_read_count: u64,
     /// Spills and `ctx.*` reads, reported by `agent context paging`.
     context_paging: ContextPagingCounts,
+    /// Surprise-weighted previews and the reads after them, reported by `agent previews`.
+    previews: previews::PreviewCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -1917,6 +1921,7 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_previews();
         self.client.flush().await
     }
 
