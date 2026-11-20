@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
+mod readonly_cache;
 mod test_summaries;
 
 mod status;
@@ -452,6 +454,10 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Read-only command cache lookups, reported by `agent readonly cache`.
+    readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
+    edit_checks: edit_checks::EditCheckCounts,
     /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
     test_summaries: test_summaries::TestSummaryCounts,
 }
@@ -2049,6 +2055,8 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_readonly_cache();
+        self.track_edit_checks();
         self.track_test_summaries();
         self.client.flush().await
     }

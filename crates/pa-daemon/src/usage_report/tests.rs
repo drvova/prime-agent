@@ -414,6 +414,7 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
                 ProviderQuota {
                     provider: "anthropic".into(),
                     plan: None,
+                    account: None,
                     source: QuotaSource::Provider,
                     fetched_at_ms: 1_795_003_200_000,
                     state: QuotaState::Failed {
@@ -423,6 +424,7 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
                 ProviderQuota {
                     provider: "github-copilot".into(),
                     plan: Some("business".into()),
+                    account: None,
                     source: QuotaSource::Provider,
                     fetched_at_ms: 1_795_003_200_000,
                     state: QuotaState::Windows {
@@ -438,6 +440,7 @@ async fn a_hung_provider_fails_its_own_card_within_the_bound() {
                 ProviderQuota {
                     provider: "synthetic".into(),
                     plan: None,
+                    account: None,
                     source: QuotaSource::Provider,
                     fetched_at_ms: 1_795_003_200_000,
                     state: QuotaState::Windows {
@@ -496,6 +499,7 @@ async fn the_kernel_quota_request_answers_the_page_cards_without_the_token() {
             providers: vec![ProviderQuota {
                 provider: "github-copilot".into(),
                 plan: Some("business".into()),
+                account: None,
                 source: QuotaSource::Provider,
                 fetched_at_ms: 0,
                 state: QuotaState::Windows {
@@ -508,6 +512,63 @@ async fn the_kernel_quota_request_answers_the_page_cards_without_the_token() {
                     }],
                 },
             }],
+            pacing: Vec::new(),
+        }
+    );
+}
+
+/// Every stored credential of a plan provider gets its own card, labelled with the credential.
+#[tokio::test]
+async fn each_named_credential_gets_its_own_quota_card() {
+    let agent_dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        agent_dir.path().join("auth.json"),
+        json!({ "synthetic": {"type": "api_key", "key": "syn-default"} }).to_string(),
+    )
+    .unwrap();
+    pa_core::auth::AuthAccounts::create(agent_dir.path())
+        .add(
+            "synthetic",
+            "work",
+            pa_core::auth::AuthCredential::ApiKey {
+                key: "syn-work".into(),
+                prime_team: None,
+            },
+            0,
+        )
+        .unwrap();
+    let config = QuotaFetchConfig {
+        origin_override: Some(quota_server().await),
+        timeout: Duration::from_millis(2_000),
+        http: Arc::new(pa_ai::oauth::ReqwestProviderHttp::new()),
+    };
+    let report = quota_report(
+        agent_dir.path().to_path_buf(),
+        &config,
+        CachePolicy::UseFresh,
+        1_795_003_200_000,
+    )
+    .await;
+    let card = |account: &str| ProviderQuota {
+        provider: "synthetic".into(),
+        plan: None,
+        account: Some(account.into()),
+        source: QuotaSource::Provider,
+        fetched_at_ms: 1_795_003_200_000,
+        state: QuotaState::Windows {
+            windows: vec![QuotaWindow {
+                label: "Subscription".into(),
+                used: 135.0,
+                limit: Some(135.0),
+                unit: QuotaUnit::Requests,
+                resets_at_ms: Some(1_796_083_200_000),
+            }],
+        },
+    };
+    assert_eq!(
+        report,
+        QuotaReport {
+            providers: vec![card("default"), card("work")],
             pacing: Vec::new(),
         }
     );
