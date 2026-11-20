@@ -10,13 +10,25 @@
 //! checked against the repository, not the conversation). Its tools only read (see
 //! [`read_only`]); nothing it does enters the session's history.
 //!
+//! A run adapts the way a serverless worker does, with nothing to configure:
+//!
+//! - Its read budget starts where this project's learning puts it ([`learning`]: rewrites that
+//!   get discarded start deeper) and grows only while the helper still lists references it has
+//!   not located, by [`GROWTH_STEP`] reads per pass, up to [`READ_CEILING`] and inside the run's
+//!   [`WALL_CLOCK`].
+//! - Its result is checked mechanically ([`verify`]): every path, symbol, and command the rewrite
+//!   cites must resolve in the repository. Unverified ones go back to the helper for one refine
+//!   pass; what still does not resolve is named under the rewrite.
+//!
 //! The reply contract lives in [`reply`], the wording in [`instructions`].
 
 mod instructions;
+mod learning;
 mod read_only;
 mod reply;
 #[cfg(test)]
 mod tests;
+mod verify;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -35,9 +47,16 @@ use super::telemetry::{BetterTelemetryFact, SessionCounters};
 pub use read_only::ReadProgress as BetterProgress;
 use read_only::{ReadBudget, ReadContext};
 
-/// Reads the helper may make in one pass: enough to open the files a prompt names and follow
-/// a few references, small enough that a one-line prompt costs seconds, not minutes.
-const READ_BUDGET: u32 = 12;
+/// The most reads one run may make, every pass together: enough to chase a prompt's references
+/// through a large repository, small enough that a run stays a quick step before sending.
+const READ_CEILING: u32 = 24;
+
+/// Reads each grounding pass (and the refine pass) adds.
+const GROWTH_STEP: u32 = 4;
+
+/// A grounding pass starts only with at least this much of the wall clock left (a pass reads
+/// and then answers).
+const PASS_RESERVE: Duration = Duration::from_secs(30);
 
 /// Model turns past the read budget: the turn that meets the spent budget, and one to answer.
 const GRACE_TURNS: u32 = 2;
@@ -139,16 +158,20 @@ pub struct BetterHost {
     usage: OnceLock<UsageRecorder>,
     counters: Option<Arc<SessionCounters>>,
     spill: Option<crate::kernel::spill::SpillStore>,
+    learning: learning::ProjectLearning,
 }
 
 impl BetterHost {
+    /// `agent_dir` keeps this project's learning across sessions (`None`: in memory only).
     #[must_use]
     pub fn new(
         cwd: PathBuf,
+        agent_dir: Option<&Path>,
         counters: Option<Arc<SessionCounters>>,
         spill: Option<crate::kernel::spill::SpillStore>,
     ) -> Self {
         Self {
+            learning: learning::ProjectLearning::new(agent_dir, &cwd),
             cwd,
             agent: OnceLock::new(),
             stream_fn: OnceLock::new(),
@@ -177,13 +200,21 @@ impl BetterHost {
         }
     }
 
-    /// Count one outcome the composer reported for an inserted rewrite.
+    /// Count one outcome the composer reported for an inserted rewrite, and learn from it.
     pub fn note_composer_outcome(&self, outcome: pa_types::better::ComposerOutcome) {
-        self.note(match outcome {
-            pa_types::better::ComposerOutcome::SentAsIs => BetterTelemetryFact::SentAsIs,
-            pa_types::better::ComposerOutcome::Edited => BetterTelemetryFact::Edited,
-            pa_types::better::ComposerOutcome::Discarded => BetterTelemetryFact::Discarded,
-        });
+        let (fact, signal) = match outcome {
+            pa_types::better::ComposerOutcome::SentAsIs => {
+                (BetterTelemetryFact::SentAsIs, learning::Signal::SentAsIs)
+            }
+            pa_types::better::ComposerOutcome::Edited => {
+                (BetterTelemetryFact::Edited, learning::Signal::Edited)
+            }
+            pa_types::better::ComposerOutcome::Discarded => {
+                (BetterTelemetryFact::Discarded, learning::Signal::Discarded)
+            }
+        };
+        self.note(fact);
+        self.learning.observe(signal);
     }
 
     /// Run the helper once. `progress` hears a short label per read; `signal` cancels.
@@ -245,11 +276,15 @@ impl BetterHost {
         ) else {
             return failed("the session is still starting; try again");
         };
+        let first_pass_reads = self.learning.estimate().await.first_pass_budget();
         let run = run_helper(
             &agent,
             stream_fn,
-            request,
-            &cwd,
+            &HelperInput {
+                request,
+                cwd: &cwd,
+                first_pass_reads,
+            },
             &DEFAULT_PROVIDER_RETRY_POLICY,
             signal,
             progress,
@@ -258,28 +293,41 @@ impl BetterHost {
         if let (Some(usage), Some(recorder)) = (run.usage, self.usage.get()) {
             recorder(usage).await;
         }
+        for _ in 0..run.verification_passes {
+            self.note(BetterTelemetryFact::VerificationPass);
+        }
         match run.end {
             HelperEnd::Cancelled => BetterOutcome::Cancelled,
             HelperEnd::Failed(error) => failed(&error),
-            HelperEnd::Replied(text) => match reply::parse_reply(&text) {
-                Ok(parsed) => {
-                    let task = request.task.trim();
-                    match parsed.rewrite {
-                        Some(rewrite) if rewrite != task => BetterOutcome::Rewritten {
-                            rewrite,
-                            unchanged: false,
-                        },
-                        _ => BetterOutcome::Rewritten {
-                            rewrite: task.to_string(),
-                            unchanged: true,
-                        },
+            HelperEnd::Unparsed { error, text } => BetterOutcome::Failed {
+                error: error.to_string(),
+                reply: Some(self.keep(text)),
+            },
+            HelperEnd::Replied {
+                rewrite,
+                unverified,
+            } => {
+                let task = request.task.trim();
+                let (rewrite, unchanged) = match rewrite {
+                    Some(rewrite) if rewrite != task => (rewrite, false),
+                    _ => (task.to_string(), true),
+                };
+                if unverified.is_empty() {
+                    BetterOutcome::Rewritten { rewrite, unchanged }
+                } else {
+                    // What still does not resolve is named under the rewrite, so whoever sends it
+                    // sees it first.
+                    let cited = unverified
+                        .iter()
+                        .map(|reference| format!("`{reference}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    BetterOutcome::Rewritten {
+                        rewrite: format!("{rewrite}\n\n{UNVERIFIED_LABEL} {cited}"),
+                        unchanged: false,
                     }
                 }
-                Err(error) => BetterOutcome::Failed {
-                    error: error.to_string(),
-                    reply: Some(self.keep(text)),
-                },
-            },
+            }
         }
     }
 
@@ -362,28 +410,112 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// The line under a rewrite that names the references verification could not resolve.
+pub(crate) const UNVERIFIED_LABEL: &str = "Unverified (not found in the repository):";
+
 /// How the helper's loop ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum HelperEnd {
-    /// Its final text (not yet parsed).
-    Replied(String),
+    /// The final parsed reply: its rewrite (`None`: unchanged) and the cited references that
+    /// still do not resolve.
+    Replied {
+        rewrite: Option<String>,
+        unverified: Vec<String>,
+    },
+    /// A reply without the contract's blocks, kept whole.
+    Unparsed {
+        error: &'static str,
+        text: String,
+    },
     Cancelled,
     Failed(String),
 }
 
-/// One helper run's end and its summed bill.
+/// One helper run's end, its summed bill, and the verification passes it took.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct HelperRun {
     pub(crate) end: HelperEnd,
     pub(crate) usage: Option<ModelUsage>,
+    pub(crate) verification_passes: u32,
 }
 
-/// Run the helper loop against `parent`'s model, prompt, and tools (see the module docs).
+/// What one run works from.
+pub(crate) struct HelperInput<'a> {
+    pub(crate) request: &'a BetterRequest,
+    /// Where reads resolve.
+    pub(crate) cwd: &'a Path,
+    /// The first pass's reads (this project's learned start).
+    pub(crate) first_pass_reads: u32,
+}
+
+/// How one pass ended short of a reply.
+enum PassStop {
+    Cancelled,
+    Failed(String),
+}
+
+/// The helper agent and what its passes share.
+struct Helper {
+    agent: Arc<Agent>,
+    observer: SideRunObserver,
+    budget: Arc<ReadBudget>,
+    /// The current pass's model turns and its granted reads (the turn cap is their sum plus
+    /// [`GRACE_TURNS`]).
+    pass_turns: Arc<AtomicU32>,
+    pass_reads: Arc<AtomicU32>,
+}
+
+impl Helper {
+    /// Run one pass: send `prompt` with `reads` more reads granted; the pass's final text.
+    async fn pass(
+        &self,
+        prompt: &str,
+        reads: u32,
+        retry_policy: &ProviderRetryPolicy,
+        signal: &AbortSignal,
+        timed_out: &AtomicBool,
+    ) -> Result<String, PassStop> {
+        self.budget.grow(reads);
+        self.pass_reads.store(reads, Ordering::SeqCst);
+        self.pass_turns.store(0, Ordering::SeqCst);
+        let prefix_len = self.agent.state().await.messages.len();
+        // Partial text is not progress here: the user sees what the helper reads, not its draft.
+        let sink: SideQuestionSink = Arc::new(|_| true);
+        let result = run_attempts(
+            &self.agent,
+            prompt,
+            prefix_len,
+            retry_policy,
+            signal,
+            &sink,
+            &self.observer.updates,
+        )
+        .await;
+        match result.status {
+            SideQuestionStatus::Complete => Ok(result.answer),
+            SideQuestionStatus::Cancelled if timed_out.load(Ordering::SeqCst) => {
+                Err(PassStop::Failed(format!(
+                    "the helper timed out after {} s",
+                    WALL_CLOCK.as_secs()
+                )))
+            }
+            SideQuestionStatus::Cancelled => Err(PassStop::Cancelled),
+            SideQuestionStatus::Error => Err(PassStop::Failed(
+                result
+                    .error_message
+                    .unwrap_or_else(|| "the helper failed".to_string()),
+            )),
+        }
+    }
+}
+
+/// Run the helper against `parent`'s model, prompt, and tools (see the module docs): the first
+/// pass, grounding passes while references stay unresolved, then verification with at most one
+/// refine pass.
 pub(crate) async fn run_helper(
     parent: &Arc<Agent>,
     stream_fn: pa_agent::stream::StreamFn,
-    request: &BetterRequest,
-    cwd: &Path,
+    input: &HelperInput<'_>,
     retry_policy: &ProviderRetryPolicy,
     signal: &AbortSignal,
     progress: &BetterProgress,
@@ -393,11 +525,13 @@ pub(crate) async fn run_helper(
         return HelperRun {
             end: HelperEnd::Failed("select a model before using /better".to_string()),
             usage: None,
+            verification_passes: 0,
         };
     }
-    let budget = Arc::new(ReadBudget::new(READ_BUDGET));
+    let request = input.request;
+    let budget = Arc::new(ReadBudget::new(0));
     let context = ReadContext {
-        cwd: cwd.to_path_buf(),
+        cwd: input.cwd.to_path_buf(),
         budget: Arc::clone(&budget),
         progress: Arc::clone(progress),
     };
@@ -405,26 +539,24 @@ pub(crate) async fn run_helper(
         BetterMode::Deepen => parent_state.messages.clone(),
         BetterMode::Brief => Vec::new(),
     };
-    let prefix_len = messages.len();
-    let turns = Arc::new(AtomicU32::new(0));
+    let pass_turns = Arc::new(AtomicU32::new(0));
+    let pass_reads = Arc::new(AtomicU32::new(0));
     let should_stop_after_turn: ShouldStopAfterTurnFn = {
-        let turns = Arc::clone(&turns);
-        let budget = Arc::clone(&budget);
+        let (pass_turns, pass_reads) = (Arc::clone(&pass_turns), Arc::clone(&pass_reads));
         Arc::new(move |context| {
-            let turns = Arc::clone(&turns);
-            let budget = Arc::clone(&budget);
+            let (pass_turns, pass_reads) = (Arc::clone(&pass_turns), Arc::clone(&pass_reads));
             Box::pin(async move {
-                let count = turns.fetch_add(1, Ordering::SeqCst) + 1;
+                let count = pass_turns.fetch_add(1, Ordering::SeqCst) + 1;
                 let calls_tools = context
                     .message
                     .content
                     .iter()
                     .any(|block| matches!(block, AssistantContent::ToolCall(_)));
-                Ok(!calls_tools || count >= budget.limit() + GRACE_TURNS)
+                Ok(!calls_tools || count >= pass_reads.load(Ordering::SeqCst) + GRACE_TURNS)
             })
         })
     };
-    let helper = Arc::new(Agent::new(AgentOptions {
+    let agent = Arc::new(Agent::new(AgentOptions {
         initial_state: AgentInitialState {
             system_prompt: Some(parent_state.system_prompt.clone()),
             model: Some(parent_state.model.clone()),
@@ -440,8 +572,15 @@ pub(crate) async fn run_helper(
         transport: Some(pa_agent::types::Transport::Sse),
         ..Default::default()
     }));
-    let observer = SideRunObserver::subscribe(&helper).await;
-    // The run's own abort: the caller's cancel, or the wall clock.
+    let helper = Helper {
+        observer: SideRunObserver::subscribe(&agent).await,
+        agent,
+        budget,
+        pass_turns,
+        pass_reads,
+    };
+    // The run's own abort: the caller's cancel, or the wall clock across every pass.
+    let started = std::time::Instant::now();
     let run_abort = AbortController::new();
     let timed_out = Arc::new(AtomicBool::new(false));
     let watchdog = {
@@ -455,33 +594,88 @@ pub(crate) async fn run_helper(
             run_abort.abort();
         })
     };
-    // Partial text is not progress here: the user sees what the helper reads, not its draft.
-    let sink: SideQuestionSink = Arc::new(|_| true);
-    let prompt = instructions::first_pass(request.mode, &request.task, cwd, budget.limit());
-    let result = run_attempts(
-        &helper,
-        &prompt,
-        prefix_len,
-        retry_policy,
-        &run_abort.signal(),
-        &sink,
-        &observer.updates,
-    )
+    let run_signal = run_abort.signal();
+    let mut verification_passes = 0;
+    let end = async {
+        let pass = |prompt: String, reads: u32| {
+            let (helper, run_signal, timed_out) = (&helper, &run_signal, &timed_out);
+            async move {
+                helper
+                    .pass(&prompt, reads, retry_policy, run_signal, timed_out)
+                    .await
+            }
+        };
+        let stopped = |stop: PassStop| match stop {
+            PassStop::Cancelled => HelperEnd::Cancelled,
+            PassStop::Failed(error) => HelperEnd::Failed(error),
+        };
+        let parse = |text: String| {
+            reply::parse_reply(&text).map_err(|error| HelperEnd::Unparsed { error, text })
+        };
+        let first = instructions::first_pass(
+            request.mode,
+            &request.task,
+            input.cwd,
+            input.first_pass_reads,
+        );
+        let mut parsed = match pass(first, input.first_pass_reads).await.map(parse) {
+            Ok(Ok(parsed)) => parsed,
+            Ok(Err(unparsed)) => return unparsed,
+            Err(stop) => return stopped(stop),
+        };
+        // Grounding: more reads only while the helper still lists unresolved references.
+        while !parsed.unresolved.is_empty()
+            && helper.budget.limit() < READ_CEILING
+            && started.elapsed() + PASS_RESERVE < WALL_CLOCK
+        {
+            let reads = GROWTH_STEP.min(READ_CEILING - helper.budget.limit());
+            parsed = match pass(
+                instructions::grounding_pass(&parsed.unresolved, reads),
+                reads,
+            )
+            .await
+            .map(parse)
+            {
+                Ok(Ok(parsed)) => parsed,
+                Ok(Err(unparsed)) => return unparsed,
+                Err(stop) => return stopped(stop),
+            };
+        }
+        // Verification: every cited reference must resolve; one refine pass for those that do
+        // not, then report what remains.
+        let task = request.task.clone();
+        let mut unverified =
+            unresolved_references(parsed.rewrite.as_deref().unwrap_or(&task), input.cwd).await;
+        if !unverified.is_empty() {
+            verification_passes += 1;
+            let reads = GROWTH_STEP.min(READ_CEILING.saturating_sub(helper.budget.limit()));
+            match pass(instructions::refine_pass(&unverified, reads), reads)
+                .await
+                .map(parse)
+            {
+                Ok(Ok(refined)) => {
+                    parsed = refined;
+                    unverified = unresolved_references(
+                        parsed.rewrite.as_deref().unwrap_or(&task),
+                        input.cwd,
+                    )
+                    .await;
+                }
+                // The refine reply broke the contract: the verified rewrite before it stands,
+                // with what did not resolve still named under it. Verification only ever adds
+                // to a rewrite; it never throws a good one away.
+                Ok(Err(_unparsed)) => {}
+                Err(stop) => return stopped(stop),
+            }
+        }
+        HelperEnd::Replied {
+            rewrite: parsed.rewrite,
+            unverified,
+        }
+    }
     .await;
     watchdog.abort();
-    let billed = observer.finish().await;
-    let end = match result.status {
-        SideQuestionStatus::Complete => HelperEnd::Replied(result.answer),
-        SideQuestionStatus::Cancelled if timed_out.load(Ordering::SeqCst) => HelperEnd::Failed(
-            format!("the helper timed out after {} s", WALL_CLOCK.as_secs()),
-        ),
-        SideQuestionStatus::Cancelled => HelperEnd::Cancelled,
-        SideQuestionStatus::Error => HelperEnd::Failed(
-            result
-                .error_message
-                .unwrap_or_else(|| "the helper failed".to_string()),
-        ),
-    };
+    let billed = helper.observer.finish().await;
     HelperRun {
         end,
         usage: ModelUsage::new(
@@ -490,5 +684,26 @@ pub(crate) async fn run_helper(
             &parent_state.model.id,
             billed,
         ),
+        verification_passes,
     }
+}
+
+/// The references `text` cites that do not resolve from `root`, in citation order.
+async fn unresolved_references(text: &str, root: &Path) -> Vec<String> {
+    let references = verify::cited_references(text);
+    let cited: Vec<String> = references
+        .iter()
+        .map(|reference| reference.text().to_string())
+        .collect();
+    let root = root.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        references
+            .into_iter()
+            .filter(|reference| !verify::resolves(reference, &root))
+            .map(|reference| reference.text().to_string())
+            .collect()
+    })
+    .await
+    // A check that could not finish verified nothing.
+    .unwrap_or(cited)
 }
