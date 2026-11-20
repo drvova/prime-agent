@@ -2387,6 +2387,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// Summarized test runs ride their own `agent test summaries` event at session end (counts only: never a test name or output).
 #[tokio::test]
 async fn test_summaries_ride_their_own_event() {
+    use crate::kernel::test_runs::TestRunFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2395,7 +2396,6 @@ async fn test_summaries_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::kernel::test_runs::TestRunFact;
     for fact in [
         TestRunFact {
             failed: 2,
