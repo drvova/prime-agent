@@ -404,6 +404,20 @@ impl SessionEngine for AgentSessionEngine {
         let _ = self.effective_thinking();
     }
 
+    fn set_credential_pin(&self, pin: Option<pa_types::session::CredentialPin>) {
+        *self
+            .credential_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = pin;
+    }
+
+    fn credential_pin(&self) -> Option<pa_types::session::CredentialPin> {
+        self.credential_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     fn configure_create_model(&self, selection: EngineModelSelection) {
         // The create's explicit flags fold into the runtime config (TS
         // `mergeAgentSessionRuntimeConfig`) and must survive the restore reset.
