@@ -38,12 +38,29 @@ class BetterClientTest(unittest.TestCase):
         )
         self.assertEqual(handle.rlm_child_id, "c1")
 
+    def test_checks_and_evidence_ride_the_better_callable(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+        evidence = {"handle": "out:7f3a9c1e04", "round": 1, "passed": 1, "failed": 0, "checks": []}
+
+        async def host(request_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+            calls.append((request_type, payload))
+            if request_type == "better.checks":
+                return {"status": "passed", "checks": [], "rounds": 0, "max_rounds": 3, "running": False, "last": evidence}
+            return evidence
+
+        with patch.object(better_module, "host_request", host):
+            status = asyncio.run(better_module.better.checks())
+            record = asyncio.run(better_module.better.evidence("out:7f3a9c1e04"))
+        self.assertEqual((status["last"], record), (evidence, evidence))
+        self.assertEqual(calls, [("better.checks", {}), ("better.evidence", {"handle": "out:7f3a9c1e04"})])
+
     def test_invalid_arguments_fail_before_the_host(self) -> None:
         host = HostRecorder()
         with patch.object(better_module, "host_request", host), patch.object(rlm, "host_request", host):
             for call in (
                 better_module.better("  "),
                 better_module.better("x", mode="shorter"),
+                better_module.evidence(""),
                 rlm.spawn("x", name="n", better="yes"),  # type: ignore[arg-type]
             ):
                 with self.assertRaises((ValueError, TypeError)):

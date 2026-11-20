@@ -299,7 +299,7 @@ fn snapshots_equal(a: Option<&GitWorktreeSnapshot>, b: Option<&GitWorktreeSnapsh
     matches!((a, b), (Some(a), Some(b)) if a.status == b.status && a.diff == b.diff && a.untracked_hash == b.untracked_hash)
 }
 
-fn format_process_exit(result: &ChildProcessResult) -> String {
+pub(crate) fn format_process_exit(result: &ChildProcessResult) -> String {
     if result.timed_out {
         return "timed out".to_string();
     }
@@ -312,7 +312,11 @@ fn format_process_exit(result: &ChildProcessResult) -> String {
     }
 }
 
-fn truncate_gate_output(output: &str, was_truncated: bool, cap: GateOutputCap) -> String {
+pub(crate) fn truncate_gate_output(
+    output: &str,
+    was_truncated: bool,
+    cap: GateOutputCap,
+) -> String {
     let (GateOutputCap::Head(max_chars) | GateOutputCap::Tail(max_chars)) = cap;
     let chars = output.chars().count();
     if chars <= max_chars && !was_truncated {

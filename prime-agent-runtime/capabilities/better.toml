@@ -1,11 +1,17 @@
 module = "rlm.better"
 closure_seed = true
 prompt_builtins = ["better"]
-documented = ["better"]
-probe = ["import rlm.better as _better", "assert callable(_better.better)"]
+documented = ["better", "better.checks", "better.evidence"]
+probe = [
+  "import rlm.better as _better",
+  "assert callable(_better.better)",
+  "assert callable(_better.better.checks) and callable(_better.better.evidence)",
+]
 
 [host_requests]
 "better.run" = "better"
+"better.checks" = "better"
+"better.evidence" = "better"
 
 [[telemetry]]
 event = "agent better prompt"
@@ -20,4 +26,7 @@ properties = [
   "better_brief_run_count",
   "better_brief_unchanged_count",
   "better_verification_pass_count",
+  "better_check_round_count",
+  "better_check_passed_count",
+  "better_check_failed_count",
 ]

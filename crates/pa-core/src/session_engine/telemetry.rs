@@ -447,6 +447,9 @@ struct CounterValues {
     agent_message_refusals: super::agent_messaging::AgentMessageRefusals,
     /// `agent_message.wait` outcomes, reported by `agent message waits`.
     agent_message_waits: AgentMessageWaitCounts,
+    /// The adaptive delegation depth bound's moves and the briefs scaled to it, reported by
+    /// `agent rlm delegation depth`.
+    rlm_depth: RlmDepthCounts,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
     rlm_abort: RlmAbortCounts,
     /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
@@ -521,6 +524,15 @@ struct RlmAbortCounts {
     aborted: u64,
     idle: u64,
     failed: u64,
+}
+
+/// `agent rlm delegation depth`: the adaptive bound's raises and drops, and the brief-mode
+/// `better` runs whose depth followed the remaining bound.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct RlmDepthCounts {
+    raised: u64,
+    lowered: u64,
+    scaled_briefs: u64,
 }
 
 /// `agent kernel login and recall`: kernel MCP logins by outcome, and past-session searches,
@@ -683,6 +695,12 @@ pub enum BetterTelemetryFact {
     BriefUnchanged,
     /// A verification found unresolved references and ran a refine pass.
     VerificationPass,
+    /// An acceptance-check round started at a run's end.
+    CheckRound,
+    /// One acceptance check of a round passed.
+    CheckPassed,
+    /// One acceptance check of a round failed.
+    CheckFailed,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -697,6 +715,9 @@ struct BetterCounts {
     brief_runs: u64,
     brief_unchanged: u64,
     verification_passes: u64,
+    check_rounds: u64,
+    checks_passed: u64,
+    checks_failed: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -821,6 +842,9 @@ impl SessionCounters {
                 BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
                 BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
                 BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
+                BetterTelemetryFact::CheckRound => &mut counts.check_rounds,
+                BetterTelemetryFact::CheckPassed => &mut counts.checks_passed,
+                BetterTelemetryFact::CheckFailed => &mut counts.checks_failed,
             };
             *counter += 1;
         });
@@ -1083,6 +1107,21 @@ impl SessionCounters {
                 None => &mut counts.failed,
             } += 1;
         });
+    }
+
+    /// One observation of the adaptive delegation depth bound (counts only).
+    pub(crate) fn note_rlm_depth(&self, change: pa_types::control::DepthChange) {
+        use pa_types::control::DepthChange;
+        self.with(|values| match change {
+            DepthChange::Raised => values.rlm_depth.raised += 1,
+            DepthChange::Lowered => values.rlm_depth.lowered += 1,
+            DepthChange::Unchanged => {}
+        });
+    }
+
+    /// One brief-mode `better` run whose depth followed the remaining delegation bound.
+    pub(crate) fn note_scaled_brief(&self) {
+        self.with(|values| values.rlm_depth.scaled_briefs += 1);
     }
 
     /// One kernel `rlm.reload()` and the count of skills it added (never a name).
@@ -1669,6 +1708,9 @@ impl SessionTelemetry {
                 ("better_brief_run_count", better.brief_runs),
                 ("better_brief_unchanged_count", better.brief_unchanged),
                 ("better_verification_pass_count", better.verification_passes),
+                ("better_check_round_count", better.check_rounds),
+                ("better_check_passed_count", better.checks_passed),
+                ("better_check_failed_count", better.checks_failed),
             ] {
                 better_properties.set(key, Value::from(value));
             }
@@ -2056,6 +2098,21 @@ impl SessionTelemetry {
                 abort_properties.set(key, Value::from(value));
             }
             self.client.track("agent rlm child abort", abort_properties);
+        }
+        // A session whose depth bound never moved and that scaled no brief sends no depth event.
+        let mut depth = RlmDepthCounts::default();
+        self.counters.with(|values| depth = values.rlm_depth);
+        if depth != RlmDepthCounts::default() {
+            let mut depth_properties = self.session_properties();
+            for (key, value) in [
+                ("rlm_depth_raised_count", depth.raised),
+                ("rlm_depth_lowered_count", depth.lowered),
+                ("rlm_depth_scaled_brief_count", depth.scaled_briefs),
+            ] {
+                depth_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent rlm delegation depth", depth_properties);
         }
         // A session that never reloaded or read its settings sends no reload event.
         let mut repl_reload = ReplReloadCounts::default();

@@ -87,6 +87,7 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
     admit_kernel_notice(
         &worker.recovery,
         &worker.core,
+        &worker.events,
         &notify,
         crate::engine::KernelNotice::bash_completion(
             4321,
@@ -144,6 +145,55 @@ async fn a_bash_completion_notice_admits_the_steering_lane_with_busy_evidence() 
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }
 
+/// A recorded notice (a passed acceptance-check round) shows its row and queues no turn.
+#[tokio::test]
+async fn a_recorded_notice_broadcasts_its_row_and_queues_no_turn() {
+    let worker = created_worker_with_journal().await;
+    worker.dispatch("clear_queue", &json!({})).await;
+    let mut subscription = worker.events.subscribe();
+    let row = pa_types::session::CustomMessage {
+        custom_type: "better_acceptance_checks".to_string(),
+        content: pa_types::ai::UserContent::Text("[better-checks out:1 · 1 passed]".to_string()),
+        display: true,
+        details: Some(json!({ "failed": 0 })),
+        timestamp: 7,
+        rest: serde_json::Map::default(),
+    };
+    admit_kernel_notice(
+        &worker.recovery,
+        &worker.core,
+        &worker.events,
+        &Arc::new(Notify::new()),
+        crate::engine::KernelNotice {
+            row: row.clone(),
+            preview_label: "Acceptance checks",
+            delivery: pa_core::session_engine::bash_notices::NoticeDelivery::Record,
+        },
+        || false,
+    );
+    let message = serde_json::to_value(pa_types::session::AgentMessage::Custom(row)).unwrap();
+    let mut events = Vec::new();
+    while let Ok(frame) = subscription.try_recv() {
+        let outbound: Value = serde_json::from_slice(&frame.payload).unwrap();
+        events.push(outbound["event"].clone());
+    }
+    assert_eq!(
+        events,
+        vec![
+            json!({ "type": "message_start", "message": message }),
+            json!({ "type": "message_end", "message": message }),
+        ]
+    );
+    let core = worker.core.lock().unwrap();
+    assert_eq!(
+        (core.steering.len(), core.follow_up.len()),
+        (0, 0),
+        "a recorded row never queues a turn"
+    );
+    drop(core);
+    let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
+}
+
 /// A busy session queues the notice as a visible steer row (TS `queueIfBusy`).
 #[tokio::test]
 async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row() {
@@ -153,6 +203,7 @@ async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row()
     admit_kernel_notice(
         &worker.recovery,
         &worker.core,
+        &worker.events,
         &notify,
         crate::engine::KernelNotice::bash_completion(
             99,
@@ -179,6 +230,7 @@ async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
     admit_kernel_notice(
         &worker.recovery,
         &worker.core,
+        &worker.events,
         &notify,
         crate::engine::KernelNotice::bash_completion(
             4321,

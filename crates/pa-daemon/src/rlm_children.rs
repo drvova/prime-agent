@@ -422,6 +422,10 @@ struct SupervisorChildSessionsInner {
     semantic_edges: std::sync::Mutex<
         Option<std::sync::Arc<pa_core::session_engine::semantic_edges::SemanticEdgeRecorder>>,
     >,
+    /// The session's delegation depth bound: the identity's fixed bound, or (with no setting)
+    /// the adaptive bound the kernel's collects feed. The spawn check and every child's
+    /// inherited bound read it.
+    depth: Arc<pa_core::session_engine::rlm_depth::DelegationDepth>,
 }
 
 impl Clone for SupervisorChildSessions {
@@ -467,6 +471,7 @@ impl SupervisorChildSessions {
                 delete_notifier: std::sync::Mutex::new(None),
                 child_update_sink: std::sync::Mutex::new(None),
                 semantic_edges: std::sync::Mutex::new(None),
+                depth: Arc::default(),
             }),
         }
     }
@@ -601,7 +606,21 @@ impl SupervisorChildSessions {
     ///
     /// Panics when the identity mutex is poisoned.
     pub fn set_identity(&self, identity: ParentIdentity) {
+        self.inner.depth.configure(
+            identity.rlm_depth,
+            pa_core::session_engine::rlm_depth::DepthBound::Fixed(identity.rlm_max_depth),
+        );
         *self.inner.identity.lock().expect("identity lock") = identity;
+    }
+
+    /// Let the bound adapt (no setting fixed it) or keep it fixed, after [`Self::set_identity`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the identity mutex is poisoned.
+    pub fn set_depth_bound(&self, bound: pa_core::session_engine::rlm_depth::DepthBound) {
+        let depth = self.inner.identity.lock().expect("identity lock").rlm_depth;
+        self.inner.depth.configure(depth, bound);
     }
 
     /// Replace the parent session's live name (the worker's summary — the
@@ -634,11 +653,7 @@ impl SupervisorChildSessions {
     /// Panics when the identity mutex is poisoned.
     #[must_use]
     pub fn rlm_max_depth(&self) -> u32 {
-        self.inner
-            .identity
-            .lock()
-            .expect("identity lock")
-            .rlm_max_depth
+        self.inner.depth.max_depth()
     }
 
     /// Test-only read of the identity's model selector (for the regression test).
@@ -797,6 +812,7 @@ impl SupervisorChildSessions {
             .lock()
             .expect("identity lock")
             .rlm_max_depth = max_depth;
+        self.inner.depth.fix(max_depth);
     }
 
     /// Cancel one live child run: abort the worker's in-flight turn and
@@ -841,7 +857,7 @@ impl SupervisorChildSessions {
         }
     }
 
-    fn collect_result(record: &ChildRecord) -> RlmChildResult {
+    fn collect_result(record: &ChildRecord, check_status: Option<&'static str>) -> RlmChildResult {
         RlmChildResult {
             rlm_child_id: record.rlm_child_id.clone(),
             session_name: Some(record.session_name.clone()),
@@ -855,6 +871,7 @@ impl SupervisorChildSessions {
             tool_use_count: record.tool_use_count,
             replied_since_task: Some(record.replied_since_task),
             queued_ms: Some(record.queued_ms).filter(|queued_ms| *queued_ms > 0),
+            check_status,
         }
     }
 
@@ -874,6 +891,7 @@ impl SupervisorChildSessions {
             tool_use_count: None,
             replied_since_task: None,
             queued_ms: None,
+            check_status: None,
         }
     }
 }

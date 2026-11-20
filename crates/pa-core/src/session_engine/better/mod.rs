@@ -20,8 +20,12 @@
 //!   cites must resolve in the repository. Unverified ones go back to the helper for one refine
 //!   pass; what still does not resolve is named under the rewrite.
 //!
-//! The reply contract lives in [`reply`], the wording in [`instructions`].
+//! The reply contract lives in [`reply`], the wording in [`instructions`]. A rewrite or brief also
+//! carries an `<acceptance>` block of executable checks ([`checks`]); a prompt that carries one
+//! arms them, and they run in the background when its runs end ([`acceptance`]).
 
+mod acceptance;
+mod checks;
 mod instructions;
 mod learning;
 mod read_only;
@@ -44,6 +48,8 @@ use super::model_usage::ModelUsage;
 use super::provider_retry::{ProviderRetryPolicy, DEFAULT_PROVIDER_RETRY_POLICY};
 use super::side_question::{run_attempts, SideQuestionSink, SideQuestionStatus, SideRunObserver};
 use super::telemetry::{BetterTelemetryFact, SessionCounters};
+pub use acceptance::{check_status_from_session_file, CheckStatus, Evidence};
+pub use checks::{AcceptanceCheck, CheckOutcome, CheckVerdict};
 pub use read_only::ReadProgress as BetterProgress;
 use read_only::{ReadBudget, ReadContext};
 
@@ -159,16 +165,26 @@ pub struct BetterHost {
     counters: Option<Arc<SessionCounters>>,
     spill: Option<crate::kernel::spill::SpillStore>,
     learning: learning::ProjectLearning,
+    /// Runs the acceptance checks' `run:` commands (the gate lane's runner in the session cwd).
+    check_runner: Arc<dyn crate::autonomous::GateCommandRunner>,
+    /// Where a check round's notice goes (see [`BetterHost::bind_notice_sink`]).
+    notice: OnceLock<super::bash_notices::KernelNoticeSink>,
+    acceptance: std::sync::Mutex<acceptance::AcceptanceState>,
+    /// The session's delegation depth bound, when it runs children: a brief's depth follows the
+    /// levels its subagent may still delegate.
+    delegation: OnceLock<Arc<super::rlm_depth::DelegationDepth>>,
 }
 
 impl BetterHost {
-    /// `agent_dir` keeps this project's learning across sessions (`None`: in memory only).
+    /// `agent_dir` keeps this project's learning across sessions (`None`: in memory only);
+    /// `check_runner` runs the acceptance checks' commands.
     #[must_use]
     pub fn new(
         cwd: PathBuf,
         agent_dir: Option<&Path>,
         counters: Option<Arc<SessionCounters>>,
         spill: Option<crate::kernel::spill::SpillStore>,
+        check_runner: Arc<dyn crate::autonomous::GateCommandRunner>,
     ) -> Self {
         Self {
             learning: learning::ProjectLearning::new(agent_dir, &cwd),
@@ -178,7 +194,16 @@ impl BetterHost {
             usage: OnceLock::new(),
             counters,
             spill,
+            check_runner,
+            notice: OnceLock::new(),
+            acceptance: std::sync::Mutex::default(),
+            delegation: OnceLock::new(),
         }
+    }
+
+    /// Bind the session's delegation depth bound (first bind wins).
+    pub fn bind_delegation_depth(&self, depth: Arc<super::rlm_depth::DelegationDepth>) {
+        let _ = self.delegation.set(depth);
     }
 
     /// Bind the assembled session (first bind wins). The agent is held weakly: the kernel's
@@ -276,7 +301,17 @@ impl BetterHost {
         ) else {
             return failed("the session is still starting; try again");
         };
-        let first_pass_reads = self.learning.estimate().await.first_pass_budget();
+        // A delegation brief is refined as deeply as its subagent may still delegate: a leaf
+        // gets a lean pass, a subagent that will hand work on gets a deeper one.
+        let brief_depth = match (request.mode, self.delegation.get()) {
+            (BetterMode::Brief, Some(depth)) => BriefDepth::Levels(depth.levels_below_child()),
+            (BetterMode::Brief, None) | (BetterMode::Deepen, _) => BriefDepth::Unscaled,
+        };
+        if let (BriefDepth::Levels(_), Some(counters)) = (brief_depth, &self.counters) {
+            counters.note_scaled_brief();
+        }
+        let first_pass_reads =
+            brief_depth.scaled_reads(self.learning.estimate().await.first_pass_budget());
         let run = run_helper(
             &agent,
             stream_fn,
@@ -284,6 +319,7 @@ impl BetterHost {
                 request,
                 cwd: &cwd,
                 first_pass_reads,
+                brief_depth,
             },
             &DEFAULT_PROVIDER_RETRY_POLICY,
             signal,
@@ -352,11 +388,49 @@ impl BetterHost {
 /// waiting (interrupted, or its kernel gone) cancels the run.
 pub(crate) const BETTER_REQUEST_TYPE: &str = "better.run";
 
-/// Register [`BETTER_REQUEST_TYPE`] on `host`.
+/// The kernel's `better.checks()`: where the armed acceptance checks stand.
+pub(crate) const BETTER_CHECKS_REQUEST_TYPE: &str = "better.checks";
+
+/// The kernel's `better.evidence(handle)`: one check round's per-check results.
+pub(crate) const BETTER_EVIDENCE_REQUEST_TYPE: &str = "better.evidence";
+
+/// Register [`BETTER_REQUEST_TYPE`], [`BETTER_CHECKS_REQUEST_TYPE`], and
+/// [`BETTER_EVIDENCE_REQUEST_TYPE`] on `host`.
 pub(crate) fn register_better_handler(
     handlers: &mut crate::kernel::shared::HostRequestHandlers,
     host: &Arc<BetterHost>,
 ) {
+    let checks_host = Arc::clone(host);
+    handlers.register(
+        BETTER_CHECKS_REQUEST_TYPE,
+        crate::kernel::shared::host_handler(move |_payload| {
+            let status = checks_host.checks_status();
+            async move { Ok(status) }
+        }),
+    );
+    let evidence_host = Arc::clone(host);
+    handlers.register(
+        BETTER_EVIDENCE_REQUEST_TYPE,
+        crate::kernel::shared::host_handler(move |payload| {
+            let host = Arc::clone(&evidence_host);
+            async move {
+                let Some(handle) = payload
+                    .data
+                    .get("handle")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    anyhow::bail!("better.evidence handle must be a string");
+                };
+                match host.evidence(handle) {
+                    Some(evidence) => Ok(evidence.to_json()),
+                    None => anyhow::bail!(
+                        "no acceptance-check evidence {handle:?} in this session (read a stored \
+                         report's text with ctx.page)"
+                    ),
+                }
+            }
+        }),
+    );
     let host = Arc::clone(host);
     handlers.register(
         BETTER_REQUEST_TYPE,
@@ -444,8 +518,30 @@ pub(crate) struct HelperInput<'a> {
     pub(crate) request: &'a BetterRequest,
     /// Where reads resolve.
     pub(crate) cwd: &'a Path,
-    /// The first pass's reads (this project's learned start).
+    /// The first pass's reads (this project's learned start, scaled by `brief_depth`).
     pub(crate) first_pass_reads: u32,
+    pub(crate) brief_depth: BriefDepth,
+}
+
+/// How deeply a brief is refined (Rieseberg's Depth, measured in delegation levels): the levels
+/// the subagent it briefs may still delegate below itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BriefDepth {
+    /// Not a delegation brief, or a session that runs no children.
+    Unscaled,
+    /// The briefed subagent may delegate this many more levels.
+    Levels(u32),
+}
+
+impl BriefDepth {
+    /// The first pass's reads at this depth: half the learned start for a leaf, growing by half
+    /// per level the subagent may delegate, inside [`GROWTH_STEP`]..=[`READ_CEILING`].
+    pub(crate) fn scaled_reads(self, reads: u32) -> u32 {
+        match self {
+            Self::Unscaled => reads,
+            Self::Levels(levels) => (reads * (levels + 1) / 2).clamp(GROWTH_STEP, READ_CEILING),
+        }
+    }
 }
 
 /// How one pass ended short of a reply.
@@ -617,6 +713,7 @@ pub(crate) async fn run_helper(
             &request.task,
             input.cwd,
             input.first_pass_reads,
+            input.brief_depth,
         );
         let mut parsed = match pass(first, input.first_pass_reads).await.map(parse) {
             Ok(Ok(parsed)) => parsed,

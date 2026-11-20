@@ -64,6 +64,9 @@ pub const REFINEMENT_OUTCOME_CUSTOM_TYPE: &str = "refinement_outcome";
 /// operator ruling 2026-09-23: one terminal row per episode instead of TS's per-attempt error
 /// rows). Wire twin of `pa_core::session_engine::messages::PROVIDER_RETRY_OUTCOME_CUSTOM_TYPE`.
 pub const PROVIDER_RETRY_OUTCOME_CUSTOM_TYPE: &str = "provider_retry_outcome";
+/// One acceptance-check round's row. Wire twin of
+/// `pa_core::session_engine::messages::BETTER_CHECKS_CUSTOM_TYPE`.
+pub const BETTER_CHECKS_CUSTOM_TYPE: &str = "better_acceptance_checks";
 /// Wire twin of `pa_core::prompts::model_prompts::MODEL_PROMPT_ERROR_CUSTOM_TYPE`.
 pub const MODEL_PROMPT_ERROR_CUSTOM_TYPE: &str = "model_prompt_error";
 
@@ -208,6 +211,19 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
                 },
             }]
         }
+        // One compact line per round (the full report is the model's notice and the evidence
+        // handle's text): the summary the row carries, the tone from its failures.
+        BETTER_CHECKS_CUSTOM_TYPE => vec![ChatEntry::Status {
+            text: details
+                .get("summary")
+                .and_then(Value::as_str)
+                .map_or(content, str::to_string),
+            kind: if details.get("failed").and_then(Value::as_u64) == Some(0) {
+                crate::chat::StatusKind::Info
+            } else {
+                crate::chat::StatusKind::Warning
+            },
+        }],
         MODEL_PROMPT_ERROR_CUSTOM_TYPE => vec![ChatEntry::Status {
             text: content,
             kind: crate::chat::StatusKind::Warning,
@@ -497,6 +513,39 @@ mod tests {
             }));
             assert!(entries.is_empty(), "{custom_type} rendered {entries:?}");
         }
+    }
+
+    #[test]
+    fn an_acceptance_check_round_renders_one_compact_line_toned_by_its_failures() {
+        let row = |failed: u64, summary: &str| {
+            decoded(&json!({
+                "role": "custom",
+                "customType": BETTER_CHECKS_CUSTOM_TYPE,
+                "content": "[better-checks out:7f3a9c1e04 · 2 passed · 1 failed · round 1 of 3]\n✗ run: cargo test\n  exited with code 101",
+                "display": true,
+                "details": { "handle": "out:7f3a9c1e04", "failed": failed, "summary": summary },
+            }))
+        };
+        assert_eq!(
+            [
+                row(
+                    1,
+                    "Acceptance checks: 1 of 3 failed · round 1 of 3 · out:7f3a9c1e04"
+                ),
+                row(0, "Acceptance checks: 3/3 passed · out:7f3a9c1e04"),
+            ],
+            [
+                vec![ChatEntry::Status {
+                    text: "Acceptance checks: 1 of 3 failed · round 1 of 3 · out:7f3a9c1e04"
+                        .to_string(),
+                    kind: StatusKind::Warning,
+                }],
+                vec![ChatEntry::Status {
+                    text: "Acceptance checks: 3/3 passed · out:7f3a9c1e04".to_string(),
+                    kind: StatusKind::Info,
+                }],
+            ]
+        );
     }
 
     #[test]

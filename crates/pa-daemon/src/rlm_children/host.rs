@@ -88,15 +88,17 @@ fn create_session_launch_env(
 }
 
 impl RlmSubagentHost for SupervisorChildSessions {
+    fn delegation_depth(&self) -> Option<Arc<pa_core::session_engine::rlm_depth::DelegationDepth>> {
+        Some(Arc::clone(&self.inner.depth))
+    }
+
     fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
         let this = Arc::clone(&self.inner);
         Box::pin(async move {
             let identity = this.identity.lock().expect("identity lock").clone();
-            if identity.rlm_depth >= identity.rlm_max_depth {
-                bail!(rlm_depth_limit_error(
-                    identity.rlm_depth,
-                    identity.rlm_max_depth
-                ));
+            let max_depth = this.depth.max_depth();
+            if identity.rlm_depth >= max_depth {
+                bail!(rlm_depth_limit_error(identity.rlm_depth, max_depth));
             }
             let child_id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
             let name = request.name.clone().unwrap_or_else(|| {
@@ -726,9 +728,28 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     this.wait_for_child(&active_session_id, remaining).await;
                     this.refresh_record(record).await;
                 }
+                // The child's acceptance checks, from its durable rows (the child runs in its
+                // own worker process); the read stays off the async workers.
+                let session_file = record
+                    .lock()
+                    .await
+                    .session_file
+                    .clone()
+                    .filter(|path| !path.is_empty());
+                let check_status = match session_file {
+                    Some(path) => tokio::task::spawn_blocking(move || {
+                        pa_core::session_engine::better::check_status_from_session_file(Path::new(
+                            &path,
+                        ))
+                    })
+                    .await
+                    .ok()
+                    .map(pa_core::session_engine::better::CheckStatus::as_str),
+                    None => None,
+                };
                 let result = {
                     let record = record.lock().await;
-                    SupervisorChildSessions::collect_result(&record)
+                    SupervisorChildSessions::collect_result(&record, check_status)
                 };
                 results.push(result);
             }

@@ -69,3 +69,65 @@ conversation: a brief is checked against the repository, not against the chat.
 `rlm.spawn(..., better=True)` runs brief mode first and spawns the checked brief; the spawn
 still waits for a session-boot slot like every other spawn, and the helper's model calls pass
 the same provider admission as the session's own.
+
+## Acceptance checks
+
+Every rewrite and checked brief ends with an `<acceptance>` block: the checks that pass only
+once the task is done, one per line.
+
+```
+<acceptance>
+- run: cargo test -p parser parse_expr
+- exists: tests/fixtures/expr.txt
+- grep: src/parser.rs fn parse_expr
+</acceptance>
+```
+
+- `run: <command>` passes when the command exits 0. It runs through the same runner as the
+  autonomous quality gates: the platform shell in the session's working directory, with the
+  gate timeout and output caps.
+- `exists: <path>` passes when the path exists. `grep: <path> <text>` passes when the literal
+  text occurs in the file, or in a file under the directory. Neither starts a process.
+- A line that is none of these fails with its reason, so a malformed block never passes
+  silently.
+
+Sending a prompt that carries a block arms its checks. Each time a run ends cleanly (not on an
+error or Esc), the checks run in the background. Nothing waits on them: the run settles and the
+interface keeps painting while they run. Each round leaves one compact row in the transcript,
+such as `Acceptance checks: 1 of 3 failed · round 1 of 3 · out:7f3a9c1e04`. The full report is
+kept in the session's spill store under that `out:<id>` handle.
+
+- When a check fails, the report goes to the model as a notice with each failure's raw exit and
+  output tail. The model continues from it, and the checks run again when its turn ends.
+- When every check passes, the row is only recorded and no turn runs.
+- After three rounds that do not all pass, the checks stop re-running on their own, and the
+  last notice asks the model to say what still fails.
+- A new prompt without a block disarms the checks; a prompt with a new block replaces them.
+
+The same checks are readable from the REPL. `better.checks()` returns where they stand
+(`status` is `none`, `pending`, `passed`, or `failed`, plus the checks, the rounds run, and the
+latest round's evidence). `better.evidence("out:7f3a9c1e04")` returns one round's per-check
+results with each failure's raw reason. Telemetry counts the rounds and the checks that passed
+and failed, and nothing else.
+
+## Depth-aware delegation
+
+Two kinds of depth meet when a session delegates. One is how many levels of subagents may
+nest below it. The other is how deeply a brief was refined before it went out (the "Depth" in
+the questions above).
+
+- With no recursion setting (no `/rlm-max-depth`, no `rlmMaxDepth` setting, no `RLM_MAX_DEPTH`
+  in the environment), the nesting bound adapts. It starts at 2 levels and stays between 1 and
+  4. Two children in a row that come back from `rlm.collect` finished with their acceptance
+  checks passing raise it one level. A child that fails, whose checks fail, or that a bounded
+  `rlm.collect(..., timeout_ms=...)` wait times out on lowers it one level. A child inherits
+  the bound as it stood when it was spawned. A setting always fixes the bound, and nothing
+  adapts then.
+- `rlm.spawn(..., better=True)` refines the brief as deeply as the child may still delegate.
+  A child at the last level gets a lean check and is told to finish in one session. A child
+  that may delegate further gets more reads and is asked for a brief it can split, each part
+  with its own acceptance check.
+- `rlm.collect` results carry `check_status`: `none` (the child's task carried no checks),
+  `pending` (armed, no round finished yet), `passed`, or `failed`.
+
+Telemetry counts the bound's raises and drops and the briefs scaled to it, and nothing else.

@@ -92,7 +92,8 @@ impl SupervisorChildSessionsInner {
             "cwd": cwd,
             "sessionDir": session_dir.to_string_lossy(),
             "rlmDepth": depth,
-            "rlmMaxDepth": identity.rlm_max_depth,
+            // The bound as it stands now: the child inherits it fixed.
+            "rlmMaxDepth": self.depth.max_depth(),
         });
         if let Some((provider, id)) = model.split_once('/') {
             config["provider"] = json!(provider);

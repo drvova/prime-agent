@@ -63,7 +63,9 @@ pub(crate) struct InlineSessionNode {
     /// Serializes message admission with disposal; never held across an await.
     delivery_gate: std::sync::Mutex<()>,
     pub(crate) depth: u32,
-    pub(crate) max_depth: u32,
+    /// The delegation depth bound: the root's adapts when no setting fixes it; a child
+    /// inherits its parent's bound fixed at spawn.
+    pub(crate) delegation: Arc<pa_core::session_engine::rlm_depth::DelegationDepth>,
     /// The session's model selector (`provider/id`), inherited by children.
     model_selector: std::sync::Mutex<Option<String>>,
     /// The session's effective thinking level, inherited by children.
@@ -178,7 +180,7 @@ pub(crate) fn root_node(
     session_manager: &pa_core::session::manager::SessionManager,
     faux: Option<Value>,
 ) -> Arc<InlineSessionNode> {
-    let (max_depth, _) = resolve_rlm_max_depth(
+    let (max_depth, source) = resolve_rlm_max_depth(
         session_manager
             .get_session_file()
             .map(|path| path.display().to_string())
@@ -197,7 +199,10 @@ pub(crate) fn root_node(
         spawn_gate: tokio::sync::Mutex::new(()),
         delivery_gate: std::sync::Mutex::new(()),
         depth: 0,
-        max_depth: u32::try_from(max_depth).unwrap_or(u32::MAX),
+        delegation: Arc::new(pa_core::session_engine::rlm_depth::DelegationDepth::new(
+            0,
+            pa_core::session_engine::rlm_depth::DepthBound::resolved(max_depth, source),
+        )),
         model_selector: std::sync::Mutex::new(None),
         thinking: std::sync::Mutex::new(None),
         parent: None,
@@ -628,6 +633,10 @@ pub(crate) async fn dispose_inline_subagents(root: &Arc<InlineSessionNode>) {
 struct InlineHost(Arc<InlineSessionNode>);
 
 impl RlmSubagentHost for InlineHost {
+    fn delegation_depth(&self) -> Option<Arc<pa_core::session_engine::rlm_depth::DelegationDepth>> {
+        Some(Arc::clone(&self.0.delegation))
+    }
+
     /// Admit one inline child (TS `_startRlmChildRun` minus the usage
     /// attribution the daemonless host does not keep): depth gate, name
     /// uniqueness, model resolution, the child session + engine, the
@@ -636,8 +645,9 @@ impl RlmSubagentHost for InlineHost {
     fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
         let node = Arc::clone(&self.0);
         Box::pin(async move {
-            if node.depth >= node.max_depth {
-                return Err(rlm_depth_limit_error(node.depth, node.max_depth));
+            let max_depth = node.delegation.max_depth();
+            if node.depth >= max_depth {
+                return Err(rlm_depth_limit_error(node.depth, max_depth));
             }
             let recipe = match request.cwd.as_deref() {
                 None => Arc::clone(&node.recipe),
@@ -795,7 +805,10 @@ impl RlmSubagentHost for InlineHost {
                 spawn_gate: tokio::sync::Mutex::new(()),
                 delivery_gate: std::sync::Mutex::new(()),
                 depth: node.depth + 1,
-                max_depth: node.max_depth,
+                delegation: Arc::new(pa_core::session_engine::rlm_depth::DelegationDepth::new(
+                    node.depth + 1,
+                    pa_core::session_engine::rlm_depth::DepthBound::Fixed(max_depth),
+                )),
                 model_selector: std::sync::Mutex::new(Some(selector.clone())),
                 thinking: std::sync::Mutex::new(Some(thinking)),
                 parent: Some(Arc::downgrade(&node)),
@@ -978,6 +991,7 @@ impl RlmSubagentHost for InlineHost {
                         tool_use_count: None,
                         replied_since_task: Some(state.replied_since_task),
                         queued_ms: None,
+                        check_status: Some(child.engine.better.check_status().as_str()),
                     });
                 }
                 if all_settled || deadline <= tokio::time::Instant::now() {
@@ -1283,7 +1297,7 @@ mod tests {
         let options = run_options(directory.path());
         std::fs::create_dir_all(&options.config.agent_dir).unwrap();
         let manager = pa_core::session::manager::SessionManager::in_memory(directory.path());
-        let mut node = root_node(
+        let node = root_node(
             &options,
             &manager,
             Some(json!({
@@ -1291,7 +1305,7 @@ mod tests {
                 "children": { "late": { "responses": ["child"] } },
             })),
         );
-        Arc::get_mut(&mut node).unwrap().max_depth = 2;
+        node.delegation.fix(2);
         let gate = node.spawn_gate.lock().await;
         let mut spawn = InlineHost(Arc::clone(&node)).spawn(RlmSpawnRequest {
             prompt: "finish the task".to_string(),

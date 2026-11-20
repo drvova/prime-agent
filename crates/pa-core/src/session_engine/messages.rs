@@ -50,6 +50,11 @@ pub const ASYNC_CELL_COMPLETION_PREVIEW_LABEL: &str = "Background cell finished"
 /// The durable row a factory run milestone (`factory.progress`) admits on
 /// the owning session's steering lane.
 pub const FACTORY_PROGRESS_NOTICE_CUSTOM_TYPE: &str = "factory_progress_notice";
+/// The row one acceptance-check round leaves (`better` checks at turn end): a failure steers it
+/// onto the session, a pass only records it.
+pub const BETTER_CHECKS_CUSTOM_TYPE: &str = "better_acceptance_checks";
+/// The queue-strip label a failed acceptance-check round's queued row carries.
+pub const BETTER_CHECKS_PREVIEW_LABEL: &str = "Acceptance checks";
 /// The queue-strip label the factory progress notice's queued row carries.
 pub const FACTORY_PROGRESS_PREVIEW_LABEL: &str = "Factory progress";
 /// The queue-strip preview label for a parked heartbeat fire; the queued row reads
