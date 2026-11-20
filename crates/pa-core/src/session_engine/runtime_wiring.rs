@@ -270,6 +270,7 @@ pub fn kernel_provisioner(
     websearch_env: Vec<(String, String)>,
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_window: crate::kernel::cell_window::CellWindow,
+    error_context: crate::kernel::error_context::ErrorContext,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
@@ -326,6 +327,7 @@ pub fn kernel_provisioner(
             // The engine-resolved cell yield window policy (daemonless: none;
             // the runtime bootstrap and state ops never use it).
             cell_window,
+            error_context,
             ready_gate,
             on_restore,
             on_background_work_settled,
@@ -372,6 +374,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
             Ok(Box::new(KernelManagerExecutor {
                 manager,
                 cell_window: this.cell_window().clone(),
+                error_context: this.error_context().clone(),
                 spill: this.spill_store(),
             }) as Box<dyn KernelExecutor>)
         })
@@ -392,6 +395,8 @@ struct KernelManagerExecutor {
     cell_window: crate::kernel::cell_window::CellWindow,
     /// Where a user cell's cut output pages out (persistent sessions).
     spill: Option<crate::kernel::spill::SpillStore>,
+    /// The source lines a failed cell or awaited command gets.
+    error_context: crate::kernel::error_context::ErrorContext,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -411,6 +416,7 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
+        let error_context = self.error_context.clone();
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -419,7 +425,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
                         on_late_sent_agent_message,
                         cell_yield_ms,
-                        spill,
+                        spill: spill.clone(),
                         ..Default::default()
                     },
                 )
@@ -436,7 +442,26 @@ impl KernelExecutor for KernelManagerExecutor {
                     crate::kernel::shared::ExecuteStatus::Aborted => {}
                 }
             }
-            Ok(convert_execute_result(result))
+            // A failed cell or awaited command carries its error locations'
+            // source lines; the reads wait at most a short budget.
+            let traceback = result
+                .error
+                .as_ref()
+                .filter(|_| result.status == crate::kernel::shared::ExecuteStatus::Error)
+                .map(|error| error.traceback.concat());
+            let context = error_context
+                .enrich(
+                    crate::kernel::error_context::CellFailure {
+                        traceback: traceback.as_deref(),
+                        streams: [&result.stdout, &result.stderr],
+                        commands: &result.command_failures,
+                    },
+                    spill.as_ref(),
+                )
+                .await;
+            let mut converted = convert_execute_result(result);
+            converted.error_context = context;
+            Ok(converted)
         })
     }
 }
@@ -486,6 +511,7 @@ fn convert_execute_result(
         questions: result.questions.unwrap_or_default(),
         backgrounded_cell: result.backgrounded_cell,
         ended_turn: result.ended_turn,
+        error_context: None,
     }
 }
 

@@ -31,7 +31,7 @@
 
 pub(crate) mod host;
 mod index;
-mod marker;
+pub(crate) mod marker;
 #[cfg(test)]
 mod tests;
 

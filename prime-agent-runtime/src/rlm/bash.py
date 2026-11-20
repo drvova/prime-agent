@@ -82,6 +82,11 @@ _SNAPSHOT_TAIL_CHARS = 2000
 # Display MIME the host counts per cell: one event per bounded await that
 # completed inside its window or degraded to a snapshot (adoption telemetry).
 _BASH_WAIT_MIME = "application/vnd.prime-agent.bash-wait+json"
+# Display MIME the host enriches from: one event per await that returned a
+# non-zero exit, with the whole output, so the cell result can carry the
+# source lines its errors name (and a handle to the output) even when the
+# cell never printed it.
+_COMMAND_FAILURE_MIME = "application/vnd.prime-agent.command-failure+json"
 
 
 def _set_completion_notices_wired(wired: bool) -> None:
@@ -1189,6 +1194,19 @@ class BashHandle:
             from . import repl
 
             repl.emit({_BASH_WAIT_MIME: {"outcome": "yielded" if degraded else "completed"}})
+        finished = cast("BashResult", result) if completed else None
+        if finished is not None and finished.exit_code != 0:
+            from . import repl
+
+            repl.emit(
+                {
+                    _COMMAND_FAILURE_MIME: {
+                        "command": _capped(self.command),
+                        "exitCode": finished.exit_code,
+                        "output": finished.output,
+                    }
+                }
+            )
         if degraded:
             _note_degrade(self, cast("float", bound))
             return self._degrade_snapshot()

@@ -2383,3 +2383,54 @@ async fn kernel_login_and_recall_ride_their_own_event() {
         })
     );
 }
+
+/// Error enrichments ride their own `agent error enrichment` event at session end (counts only: never a path, a line, or output).
+#[tokio::test]
+async fn error_enrichment_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    use crate::kernel::error_context::EnrichmentFact;
+    for fact in [
+        EnrichmentFact {
+            failed_commands: 1,
+            locations: 2,
+            skipped: 1,
+            timed_out: false,
+        },
+        EnrichmentFact {
+            failed_commands: 0,
+            locations: 0,
+            skipped: 3,
+            timed_out: true,
+        },
+    ] {
+        counters.note_error_enrichment(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent error enrichment"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent error enrichment").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("error_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "error_enrichment_count": 1,
+            "error_location_count": 2,
+            "error_location_skipped_count": 4,
+            "error_enrichment_timeout_count": 1,
+            "error_failed_command_count": 1,
+        })
+    );
+}

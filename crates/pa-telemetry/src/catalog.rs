@@ -1886,6 +1886,24 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
+/// got the source lines around their error locations, the locations attached, the parsed locations
+/// left out (outside the workspace, unreadable, or past the cap), source reads that ran out of
+/// time, and the failed commands seen. Counts only: never a path, a line, a command, or output.
+const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
+    name: "agent error enrichment",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("error_enrichment_count", required(count())),
+        ("error_location_count", required(count())),
+        ("error_location_skipped_count", required(count())),
+        ("error_enrichment_timeout_count", required(count())),
+        ("error_failed_command_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2001,6 +2019,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_ERROR_ENRICHMENT,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

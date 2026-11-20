@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod error_enrichment;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -432,6 +434,9 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Failed cells and commands given their error locations' source lines,
+    /// reported by `agent error enrichment`.
+    error_enrichment: error_enrichment::ErrorEnrichmentCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -1838,6 +1843,7 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_error_enrichment();
         self.client.flush().await
     }
 
