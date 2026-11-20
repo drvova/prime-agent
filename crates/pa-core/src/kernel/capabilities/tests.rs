@@ -32,8 +32,8 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent endpoint discovery",
     // The session's recorded calls by billing mode (no kernel capability).
     "agent billing modes",
-    // `/better` runs from the TUI and the session commands (no kernel capability yet).
-    "agent better prompt",
+    // Error enrichment reads the cell result host-side (no kernel capability).
+    "agent error enrichment",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {

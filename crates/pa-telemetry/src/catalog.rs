@@ -1122,6 +1122,14 @@ const AGENT_CREDENTIAL_ADDED: EventRule = EventRule {
     ],
 };
 
+/// One interactive run started its session pinned to a stored named credential (v2): `source` is
+/// how the pin was chosen (`flag`: `--credential`). Never a provider, a label, or a credential id.
+const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
+    name: "agent credential pinned",
+    since: 2,
+    properties: &[("source", required(enum_rule(&["flag"], "flag")))],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1616,7 +1624,8 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
 /// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
 /// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
-/// edited, discarded). Counts only: never a prompt, a rewrite, or a path.
+/// edited, discarded), the kernel's brief-mode runs and how many needed no fix, and the refine passes verification ran. Counts only:
+/// never a prompt, a rewrite, or a path.
 const AGENT_BETTER_PROMPT: EventRule = EventRule {
     name: "agent better prompt",
     since: 2,
@@ -1629,6 +1638,9 @@ const AGENT_BETTER_PROMPT: EventRule = EventRule {
         ("better_sent_as_is_count", required(count())),
         ("better_edited_count", required(count())),
         ("better_discarded_count", required(count())),
+        ("better_brief_run_count", required(count())),
+        ("better_brief_unchanged_count", required(count())),
+        ("better_verification_pass_count", required(count())),
     ],
 };
 
@@ -1934,6 +1946,77 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
+/// got the source lines around their error locations, the locations attached, the parsed locations
+/// left out (outside the workspace, unreadable, or past the cap), source reads that ran out of
+/// time, and the failed commands seen. Counts only: never a path, a line, a command, or output.
+const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
+    name: "agent error enrichment",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("error_enrichment_count", required(count())),
+        ("error_location_count", required(count())),
+        ("error_location_skipped_count", required(count())),
+        ("error_enrichment_timeout_count", required(count())),
+        ("error_failed_command_count", required(count())),
+    ],
+};
+
+/// The kernel's read-only command cache (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a lookup ran: allowlisted read-only
+/// `bash()` commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) answered from the cache
+/// or run, and `fs.read` calls answered from the cache or read. Counts only: never a command, a
+/// path, or output.
+const AGENT_READONLY_CACHE: EventRule = EventRule {
+    name: "agent readonly cache",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("readonly_cache_hit_count", required(count())),
+        ("readonly_cache_miss_count", required(count())),
+        ("readonly_cache_fs_read_hit_count", required(count())),
+        ("readonly_cache_fs_read_miss_count", required(count())),
+    ],
+};
+
+/// Edit-then-check (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when an edit was checked: checks run after an edit (`fs.edit` or the
+/// `edit` skill), those that found diagnostics, those that outlived the edit's wait (their
+/// diagnostics arrive as a notice), those dropped because their learned cost exceeds their benefit,
+/// and those that could not run. Counts only: never a path, a command, or output.
+const AGENT_EDIT_CHECKS: EventRule = EventRule {
+    name: "agent edit checks",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("edit_check_run_count", required(count())),
+        ("edit_check_found_count", required(count())),
+        ("edit_check_late_count", required(count())),
+        ("edit_check_skipped_count", required(count())),
+        ("edit_check_failed_count", required(count())),
+    ],
+};
+
+/// Typed test-run summaries (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the kernel summarized an awaited test run (cargo test,
+/// pytest, unittest, go test, jest, vitest): runs summarized, runs with failures, the failed tests
+/// they counted, the failures that got their own output handle, and runs whose whole output got a
+/// handle. Counts only: never a test name, a path, a command, or output.
+const AGENT_TEST_SUMMARIES: EventRule = EventRule {
+    name: "agent test summaries",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("test_summary_count", required(count())),
+        ("test_summary_failing_count", required(count())),
+        ("test_summary_failed_test_count", required(count())),
+        ("test_summary_failure_handle_count", required(count())),
+        ("test_summary_stored_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2034,6 +2117,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
+        &AGENT_CREDENTIAL_PINNED,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
@@ -2051,6 +2135,10 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_ERROR_ENRICHMENT,
+        &AGENT_READONLY_CACHE,
+        &AGENT_EDIT_CHECKS,
+        &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

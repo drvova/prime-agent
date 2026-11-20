@@ -236,6 +236,7 @@ impl Inner {
                     .then(|| std::mem::take(&mut buffers.sent_agent_messages)),
                 bash_commands: buffers.bash_commands.take(),
                 bash_waits: std::mem::take(&mut buffers.bash_waits),
+                command_failures: std::mem::take(&mut buffers.command_failures),
                 transcript_reads: (!buffers.transcript_reads.is_empty())
                     .then(|| std::mem::take(&mut buffers.transcript_reads)),
                 todo_list: buffers.todo_list.take(),

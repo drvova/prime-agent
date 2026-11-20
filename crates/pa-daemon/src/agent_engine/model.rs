@@ -489,6 +489,7 @@ impl AgentSessionEngine {
         let mut registry = slot
             .take()
             .unwrap_or_else(|| self.new_request_auth_registry(None));
+        self.apply_credential_pin(&mut registry);
         // The per-call reload keeps the resolution live: a credential
         // another process wrote serves the next call, and a failed read
         // keeps the last read's data (TS `this.data`).
@@ -513,17 +514,24 @@ impl AgentSessionEngine {
 
     /// Force-refresh the OAuth credential `provider` rejected, on the store
     /// the per-call resolution reads (its last read served the rejected call).
-    pub(crate) fn refresh_rejected_request_auth(
-        &self,
-        provider: &str,
-    ) -> Result<(), pa_core::auth::OAuthRefreshFailure> {
+    pub(crate) fn refresh_rejected_request_auth(&self, provider: &str) -> Result<(), String> {
         self.request_auth_registry
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .as_mut()
             .map_or(Ok(()), |registry| {
-                registry.auth.refresh_rejected_oauth(provider)
+                registry.refresh_rejected_request_auth(provider)
             })
+    }
+
+    /// Point `registry` at the session's credential pin (the header's, set at create).
+    fn apply_credential_pin(&self, registry: &mut pa_core::models::ModelRegistry) {
+        let pin = self
+            .credential_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        registry.set_credential_pin(&self.config.agent_dir, pin);
     }
 
     /// Arm `model`'s declared quota fallback (models.json `auth.fallback`)
@@ -535,11 +543,13 @@ impl AgentSessionEngine {
         model: &Model,
         retry_after_ms: u64,
     ) -> pa_core::models::QuotaFallback {
-        self.request_auth_registry
+        let mut slot = self
+            .request_auth_registry
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get_or_insert_with(|| self.new_request_auth_registry(None))
-            .arm_quota_fallback(model, retry_after_ms)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let registry = slot.get_or_insert_with(|| self.new_request_auth_registry(None));
+        self.apply_credential_pin(registry);
+        registry.arm_quota_fallback(model, retry_after_ms)
     }
 
     /// Request auth for a model call outside the session stream

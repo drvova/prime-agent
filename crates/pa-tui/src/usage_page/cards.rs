@@ -104,7 +104,7 @@ fn source_label(source: QuotaSource) -> &'static str {
 
 /// The card's title row: the pressure dot, the name, the plan, the source, and in the details
 /// view how old the card is. Too narrow for every segment, the source drops first, then the
-/// plan; only the last segment standing truncates.
+/// plan; the credential label and the age stay, and only then the row truncates.
 fn card_title(
     theme: &Theme,
     width: usize,
@@ -133,14 +133,21 @@ fn card_title(
             countdown(now_ms - card.fetched_at_ms)
         )),
     };
-    let (plan, source, age) = (
+    // A provider holding several credentials shows one card per credential: `Provider · label ·
+    // plan`. The label names the card, so it never drops.
+    let (account, plan, source, age) = (
+        card.account.as_deref(),
         card.plan.as_deref(),
         Some(source_label(card.source)),
         age.as_deref(),
     );
     let lead =
         str_width(CHROME_INDENT) + str_width("● ") + str_width(provider_name(&card.provider));
-    let variants = [[plan, source, age], [plan, None, age], [None, None, age]];
+    let variants = [
+        [account, plan, source, age],
+        [account, plan, None, age],
+        [account, None, None, age],
+    ];
     let meta = variants
         .iter()
         .map(|segments| segments.iter().flatten().copied().collect::<Vec<&str>>())
@@ -364,6 +371,7 @@ pub(crate) fn cards(
         cards.push(ProviderQuota {
             provider: observed.provider.clone(),
             plan: None,
+            account: None,
             source: QuotaSource::ObservedResponse,
             fetched_at_ms: observed.observed_at_ms,
             state: QuotaState::RateLimited {

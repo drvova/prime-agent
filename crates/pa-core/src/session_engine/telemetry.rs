@@ -47,6 +47,11 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
+mod error_enrichment;
+mod readonly_cache;
+mod test_summaries;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -436,6 +441,15 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Failed cells and commands given their error locations' source lines,
+    /// reported by `agent error enrichment`.
+    error_enrichment: error_enrichment::ErrorEnrichmentCounts,
+    /// Read-only command cache lookups, reported by `agent readonly cache`.
+    readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
+    edit_checks: edit_checks::EditCheckCounts,
+    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
+    test_summaries: test_summaries::TestSummaryCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -623,6 +637,12 @@ pub enum BetterTelemetryFact {
     Edited,
     /// The user never sent an inserted rewrite (or replaced most of it).
     Discarded,
+    /// A brief-mode run started (`better(mode="brief")`, `rlm.spawn(better=True)`).
+    BriefRun,
+    /// A brief-mode run found nothing to fix.
+    BriefUnchanged,
+    /// A verification found unresolved references and ran a refine pass.
+    VerificationPass,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -634,6 +654,9 @@ struct BetterCounts {
     sent_as_is: u64,
     edited: u64,
     discarded: u64,
+    brief_runs: u64,
+    brief_unchanged: u64,
+    verification_passes: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -755,6 +778,9 @@ impl SessionCounters {
                 BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
                 BetterTelemetryFact::Edited => &mut counts.edited,
                 BetterTelemetryFact::Discarded => &mut counts.discarded,
+                BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
+                BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
+                BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
             };
             *counter += 1;
         });
@@ -1564,6 +1590,9 @@ impl SessionTelemetry {
                 ("better_sent_as_is_count", better.sent_as_is),
                 ("better_edited_count", better.edited),
                 ("better_discarded_count", better.discarded),
+                ("better_brief_run_count", better.brief_runs),
+                ("better_brief_unchanged_count", better.brief_unchanged),
+                ("better_verification_pass_count", better.verification_passes),
             ] {
                 better_properties.set(key, Value::from(value));
             }
@@ -1981,6 +2010,10 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_error_enrichment();
+        self.track_readonly_cache();
+        self.track_edit_checks();
+        self.track_test_summaries();
         self.client.flush().await
     }
 

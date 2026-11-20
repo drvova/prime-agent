@@ -135,6 +135,7 @@ fn quota_report() -> QuotaReport {
             ProviderQuota {
                 provider: "anthropic".into(),
                 plan: None,
+                account: None,
                 source: QuotaSource::Provider,
                 fetched_at_ms: NOW - 2 * MINUTE,
                 state: QuotaState::Windows {
@@ -159,6 +160,7 @@ fn quota_report() -> QuotaReport {
             ProviderQuota {
                 provider: "github-copilot".into(),
                 plan: Some("individual".into()),
+                account: None,
                 source: QuotaSource::Provider,
                 fetched_at_ms: NOW - 2 * MINUTE,
                 state: QuotaState::Failed {
@@ -729,4 +731,36 @@ fn back_from_the_details_restores_the_overview_scroll() {
         assert_eq!(page.handle_key(back, &kb), UsagePageAction::None);
         assert_eq!(render(&mut page, 80, 16), scrolled, "back with {back}");
     }
+}
+
+/// A provider holding several credentials shows one card per credential, titled
+/// `Provider · label · plan`.
+#[test]
+fn each_credential_of_a_provider_gets_its_own_titled_card() {
+    let card = |account: &str| ProviderQuota {
+        provider: "github-copilot".into(),
+        plan: Some("individual".into()),
+        account: Some(account.into()),
+        source: QuotaSource::Provider,
+        fetched_at_ms: NOW - 2 * MINUTE,
+        state: QuotaState::Failed {
+            error: "the usage endpoint did not answer in time".into(),
+        },
+    };
+    let mut page = UsagePage::new(None, None);
+    page.apply_quotas(Ok(QuotaReport {
+        providers: vec![card("default"), card("work")],
+        pacing: Vec::new(),
+    }));
+    let titles: Vec<String> = render(&mut page, 80, 40)
+        .into_iter()
+        .filter(|line| line.contains("GitHub Copilot"))
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            "  ● GitHub Copilot · default · individual · from provider".to_string(),
+            "  ● GitHub Copilot · work · individual · from provider".to_string(),
+        ]
+    );
 }

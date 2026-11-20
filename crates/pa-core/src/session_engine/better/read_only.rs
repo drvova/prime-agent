@@ -76,7 +76,7 @@ const BASH_ACCEPTS: &str = "bash in this read-only helper runs only one read-onl
      (`git log`, `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) without pipes, \
      redirects, or substitutions. Read and search files with python_repl's fs calls.";
 
-/// The helper's read allowance for its current pass, shared by its tools.
+/// The helper's read allowance, shared by its tools: each pass grants more on top.
 #[derive(Debug, Default)]
 pub(crate) struct ReadBudget {
     used: AtomicU32,
@@ -99,6 +99,11 @@ impl ReadBudget {
                 (used < limit).then_some(used + 1)
             })
             .is_ok()
+    }
+
+    /// Grant `reads` more for the next pass.
+    pub(crate) fn grow(&self, reads: u32) {
+        self.limit.fetch_add(reads, Ordering::SeqCst);
     }
 
     #[cfg(test)]

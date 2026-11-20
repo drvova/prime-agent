@@ -621,12 +621,43 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
+        Some(&config.agent_dir),
         config
             .telemetry
             .is_some()
             .then(|| std::sync::Arc::clone(&session_counters)),
         spill_store.clone(),
     ));
+    // `command_cache.fact`: read-only cache lookups (telemetry counts).
+    crate::kernel::command_cache::register_command_cache_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |lookup| counters.note_cache_lookup(lookup))
+                as crate::kernel::command_cache::CacheObserver
+        }),
+    );
+    super::better::register_better_handler(&mut handlers, &better);
+    // `tests.summary`: an awaited test run's output and failures get handles
+    // in the same store; telemetry counts each summarized run.
+    crate::kernel::test_runs::register_test_summary_handler(
+        &mut handlers,
+        spill_store.as_ref(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_test_summary(fact))
+                as crate::kernel::test_runs::TestRunObserver
+        }),
+    );
+    // `edit_check.fact`: how each check after an edit went (telemetry counts).
+    crate::kernel::edit_checks::register_edit_check_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_edit_check(outcome))
+                as crate::kernel::edit_checks::EditCheckObserver
+        }),
+    );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the
@@ -730,6 +761,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         websearch_env,
         session_artifact_dir,
         cell_window.clone(),
+        // A failed cell or awaited command gets its error locations' source
+        // lines from this workspace; telemetry counts each enrichment.
+        crate::kernel::error_context::ErrorContext::for_workspace(
+            cwd.clone(),
+            config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_error_enrichment(fact))
+                    as crate::kernel::error_context::ErrorContextObserver
+            }),
+        ),
         output_budget.clone(),
         on_restore,
         config.on_background_work_settled.clone(),
