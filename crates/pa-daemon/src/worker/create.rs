@@ -172,21 +172,18 @@ impl Worker {
                     .get("defaultProvider")
                     .and_then(Value::as_str)
             });
-            let named = profile
+            let mut named = profile
                 .credentials
                 .iter()
                 .filter(|(_, id)| id.as_str() != pa_core::settings::DEFAULT_CREDENTIAL);
-            match provider {
-                Some(provider) => named
-                    .clone()
+            if let Some(provider) = provider {
+                named
                     .find(|(mapped, _)| mapped.as_str() == provider)
-                    .map(|(_, id)| id.clone()),
-                None => {
-                    let mut named = named;
-                    match (named.next(), named.next()) {
-                        (Some((_, id)), None) => Some(id.clone()),
-                        (Some(_), Some(_)) | (None, _) => None,
-                    }
+                    .map(|(_, id)| id.clone())
+            } else {
+                match (named.next(), named.next()) {
+                    (Some((_, id)), None) => Some(id.clone()),
+                    (Some(_), Some(_)) | (None, _) => None,
                 }
             }
         });
