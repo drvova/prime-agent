@@ -21,7 +21,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from . import host_request
+from . import edit_check, host_request
 
 __all__ = [
     "AnchoredLine",
@@ -358,6 +358,9 @@ class EditResult:
     total_lines: int
     hunks: list[list[AnchoredLine]]
     text: str = ""
+    # The touched file's check (`[check: ...]` and its diagnostics), when it has one; also the
+    # last lines of `text`.
+    check: str | None = None
 
     def __str__(self) -> str:
         return self.text
@@ -510,6 +513,9 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
             ],
             lines=_rows(reply.get("lines")),
         )
+    # The touched file's cheapest check rides the result (bounded wait; a slow one notifies later).
+    check = await edit_check.after_edit(payload["path"])
+    text = str(reply.get("text") or "")
     return EditResult(
         path=str(reply.get("path") or ""),
         edits=int(reply.get("edits") or 0),
@@ -517,5 +523,6 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
         added=int(reply.get("added") or 0),
         total_lines=int(reply.get("totalLines") or 0),
         hunks=[_rows(hunk.get("lines")) for hunk in reply.get("hunks") or [] if isinstance(hunk, dict)],
-        text=str(reply.get("text") or ""),
+        text=f"{text}\n{check}" if check else text,
+        check=check,
     )

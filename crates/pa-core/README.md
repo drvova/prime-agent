@@ -149,6 +149,13 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Edit checks (`kernel::edit_checks`): the kernel runs the touched file's cheapest check after
+`fs.edit` and the `edit` skill (`rlm.edit_check`: fatal-rule `ruff` or `py_compile`, `cargo check
+-p`, `tsc --noEmit`, `go vet`), learns per project which checks pay for themselves, and reports
+each outcome through the fire-and-forget `edit_check.fact` host request; a late check's diagnostics
+ride the existing `bash.completed` notice. Adoption counts ride the `agent edit checks` event.
+Non-goals: running checks in the host, and a setting to choose them.
+
 Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
 session boot (a kernel's interpreter start here; the daemon's child worker spawns and
 crash-recovery adoption) under a permit of the session-boot budget
