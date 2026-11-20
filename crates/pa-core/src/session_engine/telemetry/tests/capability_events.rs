@@ -23,6 +23,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::spill::SpillFact;
     use crate::kernel::test_runs::TestRunFact;
     use crate::session_engine::checkpoint_host::CheckpointFact;
+    use crate::session_engine::decision::DecideFact;
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
     use crate::session_engine::session_search::SessionRecallFact;
@@ -263,6 +264,16 @@ fn drive(counters: &SessionCounters) {
         counters.note_edit_check(outcome);
     }
     for fact in [
+        DecideFact::Decided,
+        DecideFact::Decided,
+        DecideFact::Limited,
+        DecideFact::Failed,
+        DecideFact::Failed,
+        DecideFact::Failed,
+    ] {
+        counters.note_decision(fact);
+    }
+    for fact in [
         WorktreeFact::Created,
         WorktreeFact::Created,
         WorktreeFact::Created,
@@ -454,6 +465,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent repl checkpoint",
         r#"{"checkpoint_created_count":2,"checkpoint_list_count":1,"checkpoint_restored_count":1,"checkpoint_restore_declined_count":1,"checkpoint_restore_disabled_count":2,"checkpoint_failed_count":1}"#,
+    ),
+    (
+        "agent repl decide",
+        r#"{"decide_count":2,"decide_limited_count":1,"decide_failed_count":3}"#,
     ),
     (
         "agent repl notify",

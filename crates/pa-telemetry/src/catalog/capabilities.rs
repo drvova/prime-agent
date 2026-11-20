@@ -11,6 +11,7 @@ mod cells;
 mod checkpoint;
 mod core;
 mod ctx;
+mod decision;
 mod fs;
 mod mcp_session;
 mod notify_model;
@@ -42,6 +43,7 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &resource_reload_settings::AGENT_REPL_RELOAD,
     &mcp_session::AGENT_KERNEL_LOGIN_AND_RECALL,
     &notify_model::AGENT_REPL_NOTIFY,
+    &decision::AGENT_REPL_DECIDE,
     &cells::AGENT_REPL_BACKGROUND_CELLS,
     &fs::AGENT_SYMBOL_INDEX,
     &bash::AGENT_READONLY_CACHE,

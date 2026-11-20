@@ -906,6 +906,19 @@ impl SessionCounters {
         });
     }
 
+    /// One kernel `rlm.decide(...)` outcome (never the question, the options, or the choice).
+    pub(crate) fn note_decision(&self, fact: super::decision::DecideFact) {
+        use super::decision::DecideFact;
+        self.note_capability(
+            match fact {
+                DecideFact::Decided => "decide_count",
+                DecideFact::Limited => "decide_limited_count",
+                DecideFact::Failed => "decide_failed_count",
+            },
+            1,
+        );
+    }
+
     /// One kernel `model.set_effort(...)`: applied, or refused (the setting is off or the
     /// level invalid). Never the level.
     pub(crate) fn note_effort_switch(&self, applied: bool) {
