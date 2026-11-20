@@ -1,0 +1,1 @@
+- Agent messaging now stops two idle agents from waking each other forever: each sender may wake one idle receiver 20 times per 10 minutes, and further wakes return a `wake_refused` receipt with a retry-after hint (messages to a busy receiver still queue).

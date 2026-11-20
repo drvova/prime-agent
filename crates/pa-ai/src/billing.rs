@@ -50,14 +50,16 @@ const OAUTH_PLAN_PROVIDERS: &[(&str, bool)] = &[
     ("xai", false),
 ];
 
-/// Compiled provider metadata: providers that only sell plans (a coding or token plan), keyed by
-/// their catalog id. The zai coding endpoint is marked by its base URL below.
-const PLAN_PROVIDERS: &[&str] = &[
-    "xiaomi-token-plan-cn",
-    "xiaomi-token-plan-ams",
-    "xiaomi-token-plan-sgp",
-    "kimi-coding",
-    "opencode-go",
+/// Compiled provider metadata: providers that sell plans (a coding, token or request plan) on an
+/// API key, keyed by their catalog id, and whether the provider serves usage windows for the
+/// plan. The zai coding endpoint is marked by its base URL below.
+const PLAN_PROVIDERS: &[(&str, bool)] = &[
+    ("xiaomi-token-plan-cn", false),
+    ("xiaomi-token-plan-ams", false),
+    ("xiaomi-token-plan-sgp", false),
+    ("kimi-coding", false),
+    ("opencode-go", false),
+    ("synthetic", true),
 ];
 
 /// Providers that price every call themselves (`OpenRouter`'s `usage.cost` on completions).
@@ -127,9 +129,15 @@ pub fn classify(inputs: &BillingInputs<'_>) -> BillingMode {
     if let Some(provider_quota) = signed_in_plan {
         return BillingMode::Plan { provider_quota };
     }
-    if PLAN_PROVIDERS.contains(&inputs.provider)
-        || (inputs.provider == "zai" && inputs.base_url.contains("/api/coding/"))
+    if let Some((_, provider_quota)) = PLAN_PROVIDERS
+        .iter()
+        .find(|(provider, _)| *provider == inputs.provider)
     {
+        return BillingMode::Plan {
+            provider_quota: *provider_quota,
+        };
+    }
+    if inputs.provider == "zai" && inputs.base_url.contains("/api/coding/") {
         return BillingMode::Plan {
             provider_quota: false,
         };
@@ -211,6 +219,14 @@ mod tests {
                     &priced,
                     0.1
                 ),
+                // 3. A compiled plan provider with its own usage windows.
+                call(
+                    "synthetic",
+                    "https://api.synthetic.new/openai/v1",
+                    metered,
+                    &priced,
+                    0.1
+                ),
                 // 4. A provider that prices its own calls.
                 call(
                     "openrouter",
@@ -241,6 +257,9 @@ mod tests {
                 },
                 BillingMode::Plan {
                     provider_quota: false
+                },
+                BillingMode::Plan {
+                    provider_quota: true
                 },
                 BillingMode::PayAsYouGo {
                     source: CostSource::ProviderReported
