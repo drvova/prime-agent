@@ -435,6 +435,7 @@ impl ScriptedProviderAuth {
             flow: AuthFlow::ApiKeyPrompt,
             configured,
             available: true,
+            credential: pa_tui::provider_auth::RowCredential::Default,
         }
     }
 
@@ -451,6 +452,7 @@ impl ScriptedProviderAuth {
             flow: AuthFlow::TerminalFlow,
             configured: true,
             available: true,
+            credential: pa_tui::provider_auth::RowCredential::Default,
         }
     }
 }
@@ -483,12 +485,18 @@ impl ProviderAuthCommands for ScriptedProviderAuth {
                     flow: AuthFlow::ApiKeyPrompt,
                     configured: true,
                     available: true,
+                    credential: pa_tui::provider_auth::RowCredential::Default,
                 })
                 .collect()
         })
     }
 
-    fn login(&self, provider: &ProviderRow, api_key: Option<&str>) -> ProviderAuthFuture {
+    fn login(
+        &self,
+        provider: &ProviderRow,
+        api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
+    ) -> ProviderAuthFuture {
         let key = api_key.unwrap_or_default().to_string();
         let (id, name) = (provider.id.clone(), provider.name.clone());
         if key.is_empty() {
@@ -528,6 +536,7 @@ impl ProviderAuthCommands for ScriptedProviderAuth {
         &self,
         provider: &ProviderRow,
         panel: pa_tui::auth_panel::AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> ProviderAuthFuture {
         let name = provider.name.clone();
         self.calls

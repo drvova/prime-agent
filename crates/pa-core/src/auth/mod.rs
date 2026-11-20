@@ -1,5 +1,6 @@
 //! Auth subsystem: credential storage, resolution priority, stale-marking.
 
+pub(crate) mod accounts;
 pub(crate) mod descriptor;
 pub(crate) mod descriptor_oauth;
 pub(crate) mod descriptor_oauth_login;
@@ -14,6 +15,7 @@ pub(crate) mod storage;
 pub(crate) mod token_exchange;
 pub(crate) mod types;
 
+pub use accounts::{AuthAccounts, StoredAccount, AUTH_ACCOUNTS_FILE};
 pub use descriptor_oauth_login::{
     oauth_descriptor_providers, sign_in_with_descriptor, OAuthSignInUi, SignInAttempt, SignInError,
     SignInFlow, SignInMethod, SignInTiming,

@@ -1096,6 +1096,32 @@ const TUI_IMAGE_PASTE: EventRule = EventRule {
     ],
 };
 
+/// One `/login` settled a credential save (v2): the credential's kind, the slot it went to (the
+/// provider's default slot or a new named credential beside it), the surface that ran the login,
+/// and how it ended. Never a provider, a label, an account id, or any credential material.
+const AGENT_CREDENTIAL_ADDED: EventRule = EventRule {
+    name: "agent credential added",
+    since: 2,
+    properties: &[
+        (
+            "kind",
+            required(enum_rule(&["api_key", "oauth"], "api_key")),
+        ),
+        (
+            "slot",
+            required(enum_rule(&["default", "named"], "default")),
+        ),
+        (
+            "surface",
+            required(enum_rule(&["login", "model_picker", "onboarding"], "login")),
+        ),
+        (
+            "outcome",
+            required(enum_rule(&["saved", "failed", "cancelled"], "failed")),
+        ),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1535,6 +1561,22 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Session-boot admission for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when a session boot (a subagent's
+/// worker spawn or a kernel start) waited for the daemon-wide boot budget or finished under
+/// CPU or memory pressure: boots that waited, their summed wait, and boots under pressure.
+/// Counts only.
+const AGENT_SESSION_BOOT_ADMISSION: EventRule = EventRule {
+    name: "agent session boot admission",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("boot_admission_waited_count", required(count())),
+        ("boot_admission_wait_ms", required(duration())),
+        ("boot_pressure_count", required(count())),
+    ],
+};
+
 /// Provider connection re-warm for one session's process (v2), emitted at session close beside
 /// `agent session ended` (which sits at the 128-key cap) when a turn start re-opened an idle
 /// provider connection: warm-ups sent, those that found the connection closed and reconnected
@@ -1791,6 +1833,22 @@ const AGENT_MESSAGES: EventRule = EventRule {
     ],
 };
 
+/// Kernel `agent_message.wait` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session waited:
+/// the waits by outcome (a message arrived, the timeout passed, the wait would have closed a
+/// cycle, no family member matched the sender). Counts only: never a sender, a name, or a body.
+const AGENT_MESSAGE_WAITS: EventRule = EventRule {
+    name: "agent message waits",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("agent_message_wait_message_count", required(count())),
+        ("agent_message_wait_timeout_count", required(count())),
+        ("agent_message_wait_cycle_count", required(count())),
+        ("agent_message_wait_no_sender_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
 /// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
 /// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
@@ -1926,6 +1984,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
+        &AGENT_CREDENTIAL_ADDED,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
@@ -1939,6 +1998,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_USAGE_READS,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
+        &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_PROVIDER_OAUTH_LOGIN,
@@ -1947,6 +2007,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_SESSION_BOOT_ADMISSION,
         &AGENT_CONNECTION_REWARM,
         &AGENT_QUOTA_FALLBACK,
         &AGENT_ENDPOINT_DISCOVERY,

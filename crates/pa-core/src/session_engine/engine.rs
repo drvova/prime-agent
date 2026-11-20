@@ -389,6 +389,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             &mut handlers,
             std::sync::Arc::new(move |refusals| counters.note_agent_message_refusals(refusals)),
         );
+        // `agent_message.wait`: telemetry counts how each wait ended (never a sender or a body).
+        let counters = std::sync::Arc::clone(&session_counters);
+        super::agent_messaging::observe_agent_message_waits(
+            &mut handlers,
+            std::sync::Arc::new(move |outcome| counters.note_agent_message_wait(outcome)),
+        );
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
     // generic MCP registry sends while listing or calling generic servers.
@@ -584,6 +590,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .as_deref()
                 .and_then(super::harness_digest::session_artifact_dir_for_log)
         });
+    // `ctx.*`: page a cut cell output back in by its handle, from the
+    // session's spill store (an ephemeral session answers `unavailable`).
+    crate::kernel::spill::host::register_ctx_handlers(
+        &mut handlers,
+        session_artifact_dir
+            .as_deref()
+            .map(crate::kernel::spill::SpillStore::for_session_dir)
+            .as_ref(),
+        /*observer*/ None,
+    );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the

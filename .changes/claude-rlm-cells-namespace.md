@@ -1,0 +1,1 @@
+- Fixed `rlm.cells.get(...)` failing in the Python REPL: the documented background-cell API is now reachable from the kernel's `rlm` object.
