@@ -70,6 +70,50 @@ macro_rules! str_setting {
 }
 
 impl ClientSettings for CliClientSettings {
+    fn profiles(&self) -> Vec<String> {
+        pa_core::settings::list_profiles(&self.agent_dir)
+    }
+
+    fn save_profile(
+        &self,
+        name: &str,
+        choices: &pa_tui::client_settings::ProfileChoices,
+    ) -> Result<()> {
+        let accounts = pa_core::auth::AuthAccounts::create(&self.agent_dir);
+        let mut credentials = std::collections::BTreeMap::new();
+        for (provider, label) in &choices.accounts {
+            let id = if label == pa_core::settings::DEFAULT_CREDENTIAL {
+                label.clone()
+            } else {
+                accounts
+                    .list(provider)?
+                    .into_iter()
+                    .find(|account| account.label == *label)
+                    .map(|account| account.id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("no credential labelled '{label}' is stored for {provider}")
+                    })?
+            };
+            credentials.insert(provider.clone(), id);
+        }
+        let mut settings = serde_json::Map::new();
+        if let Some(provider) = &choices.provider {
+            settings.insert("defaultProvider".into(), provider.clone().into());
+        }
+        if let Some(model) = &choices.model {
+            settings.insert("defaultModel".into(), model.clone().into());
+        }
+        pa_core::settings::save_profile(
+            &self.agent_dir,
+            name,
+            &pa_core::settings::Profile {
+                version: 0,
+                credentials,
+                settings,
+            },
+        )
+    }
+
     fn harness_refinements(&self) -> bool {
         self.manager().get_harness_refinements()
     }

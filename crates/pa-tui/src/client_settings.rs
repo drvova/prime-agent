@@ -5,7 +5,28 @@
 
 use anyhow::Result;
 
+/// The current choices `/profile new <name>` saves: the session's model and the account each
+/// multi-credential provider serves it with (a credential label, or `default`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProfileChoices {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub accounts: std::collections::BTreeMap<String, String>,
+}
+
 pub trait ClientSettings: Send + Sync {
+    /// The stored profiles' names, sorted.
+    fn profiles(&self) -> Vec<String> {
+        Vec::new()
+    }
+    /// Save `choices` as the profile `name` (created or replaced).
+    ///
+    /// # Errors
+    /// Returns an error for an invalid name, an unknown account label, or a failed store.
+    fn save_profile(&self, _name: &str, _choices: &ProfileChoices) -> Result<()> {
+        anyhow::bail!("Profiles are unavailable")
+    }
+
     /// Master harness refinement switch, enabled by default.
     fn harness_refinements(&self) -> bool {
         true

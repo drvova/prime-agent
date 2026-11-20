@@ -365,6 +365,7 @@ const TOP_LEVEL_OPTION_GROUPS: &[OptionGroup] = &[
                 "--credential <label|id>",
                 "Pin a new session to a stored credential",
             ),
+            ("--profile <name>", "Use a stored profile for new sessions"),
             (
                 "--models <patterns>",
                 "Set comma-separated models for cycling",

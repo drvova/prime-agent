@@ -278,6 +278,8 @@ impl Supervisor {
             "models",
             // The `--credential` selector: a respawned fresh create pins the same credential.
             "credential",
+            // The `--profile` name: a respawned fresh create layers the same profile.
+            "profile",
             // The scripted-parent verification seam: a dropped key leaves
             // spawned children scriptless.
             "childScript",

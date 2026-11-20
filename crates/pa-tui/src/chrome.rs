@@ -116,6 +116,9 @@ pub struct ChromeState {
     pub extra_metadata: Vec<(String, String)>,
     /// Top-bar chat name (session name or the cwd basename).
     pub chat_name: String,
+    /// The profile this client creates new sessions under: the top bar tags it beside the chat
+    /// name. `None` (no profile) shows nothing.
+    pub profile: Option<String>,
     /// Session spend (USD): the family rollup (the session's spend plus every subagent
     /// descendant's), a plan's calls at their API-equivalent value.
     pub cost_usd: Option<f64>,
@@ -534,6 +537,9 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
     let start = (width.saturating_sub(name_width)) / 2;
     line.push(Span::styled(" ".repeat(start), Style::default()));
     line.push(Span::styled(name, text));
+    if let Some(profile) = &state.profile {
+        line.push(Span::styled(format!("  [{profile}]"), dim));
+    }
     let spend = match &state.billing {
         // A plan's calls are never billed: they show the plan (its quota when cached), not a `$`.
         Some(billing) => {

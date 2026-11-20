@@ -4902,6 +4902,7 @@ fn subscription_options(
         model: Some("claude-test".to_string()),
         api_key: None,
         credential: None,
+        profile: None,
         thinking: None,
     };
     options.provider_auth = Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
