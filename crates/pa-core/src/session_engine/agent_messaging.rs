@@ -20,6 +20,14 @@ pub const DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION: usize = 20;
 pub const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY: usize = 3;
 /// One rate-limit token per sender per this window.
 pub const DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS: u64 = 1_000;
+/// The wakes one sender may spend on one idle receiver per
+/// [`DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS`]: the receiving worker refuses the
+/// next idle-waking delivery (deliveries to a busy receiver queue, unbudgeted).
+pub const DEFAULT_AGENT_MESSAGE_WAKE_BUDGET: usize = 20;
+/// The trailing window the wake budget counts over (10 minutes).
+pub const DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS: u64 = 600_000;
+/// The receipt `deliveryStatus` of a delivery the receiver's wake budget refused.
+pub const AGENT_MESSAGE_WAKE_REFUSED_STATUS: &str = "wake_refused";
 
 pub const AGENT_OBSERVE_PREVIEW_MAX_CHARS: usize = 240;
 pub const AGENT_OBSERVE_IMPORT_NAME: &str = "agent_observe";
@@ -62,6 +70,12 @@ impl AgentFamilyRelationship {
 pub enum AgentMessageDeliveryStatus {
     Delivered,
     Queued,
+    /// The idle receiver refused to wake: this sender spent its wake budget
+    /// there; the message was not delivered. `retry_after_ms` is when the
+    /// oldest counted wake leaves the window.
+    WakeRefused {
+        retry_after_ms: u64,
+    },
 }
 
 impl AgentMessageDeliveryStatus {
@@ -70,6 +84,7 @@ impl AgentMessageDeliveryStatus {
         match self {
             AgentMessageDeliveryStatus::Delivered => "delivered",
             AgentMessageDeliveryStatus::Queued => "queued",
+            AgentMessageDeliveryStatus::WakeRefused { .. } => AGENT_MESSAGE_WAKE_REFUSED_STATUS,
         }
     }
 }
@@ -420,7 +435,7 @@ fn receipt_target_value(receipt: &AgentMessageReceipt) -> Value {
 }
 
 fn receipt_value(receipt: &AgentMessageReceipt) -> Value {
-    json!({
+    let mut value = json!({
         "id": receipt.id,
         "source": AGENT_MESSAGE_SOURCE,
         "target": receipt_target_value(receipt),
@@ -430,7 +445,18 @@ fn receipt_value(receipt: &AgentMessageReceipt) -> Value {
         "queuedAt": receipt.queued_at,
         "deliveryMode": receipt.delivery_mode,
         "receiverRole": receipt.receiver_role.map(|role| role.as_str()),
-    })
+    });
+    match receipt.delivery_status {
+        AgentMessageDeliveryStatus::WakeRefused { retry_after_ms } => {
+            value[RETRY_AFTER_MS_FIELD] = json!(retry_after_ms);
+            value["error"] = json!(format!(
+                "Agent message not delivered: the idle receiver refused to wake; you already woke it {DEFAULT_AGENT_MESSAGE_WAKE_BUDGET} times in the last {} minutes. Retry after {retry_after_ms} ms",
+                DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS / 60_000
+            ));
+        }
+        AgentMessageDeliveryStatus::Delivered | AgentMessageDeliveryStatus::Queued => {}
+    }
+    value
 }
 
 /// Register `agent_message.*` handlers onto a handler map. The `send`
@@ -611,7 +637,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
 }
 
 mod rate_limit;
-pub(crate) use rate_limit::observe_agent_message_throttles;
+pub(crate) use rate_limit::{observe_agent_message_refusals, AgentMessageRefusals};
 use rate_limit::{AgentMessageClock, AgentMessageRateLimiter, RETRY_AFTER_MS_FIELD};
 
 // The observe half lives in the child module; the pub use re-exports keep
