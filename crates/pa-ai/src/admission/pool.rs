@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use pa_types::control::{
     service_deadline_ms, AdjustReason, Controller, ControllerConfig, LearnedState, Observation,
-    RateBucket,
+    RateBucket, Target,
 };
 use pa_types::provider_usage::ProviderPacing;
 use tokio::sync::Notify;
@@ -43,6 +43,9 @@ impl Slot {
 
 struct Inner {
     config: ControllerConfig,
+    /// The pool's millisecond clock: epoch time by default; a host on tokio's clock (paused in
+    /// its tests) passes its own.
+    clock: fn() -> u64,
     slots: Mutex<HashMap<AdmissionKey, Slot>>,
 }
 
@@ -57,7 +60,7 @@ impl Inner {
     }
 
     fn with_slot<T>(&self, key: &AdmissionKey, apply: impl FnOnce(&mut Slot, u64) -> T) -> T {
-        let now = now_ms();
+        let now = (self.clock)();
         let mut slots = self
             .slots
             .lock()
@@ -127,18 +130,44 @@ impl Drop for Ticket<'_> {
 impl LocalAdmission {
     #[must_use]
     pub fn new(config: ControllerConfig) -> Self {
+        Self::with_clock(config, now_ms)
+    }
+
+    /// A pool on `clock` (milliseconds; requests' `enqueued_at_ms` must read the same clock).
+    #[must_use]
+    pub fn with_clock(config: ControllerConfig, clock: fn() -> u64) -> Self {
         Self {
             inner: Arc::new(Inner {
                 config,
+                clock,
                 slots: Mutex::new(HashMap::new()),
             }),
         }
     }
 
+    /// The pool's clock now (the time base for a request's `enqueued_at_ms`).
+    #[must_use]
+    pub fn now_ms(&self) -> u64 {
+        (self.inner.clock)()
+    }
+
+    /// The target `key`'s controller applies now.
+    #[must_use]
+    pub fn target(&self, key: &AdmissionKey) -> Target {
+        self.inner
+            .with_slot(key, |slot, _| slot.controller.target())
+    }
+
+    /// Permits of `key` held now.
+    #[must_use]
+    pub fn in_flight(&self, key: &AdmissionKey) -> u32 {
+        self.inner.with_slot(key, |slot, _| slot.in_flight)
+    }
+
     /// Seed keys from persisted learned state; keys already live keep
     /// what they learned in this process.
     pub fn seed(&self, learned: impl IntoIterator<Item = (AdmissionKey, LearnedState)>) {
-        let now = now_ms();
+        let now = self.now_ms();
         let mut slots = self
             .inner
             .slots
@@ -207,7 +236,7 @@ impl LocalAdmission {
         request: &AdmissionRequest,
         give_up: Option<tokio::time::Instant>,
     ) -> Option<Grant> {
-        let started = now_ms();
+        let started = self.now_ms();
         let deadline = service_deadline_ms(request.priority, request.enqueued_at_ms);
         let entry = self.inner.with_slot(&request.key, |slot, _| {
             let entry = (deadline, slot.next_ticket);
@@ -247,7 +276,7 @@ impl LocalAdmission {
                 let inner = Arc::clone(&self.inner);
                 let key = request.key.clone();
                 return Some(Grant::new(
-                    now_ms().saturating_sub(started),
+                    self.now_ms().saturating_sub(started),
                     Box::new(move |observation| inner.finish(&key, &observation)),
                 ));
             }

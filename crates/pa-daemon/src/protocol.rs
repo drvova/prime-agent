@@ -80,6 +80,7 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "abort_and_send_queued",
     "start_side_question",
     "abort_side_question",
+    "record_better_outcome",
     "answer_question",
     "execute_bash",
     "execute_bash_and_wait",
@@ -672,6 +673,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::AbortSideQuestion {
             active_session_id, ..
         }
+        | DaemonCommand::RecordBetterOutcome {
+            active_session_id, ..
+        }
         | DaemonCommand::AnswerQuestion {
             active_session_id, ..
         }
@@ -998,6 +1002,7 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::AbortAndSendQueued { .. } => "abort_and_send_queued",
         DaemonCommand::StartSideQuestion { .. } => "start_side_question",
         DaemonCommand::AbortSideQuestion { .. } => "abort_side_question",
+        DaemonCommand::RecordBetterOutcome { .. } => "record_better_outcome",
         DaemonCommand::AnswerQuestion { .. } => "answer_question",
         DaemonCommand::ExecuteBash { .. } => "execute_bash",
         DaemonCommand::AbortBash { .. } => "abort_bash",

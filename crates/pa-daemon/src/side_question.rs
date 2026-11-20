@@ -81,6 +81,11 @@ impl SideQuestionManager {
             .and_then(Value::as_str)
             .unwrap_or("anonymous")
             .to_string();
+        let kind: pa_types::better::SideRunKind = payload
+            .get("kind")
+            .cloned()
+            .and_then(|kind| serde_json::from_value(kind).ok())
+            .unwrap_or_default();
         let previous_turns: Vec<SideQuestionTurn> = payload
             .get("previousTurns")
             .and_then(Value::as_array)
@@ -130,7 +135,7 @@ impl SideQuestionManager {
                 },
             );
         }
-        self.spawn_run(side_question_id, question, previous_turns, controller);
+        self.spawn_run(side_question_id, question, kind, previous_turns, controller);
         response_success(None, "start_side_question", None)
     }
 
@@ -159,6 +164,24 @@ impl SideQuestionManager {
             "abort_side_question",
             Some(json!({ "aborted": aborted })),
         )
+    }
+
+    /// `record_better_outcome`: count what the user did with an inserted rewrite.
+    pub(crate) fn record_better_outcome(&self, payload: &Value) -> DaemonResponse {
+        let Some(outcome) = payload
+            .get("outcome")
+            .cloned()
+            .and_then(|outcome| serde_json::from_value(outcome).ok())
+        else {
+            return response_failure(
+                None,
+                "record_better_outcome",
+                "outcome must be sent_as_is, edited, or discarded",
+                None,
+            );
+        };
+        self.engine.note_better_outcome(outcome);
+        response_success(None, "record_better_outcome", None)
     }
 
     /// Abort every run owned by `client_id`. The entries STAY registered: each
@@ -203,6 +226,7 @@ impl SideQuestionManager {
         &self,
         side_question_id: String,
         question: String,
+        kind: pa_types::better::SideRunKind,
         previous_turns: Vec<SideQuestionTurn>,
         controller: pa_agent::abort::AbortController,
     ) {
@@ -215,11 +239,13 @@ impl SideQuestionManager {
         let sink_request = SideQuestionRequest {
             side_question_id: side_question_id.clone(),
             question: question.clone(),
+            kind,
             previous_turns: Vec::new(),
         };
         let engine_request = SideQuestionRequest {
             side_question_id: side_question_id.clone(),
             question: question.clone(),
+            kind,
             previous_turns,
         };
         // The streaming sink emits one running event per partial answer.
@@ -239,6 +265,7 @@ impl SideQuestionManager {
             let initial = SideQuestionRequest {
                 side_question_id: side_question_id.clone(),
                 question: question.clone(),
+                kind,
                 previous_turns: Vec::new(),
             };
             emit_side_question_frame(
@@ -262,6 +289,7 @@ impl SideQuestionManager {
             let event_request = SideQuestionRequest {
                 side_question_id: side_question_id.clone(),
                 question,
+                kind,
                 previous_turns: Vec::new(),
             };
             let event = side_question_event_value(

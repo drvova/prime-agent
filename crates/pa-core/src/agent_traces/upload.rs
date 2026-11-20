@@ -48,8 +48,8 @@ pub async fn upload_trace_file(options: &TraceUploadOptions<'_>) -> TraceUploadR
     result
 }
 
-/// The gate variant is the upload-all call: perform with the shared
-/// request slot.
+/// The gate variant is the background call (upload-all, continuous delivery): every request
+/// takes a permit from the trace controller.
 pub(super) async fn perform_agent_trace_upload(
     options: &TraceUploadOptions<'_>,
     before_request: Option<&TraceRequestGate>,
@@ -208,8 +208,8 @@ pub(super) async fn perform_agent_trace_upload(
     }
 }
 
-/// The gate runs before every attempt, the retriable statuses/network
-/// errors back off with jitter, and 503 honors `Retry-After`.
+/// The trace controller admits every attempt and hears how it ended, the retriable
+/// statuses/network errors back off with jitter, and 503 honors `Retry-After`.
 pub(super) async fn fetch_with_retry(
     options: &TraceUploadOptions<'_>,
     url: &str,
@@ -219,11 +219,14 @@ pub(super) async fn fetch_with_retry(
 ) -> Result<TraceHttpResponse, TraceHttpError> {
     let mut attempt: u32 = 0;
     loop {
-        if let Some(gate) = before_request {
-            // A cancelled wait ends the upload.
-            gate.before_request(options.cancel, options.on_upload_delay.as_ref())
-                .await?;
-        }
+        // A cancelled wait ends the upload.
+        let permit = match before_request {
+            Some(gate) => Some(
+                gate.before_request(options.cancel, options.on_upload_delay.as_ref())
+                    .await?,
+            ),
+            None => None,
+        };
         if options.cancel.is_some_and(TraceUploadCancel::is_cancelled) {
             return Err(TraceHttpError::Cancelled);
         }
@@ -241,6 +244,9 @@ pub(super) async fn fetch_with_retry(
                 options.cancel,
             )
             .await;
+        if let Some(permit) = permit {
+            permit.finish(&result);
+        }
         match result {
             Ok(response) => {
                 if attempt >= TRACE_UPLOAD_MAX_RETRIES
