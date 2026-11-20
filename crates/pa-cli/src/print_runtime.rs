@@ -689,23 +689,22 @@ pub(crate) async fn build_headless_engine_with(
         .as_ref()
         .and_then(pa_core::session::manager::SessionManager::get_header)
         .and_then(pa_types::session::SessionHeader::credential_pin);
-    let credential_pin = match resumed_pin {
-        Some(pin) => Some(pin),
-        None => {
-            let profile = match config.profile.as_deref() {
-                Some(name) => pa_core::settings::load_profile(&config.agent_dir, name)
-                    .map_err(|error| format!("{error:#}"))?,
-                None => None,
-            };
-            profile
-                .as_ref()
-                .and_then(|profile| profile.credential_for(config.provider.as_deref()))
-                .or(config.credential.as_deref())
-                .map(|selector| {
-                    pa_core::auth::AuthAccounts::create(&config.agent_dir).select(selector)
-                })
-                .transpose()?
-        }
+    let credential_pin = if let Some(pin) = resumed_pin {
+        Some(pin)
+    } else {
+        let profile = config
+            .profile
+            .as_deref()
+            .map(|name| pa_core::settings::load_profile(&config.agent_dir, name))
+            .transpose()
+            .map_err(|error| format!("{error:#}"))?
+            .flatten();
+        profile
+            .as_ref()
+            .and_then(|profile| profile.credential_for(config.provider.as_deref()))
+            .or(config.credential.as_deref())
+            .map(|selector| pa_core::auth::AuthAccounts::create(&config.agent_dir).select(selector))
+            .transpose()?
     };
     let pinned = credential_pin.is_some();
     registry.set_credential_pin(&config.agent_dir, credential_pin);
