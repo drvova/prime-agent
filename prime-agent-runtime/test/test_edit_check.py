@@ -58,6 +58,11 @@ class EditCheckTest(unittest.IsolatedAsyncioTestCase):
         while edit_check._tasks:
             await asyncio.gather(*list(edit_check._tasks))
 
+    async def asyncTearDown(self) -> None:
+        # The learned state saves in the background: let it land before the
+        # temp dirs are removed (a save racing the cleanup failed it).
+        await self._settled()
+
     async def test_a_check_that_ends_in_time_attaches_its_diagnostics_and_is_learned(self):
         with self._check("echo 'app.py:1:1: F821 undefined name'; exit 1"):
             attached = await edit_check.after_edit(str(self.edited))
