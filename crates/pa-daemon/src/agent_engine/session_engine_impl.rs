@@ -404,6 +404,20 @@ impl SessionEngine for AgentSessionEngine {
         let _ = self.effective_thinking();
     }
 
+    fn set_credential_pin(&self, pin: Option<pa_types::session::CredentialPin>) {
+        *self
+            .credential_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = pin;
+    }
+
+    fn credential_pin(&self) -> Option<pa_types::session::CredentialPin> {
+        self.credential_pin
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     fn configure_create_model(&self, selection: EngineModelSelection) {
         // The create's explicit flags fold into the runtime config (TS
         // `mergeAgentSessionRuntimeConfig`) and must survive the restore reset.
@@ -1008,6 +1022,9 @@ impl SessionEngine for AgentSessionEngine {
         signal: &pa_agent::abort::AbortSignal,
         sink: &pa_core::session_engine::side_question::SideQuestionSink,
     ) -> SideQuestionOutcome {
+        if request.kind == pa_types::better::SideRunKind::Better {
+            return self.run_better(&request.question, signal, sink);
+        }
         let model = match self.session_model() {
             Ok(model) => model,
             Err(error) => {
@@ -1080,6 +1097,17 @@ impl SessionEngine for AgentSessionEngine {
                 }
             }
         }
+    }
+
+    fn note_better_outcome(&self, outcome: pa_types::better::ComposerOutcome) {
+        // The worker's command loop calls this on its runtime, where a blocking lock panics:
+        // the count lands from the engine's own runtime instead.
+        let session = std::sync::Arc::clone(&self.session);
+        self.runtime.spawn(async move {
+            if let Some(built) = session.lock().await.clone() {
+                built.better.note_composer_outcome(outcome);
+            }
+        });
     }
 
     fn rlm_child_snapshots(

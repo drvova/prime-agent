@@ -69,6 +69,10 @@ pub struct ProviderQuota {
     /// email or account id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    /// Which of the provider's credentials the card reads, when it holds several: a named
+    /// credential's label, or `default` for the default slot. `None` when it holds one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub source: QuotaSource,
     /// When the numbers were fetched (or the response was observed), epoch ms.
     pub fetched_at_ms: i64,

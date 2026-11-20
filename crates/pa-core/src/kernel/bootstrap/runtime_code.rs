@@ -54,6 +54,8 @@ try:
     ask = _prime_agent_ask_module.ask
     import rlm.notify as _prime_agent_notify_module
     notify = _prime_agent_notify_module.notify
+    import rlm.better as _prime_agent_better_module
+    better = _prime_agent_better_module.better
     import rlm.model as model
 ";
 

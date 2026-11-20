@@ -48,7 +48,13 @@ impl Worker {
             pa_core::models::RefreshTrigger::PickerOpen
         };
         self.spawn_catalog_refresh(trigger, served.clone());
-        response_success(None, "get_model_catalog", Some(served))
+        let mut answer = served;
+        answer["accounts"] = session_accounts(
+            &registry.auth.get_all(),
+            &agent_dir,
+            self.engine.credential_pin().as_ref(),
+        );
+        response_success(None, "get_model_catalog", Some(answer))
     }
 
     /// The background catalog refresh: the same awaited chain the TS
@@ -94,6 +100,34 @@ impl Worker {
             }
         });
     }
+}
+
+/// The account this session serves each multi-credential provider with: the pinned credential's
+/// label for the pinned provider, else `default`. A provider holding one credential is absent. An
+/// unreadable `auth-accounts.json` lists nothing here (`/logout` reports it).
+fn session_accounts(
+    stored: &pa_core::auth::AuthStorageData,
+    agent_dir: &std::path::Path,
+    pin: Option<&pa_types::session::CredentialPin>,
+) -> Value {
+    let named = pa_core::auth::AuthAccounts::create(agent_dir)
+        .all()
+        .unwrap_or_default();
+    let accounts: serde_json::Map<String, Value> = named
+        .into_iter()
+        .filter_map(|(provider, accounts)| {
+            let pinned = pin
+                .filter(|pin| pin.provider == provider)
+                .and_then(|pin| accounts.iter().find(|account| account.id == pin.id));
+            let count = accounts.len() + usize::from(stored.credential(&provider).is_some());
+            match pinned {
+                Some(account) => Some((provider, json!(account.label))),
+                None if count > 1 => Some((provider, json!("default"))),
+                None => None,
+            }
+        })
+        .collect();
+    Value::Object(accounts)
 }
 
 /// The wire payload of one catalog snapshot: the full catalog minus

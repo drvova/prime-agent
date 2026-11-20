@@ -89,6 +89,11 @@ impl SessionUi {
         // per submitted builtin, client and session commands alike, by its
         // canonical name, before the command runs.
         self.track_command_used(resolved.name);
+        // `/better` is a session command for every other surface (the rewrite comes back as a
+        // result row); here it runs in the background and lands in the composer instead.
+        if resolved.name == "better" {
+            return self.start_better(&resolved.args, view).await;
+        }
         match command.execution {
             SlashCommandExecution::Session => self.send_prompt(text, behavior, view),
             SlashCommandExecution::Client => {

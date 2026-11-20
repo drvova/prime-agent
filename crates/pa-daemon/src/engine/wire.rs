@@ -385,6 +385,9 @@ pub struct SideQuestionRequest {
     /// Caller-generated id; echoed on every event of the run.
     pub side_question_id: String,
     pub question: String,
+    /// A `/btw` question, or a `/better` rewrite of `question` (whose running events then carry
+    /// progress labels, and whose final answer is the rewrite).
+    pub kind: pa_types::better::SideRunKind,
     /// Earlier `{question, answer}` exchanges replayed before the question.
     pub previous_turns: Vec<SideQuestionTurn>,
 }
