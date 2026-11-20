@@ -24,6 +24,7 @@ fn drive(counters: &SessionCounters) {
     use crate::session_engine::runtime::ScheduleFact;
     use crate::session_engine::session_search::SessionRecallFact;
     use crate::web_read::{ReadKind, ReadOutcome};
+    use pa_types::billing::{BillingMode, CostSource};
     use pa_types::todo::{TodoItem, TodoList, TodoStatus};
 
     let item = |id: &str, status| TodoItem {
@@ -236,7 +237,6 @@ fn drive(counters: &SessionCounters) {
     }
     // The non-capability events that main emitted between the capability events: they keep
     // their own counter structs, and the move must leave their bytes alone too.
-    use pa_types::billing::{BillingMode, CostSource};
     for mode in [
         BillingMode::PayAsYouGo {
             source: CostSource::Catalog,
