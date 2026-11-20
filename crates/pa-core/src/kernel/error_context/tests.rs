@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -327,10 +328,11 @@ async fn the_block_stays_within_its_location_cap() {
     for n in 0..9 {
         let path = workspace.path().join(format!("m{n}.py"));
         std::fs::write(&path, "def f():\n    g()\n").expect("module");
-        traceback.push_str(&format!(
+        let _ = write!(
+            traceback,
             "  File \"{}\", line 2, in f\n    g()\n",
             path.display()
-        ));
+        );
     }
     traceback.push_str("RecursionError: deep\n");
     let context = ErrorContext::for_workspace(workspace.path().to_path_buf(), None);

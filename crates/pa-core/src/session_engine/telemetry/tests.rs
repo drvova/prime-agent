@@ -2387,6 +2387,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// Error enrichments ride their own `agent error enrichment` event at session end (counts only: never a path, a line, or output).
 #[tokio::test]
 async fn error_enrichment_ride_their_own_event() {
+    use crate::kernel::error_context::EnrichmentFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2395,7 +2396,6 @@ async fn error_enrichment_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::kernel::error_context::EnrichmentFact;
     for fact in [
         EnrichmentFact {
             failed_commands: 1,
