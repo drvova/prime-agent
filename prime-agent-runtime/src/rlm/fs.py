@@ -421,9 +421,13 @@ async def read(path: str | os.PathLike[str], *, start: int | None = None, end: i
         payload["start"] = _count("start", start, minimum=1)
     if end is not None:
         payload["end"] = _count("end", end, minimum=1)
-    # The same read of an unchanged file answers from the cache, marked `cached`.
+    # The same range read of an unchanged file answers from the cache, marked `cached`. A
+    # whole-file read always reaches the host, which knows what this session has already seen:
+    # an unchanged file comes back as one "unchanged since turn N" line (or a diff), and stays
+    # correct across compaction, which this cache cannot see.
     key = ("fs.read", payload["path"], payload.get("start"), payload.get("end"))
-    stamps = command_cache.fingerprint("", command_cache.plan_files(payload["path"]))
+    whole_file = start is None and end is None
+    stamps = None if whole_file else command_cache.fingerprint("", command_cache.plan_files(payload["path"]))
     if stamps is not None and None in stamps[0]:
         stamps = None  # a file that is not there is never cached
     hit = command_cache.lookup(key, stamps) if stamps is not None else None

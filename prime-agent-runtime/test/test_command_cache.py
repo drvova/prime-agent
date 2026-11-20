@@ -91,7 +91,7 @@ class CacheTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result.cached)
         self.assertEqual((self.root / "log.txt").read_text(), "x\nx\n")
 
-    async def test_an_unchanged_fs_read_answers_cached(self):
+    async def test_an_unchanged_fs_range_read_answers_cached(self):
         reply = {
             "path": "a.txt",
             "lines": [{"line": 1, "anchor": "1:abc", "text": "first"}],
@@ -106,13 +106,33 @@ class CacheTest(unittest.IsolatedAsyncioTestCase):
         }
         host = mock.AsyncMock(return_value=reply)
         with mock.patch.object(fs, "host_request", host):
-            first = await fs.read("a.txt")
-            second = await fs.read("a.txt")
+            first = await fs.read("a.txt", start=1, end=1)
+            second = await fs.read("a.txt", start=1, end=1)
             self._rewrite("first, changed\n")
-            third = await fs.read("a.txt")
+            third = await fs.read("a.txt", start=1, end=1)
         self.assertEqual(
             (host.await_count, [view.cached for view in (first, second, third)], second.text),
             (2, [False, True, False], "a.txt (lines 1-1 of 1) · cached\n1:abc|first"),
+        )
+
+    async def test_a_whole_file_read_always_asks_the_host(self):
+        # The host answers a re-read of a file this session has seen as "unchanged" or a diff,
+        # and knows when a compaction dropped it; a cached full view would show it all again.
+        reply = {
+            "path": "a.txt",
+            "lines": [{"line": 1, "anchor": "1:abc", "text": "first"}],
+            "totalLines": 1,
+            "start": 1,
+            "end": 1,
+            "truncated": False,
+            "text": "a.txt (unchanged since turn 1, 1 lines; whole view: out:0123456789)",
+        }
+        host = mock.AsyncMock(return_value=reply)
+        with mock.patch.object(fs, "host_request", host):
+            views = [await fs.read("a.txt") for _ in range(2)]
+        self.assertEqual(
+            (host.await_count, [(view.cached, view.text) for view in views]),
+            (2, [(False, reply["text"])] * 2),
         )
 
 
