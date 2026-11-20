@@ -557,6 +557,15 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
                 serde_json::Value::from(summary.filters_active),
             );
             properties.set("sort", serde_json::Value::from(summary.sort));
+            for (name, count) in [
+                ("action_menu_count", summary.action_menu_count),
+                ("favorite_toggle_count", summary.favorite_toggle_count),
+                ("default_set_count", summary.default_set_count),
+                ("effort_set_count", summary.effort_set_count),
+                ("details_count", summary.details_count),
+            ] {
+                properties.set(name, serde_json::Value::from(count));
+            }
             client.track("tui model picker closed", properties);
             let _ = client.shutdown().await;
         })

@@ -332,6 +332,13 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["alt+o"], "Model selector: cycle the sort"),
     ),
     (
+        "app.model.actions",
+        def!(
+            &["tab"],
+            "Model selector: open the highlighted model's actions"
+        ),
+    ),
+    (
         "app.model.cycleForward",
         def!(&["alt+m"], "Cycle to the next scoped model"),
     ),

@@ -196,6 +196,9 @@ pub(crate) struct SessionUi {
     model_billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
+    /// The settings favorite-model list (`provider/id` keys, in the order they were added), read
+    /// once when the UI starts and kept in step with each toggle the picker persists.
+    model_favorite_models: Vec<String>,
     default_thinking_level: Option<String>,
     models_fetched_at: Option<std::time::Instant>,
     pasted_images: std::collections::BTreeMap<u64, LoadedImage>,

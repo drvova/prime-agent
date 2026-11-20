@@ -46,6 +46,14 @@ pub enum ModelPickerAction {
     None,
     /// The scope key toggled the picker's list (the picker stays mounted).
     ScopeToggled { scoped: bool },
+    /// The action menu's default row: persist the model as the default for new sessions (the
+    /// picker stays mounted; the session keeps its model).
+    SetDefault { provider: String, model_id: String },
+    /// The action menu's effort row on the current model: apply this thinking level (wire name)
+    /// to the session.
+    SetEffort(String),
+    /// The action menu toggled a favorite: persist the whole list (`provider/id` keys).
+    FavoritesChanged(Vec<String>),
 }
 
 /// The outcome of dispatching `/model [search]`.
@@ -79,8 +87,14 @@ pub struct ModelPickerOptions {
     pub billing: HashMap<String, BillingMode>,
     /// The tightest cached quota window per provider id (`5h 42%`), from the last `/usage` cards.
     pub quota_labels: HashMap<String, String>,
+    /// The settings favorite-model list (`provider/id` keys, in the order they were added): the
+    /// grouped view lists them first.
+    pub favorite_models: Vec<String>,
+    /// The cached spend and quota cards the details view reads.
+    pub usage: PickerUsage,
 }
 
+mod actions;
 mod facts;
 mod filters;
 mod rows;
@@ -88,6 +102,8 @@ mod scope;
 mod search;
 mod sort;
 
+pub use actions::PickerUsage;
+use actions::PickerView;
 use facts::{billing_class, BillingClass};
 use filters::{Chip, PickerFilters, SortKey};
 use rows::ListRow;
@@ -127,6 +143,16 @@ pub struct ModelPickerSummary {
     pub filters_active: bool,
     /// The sort the picker closed on (`recent`, `name`, `price`, `context`).
     pub sort: &'static str,
+    /// Action menu opens.
+    pub action_menu_count: u64,
+    /// Favorite toggles.
+    pub favorite_toggle_count: u64,
+    /// Default-for-new-sessions sets.
+    pub default_set_count: u64,
+    /// Effort applies from the action menu.
+    pub effort_set_count: u64,
+    /// Details view opens.
+    pub details_count: u64,
 }
 
 #[cfg(test)]
@@ -192,6 +218,18 @@ pub struct ModelPicker {
     /// Chip and sort key presses this run (the adoption event).
     chip_changes: u64,
     sort_changes: u64,
+    /// The list, or the action menu or details view over one model.
+    view: PickerView,
+    /// The favorites as `provider/id` keys, in the order they were added.
+    favorites: Vec<String>,
+    /// The cached spend and quota cards.
+    usage: PickerUsage,
+    /// Action menu use this run (the adoption event).
+    action_menu_opens: u64,
+    favorite_toggles: u64,
+    default_sets: u64,
+    effort_sets: u64,
+    details_opens: u64,
 }
 
 impl ModelPicker {
@@ -230,6 +268,14 @@ impl ModelPicker {
             browse_rows: 0,
             chip_changes: 0,
             sort_changes: 0,
+            view: PickerView::List,
+            favorites: options.favorite_models,
+            usage: options.usage,
+            action_menu_opens: 0,
+            favorite_toggles: 0,
+            default_sets: 0,
+            effort_sets: 0,
+            details_opens: 0,
         };
         picker.load_models(options.models);
         picker.resolve_scope_positions();
@@ -297,6 +343,11 @@ impl ModelPicker {
             sort_change_count: self.sort_changes,
             filters_active: self.filters != PickerFilters::default(),
             sort: self.sort.label(),
+            action_menu_count: self.action_menu_opens,
+            favorite_toggle_count: self.favorite_toggles,
+            default_set_count: self.default_sets,
+            effort_set_count: self.effort_sets,
+            details_count: self.details_opens,
         }
     }
 
@@ -307,6 +358,16 @@ impl ModelPicker {
         // overlay only cancels, like the TS model selector.
         if key == "ctrl+c" {
             return ModelPickerAction::Cancel;
+        }
+        match self.view {
+            PickerView::List => {}
+            PickerView::Actions { .. } | PickerView::Details { .. } => {
+                return self.handle_action_key(key, kb);
+            }
+        }
+        if kb.matches(key, "app.model.actions") {
+            self.open_actions();
+            return ModelPickerAction::None;
         }
         // The scope toggle goes first: it toggles only with scoped entries,
         // re-filters, and re-selects the current model, else the top.
@@ -399,7 +460,10 @@ impl ModelPicker {
             return ModelPickerAction::None;
         }
         if kb.matches(key, "tui.select.confirm") {
-            return self.confirm();
+            return match self.selected_model() {
+                Some(model) => self.apply(model),
+                None => ModelPickerAction::None,
+            };
         }
         if kb.matches(key, "tui.select.cancel") {
             // Esc clears a non-empty query first; the next Esc closes.
@@ -760,10 +824,8 @@ impl ModelPicker {
         kb.matches(key, "app.modal.back") && self.search.cursor() == 0
     }
 
-    fn confirm(&self) -> ModelPickerAction {
-        let Some(model) = self.selected_model() else {
-            return ModelPickerAction::None;
-        };
+    /// Switch to `model` with its user-edited effort (if any).
+    fn apply(&self, model: &Model) -> ModelPickerAction {
         let key = Self::model_key_provider(&model.provider, &model.id);
         let effort = if self.edited_effort.contains(&key) {
             self.effort_levels

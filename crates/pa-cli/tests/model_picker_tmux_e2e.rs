@@ -5,8 +5,9 @@
 //! isolated HOME, and the scripted faux provider standing in for Anthropic's endpoint, with a
 //! stored Claude sign-in. The catalog holds a Claude plan, a metered provider, and a free local
 //! endpoint (models.json). The run opens `/model`, waits for the daemon's billing classes to
-//! land in the rows, turns the billing chip to `plan`, picks the other Claude model, and checks
-//! both the screen and the session file's recorded model switch.
+//! land in the rows, turns the billing chip to `plan`, opens the other Claude model's action menu,
+//! favorites it (the favorites group heads the list), switches to it from the menu, and checks
+//! the screen, the session file's recorded model switch, and the persisted favorites.
 //!
 //! Every wait polls the captured pane for observable state under a deadline; nothing sleeps
 //! for a fixed time.
@@ -228,7 +229,7 @@ fn row<'a>(screen: &'a str, name: &str) -> Option<&'a str> {
 }
 
 #[test]
-fn the_picker_filters_by_billing_and_switches_the_session() {
+fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
     let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
         .expect("temp dir");
     let pane = start(dir.path());
@@ -260,6 +261,29 @@ fn the_picker_filters_by_billing_and_switches_the_session() {
     pane.wait("the selection on Claude Plan Two", |screen| {
         screen.contains("enter switches to Claude Plan Two")
     });
+    // The action menu over the highlighted model: its rows, then the favorite toggle.
+    pane.keys(&["Tab"]);
+    let menu = pane.wait("the action menu", |screen| {
+        screen.contains("Model \u{b7} Claude Plan Two")
+            && screen.contains("Set as default for new sessions")
+            && screen.contains("Add to favorites")
+    });
+    println!("--- actions ---\n{menu}");
+    pane.keys(&["Down", "Down", "Enter"]);
+    pane.wait("the favorite toggle", |screen| {
+        screen.contains("Remove from favorites")
+    });
+    pane.keys(&["Escape"]);
+    let favorited = pane.wait("the favorites group", |screen| {
+        screen.contains("favorites")
+            && row(screen, "Claude Plan Two").is_some_and(|line| line.contains("\u{2605}"))
+    });
+    println!("--- favorited ---\n{favorited}");
+    // Switch from the menu: the explicit set_model path, never an implicit one.
+    pane.keys(&["Tab"]);
+    pane.wait("the action menu again", |screen| {
+        screen.contains("Switch this session to it")
+    });
     pane.keys(&["Enter"]);
     let switched = pane.wait("the switch", |screen| {
         screen.contains("Model: claude-e2e-plan-two")
@@ -278,4 +302,12 @@ fn the_picker_filters_by_billing_and_switches_the_session() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+    let settings: Value = serde_json::from_str(
+        &std::fs::read_to_string(home.join(".prime/agent/settings.json")).expect("settings"),
+    )
+    .expect("settings parse");
+    assert_eq!(
+        settings["favoriteModels"],
+        json!(["anthropic/claude-e2e-plan-two"])
+    );
 }

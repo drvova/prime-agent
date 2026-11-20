@@ -3,11 +3,11 @@ use crate::keybindings::KeybindingsManager;
 use crate::theme::{ColorMode, Theme};
 use pa_types::billing::BillingMode;
 
-fn theme() -> Theme {
+pub(super) fn theme() -> Theme {
     Theme::builtin("prime", ColorMode::TrueColor)
 }
 
-fn kb() -> KeybindingsManager {
+pub(super) fn kb() -> KeybindingsManager {
     KeybindingsManager::new()
 }
 
@@ -124,6 +124,8 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         viewport_rows: 19,
         billing: HashMap::new(),
         quota_labels: HashMap::new(),
+        favorite_models: Vec::new(),
+        usage: PickerUsage::default(),
     }
 }
 
@@ -266,7 +268,7 @@ fn rich_model(
 
 /// A catalog across billing classes: a Claude plan (with a cached 5-hour quota), metered
 /// OpenRouter rows, a free local model, and an unconfigured provider with no price.
-fn rich_options() -> ModelPickerOptions {
+pub(super) fn rich_options() -> ModelPickerOptions {
     let models = vec![
         rich_model(
             "anthropic",
@@ -380,16 +382,18 @@ fn rich_options() -> ModelPickerOptions {
         quota_labels: [("anthropic".to_string(), "5h 42%".to_string())]
             .into_iter()
             .collect(),
+        favorite_models: Vec::new(),
+        usage: PickerUsage::default(),
     }
 }
 
 /// The search field's rule row at `width`.
-fn rule(width: usize) -> String {
+pub(super) fn rule(width: usize) -> String {
     "\u{2500}".repeat(width)
 }
 
 /// Rendered frame rows at `width` as trimmed plain text (tmux-capture shape).
-fn frame_at(picker: &mut ModelPicker, width: usize) -> Vec<String> {
+pub(super) fn frame_at(picker: &mut ModelPicker, width: usize) -> Vec<String> {
     picker
         .render(&theme(), width, &kb())
         .iter()
@@ -428,7 +432,7 @@ fn the_grouped_frame_at_120_columns() {
         " $5                                $0                                $25",
         "",
         "  enter switches to Claude Fable 5",
-        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
 }
@@ -456,7 +460,7 @@ fn the_grouped_frame_at_80_columns() {
         " $5                   $0                   $25",
         "",
         "  enter switches to Claude Fable 5",
-        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
 }
@@ -521,7 +525,7 @@ fn the_plan_filter_and_price_sort_frame() {
         " $5                          $0                          $25",
         "",
         "  enter switches to Claude Fable 5",
-        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Alt+O sort \u{b7} Esc close",
+        "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
 }
@@ -553,6 +557,11 @@ fn the_chips_compose_with_the_context_sort() {
             sort_change_count: 3,
             filters_active: true,
             sort: "context",
+            action_menu_count: 0,
+            favorite_toggle_count: 0,
+            default_set_count: 0,
+            effort_set_count: 0,
+            details_count: 0,
         }
     );
 }

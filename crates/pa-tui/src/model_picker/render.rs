@@ -32,6 +32,9 @@ pub(super) fn render(
 ) -> Vec<Line> {
     picker.set_render_width(width);
     picker.set_visible_items(picker.list_layout());
+    if let Some(lines) = picker.render_overlay(theme, width, kb) {
+        return lines;
+    }
 
     // The scope row renders ABOVE the search field (TS v0.9.7's headerHelpContainer mounts before
     // the search input): one leading space, the active side accented, then the dim toggle key and
@@ -128,6 +131,11 @@ pub(super) fn render(
                         theme.fg_span(ThemeColor::Accent, "\u{25cf}"),
                         Span::raw(" "),
                     ]
+                } else if picker.is_favorite(model) {
+                    vec![
+                        theme.fg_span(ThemeColor::Accent, "\u{2605}"),
+                        Span::raw(" "),
+                    ]
                 } else {
                     vec![Span::raw("  ")]
                 };
@@ -184,6 +192,7 @@ pub(super) fn render(
                 HintRank::Useful,
             )
             .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+            .bound(kb, &["app.model.actions"], "actions", HintRank::Useful)
             .bound(kb, &["app.model.sort"], "sort", HintRank::Extra)
             .esc(kb, EscVerb::Close)
             .rows(theme, width),

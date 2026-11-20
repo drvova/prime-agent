@@ -366,6 +366,23 @@ impl ClientSettings for CliClientSettings {
     fn set_telemetry_notice_shown(&self) -> Result<()> {
         self.manager().set_telemetry_notice_shown(true)
     }
+
+    fn favorite_models(&self) -> Vec<String> {
+        self.manager().get_favorite_models()
+    }
+
+    fn set_favorite_models(&self, models: &[String]) -> Result<()> {
+        self.save(|manager| manager.set_favorite_models(models.to_vec()))
+            .map(drop)
+    }
+
+    fn set_default_model(&self, provider: &str, model: &str) -> Result<()> {
+        self.save(|manager| {
+            manager.set_default_provider(provider.to_string())?;
+            manager.set_default_model(model.to_string())
+        })
+        .map(drop)
+    }
 }
 
 #[cfg(test)]
@@ -447,6 +464,43 @@ mod tests {
             std::fs::read_to_string(agent_dir.join("settings.json")).expect("settings file");
         let value: serde_json::Value = serde_json::from_str(&content).expect("parse");
         assert_eq!(value["factory"]["enabled"], false);
+    }
+
+    /// The `/model` picker's favorites and default survive a restart: a fresh seam over the same
+    /// directories (the next launch) reads back what the last one saved, and the default write
+    /// leaves the recent list alone (setting a default is not a use).
+    #[test]
+    fn favorites_and_the_default_persist_across_a_restart() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let agent_dir = dir.path().join("agent");
+        std::fs::create_dir_all(&agent_dir).expect("agent dir");
+        let favorites = vec![
+            "anthropic/claude-fable-5".to_string(),
+            "openrouter/z-ai/glm-5.3".to_string(),
+        ];
+        {
+            let settings = CliClientSettings::new(dir.path().to_path_buf(), agent_dir.clone());
+            settings.set_favorite_models(&favorites).expect("favorites");
+            settings
+                .set_default_model("openrouter", "z-ai/glm-5.3")
+                .expect("default");
+        }
+        let restarted = CliClientSettings::new(dir.path().to_path_buf(), agent_dir.clone());
+        let manager = pa_core::settings::SettingsManager::create(dir.path(), &agent_dir);
+        assert_eq!(
+            (
+                restarted.favorite_models(),
+                manager.get_default_provider().map(str::to_string),
+                manager.get_default_model().map(str::to_string),
+                manager.get_recent_models(),
+            ),
+            (
+                favorites,
+                Some("openrouter".to_string()),
+                Some("z-ai/glm-5.3".to_string()),
+                Vec::new(),
+            )
+        );
     }
 
     /// A settings file that does not load refuses every save: the manager keeps the value in

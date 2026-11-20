@@ -72,6 +72,7 @@ impl SessionUi {
                     .collect()
             })
             .unwrap_or_default();
+        let now_ms = crate::usage_page::now_ms();
         let options = ModelPickerOptions {
             models: self.model_catalog.clone(),
             current,
@@ -81,7 +82,21 @@ impl SessionUi {
             scoped_models,
             viewport_rows: picker_viewport_rows(view.terminal_rows()),
             billing: self.model_billing.clone(),
-            quota_labels: self.cached_quota_labels(crate::usage_page::now_ms()),
+            quota_labels: self.cached_quota_labels(now_ms),
+            favorite_models: self.model_favorite_models.clone(),
+            usage: crate::model_picker::PickerUsage {
+                spend: self
+                    .usage_spend
+                    .as_ref()
+                    .map(|spend| spend.models.clone())
+                    .unwrap_or_default(),
+                quotas: self
+                    .usage_quotas
+                    .as_ref()
+                    .map(|report| report.providers.clone())
+                    .unwrap_or_default(),
+                now_ms,
+            },
         };
         // Always open the menu (an empty catalog renders the empty panel).
         let crate::model_picker::ModelCommandOutcome::Open(picker) =
@@ -131,6 +146,35 @@ impl SessionUi {
                     tokio::spawn(async move {
                         telemetry.scoped_models_used("toggle_scope", scoped).await;
                     });
+                }
+            }
+            Some(ModelPickerAction::SetDefault { provider, model_id }) => {
+                let saved = match &self.client_settings {
+                    Some(settings) => settings.set_default_model(&provider, &model_id),
+                    None => Err(anyhow::anyhow!("Model defaults are unavailable")),
+                };
+                match saved {
+                    Ok(()) => {
+                        // `/new` creates from this selection: the next session starts on the
+                        // default; this session keeps its model.
+                        self.model_selection.provider = Some(provider.clone());
+                        self.model_selection.model = Some(model_id.clone());
+                        self.note(&format!("Default model: {provider}/{model_id}"), view);
+                    }
+                    Err(error) => self.error_row(&format!("{error:#}"), view),
+                }
+            }
+            Some(ModelPickerAction::SetEffort(level)) => {
+                self.apply_thinking_level(&level, view).await;
+            }
+            Some(ModelPickerAction::FavoritesChanged(favorites)) => {
+                let saved = match &self.client_settings {
+                    Some(settings) => settings.set_favorite_models(&favorites),
+                    None => Err(anyhow::anyhow!("Model favorites are unavailable")),
+                };
+                match saved {
+                    Ok(()) => self.model_favorite_models = favorites,
+                    Err(error) => self.error_row(&format!("{error:#}"), view),
                 }
             }
             Some(ModelPickerAction::Cancel) => {

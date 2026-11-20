@@ -32,6 +32,9 @@ pub(crate) enum SignIn {
 /// The recent models' group header.
 pub(crate) const RECENT_HEADER: &str = "recent";
 
+/// The favorite models' group header.
+pub(crate) const FAVORITES_HEADER: &str = "favorites";
+
 /// The narrowest name cell the columns leave (the marker and name before the effort cluster).
 const NAME_MIN_WIDTH: usize = 18;
 
@@ -75,10 +78,20 @@ impl ModelPicker {
         (ordered, rows)
     }
 
-    /// The grouped view: the current and recent models under the recent header (current first,
-    /// then newest use), then each provider's remaining models under its own header, providers in
-    /// catalog order (signed-in first).
+    /// The grouped view: the favorites under their header (in the order they were added), the
+    /// current and recent models under the recent header (current first, then newest use), then
+    /// each provider's remaining models under its own header, providers in catalog order
+    /// (signed-in first).
     fn grouped_order(&self, candidates: Vec<usize>) -> (Vec<usize>, Vec<ListRow>) {
+        let favorite_rank = |index: usize| -> Option<usize> {
+            let model = &self.all_models[index];
+            let key = Self::model_key_provider(&model.provider, &model.id);
+            self.favorites.iter().position(|favorite| *favorite == key)
+        };
+        let (mut favorites, candidates): (Vec<usize>, Vec<usize>) = candidates
+            .into_iter()
+            .partition(|index| favorite_rank(*index).is_some());
+        favorites.sort_by_key(|index| favorite_rank(*index));
         let pinned_rank = |index: usize| -> Option<usize> {
             let model = &self.all_models[index];
             if self.is_current(model) {
@@ -117,6 +130,9 @@ impl ModelPicker {
                 filtered.push(index);
             }
         };
+        if !favorites.is_empty() {
+            push_group(FAVORITES_HEADER.to_string(), SignIn::Ready, favorites);
+        }
         if !pinned.is_empty() {
             push_group(RECENT_HEADER.to_string(), SignIn::Ready, pinned);
         }

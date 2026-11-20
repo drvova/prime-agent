@@ -78,6 +78,11 @@ impl SessionUi {
             model_configured_providers: options.model_configured_providers.clone(),
             model_billing: std::collections::HashMap::new(),
             model_recent_models: options.model_recent_models.clone(),
+            model_favorite_models: options
+                .client_settings
+                .as_ref()
+                .map(|settings| settings.favorite_models())
+                .unwrap_or_default(),
             default_thinking_level: options.default_thinking_level.clone(),
             models_fetched_at: None,
             catalog_updates,

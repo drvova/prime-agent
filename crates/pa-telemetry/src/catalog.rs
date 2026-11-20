@@ -1217,7 +1217,8 @@ const TUI_CONTEXT_WINDOW_CLOSED: EventRule = EventRule {
 };
 
 /// One `/model` picker run ended (v2): whether it switched models, the filter-chip and sort key
-/// presses, whether a chip was active at the close, and the closing sort. Standalone because
+/// presses, whether a chip was active at the close, the closing sort, and the action menu's use
+/// (opens, favorite toggles, defaults set, effort applies, details opens). Standalone because
 /// `tui exit` sits at the backend's 128-key cap. Counts and enums only: never a model, a
 /// provider, or the search text.
 const TUI_MODEL_PICKER_CLOSED: EventRule = EventRule {
@@ -1235,6 +1236,11 @@ const TUI_MODEL_PICKER_CLOSED: EventRule = EventRule {
             "sort",
             required(enum_rule(&["recent", "name", "price", "context"], "recent")),
         ),
+        ("action_menu_count", required(count())),
+        ("favorite_toggle_count", required(count())),
+        ("default_set_count", required(count())),
+        ("effort_set_count", required(count())),
+        ("details_count", required(count())),
     ],
 };
 
