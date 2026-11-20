@@ -25,6 +25,9 @@ use crate::properties::Properties;
 /// changes do not bump it.
 pub const SCHEMA_VERSION: u64 = 2;
 
+mod capabilities;
+pub use capabilities::{CAPABILITY_EVENTS_AFTER_SESSION_END, CAPABILITY_EVENTS_BEFORE_SESSION_END};
+
 // ---------------------------------------------------------------------------
 // Rule kinds
 
@@ -1530,25 +1533,6 @@ const WEB_SEARCH_PROVIDER_CHANGED: EventRule = EventRule {
     )],
 };
 
-/// The kernel `todo.*` and `ask(...)` adoption counters for one session (v2), emitted at session
-/// close beside `agent session ended` (which sits at the 128-key cap) when the session used
-/// either. Counts only: never item text, a question, a choice, or an answer.
-const AGENT_TODOS_AND_QUESTIONS: EventRule = EventRule {
-    name: "agent todos and questions",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("todo_list_set_count", required(count())),
-        ("todo_item_done_count", required(count())),
-        ("question_asked_count", required(count())),
-        ("question_answered_count", required(count())),
-        ("question_declined_count", required(count())),
-        ("question_timed_out_count", required(count())),
-        ("question_no_user_count", required(count())),
-        ("question_cancelled_count", required(count())),
-    ],
-};
-
 /// Provider request admission for one session's process (v2), emitted at session close beside
 /// `agent session ended` (which sits at the 128-key cap) when any request waited for a permit or
 /// a provider pushed back: requests that waited, their summed wait, throttled/overloaded
@@ -1629,29 +1613,6 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
         ("goal_judge_not_met_count", required(count())),
         ("goal_token_budget_stop_count", required(count())),
         ("goal_cost_budget_stop_count", required(count())),
-    ],
-};
-
-/// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
-/// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
-/// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
-/// edited, discarded), the kernel's brief-mode runs and how many needed no fix, and the refine passes verification ran. Counts only:
-/// never a prompt, a rewrite, or a path.
-const AGENT_BETTER_PROMPT: EventRule = EventRule {
-    name: "agent better prompt",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("better_run_count", required(count())),
-        ("better_completed_count", required(count())),
-        ("better_cancelled_count", required(count())),
-        ("better_failed_count", required(count())),
-        ("better_sent_as_is_count", required(count())),
-        ("better_edited_count", required(count())),
-        ("better_discarded_count", required(count())),
-        ("better_brief_run_count", required(count())),
-        ("better_brief_unchanged_count", required(count())),
-        ("better_verification_pass_count", required(count())),
     ],
 };
 
@@ -1736,161 +1697,6 @@ const AGENT_ENDPOINT_DISCOVERY: EventRule = EventRule {
     ],
 };
 
-/// Kernel `web.read` adoption for one session (v2), emitted at session end beside `agent session
-/// ended` (which sits near the backend's 128-key cap) only when the session read a URL: reads,
-/// failures, reads by kind (a site route such as arXiv/GitHub/Stack Exchange, a PDF, a generic
-/// page), truncated reads, and the slowest read. Counts only: never a URL, a title, or content.
-const AGENT_WEB_READS: EventRule = EventRule {
-    name: "agent web reads",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("web_read_count", required(count())),
-        ("web_read_failed_count", required(count())),
-        ("web_read_site_count", required(count())),
-        ("web_read_pdf_count", required(count())),
-        ("web_read_page_count", required(count())),
-        ("web_read_truncated_count", required(count())),
-        ("web_read_max_ms", required(duration())),
-    ],
-};
-
-/// Kernel native file search (`fs.grep`/`fs.glob`/`fs.find`) adoption for one session (v2),
-/// emitted at session end beside `agent session ended` (which sits near the backend's 128-key cap)
-/// only when the session searched: calls by operation, failures, capped calls, results returned,
-/// and the slowest call. Counts only: never a pattern, a path, or a match.
-const AGENT_FS_SEARCH: EventRule = EventRule {
-    name: "agent fs search",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("fs_grep_count", required(count())),
-        ("fs_glob_count", required(count())),
-        ("fs_find_count", required(count())),
-        ("fs_search_failed_count", required(count())),
-        ("fs_search_truncated_count", required(count())),
-        ("fs_search_result_count", required(count())),
-        ("fs_search_max_ms", required(duration())),
-    ],
-};
-
-/// Kernel anchored (hashline) file reads and edits (`fs.read`/`fs.edit`) adoption for one session
-/// (v2), emitted at session end beside `agent session ended` (which sits near the backend's 128-key
-/// cap) only when the session used them: reads and lines shown, failed reads, patches applied and
-/// the edits in them, patches rejected for stale anchors and the stale anchors, and failed edits.
-/// Counts only: never a path, an anchor, or file content.
-const AGENT_FS_EDIT: EventRule = EventRule {
-    name: "agent fs edit",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("fs_read_count", required(count())),
-        ("fs_read_line_count", required(count())),
-        ("fs_read_failed_count", required(count())),
-        ("fs_edit_count", required(count())),
-        ("fs_edit_op_count", required(count())),
-        ("fs_edit_rejected_count", required(count())),
-        ("fs_edit_stale_anchor_count", required(count())),
-        ("fs_edit_failed_count", required(count())),
-    ],
-};
-
-/// Kernel session-owned scheduled jobs (`schedule.add/list/cancel`) adoption for one session
-/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
-/// cap) only when the session used them: jobs added by kind, listings, cancels, and refused calls.
-/// Counts only: never a prompt, a schedule, or a job id.
-const AGENT_REPL_SCHEDULE: EventRule = EventRule {
-    name: "agent repl schedule",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("schedule_once_added_count", required(count())),
-        ("schedule_recurring_added_count", required(count())),
-        ("schedule_list_count", required(count())),
-        ("schedule_cancelled_count", required(count())),
-        ("schedule_rejected_count", required(count())),
-    ],
-};
-
-/// Kernel workspace checkpoints (`checkpoint.create/list/restore`) adoption for one session (v2),
-/// emitted at session end beside `agent session ended` (which sits at the backend's 128-key cap)
-/// only when the session used them: checkpoints taken, listings, and restores by outcome
-/// (restored, declined or unanswered, refused by the off-by-default setting) plus failed calls.
-/// Counts only: never a label, an id, or a path.
-const AGENT_REPL_CHECKPOINT: EventRule = EventRule {
-    name: "agent repl checkpoint",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("checkpoint_created_count", required(count())),
-        ("checkpoint_list_count", required(count())),
-        ("checkpoint_restored_count", required(count())),
-        ("checkpoint_restore_declined_count", required(count())),
-        ("checkpoint_restore_disabled_count", required(count())),
-        ("checkpoint_failed_count", required(count())),
-    ],
-};
-
-/// Kernel `usage.get()` adoption for one session (v2), emitted at session end beside
-/// `agent session ended` (which sits near the backend's 128-key cap) only when the session read
-/// its usage. A count only: never a cost, a token number, a provider, or a quota.
-const AGENT_USAGE_READS: EventRule = EventRule {
-    name: "agent usage reads",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("usage_read_count", required(count())),
-    ],
-};
-
-/// Kernel `worktree` adoption for one session (v2), emitted at session end beside
-/// `agent session ended` (which sits near the backend's 128-key cap) only when the session used a
-/// worktree: created, diffed, merged into the checkout, committed to a branch, merges that found
-/// conflicts, removed, and failed operations. Counts only: never a name, a path, or a diff.
-const AGENT_WORKTREES: EventRule = EventRule {
-    name: "agent worktrees",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("worktree_created_count", required(count())),
-        ("worktree_diff_count", required(count())),
-        ("worktree_merged_count", required(count())),
-        ("worktree_branched_count", required(count())),
-        ("worktree_conflict_count", required(count())),
-        ("worktree_removed_count", required(count())),
-        ("worktree_failed_count", required(count())),
-    ],
-};
-
-/// Paged-out output for one session (v2), emitted at session end beside `agent session ended`
-/// (which sits near the backend's 128-key cap) only when the session spilled or read paged-out
-/// output: spills (cut cell output and thinned results written to the session's spill store), their
-/// size as a bucket, spills the store could not keep, evictions, and the kernel `ctx.*` reads.
-/// Counts and a size bucket only: never a handle, a pattern, or any output text.
-const AGENT_CONTEXT_PAGING: EventRule = EventRule {
-    name: "agent context paging",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("spill_count", required(count())),
-        (
-            "spill_bytes_bucket",
-            required(enum_rule(
-                &[
-                    "none", "lt_1mb", "lt_16mb", "lt_64mb", "lt_256mb", "ge_256mb",
-                ],
-                "none",
-            )),
-        ),
-        ("spill_not_stored_count", required(count())),
-        ("spill_evicted_count", required(count())),
-        ("ctx_page_count", required(count())),
-        ("ctx_grep_count", required(count())),
-        ("ctx_tail_count", required(count())),
-        ("ctx_info_count", required(count())),
-    ],
-};
-
 /// How a session's recorded assistant calls are paid for (v2), emitted at session end beside
 /// `agent session ended` (which sits near the backend's 128-key cap) when the session recorded a
 /// classified call: the calls per billing mode. Counts only: never a cost, a provider, a model,
@@ -1939,59 +1745,6 @@ const AGENT_MESSAGE_WAITS: EventRule = EventRule {
     ],
 };
 
-/// Kernel `rlm.abort` (stop a child's current turn, keep the child) adoption for one session
-/// (v2), emitted at session end beside `agent session ended` (which sits at the backend's 128-key
-/// cap) only when the session aborted a child: aborts that stopped a turn, aborts of an idle
-/// child, and failed calls. Counts only: never a child id or name.
-const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
-    name: "agent rlm child abort",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("rlm_abort_aborted_count", required(count())),
-        ("rlm_abort_idle_count", required(count())),
-        ("rlm_abort_failed_count", required(count())),
-    ],
-};
-
-/// Python cells that continued in the background (v2), emitted at session end beside `agent
-/// session ended` (which sits near the backend's 128-key cap) only when a cell was armed with a
-/// yield window or outlived one: cells backgrounded, how they ended (value, exception,
-/// interrupted), and where each armed window came from (learned from the project's recent cells,
-/// the model's `timeout`, the user's `pythonCellTimeoutMs`, or the cold 60 s default). Counts only:
-/// never code, output, a value, a cell id, or a duration.
-const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
-    name: "agent repl background cells",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("cell_backgrounded_count", required(count())),
-        ("cell_background_ok_count", required(count())),
-        ("cell_background_error_count", required(count())),
-        ("cell_background_interrupted_count", required(count())),
-        ("cell_window_learned_count", required(count())),
-        ("cell_window_timeout_count", required(count())),
-        ("cell_window_setting_count", required(count())),
-        ("cell_window_default_count", required(count())),
-    ],
-};
-
-/// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
-/// near the backend's 128-key cap) only when the session asked a query: queries answered from the
-/// project's symbol index, those answered before its first full pass (partial), and the definitions
-/// and references returned. Counts only: never a name or a path.
-const AGENT_SYMBOL_INDEX: EventRule = EventRule {
-    name: "agent symbol index",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("symbol_query_count", required(count())),
-        ("symbol_query_partial_count", required(count())),
-        ("symbol_definition_count", required(count())),
-        ("symbol_reference_count", required(count())),
-    ],
-};
-
 /// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
 /// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
 /// got the source lines around their error locations, the locations attached, the parsed locations
@@ -2007,59 +1760,6 @@ const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
         ("error_location_skipped_count", required(count())),
         ("error_enrichment_timeout_count", required(count())),
         ("error_failed_command_count", required(count())),
-    ],
-};
-
-/// The kernel's read-only command cache (v2), emitted at session end beside `agent session ended`
-/// (which sits near the backend's 128-key cap) only when a lookup ran: allowlisted read-only
-/// `bash()` commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) answered from the cache
-/// or run, and `fs.read` calls answered from the cache or read. Counts only: never a command, a
-/// path, or output.
-const AGENT_READONLY_CACHE: EventRule = EventRule {
-    name: "agent readonly cache",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("readonly_cache_hit_count", required(count())),
-        ("readonly_cache_miss_count", required(count())),
-        ("readonly_cache_fs_read_hit_count", required(count())),
-        ("readonly_cache_fs_read_miss_count", required(count())),
-    ],
-};
-
-/// Edit-then-check (v2), emitted at session end beside `agent session ended` (which sits near the
-/// backend's 128-key cap) only when an edit was checked: checks run after an edit (`fs.edit` or the
-/// `edit` skill), those that found diagnostics, those that outlived the edit's wait (their
-/// diagnostics arrive as a notice), those dropped because their learned cost exceeds their benefit,
-/// and those that could not run. Counts only: never a path, a command, or output.
-const AGENT_EDIT_CHECKS: EventRule = EventRule {
-    name: "agent edit checks",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("edit_check_run_count", required(count())),
-        ("edit_check_found_count", required(count())),
-        ("edit_check_late_count", required(count())),
-        ("edit_check_skipped_count", required(count())),
-        ("edit_check_failed_count", required(count())),
-    ],
-};
-
-/// Typed test-run summaries (v2), emitted at session end beside `agent session ended` (which sits
-/// near the backend's 128-key cap) only when the kernel summarized an awaited test run (cargo test,
-/// pytest, unittest, go test, jest, vitest): runs summarized, runs with failures, the failed tests
-/// they counted, the failures that got their own output handle, and runs whose whole output got a
-/// handle. Counts only: never a test name, a path, a command, or output.
-const AGENT_TEST_SUMMARIES: EventRule = EventRule {
-    name: "agent test summaries",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("test_summary_count", required(count())),
-        ("test_summary_failing_count", required(count())),
-        ("test_summary_failed_test_count", required(count())),
-        ("test_summary_failure_handle_count", required(count())),
-        ("test_summary_stored_count", required(count())),
     ],
 };
 
@@ -2084,79 +1784,11 @@ const AGENT_PROVIDER_OAUTH_LOGIN: EventRule = EventRule {
     ],
 };
 
-/// Kernel `notify(...)` and `model.set_effort(...)` adoption for one session (v2), emitted at
-/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
-/// the session pinged or switched effort: pings, pings nobody was attached to see, and effort
-/// switches applied and refused. Counts only: never a message or a level.
-const AGENT_REPL_NOTIFY: EventRule = EventRule {
-    name: "agent repl notify",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("notify_count", required(count())),
-        ("notify_undelivered_count", required(count())),
-        ("effort_set_count", required(count())),
-        ("effort_refused_count", required(count())),
-    ],
-};
-
-/// Kernel `rlm.decide(...)` adoption for one session (v2), emitted at session end beside `agent
-/// session ended` only when the session asked for a decision: decisions made, decisions refused
-/// at the per-cell bound, and failed decision calls. Counts only: never a question, an option,
-/// or a choice.
-const AGENT_REPL_DECIDE: EventRule = EventRule {
-    name: "agent repl decide",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("decide_count", required(count())),
-        ("decide_limited_count", required(count())),
-        ("decide_failed_count", required(count())),
-    ],
-};
-
-/// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
-/// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
-/// session reloaded or read its settings: reloads, the skills they added, and settings reads.
-/// Counts only: never a skill name, a path, or a setting value.
-const AGENT_REPL_RELOAD: EventRule = EventRule {
-    name: "agent repl reload",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("repl_reload_count", required(count())),
-        ("repl_reload_skills_added_count", required(count())),
-        ("repl_settings_get_count", required(count())),
-    ],
-};
-
-/// Kernel `mcp.login` and past-session recall (`rlm.session.search`, `rlm.session.messages(
-/// session=...)`) adoption for one session (v2), emitted at session end beside `agent session
-/// ended` (which sits at the backend's 128-key cap) only when the session used them: logins by
-/// outcome (logged in, failed, no interactive login in the run), searches, the hits they
-/// returned, saved-transcript reads, and failed recall calls. Counts only: never a server, a
-/// query, a session, or a snippet.
-const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
-    name: "agent kernel login and recall",
-    since: 2,
-    properties: &[
-        ("session_id", required(uuid())),
-        ("kernel_mcp_login_count", required(count())),
-        ("kernel_mcp_login_failed_count", required(count())),
-        ("kernel_mcp_login_unavailable_count", required(count())),
-        ("session_search_count", required(count())),
-        ("session_search_hit_count", required(count())),
-        ("session_search_read_count", required(count())),
-        ("session_search_failed_count", required(count())),
-    ],
-};
-
 /// Every catalogued event, flattened.
 #[must_use]
 pub fn catalog() -> Vec<&'static EventRule> {
     let mut all: Vec<&'static EventRule> = vec![
         &AGENT_GOAL_VERIFICATION,
-        &AGENT_BETTER_PROMPT,
         &HARNESS_REFINEMENTS_CHANGED,
         &WEB_SEARCH_PROVIDER_CHANGED,
         &AGENT_STARTED,
@@ -2183,31 +1815,12 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
-        &AGENT_TODOS_AND_QUESTIONS,
         &AGENT_SESSIONS_IMPORTED,
-        &AGENT_WEB_READS,
-        &AGENT_FS_SEARCH,
-        &AGENT_FS_EDIT,
-        &AGENT_REPL_SCHEDULE,
-        &AGENT_REPL_CHECKPOINT,
-        &AGENT_USAGE_READS,
-        &AGENT_WORKTREES,
-        &AGENT_CONTEXT_PAGING,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,
-        &AGENT_RLM_CHILD_ABORT,
-        &AGENT_REPL_BACKGROUND_CELLS,
-        &AGENT_SYMBOL_INDEX,
         &AGENT_ERROR_ENRICHMENT,
-        &AGENT_READONLY_CACHE,
-        &AGENT_EDIT_CHECKS,
-        &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
-        &AGENT_REPL_NOTIFY,
-        &AGENT_REPL_DECIDE,
-        &AGENT_REPL_RELOAD,
-        &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
         &AGENT_SESSION_BOOT_ADMISSION,
@@ -2216,6 +1829,16 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_ENDPOINT_DISCOVERY,
     ];
     all.extend(UPDATE_EVENTS.iter());
+    all.extend(
+        capabilities::CAPABILITY_EVENTS_BEFORE_SESSION_END
+            .iter()
+            .copied(),
+    );
+    all.extend(
+        capabilities::CAPABILITY_EVENTS_AFTER_SESSION_END
+            .iter()
+            .copied(),
+    );
     all
 }
 
