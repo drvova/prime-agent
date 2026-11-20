@@ -2006,6 +2006,24 @@ const AGENT_SYMBOL_INDEX: EventRule = EventRule {
     ],
 };
 
+/// Kernel `fs.read` neighbour prefetch (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a read prefetched: reads that paged their
+/// likely next reads (test file, imports, callers) out to the spill store, the handles issued, those
+/// the model went on to use (a `ctx.*` read or an `fs.read` of the file) and those left unused, and
+/// reads the learned share left without handles. Counts only: never a path.
+const AGENT_PREFETCH: EventRule = EventRule {
+    name: "agent prefetch",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("prefetch_read_count", required(count())),
+        ("prefetch_issued_count", required(count())),
+        ("prefetch_used_count", required(count())),
+        ("prefetch_unused_count", required(count())),
+        ("prefetch_skipped_count", required(count())),
+    ],
+};
+
 /// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
 /// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
 /// got the source lines around their error locations, the locations attached, the parsed locations
@@ -2213,6 +2231,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_SYMBOL_INDEX,
+        &AGENT_PREFETCH,
         &AGENT_ERROR_ENRICHMENT,
         &AGENT_READONLY_CACHE,
         &AGENT_EDIT_CHECKS,

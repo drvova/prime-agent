@@ -21,6 +21,8 @@ pub(crate) type EditObserver = Arc<dyn Fn(EditFact) + Send + Sync>;
 /// One session's `fs.read`/`fs.edit` handler wiring.
 pub(crate) struct FsEditHost {
     pub(crate) observer: Option<EditObserver>,
+    /// Pages a read file's likely next reads out to the spill store (persistent sessions).
+    pub(crate) prefetch: Option<crate::prefetch::Prefetcher>,
 }
 
 impl FsEditHost {
@@ -40,9 +42,29 @@ impl FsEditHost {
 
     #[tracing::instrument(skip_all, fields(operation = ?operation))]
     async fn handle(&self, operation: FsEditOperation, data: Value) -> anyhow::Result<Value> {
-        let outcome = tokio::task::spawn_blocking(move || run(operation, &data))
+        let read_path = match operation {
+            FsEditOperation::Read => data
+                .get("path")
+                .and_then(Value::as_str)
+                .map(std::path::PathBuf::from),
+            FsEditOperation::Edit => None,
+        };
+        let mut outcome = tokio::task::spawn_blocking(move || run(operation, &data))
             .await
             .context("fs edit thread")?;
+        // A read names its neighbours' handles (bounded wait; nothing enters the context).
+        if let (Some(prefetch), Some(path), Ok((reply, _))) =
+            (&self.prefetch, read_path, &mut outcome)
+        {
+            if let Some((related, line)) = prefetch.prefetch(path).await {
+                let text = reply
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                reply["text"] = Value::from(format!("{text}\n{line}"));
+                reply["related"] = related;
+            }
+        }
         let fact = match &outcome {
             Ok((_, fact)) => *fact,
             Err(_) => EditFact::Failed { operation },

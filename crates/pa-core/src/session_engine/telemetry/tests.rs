@@ -2751,3 +2751,54 @@ async fn symbol_index_ride_their_own_event() {
         })
     );
 }
+
+/// Neighbour prefetches ride their own `agent prefetch` event at session end (counts only: never a path).
+#[tokio::test]
+async fn prefetch_ride_their_own_event() {
+    use crate::prefetch::PrefetchFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        PrefetchFact {
+            issued: 3,
+            used: 0,
+            unused: 0,
+            skipped: false,
+        },
+        PrefetchFact {
+            issued: 0,
+            used: 1,
+            unused: 2,
+            skipped: true,
+        },
+    ] {
+        counters.note_prefetch(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent prefetch"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent prefetch").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("prefetch_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "prefetch_read_count": 2,
+            "prefetch_issued_count": 3,
+            "prefetch_used_count": 1,
+            "prefetch_unused_count": 2,
+            "prefetch_skipped_count": 1,
+        })
+    );
+}
