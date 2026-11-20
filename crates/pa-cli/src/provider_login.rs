@@ -5,13 +5,17 @@
 
 use std::path::{Path, PathBuf};
 
-use pa_core::auth::{AuthCredential, AuthSource, AuthStatus};
+use pa_core::auth::{AuthAccounts, AuthCredential, AuthSource, AuthStatus};
 use pa_core::models::ModelRegistry;
 use pa_tui::provider_auth::{
-    AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthType, ProviderAuthCommands,
+    AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthType, LoginTarget, ProviderAuthCommands,
     ProviderAuthFuture, ProviderAuthOutcome, ProviderRow, ProviderRowsFuture,
-    ProviderWarningFuture,
+    ProviderWarningFuture, RowCredential,
 };
+
+pub(crate) mod store;
+
+use store::LoginStore;
 
 /// The subscription login providers (every flow ported).
 const SUBSCRIPTION_PROVIDERS: [(&str, &str); 4] = [
@@ -91,6 +95,26 @@ const BUILT_IN_PROVIDER_DISPLAY_NAMES: &[(&str, &str)] = &[
 ];
 
 const PRIME_INFERENCE_PROVIDER_ID: &str = "prime-inference";
+
+/// A login row's slot: a provider whose default slot already holds a credential offers "Add
+/// another" (the subscription and pasted-key logins; the Prime, MCP and descriptor sign-ins keep
+/// one credential).
+fn login_row_credential(stored: Option<&AuthCredential>) -> RowCredential {
+    match stored {
+        Some(_) => RowCredential::DefaultWithAddAnother,
+        None => RowCredential::Default,
+    }
+}
+
+/// A credential's row type.
+fn credential_auth_type(credential: &AuthCredential) -> AuthType {
+    match credential {
+        AuthCredential::ApiKey { .. }
+        | AuthCredential::McpStaticToken { .. }
+        | AuthCredential::TokenExchange { .. } => AuthType::ApiKey,
+        AuthCredential::Oauth { .. } => AuthType::Oauth,
+    }
+}
 
 /// The display name of a provider id (else the id itself).
 fn display_name(provider_id: &str) -> String {
@@ -281,14 +305,26 @@ impl ProviderAuthCommands for ProviderAuth {
 
     /// The API-key store for prompted keys; the panel-driven flows route through
     /// [`ProviderAuth::login_on_panel`].
-    fn login(&self, provider: &ProviderRow, api_key: Option<&str>) -> ProviderAuthFuture {
+    fn login(
+        &self,
+        provider: &ProviderRow,
+        api_key: Option<&str>,
+        target: &LoginTarget,
+    ) -> ProviderAuthFuture {
         let provider_row = provider.clone();
         let agent_dir = self.agent_dir.clone();
         let api_key = api_key.map(str::to_string);
+        let target = target.clone();
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || login_blocking(&provider_row, &agent_dir, api_key))
-                .await
-                .expect("the login task ran")
+            tokio::task::spawn_blocking(move || {
+                login_blocking(
+                    &provider_row,
+                    &LoginStore::new(&agent_dir, &target),
+                    api_key,
+                )
+            })
+            .await
+            .expect("the login task ran")
         })
     }
 
@@ -298,15 +334,17 @@ impl ProviderAuthCommands for ProviderAuth {
         &self,
         provider: &ProviderRow,
         panel: pa_tui::auth_panel::AuthPanelHandle,
+        target: &LoginTarget,
     ) -> ProviderAuthFuture {
         let provider_row = provider.clone();
         let cwd = self.cwd.clone();
         let agent_dir = self.agent_dir.clone();
+        let target = target.clone();
         Box::pin(async move {
             // The panel round-trips stay off the async workers (a prompt's answer arrives from the
             // TUI loop's thread).
             tokio::task::spawn_blocking(move || {
-                login_blocking_on_panel(&provider_row, cwd, agent_dir, panel)
+                login_blocking_on_panel(&provider_row, cwd, &agent_dir, &target, panel)
             })
             .await
             .expect("the login task ran")
@@ -365,6 +403,7 @@ impl ProviderAuth {
                     flow: AuthFlow::TerminalFlow,
                     configured: status.configured,
                     available: true,
+                    credential: login_row_credential(credential.as_ref()),
                 });
             }
 
@@ -386,6 +425,7 @@ impl ProviderAuth {
                     flow: AuthFlow::TerminalFlow,
                     configured: status.configured,
                     available: true,
+                    credential: RowCredential::Default,
                 });
             }
 
@@ -413,11 +453,15 @@ impl ProviderAuth {
                     continue;
                 }
                 let (credential, status) = provider.credential_status(&provider_id);
-                // Prime Inference logs in through the Prime flow, not a pasted key.
-                let flow = if provider_id == PRIME_INFERENCE_PROVIDER_ID {
-                    AuthFlow::TerminalFlow
+                // Prime Inference logs in through the Prime flow, not a pasted key, and keeps one
+                // credential.
+                let (flow, row_credential) = if provider_id == PRIME_INFERENCE_PROVIDER_ID {
+                    (AuthFlow::TerminalFlow, RowCredential::Default)
                 } else {
-                    AuthFlow::ApiKeyPrompt
+                    (
+                        AuthFlow::ApiKeyPrompt,
+                        login_row_credential(credential.as_ref()),
+                    )
                 };
                 rows.push(ProviderRow {
                     status: status_indicator(credential.as_ref(), &status, AuthType::ApiKey),
@@ -427,6 +471,7 @@ impl ProviderAuth {
                     flow,
                     configured: status.configured,
                     available: true,
+                    credential: row_credential,
                 });
             }
 
@@ -462,12 +507,7 @@ impl ProviderAuth {
             let Some(credential) = auth.get_all().credential(&provider_id) else {
                 continue;
             };
-            let auth_type = match credential {
-                AuthCredential::ApiKey { .. }
-                | AuthCredential::McpStaticToken { .. }
-                | AuthCredential::TokenExchange { .. } => AuthType::ApiKey,
-                AuthCredential::Oauth { .. } => AuthType::Oauth,
-            };
+            let auth_type = credential_auth_type(&credential);
             let api_key_label = pa_core::mcp::API_KEY_CREDENTIALS
                 .iter()
                 .find(|(id, _)| *id == provider_id)
@@ -495,7 +535,52 @@ impl ProviderAuth {
                 // removal always runs.
                 configured: true,
                 available: true,
+                credential: RowCredential::Default,
             });
+        }
+        // One row per named credential, beside its provider's default row.
+        match AuthAccounts::create(&self.agent_dir).all() {
+            Ok(providers) => {
+                for (provider_id, accounts) in providers {
+                    for account in accounts {
+                        rows.push(ProviderRow {
+                            id: provider_id.clone(),
+                            name: format!(
+                                "{} \u{b7} {}",
+                                display_name(&provider_id),
+                                account.label
+                            ),
+                            auth_type: credential_auth_type(&account.credential),
+                            status: Some(AuthStatusIndicator {
+                                style: AuthStatusStyle::Success,
+                                label: "configured".to_string(),
+                            }),
+                            flow: AuthFlow::TerminalFlow,
+                            configured: true,
+                            available: true,
+                            credential: RowCredential::Named {
+                                id: account.id,
+                                label: account.label,
+                            },
+                        });
+                    }
+                }
+            }
+            // An unreadable store (corrupt, or written by a newer build) shows as one inert row:
+            // its credentials are not silently missing from the list.
+            Err(error) => rows.push(ProviderRow {
+                id: pa_core::auth::AUTH_ACCOUNTS_FILE.to_string(),
+                name: format!("Named credentials unavailable: {error:#}"),
+                auth_type: AuthType::ApiKey,
+                status: Some(AuthStatusIndicator {
+                    style: AuthStatusStyle::Warning,
+                    label: "unreadable".to_string(),
+                }),
+                flow: AuthFlow::TerminalFlow,
+                configured: false,
+                available: false,
+                credential: RowCredential::Default,
+            }),
         }
         rows.sort_by(|a, b| a.name.cmp(&b.name));
         rows
@@ -506,7 +591,7 @@ impl ProviderAuth {
 /// to [`login_blocking_on_panel`], and an OAuth row reaching it cancels silently.
 fn login_blocking(
     provider_row: &ProviderRow,
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     api_key: Option<String>,
 ) -> ProviderAuthOutcome {
     if provider_row.auth_type == AuthType::Oauth {
@@ -518,21 +603,19 @@ fn login_blocking(
             provider_row.name
         ));
     };
-    let mut auth = pa_core::auth::AuthStorage::create(agent_dir);
-    auth.set(
+    if let Err(error) = store.save(
         &provider_row.id,
         AuthCredential::ApiKey {
             key: api_key,
             prime_team: None,
         },
-    );
-    if let Some(error) = auth.drain_errors().pop() {
+    ) {
         return ProviderAuthOutcome::Error(format!("could not save the API key: {error}"));
     }
     ProviderAuthOutcome::Status(format!(
-        "Saved API key for {}. Credentials saved to {}",
+        "Saved API key for {}. {}",
         provider_row.name,
-        agent_dir.join("auth.json").display()
+        store.saved_note()
     ))
 }
 
@@ -541,11 +624,22 @@ fn login_blocking(
 fn login_blocking_on_panel(
     provider_row: &ProviderRow,
     cwd: PathBuf,
-    agent_dir: PathBuf,
+    agent_dir: &Path,
+    target: &LoginTarget,
     panel: pa_tui::auth_panel::AuthPanelHandle,
 ) -> ProviderAuthOutcome {
+    let store = LoginStore::new(agent_dir, target);
+    let single_slot = provider_row.id.starts_with("mcp:")
+        || provider_row.id == PRIME_INFERENCE_PROVIDER_ID
+        || pa_core::auth::oauth_descriptor_providers(agent_dir).contains(&provider_row.id);
+    if single_slot && matches!(target, LoginTarget::AddNamed { .. }) {
+        return ProviderAuthOutcome::Error(format!(
+            "{} keeps one credential; use Replace default.",
+            provider_row.name
+        ));
+    }
     if let Some(server) = provider_row.id.strip_prefix("mcp:") {
-        let auth = crate::mcp_login::TerminalMcpAuth::new(cwd, agent_dir);
+        let auth = crate::mcp_login::TerminalMcpAuth::new(cwd, agent_dir.to_path_buf());
         let outcome = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -580,12 +674,12 @@ fn login_blocking_on_panel(
                 |runtime| {
                     runtime.block_on(crate::prime_inference_login::run_prime_inference_login(
                         crate::prime_inference_login::PrimeLoginInputs {
-                            agent_dir: &agent_dir,
+                            agent_dir,
                             provider_name: &provider_row.name,
                             config: &pa_core::auth::resolve_prime_inference_auth_config(),
                             http: &pa_core::auth::ReqwestPrimeHttp,
                             prime_cli_config_path:
-                                crate::prime_inference_login::prime_cli_config_path(&agent_dir)
+                                crate::prime_inference_login::prime_cli_config_path(agent_dir)
                                     .as_deref(),
                             prime_team_id: std::env::var("PRIME_TEAM_ID").ok().as_deref(),
                             poll_interval_ms: None,
@@ -610,7 +704,7 @@ fn login_blocking_on_panel(
                 |runtime| {
                     runtime.block_on(
                         crate::codex_subscription_login::run_codex_subscription_login(
-                            &agent_dir,
+                            &store,
                             &provider_row.name,
                             &pa_ai::oauth::ReqwestCodexHttp::new(),
                             &crate::codex_subscription_login::PanelCodexLoginUi::new(panel),
@@ -633,7 +727,7 @@ fn login_blocking_on_panel(
                 },
                 |runtime| {
                     runtime.block_on(crate::subscription_login::run_anthropic_login(
-                        &agent_dir,
+                        &store,
                         &provider_row.name,
                         &pa_ai::oauth::ReqwestProviderHttp::new(),
                         &crate::subscription_login::PanelSubscriptionLoginUi::new(
@@ -658,7 +752,7 @@ fn login_blocking_on_panel(
                 },
                 |runtime| {
                     runtime.block_on(crate::subscription_login::run_github_copilot_login(
-                        &agent_dir,
+                        &store,
                         &provider_row.name,
                         &pa_ai::oauth::ReqwestProviderHttp::new(),
                         &crate::subscription_login::PanelSubscriptionLoginUi::new(
@@ -683,7 +777,7 @@ fn login_blocking_on_panel(
                 },
                 |runtime| {
                     runtime.block_on(crate::subscription_login::run_xai_login(
-                        &agent_dir,
+                        &store,
                         &provider_row.name,
                         &pa_ai::oauth::ReqwestProviderHttp::new(),
                         &crate::subscription_login::PanelSubscriptionLoginUi::new(
@@ -695,9 +789,9 @@ fn login_blocking_on_panel(
             );
     }
     // A models.json provider whose `auth` descriptor declares `oauth`.
-    if pa_core::auth::oauth_descriptor_providers(&agent_dir).contains(&provider_row.id) {
+    if pa_core::auth::oauth_descriptor_providers(agent_dir).contains(&provider_row.id) {
         return crate::descriptor_login::run_panel_sign_in(
-            &agent_dir,
+            agent_dir,
             &provider_row.id,
             &provider_row.name,
             panel,
@@ -708,6 +802,19 @@ fn login_blocking_on_panel(
 }
 
 fn logout_blocking(provider_row: &ProviderRow, agent_dir: &Path) -> ProviderAuthOutcome {
+    if let RowCredential::Named { id, label } = &provider_row.credential {
+        return match AuthAccounts::create(agent_dir).remove(&provider_row.id, id) {
+            Ok(true) => ProviderAuthOutcome::Status(format!(
+                "Removed credential \"{label}\" for {}.",
+                display_name(&provider_row.id)
+            )),
+            Ok(false) => ProviderAuthOutcome::Status(format!(
+                "Credential \"{label}\" for {} is not stored.",
+                display_name(&provider_row.id)
+            )),
+            Err(error) => ProviderAuthOutcome::Error(format!("Logout failed: {error:#}")),
+        };
+    }
     let mut auth = pa_core::auth::AuthStorage::create(agent_dir);
     if auth.get_all().get(&provider_row.id).is_none() {
         return ProviderAuthOutcome::Status(format!("{} is not configured.", provider_row.name));

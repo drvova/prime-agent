@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from dataclasses import dataclass
@@ -983,6 +984,13 @@ class _RLMNamespace:
         return await _reload()
 
     factory = _RLMFactoryNamespace()
+
+    @property
+    def cells(self) -> types.ModuleType:
+        """Background-cell handles (``rlm.cells.get``/``handles``), bound on first use."""
+        # import_module, not `from . import cells`: the package-level __getattr__ forwards
+        # unknown names to this namespace, so a from-import would recurse into this property.
+        return importlib.import_module(f"{__name__}.cells")
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(_NOT_CALLABLE_MESSAGE)

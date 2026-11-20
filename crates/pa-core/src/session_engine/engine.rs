@@ -592,17 +592,24 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .as_deref()
                 .and_then(super::harness_digest::session_artifact_dir_for_log)
         });
-    // `/better`: its helper binds to the agent once it exists; an unparsed reply is kept in the
-    // session's spill store.
+    // The session's spill store: `ctx.*` pages cut cell outputs back in from it (an ephemeral
+    // session answers `unavailable`), and `/better` keeps an unparsed reply in it.
+    let spill_store = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
+    crate::kernel::spill::host::register_ctx_handlers(
+        &mut handlers,
+        spill_store.as_ref(),
+        /*observer*/ None,
+    );
+    // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
         config
             .telemetry
             .is_some()
             .then(|| std::sync::Arc::clone(&session_counters)),
-        session_artifact_dir
-            .as_deref()
-            .map(crate::kernel::spill::SpillStore::for_session_dir),
+        spill_store,
     ));
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());

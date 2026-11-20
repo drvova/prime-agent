@@ -170,7 +170,9 @@ runs on the store's writer thread (bounded queue, bounded retries), never on the
 a spill the writer cannot take or keep answers "not stored". Files live under
 `<session artifact dir>/spill/` with an append-only `index.jsonl` (stored, failed, evicted), so
 handles survive resume and daemon restart; past 64 MiB per session the oldest spills are evicted
-and answer "evicted". Public surface: `SpillStore::for_session_dir` and the
+and answer "evicted". The `ctx.page`/`ctx.grep`/`ctx.tail`/`ctx.info` host requests
+(`kernel::spill::host`) the kernel's `rlm.ctx` client reaches read a handle back in slices capped
+at 16k characters, so a read never spills again; a handle without text answers its state. Public surface: `SpillStore::for_session_dir` and the
 `ExecuteOptions::spill` slot. Non-goals: the kernel's own in-process caps (the 1 MiB result
 transit cap and `bash()`'s 2 MiB head/tail buffer bound memory before the host sees the text)
 and any cross-session sharing.
