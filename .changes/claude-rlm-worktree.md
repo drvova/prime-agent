@@ -1,0 +1,1 @@
+- New kernel capability `worktree`: `await worktree.create(name)` gives a subagent its own git checkout under the agent dir (spawn it with `cwd=str(wt.path)`), `diff` shows only its changes, `merge` applies them after a `git apply --3way --check` (conflicts are listed, never auto-resolved) or commits them to a branch, and the session end names worktrees left unremoved.

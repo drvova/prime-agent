@@ -144,6 +144,9 @@ pub struct SessionEngine {
     pub turn_boundary: std::sync::Arc<super::turn_boundary::TurnBoundaryRequests>,
     /// `None` when telemetry is disabled or the session is not depth 0.
     pub telemetry: Option<std::sync::Arc<super::telemetry::SessionTelemetry>>,
+    /// The kernel `worktree` capability's ledger: the worktrees this session made and has not
+    /// removed, named by the session-end notice.
+    pub worktrees: std::sync::Arc<crate::worktree_host::WorktreeLedger>,
     /// The kernel `rlm.spawn` handler registers spawn targets into it; the
     /// embedding wires the child-observation sink onto it after the build.
     pub rlm_usage: std::sync::Arc<super::rlm_usage::RlmChildUsageAttributions>,
@@ -468,6 +471,19 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `worktree.record`: the kernel `worktree` capability's report after each operation, kept in
+    // the session's ledger (the session-end notice); telemetry counts each outcome (never a
+    // name, a path, or a diff).
+    let worktrees = std::sync::Arc::new(crate::worktree_host::WorktreeLedger::default());
+    crate::worktree_host::register_worktree_host_handler(
+        &mut handlers,
+        std::sync::Arc::clone(&worktrees),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_worktree(fact))
+                as crate::worktree_host::WorktreeObserver
+        }),
+    );
     // `usage.get`: the session's spend (and the no-daemon quota fallback);
     // telemetry counts each read (never a number).
     crate::usage_host::register_usage_host_handlers(
@@ -1452,6 +1468,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager,
         turn_boundary,
         telemetry,
+        worktrees,
         rlm_usage: wiring.rlm_usage,
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
@@ -1578,6 +1595,10 @@ impl SessionEngine {
             pa_ai::responses_transport::close_session_websockets(session_id);
         }
         self.provisioner.dispose(None).await;
+        // The session ends: name the worktrees it made and never removed (they stay on disk).
+        if let Some(notice) = self.worktrees.unremoved_notice() {
+            eprintln!("prime-agent: {notice}");
+        }
     }
 
     /// Release the kernel with a final namespace snapshot, revivable: the next

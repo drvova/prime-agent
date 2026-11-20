@@ -89,6 +89,9 @@ pub struct ProviderTarget {
     /// The auth-resolved provider-request headers: a live `set_model` carries
     /// them through to the stream like the build-time resolution does.
     pub headers: Option<std::collections::BTreeMap<String, String>>,
+    /// The stable identity the request admits under (a pinned named credential's
+    /// [`pa_ai::admission::credential_identity`]); `None` admits under the api key's hash.
+    pub admission_credential: Option<String>,
 }
 
 /// A real pa-ai stream adapter reading its target from a shared slot the host can swap live
@@ -101,19 +104,12 @@ pub struct ProviderTarget {
 pub fn switchable_stream_fn(target: Arc<std::sync::RwLock<Option<ProviderTarget>>>) -> StreamFn {
     Arc::new(
         move |_requested: AgentModel, context: LlmContext, options: StreamRequestOptions| {
-            let ProviderTarget {
-                api_key,
-                model,
-                service_tier,
-                headers,
-            } = target
+            let target = target
                 .read()
                 .expect("provider target lock")
                 .clone()
                 .expect("provider target set before the first stream");
-            Box::pin(async move {
-                stream_once(&model, api_key, service_tier, headers, context, options)
-            })
+            Box::pin(async move { stream_once(target, context, options) })
         },
     )
 }
@@ -204,20 +200,15 @@ pub fn switchable_stream_fn_with_live_auth(
                 }
                 target_value.api_key = resolved.api_key;
                 target_value.headers = resolved.headers;
-                let ProviderTarget {
-                    api_key,
-                    model,
-                    service_tier,
-                    headers,
-                } = target_value;
-                stream_once(&model, api_key, service_tier, headers, context, options)
+                target_value.admission_credential = resolved.admission_credential;
+                stream_once(target_value, context, options)
             })
         },
     )
 }
 
-/// Stream one completion against `model` with `api_key` and the auth-resolved
-/// request `headers`: the per-request tail the switchable seams and the CLI's
+/// Stream one completion against the `target`'s model with its api key, auth-resolved request
+/// headers, and admission identity: the per-request tail the switchable seams and the CLI's
 /// route-authoritative variant share.
 ///
 /// # Errors
@@ -225,13 +216,18 @@ pub fn switchable_stream_fn_with_live_auth(
 /// Returns the provider stream's error when the request fails (the
 /// per-attempt failures the retry driver classifies).
 pub fn stream_once(
-    model: &Model,
-    api_key: Option<String>,
-    service_tier: Option<pa_types::ai::ServiceTier>,
-    headers: Option<std::collections::BTreeMap<String, String>>,
+    target: ProviderTarget,
     context: LlmContext,
     options: StreamRequestOptions,
 ) -> anyhow::Result<Box<dyn ModelStream>> {
+    let ProviderTarget {
+        api_key,
+        model: target_model,
+        service_tier,
+        headers,
+        admission_credential,
+    } = target;
+    let model = &target_model;
     let messages: Vec<pa_types::ai::Message> = context
         .messages
         .iter()
@@ -291,6 +287,7 @@ pub fn stream_once(
             // Session turns (and side questions) take the process's admission class: the
             // foreground session, or a subagent worker's.
             priority: None,
+            admission_credential,
         },
         reasoning: Some(model_thinking_level(options.reasoning)),
         thinking_budgets: None,
@@ -327,6 +324,7 @@ pub fn real_stream_fn(api_key: Option<String>, model: Model) -> StreamFn {
         model,
         service_tier: None,
         headers: None,
+        admission_credential: None,
     }))))
 }
 
@@ -523,6 +521,7 @@ mod tests {
             model: model.clone(),
             service_tier: Some(pa_types::ai::ServiceTier::Priority),
             headers: None,
+            admission_credential: None,
         })));
         let stream_fn = switchable_stream_fn(target.clone());
         for tier in [Some(pa_types::ai::ServiceTier::Priority), None] {
@@ -565,6 +564,7 @@ mod tests {
             model: registration.get_model(),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         let resolutions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let live_auth: LiveAuthResolver = Arc::new(move |_: &Model| {
@@ -640,6 +640,7 @@ mod tests {
                 "X-Prime-Team-ID".to_string(),
                 "team-old".to_string(),
             )])),
+            admission_credential: None,
         })));
         // The scripted resolutions, served one per provider call: a
         // resolution that serves no key (a logout with no configured
@@ -658,6 +659,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: None,
+                        admission_credential: None,
                     },
                     ResolvedRequestAuth {
                         ok: true,
@@ -668,6 +670,7 @@ mod tests {
                         )])),
                         error: None,
                         request_model: None,
+                        admission_credential: None,
                     },
                     ResolvedRequestAuth {
                         ok: true,
@@ -675,6 +678,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: None,
+                        admission_credential: None,
                     },
                     ResolvedRequestAuth {
                         ok: true,
@@ -682,6 +686,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: None,
+                        admission_credential: None,
                     },
                 ],
             )));
@@ -744,6 +749,7 @@ mod tests {
             headers: None,
             error: Some("No API key found for \"battery\"".to_string()),
             request_model: None,
+            admission_credential: None,
         });
         let Err(error) = stream_fn(
             AgentModel::unknown(),
@@ -830,6 +836,7 @@ mod tests {
             model: slot_model.clone(),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         let queue: Arc<std::sync::Mutex<std::collections::VecDeque<ResolvedRequestAuth>>> =
             Arc::new(std::sync::Mutex::new(std::collections::VecDeque::from(
@@ -840,6 +847,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: Some(adapted_model.clone()),
+                        admission_credential: None,
                     },
                     ResolvedRequestAuth {
                         ok: true,
@@ -847,6 +855,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: None,
+                        admission_credential: None,
                     },
                     // A logged-out xAI store resolves no live credential
                     // WITH an API-key-shaped request model (the registry
@@ -860,6 +869,7 @@ mod tests {
                         headers: None,
                         error: None,
                         request_model: Some(adapted_model.clone()),
+                        admission_credential: None,
                     },
                 ],
             )));
@@ -1005,6 +1015,7 @@ mod tests {
             api_key: Some("expired-access".to_string()),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         let stream_fn = switchable_stream_fn_with_live_auth(target, live_auth);
         let controller = pa_agent::abort::AbortController::new();
@@ -1126,6 +1137,7 @@ mod tests {
                     headers: None,
                     error: None,
                     request_model: None,
+                    admission_credential: None,
                 }
             });
             let target = Arc::new(std::sync::RwLock::new(Some(ProviderTarget {
@@ -1133,6 +1145,7 @@ mod tests {
                 model: registration.get_model(),
                 service_tier: None,
                 headers: None,
+                admission_credential: None,
             })));
             let stream_fn = switchable_stream_fn_with_live_auth(target, resolver);
             let outcome = stream_fn(
@@ -1255,6 +1268,7 @@ mod tests {
             api_key: Some("expired-access".to_string()),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         let stream_fn = switchable_stream_fn_with_live_auth(target, live_auth);
         let controller = pa_agent::abort::AbortController::new();
@@ -1363,10 +1377,13 @@ mod tests {
         let model = registration.get_model();
         for transport in [Some(pa_agent::types::Transport::Sse), None] {
             let mut stream = stream_once(
-                &model,
-                None,
-                None,
-                None,
+                ProviderTarget {
+                    api_key: None,
+                    model: model.clone(),
+                    service_tier: None,
+                    headers: None,
+                    admission_credential: None,
+                },
                 LlmContext::default(),
                 StreamRequestOptions {
                     transport,
@@ -1478,6 +1495,7 @@ mod tests {
             model: model.clone(),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         let stream_fn = switchable_stream_fn(target);
         let mut stream = stream_fn(

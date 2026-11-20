@@ -1130,6 +1130,17 @@ const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
     properties: &[("source", required(enum_rule(&["flag"], "flag")))],
 };
 
+/// One interactive run's profile state (v2), at run start: whether the run creates sessions under
+/// a profile, and how many profiles the agent dir stores. Never a profile name.
+const AGENT_PROFILE_STATE: EventRule = EventRule {
+    name: "agent profile state",
+    since: 2,
+    properties: &[
+        ("profile_active", required(boolean())),
+        ("profile_count", required(count())),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1832,6 +1843,25 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `worktree` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session used a
+/// worktree: created, diffed, merged into the checkout, committed to a branch, merges that found
+/// conflicts, removed, and failed operations. Counts only: never a name, a path, or a diff.
+const AGENT_WORKTREES: EventRule = EventRule {
+    name: "agent worktrees",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("worktree_created_count", required(count())),
+        ("worktree_diff_count", required(count())),
+        ("worktree_merged_count", required(count())),
+        ("worktree_branched_count", required(count())),
+        ("worktree_conflict_count", required(count())),
+        ("worktree_removed_count", required(count())),
+        ("worktree_failed_count", required(count())),
+    ],
+};
+
 /// Paged-out output for one session (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when the session spilled or read paged-out
 /// output: spills (cut cell output and thinned results written to the session's spill store), their
@@ -2154,6 +2184,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
+        &AGENT_PROFILE_STATE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
@@ -2165,6 +2196,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_WORKTREES,
         &AGENT_CONTEXT_PAGING,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
