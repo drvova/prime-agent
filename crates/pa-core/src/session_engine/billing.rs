@@ -181,7 +181,7 @@ mod tests {
     }
 
     /// The picker's catalog mode reads the stored credential's kind: a Claude sign-in is the
-    /// plan, a pasted OpenRouter key is billed as the provider prices it, and a provider with no
+    /// plan, a pasted `OpenRouter` key is billed as the provider prices it, and a provider with no
     /// credential and no rates has no known price.
     #[test]
     fn the_catalog_mode_follows_the_stored_credential_kind() {
@@ -190,7 +190,7 @@ mod tests {
             "openrouter": { "type": "api_key", "key": "sk-or-test" },
         }))
         .unwrap();
-        let model = |provider: &str, base_url: &str| -> pa_types::ai::Model {
+        let catalog_model = |provider: &str, base_url: &str| -> pa_types::ai::Model {
             serde_json::from_value(serde_json::json!({
                 "id": "m", "name": "M", "api": "openai-completions", "provider": provider,
                 "baseUrl": base_url, "reasoning": false, "input": ["text"],
@@ -200,9 +200,9 @@ mod tests {
             .unwrap()
         };
         let modes: Vec<BillingMode> = [
-            model("anthropic", "https://api.anthropic.com"),
-            model("openrouter", "https://openrouter.ai/api/v1"),
-            model("unpriced-provider-e2e", "https://example.invalid/v1"),
+            catalog_model("anthropic", "https://api.anthropic.com"),
+            catalog_model("openrouter", "https://openrouter.ai/api/v1"),
+            catalog_model("unpriced-provider-e2e", "https://example.invalid/v1"),
         ]
         .iter()
         .map(|model| catalog_billing_mode(&credentials, model))
