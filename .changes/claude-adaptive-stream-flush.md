@@ -1,0 +1,1 @@
+- Streaming replies adapt to the connection: the daemon now sends live updates up to about 60 times a second while the TUI keeps up, and backs off to 10 a second when a client falls behind or misses updates, instead of a fixed 20 a second. The first token still shows at once. No settings.

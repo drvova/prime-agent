@@ -71,6 +71,10 @@ pub(crate) struct EventPump {
     events: broadcast::Sender<Arc<OutboundFrame>>,
     next_seq: AtomicU64,
     send_guard: std::sync::Mutex<()>,
+    /// Frames a subscriber missed because it fell a whole ring behind.
+    dropped: AtomicU64,
+    /// The adaptive `message_update` flush interval (fed by the backlog and the drops).
+    pub(crate) flush: crate::streaming::FlushPacer,
 }
 
 impl EventPump {
@@ -80,7 +84,19 @@ impl EventPump {
             events,
             next_seq: AtomicU64::new(0),
             send_guard: std::sync::Mutex::new(()),
+            dropped: AtomicU64::new(0),
+            flush: crate::streaming::FlushPacer::new(),
         }
+    }
+
+    /// The slowest subscriber's backlog: frames sent that it has not received yet.
+    pub(crate) fn backlog(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Frames subscribers missed so far.
+    pub(crate) fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<Arc<OutboundFrame>> {
@@ -449,7 +465,9 @@ impl Worker {
                                     }
                                     sink.mark_flushed(frame.seq);
                                 }
-                                Err(broadcast::error::RecvError::Lagged(_)) => {}
+                                Err(broadcast::error::RecvError::Lagged(missed)) => {
+                                    worker.events.dropped.fetch_add(missed, Ordering::Relaxed);
+                                }
                                 Err(broadcast::error::RecvError::Closed) => {
                                     sink.mark_closed();
                                     break;
