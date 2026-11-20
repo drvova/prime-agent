@@ -40,7 +40,13 @@ pub(super) fn host(
     cwd: &Path,
     spill: Option<crate::kernel::spill::SpillStore>,
 ) -> BetterHost {
-    let host = BetterHost::new(cwd.to_path_buf(), None, None, spill);
+    let host = BetterHost::new(
+        cwd.to_path_buf(),
+        None,
+        None,
+        spill,
+        Arc::new(crate::autonomous::ShellGateRunner::new(cwd)),
+    );
     host.bind(
         parent,
         provider.stream_fn(),

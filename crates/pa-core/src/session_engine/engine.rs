@@ -627,6 +627,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .is_some()
             .then(|| std::sync::Arc::clone(&session_counters)),
         spill_store.clone(),
+        std::sync::Arc::new(crate::autonomous::ShellGateRunner::new(cwd.clone())),
     ));
     super::better::register_better_handler(&mut handlers, &better);
     // `tests.summary`: an awaited test run's output and failures get handles
@@ -715,6 +716,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             &bash_notice_agent,
             &mut handlers,
         );
+        // A failed acceptance-check round steers through the same in-process lane.
+        better.bind_notice_sink(super::bash_notices::in_process_notice_sink(
+            &wake,
+            &bash_notice_agent,
+        ));
     }
     // One model-visible skill list, computed now that the host-handler
     // registry is final (every registration, the refine handlers, and
@@ -1276,6 +1282,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         std::sync::Arc::clone(&side_question_stream_fn),
         session.model_usage_recorder(),
     );
+    // Acceptance checks a prompt armed run in the background when its runs end.
+    better.watch_turn_ends(&agent).await;
     session.set_side_question_stream_fn(side_question_stream_fn);
     // The armed image route never outlives the run that armed it (TS
     // `_clearModelOverrideWhenIdle`: the override drops once the turn is

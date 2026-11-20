@@ -10,8 +10,8 @@ pub use driver::{
     ShellAutonomousDriver,
 };
 pub(crate) use gates::{
-    run_child_process, run_gate_lane, GateLaneMemory, GateLanePolicy, GateOutputCap,
-    GATE_NOT_RERUN_EXIT_TEXT, SNAPSHOT_GIT_OVERRIDES,
+    format_process_exit, run_child_process, run_gate_lane, truncate_gate_output, GateLaneMemory,
+    GateLanePolicy, GateOutputCap, GATE_NOT_RERUN_EXIT_TEXT, SNAPSHOT_GIT_OVERRIDES,
 };
 pub use gates::{
     should_autonomously_continue, ChildProcessResult, GateCommandRunner, ShellGateRunner,

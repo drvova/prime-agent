@@ -647,6 +647,7 @@ impl Worker {
                 let notice_core = Arc::clone(&core);
                 let notice_notify = Arc::clone(&work_notify);
                 let notice_recovery = Arc::clone(&recovery);
+                let notice_events = events.clone();
                 let notice_sink: crate::engine::KernelNoticeSink = Arc::new(move |notice| {
                     let Some(engine) = notice_engine.upgrade() else {
                         return;
@@ -657,6 +658,7 @@ impl Worker {
                     admit_kernel_notice(
                         &notice_recovery,
                         &notice_core,
+                        &notice_events,
                         &notice_notify,
                         notice,
                         // Revalidated inside the admission's lock section: the

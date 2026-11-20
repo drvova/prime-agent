@@ -531,11 +531,43 @@ pub(crate) fn admit_goal_follow_up(
 pub(crate) fn admit_kernel_notice(
     recovery: &std::sync::Mutex<Option<WorkerRecoveryJournal>>,
     core: &Arc<Mutex<SessionCore>>,
+    events: &EventPump,
     work_notify: &Arc<Notify>,
     notice: crate::engine::KernelNotice,
     session_is_closed: impl Fn() -> bool,
 ) {
-    let crate::engine::KernelNotice { row, preview_label } = notice;
+    let crate::engine::KernelNotice {
+        row,
+        preview_label,
+        delivery,
+    } = notice;
+    match delivery {
+        pa_core::session_engine::bash_notices::NoticeDelivery::Steer => {}
+        // A recorded row persists and shows in the transcript; no turn runs behind it.
+        pa_core::session_engine::bash_notices::NoticeDelivery::Record => {
+            let Ok(message) = serde_json::to_value(pa_types::session::AgentMessage::Custom(row))
+            else {
+                return;
+            };
+            let mut core = core.lock().unwrap();
+            if session_is_closed() {
+                return;
+            }
+            if let Some(store) = core.store.as_mut() {
+                let _ = store.persist_entry(
+                    "custom_message",
+                    json!({
+                        "customType": message["customType"],
+                        "content": message["content"],
+                        "display": message["display"],
+                        "details": message["details"],
+                    }),
+                );
+            }
+            super::broadcast_custom_row_locked(&mut core, events, &message);
+            return;
+        }
+    }
     let content = match &row.content {
         pa_types::ai::UserContent::Text(text) => text.clone(),
         pa_types::ai::UserContent::Blocks(_) => String::new(),
