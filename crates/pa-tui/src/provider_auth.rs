@@ -789,6 +789,8 @@ impl ProviderAuthSelector {
 mod tests {
     use std::future::Future;
 
+    use crate::interactive::{InlineImageCounts, MenuUse, TodoQuestionCounts, TurnFeedback};
+
     use super::*;
 
     fn kb() -> KeybindingsManager {

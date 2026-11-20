@@ -108,7 +108,7 @@ fn accounts_child_mode() {
     let _ = runtime.block_on(run_interactive(options, UiMode::Terminal));
 }
 
-/// An OpenAI row whose default slot is stored, with "Add another" and per-credential logout
+/// An `OpenAI` row whose default slot is stored, with "Add another" and per-credential logout
 /// writing the real named-credential store.
 struct AccountsProviderAuth {
     agent_dir: PathBuf,
@@ -648,7 +648,7 @@ fn model_picker_routes_the_sign_in_flow_and_applies_after_login() {
 #[test]
 fn login_adds_a_named_credential_and_logout_removes_it() {
     let mut harness = LoginPanelHarness::start_for("accounts_child_mode");
-    let accounts = pa_core::auth::AuthAccounts::create(harness._socket_dir.path().join("agent"));
+    let accounts = pa_core::auth::AuthAccounts::create(harness.socket_dir.path().join("agent"));
 
     harness.wait_from_start("\x1b[?1049h", "the startup alternate-screen enter");
     harness.write(b"/login\r");
@@ -656,12 +656,15 @@ fn login_adds_a_named_credential_and_logout_removes_it() {
 
     let mark = harness.mark();
     harness.write(b"\r");
-    harness.wait_from(mark, "Add another", "the slot choice");
+    // The highlighted first row paints in one run (the diff can split the plain second row).
+    harness.wait_from(mark, "Replace default", "the slot choice");
     harness.write(b"\x1b[B");
     harness.write(b"\r");
-    harness.wait_from(mark, "Label for the new credential:", "the label prompt");
+    // The prompt's words can paint in separate runs; the placeholder is one.
+    harness.wait_from(mark, "e.g. work", "the label prompt");
     harness.write(b"work\r");
-    harness.wait_from(mark, "Enter API key:", "the key prompt");
+    // The key prompt repaints over the label prompt's words; its placeholder paints whole.
+    harness.wait_from(mark, "Paste value", "the key prompt");
     harness.write(b"sk-work\r");
     harness.wait_from(mark, "Added as \"work\".", "the saved status");
     let stored: Vec<(String, pa_core::auth::AuthCredential)> = accounts
@@ -683,11 +686,7 @@ fn login_adds_a_named_credential_and_logout_removes_it() {
 
     let mark = harness.mark();
     harness.write(b"/logout\r");
-    harness.wait_from(
-        mark,
-        "Choose a credential to remove.",
-        "the logout selector",
-    );
+    harness.wait_from(mark, "remove.", "the logout selector");
     harness.write(b"\x1b[B");
     harness.write(b"\r");
     harness.wait_from(
@@ -708,7 +707,7 @@ struct LoginPanelHarness {
     master: PtyReader,
     /// The socket's temp dir, removed whenever the harness drops (after
     /// `finish` reaps the child); declared last so it outlives the pty.
-    _socket_dir: tempfile::TempDir,
+    socket_dir: tempfile::TempDir,
 }
 
 impl LoginPanelHarness {
@@ -749,7 +748,7 @@ impl LoginPanelHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
-            _socket_dir: dir,
+            socket_dir: dir,
         }
     }
 
