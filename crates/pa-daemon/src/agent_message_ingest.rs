@@ -1,30 +1,70 @@
 //! The agent-message ingestion surface: the worker arms for
 //! `agent_messages_status`/`_pause`/`_resume`/`_clear`, plus the paused
-//! delivery gate. The per-sender rate bucket the status reports is enforced
-//! on the sending side, in pa-core's `agent_message.send` handler.
+//! delivery gate, and the per-(sender, target) wake budget. The per-sender
+//! rate bucket the status reports is enforced on the sending side, in
+//! pa-core's `agent_message.send` handler; the wake budget is enforced here,
+//! by the receiving worker, so no sender can spend another's.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
 use pa_core::session_engine::agent_messaging::{
     DEFAULT_AGENT_MESSAGE_MAX_CHARS, DEFAULT_AGENT_MESSAGE_MAX_PENDING_PER_SESSION,
     DEFAULT_AGENT_MESSAGE_RATE_LIMIT_CAPACITY, DEFAULT_AGENT_MESSAGE_RATE_LIMIT_REFILL_MS,
+    DEFAULT_AGENT_MESSAGE_WAKE_BUDGET, DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS,
 };
 
 use crate::protocol::{response_failure, response_success, DaemonResponse};
 use crate::worker::Worker;
 
-/// The worker's agent-message ingestion state: the pause flag.
+/// The worker's agent-message ingestion state: the pause flag and the wake budget.
 pub(crate) struct AgentMessageIngest {
     paused: AtomicBool,
+    /// Each sender's wakes of this (idle) session inside the trailing
+    /// [`DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS`], oldest first, keyed by the
+    /// sender's durable session id.
+    wakes: Mutex<HashMap<String, VecDeque<Instant>>>,
 }
 
 impl AgentMessageIngest {
     pub(crate) fn new() -> Self {
         AgentMessageIngest {
             paused: AtomicBool::new(false),
+            wakes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Spend one of `sender`'s wakes of this idle session, or answer the ms until its oldest
+    /// counted wake leaves the window. Two idle agents that answer each other's every message
+    /// stop here instead of ping-ponging forever.
+    pub(crate) fn admit_wake(&self, sender: &str, now: Instant) -> Result<(), u64> {
+        let window = Duration::from_millis(DEFAULT_AGENT_MESSAGE_WAKE_WINDOW_MS);
+        let mut wakes = self
+            .wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Forget every sender's aged-out wakes, so the map holds only live windows.
+        wakes.retain(|_, times| {
+            while times
+                .front()
+                .is_some_and(|oldest| now.saturating_duration_since(*oldest) >= window)
+            {
+                times.pop_front();
+            }
+            !times.is_empty()
+        });
+        let times = wakes.entry(sender.to_string()).or_default();
+        if times.len() >= DEFAULT_AGENT_MESSAGE_WAKE_BUDGET {
+            let oldest = times.front().copied().unwrap_or(now);
+            let retry_after = window.saturating_sub(now.saturating_duration_since(oldest));
+            return Err(u64::try_from(retry_after.as_millis()).unwrap_or(u64::MAX));
+        }
+        times.push_back(now);
+        Ok(())
     }
 
     pub(crate) fn paused(&self) -> bool {

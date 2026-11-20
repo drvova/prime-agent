@@ -8,8 +8,8 @@ use super::{
     DEFAULT_MAX_OUTPUT_CHARS, KERNEL_ABORT_GRACE_MS,
 };
 
-pub(crate) use crate::platform::process::Signal;
 use crate::kernel::spill::{SpillCopy, SpillStore};
+pub(crate) use crate::platform::process::Signal;
 
 /// Append stream text up to `max_chars` Unicode scalars, keeping the buffered count in sync.
 pub(crate) fn append_truncated(
@@ -158,7 +158,9 @@ impl HeadTailBuffer {
     /// Resolve the buffered text: trim the tail to its cap, then return head,
     /// marker, and tail. Text that fit the cap passes through unchanged.
     pub(crate) fn finish(self, max_chars: usize) -> String {
-        self.finish_with(max_chars, |omitted, _| format!("[... {omitted} chars omitted ...]"))
+        self.finish_with(max_chars, |omitted, _| {
+            format!("[... {omitted} chars omitted ...]")
+        })
     }
 
     /// [`Self::finish`], paging a cut stream out to `store`: the marker

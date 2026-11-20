@@ -483,10 +483,10 @@ async fn a_fourth_rapid_send_is_throttled_until_the_bucket_refills() {
     );
     let throttled = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let counted = std::sync::Arc::clone(&throttled);
-    observe_agent_message_throttles(
+    observe_agent_message_refusals(
         &mut handlers,
-        std::sync::Arc::new(move |count| {
-            counted.fetch_add(count, std::sync::atomic::Ordering::SeqCst);
+        std::sync::Arc::new(move |refusals: AgentMessageRefusals| {
+            counted.fetch_add(refusals.throttled, std::sync::atomic::Ordering::SeqCst);
         }),
     );
     let send = handlers.get("agent_message.send").unwrap().clone();
@@ -740,4 +740,79 @@ async fn observe_recent_returns_the_ts_envelope() {
     assert_eq!(response["maxChars"], 90);
     assert_eq!(response["truncated"], true);
     assert_eq!(response["messages"].as_array().map(Vec::len), Some(3));
+}
+
+/// A receiver's wake-budget refusal is a receipt, not an error: it names the `wake_refused` status,
+/// the retry hint, and why nothing was delivered; the refusal observer counts it apart from the
+/// rate bucket's throttles.
+#[tokio::test]
+async fn a_wake_refused_receipt_reports_the_refusal_and_is_counted() {
+    struct WakeRefusingController;
+    impl AgentMessageController for WakeRefusingController {
+        fn family(
+            &self,
+        ) -> impl std::future::Future<Output = anyhow::Result<Vec<AgentFamilyMember>>> {
+            std::future::ready(Ok(family()))
+        }
+        fn send_agent_message(
+            &self,
+            input: AgentMessageSendInput,
+        ) -> impl std::future::Future<Output = anyhow::Result<AgentMessageReceipt>> {
+            std::future::ready(Ok(AgentMessageReceipt {
+                id: "agentmsg_refused".to_string(),
+                target_session_id: Some(format!("{}-session", input.target)),
+                target: input.target,
+                target_session_name: None,
+                target_runtime_kind: Some("top-level".to_string()),
+                message: input.message,
+                delivery_status: AgentMessageDeliveryStatus::WakeRefused {
+                    retry_after_ms: 1_234,
+                },
+                delivery_mode: Some("steer"),
+                receiver_role: input.receiver_role,
+                delivered_at: None,
+                queued_at: None,
+            }))
+        }
+    }
+    let mut handlers = HostRequestHandlers::default();
+    register_agent_message_host_handlers(
+        std::sync::Arc::new(WakeRefusingController),
+        &mut handlers,
+    );
+    let heard = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = std::sync::Arc::clone(&heard);
+    observe_agent_message_refusals(
+        &mut handlers,
+        std::sync::Arc::new(move |refusals| recorded.lock().unwrap().push(refusals)),
+    );
+    let send = handlers.get("agent_message.send").unwrap().clone();
+    let receipt = send_request(
+        &send,
+        json!({ "message": "again", "receiver_role": "parent" }),
+    )
+    .unwrap();
+    assert_eq!(
+        receipt,
+        json!({
+            "id": "agentmsg_refused",
+            "source": "agent_message",
+            "target": { "activeSessionId": "parent-1", "sessionId": "parent-1-session", "runtimeKind": "top-level" },
+            "message": "again",
+            "deliveryStatus": "wake_refused",
+            "deliveredAt": null,
+            "queuedAt": null,
+            "deliveryMode": "steer",
+            "receiverRole": "parent",
+            "retryAfterMs": 1234,
+            "error": "Agent message not delivered: the idle receiver refused to wake; you already woke it 20 times in the last 10 minutes. Retry after 1234 ms",
+        })
+    );
+    assert_eq!(
+        *heard.lock().unwrap(),
+        [AgentMessageRefusals {
+            throttled: 0,
+            wake_refused: 1,
+        }]
+    );
 }

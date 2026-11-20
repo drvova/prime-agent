@@ -383,11 +383,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .interaction
             .set_counters(std::sync::Arc::clone(&session_counters));
         // `agent_message.send` (registered by the embedding): telemetry counts the deliveries
-        // the per-sender rate bucket refused (never a target or a body).
+        // the per-sender rate bucket or a receiver's wake budget refused (never a target or a body).
         let counters = std::sync::Arc::clone(&session_counters);
-        super::agent_messaging::observe_agent_message_throttles(
+        super::agent_messaging::observe_agent_message_refusals(
             &mut handlers,
-            std::sync::Arc::new(move |count| counters.note_agent_message_throttled(count)),
+            std::sync::Arc::new(move |refusals| counters.note_agent_message_refusals(refusals)),
         );
     }
     // The `mcp.*` host requests (config/refresh/begin_login) the kernel's
@@ -599,12 +599,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     }
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
-        spill_store.clone(),
-        config.telemetry.is_some().then(|| {
-            let counters = std::sync::Arc::clone(&session_counters);
-            std::sync::Arc::new(move |read| counters.note_ctx_read(read))
-                as crate::kernel::spill::host::CtxObserver
-        }),
+        spill_store.as_ref(),
+        config
+            .telemetry
+            .is_some()
+            .then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |read| counters.note_ctx_read(read))
+                    as crate::kernel::spill::host::CtxObserver
+            })
+            .as_ref(),
     );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());

@@ -42,16 +42,19 @@ pub(crate) type CtxObserver = std::sync::Arc<dyn Fn(CtxRead) + Send + Sync>;
 pub(crate) fn parse_handle(handle: &str) -> Option<&str> {
     let handle = handle.trim();
     let id = handle.strip_prefix(HANDLE_PREFIX).unwrap_or(handle);
-    (id.len() == ID_HEX_LEN && id.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
-        .then_some(id)
+    (id.len() == ID_HEX_LEN
+        && id
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')))
+    .then_some(id)
 }
 
 /// Register the `ctx.*` handlers over the session's store (`None` for an
 /// ephemeral session, whose handles answer `unavailable`).
 pub(crate) fn register_ctx_handlers(
     handlers: &mut HostRequestHandlers,
-    store: Option<SpillStore>,
-    observer: Option<CtxObserver>,
+    store: Option<&SpillStore>,
+    observer: Option<&CtxObserver>,
 ) {
     for request_type in ["ctx.page", "ctx.grep", "ctx.tail", "ctx.info"] {
         let read = match request_type {
@@ -60,8 +63,8 @@ pub(crate) fn register_ctx_handlers(
             "ctx.info" => CtxRead::Info,
             _ => CtxRead::Page,
         };
-        let store = store.clone();
-        let observer = observer.clone();
+        let store = store.cloned();
+        let observer = observer.cloned();
         handlers.register(
             request_type,
             host_handler(move |payload| {
@@ -129,7 +132,13 @@ async fn answer(store: Option<&SpillStore>, read: CtxRead, data: &Value) -> anyh
 }
 
 /// A non-negative integer argument, `default` when absent, capped at `max`.
-fn count_arg(data: &Value, name: &str, default: usize, max: usize, op: &str) -> anyhow::Result<usize> {
+fn count_arg(
+    data: &Value,
+    name: &str,
+    default: usize,
+    max: usize,
+    op: &str,
+) -> anyhow::Result<usize> {
     match data.get(name) {
         None | Some(Value::Null) => Ok(default.min(max)),
         Some(value) => value
@@ -141,7 +150,9 @@ fn count_arg(data: &Value, name: &str, default: usize, max: usize, op: &str) -> 
 
 /// The first `chars` chars of `line`.
 fn clip(line: &str, chars: usize) -> &str {
-    line.char_indices().nth(chars).map_or(line, |(at, _)| &line[..at])
+    line.char_indices()
+        .nth(chars)
+        .map_or(line, |(at, _)| &line[..at])
 }
 
 /// Lines `start..` (at most `wanted`) within the slice cap: whole lines, or
@@ -235,7 +246,11 @@ fn grep(lines: &[&str], data: &Value) -> anyhow::Result<Value> {
         }
         let to = (at + context + 1).min(lines.len());
         for (line_at, line) in lines.iter().enumerate().take(to).skip(from) {
-            let mark = if shown_matches.binary_search(&line_at).is_ok() { ':' } else { '-' };
+            let mark = if shown_matches.binary_search(&line_at).is_ok() {
+                ':'
+            } else {
+                '-'
+            };
             let mut row = String::new();
             let _ = write!(row, "{line_at}{mark}{}", clip(line, GREP_LINE_CHARS_CAP));
             let row_chars = row.chars().count() + 1;

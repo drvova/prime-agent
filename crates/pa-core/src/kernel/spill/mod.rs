@@ -452,7 +452,9 @@ impl StoreState {
                     total_chars: meta.total_chars,
                     lines: meta.lines,
                 }),
-                Err(error) => SpillLookup::NotStored(format!("the stored file is unreadable: {error}")),
+                Err(error) => {
+                    SpillLookup::NotStored(format!("the stored file is unreadable: {error}"))
+                }
             },
             Some(Entry::Evicted) => SpillLookup::Evicted,
             Some(Entry::Failed(reason)) => SpillLookup::NotStored(reason),
@@ -511,9 +513,8 @@ impl StoreState {
 
     /// Store one job (with bounded retries), then evict past the cap.
     fn store(&self, job: &Job) {
-        let stored = self.with_index(|index| {
-            matches!(index.entries.get(&job.id), Some(Entry::Stored(_)))
-        });
+        let stored =
+            self.with_index(|index| matches!(index.entries.get(&job.id), Some(Entry::Stored(_))));
         if stored && self.spill_path(&job.id).exists() {
             return;
         }
