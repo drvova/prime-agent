@@ -370,7 +370,7 @@ impl TurnRunner {
             // The trailing edge: the leading edge broadcasts from `park_update` itself, so the
             // flusher wakes one interval after the last broadcast to drain what parked behind it.
             tokio::spawn(async move {
-                while let Some(due) = coalescer.next_flush_at() {
+                while let Some(due) = coalescer.next_flush_at(&events) {
                     tokio::time::sleep_until(due).await;
                     if !coalescer.flush_pending(&events) {
                         break;

@@ -1130,6 +1130,17 @@ const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
     properties: &[("source", required(enum_rule(&["flag"], "flag")))],
 };
 
+/// One interactive run's profile state (v2), at run start: whether the run creates sessions under
+/// a profile, and how many profiles the agent dir stores. Never a profile name.
+const AGENT_PROFILE_STATE: EventRule = EventRule {
+    name: "agent profile state",
+    since: 2,
+    properties: &[
+        ("profile_active", required(boolean())),
+        ("profile_count", required(count())),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1569,6 +1580,20 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Scraped web search engine limits for one session's process (v2), emitted at session close
+/// beside `agent session ended` (which sits at the 128-key cap) when an engine call was skipped
+/// (over its learned budget or cooling down after a block) or an engine answered with a block.
+/// Counts only: never a query, engine response, or URL.
+const AGENT_WEB_SEARCH_ENGINES: EventRule = EventRule {
+    name: "agent web search engines",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_search_engine_skipped_count", required(count())),
+        ("web_search_engine_blocked_count", required(count())),
+    ],
+};
+
 /// Session-boot admission for one session's process (v2), emitted at session close beside
 /// `agent session ended` (which sits at the 128-key cap) when a session boot (a subagent's
 /// worker spawn or a kernel start) waited for the daemon-wide boot budget or finished under
@@ -1836,6 +1861,25 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `worktree` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when the session used a
+/// worktree: created, diffed, merged into the checkout, committed to a branch, merges that found
+/// conflicts, removed, and failed operations. Counts only: never a name, a path, or a diff.
+const AGENT_WORKTREES: EventRule = EventRule {
+    name: "agent worktrees",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("worktree_created_count", required(count())),
+        ("worktree_diff_count", required(count())),
+        ("worktree_merged_count", required(count())),
+        ("worktree_branched_count", required(count())),
+        ("worktree_conflict_count", required(count())),
+        ("worktree_removed_count", required(count())),
+        ("worktree_failed_count", required(count())),
+    ],
+};
+
 /// Paged-out output for one session (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when the session spilled or read paged-out
 /// output: spills (cut cell output and thinned results written to the session's spill store), their
@@ -1950,6 +1994,22 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the session asked a query: queries answered from the
+/// project's symbol index, those answered before its first full pass (partial), and the definitions
+/// and references returned. Counts only: never a name or a path.
+const AGENT_SYMBOL_INDEX: EventRule = EventRule {
+    name: "agent symbol index",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("symbol_query_count", required(count())),
+        ("symbol_query_partial_count", required(count())),
+        ("symbol_definition_count", required(count())),
+        ("symbol_reference_count", required(count())),
+    ],
+};
+
 /// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
 /// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
 /// got the source lines around their error locations, the locations attached, the parsed locations
@@ -2058,6 +2118,21 @@ const AGENT_REPL_NOTIFY: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.decide(...)` adoption for one session (v2), emitted at session end beside `agent
+/// session ended` only when the session asked for a decision: decisions made, decisions refused
+/// at the per-cell bound, and failed decision calls. Counts only: never a question, an option,
+/// or a choice.
+const AGENT_REPL_DECIDE: EventRule = EventRule {
+    name: "agent repl decide",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("decide_count", required(count())),
+        ("decide_limited_count", required(count())),
+        ("decide_failed_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
 /// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
 /// session reloaded or read its settings: reloads, the skills they added, and settings reads.
@@ -2122,6 +2197,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
+        &AGENT_PROFILE_STATE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
@@ -2133,22 +2209,26 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_WORKTREES,
         &AGENT_CONTEXT_PAGING,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_SYMBOL_INDEX,
         &AGENT_ERROR_ENRICHMENT,
         &AGENT_READONLY_CACHE,
         &AGENT_EDIT_CHECKS,
         &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
+        &AGENT_REPL_DECIDE,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_WEB_SEARCH_ENGINES,
         &AGENT_SESSION_BOOT_ADMISSION,
         &AGENT_CONNECTION_REWARM,
         &AGENT_QUOTA_FALLBACK,

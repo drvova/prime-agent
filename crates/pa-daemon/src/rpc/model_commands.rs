@@ -72,6 +72,7 @@ async fn apply_model_selection(
             model: model.clone(),
             service_tier: None,
             headers: resolved.headers.clone(),
+            admission_credential: resolved.admission_credential.clone(),
         };
         *handle
             .provider_target

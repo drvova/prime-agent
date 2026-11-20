@@ -947,6 +947,7 @@ impl AgentSessionEngine {
                 api_key: None,
                 model: model.clone(),
                 headers: None,
+                admission_credential: None,
             });
         }
         if let Some(session_dir) = &self.config.session_dir {

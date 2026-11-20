@@ -12,6 +12,7 @@ use pa_telemetry::{MockSink, TelemetryClient, TelemetryClientConfig};
 
 use super::*;
 use crate::session_engine::agent_messaging::AgentMessageRefusals;
+use crate::session_engine::decision::DecideFact;
 
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
@@ -2130,6 +2131,53 @@ async fn context_paging_rides_its_own_event() {
     );
 }
 
+/// Kernel `worktree` operations ride their own `agent worktrees` event at session end (counts by
+/// outcome, never a name or a path).
+#[tokio::test]
+async fn worktree_operations_ride_their_own_event() {
+    use crate::worktree_host::WorktreeFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        WorktreeFact::Created,
+        WorktreeFact::Created,
+        WorktreeFact::Conflicted,
+        WorktreeFact::Merged,
+        WorktreeFact::Removed,
+    ] {
+        counters.note_worktree(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent worktrees"]
+    );
+    let worktrees = &event_properties(&fixture.mock, "agent worktrees").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = worktrees
+        .iter()
+        .filter(|(key, _)| key.starts_with("worktree_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "worktree_created_count": 2,
+            "worktree_diff_count": 0,
+            "worktree_merged_count": 1,
+            "worktree_branched_count": 0,
+            "worktree_conflict_count": 1,
+            "worktree_removed_count": 1,
+            "worktree_failed_count": 0,
+        })
+    );
+}
+
 /// Rate-limited `agent_message.send` deliveries ride their own `agent messages` event at session
 /// end (a count, never a target or a body), and a session never throttled sends none.
 #[tokio::test]
@@ -2344,6 +2392,48 @@ async fn repl_notifications_and_effort_switches_ride_their_own_event() {
             "notify_undelivered_count": 1,
             "effort_set_count": 1,
             "effort_refused_count": 2,
+        })
+    );
+}
+
+/// Kernel `rlm.decide(...)` outcomes ride their own `agent repl decide` event at session end
+/// (counts only, never a question or a choice).
+#[tokio::test]
+async fn repl_decisions_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        DecideFact::Decided,
+        DecideFact::Decided,
+        DecideFact::Limited,
+        DecideFact::Failed,
+        DecideFact::Decided,
+    ] {
+        counters.note_decision(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl decide"]
+    );
+    let decide = &event_properties(&fixture.mock, "agent repl decide").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = decide
+        .iter()
+        .filter(|(key, _)| key.starts_with("decide_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "decide_count": 3,
+            "decide_limited_count": 1,
+            "decide_failed_count": 1,
         })
     );
 }
@@ -2610,6 +2700,54 @@ async fn error_enrichment_ride_their_own_event() {
             "error_location_skipped_count": 4,
             "error_enrichment_timeout_count": 1,
             "error_failed_command_count": 1,
+        })
+    );
+}
+
+/// `fs.symbol` queries ride their own `agent symbol index` event at session end (counts only: never a name or a path).
+#[tokio::test]
+async fn symbol_index_ride_their_own_event() {
+    use crate::symbol_index::SymbolFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        SymbolFact {
+            definitions: 1,
+            references: 4,
+            partial: true,
+        },
+        SymbolFact {
+            definitions: 2,
+            references: 0,
+            partial: false,
+        },
+    ] {
+        counters.note_symbol_query(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent symbol index"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent symbol index").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("symbol_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "symbol_query_count": 2,
+            "symbol_query_partial_count": 1,
+            "symbol_definition_count": 3,
+            "symbol_reference_count": 4,
         })
     );
 }

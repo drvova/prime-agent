@@ -7,6 +7,9 @@
 //! answers through a loopback chat-completions endpoint that records every request's bearer: each
 //! one carries the pinned key, never the default slot's. The model picker names the account.
 //!
+//! A second check starts the product with `--profile work`, whose profile maps the provider to
+//! that named credential: the new session sends only `key-work`, and the top bar tags the profile.
+//!
 //! Every wait polls the captured pane (or the recorded requests) for observable state under a
 //! deadline; nothing sleeps for a fixed time.
 
@@ -205,6 +208,14 @@ fn start(dir: &Path, origin: &str, args: &str) -> Pane {
         .to_string(),
     )
     .expect("auth accounts");
+    // The `work` profile maps the provider to the named credential.
+    std::fs::create_dir_all(agent.join("profiles")).expect("profiles dir");
+    std::fs::write(
+        agent.join("profiles/work.json"),
+        json!({ "version": 1, "credentials": { "openai": "c_00000000e2e0work" }, "settings": {} })
+            .to_string(),
+    )
+    .expect("profile");
     // The pane's whole environment, so nothing ambient (provider keys, the user's HOME, a
     // daemon socket) reaches the product.
     let launcher = dir.join("launch.sh");
@@ -269,4 +280,24 @@ fn a_session_pinned_to_a_named_credential_sends_only_that_key() {
             .lines()
             .any(|line| line.contains("e2e-model") && line.contains("account: work"))
     });
+}
+
+#[test]
+fn a_new_session_under_a_profile_uses_the_profiles_credential() {
+    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
+        .expect("temp dir");
+    let (origin, bearers) = completions_fixture();
+    let pane = start(dir.path(), &origin, "--profile work");
+    // The top bar tags the profile beside the chat name.
+    pane.wait("the profile tag", |screen| {
+        screen.lines().any(|line| line.trim() == "pin-chat  [work]")
+    });
+    pane.submit("hello");
+    pane.wait("the answer", |screen| screen.contains("pinned answer"));
+    let sent = bearers.lock().unwrap().clone();
+    assert!(!sent.is_empty(), "no request reached the fixture");
+    assert!(
+        sent.iter().all(|bearer| bearer == "Bearer key-work"),
+        "every request carries the profile's credential: {sent:?}"
+    );
 }
