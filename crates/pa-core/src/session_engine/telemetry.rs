@@ -452,6 +452,8 @@ struct CounterValues {
     login_recall: LoginRecallCounts,
     /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
     notify_effort: NotifyEffortCounts,
+    /// Kernel `rlm.decide(...)` calls, reported by `agent repl decide`.
+    decisions: DecideCounts,
     /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
     repl_reload: ReplReloadCounts,
     /// Cells that continued in the background, and where each cell's yield
@@ -487,6 +489,14 @@ struct NotifyEffortCounts {
     undelivered: u64,
     effort_set: u64,
     effort_refused: u64,
+}
+
+/// `agent repl decide`: decisions made, refused at the per-cell bound, and failed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct DecideCounts {
+    decided: u64,
+    limited: u64,
+    failed: u64,
 }
 
 /// `agent repl background cells`: cells that outlived their yield window, how they ended, and
@@ -1101,6 +1111,15 @@ impl SessionCounters {
         self.with(|values| {
             values.notify_effort.notified += 1;
             values.notify_effort.undelivered += u64::from(!delivered);
+        });
+    }
+
+    /// One kernel `rlm.decide(...)` outcome (never the question, the options, or the choice).
+    pub(crate) fn note_decision(&self, fact: super::decision::DecideFact) {
+        self.with(|values| match fact {
+            super::decision::DecideFact::Decided => values.decisions.decided += 1,
+            super::decision::DecideFact::Limited => values.decisions.limited += 1,
+            super::decision::DecideFact::Failed => values.decisions.failed += 1,
         });
     }
 
@@ -2043,6 +2062,20 @@ impl SessionTelemetry {
                 notify_properties.set(key, Value::from(value));
             }
             self.client.track("agent repl notify", notify_properties);
+        }
+        // A session that never called `rlm.decide` sends no decide event.
+        let mut decisions = DecideCounts::default();
+        self.counters.with(|values| decisions = values.decisions);
+        if decisions != DecideCounts::default() {
+            let mut decide_properties = self.session_properties();
+            for (key, value) in [
+                ("decide_count", decisions.decided),
+                ("decide_limited_count", decisions.limited),
+                ("decide_failed_count", decisions.failed),
+            ] {
+                decide_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent repl decide", decide_properties);
         }
         // A session that armed no cell window and backgrounded no cell sends no background-cell
         // event.

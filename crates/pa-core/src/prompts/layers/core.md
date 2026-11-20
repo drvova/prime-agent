@@ -8,6 +8,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{capability:bash}}
 {{capability:cells}}
+{{capability:decision}}
 - `edit.run(path: str, old_str: str, new_str: str) -> str`: edits a file by retyping its old text. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`). Prefer `fs.read` + `fs.edit` anchors (File reading and editing, below) for edits made from the REPL: no old text to retype, and a stale file is rejected instead of corrupted
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise; the only way to see an image file (a screenshot, diagram, chart, or photo): reading its bytes does not show it
 {{capability:core.end_turn}}

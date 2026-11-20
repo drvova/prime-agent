@@ -602,6 +602,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if compaction_settings.agent_callable.unwrap_or(true) {
         turn_boundary.register_compact_handlers(&mut handlers, keep_recent_tokens);
     }
+    // `rlm.decide`: one bounded decision by the session's model mid-cell; the decider binds
+    // once the agent exists. Telemetry counts decisions, refusals at the bound, and failures.
+    let decision_host = std::sync::Arc::new(super::decision::DecisionHost::new(
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_decision(fact))
+                as super::decision::DecideObserver
+        }),
+    ));
+    super::decision::register_decide_handler(&mut handlers, &decision_host);
     // `rlm.session.tool_result`: the recall path a thinned result's pointer names.
     super::context_thinning::register_tool_result_recall(&mut handlers, &wiring.session);
     // The daemon worker owns persistence outside the session manager, so
@@ -1256,6 +1266,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
             wiring.rlm_usage.store(),
         ));
+    decision_host.bind(super::decision::Decider::new(
+        Arc::downgrade(&agent),
+        std::sync::Arc::clone(&side_question_stream_fn),
+        wiring.rlm_usage.store(),
+    ));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),

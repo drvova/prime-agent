@@ -2126,6 +2126,21 @@ const AGENT_REPL_NOTIFY: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.decide(...)` adoption for one session (v2), emitted at session end beside `agent
+/// session ended` only when the session asked for a decision: decisions made, decisions refused
+/// at the per-cell bound, and failed decision calls. Counts only: never a question, an option,
+/// or a choice.
+const AGENT_REPL_DECIDE: EventRule = EventRule {
+    name: "agent repl decide",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("decide_count", required(count())),
+        ("decide_limited_count", required(count())),
+        ("decide_failed_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
 /// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
 /// session reloaded or read its settings: reloads, the skills they added, and settings reads.
@@ -2217,6 +2232,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
+        &AGENT_REPL_DECIDE,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
