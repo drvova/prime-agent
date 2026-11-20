@@ -1613,6 +1613,25 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
     ],
 };
 
+/// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
+/// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
+/// edited, discarded). Counts only: never a prompt, a rewrite, or a path.
+const AGENT_BETTER_PROMPT: EventRule = EventRule {
+    name: "agent better prompt",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("better_run_count", required(count())),
+        ("better_completed_count", required(count())),
+        ("better_cancelled_count", required(count())),
+        ("better_failed_count", required(count())),
+        ("better_sent_as_is_count", required(count())),
+        ("better_edited_count", required(count())),
+        ("better_discarded_count", required(count())),
+    ],
+};
+
 /// A distribution build's one-time history import (v2), emitted by the daemon once the import
 /// that copies the official build's chats into the build's own agent dir settles (its automatic
 /// run after boot, or `import-sessions`). Counts and a size bucket only: never a path, a session
@@ -1801,6 +1820,35 @@ const AGENT_USAGE_READS: EventRule = EventRule {
     ],
 };
 
+/// Paged-out output for one session (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when the session spilled or read paged-out
+/// output: spills (cut cell output and thinned results written to the session's spill store), their
+/// size as a bucket, spills the store could not keep, evictions, and the kernel `ctx.*` reads.
+/// Counts and a size bucket only: never a handle, a pattern, or any output text.
+const AGENT_CONTEXT_PAGING: EventRule = EventRule {
+    name: "agent context paging",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("spill_count", required(count())),
+        (
+            "spill_bytes_bucket",
+            required(enum_rule(
+                &[
+                    "none", "lt_1mb", "lt_16mb", "lt_64mb", "lt_256mb", "ge_256mb",
+                ],
+                "none",
+            )),
+        ),
+        ("spill_not_stored_count", required(count())),
+        ("spill_evicted_count", required(count())),
+        ("ctx_page_count", required(count())),
+        ("ctx_grep_count", required(count())),
+        ("ctx_tail_count", required(count())),
+        ("ctx_info_count", required(count())),
+    ],
+};
+
 /// How a session's recorded assistant calls are paid for (v2), emitted at session end beside
 /// `agent session ended` (which sits near the backend's 128-key cap) when the session recorded a
 /// classified call: the calls per billing mode. Counts only: never a cost, a provider, a model,
@@ -1981,6 +2029,7 @@ const AGENT_KERNEL_LOGIN_AND_RECALL: EventRule = EventRule {
 pub fn catalog() -> Vec<&'static EventRule> {
     let mut all: Vec<&'static EventRule> = vec![
         &AGENT_GOAL_VERIFICATION,
+        &AGENT_BETTER_PROMPT,
         &HARNESS_REFINEMENTS_CHANGED,
         &WEB_SEARCH_PROVIDER_CHANGED,
         &AGENT_STARTED,
@@ -2013,6 +2062,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_REPL_SCHEDULE,
         &AGENT_REPL_CHECKPOINT,
         &AGENT_USAGE_READS,
+        &AGENT_CONTEXT_PAGING,
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,
