@@ -10,6 +10,7 @@ mod script;
 use script::write_executable;
 use sha2::Digest as _;
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
@@ -55,9 +56,10 @@ fn manager(dir: &Path) -> ReplKernelManager {
 
 /// About 1 MB of ASCII lines.
 fn big_output() -> String {
-    (0..20_000)
-        .map(|n| format!("line {n:06} of a long build log, kept whole\n"))
-        .collect()
+    (0..25_000).fold(String::new(), |mut out, n| {
+        let _ = writeln!(out, "line {n:06} of a long build log, kept whole");
+        out
+    })
 }
 
 fn spill_id(text: &str) -> String {
@@ -73,7 +75,7 @@ fn expected_stdout(text: &str) -> String {
         let digits = n.to_string();
         let mut out = String::new();
         for (at, digit) in digits.chars().enumerate() {
-            if at > 0 && (digits.len() - at) % 3 == 0 {
+            if at > 0 && (digits.len() - at).is_multiple_of(3) {
                 out.push(',');
             }
             out.push(digit);
@@ -89,7 +91,11 @@ fn expected_stdout(text: &str) -> String {
     )
 }
 
-async fn run_cell(manager: &ReplKernelManager, text: &str, spill: SpillStore) -> (ExecuteStatus, String) {
+async fn run_cell(
+    manager: &ReplKernelManager,
+    text: &str,
+    spill: SpillStore,
+) -> (ExecuteStatus, String) {
     let chunks: Vec<&str> = text
         .as_bytes()
         .chunks(60_000)
@@ -117,7 +123,10 @@ async fn wait_stored(spill_dir: &Path, id: &str) {
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let index = std::fs::read_to_string(spill_dir.join("index.jsonl")).unwrap_or_default();
-            if index.lines().any(|line| line.contains(&needle) && line.contains("\"state\":\"stored\"")) {
+            if index
+                .lines()
+                .any(|line| line.contains(&needle) && line.contains("\"state\":\"stored\""))
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -160,8 +169,10 @@ async fn a_megabyte_of_stdout_pages_out_whole_behind_its_handle() {
     shutdown(&manager).await;
 }
 
-#[tokio::test]
-async fn a_hanging_spill_write_never_delays_the_cell_result() {
+/// The cell runs on its own runtime thread: a write on the settle path would
+/// block that runtime outright, and this thread still sees the result late.
+#[test]
+fn a_hanging_spill_write_never_delays_the_cell_result() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let session_dir = dir.path().join("session");
     let spill_dir = session_dir.join("spill");
@@ -175,13 +186,36 @@ async fn a_hanging_spill_write_never_delays_the_cell_result() {
         .status()
         .expect("mkfifo");
     assert!(status.success());
-    let manager = manager(dir.path());
-    manager
-        .start(KernelStartOptions::default())
-        .await
-        .expect("fake runtime must start");
 
-    let outcome = run_cell(&manager, &text, SpillStore::for_session_dir(&session_dir)).await;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let cell_text = text.clone();
+    let root = dir.path().to_path_buf();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let outcome = runtime.block_on(async {
+            let manager = manager(&root);
+            manager
+                .start(KernelStartOptions::default())
+                .await
+                .expect("fake runtime must start");
+            let outcome = run_cell(
+                &manager,
+                &cell_text,
+                SpillStore::for_session_dir(&session_dir),
+            )
+            .await;
+            shutdown(&manager).await;
+            outcome
+        });
+        let _ = sender.send(outcome);
+    });
+    let outcome = receiver
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the cell result must not wait on the spill write");
     assert_eq!(outcome, (ExecuteStatus::Ok, expected_stdout(&text)));
-    shutdown(&manager).await;
+    drop(dir);
 }
