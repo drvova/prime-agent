@@ -551,7 +551,8 @@ fn rearm_retired_recovery(run: &RecoveryRun) {
 
 async fn run_service() {
     let service = service();
-    let permits = Arc::new(tokio::sync::Semaphore::new(4));
+    // One trace controller for every delivery here and the `/traces` sweep.
+    let gate = TraceRequestGate::shared();
     // Recovery belongs to all live hosts sharing this directory, not its first host.
     let mut recovered = RecoveryRuns::new();
     loop {
@@ -586,12 +587,12 @@ async fn run_service() {
                         let state = run.state.clone();
                         let replay_needed = run.replay_needed.clone();
                         let saved_deadline = run.not_before.clone();
-                        let permits = permits.clone();
+                        let gate = gate.clone();
                         tokio::spawn(async move {
                             let (complete, not_before) = recover_with_backoff(
                                 cwd,
                                 agent_dir,
-                                permits,
+                                gate,
                                 Arc::new(ReqwestTraceHttp),
                                 None,
                                 cancel.clone(),
@@ -607,7 +608,7 @@ async fn run_service() {
                 if !controller.started.swap(true, Ordering::AcqRel) {
                     tokio::spawn(run_controller(
                         weak,
-                        permits.clone(),
+                        gate.clone(),
                         Arc::new(ReqwestTraceHttp),
                         None,
                     ));
@@ -638,7 +639,7 @@ async fn settle_recovery_run(
 
 async fn run_controller(
     weak: Weak<ContinuousTraceUpload>,
-    permits: Arc<tokio::sync::Semaphore>,
+    gate: TraceRequestGate,
     http: Arc<dyn TraceHttp>,
     base_url: Option<String>,
 ) {
@@ -704,7 +705,6 @@ async fn run_controller(
             tokio::select! { () = wake.notified() => {}, () = tokio::time::sleep(wait) => {}, () = cancel.wait() => return }
             continue;
         }
-        let permit = tokio::select! { p = permits.clone().acquire_owned() => p.unwrap(), () = cancel.wait() => return };
         let Some(controller) = weak.upgrade() else {
             return;
         };
@@ -718,8 +718,6 @@ async fn run_controller(
             continue;
         };
         let Some(_delivery_lease) = delivery_lease(&controller.agent_dir, &path) else {
-            // A busy lease must not hold delivery capacity while waiting.
-            drop(permit);
             drop(controller);
             tokio::select! { () = tokio::time::sleep(DEBOUNCE) => {}, () = cancel.wait() => return }
             continue;
@@ -751,11 +749,10 @@ async fn run_controller(
                 cancel: Some(&cancel),
                 on_upload_delay: None,
             },
-            None,
+            Some(&gate),
         )
         .await;
         log_agent_trace_outcome(&agent_dir, Some(&path), &result);
-        drop(permit);
         if let Some(controller) = weak.upgrade() {
             let mut pending = controller.pending.lock().unwrap();
             if let Some((current, schedule)) = pending.as_mut() {
@@ -808,7 +805,7 @@ async fn deliver_with_consent(
 async fn recover_with_backoff(
     cwd: PathBuf,
     agent_dir: PathBuf,
-    permits: Arc<tokio::sync::Semaphore>,
+    gate: TraceRequestGate,
     http: Arc<dyn TraceHttp>,
     base_url: Option<String>,
     cancel: TraceUploadCancel,
@@ -817,7 +814,7 @@ async fn recover_with_backoff(
     recover_with_io(
         cwd,
         agent_dir,
-        permits,
+        gate,
         http,
         base_url,
         cancel,
@@ -843,7 +840,7 @@ enum RecoveryRead {
 async fn recover_with_io(
     cwd: PathBuf,
     agent_dir: PathBuf,
-    permits: Arc<tokio::sync::Semaphore>,
+    gate: TraceRequestGate,
     http: Arc<dyn TraceHttp>,
     base_url: Option<String>,
     cancel: TraceUploadCancel,
@@ -868,7 +865,6 @@ async fn recover_with_io(
         Ok(entries) => entries,
         Err(error) => return (error.kind() == std::io::ErrorKind::NotFound, None),
     };
-    let gate = TraceRequestGate::new();
     let mut complete = true;
     let mut not_before: Option<Instant> = None;
     loop {
@@ -1019,11 +1015,9 @@ async fn recover_with_io(
         // Bound catch-up retries per entry; exhaustion leaves its durable marker.
         let mut schedule = Schedule::default();
         for attempt in 0..3 {
-            let permit = tokio::select! { p = permits.clone().acquire_owned() => p.unwrap(), () = cancel.wait() => return (false, None) };
             let generation = schedule.start(Instant::now());
             let result = deliver_with_consent(&options, Some(&gate)).await;
             log_agent_trace_outcome(&agent_dir, Some(&path), &result);
-            drop(permit);
             if matches!(
                 result,
                 TraceUploadResult::Disabled | TraceUploadResult::MissingCredentials

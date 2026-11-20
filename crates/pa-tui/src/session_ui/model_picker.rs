@@ -27,6 +27,8 @@ pub(crate) struct ModelCatalogUpdate {
     pub models: Vec<pa_types::ai::Model>,
     pub configured_providers: std::collections::HashSet<String>,
     pub billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
+    /// The session's account per multi-credential provider (`accounts`).
+    pub accounts: std::collections::BTreeMap<String, String>,
 }
 
 impl SessionUi {
@@ -76,6 +78,7 @@ impl SessionUi {
             models: self.model_catalog.clone(),
             current,
             configured_providers: self.model_configured_providers.clone(),
+            accounts: self.model_accounts.clone(),
             recent_models: self.model_recent_models.clone(),
             thinking_level,
             scoped_models,
@@ -266,10 +269,16 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default();
+            let accounts = value
+                .get("accounts")
+                .cloned()
+                .and_then(|accounts| serde_json::from_value(accounts).ok())
+                .unwrap_or_default();
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,
                 billing,
+                accounts,
             });
         });
     }
@@ -300,6 +309,7 @@ impl SessionUi {
         self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
         self.model_billing = update.billing;
+        self.model_accounts = update.accounts;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
         if let Some(picker) = view.model_picker.as_mut() {
@@ -307,6 +317,7 @@ impl SessionUi {
                 current,
                 self.model_catalog.clone(),
                 self.model_configured_providers.clone(),
+                self.model_accounts.clone(),
                 self.model_billing.clone(),
             );
         }

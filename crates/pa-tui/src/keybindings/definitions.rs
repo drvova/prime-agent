@@ -448,6 +448,20 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         ),
     ),
     (
+        "app.agents.traffic",
+        def!(
+            &["m"],
+            "Show or hide the scoped agents view's message traffic pane"
+        ),
+    ),
+    (
+        "app.agents.pauseMessages",
+        def!(
+            &["alt+p"],
+            "Pause or resume agent messages to the selected agent"
+        ),
+    ),
+    (
         "app.agents.expand",
         def!(
             &["alt+right"],

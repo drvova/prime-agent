@@ -3,6 +3,7 @@ closure_seed = true
 bound_module = "fs"
 prompt_builtins = ["fs.*"]
 documented = ["fs.grep", "fs.glob", "fs.find", "fs.read", "fs.edit"]
+internal_host_requests = ["edit_check.fact"]
 probe = [
   "import rlm.fs as _fs",
   "assert all(callable(getattr(_fs, _m, None)) for _m in ('grep', 'glob', 'find', 'read', 'edit'))",
@@ -39,4 +40,14 @@ properties = [
   "fs_edit_rejected_count",
   "fs_edit_stale_anchor_count",
   "fs_edit_failed_count",
+]
+
+[[telemetry]]
+event = "agent edit checks"
+properties = [
+  "edit_check_run_count",
+  "edit_check_found_count",
+  "edit_check_late_count",
+  "edit_check_skipped_count",
+  "edit_check_failed_count",
 ]

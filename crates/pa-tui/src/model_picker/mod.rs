@@ -64,6 +64,9 @@ pub struct ModelPickerOptions {
     pub current: Option<CurrentModel>,
     /// Providers with configured auth (`configuredProviders`).
     pub configured_providers: HashSet<String>,
+    /// The account each multi-credential provider serves this session with (`accounts`: the
+    /// pinned credential's label, else `default`); providers with one credential are absent.
+    pub accounts: std::collections::BTreeMap<String, String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     pub recent_models: Vec<String>,
     /// The session's scoped models as `provider/id` keys: the picker opens on them when non-empty,
@@ -149,6 +152,7 @@ pub struct ModelPicker {
     all_models: Vec<Model>,
     current: Option<CurrentModel>,
     configured_providers: HashSet<String>,
+    accounts: std::collections::BTreeMap<String, String>,
     recent_rank: HashMap<String, usize>,
     /// The effort a fresh selection starts from; `None` resolves to "off" per model.
     initial_thinking_level: Option<ModelThinkingLevel>,
@@ -201,6 +205,7 @@ impl ModelPicker {
             all_models: Vec::new(),
             current: options.current,
             configured_providers: options.configured_providers,
+            accounts: options.accounts,
             recent_rank: options
                 .recent_models
                 .iter()
@@ -254,10 +259,12 @@ impl ModelPicker {
         current: Option<CurrentModel>,
         models: Vec<Model>,
         configured_providers: HashSet<String>,
+        accounts: std::collections::BTreeMap<String, String>,
         billing: HashMap<String, BillingMode>,
     ) {
         self.current = current;
         self.configured_providers = configured_providers;
+        self.accounts = accounts;
         self.billing = billing;
         let selected_key = self.selected_key();
         self.load_models(models);

@@ -4901,6 +4901,7 @@ fn subscription_options(
         provider: Some("anthropic".to_string()),
         model: Some("claude-test".to_string()),
         api_key: None,
+        credential: None,
         thinking: None,
     };
     options.provider_auth = Some(pa_tui::provider_auth::ProviderAuthCommandsHandle(
