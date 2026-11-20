@@ -31,8 +31,16 @@ it found.
   calls with literal arguments, and its `bash` accepts one read-only `git` command (`log`,
   `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) with no pipes, redirects, or
   substitutions. The host refuses every edit and write.
-- Its reads are bounded (a small read budget and a wall-clock limit), and nothing it reads or
-  writes enters the session's history. Its model calls are billed to the session.
+- Its reads adapt, with nothing to configure. A run starts with the reads this project has
+  learned it needs (rewrites you discard make later runs start deeper; rewrites you send as is
+  make them start lean), and gets more only while the helper still lists references it has not
+  located, up to a hard ceiling and a wall-clock limit. Nothing it reads or writes enters the
+  session's history. Its model calls are billed to the session.
+- The result is verified mechanically. Every path, symbol, and command the rewrite cites in
+  backticks must resolve in the repository (a path must exist, a symbol must occur in a file, a
+  command's program must be installed; nothing is run). Unverified references go back to the
+  helper for one refine pass, and any that still do not resolve are named on a last
+  `Unverified (not found in the repository):` line under the rewrite.
 - One run at a time. Esc cancels a running rewrite; nothing is sent either way.
 - Errors are shown as they came. When the helper's reply has no rewrite, the whole reply is
   kept in the session's spill store and the error names its `out:<id>` handle and file.
@@ -42,3 +50,22 @@ it found.
 In print mode, RPC, and other non-interactive surfaces, `/better <prompt>` returns the
 rewrite as the command's result message instead of filling an input box. Nothing is sent to
 the model there either.
+
+## From the REPL: `better(...)` and `rlm.spawn(..., better=True)`
+
+The agent can call the same helper from its Python REPL:
+
+```python
+deeper = await better("fix the parser")
+brief = await better("Add a test for parse_expr in src/parser.rs", cwd="crates/parser", mode="brief")
+child = await rlm.spawn(brief_text, name="parser-tests", cwd="crates/parser", better=True)
+```
+
+`mode="brief"` checks a delegation brief against the repository from `cwd`: every path, name,
+and command it mentions must exist there, or run read-only. The helper fixes what is wrong (a
+wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is
+done) and returns the brief unchanged when nothing needs fixing. It starts from no
+conversation: a brief is checked against the repository, not against the chat.
+`rlm.spawn(..., better=True)` runs brief mode first and spawns the checked brief; the spawn
+still waits for a session-boot slot like every other spawn, and the helper's model calls pass
+the same provider admission as the session's own.
