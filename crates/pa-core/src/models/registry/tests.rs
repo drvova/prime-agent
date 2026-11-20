@@ -763,3 +763,157 @@ fn discovery_targets_skip_declared_chat_completions_and_loopback_endpoints() {
         )]
     );
 }
+
+/// A session pinned to named credential A beside a default slot holding key B.
+fn pinned_registry(dir: &Path) -> (ModelRegistry, CredentialPin) {
+    let accounts = AuthAccounts::create(dir);
+    let id = accounts
+        .add(
+            "anthropic",
+            "work",
+            AuthCredential::ApiKey {
+                key: "key-A".to_string(),
+                prime_team: None,
+            },
+            0,
+        )
+        .unwrap();
+    let pin = CredentialPin {
+        provider: "anthropic".to_string(),
+        id,
+        label: "work".to_string(),
+    };
+    let mut registry = ModelRegistry::in_memory(auth_without_env(&serde_json::json!({
+        "anthropic": { "type": "api_key", "key": "key-B" }
+    })));
+    registry.set_credential_pin(dir, Some(pin.clone()));
+    (registry, pin)
+}
+
+#[test]
+fn a_pinned_credential_never_serves_another_key_even_after_a_rejection_or_a_quota_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut registry, _) = pinned_registry(dir.path());
+    let anthropic = model("m", "anthropic");
+    let served = |registry: &mut ModelRegistry| {
+        let resolved = registry.get_api_key_and_headers(&anthropic, None);
+        (resolved.ok, resolved.api_key, resolved.error)
+    };
+    let pinned = (true, Some("key-A".to_string()), None);
+    assert_eq!(served(&mut registry), pinned);
+    // A 401: the rejected-credential refresh stays on the pinned slot.
+    assert_eq!(registry.refresh_rejected_request_auth("anthropic"), Ok(()));
+    assert_eq!(served(&mut registry), pinned);
+    // A 429: no fallback is declared, so nothing is armed and the pin keeps serving.
+    assert_eq!(
+        registry.arm_quota_fallback(&anthropic, 60_000),
+        QuotaFallback::NotDeclared
+    );
+    assert_eq!(served(&mut registry), pinned);
+}
+
+#[test]
+fn a_deleted_pinned_credential_fails_with_its_label_and_never_serves_the_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut registry, pin) = pinned_registry(dir.path());
+    assert!(AuthAccounts::create(dir.path())
+        .remove(&pin.provider, &pin.id)
+        .unwrap());
+    assert_eq!(
+        registry.get_api_key_and_headers(&model("m", "anthropic"), None),
+        ResolvedRequestAuth {
+            ok: false,
+            error: Some(
+                "credential 'work' for anthropic is no longer stored; /login or choose another"
+                    .to_string()
+            ),
+            ..Default::default()
+        }
+    );
+}
+
+#[test]
+fn a_pinned_credential_admits_under_one_key_across_a_token_refresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut registry, pin) = pinned_registry(dir.path());
+    let anthropic = model("m", "anthropic");
+    let admission_key = |registry: &mut ModelRegistry| {
+        let resolved = registry.get_api_key_and_headers(&anthropic, None);
+        pa_ai::admission::AdmissionKey::for_request(&anthropic, resolved.api_key.as_deref())
+    };
+    let before = admission_key(&mut registry);
+    // The refresh rotates the stored token in place: the credential id stays.
+    let path = dir.path().join(crate::auth::AUTH_ACCOUNTS_FILE);
+    let document = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("key-A", "key-A-rotated");
+    std::fs::write(&path, document).unwrap();
+    let after = admission_key(&mut registry);
+    assert_eq!(after, before);
+    assert_eq!(
+        before,
+        pa_ai::admission::AdmissionKey {
+            provider: "anthropic".to_string(),
+            credential: admission_identity(&pin),
+            scope: "m".to_string(),
+        }
+    );
+}
+
+#[test]
+fn a_declared_quota_fallback_still_serves_a_pinned_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let models = serde_json::json!([{ "id": "hy4-flash-free", "api": "openai-completions" }]);
+    std::fs::write(
+        dir.path().join("models.json"),
+        serde_json::json!({ "providers": {
+            "opencode": {
+                "baseUrl": "https://example.com/zen/v1",
+                "models": models,
+                "auth": { "strategy": "api-key", "fallback": ["opencode-go"] }
+            },
+            "opencode-go": { "baseUrl": "https://example.com/zen/go/v1", "models": models },
+        } })
+        .to_string(),
+    )
+    .unwrap();
+    let id = AuthAccounts::create(dir.path())
+        .add(
+            "opencode",
+            "work",
+            AuthCredential::ApiKey {
+                key: "pinned-free".to_string(),
+                prime_team: None,
+            },
+            0,
+        )
+        .unwrap();
+    let mut registry = ModelRegistry::create(
+        auth_without_env(&serde_json::json!({
+            "opencode": { "type": "api_key", "key": "default-free" },
+            "opencode-go": { "type": "api_key", "key": "go-key" },
+        })),
+        &dir.path().join("models.json"),
+    );
+    registry.set_credential_pin(
+        dir.path(),
+        Some(CredentialPin {
+            provider: "opencode".to_string(),
+            id,
+            label: "work".to_string(),
+        }),
+    );
+    let free = registry
+        .get_all()
+        .iter()
+        .find(|model| model.provider == "opencode" && model.id == "hy4-flash-free")
+        .cloned()
+        .unwrap();
+    let key = |registry: &mut ModelRegistry| registry.get_api_key_and_headers(&free, None).api_key;
+    assert_eq!(key(&mut registry).as_deref(), Some("pinned-free"));
+    assert!(matches!(
+        registry.arm_quota_fallback(&free, 3_600_000),
+        QuotaFallback::Armed { provider, .. } if provider == "opencode-go"
+    ));
+    assert_eq!(key(&mut registry).as_deref(), Some("go-key"));
+}

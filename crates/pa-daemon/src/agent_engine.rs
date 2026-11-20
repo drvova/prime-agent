@@ -199,6 +199,9 @@ pub struct AgentSessionEngine {
     /// failed `reload()` keeps the last read's data — a transiently-held
     /// document lock or a corrupt auth.json is not a logout.
     pub(crate) request_auth_registry: std::sync::Mutex<Option<pa_core::models::ModelRegistry>>,
+    /// The session header's credential pin: every request-auth resolution serves its provider
+    /// through exactly that named credential.
+    pub(crate) credential_pin: std::sync::Mutex<Option<pa_types::session::CredentialPin>>,
     /// One shared supervisor-link client: agent messaging and RLM children
     /// multiplex the same connection.
     link: Arc<crate::supervisor_link::SupervisorLink>,

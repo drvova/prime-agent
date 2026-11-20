@@ -21,8 +21,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
+use pa_types::session::CredentialPin;
+
+use super::manager::{OAuthIntegration, OAuthRefreshFailure};
 use super::storage::{AuthStorageBackend, FileAuthStorageBackend, RefreshLock};
-use super::types::AuthCredential;
+use super::types::{AuthCredential, AuthStorageData};
 
 /// The file name beside `auth.json`.
 pub const AUTH_ACCOUNTS_FILE: &str = "auth-accounts.json";
@@ -176,6 +179,164 @@ impl AuthAccounts {
         self.backend.refresh_lock(&format!("{provider}\u{0}{id}"))
     }
 
+    /// The pin a `--credential <label|id>` selector names: the one stored credential whose id
+    /// or label (case-insensitive) matches, across every provider.
+    ///
+    /// # Errors
+    ///
+    /// No stored credential matches, the label names credentials of several providers, or the
+    /// document cannot be read.
+    pub fn select(&self, selector: &str) -> Result<CredentialPin, String> {
+        let selector = selector.trim();
+        let all = self.all().map_err(|error| format!("{error:#}"))?;
+        let matches: Vec<CredentialPin> = all
+            .iter()
+            .flat_map(|(provider, accounts)| {
+                accounts
+                    .iter()
+                    .filter(|account| {
+                        account.id == selector || account.label.eq_ignore_ascii_case(selector)
+                    })
+                    .map(|account| CredentialPin {
+                        provider: provider.clone(),
+                        id: account.id.clone(),
+                        label: account.label.clone(),
+                    })
+            })
+            .collect();
+        match matches.as_slice() {
+            [pin] => Ok(pin.clone()),
+            [] => Err(format!(
+                "no stored credential is named '{selector}'; /login and choose Add another to store one"
+            )),
+            [_, ..] => Err(format!(
+                "the label '{selector}' names credentials of several providers; pass the credential id instead"
+            )),
+        }
+    }
+
+    /// The pinned credential as stored now.
+    ///
+    /// # Errors
+    ///
+    /// The document cannot be read, or the credential was deleted: the sentence that names its
+    /// label and the way out (a pin never falls back to the default slot).
+    pub(crate) fn stored(&self, pin: &CredentialPin) -> Result<AuthCredential, String> {
+        self.list(&pin.provider)
+            .map_err(|error| format!("{error:#}"))?
+            .into_iter()
+            .find(|account| account.id == pin.id)
+            .map(|account| account.credential)
+            .ok_or_else(|| {
+                format!(
+                    "credential '{}' for {} is no longer stored; /login or choose another",
+                    pin.label, pin.provider
+                )
+            })
+    }
+
+    /// The request key a pinned named credential serves: an API key as stored, an OAuth sign-in's
+    /// token (refreshed once it expired, or after the provider rejected it) under this
+    /// credential's own refresh lock. Never the default slot, and never another credential.
+    ///
+    /// # Errors
+    ///
+    /// The user-facing sentence: the credential is no longer stored, cannot be pinned, or its
+    /// refresh failed (never a credential value).
+    pub(crate) fn resolve_key(
+        &self,
+        pin: &CredentialPin,
+        oauth: &dyn OAuthIntegration,
+        refresh: NamedRefresh,
+    ) -> Result<NamedKey, String> {
+        let CredentialPin { provider, id, .. } = pin;
+        let stored = || self.stored(pin);
+        let served = |credential: &AuthCredential| -> Result<NamedKey, String> {
+            oauth
+                .api_key_for(provider, credential)
+                .map(|api_key| NamedKey {
+                    api_key,
+                    credential_type: "oauth",
+                })
+                .ok_or_else(|| {
+                    format!("credential '{id}' for {provider} holds no usable token; /login again")
+                })
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(i64::MAX, |elapsed| {
+                i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
+            });
+        let fresh = |credential: &AuthCredential| match credential {
+            AuthCredential::Oauth { expires, .. } => now_ms < *expires,
+            AuthCredential::ApiKey { .. }
+            | AuthCredential::McpStaticToken { .. }
+            | AuthCredential::TokenExchange { .. } => false,
+        };
+        let credential = stored()?;
+        match &credential {
+            AuthCredential::ApiKey { key, .. } => {
+                return Ok(NamedKey {
+                    api_key: key.clone(),
+                    credential_type: "api_key",
+                })
+            }
+            AuthCredential::Oauth { .. } => {}
+            AuthCredential::McpStaticToken { .. } | AuthCredential::TokenExchange { .. } => {
+                return Err(format!(
+                    "credential '{id}' for {provider} is a {} credential; a session pins only an API key or a subscription sign-in",
+                    credential.credential_type()
+                ))
+            }
+        }
+        if refresh == NamedRefresh::WhenExpired && fresh(&credential) {
+            return served(&credential);
+        }
+        let _lock = self
+            .refresh_lock(provider, id)
+            .map_err(|error| format!("{error:#}"))?;
+        // Re-read under the lock: a peer that refreshed first is served, never refreshed again
+        // (its refresh token is single-use).
+        let current = stored()?;
+        let peer_refreshed = current != credential && fresh(&current);
+        if peer_refreshed || (refresh == NamedRefresh::WhenExpired && fresh(&current)) {
+            return served(&current);
+        }
+        let mut document = serde_json::Map::new();
+        document.insert(
+            provider.clone(),
+            serde_json::to_value(&current).map_err(|error| error.to_string())?,
+        );
+        let refreshed = oauth
+            .refresh(provider, &AuthStorageData(document))
+            .map_err(|reason| {
+                OAuthRefreshFailure {
+                    provider: provider.clone(),
+                    reason,
+                }
+                .to_string()
+            })?;
+        let mut replacement = Some(refreshed.clone());
+        self.update(&mut |document| {
+            let Some(account) = document
+                .providers
+                .get_mut(provider)
+                .and_then(|accounts| accounts.iter_mut().find(|account| account.id == *id))
+            else {
+                return Ok(false);
+            };
+            match replacement.take() {
+                Some(credential) => {
+                    account.credential = credential;
+                    Ok(true)
+                }
+                None => Ok(false),
+            }
+        })
+        .map_err(|error| format!("{error:#}"))?;
+        served(&refreshed)
+    }
+
     /// The locked read-modify-write; `change` answers whether it changed the document.
     fn update(&self, change: &mut dyn FnMut(&mut AccountsDocument) -> Result<bool>) -> Result<()> {
         self.backend.with_lock(&mut |current| {
@@ -189,6 +350,100 @@ impl AuthAccounts {
             Ok(((), Some(text)))
         })
     }
+}
+
+/// One named credential seen as an `auth.json`-shaped document (`{<provider>: <credential>}`), so
+/// a descriptor resolver ([`TokenExchange`](super::token_exchange::TokenExchange),
+/// [`DescriptorOAuth`](super::descriptor_oauth::DescriptorOAuth)) reads, refreshes and writes back
+/// exactly the pinned slot: under `auth-accounts.json`'s lock and that credential's own refresh
+/// lock, never the default slot.
+pub(crate) struct NamedSlotBackend {
+    accounts: AuthAccounts,
+    pin: CredentialPin,
+}
+
+impl NamedSlotBackend {
+    pub(crate) fn new(agent_dir: &Path, pin: CredentialPin) -> Self {
+        NamedSlotBackend {
+            accounts: AuthAccounts::create(agent_dir),
+            pin,
+        }
+    }
+}
+
+impl AuthStorageBackend for NamedSlotBackend {
+    fn with_lock(
+        &self,
+        update: &mut dyn FnMut(Option<String>) -> Result<((), Option<String>)>,
+    ) -> Result<()> {
+        let CredentialPin { provider, id, .. } = &self.pin;
+        self.accounts.update(&mut |document| {
+            let Some(account) = document
+                .providers
+                .get_mut(provider)
+                .and_then(|accounts| accounts.iter_mut().find(|account| account.id == *id))
+            else {
+                return update(None).map(|((), _)| false);
+            };
+            let slot = serde_json::json!({ provider.as_str(): account.credential });
+            let ((), next) = update(Some(serde_json::to_string(&slot)?))?;
+            let Some(next) = next else {
+                return Ok(false);
+            };
+            let Some(credential) =
+                super::storage::parse_storage_data(Some(&next))?.credential(provider)
+            else {
+                bail!("a named credential's slot cannot be removed through its resolver");
+            };
+            account.credential = credential;
+            Ok(true)
+        })
+    }
+
+    /// The resolver's lock key, further keyed by this credential's id: the default slot's lock
+    /// stays its own.
+    fn refresh_lock(&self, key: &str) -> Result<Option<RefreshLock>> {
+        self.accounts.refresh_lock(key, &self.pin.id)
+    }
+}
+
+/// When a pinned OAuth credential refreshes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NamedRefresh {
+    /// Only once its access token expired.
+    WhenExpired,
+    /// Now: the provider rejected the token it served.
+    Rejected,
+}
+
+/// The request key a pinned credential serves.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct NamedKey {
+    pub(crate) api_key: String,
+    /// `api_key` or `oauth` (the stored lookup's `credential_type` vocabulary).
+    pub(crate) credential_type: &'static str,
+}
+
+/// The key carries the credential, so `Debug` prints its kind only.
+impl std::fmt::Debug for NamedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NamedKey")
+            .field("credential_type", &self.credential_type)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The stable admission identity of a pinned credential: the first 12 hex digits of
+/// `sha256(provider:id)`. It never changes when an OAuth refresh rotates the token, and it carries
+/// no secret.
+#[must_use]
+pub(crate) fn admission_identity(pin: &CredentialPin) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(format!("{}:{}", pin.provider, pin.id).as_bytes());
+    digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The document, or an empty one for an absent or freshly initialized (`{}`) file.

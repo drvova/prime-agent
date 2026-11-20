@@ -276,6 +276,15 @@ pub trait SessionEngine: Send + Sync {
     /// the flags are authoritative and survive every session replacement.
     fn configure_create_model(&self, _selection: EngineModelSelection) {}
 
+    /// Pin the session's request auth to one named credential (the session header's pin);
+    /// `None` serves every provider's default slot. Engines without provider auth ignore it.
+    fn set_credential_pin(&self, _pin: Option<pa_types::session::CredentialPin>) {}
+
+    /// The session's credential pin, as [`Self::set_credential_pin`] last set it.
+    fn credential_pin(&self) -> Option<pa_types::session::CredentialPin> {
+        None
+    }
+
     /// The create command's `--models` scope, plus whether the session
     /// continues an existing file: fresh sessions start on the first
     /// scoped model or the saved default; continuing sessions keep their own.

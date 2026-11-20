@@ -191,6 +191,8 @@ pub(crate) struct SessionUi {
     /// fallback), replaced by the daemon's `get_model_catalog` response.
     model_catalog: Vec<pa_types::ai::Model>,
     model_configured_providers: std::collections::HashSet<String>,
+    /// The session's account per multi-credential provider, from the daemon's catalog answer.
+    model_accounts: std::collections::BTreeMap<String, String>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
     default_thinking_level: Option<String>,

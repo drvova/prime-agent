@@ -362,6 +362,10 @@ const TOP_LEVEL_OPTION_GROUPS: &[OptionGroup] = &[
             ("--model <id>", "Select a model"),
             ("--api-key <key>", "Use an API key for this run"),
             (
+                "--credential <label|id>",
+                "Pin a new session to a stored credential",
+            ),
+            (
                 "--models <patterns>",
                 "Set comma-separated models for cycling",
             ),

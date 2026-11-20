@@ -51,15 +51,53 @@ pub struct AdmissionKey {
     pub scope: String,
 }
 
+/// Key hashes that belong to one stable credential identity (a pinned named credential's
+/// `sha256(provider:id)` prefix): an OAuth refresh rotates the token, never the admission key.
+static CREDENTIAL_ALIASES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::OnceLock::new();
+
+/// The most aliases one process keeps: one per refresh of the session's pinned credential.
+const MAX_CREDENTIAL_ALIASES: usize = 256;
+
+fn key_hash(api_key: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(api_key.as_bytes());
+    hex::encode(&digest[..6])
+}
+
+/// Admit requests made with `api_key` under `identity` instead of the key's own hash. The
+/// identity carries no secret; the key itself is never stored, only its short hash.
+pub fn alias_credential(api_key: &str, identity: &str) {
+    let mut aliases = CREDENTIAL_ALIASES
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if aliases.len() >= MAX_CREDENTIAL_ALIASES {
+        aliases.clear();
+    }
+    aliases.insert(key_hash(api_key), identity.to_string());
+}
+
 impl AdmissionKey {
-    /// The key for a request to `model` with `api_key`.
+    /// The key for a request to `model` with `api_key`: the key's short hash, or the stable
+    /// identity [`alias_credential`] registered for it.
     #[must_use]
     pub fn for_request(model: &crate::types::Model, api_key: Option<&str>) -> Self {
-        use sha2::Digest;
-        let digest = sha2::Sha256::digest(api_key.unwrap_or_default().as_bytes());
+        let hashed = key_hash(api_key.unwrap_or_default());
+        let credential = CREDENTIAL_ALIASES
+            .get()
+            .and_then(|aliases| {
+                aliases
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .get(&hashed)
+                    .cloned()
+            })
+            .unwrap_or(hashed);
         Self {
             provider: model.provider.clone(),
-            credential: hex::encode(&digest[..6]),
+            credential,
             scope: model.id.clone(),
         }
     }
