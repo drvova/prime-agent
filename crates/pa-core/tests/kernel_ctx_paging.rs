@@ -13,6 +13,7 @@
 //! instead of re-running the command.
 #![cfg(unix)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
@@ -138,7 +139,10 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     session.materialize_session_file(Some(sessions_dir));
 
     // What the first cell prints: 100,000 lines, about 1.2 MB.
-    let printed: String = (0..100_000).map(|n| format!("line {n:06}\n")).collect();
+    let printed: String = (0..100_000).fold(String::new(), |mut out, n| {
+        let _ = writeln!(out, "line {n:06}");
+        out
+    });
     let handle = format!(
         "out:{}",
         &format!("{:x}", sha2::Sha256::digest(printed.as_bytes()))[..10]

@@ -1,4 +1,5 @@
 use serde_json::{json, Value};
+use std::fmt::Write as _;
 
 use super::{register_ctx_handlers, SLICE_CHARS_CAP};
 use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload};
@@ -17,9 +18,10 @@ async fn ask(handlers: &HostRequestHandlers, request: &str, data: Value) -> Valu
 
 /// `count` numbered lines of about 50 bytes each.
 fn numbered(count: usize) -> String {
-    (0..count)
-        .map(|n| format!("row {n:06} of a megabyte of build output, kept\n"))
-        .collect()
+    (0..count).fold(String::new(), |mut out, n| {
+        let _ = writeln!(out, "row {n:06} of a megabyte of build output, kept");
+        out
+    })
 }
 
 #[tokio::test]
@@ -31,7 +33,12 @@ async fn page_reads_the_middle_of_a_megabyte_output_whole() {
     let handle = format!("out:{}", store.spill(SpillCopy::of_text(&text)).id);
     let handlers = handlers_over(Some(store));
 
-    let reply = ask(&handlers, "ctx.page", json!({"handle": handle, "start": 10_500, "lines": 3})).await;
+    let reply = ask(
+        &handlers,
+        "ctx.page",
+        json!({"handle": handle, "start": 10_500, "lines": 3}),
+    )
+    .await;
     assert_eq!(
         reply,
         json!({
@@ -51,7 +58,12 @@ async fn page_reads_the_middle_of_a_megabyte_output_whole() {
     let mut rebuilt = String::new();
     let mut start = 0;
     loop {
-        let page = ask(&handlers, "ctx.page", json!({"handle": handle, "start": start, "lines": 2000})).await;
+        let page = ask(
+            &handlers,
+            "ctx.page",
+            json!({"handle": handle, "start": start, "lines": 2000}),
+        )
+        .await;
         let chunk = page["text"].as_str().expect("text");
         assert!(chunk.chars().count() <= SLICE_CHARS_CAP);
         if chunk.is_empty() {
@@ -81,7 +93,10 @@ async fn grep_and_tail_answer_within_the_cap() {
     let base = json!({"handle": handle, "state": "stored", "totalChars": text.len(), "lines": 10, "storedLines": 10});
     let with = |extra: Value| {
         let mut value = base.clone();
-        value.as_object_mut().expect("object").extend(extra.as_object().expect("object").clone());
+        value
+            .as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
         value
     };
     assert_eq!(
@@ -106,12 +121,20 @@ async fn handles_without_text_answer_their_state() {
     let first = store.spill(SpillCopy::of_text(&numbered(4))).id;
     assert!(matches!(store.lookup(&first).await, SpillLookup::Stored(_)));
     let second = store.spill(SpillCopy::of_text(&numbered(5))).id;
-    assert!(matches!(store.lookup(&second).await, SpillLookup::Stored(_)));
+    assert!(matches!(
+        store.lookup(&second).await,
+        SpillLookup::Stored(_)
+    ));
     let handlers = handlers_over(Some(store));
     let ephemeral = handlers_over(None);
 
     let answers = (
-        ask(&handlers, "ctx.page", json!({"handle": format!("out:{first}")})).await,
+        ask(
+            &handlers,
+            "ctx.page",
+            json!({"handle": format!("out:{first}")}),
+        )
+        .await,
         ask(&handlers, "ctx.info", json!({"handle": "out:0123456789"})).await,
         ask(&ephemeral, "ctx.info", json!({"handle": "out:0123456789"})).await,
     );
@@ -140,7 +163,10 @@ async fn a_handle_row_survives_resume() {
     let marker = {
         let store = SpillStore::unregistered(artifact_dir.join(SPILL_DIR), u64::MAX);
         let handle = store.spill(SpillCopy::of_text(&text));
-        assert!(matches!(store.lookup(&handle.id).await, SpillLookup::Stored(_)));
+        assert!(matches!(
+            store.lookup(&handle.id).await,
+            SpillLookup::Stored(_)
+        ));
         handle.marker(text.len() - 100)
     };
     manager
@@ -164,10 +190,12 @@ async fn a_handle_row_survives_resume() {
         .append_message(AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
             tool_call_id: "call-1".to_string(),
             tool_name: "python_repl".to_string(),
-            content: vec![pa_types::ai::UserContentBlock::Text(pa_types::ai::TextContent {
-                text: format!("{}\n{marker}\n", &text[..100]),
-                text_signature: None,
-            })],
+            content: vec![pa_types::ai::UserContentBlock::Text(
+                pa_types::ai::TextContent {
+                    text: format!("{}\n{marker}\n", &text[..100]),
+                    text_signature: None,
+                },
+            )],
             details: None,
             is_error: false,
             timestamp: 0,
@@ -187,7 +215,8 @@ async fn a_handle_row_survives_resume() {
                 ..
             } => result.content.iter().find_map(|block| match block {
                 pa_types::ai::UserContentBlock::Text(text) => Some(text.text.clone()),
-                pa_types::ai::UserContentBlock::Image(_) | pa_types::ai::UserContentBlock::Raw(_) => None,
+                pa_types::ai::UserContentBlock::Image(_)
+                | pa_types::ai::UserContentBlock::Raw(_) => None,
             }),
             _ => None,
         })
@@ -199,13 +228,19 @@ async fn a_handle_row_survives_resume() {
         .map(|id| format!("out:{id}"))
         .expect("the row carries its handle");
     let fresh = SpillStore::unregistered(
-        reopened.get_session_artifact_dir().expect("persisted").join(SPILL_DIR),
+        reopened
+            .get_session_artifact_dir()
+            .expect("persisted")
+            .join(SPILL_DIR),
         u64::MAX,
     );
     let handlers = handlers_over(Some(fresh));
     let reply = ask(&handlers, "ctx.tail", json!({"handle": handle, "n": 1})).await;
     assert_eq!(
         (reply["state"].clone(), reply["text"].clone()),
-        (json!("stored"), json!("row 002999 of a megabyte of build output, kept\n"))
+        (
+            json!("stored"),
+            json!("row 002999 of a megabyte of build output, kept\n")
+        )
     );
 }
