@@ -129,17 +129,32 @@ impl TurnRunner {
                 // window arms for any idle unattached session under a live
                 // threshold; the select's notified arm is the wake path — a
                 // queued delivery wins the race and the next park re-arms.
-                match self.idle_passivation_window() {
-                    Some(remaining) => {
-                        tokio::select! {
-                            () = self.work_notify.notified() => {}
-                            () = tokio::time::sleep(remaining) => {
-                                self.maybe_request_idle_passivation().await;
+                // An adaptive window re-reads memory pressure while it waits, so a window armed
+                // while memory was plentiful shortens when it runs low (the idle clock keeps
+                // running: a recheck is not a park).
+                loop {
+                    match self.idle_passivation_window() {
+                        Some((remaining, threshold)) => {
+                            let wait = match threshold.source {
+                                crate::idle_eviction::ThresholdSource::User => remaining,
+                                crate::idle_eviction::ThresholdSource::MemoryPressure => {
+                                    remaining.min(crate::idle_eviction::ADAPTIVE_RECHECK)
+                                }
+                            };
+                            tokio::select! {
+                                () = self.work_notify.notified() => break,
+                                () = tokio::time::sleep(wait) => {
+                                    if wait >= remaining {
+                                        self.maybe_request_idle_passivation().await;
+                                        break;
+                                    }
+                                }
                             }
                         }
-                    }
-                    None => {
-                        self.work_notify.notified().await;
+                        None => {
+                            self.work_notify.notified().await;
+                            break;
+                        }
                     }
                 }
             }
@@ -175,7 +190,9 @@ impl TurnRunner {
     /// inside [`Self::maybe_request_idle_passivation`] — the
     /// fresh-snapshot fence — so this window only decides whether to
     /// arm.
-    pub(super) fn idle_passivation_window(&self) -> Option<std::time::Duration> {
+    pub(super) fn idle_passivation_window(
+        &self,
+    ) -> Option<(std::time::Duration, crate::idle_eviction::EvictionThreshold)> {
         let (attached, compacting, shutdown, queued, last_activity, cwd) = {
             let core = self.core.lock().unwrap();
             (
@@ -205,15 +222,13 @@ impl TurnRunner {
         }
         let settings =
             pa_core::settings::SettingsManager::create(&cwd, &self.passivation.agent_dir);
-        let minutes = match settings.get_idle_eviction() {
-            pa_core::settings::IdleEviction::Off => return None,
-            pa_core::settings::IdleEviction::Minutes(minutes) => minutes,
-        };
+        let threshold = crate::idle_eviction::eviction_threshold(settings.get_idle_eviction())?;
         let now = crate::util::now_ms();
         let idle_ms = now.saturating_sub(last_activity);
-        let threshold_ms = minutes.saturating_mul(60_000);
-        Some(std::time::Duration::from_millis(
-            threshold_ms.saturating_sub(idle_ms),
+        let threshold_ms = threshold.minutes.saturating_mul(60_000);
+        Some((
+            std::time::Duration::from_millis(threshold_ms.saturating_sub(idle_ms)),
+            threshold,
         ))
     }
 
@@ -245,10 +260,12 @@ impl TurnRunner {
         }
         let settings =
             pa_core::settings::SettingsManager::create(&cwd, &self.passivation.agent_dir);
-        let minutes = match settings.get_idle_eviction() {
-            pa_core::settings::IdleEviction::Off => return,
-            pa_core::settings::IdleEviction::Minutes(minutes) => minutes,
+        let Some(threshold) =
+            crate::idle_eviction::eviction_threshold(settings.get_idle_eviction())
+        else {
+            return;
         };
+        let minutes = threshold.minutes;
         // The idle threshold still holds on the fresh clock.
         if crate::util::now_ms().saturating_sub(last_activity) < minutes.saturating_mul(60_000) {
             return;

@@ -299,7 +299,7 @@ async fn idle_passivation_window_arms_only_for_idle_unattached_sessions() {
     // A 1-minute threshold from now: the remaining window is under a
     // minute (the clock already ran during the test).
     assert!(
-        window.unwrap() <= std::time::Duration::from_secs(60),
+        window.unwrap().0 <= std::time::Duration::from_secs(60),
         "the remaining window must be the threshold minus the elapsed idle"
     );
 
@@ -315,7 +315,13 @@ async fn idle_passivation_window_arms_only_for_idle_unattached_sessions() {
     }
     assert_eq!(
         runner.idle_passivation_window(),
-        Some(std::time::Duration::from_secs(0)),
+        Some((
+            std::time::Duration::from_secs(0),
+            crate::idle_eviction::EvictionThreshold {
+                minutes: 1,
+                source: crate::idle_eviction::ThresholdSource::User,
+            }
+        )),
         "a crossed clock must fire immediately"
     );
 

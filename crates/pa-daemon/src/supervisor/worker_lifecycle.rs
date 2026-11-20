@@ -689,16 +689,15 @@ impl Supervisor {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let settings =
             pa_core::settings::SettingsManager::create(cwd.as_path(), &self.options.agent_dir);
-        let threshold = match settings.get_idle_eviction() {
-            pa_core::settings::IdleEviction::Off => {
-                return response_success(Some(command_id), type_name, None);
-            }
-            pa_core::settings::IdleEviction::Minutes(minutes) => minutes,
+        let Some(current) = crate::idle_eviction::eviction_threshold(settings.get_idle_eviction())
+        else {
+            return response_success(Some(command_id), type_name, None);
         };
-        // The idle claim the worker reported must match the live setting (a stale ask
-        // against a raised threshold is refused).
+        let threshold = current.minutes;
+        // The idle claim the worker reported must still hold against the live window (a stale
+        // ask against a raised threshold, or against memory pressure that eased, is refused).
         if let Some(reported) = idle_minutes {
-            if reported != threshold {
+            if !crate::idle_eviction::ask_holds(reported, current) {
                 return response_success(Some(command_id), type_name, None);
             }
         }

@@ -1,0 +1,1 @@
+- Idle background sessions now give their memory back sooner when the machine runs low: with `idleEvictionMinutes` unset, an unattached idle session worker passivates after 90 minutes while memory is plentiful and after as little as 5 minutes under memory pressure (it reopens on the next prompt as before). A value you set yourself still wins. No new settings.
