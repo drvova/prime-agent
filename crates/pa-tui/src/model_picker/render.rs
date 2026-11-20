@@ -110,7 +110,10 @@ pub(super) fn render(
                 match sign_in {
                     SignIn::Ready => {}
                     SignIn::Required => {
-                        header.push(theme.fg_span(ThemeColor::Dim, " \u{b7} sign in"));
+                        header.push(theme.fg_span(
+                            ThemeColor::Dim,
+                            format!(" \u{b7} {}", super::rows::SIGN_IN_TEXT),
+                        ));
                     }
                 }
                 finish_menu_row(theme, &header, row_width, false)

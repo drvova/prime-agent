@@ -600,8 +600,8 @@ fn the_provider_and_context_chips_cycle() {
     );
 }
 
-/// A provider holding several credentials names the session's account in its group header and,
-/// in a flat sort, in its provider column.
+/// A provider holding several credentials names the session's account on each of its rows, in
+/// the grouped view and a flat sort alike; a single-credential provider's rows carry none.
 #[test]
 fn a_multi_credential_provider_names_its_account() {
     let mut options = rich_options();
@@ -609,24 +609,22 @@ fn a_multi_credential_provider_names_its_account() {
         .into_iter()
         .collect();
     let mut picker = ModelPicker::new(options);
+    let row = |rows: &[String], name: &str| {
+        rows.iter()
+            .find(|row| row.contains(name))
+            .is_some_and(|row| row.contains("account: work"))
+    };
     let grouped = frame_at(&mut picker, 120);
     picker.handle_key("alt+o", &kb());
     let flat = frame_at(&mut picker, 120);
-    let haiku = flat
-        .iter()
-        .find(|row| row.contains("Claude Haiku 5"))
-        .cloned()
-        .unwrap_or_default();
     assert_eq!(
         (
-            grouped.iter().any(
-                |row| row.trim_end_matches(['\u{2588}', '\u{2502}']).trim_end()
-                    == "  anthropic \u{b7} account: work"
-            ),
-            haiku.ends_with("anthropic \u{b7} work"),
+            row(&grouped, "Claude Haiku 5"),
+            row(&flat, "Claude Haiku 5"),
+            row(&grouped, "GLM 5.3"),
         ),
-        (true, true),
-        "{grouped:#?}\n{haiku}"
+        (true, true, false),
+        "{grouped:#?}\n{flat:#?}"
     );
 }
 
@@ -849,9 +847,12 @@ fn unconfigured_providers_head_a_sign_in_group_and_sort_last() {
     let headers: Vec<&str> = rows
         .iter()
         .map(String::as_str)
-        .filter(|row| *row == "  prime-inference" || *row == "  other \u{b7} sign in")
+        .filter(|row| *row == "  prime-inference" || *row == "  other \u{b7} require sign in")
         .collect();
-    assert_eq!(headers, vec!["  prime-inference", "  other \u{b7} sign in"]);
+    assert_eq!(
+        headers,
+        vec!["  prime-inference", "  other \u{b7} require sign in"]
+    );
 }
 
 #[test]
