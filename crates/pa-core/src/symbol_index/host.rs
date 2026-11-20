@@ -73,7 +73,7 @@ pub(crate) fn register_symbol_handler(
                         .map_err(|error| anyhow::anyhow!("fs.symbol: {error}"))?
                 };
                 // The spill only queues each write: the reply never waits on disk.
-                let handles: Vec<Option<String>> = answer
+                let source_handles: Vec<Option<String>> = answer
                     .sources
                     .iter()
                     .map(|source| {
@@ -95,7 +95,7 @@ pub(crate) fn register_symbol_handler(
                 let definitions: Vec<Value> = answer
                     .definitions
                     .iter()
-                    .zip(&handles)
+                    .zip(&source_handles)
                     .map(|(found, handle)| {
                         let mut value = found_json(found);
                         value["handle"] = json!(handle);
