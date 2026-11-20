@@ -114,6 +114,7 @@ impl DelegationDepth {
     }
 
     /// Fold one collect's results into an adaptive bound; what each folded outcome did.
+    #[must_use]
     pub fn observe(&self, results: &[RlmChildResult], wait: CollectWait) -> Vec<DepthChange> {
         let mut state = self.state();
         match state.bound {

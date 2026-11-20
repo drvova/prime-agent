@@ -333,6 +333,7 @@ pub type BashNoticeAgentSlot = Arc<Mutex<Option<Weak<pa_agent::agent::Agent>>>>;
 /// The in-process notice sink over one session's own agent: a [`NoticeDelivery::Steer`] notice
 /// steers its row onto the agent's steering queue and fires the embedding's wake; a
 /// [`NoticeDelivery::Record`] notice has no transcript to land in and drops.
+#[must_use]
 pub fn in_process_notice_sink(
     wake: &BashNoticeWake,
     agent_slot: &BashNoticeAgentSlot,
