@@ -2,11 +2,11 @@ module = "rlm.fs"
 closure_seed = true
 bound_module = "fs"
 prompt_builtins = ["fs.*"]
-documented = ["fs.grep", "fs.glob", "fs.find", "fs.read", "fs.edit"]
+documented = ["fs.grep", "fs.glob", "fs.find", "fs.read", "fs.edit", "fs.symbol"]
 internal_host_requests = ["edit_check.fact"]
 probe = [
   "import rlm.fs as _fs",
-  "assert all(callable(getattr(_fs, _m, None)) for _m in ('grep', 'glob', 'find', 'read', 'edit'))",
+  "assert all(callable(getattr(_fs, _m, None)) for _m in ('grep', 'glob', 'find', 'read', 'edit', 'symbol'))",
   "assert issubclass(_fs.StaleAnchorsError, RuntimeError)",
 ]
 
@@ -16,6 +16,7 @@ probe = [
 "fs.find" = "fs.find"
 "fs.read" = "fs.read"
 "fs.edit" = "fs.edit"
+"fs.symbol" = "fs.symbol"
 
 [[telemetry]]
 event = "agent fs search"
@@ -50,4 +51,13 @@ properties = [
   "edit_check_late_count",
   "edit_check_skipped_count",
   "edit_check_failed_count",
+]
+
+[[telemetry]]
+event = "agent symbol index"
+properties = [
+  "symbol_query_count",
+  "symbol_query_partial_count",
+  "symbol_definition_count",
+  "symbol_reference_count",
 ]

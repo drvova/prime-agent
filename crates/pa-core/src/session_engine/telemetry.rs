@@ -48,7 +48,9 @@ mod classify;
 pub use classify::provider_category;
 
 mod edit_checks;
+mod error_enrichment;
 mod readonly_cache;
+mod symbol_index;
 mod test_summaries;
 
 mod status;
@@ -415,6 +417,9 @@ struct CounterValues {
     agent_message_refusals: super::agent_messaging::AgentMessageRefusals,
     /// `agent_message.wait` outcomes, reported by `agent message waits`.
     agent_message_waits: AgentMessageWaitCounts,
+    /// Failed cells and commands given their error locations' source lines,
+    /// reported by `agent error enrichment`.
+    error_enrichment: error_enrichment::ErrorEnrichmentCounts,
 }
 
 /// One goal verification or budget fact, counted into `agent goal verification`.
@@ -776,6 +781,23 @@ impl SessionCounters {
                 CtxRead::Grep => "ctx_grep_count",
                 CtxRead::Tail => "ctx_tail_count",
                 CtxRead::Info => "ctx_info_count",
+            },
+            1,
+        );
+    }
+
+    /// One kernel `worktree` operation (counts only: never a name, a path, or a diff).
+    pub(crate) fn note_worktree(&self, fact: crate::worktree_host::WorktreeFact) {
+        use crate::worktree_host::WorktreeFact;
+        self.note_capability(
+            match fact {
+                WorktreeFact::Created => "worktree_created_count",
+                WorktreeFact::Diffed => "worktree_diff_count",
+                WorktreeFact::Merged => "worktree_merged_count",
+                WorktreeFact::Branched => "worktree_branched_count",
+                WorktreeFact::Conflicted => "worktree_conflict_count",
+                WorktreeFact::Removed => "worktree_removed_count",
+                WorktreeFact::Failed => "worktree_failed_count",
             },
             1,
         );
@@ -1572,6 +1594,7 @@ impl SessionTelemetry {
             }
             self.client.track("agent message waits", wait_properties);
         }
+        self.track_error_enrichment();
         // Every kernel capability's standalone event (the pa-telemetry rule files), in emission
         // order; a capability the session never used sends none.
         self.track_capability_events(pa_telemetry::CAPABILITY_EVENTS_AFTER_SESSION_END);

@@ -1,5 +1,5 @@
-//! The `fs` capability owns three events: the search calls, the anchored read/edit calls, and
-//! the checks after edits.
+//! The `fs` capability owns four events: the search calls, the anchored read/edit calls, the
+//! checks after edits, and the symbol index queries.
 
 use super::super::{count, duration, required, uuid, EventRule};
 
@@ -58,5 +58,21 @@ pub(in crate::catalog) const AGENT_EDIT_CHECKS: EventRule = EventRule {
         ("edit_check_late_count", required(count())),
         ("edit_check_skipped_count", required(count())),
         ("edit_check_failed_count", required(count())),
+    ],
+};
+
+/// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the session asked a query: queries answered from the
+/// project's symbol index, those answered before its first full pass (partial), and the definitions
+/// and references returned. Counts only: never a name or a path.
+pub(in crate::catalog) const AGENT_SYMBOL_INDEX: EventRule = EventRule {
+    name: "agent symbol index",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("symbol_query_count", required(count())),
+        ("symbol_query_partial_count", required(count())),
+        ("symbol_definition_count", required(count())),
+        ("symbol_reference_count", required(count())),
     ],
 };

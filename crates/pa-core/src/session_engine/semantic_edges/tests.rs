@@ -561,6 +561,7 @@ async fn a_dropped_call_mid_resolution_fails_its_started_request() {
                 model: registration.get_model(),
                 service_tier: None,
                 headers: None,
+                admission_credential: None,
             }))),
             resolver,
         ),

@@ -144,6 +144,9 @@ pub struct SessionEngine {
     pub turn_boundary: std::sync::Arc<super::turn_boundary::TurnBoundaryRequests>,
     /// `None` when telemetry is disabled or the session is not depth 0.
     pub telemetry: Option<std::sync::Arc<super::telemetry::SessionTelemetry>>,
+    /// The kernel `worktree` capability's ledger: the worktrees this session made and has not
+    /// removed, named by the session-end notice.
+    pub worktrees: std::sync::Arc<crate::worktree_host::WorktreeLedger>,
     /// The kernel `rlm.spawn` handler registers spawn targets into it; the
     /// embedding wires the child-observation sink onto it after the build.
     pub rlm_usage: std::sync::Arc<super::rlm_usage::RlmChildUsageAttributions>,
@@ -468,6 +471,19 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `worktree.record`: the kernel `worktree` capability's report after each operation, kept in
+    // the session's ledger (the session-end notice); telemetry counts each outcome (never a
+    // name, a path, or a diff).
+    let worktrees = std::sync::Arc::new(crate::worktree_host::WorktreeLedger::default());
+    crate::worktree_host::register_worktree_host_handler(
+        &mut handlers,
+        std::sync::Arc::clone(&worktrees),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_worktree(fact))
+                as crate::worktree_host::WorktreeObserver
+        }),
+    );
     // `usage.get`: the session's spend (and the no-daemon quota fallback);
     // telemetry counts each read (never a number).
     crate::usage_host::register_usage_host_handlers(
@@ -618,6 +634,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             })
             .as_ref(),
     );
+    // `fs.symbol`: the project's symbol index, built in the background from
+    // its first query on; a definition's source pages out to the spill store.
+    crate::symbol_index::register_symbol_handler(
+        &mut handlers,
+        crate::symbol_index::SymbolIndex::for_project(&cwd, Some(&config.agent_dir)),
+        spill_store.clone(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_symbol_query(fact))
+                as crate::symbol_index::SymbolObserver
+        }),
+    );
     // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
@@ -761,6 +789,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         websearch_env,
         session_artifact_dir,
         cell_window.clone(),
+        // A failed cell or awaited command gets its error locations' source
+        // lines from this workspace; telemetry counts each enrichment.
+        crate::kernel::error_context::ErrorContext::for_workspace(
+            cwd.clone(),
+            config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_error_enrichment(fact))
+                    as crate::kernel::error_context::ErrorContextObserver
+            }),
+        ),
         output_budget.clone(),
         on_restore,
         config.on_background_work_settled.clone(),
@@ -1412,6 +1450,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager,
         turn_boundary,
         telemetry,
+        worktrees,
         rlm_usage: wiring.rlm_usage,
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
@@ -1538,6 +1577,10 @@ impl SessionEngine {
             pa_ai::responses_transport::close_session_websockets(session_id);
         }
         self.provisioner.dispose(None).await;
+        // The session ends: name the worktrees it made and never removed (they stay on disk).
+        if let Some(notice) = self.worktrees.unremoved_notice() {
+            eprintln!("prime-agent: {notice}");
+        }
     }
 
     /// Release the kernel with a final namespace snapshot, revivable: the next

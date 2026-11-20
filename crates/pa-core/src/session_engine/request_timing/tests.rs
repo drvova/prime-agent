@@ -694,6 +694,7 @@ async fn a_call_dropped_mid_resolution_gets_a_timing_summary() {
                 model: registration.get_model(),
                 service_tier: None,
                 headers: None,
+                admission_credential: None,
             }))),
             resolver,
         ),

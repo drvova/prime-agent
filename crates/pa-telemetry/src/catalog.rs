@@ -1133,6 +1133,17 @@ const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
     properties: &[("source", required(enum_rule(&["flag"], "flag")))],
 };
 
+/// One interactive run's profile state (v2), at run start: whether the run creates sessions under
+/// a profile, and how many profiles the agent dir stores. Never a profile name.
+const AGENT_PROFILE_STATE: EventRule = EventRule {
+    name: "agent profile state",
+    since: 2,
+    properties: &[
+        ("profile_active", required(boolean())),
+        ("profile_count", required(count())),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1734,6 +1745,24 @@ const AGENT_MESSAGE_WAITS: EventRule = EventRule {
     ],
 };
 
+/// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
+/// got the source lines around their error locations, the locations attached, the parsed locations
+/// left out (outside the workspace, unreadable, or past the cap), source reads that ran out of
+/// time, and the failed commands seen. Counts only: never a path, a line, a command, or output.
+const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
+    name: "agent error enrichment",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("error_enrichment_count", required(count())),
+        ("error_location_count", required(count())),
+        ("error_location_skipped_count", required(count())),
+        ("error_enrichment_timeout_count", required(count())),
+        ("error_failed_command_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -1782,6 +1811,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
+        &AGENT_PROFILE_STATE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
@@ -1789,6 +1819,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_BILLING_MODES,
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,
+        &AGENT_ERROR_ENRICHMENT,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,

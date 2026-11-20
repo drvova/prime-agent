@@ -19,6 +19,7 @@ mod schedule;
 mod todo_ask;
 mod usage;
 mod web;
+mod worktree;
 
 use super::EventRule;
 
@@ -35,12 +36,14 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &schedule::AGENT_REPL_SCHEDULE,
     &checkpoint::AGENT_REPL_CHECKPOINT,
     &usage::AGENT_USAGE_READS,
+    &worktree::AGENT_WORKTREES,
     &ctx::AGENT_CONTEXT_PAGING,
     &core::AGENT_RLM_CHILD_ABORT,
     &resource_reload_settings::AGENT_REPL_RELOAD,
     &mcp_session::AGENT_KERNEL_LOGIN_AND_RECALL,
     &notify_model::AGENT_REPL_NOTIFY,
     &cells::AGENT_REPL_BACKGROUND_CELLS,
+    &fs::AGENT_SYMBOL_INDEX,
     &bash::AGENT_READONLY_CACHE,
     &fs::AGENT_EDIT_CHECKS,
     &bash::AGENT_TEST_SUMMARIES,

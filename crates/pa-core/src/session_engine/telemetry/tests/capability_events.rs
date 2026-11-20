@@ -17,6 +17,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::command_cache::CacheLookup;
     use crate::kernel::edit_checks::EditCheckOutcome;
+    use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::shared::BackgroundCellFact;
     use crate::kernel::spill::host::CtxRead;
     use crate::kernel::spill::SpillFact;
@@ -25,7 +26,9 @@ fn drive(counters: &SessionCounters) {
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
     use crate::session_engine::session_search::SessionRecallFact;
+    use crate::symbol_index::SymbolFact;
     use crate::web_read::{ReadKind, ReadOutcome};
+    use crate::worktree_host::WorktreeFact;
     use pa_types::billing::{BillingMode, CostSource};
     use pa_types::todo::{TodoItem, TodoList, TodoStatus};
 
@@ -259,8 +262,42 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_edit_check(outcome);
     }
+    for fact in [
+        WorktreeFact::Created,
+        WorktreeFact::Created,
+        WorktreeFact::Created,
+        WorktreeFact::Diffed,
+        WorktreeFact::Merged,
+        WorktreeFact::Branched,
+        WorktreeFact::Branched,
+        WorktreeFact::Conflicted,
+        WorktreeFact::Removed,
+        WorktreeFact::Failed,
+        WorktreeFact::Failed,
+        WorktreeFact::Failed,
+        WorktreeFact::Failed,
+    ] {
+        counters.note_worktree(fact);
+    }
+    for (definitions, references, partial) in [(2, 5, true), (1, 0, false), (0, 7, false)] {
+        counters.note_symbol_query(SymbolFact {
+            definitions,
+            references,
+            partial,
+        });
+    }
     // The non-capability events that main emitted between the capability events: they keep
     // their own counter structs, and the move must leave their bytes alone too.
+    for (failed_commands, locations, skipped, timed_out) in
+        [(1, 3, 0, false), (0, 0, 2, true), (2, 1, 1, false)]
+    {
+        counters.note_error_enrichment(EnrichmentFact {
+            failed_commands,
+            locations,
+            skipped,
+            timed_out,
+        });
+    }
     for mode in [
         BillingMode::PayAsYouGo {
             source: CostSource::Catalog,
@@ -383,6 +420,10 @@ const EXPECTED: &[(&str, &str)] = &[
         r#"{"edit_check_run_count":4,"edit_check_found_count":1,"edit_check_late_count":1,"edit_check_skipped_count":2,"edit_check_failed_count":1}"#,
     ),
     (
+        "agent error enrichment",
+        r#"{"error_enrichment_count":2,"error_location_count":4,"error_location_skipped_count":3,"error_enrichment_timeout_count":1,"error_failed_command_count":3}"#,
+    ),
+    (
         "agent fs edit",
         r#"{"fs_read_count":2,"fs_read_line_count":123,"fs_read_failed_count":1,"fs_edit_count":1,"fs_edit_op_count":4,"fs_edit_rejected_count":1,"fs_edit_stale_anchor_count":2,"fs_edit_failed_count":2}"#,
     ),
@@ -435,6 +476,10 @@ const EXPECTED: &[(&str, &str)] = &[
         r#"{"todo_list_set_count":1,"todo_item_done_count":2,"question_asked_count":6,"question_answered_count":2,"question_declined_count":1,"question_timed_out_count":1,"question_no_user_count":1,"question_cancelled_count":1}"#,
     ),
     (
+        "agent symbol index",
+        r#"{"symbol_query_count":3,"symbol_query_partial_count":1,"symbol_definition_count":3,"symbol_reference_count":12}"#,
+    ),
+    (
         "agent test summaries",
         r#"{"test_summary_count":3,"test_summary_failing_count":2,"test_summary_failed_test_count":4,"test_summary_failure_handle_count":3,"test_summary_stored_count":1}"#,
     ),
@@ -442,5 +487,9 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent web reads",
         r#"{"web_read_count":5,"web_read_failed_count":1,"web_read_site_count":1,"web_read_pdf_count":1,"web_read_page_count":2,"web_read_truncated_count":1,"web_read_max_ms":70}"#,
+    ),
+    (
+        "agent worktrees",
+        r#"{"worktree_created_count":3,"worktree_diff_count":1,"worktree_merged_count":1,"worktree_branched_count":2,"worktree_conflict_count":1,"worktree_removed_count":1,"worktree_failed_count":4}"#,
     ),
 ];
