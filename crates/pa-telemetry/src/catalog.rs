@@ -1096,6 +1096,32 @@ const TUI_IMAGE_PASTE: EventRule = EventRule {
     ],
 };
 
+/// One `/login` settled a credential save (v2): the credential's kind, the slot it went to (the
+/// provider's default slot or a new named credential beside it), the surface that ran the login,
+/// and how it ended. Never a provider, a label, an account id, or any credential material.
+const AGENT_CREDENTIAL_ADDED: EventRule = EventRule {
+    name: "agent credential added",
+    since: 2,
+    properties: &[
+        (
+            "kind",
+            required(enum_rule(&["api_key", "oauth"], "api_key")),
+        ),
+        (
+            "slot",
+            required(enum_rule(&["default", "named"], "default")),
+        ),
+        (
+            "surface",
+            required(enum_rule(&["login", "model_picker", "onboarding"], "login")),
+        ),
+        (
+            "outcome",
+            required(enum_rule(&["saved", "failed", "cancelled"], "failed")),
+        ),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1958,6 +1984,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
+        &AGENT_CREDENTIAL_ADDED,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,
