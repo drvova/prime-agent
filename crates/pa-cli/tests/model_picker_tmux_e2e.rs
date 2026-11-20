@@ -255,8 +255,8 @@ fn the_picker_filters_by_billing_and_switches_the_session() {
             && screen.contains("Claude Plan Two")
     });
     println!("--- billing: plan ---\n{filtered}");
-    // The recent group holds the current model; the anthropic group's first row is the other.
-    pane.keys(&["Down"]);
+    // The fuzzy search composes with the chip: the query's first match is selected.
+    pane.type_text("Plan Two");
     pane.wait("the selection on Claude Plan Two", |screen| {
         screen.contains("enter switches to Claude Plan Two")
     });
