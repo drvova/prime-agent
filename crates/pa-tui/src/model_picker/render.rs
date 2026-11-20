@@ -98,7 +98,7 @@ pub(super) fn render(
         .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, total_rows, start));
     let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
     let columns = RowColumns::fit(picker, &window_models, row_width);
-    let effort_layout = picker.effort_layout(&window_models, row_width, columns.width());
+    let effort_layout = ModelPicker::effort_layout(&window_models, row_width, columns.width());
     let selected_position = picker.selected_index();
     for (offset, display_row) in rows.iter().enumerate() {
         let mut row = match display_row {

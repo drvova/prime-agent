@@ -35,9 +35,8 @@ pub(crate) fn billing_class(mode: Option<&BillingMode>, model: &Model) -> Billin
         Some(BillingMode::Plan { .. } | BillingMode::FlatRate) => BillingClass::Plan,
         Some(BillingMode::PayAsYouGo { .. }) => BillingClass::PayAsYouGo,
         Some(BillingMode::Free) => BillingClass::Free,
-        Some(BillingMode::Unknown) => BillingClass::Unpriced,
         None if catalog_priced(model) => BillingClass::PayAsYouGo,
-        None => BillingClass::Unpriced,
+        Some(BillingMode::Unknown) | None => BillingClass::Unpriced,
     }
 }
 

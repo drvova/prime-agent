@@ -96,16 +96,15 @@ impl ModelPicker {
         for index in rest {
             let model = &self.all_models[index];
             let label = provider_label(model);
-            match groups.iter_mut().find(|(group, _, _)| group == label) {
-                Some((_, _, members)) => members.push(index),
-                None => {
-                    let sign_in = if self.is_configured(model) {
-                        SignIn::Ready
-                    } else {
-                        SignIn::Required
-                    };
-                    groups.push((label.to_string(), sign_in, vec![index]));
-                }
+            if let Some((_, _, members)) = groups.iter_mut().find(|(group, _, _)| group == label) {
+                members.push(index);
+            } else {
+                let sign_in = if self.is_configured(model) {
+                    SignIn::Ready
+                } else {
+                    SignIn::Required
+                };
+                groups.push((label.to_string(), sign_in, vec![index]));
             }
         }
         let mut filtered = Vec::new();
