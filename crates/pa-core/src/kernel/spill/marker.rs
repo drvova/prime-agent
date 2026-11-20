@@ -45,4 +45,17 @@ impl SpillHandle {
         marker.push(']');
         marker
     }
+
+    /// The handle a thinned request-view result carries in place of its
+    /// middle: `[out:<id> · N chars · L lines · thinned from this request; ...]`.
+    /// It names no store state, so the view stays a pure function of the
+    /// history.
+    pub(crate) fn thinned_marker(&self) -> String {
+        format!(
+            "[{HANDLE_PREFIX}{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]",
+            self.id,
+            group_digits(self.total_chars),
+            group_digits(self.lines),
+        )
+    }
 }

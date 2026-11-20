@@ -151,7 +151,7 @@ impl AgentSessionEngine {
                     })
                     .await;
                     match refreshed {
-                        Ok(Err(failure)) => AuthRecovery::EndTurn(failure.to_string()),
+                        Ok(Err(failure)) => AuthRecovery::EndTurn(failure),
                         Ok(Ok(())) | Err(_) => AuthRecovery::Retry,
                     }
                 })

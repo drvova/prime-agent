@@ -32,8 +32,12 @@ impl ModelRegistry {
             .unwrap_or_default()
     }
 
-    /// The value fingerprint of the credential serving `provider` now.
+    /// The identity of the credential serving `provider` now: a pinned named credential's id,
+    /// else the default ladder's value fingerprint.
     fn serving_credential(&mut self, provider: &str) -> Option<String> {
+        if let Some((pin, _)) = self.pin_for(provider) {
+            return Some(format!("named:{}", pin.id));
+        }
         self.auth
             .get_api_key_with_source_token(provider, false)
             .source_token

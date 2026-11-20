@@ -89,7 +89,7 @@ impl SideQuestionResult {
 }
 
 /// Text of an assistant message (text blocks joined).
-fn assistant_text(message: &AssistantMessage) -> String {
+pub(super) fn assistant_text(message: &AssistantMessage) -> String {
     message
         .content
         .iter()
@@ -209,61 +209,19 @@ pub async fn run_side_question(
         ..Default::default()
     }));
 
-    // Streaming events carry one partial turn at a time, so they only fill in
-    // text as it arrives; the answer of the whole run is derived at the end.
-    let (update_tx, update_rx) = std::sync::mpsc::channel::<String>();
-    let update_tx = Arc::new(update_tx);
-    let billed = Arc::new(std::sync::Mutex::new(pa_types::ai::Usage::default()));
-    let billed_sink = Arc::clone(&billed);
-    let subscription = side_agent
-        .subscribe(move |event, _signal| {
-            let update_tx = Arc::clone(&update_tx);
-            let billed = Arc::clone(&billed_sink);
-            Box::pin(async move {
-                if let pa_agent::types::AgentEvent::MessageEnd {
-                    message: pa_agent::types::AgentMessage::Standard(Message::Assistant(assistant)),
-                } = &event
-                {
-                    // The session-file usage shape: both types serialize the TS `Usage`.
-                    if let Ok(usage) = serde_json::to_value(&assistant.usage)
-                        .and_then(serde_json::from_value::<pa_types::ai::Usage>)
-                    {
-                        let mut billed = billed.lock().expect("side question usage lock");
-                        super::rlm_usage::add_assistant_usage(&mut billed, &usage);
-                    }
-                }
-                let message = match &event {
-                    pa_agent::types::AgentEvent::MessageUpdate { message, .. } => Some(&**message),
-                    pa_agent::types::AgentEvent::MessageEnd { message } => Some(message),
-                    _ => None,
-                };
-                if let Some(pa_agent::types::AgentMessage::Standard(Message::Assistant(
-                    assistant,
-                ))) = message
-                {
-                    let text = assistant_text(assistant);
-                    if !text.is_empty() {
-                        let _ = update_tx.send(text);
-                    }
-                }
-                Ok(())
-            })
-        })
-        .await;
-
+    let observer = SideRunObserver::subscribe(&side_agent).await;
+    let prompt = side_question_prompt(question, previous_turns.is_empty());
     let mut result = run_attempts(
         &side_agent,
-        question,
-        previous_turns,
+        &prompt,
         cloned_message_count,
         retry_policy,
         signal,
         sink,
-        &update_rx,
+        &observer.updates,
     )
     .await;
-    let () = subscription.unsubscribe().await;
-    let billed = *billed.lock().expect("side question usage lock");
+    let billed = observer.finish().await;
     result.usage = ModelUsage::new(
         "side_question",
         &parent_state.model.provider,
@@ -273,19 +231,92 @@ pub async fn run_side_question(
     result
 }
 
+/// The streaming and billing tap on one side run's agent: partial assistant text arrives on
+/// `updates` (one partial turn at a time; the run's answer is derived at the end), and every
+/// finished assistant message's usage sums into the run's bill.
+pub(super) struct SideRunObserver {
+    /// Behind a mutex so a run future that borrows it stays `Send` (the session-command paths
+    /// run on spawned tasks).
+    pub(super) updates: std::sync::Mutex<std::sync::mpsc::Receiver<String>>,
+    billed: Arc<std::sync::Mutex<pa_types::ai::Usage>>,
+    subscription: pa_agent::agent::Subscription,
+}
+
+impl SideRunObserver {
+    /// Subscribe to `side_agent`'s events.
+    pub(super) async fn subscribe(side_agent: &Arc<Agent>) -> Self {
+        let (update_tx, updates) = std::sync::mpsc::channel::<String>();
+        let update_tx = Arc::new(update_tx);
+        let billed = Arc::new(std::sync::Mutex::new(pa_types::ai::Usage::default()));
+        let billed_sink = Arc::clone(&billed);
+        let subscription = side_agent
+            .subscribe(move |event, _signal| {
+                let update_tx = Arc::clone(&update_tx);
+                let billed = Arc::clone(&billed_sink);
+                Box::pin(async move {
+                    if let pa_agent::types::AgentEvent::MessageEnd {
+                        message:
+                            pa_agent::types::AgentMessage::Standard(Message::Assistant(assistant)),
+                    } = &event
+                    {
+                        // The session-file usage shape: both types serialize the TS `Usage`.
+                        if let Ok(usage) = serde_json::to_value(&assistant.usage)
+                            .and_then(serde_json::from_value::<pa_types::ai::Usage>)
+                        {
+                            let mut billed = billed
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            super::rlm_usage::add_assistant_usage(&mut billed, &usage);
+                        }
+                    }
+                    let message = match &event {
+                        pa_agent::types::AgentEvent::MessageUpdate { message, .. } => {
+                            Some(&**message)
+                        }
+                        pa_agent::types::AgentEvent::MessageEnd { message } => Some(message),
+                        _ => None,
+                    };
+                    if let Some(pa_agent::types::AgentMessage::Standard(Message::Assistant(
+                        assistant,
+                    ))) = message
+                    {
+                        let text = assistant_text(assistant);
+                        if !text.is_empty() {
+                            let _ = update_tx.send(text);
+                        }
+                    }
+                    Ok(())
+                })
+            })
+            .await;
+        Self {
+            updates: std::sync::Mutex::new(updates),
+            billed,
+            subscription,
+        }
+    }
+
+    /// Unsubscribe; the run's summed usage.
+    pub(super) async fn finish(self) -> pa_types::ai::Usage {
+        let () = self.subscription.unsubscribe().await;
+        *self
+            .billed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
 /// The retrying completion cycle: prompt (first attempt), then drop the failed
 /// assistant turn and continue, with the shared provider retry policy (standalone side
 /// runs bypass the session auto-retry loop, so retry here).
-#[allow(clippy::too_many_arguments)]
-async fn run_attempts(
+pub(super) async fn run_attempts(
     side_agent: &Arc<Agent>,
-    question: &str,
-    previous_turns: &[SideQuestionTurn],
+    prompt: &str,
     cloned_message_count: usize,
     retry_policy: &ProviderRetryPolicy,
     signal: &AbortSignal,
     sink: &SideQuestionSink,
-    update_rx: &std::sync::mpsc::Receiver<String>,
+    update_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<String>>,
 ) -> SideQuestionResult {
     let mut answer = String::new();
     if signal.is_aborted() {
@@ -299,10 +330,9 @@ async fn run_attempts(
     let mut retries_performed = 0u32;
     let mut prompted = false;
     let final_message: anyhow::Result<Option<AssistantMessage>> = loop {
-        let prompt = side_question_prompt(question, previous_turns.is_empty());
         let outcome = run_attempt(
             side_agent,
-            prompt,
+            prompt.to_string(),
             prompted,
             cloned_message_count,
             signal,
@@ -409,7 +439,7 @@ async fn run_attempt(
     cloned_message_count: usize,
     signal: &AbortSignal,
     sink: &SideQuestionSink,
-    update_rx: &std::sync::mpsc::Receiver<String>,
+    update_rx: &std::sync::Mutex<std::sync::mpsc::Receiver<String>>,
     answer: &mut String,
 ) -> AttemptOutcome {
     let attempt: tokio::task::JoinHandle<anyhow::Result<Option<AssistantMessage>>> = {
@@ -436,7 +466,12 @@ async fn run_attempt(
     };
     let mut aborted = false;
     loop {
-        while let Ok(text) = update_rx.try_recv() {
+        let updates: Vec<String> = update_rx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .try_iter()
+            .collect();
+        for text in updates {
             if !text.is_empty() && text != *answer {
                 answer.clone_from(&text);
                 if !sink(answer) {

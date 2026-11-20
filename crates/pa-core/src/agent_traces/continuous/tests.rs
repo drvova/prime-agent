@@ -7,12 +7,12 @@ use std::io::Write;
 async fn recover(
     cwd: PathBuf,
     agent_dir: PathBuf,
-    permits: Arc<tokio::sync::Semaphore>,
+    gate: TraceRequestGate,
     http: Arc<dyn TraceHttp>,
     base_url: Option<String>,
     cancel: TraceUploadCancel,
 ) -> bool {
-    recover_with_backoff(cwd, agent_dir, permits, http, base_url, cancel, None)
+    recover_with_backoff(cwd, agent_dir, gate, http, base_url, cancel, None)
         .await
         .0
 }
@@ -120,7 +120,7 @@ async fn external_consent_change_fails_closed_until_background_reload() {
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -174,7 +174,7 @@ async fn controller_drop_cancels_timer_without_waiting_for_delivery() {
     let http = Arc::new(ScriptedTraceHttp::new(vec![Ok(response(200, "{}"))]));
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         http,
         None,
     ));
@@ -271,7 +271,7 @@ async fn dropping_an_active_controller_cancels_a_hanging_sink() {
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -301,7 +301,7 @@ async fn disabling_consent_cancels_an_inflight_request_without_shutting_down_the
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -339,11 +339,11 @@ async fn recovery_reschedules_rate_limits_without_holding_an_upload_permit() {
         requests,
         cancelled: Arc::new(tokio::sync::Notify::new()),
     });
-    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let gate = TraceRequestGate::new();
     let task = tokio::spawn(recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        permits.clone(),
+        gate.clone(),
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -353,9 +353,14 @@ async fn recovery_reschedules_rate_limits_without_holding_an_upload_permit() {
     let mut limited = response(429, "{}");
     limited.retry_after = Some("120".into());
     first.send(limited).unwrap();
-    // Acquire readiness demonstrates the retry timer does not consume delivery capacity.
-    let permit = permits.acquire().await.unwrap();
-    drop(permit);
+    // The retry timer holds no request permit: the 429's permit went back with the response.
+    for _ in 0..100 {
+        if gate.in_flight() == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(gate.in_flight(), 0);
     let (_body, second) = observed.recv().await.unwrap();
     assert!(Instant::now() - started >= Duration::from_secs(120));
     second.send(response(200, "{}")).unwrap();
@@ -382,7 +387,7 @@ async fn recovery_shutdown_cancels_a_hanging_request_and_preserves_intent() {
     let task = tokio::spawn(recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
         cancel.clone(),
@@ -413,7 +418,7 @@ async fn writes_during_upload_have_a_followup_and_do_not_advance_the_old_cursor(
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -453,7 +458,7 @@ async fn opted_out_recovery_does_not_create_an_outbox() {
     recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -482,7 +487,7 @@ async fn startup_recovery_uploads_pending_and_prunes_missing_but_preserves_unkno
     recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -576,7 +581,7 @@ async fn fallback_only_restart_schedules_the_live_controller_without_a_fresh_wri
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -638,11 +643,11 @@ async fn revoked_recovery_retains_intent_and_resumes_after_consent_restoration()
         requests,
         cancelled: cancelled.clone(),
     });
-    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let gate = TraceRequestGate::new();
     let task = tokio::spawn(recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        permits.clone(),
+        gate.clone(),
         sink.clone(),
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -657,12 +662,12 @@ async fn revoked_recovery_retains_intent_and_resumes_after_consent_restoration()
         .unwrap());
     assert!(agent_trace_outbox_entry_path(&fixture.agent_dir, &path).exists());
     assert!(delivery_lease(&fixture.agent_dir, &path).is_some());
-    assert_eq!(permits.available_permits(), 1);
+    assert_eq!(gate.in_flight(), 0);
     assert!(
         !recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            permits.clone(),
+            gate.clone(),
             sink.clone(),
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -674,7 +679,7 @@ async fn revoked_recovery_retains_intent_and_resumes_after_consent_restoration()
     let task = tokio::spawn(recover(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        permits,
+        gate,
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -753,7 +758,7 @@ async fn disabled_project_recovery_does_not_block_other_opted_in_projects() {
         !recover(
             second_cwd,
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -785,7 +790,7 @@ async fn disabled_uploaded_cursor_does_not_rearm_recovery() {
         recover(
             second_cwd,
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -809,7 +814,7 @@ async fn mixed_consent_rescan_preserves_exhausted_rate_limit_deadline() {
     let task = tokio::spawn(recover_with_backoff(
         second_cwd,
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -893,7 +898,7 @@ async fn replacement_at_capacity_reuses_a_slot_and_preserves_late_retirement() {
     let old_sink = Arc::new(ScriptedTraceHttp::new(Vec::new()));
     let old_task = tokio::spawn(run_controller(
         Arc::downgrade(&source),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         old_sink.clone(),
         Some("http://synthetic.invalid".into()),
     ));
@@ -933,7 +938,7 @@ async fn replacement_at_capacity_reuses_a_slot_and_preserves_late_retirement() {
     let (complete, _) = recover_with_backoff(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink.clone(),
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -949,7 +954,7 @@ async fn replacement_at_capacity_reuses_a_slot_and_preserves_late_retirement() {
     let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&latest),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         Arc::new(ObservedSink {
             requests,
             cancelled: Arc::new(tokio::sync::Notify::new()),
@@ -977,7 +982,7 @@ async fn a_busy_delivery_lease_leaves_recovery_incomplete_until_release() {
         !recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink.clone(),
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -990,7 +995,7 @@ async fn a_busy_delivery_lease_leaves_recovery_incomplete_until_release() {
         recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1017,7 +1022,7 @@ async fn exhausted_recovery_retries_leave_the_sweep_incomplete() {
         !recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1053,7 +1058,7 @@ async fn a_credentialless_controller_retries_after_credentials_arrive() {
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -1098,7 +1103,7 @@ async fn a_settings_change_after_load_still_records_the_write_intent() {
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&c),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -1128,7 +1133,7 @@ async fn missing_credentials_leave_the_sweep_incomplete_until_provided() {
         !recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink.clone(),
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1145,7 +1150,7 @@ async fn missing_credentials_leave_the_sweep_incomplete_until_provided() {
         recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1180,7 +1185,7 @@ async fn transient_recovery_reads_rearm_and_deliver_after_restoration() {
         let (complete, _) = recover_with_io(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink.clone(),
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1201,7 +1206,7 @@ async fn transient_recovery_reads_rearm_and_deliver_after_restoration() {
             recover(
                 fixture.cwd.clone(),
                 fixture.agent_dir.clone(),
-                Arc::new(tokio::sync::Semaphore::new(1)),
+                TraceRequestGate::new(),
                 sink.clone(),
                 Some("http://synthetic.invalid".into()),
                 TraceUploadCancel::new(),
@@ -1247,7 +1252,7 @@ async fn terminal_invalid_records_and_headers_complete_without_network_or_rescan
     let (complete, not_before) = recover_with_backoff(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink.clone(),
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -1311,7 +1316,7 @@ async fn bounded_admission_preserves_retirement_and_delivers_on_readmission() {
     });
     let task = tokio::spawn(run_controller(
         Arc::downgrade(&candidate),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -1339,10 +1344,10 @@ async fn a_busy_delivery_lease_does_not_hold_upload_capacity() {
         requests,
         cancelled: Arc::new(tokio::sync::Notify::new()),
     });
-    let permits = Arc::new(tokio::sync::Semaphore::new(1));
+    let gate = TraceRequestGate::new();
     let busy_task = tokio::spawn(run_controller(
         Arc::downgrade(&busy_host),
-        permits.clone(),
+        gate.clone(),
         sink.clone(),
         Some("http://synthetic.invalid".into()),
     ));
@@ -1354,7 +1359,7 @@ async fn a_busy_delivery_lease_does_not_hold_upload_capacity() {
     free_host.persisted(&free);
     let free_task = tokio::spawn(run_controller(
         Arc::downgrade(&free_host),
-        permits.clone(),
+        gate.clone(),
         sink,
         Some("http://synthetic.invalid".into()),
     ));
@@ -1395,7 +1400,7 @@ async fn pending_live_owner_keeps_recovery_incomplete_until_retirement() {
     let (complete, _) = recover_with_backoff(
         fixture.cwd.clone(),
         fixture.agent_dir.clone(),
-        Arc::new(tokio::sync::Semaphore::new(1)),
+        TraceRequestGate::new(),
         sink,
         Some("http://synthetic.invalid".into()),
         TraceUploadCancel::new(),
@@ -1409,7 +1414,7 @@ async fn pending_live_owner_keeps_recovery_incomplete_until_retirement() {
         recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1454,7 +1459,7 @@ async fn host_retirement_rearms_an_already_complete_group_for_later_markers() {
         recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1539,7 +1544,7 @@ async fn between_tick_retirement_and_late_acknowledgement_preserve_pending_marke
         recover(
             fixture.cwd.clone(),
             fixture.agent_dir.clone(),
-            Arc::new(tokio::sync::Semaphore::new(1)),
+            TraceRequestGate::new(),
             sink,
             Some("http://synthetic.invalid".into()),
             TraceUploadCancel::new(),
@@ -1551,5 +1556,52 @@ async fn between_tick_retirement_and_late_acknowledgement_preserve_pending_marke
             read_agent_trace_outbox_entry(&fixture.agent_dir, path),
             TraceUploadSignature::of(path)
         );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn live_deliveries_share_the_trace_controller_budget() {
+    let fixture = Fixture::new();
+    enable_synthetic_fixture(&fixture);
+    let first = fixture.write_session("shared-first.jsonl", "shared-first");
+    let second = fixture.write_session("shared-second.jsonl", "shared-second");
+    let (requests, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let sink = Arc::new(ObservedSink {
+        requests,
+        cancelled: Arc::new(tokio::sync::Notify::new()),
+    });
+    let gate = TraceRequestGate::new();
+    let hosts = [
+        controller(&fixture, &first, true),
+        controller(&fixture, &second, true),
+    ];
+    let tasks: Vec<_> = hosts
+        .iter()
+        .zip([&first, &second])
+        .map(|(host, path)| {
+            host.persisted(path);
+            tokio::spawn(run_controller(
+                Arc::downgrade(host),
+                gate.clone(),
+                sink.clone(),
+                Some("http://synthetic.invalid".into()),
+            ))
+        })
+        .collect();
+    let (_body, reply) = observed.recv().await.unwrap();
+    let delivered = Instant::now();
+    reply.send(response(200, "{}")).unwrap();
+    let (_body, reply) = observed.recv().await.unwrap();
+    // Both sessions are live deliveries of one process: the second waits out the platform's
+    // request interval on the shared controller instead of sending at once.
+    assert!(
+        Instant::now() - delivered >= Duration::from_secs(12),
+        "the second delivery went {:?} after the first",
+        Instant::now() - delivered
+    );
+    reply.send(response(200, "{}")).unwrap();
+    drop(hosts);
+    for task in tasks {
+        task.await.unwrap();
     }
 }

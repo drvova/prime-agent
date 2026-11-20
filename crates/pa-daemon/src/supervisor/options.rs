@@ -20,4 +20,6 @@ pub(crate) enum ClientRouting {
     BroadcastExcept { connection_id: String },
     /// Clients holding a roster subscription (`roster_subscribe`).
     RosterSubscribers,
+    /// Clients holding the display-only traffic feed (`agent_traffic_subscribe`).
+    AgentTrafficSubscribers,
 }

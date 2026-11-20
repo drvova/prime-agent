@@ -29,6 +29,7 @@ pub mod agent_message_ingest;
 pub mod agent_message_wait;
 pub mod agent_messaging;
 pub(crate) mod agent_roster;
+pub(crate) mod agent_traffic;
 mod async_safe_runtime;
 mod auto_compaction;
 mod autonomous_continuation;
