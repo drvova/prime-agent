@@ -48,6 +48,7 @@ use reconnect::{
 #[cfg(test)]
 use reconnect::{ReconnectLoop, DAEMON_SHUTDOWN_RECONNECT_WINDOW, SHUTDOWN_RECONNECT_RETRY};
 
+mod render_pacing;
 mod run;
 
 pub use run::{run_interactive, run_interactive_agents_view_open, run_interactive_origin_open};
