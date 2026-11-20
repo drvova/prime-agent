@@ -134,8 +134,9 @@ fn the_prefetch_scales_down_when_handles_go_unused() {
 async fn a_hanging_neighbour_never_holds_the_read() {
     let repo = crate_repo();
     let session = tempfile::tempdir().expect("session dir");
-    let gate = Arc::new(Mutex::new(()));
-    let held = gate.lock().unwrap();
+    // The reader blocks until the sender drops at the end of the test.
+    let (release, gate) = std::sync::mpsc::channel::<()>();
+    let gate = Arc::new(Mutex::new(gate));
     let prefetcher = Prefetcher::with_reader(
         repo.path(),
         None,
@@ -145,7 +146,7 @@ async fn a_hanging_neighbour_never_holds_the_read() {
         {
             let gate = Arc::clone(&gate);
             Arc::new(move |_path: &Path| {
-                let _wait = gate.lock().unwrap();
+                let _ = gate.lock().unwrap().recv();
                 Err(std::io::Error::other("released"))
             })
         },
@@ -156,6 +157,6 @@ async fn a_hanging_neighbour_never_holds_the_read() {
     )
     .await
     .expect("the prefetch returned at its budget");
-    drop(held);
+    drop(release);
     assert_eq!(answered, None);
 }
