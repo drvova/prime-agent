@@ -1,0 +1,1 @@
+- After a pause of more than about 80 seconds, the next turn re-opens the provider connection in the background as it starts, so its first request no longer pays a fresh TLS handshake; the idle threshold is learned per provider from how long its connections actually stay open. No settings.
