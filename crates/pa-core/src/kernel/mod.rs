@@ -19,6 +19,7 @@ pub mod rlm_runtime;
 pub mod shared;
 pub mod spill;
 pub mod state_snapshot;
+pub(crate) mod test_runs;
 
 pub use bootstrap::{
     build_rlm_bootstrap_code, ensure_kernel_python, kernel_venv_dir, EnsureKernelPythonOptions,

@@ -165,6 +165,8 @@ pub struct SessionEngine {
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
     /// The session's current resources and the `rlm.reload`/`/reload` re-read.
     pub resource_reload: std::sync::Arc<super::resource_reload::ResourceReload>,
+    /// The `/better` runner the TUI command, the session command, and the kernel share.
+    pub better: std::sync::Arc<super::better::BetterHost>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -585,6 +587,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let spill_store = session_artifact_dir
         .as_deref()
         .map(crate::kernel::spill::SpillStore::for_session_dir);
+    // The cell output cap follows the context the session has left: the
+    // thinning transform publishes each request's fill, the executor reads it.
+    let output_budget = crate::kernel::spill::OutputBudget::default();
+    // Telemetry counts spills and reads (never a handle, a pattern, or text).
+    if let (Some(store), true) = (&spill_store, config.telemetry.is_some()) {
+        let counters = std::sync::Arc::clone(&session_counters);
+        store.set_observer(std::sync::Arc::new(move |fact| counters.note_spill(fact)));
+    }
     let symbol_index = crate::symbol_index::SymbolIndex::for_project(&cwd, Some(&config.agent_dir));
     // A read file's likely next reads page out to the spill store (persistent
     // sessions only); telemetry counts the handles issued and used.
@@ -612,10 +622,20 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         prefetch: prefetch.clone(),
     }
     .register(&mut handlers);
-    // A `ctx.*` read of a prefetched handle counts as its use.
-    let ctx_observer = prefetch.map(|prefetch| {
-        std::sync::Arc::new(move |_read, id: &str| prefetch.note_handle_read(id))
-            as crate::kernel::spill::host::CtxObserver
+    // Telemetry counts each `ctx.*` read; a read of a prefetched handle counts as its use.
+    let ctx_counters = config
+        .telemetry
+        .is_some()
+        .then(|| std::sync::Arc::clone(&session_counters));
+    let ctx_observer = (ctx_counters.is_some() || prefetch.is_some()).then(|| {
+        std::sync::Arc::new(move |read, id: &str| {
+            if let Some(counters) = &ctx_counters {
+                counters.note_ctx_read(read);
+            }
+            if let Some(prefetch) = &prefetch {
+                prefetch.note_handle_read(id);
+            }
+        }) as crate::kernel::spill::host::CtxObserver
     });
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
@@ -623,15 +643,35 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         ctx_observer.as_ref(),
     );
     // `fs.symbol`: the project's symbol index, built in the background from
-    // now on; a definition's source pages out to the spill store.
+    // its first query on; a definition's source pages out to the spill store.
     crate::symbol_index::register_symbol_handler(
         &mut handlers,
         symbol_index,
-        spill_store,
+        spill_store.clone(),
         config.telemetry.is_some().then(|| {
             let counters = std::sync::Arc::clone(&session_counters);
             std::sync::Arc::new(move |fact| counters.note_symbol_query(fact))
                 as crate::symbol_index::SymbolObserver
+        }),
+    );
+    // `/better`: its helper binds to the agent once it exists.
+    let better = std::sync::Arc::new(super::better::BetterHost::new(
+        cwd.clone(),
+        config
+            .telemetry
+            .is_some()
+            .then(|| std::sync::Arc::clone(&session_counters)),
+        spill_store.clone(),
+    ));
+    // `tests.summary`: an awaited test run's output and failures get handles
+    // in the same store; telemetry counts each summarized run.
+    crate::kernel::test_runs::register_test_summary_handler(
+        &mut handlers,
+        spill_store.as_ref(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_test_summary(fact))
+                as crate::kernel::test_runs::TestRunObserver
         }),
     );
     let local_harness_dir =
@@ -737,6 +777,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         websearch_env,
         session_artifact_dir,
         cell_window.clone(),
+        output_budget.clone(),
         on_restore,
         config.on_background_work_settled.clone(),
         // Telemetry counts each cell that continues in the background and how it
@@ -1028,6 +1069,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 })
             })
         },
+        // A persistent session pages thinned results out to its spill store,
+        // so the pointer is a handle `ctx.*` reads even after compaction.
+        match spill_store.clone() {
+            Some(store) => super::context_thinning::ThinnedRecall::Spill(store),
+            None => super::context_thinning::ThinnedRecall::ToolResult,
+        },
+        output_budget,
         config.telemetry.is_some().then(|| {
             let counters = std::sync::Arc::clone(&session_counters);
             std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
@@ -1256,6 +1304,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // park read the recorder; the side question keeps the pre-semantic
     // fn so its calls carry no id.
     session.set_semantic_edges(semantic_recorder);
+    // The helper rides the side question's pre-semantic fn for the same reason.
+    better.bind(
+        &agent,
+        std::sync::Arc::clone(&side_question_stream_fn),
+        session.model_usage_recorder(),
+    );
     session.set_side_question_stream_fn(side_question_stream_fn);
     // The armed image route never outlives the run that armed it (TS
     // `_clearModelOverrideWhenIdle`: the override drops once the turn is
@@ -1379,6 +1433,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         resource_reload,
+        better,
     })
 }
 

@@ -33,6 +33,7 @@ pub fn command_plane(command_type: &str) -> DaemonCommandPlane {
         | "abort_and_send_queued"
         | "start_side_question"
         | "abort_side_question"
+        | "record_better_outcome"
         | "answer_question"
         | "execute_bash"
         | "abort_bash"

@@ -524,6 +524,9 @@ pub enum DaemonCommand {
         question: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_turns: Option<Value>,
+        /// `better` for a `/better` rewrite; absent for a `/btw` question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<crate::better::SideRunKind>,
         #[serde(flatten)]
         rest: JsonMap,
     },
@@ -534,6 +537,16 @@ pub enum DaemonCommand {
         // Optional on the wire, like `start_side_question`'s payload.
         #[serde(default)]
         side_question_id: String,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// `record_better_outcome`: what the user did with a rewrite `/better` put in the composer
+    /// (the session counts it).
+    RecordBetterOutcome {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        outcome: crate::better::ComposerOutcome,
         #[serde(flatten)]
         rest: JsonMap,
     },
