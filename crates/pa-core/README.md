@@ -240,6 +240,17 @@ start that probes) and the closure freeze's seed derive from them; its tests hol
 the core prompt, and the telemetry catalog equal to them. Non-goals: capability behavior and any
 public API.
 
+Frida in the kernel (`kernel::bootstrap::venv::native_tools`, `session_engine::frida_usage`): the
+REPL's `frida` module (`rlm.frida`) drives Frida, and the pinned `frida` and `frida-tools` wheels
+are default kernel-venv packages installed after the venv is ready, never inside its build: in the
+background for kernel starts, before returning for the install-time bootstrap
+(`EnsureKernelPythonOptions::frida`, `KernelFrida`). The install records its progress in the
+venv's `.frida-install`, which the module reads to say "still installing" or why frida is
+unavailable; a platform without a wheel records `unavailable` and installs nothing, and the
+runtime-ready probe never imports frida. Each `frida.*` call sends one fire-and-forget
+`frida.used` count, folded into `agent repl frida`. Non-goals: installing into a
+`PRIME_AGENT_KERNEL_PYTHON` override, and any frida behavior on the host side.
+
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs
 resource discovery with the session's creation inputs, rebuilds the system prompt's

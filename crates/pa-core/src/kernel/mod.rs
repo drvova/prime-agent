@@ -26,7 +26,7 @@ pub(crate) mod test_runs;
 
 pub use bootstrap::{
     build_rlm_bootstrap_code, ensure_kernel_python, kernel_venv_dir, EnsureKernelPythonOptions,
-    KernelBootstrapProgressHandler, KernelBytecode, KernelPythonSkill,
+    KernelBootstrapProgressHandler, KernelBytecode, KernelFrida, KernelPythonSkill,
     PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER,
 };
 pub use cancellation::AbortSignal;

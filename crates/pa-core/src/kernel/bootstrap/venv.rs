@@ -19,6 +19,7 @@ use super::{
 // composition root).
 mod bytecode;
 mod layout;
+mod native_tools;
 mod probe;
 mod runtime_source;
 mod skills;
@@ -31,6 +32,8 @@ pub use bytecode::KernelBytecode;
 use layout::home_dir;
 pub(crate) use layout::{expand_home, resolve_writable_kernel_venv_dir};
 pub use layout::{kernel_venv_dir, kernel_venv_python};
+pub(crate) use native_tools::install_frida;
+pub use native_tools::KernelFrida;
 pub use probe::invalidate_runtime_probe_cache;
 // The capability manifests' tests run the derived probe.
 #[cfg(test)]

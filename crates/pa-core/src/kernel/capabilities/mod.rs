@@ -62,6 +62,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
     ),
     manifest!("ctx", docs = ["ctx"]),
     manifest!("decision", docs = ["decision"]),
+    manifest!("frida", docs = ["frida"]),
     manifest!("fs", docs = ["fs"]),
     manifest!("harness", docs = ["harness"]),
     manifest!("mcp", docs = ["mcp"]),

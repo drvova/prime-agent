@@ -1976,6 +1976,32 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `frida.*` (Frida dynamic instrumentation) adoption for one session (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// the session used it: device and process listings, kills, attaches and spawns, scripts loaded,
+/// traces, discovers, console-tool runs (`frida.tool` and `frida.compile`), `gum-graft` runs, and
+/// calls refused because frida was unavailable or still installing. Counts only: never a target,
+/// a pid, a device, a script, or a path.
+const AGENT_REPL_FRIDA: EventRule = EventRule {
+    name: "agent repl frida",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("frida_devices_count", required(count())),
+        ("frida_ps_count", required(count())),
+        ("frida_kill_count", required(count())),
+        ("frida_attach_count", required(count())),
+        ("frida_spawn_count", required(count())),
+        ("frida_script_load_count", required(count())),
+        ("frida_trace_count", required(count())),
+        ("frida_discover_count", required(count())),
+        ("frida_tool_count", required(count())),
+        ("frida_graft_count", required(count())),
+        ("frida_unavailable_count", required(count())),
+        ("frida_installing_count", required(count())),
+    ],
+};
+
 /// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
 /// near the backend's 128-key cap) only when the session asked a query: queries answered from the
 /// project's symbol index, those answered before its first full pass (partial), and the definitions
@@ -2198,6 +2224,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_REPL_FRIDA,
         &AGENT_SYMBOL_INDEX,
         &AGENT_ERROR_ENRICHMENT,
         &AGENT_READONLY_CACHE,

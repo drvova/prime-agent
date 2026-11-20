@@ -49,6 +49,7 @@ pub use classify::provider_category;
 
 mod edit_checks;
 mod error_enrichment;
+mod frida;
 mod readonly_cache;
 mod symbol_index;
 mod test_summaries;
@@ -458,6 +459,8 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// Kernel `frida.*` calls by kind, reported by `agent repl frida`.
+    frida: frida::FridaCounts,
     /// `fs.symbol` queries, reported by `agent symbol index`.
     symbol_index: symbol_index::SymbolIndexCounts,
     /// Failed cells and commands given their error locations' source lines,
@@ -2100,6 +2103,7 @@ impl SessionTelemetry {
         self.track_readonly_cache();
         self.track_edit_checks();
         self.track_test_summaries();
+        self.track_frida();
         self.client.flush().await
     }
 

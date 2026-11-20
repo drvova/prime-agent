@@ -116,6 +116,7 @@ impl Inner {
                 python_skills: skills,
                 on_progress: progress,
                 bytecode: crate::kernel::bootstrap::KernelBytecode::CompileInBackground,
+                frida: crate::kernel::bootstrap::KernelFrida::InstallInBackground,
             },
             self.options
                 .cwd
