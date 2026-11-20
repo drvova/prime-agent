@@ -27,6 +27,8 @@ pub struct SettingsManager {
     storage: Arc<dyn SettingsStorage>,
     global: Settings,
     pending_global_fields: BTreeSet<&'static str>,
+    /// The active profile's settings overlay (empty without a profile).
+    profile: Settings,
     project: Settings,
     project_raw: Option<serde_json::Value>,
     merged: Settings,
@@ -48,10 +50,12 @@ impl SettingsManager {
             load_scope(storage.as_ref(), SettingsScope::Global, &mut errors);
         let (project, project_raw, project_load_error) =
             load_scope(storage.as_ref(), SettingsScope::Project, &mut errors);
-        let merged = deep_merge(&global, &project);
+        let profile = load_profile_overlay(storage.as_ref(), &mut errors);
+        let merged = layered(&global, &profile, &project);
         Self {
             storage,
             global,
+            profile,
             pending_global_fields: BTreeSet::new(),
             project,
             project_raw,
@@ -155,6 +159,7 @@ impl SettingsManager {
             load_scope(self.storage.as_ref(), SettingsScope::Global, &mut errors);
         let (project, project_raw, project_load_error) =
             load_scope(self.storage.as_ref(), SettingsScope::Project, &mut errors);
+        self.profile = load_profile_overlay(self.storage.as_ref(), &mut errors);
         self.global = global;
         self.pending_global_fields.clear();
         self.project = project;
@@ -163,7 +168,7 @@ impl SettingsManager {
         self.global_load_error = global_load_error;
         self.project_load_error = project_load_error;
         self.errors = errors;
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
         Ok(())
     }
 
@@ -469,7 +474,7 @@ impl SettingsManager {
             "packages",
             &serde_json::Value::Array(packages),
         );
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
     }
 
     pub fn set_project_packages(&mut self, packages: Vec<serde_json::Value>) {
@@ -483,7 +488,7 @@ impl SettingsManager {
         {
             project_raw.insert("packages".into(), value);
         }
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
     }
 
     /// Replace one resource-path array (`skills`/`prompts`/`themes`) in the global settings file.
@@ -501,7 +506,7 @@ impl SettingsManager {
             field,
             &serde_json::Value::Array(array),
         );
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
     }
 
     /// Replace one resource-path array in the project settings file.
@@ -519,7 +524,7 @@ impl SettingsManager {
             field,
             &serde_json::Value::Array(array),
         );
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
     }
 
     /// Write one field into a scope's file, merging with the current on-disk document
@@ -879,7 +884,7 @@ impl SettingsManager {
     /// Write the global scope back (project scope is host-written, not
     /// user-set), then re-derive the effective settings.
     fn save_global(&mut self, fields: &[&'static str]) -> Result<()> {
-        self.merged = deep_merge(&self.global, &self.project);
+        self.merged = layered(&self.global, &self.profile, &self.project);
         self.pending_global_fields.extend(fields.iter().copied());
         if let Some(message) = &self.global_load_error {
             self.errors.push(SettingsError {
@@ -972,6 +977,42 @@ fn strings(array: &[serde_json::Value]) -> Vec<String> {
 /// One loaded scope: the leniently-parsed settings, the migrated raw document,
 /// and the load error (`Some` when the document exists but cannot be read/parsed).
 #[allow(clippy::type_complexity)]
+/// The effective settings: global < profile < project.
+fn layered(global: &Settings, profile: &Settings, project: &Settings) -> Settings {
+    deep_merge(&deep_merge(global, profile), project)
+}
+
+/// The active profile's `settings` overlay, migrated like a settings document; a profile that
+/// cannot be read or parsed is recorded (under the global scope it overlays) and overlays nothing.
+fn load_profile_overlay(
+    storage: &dyn SettingsStorage,
+    errors: &mut Vec<SettingsError>,
+) -> Settings {
+    let parsed = storage.profile().and_then(|profile| {
+        profile
+            .map(|(name, content)| {
+                serde_json::from_str::<super::profiles::Profile>(&content)
+                    .map_err(|error| anyhow!("profile '{name}': {error}"))
+            })
+            .transpose()
+    });
+    match parsed {
+        Ok(Some(profile)) => {
+            let mut overlay = profile.settings;
+            migrate(&mut overlay);
+            from_value_lenient(&serde_json::Value::Object(overlay))
+        }
+        Ok(None) => Settings::default(),
+        Err(error) => {
+            errors.push(SettingsError {
+                scope: SettingsScope::Global,
+                message: error.to_string(),
+            });
+            Settings::default()
+        }
+    }
+}
+
 fn load_scope(
     storage: &dyn SettingsStorage,
     scope: SettingsScope,

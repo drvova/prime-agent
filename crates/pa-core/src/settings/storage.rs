@@ -50,11 +50,24 @@ pub trait SettingsStorage: Send + Sync {
         scope: SettingsScope,
         update: &mut dyn FnMut(Option<String>) -> Option<String>,
     ) -> Result<()>;
+
+    /// The active profile's document (`profiles/<name>.json`), whose `settings` overlay layers
+    /// between the global and the project scope; `None` when no profile is active or the store
+    /// has none. Read only: a profile is written whole through
+    /// [`save_profile`](super::profiles::save_profile).
+    ///
+    /// # Errors
+    ///
+    /// The active profile's file cannot be read.
+    fn profile(&self) -> Result<Option<(String, String)>> {
+        Ok(None)
+    }
 }
 
 /// File-backed storage with proper-lockfile directory locks (`{file}.lock`
 /// empty directory), retrying briefly on contention like the TS `acquireLockSyncWithRetry`.
 pub struct FileSettingsStorage {
+    agent_dir: PathBuf,
     global_path: PathBuf,
     project_path: PathBuf,
     project_root: PathBuf,
@@ -71,6 +84,7 @@ impl FileSettingsStorage {
         let project_root: PathBuf = cwd.into();
         FileSettingsStorage {
             global_path: agent_dir.join("settings.json"),
+            agent_dir,
             project_path: project_root.join(CONFIG_DIR_NAME).join("settings.json"),
             project_root,
         }
@@ -242,6 +256,18 @@ fn read_cache() -> &'static Mutex<HashMap<PathBuf, CachedRead>> {
 }
 
 impl SettingsStorage for FileSettingsStorage {
+    fn profile(&self) -> Result<Option<(String, String)>> {
+        let Some(name) = super::profiles::active_profile() else {
+            return Ok(None);
+        };
+        let path = super::profiles::profile_path(&self.agent_dir, &name)?;
+        match fs::read_to_string(path) {
+            Ok(content) => Ok(Some((name, content))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// The consolidated read arm: on a cache hit, one `stat` and the cached content;
     /// on a miss, the full locked cycle, byte-identical to `with_lock`'s read arm, which
     /// also populates the cache. The same-process mutex still orders in-process writers.
@@ -371,13 +397,48 @@ pub fn atomic_write_with(path: &Path, content: &str, options: AtomicWriteOptions
     Ok(())
 }
 
+/// Write `content` to `path` under the settings lock protocol, atomically and owner-only.
+///
+/// # Errors
+///
+/// The lock cannot be taken, or the write fails.
+pub(crate) fn locked_write(path: &Path, content: &str) -> Result<()> {
+    let _process_guard = process_lock(path);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let _held = FileSettingsStorage::acquire_lock(path)?;
+    atomic_write_with(path, content, AtomicWriteOptions { fsync: true })
+}
+
 #[derive(Default)]
 pub struct InMemorySettingsStorage {
     global: Mutex<Option<String>>,
     project: Mutex<Option<String>>,
+    /// The active profile's `(name, document)`.
+    profile: Mutex<Option<(String, String)>>,
+}
+
+impl InMemorySettingsStorage {
+    /// Serve `document` as the active profile `name`.
+    pub fn set_profile(&self, name: &str, document: &str) {
+        *self
+            .profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((name.to_string(), document.to_string()));
+    }
 }
 
 impl SettingsStorage for InMemorySettingsStorage {
+    fn profile(&self) -> Result<Option<(String, String)>> {
+        Ok(self
+            .profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
+    }
+
     fn with_lock(
         &self,
         scope: SettingsScope,

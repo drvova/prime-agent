@@ -292,6 +292,25 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     }
 
     let agent_dir = crate::config::get_agent_dir();
+    // The profile: `--profile` wins over `PRIME_AGENT_PROFILE`. It must exist; every settings
+    // read in this process layers it from here on, and new sessions carry it on `create`.
+    let mut parsed = parsed;
+    parsed.profile = parsed.profile.clone().or_else(|| {
+        std::env::var(pa_core::settings::PROFILE_ENV_VAR)
+            .ok()
+            .filter(|name| !name.trim().is_empty())
+    });
+    if let Some(name) = &parsed.profile {
+        match pa_core::settings::load_profile(&agent_dir, name) {
+            Ok(Some(_)) => pa_core::settings::set_active_profile(Some(name.clone())),
+            Ok(None) => {
+                return Err(format!(
+                    "profile '{name}' does not exist; /profile new {name} saves one"
+                ))
+            }
+            Err(error) => return Err(format!("{error:#}")),
+        }
+    }
     // Telemetry opt-in resolution: env override, then settings; the
     // runtime config only carries the disabled case.
     let telemetry_disabled = crate::mode::telemetry_disabled(

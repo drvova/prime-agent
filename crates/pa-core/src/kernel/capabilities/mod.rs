@@ -75,6 +75,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
     manifest!("todo", docs = ["todo"]),
     manifest!("usage", docs = ["usage"]),
     manifest!("web", docs = ["web"]),
+    manifest!("worktree", docs = ["worktree"]),
 ];
 
 /// One capability's manifest, as the README's schema table describes it.

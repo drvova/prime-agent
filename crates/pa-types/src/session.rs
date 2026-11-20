@@ -49,6 +49,9 @@ pub struct SessionHeader {
     pub rest: JsonMap,
 }
 
+/// The header key that tags a session with the profile it was created under.
+pub const PROFILE_HEADER_KEY: &str = "profile";
+
 /// The header key that pins a session to one named credential.
 pub const CREDENTIAL_PIN_HEADER_KEY: &str = "credential";
 
@@ -70,6 +73,20 @@ impl SessionHeader {
         self.rest
             .get(CREDENTIAL_PIN_HEADER_KEY)
             .and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
+
+    /// The profile the session was created under, when it was.
+    #[must_use]
+    pub fn profile(&self) -> Option<&str> {
+        self.rest
+            .get(PROFILE_HEADER_KEY)
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// Tag a fresh header with the profile it is created under.
+    pub fn set_profile(&mut self, name: &str) {
+        self.rest
+            .insert(PROFILE_HEADER_KEY.to_string(), serde_json::json!(name));
     }
 
     /// Pin the session to `pin` (a fresh header only: a resume keeps the pin it has).
