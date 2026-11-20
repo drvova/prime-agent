@@ -199,17 +199,17 @@ impl CellBudgets {
     /// Take one decision for `cell`: the decisions it has now used, or `None` when it had
     /// already used [`DECISIONS_PER_CELL`].
     fn take(&mut self, cell: &str) -> Option<u32> {
-        let position = self.cells.iter().position(|(id, _)| id == cell);
-        let used = match position {
-            Some(position) => &mut self.cells[position].1,
-            None => {
-                if self.cells.len() == TRACKED_CELLS {
-                    self.cells.pop_front();
-                }
-                self.cells.push_back((cell.to_string(), 0));
-                &mut self.cells.back_mut().expect("just pushed").1
+        if !self.cells.iter().any(|(id, _)| id == cell) {
+            if self.cells.len() == TRACKED_CELLS {
+                self.cells.pop_front();
             }
-        };
+            self.cells.push_back((cell.to_string(), 0));
+        }
+        let (_, used) = self
+            .cells
+            .iter_mut()
+            .find(|(id, _)| id == cell)
+            .expect("the cell was just tracked");
         if *used >= DECISIONS_PER_CELL {
             return None;
         }

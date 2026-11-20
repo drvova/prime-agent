@@ -13,6 +13,7 @@
 //! cell's output.
 #![cfg(unix)]
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
@@ -202,13 +203,14 @@ async fn one_cell_loop_pays_a_model_call_only_per_decision_up_to_the_bound() {
         .expect("prompt");
     let entries = serde_json::to_value(engine.session.entries().await).expect("entries json");
 
-    let mut expected: String = (0..8)
-        .map(|attempt| format!("[decide] attempt {attempt} failed; next? → retry\n"))
-        .collect();
     let picked: Vec<String> = std::iter::repeat_n("'retry'".to_string(), 8)
         .chain(["'rlm.decide: this cell used its 8 decisions; decide the rest in code or end the cell and decide in the next turn'".to_string()])
         .collect();
-    expected.push_str(&format!("[{}]\n", picked.join(", ")));
+    let mut expected = String::new();
+    for attempt in 0..8 {
+        writeln!(expected, "[decide] attempt {attempt} failed; next? → retry").unwrap();
+    }
+    writeln!(expected, "[{}]", picked.join(", ")).unwrap();
     let (status, text) = tool_result(&entries, "call-1");
     assert_eq!((status.as_str(), text.as_str()), ("ok", expected.as_str()));
     // The turn, eight decisions, and the closing turn: nothing else asked the model.
