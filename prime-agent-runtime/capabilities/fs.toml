@@ -61,3 +61,7 @@ properties = [
   "symbol_definition_count",
   "symbol_reference_count",
 ]
+
+[[telemetry]]
+event = "agent fs rereads"
+properties = ["fs_reread_unchanged_count", "fs_reread_diff_count", "fs_reread_full_count"]

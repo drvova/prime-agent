@@ -435,7 +435,7 @@ fn apply(document: &Document, placed: &[Placed<'_>]) -> (Vec<Line>, Vec<(usize, 
 /// The file cannot be loaded as text, the patch's layout is invalid, it
 /// changes nothing, or the write fails. A stale anchor is not an error: it
 /// is the structured rejection reply.
-pub(crate) fn edit(request: &EditRequest) -> anyhow::Result<(Value, EditFact)> {
+pub(crate) fn edit(request: &EditRequest) -> anyhow::Result<(Value, EditFact, Option<Rewrite>)> {
     let shown = &request.target.shown;
     let loaded = document::load(&request.target.path, shown)?;
     let lines = &loaded.document.lines;
@@ -458,6 +458,7 @@ pub(crate) fn edit(request: &EditRequest) -> anyhow::Result<(Value, EditFact)> {
         return Ok((
             rejection(shown, lines, &stale, anchors),
             EditFact::Rejected { stale: stale.len() },
+            None,
         ));
     }
     let placed = place(&request.edits, lines.len())?;
@@ -530,5 +531,16 @@ pub(crate) fn edit(request: &EditRequest) -> anyhow::Result<(Value, EditFact)> {
             "text": text,
         }),
         EditFact::Applied { edits },
+        Some(Rewrite {
+            before: lines.iter().map(|line| line.text.clone()).collect(),
+            after: patched.lines.into_iter().map(|line| line.text).collect(),
+        }),
     ))
+}
+
+/// The lines of a file before and after an applied patch (the seen-files record).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Rewrite {
+    pub(crate) before: Vec<String>,
+    pub(crate) after: Vec<String>,
 }

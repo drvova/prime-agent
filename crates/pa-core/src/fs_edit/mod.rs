@@ -22,6 +22,7 @@
 mod document;
 mod host;
 mod patch;
+mod seen;
 #[cfg(test)]
 mod tests;
 
@@ -34,6 +35,7 @@ use sha2::{Digest, Sha256};
 
 use document::{Document, Encoding, LineEnds};
 pub(crate) use host::{EditObserver, FsEditHost};
+pub(crate) use seen::{ContextMark, RereadFact, RereadObserver, SeenFiles};
 
 /// Letters in an anchor's hash.
 const HASH_LETTERS: usize = 3;
@@ -309,4 +311,4 @@ pub(crate) fn read(request: &ReadRequest) -> anyhow::Result<(Value, usize)> {
     ))
 }
 
-pub(crate) use patch::{edit, parse_edit};
+pub(crate) use patch::{edit, parse_edit, Rewrite};

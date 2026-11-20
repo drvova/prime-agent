@@ -2438,6 +2438,48 @@ async fn repl_decisions_ride_their_own_event() {
     );
 }
 
+/// Re-reads of seen files ride their own `agent fs rereads` event at session end (counts only,
+/// never a path or content).
+#[tokio::test]
+async fn rereads_ride_their_own_event() {
+    use crate::fs_edit::RereadFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        RereadFact::Unchanged,
+        RereadFact::Unchanged,
+        RereadFact::Diff,
+        RereadFact::Full,
+    ] {
+        counters.note_reread(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent fs rereads"]
+    );
+    let rereads = &event_properties(&fixture.mock, "agent fs rereads").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = rereads
+        .iter()
+        .filter(|(key, _)| key.starts_with("fs_reread_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "fs_reread_unchanged_count": 2,
+            "fs_reread_diff_count": 1,
+            "fs_reread_full_count": 1,
+        })
+    );
+}
+
 /// Kernel `rlm.reload()` and `settings.get()` calls ride their own `agent repl reload` event at
 /// session end (counts only, never a skill name or a setting value).
 #[tokio::test]
