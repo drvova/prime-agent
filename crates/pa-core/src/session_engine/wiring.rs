@@ -114,7 +114,10 @@ impl AgentSession {
         let session = std::sync::Arc::clone(&self.session);
         let store = std::sync::Arc::clone(&self.usage_store);
         std::sync::Arc::new(move |usage| {
-            let (session, store) = (std::sync::Arc::clone(&session), std::sync::Arc::clone(&store));
+            let (session, store) = (
+                std::sync::Arc::clone(&session),
+                std::sync::Arc::clone(&store),
+            );
             Box::pin(async move {
                 let session_id = session.lock().await.get_session_id().to_string();
                 if let Err(error) = store.append_model_usage(session_id, usage).await {

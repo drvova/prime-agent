@@ -84,7 +84,10 @@ mod tests {
                 unresolved: Vec::new(),
             })
         );
-        assert_eq!(parse_reply("I fixed the parser for you."), Err(MISSING_REWRITE));
+        assert_eq!(
+            parse_reply("I fixed the parser for you."),
+            Err(MISSING_REWRITE)
+        );
         assert_eq!(parse_reply("<rewrite>   </rewrite>"), Err(MISSING_REWRITE));
     }
 }

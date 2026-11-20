@@ -62,7 +62,8 @@ mod tests {
 
     #[test]
     fn outcomes_follow_how_much_of_the_rewrite_was_sent() {
-        let rewrite = "Fix `parse_expr` in `src/parser.rs`.\nRun `cargo test -p parser`.\nKeep the API.";
+        let rewrite =
+            "Fix `parse_expr` in `src/parser.rs`.\nRun `cargo test -p parser`.\nKeep the API.";
         let composer = format!("{rewrite}\n\nmy draft");
         let cases = [
             (Some(composer.as_str()), ComposerOutcome::SentAsIs),

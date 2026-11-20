@@ -41,7 +41,11 @@ pub(super) fn host(
     spill: Option<crate::kernel::spill::SpillStore>,
 ) -> BetterHost {
     let host = BetterHost::new(cwd.to_path_buf(), None, spill);
-    host.bind(parent, provider.stream_fn(), Arc::new(|_| Box::pin(async {})));
+    host.bind(
+        parent,
+        provider.stream_fn(),
+        Arc::new(|_| Box::pin(async {})),
+    );
     host
 }
 
@@ -108,18 +112,28 @@ async fn the_helper_reads_then_rewrites_and_the_session_is_untouched() {
             unchanged: false,
         }
     );
-    assert_eq!(*labels.lock().unwrap(), vec!["fs.read parser.rs".to_string()]);
+    assert_eq!(
+        *labels.lock().unwrap(),
+        vec!["fs.read parser.rs".to_string()]
+    );
     // The helper's requests carry the session's system prompt and tool definitions unchanged
     // (the cached prefix), then the cloned conversation and the helper's instructions.
     let first = &provider.calls()[0];
     assert_eq!(first.system_prompt.as_deref(), Some("main system prompt"));
     assert_eq!(
-        first.tools.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
+        first
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["bash", "edit", "python_repl"]
     );
     let sent = serde_json::to_string(&first.messages).unwrap();
     assert!(sent.contains("we talked about the parser"), "{sent}");
-    assert!(sent.contains("<prime_better mode=\\\"deepen\\\">"), "{sent}");
+    assert!(
+        sent.contains("<prime_better mode=\\\"deepen\\\">"),
+        "{sent}"
+    );
     assert!(tool_results(&provider, 1)[0].contains("|fn parse() {}"));
     // Nothing of the run entered the session.
     assert_eq!(parent.state().await.messages.len(), 1);
@@ -134,13 +148,21 @@ async fn a_helper_that_tries_to_edit_is_refused_and_the_file_is_unchanged() {
     provider.push_tool_call_turn(
         None,
         vec![
-            ("c1", "edit", json!({ "path": "parser.rs", "oldText": "fn", "newText": "x" })),
+            (
+                "c1",
+                "edit",
+                json!({ "path": "parser.rs", "oldText": "fn", "newText": "x" }),
+            ),
             (
                 "c2",
                 pa_types::ai::PYTHON_TOOL_NAME,
                 json!({ "code": "open('parser.rs', 'w').write('gone')" }),
             ),
-            ("c3", "bash", json!({ "command": "sed -i s/fn/x/ parser.rs" })),
+            (
+                "c3",
+                "bash",
+                json!({ "command": "sed -i s/fn/x/ parser.rs" }),
+            ),
         ],
     );
     provider.push_text_turn(REPLY);
@@ -148,11 +170,17 @@ async fn a_helper_that_tries_to_edit_is_refused_and_the_file_is_unchanged() {
     let outcome = host(&provider, &parent, dir.path(), None)
         .run(&deepen("fix the parser"), &AbortSignal::never(), &quiet())
         .await;
-    assert!(matches!(outcome, BetterOutcome::Rewritten { .. }), "{outcome:?}");
+    assert!(
+        matches!(outcome, BetterOutcome::Rewritten { .. }),
+        "{outcome:?}"
+    );
     let results = tool_results(&provider, 1);
     assert_eq!(results[0], read_only::EDIT_REFUSED);
     assert_eq!(
-        results.iter().map(|text| text.starts_with("Refused: ")).collect::<Vec<_>>(),
+        results
+            .iter()
+            .map(|text| text.starts_with("Refused: "))
+            .collect::<Vec<_>>(),
         vec![true, true, true],
         "{results:#?}"
     );

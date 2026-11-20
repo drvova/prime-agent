@@ -7,7 +7,8 @@ use std::collections::HashMap;
 /// Session-executed commands (their behavior lives in the session engine).
 /// `better` runs client-side in the TUI (the rewrite lands in the composer) and in the session
 /// everywhere else (the rewrite comes back as the result row).
-pub const SESSION_SLASH_COMMAND_NAMES: [&str; 5] = ["compact", "refine", "goal", "autonomous", "better"];
+pub const SESSION_SLASH_COMMAND_NAMES: [&str; 5] =
+    ["compact", "refine", "goal", "autonomous", "better"];
 
 /// Durable row custom types (TS `messages.ts`): the command echo and its
 /// result, persisted in sessions and rendered by every surface.
