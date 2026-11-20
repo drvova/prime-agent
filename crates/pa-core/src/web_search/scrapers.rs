@@ -5,7 +5,6 @@
 //! escalation some agents layer on top is not ported: these run as plain HTTP.
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use futures::stream::{FuturesUnordered, StreamExt};
 
