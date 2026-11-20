@@ -8,6 +8,7 @@ use super::{
     KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE, KERNEL_BUSY_INTERRUPT_INTERVAL_MS,
     KERNEL_BUSY_REUSE_WAIT_MS, MAX_BACKGROUND_OUTPUT_CHARS, MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS,
 };
+use crate::kernel::spill::SpillCopy;
 use std::fmt::Write as _;
 
 impl Inner {
@@ -166,19 +167,44 @@ impl Inner {
                 self.register_late_sent_agent_message_handler(&execution.request_id, callback);
             }
 
-            let stdout = std::mem::take(&mut buffers.stdout).finish(execution.max_chars);
-            let stderr = std::mem::take(&mut buffers.stderr).finish(execution.max_chars);
+            // A cut stream or result pages out to the cell's spill store, when
+            // it has one: the marker becomes its handle. The spill only queues
+            // the write; the result never waits on disk.
+            let spill = execution.opts.spill.as_ref();
+            let (stdout, stderr) = {
+                let stdout = std::mem::take(&mut buffers.stdout);
+                let stderr = std::mem::take(&mut buffers.stderr);
+                match spill {
+                    Some(store) => (
+                        stdout.finish_spilled(execution.max_chars, store),
+                        stderr.finish_spilled(execution.max_chars, store),
+                    ),
+                    None => (
+                        stdout.finish(execution.max_chars),
+                        stderr.finish(execution.max_chars),
+                    ),
+                }
+            };
             let mut result = buffers.result.take();
             let mut status = buffers.status;
             if let Some(text) = &result {
                 if let Some((end, _)) = text.char_indices().nth(execution.max_chars) {
                     // Match the Unicode-scalar limit used for stdout and stderr.
                     let mut clipped = text[..end].to_string();
-                    let _ = write!(
-                        clipped,
-                        "\n[... output truncated at {} chars ...]",
-                        execution.max_chars
-                    );
+                    match spill {
+                        Some(store) => {
+                            let copy = SpillCopy::of_text(text);
+                            let not_shown = copy.total_chars() - execution.max_chars;
+                            let _ = write!(clipped, "\n{}", store.spill(copy).marker(not_shown));
+                        }
+                        None => {
+                            let _ = write!(
+                                clipped,
+                                "\n[... output truncated at {} chars ...]",
+                                execution.max_chars
+                            );
+                        }
+                    }
                     result = Some(clipped);
                 }
             }
