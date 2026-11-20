@@ -1,0 +1,224 @@
+#![cfg(unix)]
+
+//! tmux user-level verifier for the scoped agents view's Traffic pane: the real `prime-agent`
+//! binary runs in a private tmux server against its own daemon, an isolated HOME, the real
+//! kernel, and the scripted faux provider. The root spawns two children; each child messages
+//! its sibling through `agent_message.send`. The test opens the scoped agents view from the
+//! dock, presses `m`, and polls the pane until both directions list (never a fixed sleep).
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+
+const WAIT: Duration = Duration::from_secs(60);
+
+/// The kernel Python with prime-agent-runtime installed (`PA_E2E_KERNEL_PYTHON`, else the
+/// product's kernel-venv layout under the runner's HOME, which the CI shards bootstrap).
+fn kernel_python() -> PathBuf {
+    let python = std::env::var_os("PA_E2E_KERNEL_PYTHON").map_or_else(
+        || {
+            PathBuf::from(std::env::var("HOME").expect("HOME"))
+                .join(".prime/agent/kernel-venv/bin/python")
+        },
+        PathBuf::from,
+    );
+    assert!(
+        python.exists(),
+        "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
+        python.display()
+    );
+    python
+}
+
+/// A private tmux server (its own socket in the test's temp dir) holding one pane that runs
+/// the product; dropped, it shuts the product's daemon down and kills the server.
+struct Pane {
+    socket: PathBuf,
+    launcher: PathBuf,
+}
+
+impl Pane {
+    fn tmux(&self, args: &[&str]) -> Output {
+        Command::new("tmux")
+            .arg("-S")
+            .arg(&self.socket)
+            .args(args)
+            .output()
+            .expect("tmux runs (install tmux to run this verifier)")
+    }
+
+    fn screen(&self) -> String {
+        String::from_utf8_lossy(&self.tmux(&["capture-pane", "-p", "-t", "main"]).stdout)
+            .into_owned()
+    }
+
+    fn keys(&self, keys: &[&str]) {
+        let mut args = vec!["send-keys", "-t", "main"];
+        args.extend_from_slice(keys);
+        assert!(self.tmux(&args).status.success(), "send-keys {keys:?}");
+    }
+
+    fn type_text(&self, text: &str) {
+        assert!(self
+            .tmux(&["send-keys", "-t", "main", "-l", text])
+            .status
+            .success());
+    }
+
+    /// Poll the pane until `ready` holds; the screen it held then.
+    fn wait(&self, what: &str, ready: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            let screen = self.screen();
+            if ready(&screen) {
+                return screen;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for {what}; the screen:\n{screen}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn wait_for(&self, needle: &str) -> String {
+        self.wait(needle, |screen| screen.contains(needle))
+    }
+}
+
+impl Drop for Pane {
+    fn drop(&mut self) {
+        // The product's daemon outlives its client: stop it through the product's own command.
+        let _ = Command::new("sh")
+            .arg(&self.launcher)
+            .args(["shutdown", "--force"])
+            .output();
+        let _ = self.tmux(&["kill-server"]);
+    }
+}
+
+fn cell(code: &str) -> serde_json::Value {
+    json!({ "content": [{ "type": "toolCall", "name": "python_repl", "arguments": { "code": code } }] })
+}
+
+fn start(dir: &Path) -> Pane {
+    let home = dir.join("home");
+    let agent = home.join(".prime/agent");
+    let project = dir.join("project");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    std::fs::create_dir_all(&project).expect("project dir");
+    std::fs::write(
+        agent.join("settings.json"),
+        json!({ "onboardingCompleted": true, "onboardingShown": true,
+                "telemetry": { "noticeShown": true } })
+        .to_string(),
+    )
+    .expect("settings");
+    let script = dir.join("faux.json");
+    let marker = dir.join("spawned.marker");
+    // One script serves every session (a scripted root's children run its script): the root
+    // (first, no marker yet) spawns the two children; each child polls the roster for its
+    // sibling and messages it directly.
+    let code = format!(
+        "import asyncio, json, os\n\
+         from rlm import host_request\n\
+         marker = {marker:?}\n\
+         if not os.path.exists(marker):\n\
+         \x20   open(marker, 'w').close()\n\
+         \x20   await rlm.spawn('say hello to your sibling', name='alpha')\n\
+         \x20   await rlm.spawn('say hello to your sibling', name='beta')\n\
+         else:\n\
+         \x20   sibling = None\n\
+         \x20   for _ in range(600):\n\
+         \x20       roster = await host_request('agent_observe.list', {{}})\n\
+         \x20       sibling = next((a['sessionName'] for a in roster['agents'] if a.get('relationship') == 'sibling' and a.get('sessionName')), None)\n\
+         \x20       if sibling:\n\
+         \x20           break\n\
+         \x20       await asyncio.sleep(0.05)\n\
+         \x20   await host_request('agent_message.send', {{'message': 'contract ready for review', 'receiver_role': 'sibling', 'receiver_name': sibling}})\n",
+        marker = marker.display().to_string(),
+    );
+    let mut responses = vec![cell(&code), json!({ "text": "cell done" })];
+    responses.extend((0..12).map(|_| json!({ "text": "noted" })));
+    std::fs::write(
+        &script,
+        json!({ "engine": "faux", "responses": responses }).to_string(),
+    )
+    .expect("faux script");
+    // The pane's whole environment, so nothing ambient (provider keys, the user's HOME, a
+    // daemon socket) reaches the product.
+    let launcher = dir.join("launch.sh");
+    let quote = |path: &Path| format!("'{}'", path.display());
+    std::fs::write(
+        &launcher,
+        format!(
+            "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_KERNEL_PYTHON={python} \
+             PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
+            project = quote(&project),
+            home = quote(&home),
+            python = quote(&kernel_python()),
+            script = quote(&script),
+            socket = quote(&dir.join("daemon.sock")),
+            binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
+        ),
+    )
+    .expect("launcher");
+    let pane = Pane {
+        socket: dir.join("tmux.sock"),
+        launcher,
+    };
+    let command = format!("sh {}", quote(&pane.launcher));
+    let started = pane.tmux(&[
+        "-f",
+        "/dev/null",
+        "new-session",
+        "-d",
+        "-s",
+        "main",
+        "-x",
+        "120",
+        "-y",
+        "40",
+        &command,
+    ]);
+    assert!(
+        started.status.success(),
+        "tmux new-session: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+    pane
+}
+
+#[test]
+fn two_children_messaging_each_other_show_in_the_traffic_pane() {
+    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
+        .expect("temp dir");
+    let pane = start(dir.path());
+    pane.wait_for("faux-1");
+    pane.type_text("spawn the pair");
+    pane.keys(&["Enter"]);
+    pane.wait_for("cell done");
+    // The dock lists the children; its focus key and Enter open the scoped agents view.
+    pane.wait("the subagents dock", |screen| {
+        screen.contains("alpha") || screen.contains("subagent")
+    });
+    pane.keys(&["M-a"]);
+    pane.keys(&["Enter"]);
+    pane.wait_for("subagents");
+    let closed = pane.wait("both children listed", |screen| {
+        screen.contains("alpha") && screen.contains("beta") && screen.contains("traffic")
+    });
+    eprintln!("--- the scoped view, pane closed ---\n{closed}");
+    pane.keys(&["m"]);
+    let open = pane.wait("both directions in the Traffic pane", |screen| {
+        screen.contains("alpha \u{2192} beta \u{b7} sibling")
+            && screen.contains("beta \u{2192} alpha \u{b7} sibling")
+    });
+    eprintln!("--- the Traffic pane ---\n{open}");
+    assert!(open.contains("Traffic \u{b7} 2 messages"), "{open}");
+    assert!(open.contains("contract ready for review"), "{open}");
+    assert!(open.contains("M hide traffic"), "{open}");
+}
