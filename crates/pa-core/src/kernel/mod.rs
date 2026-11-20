@@ -17,6 +17,7 @@ pub mod provisioner;
 pub(crate) mod python_env;
 pub mod rlm_runtime;
 pub mod shared;
+pub mod spill;
 pub mod state_snapshot;
 
 pub use bootstrap::{
