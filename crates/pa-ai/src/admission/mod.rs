@@ -65,6 +65,30 @@ impl AdmissionKey {
     }
 }
 
+/// The provider field of the daemon-wide session-boot budget's key: not a provider, the one
+/// shared budget for booting sessions (worker spawns for `rlm.spawn` / `rlm.create_session`
+/// children, kernel boots, crash-recovery adoption). Its slot runs
+/// [`session_boot_controller_config`] instead of the pool's provider config.
+pub const SESSION_BOOT: &str = "session-boot";
+
+impl AdmissionKey {
+    /// The session-boot budget's key.
+    #[must_use]
+    pub fn session_boot() -> Self {
+        Self {
+            provider: SESSION_BOOT.to_string(),
+            credential: String::new(),
+            scope: String::new(),
+        }
+    }
+
+    /// Whether this is the session-boot budget, not a provider key.
+    #[must_use]
+    pub fn is_session_boot(&self) -> bool {
+        self.provider == SESSION_BOOT && self.credential.is_empty() && self.scope.is_empty()
+    }
+}
+
 /// One permit request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -222,6 +246,50 @@ pub const fn provider_controller_config() -> ControllerConfig {
         headroom_pct: 20,
         decrease_spacing_ms: 2_000,
         ceiling_ttl_ms: 15 * 60_000,
+    }
+}
+
+/// The boot concurrency `PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS` pins (1..=64; a larger value
+/// caps at 64), or `None` when it is unset, empty, zero, or not a number.
+#[must_use]
+pub fn pinned_boot_concurrency(raw: Option<&str>) -> Option<u32> {
+    let raw = raw.filter(|raw| !raw.is_empty() && raw.chars().all(|c| c.is_ascii_digit()))?;
+    let parsed: u64 = raw.parse().unwrap_or(u64::MAX);
+    (parsed >= 1).then(|| u32::try_from(parsed.min(64)).unwrap_or(64))
+}
+
+/// The session-boot budget's tuning: boots start at the old kernel-boot width (twice the
+/// cores, 4..=16: boots are IO-bound), climb by one per window of fast boots, halve when a boot
+/// finishes under CPU or memory pressure, and back off when boot latency doubles. Rate pacing
+/// stays out of the way (boots are bounded by concurrency only). The
+/// `PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS` override pins the width: a hard limit the
+/// controller never moves.
+#[must_use]
+pub fn session_boot_controller_config() -> ControllerConfig {
+    let pinned = pinned_boot_concurrency(
+        std::env::var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS")
+            .ok()
+            .as_deref(),
+    );
+    let cores = std::thread::available_parallelism()
+        .map_or(4, std::num::NonZero::get)
+        .min(64);
+    let start = u32::try_from((cores * 2).clamp(4, 16)).unwrap_or(4);
+    ControllerConfig {
+        initial_concurrency: pinned.unwrap_or(start),
+        min_concurrency: pinned.unwrap_or(1),
+        max_concurrency: pinned.unwrap_or(64),
+        initial_rate_per_min: 100_000,
+        min_rate_per_min: 100_000,
+        max_rate_per_min: 100_000,
+        rate_step_per_min: 0,
+        decrease_keep_pct: 50,
+        latency_keep_pct: 75,
+        latency_rise_pct: 200,
+        latency_rise_samples: 2,
+        headroom_pct: 0,
+        decrease_spacing_ms: 2_000,
+        ceiling_ttl_ms: 5 * 60_000,
     }
 }
 
