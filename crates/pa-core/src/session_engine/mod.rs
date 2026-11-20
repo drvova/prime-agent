@@ -18,6 +18,7 @@ pub mod compaction_trace;
 pub mod compaction_utils;
 pub mod context_breakdown;
 pub mod context_thinning;
+mod decision;
 pub mod effort_switch;
 pub mod engine;
 pub mod error_classify;

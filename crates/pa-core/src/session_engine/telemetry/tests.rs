@@ -12,6 +12,7 @@ use pa_telemetry::{MockSink, TelemetryClient, TelemetryClientConfig};
 
 use super::*;
 use crate::session_engine::agent_messaging::AgentMessageRefusals;
+use crate::session_engine::decision::DecideFact;
 
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
@@ -2295,6 +2296,48 @@ async fn repl_notifications_and_effort_switches_ride_their_own_event() {
             "notify_undelivered_count": 1,
             "effort_set_count": 1,
             "effort_refused_count": 2,
+        })
+    );
+}
+
+/// Kernel `rlm.decide(...)` outcomes ride their own `agent repl decide` event at session end
+/// (counts only, never a question or a choice).
+#[tokio::test]
+async fn repl_decisions_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        DecideFact::Decided,
+        DecideFact::Decided,
+        DecideFact::Limited,
+        DecideFact::Failed,
+        DecideFact::Decided,
+    ] {
+        counters.note_decision(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl decide"]
+    );
+    let decide = &event_properties(&fixture.mock, "agent repl decide").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = decide
+        .iter()
+        .filter(|(key, _)| key.starts_with("decide_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "decide_count": 3,
+            "decide_limited_count": 1,
+            "decide_failed_count": 1,
         })
     );
 }
