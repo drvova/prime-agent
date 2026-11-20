@@ -53,8 +53,8 @@ pub(crate) fn parse_handle(handle: &str) -> Option<&str> {
 /// ephemeral session, whose handles answer `unavailable`).
 pub(crate) fn register_ctx_handlers(
     handlers: &mut HostRequestHandlers,
-    store: Option<SpillStore>,
-    observer: Option<CtxObserver>,
+    store: Option<&SpillStore>,
+    observer: Option<&CtxObserver>,
 ) {
     for request_type in ["ctx.page", "ctx.grep", "ctx.tail", "ctx.info"] {
         let read = match request_type {
@@ -63,8 +63,8 @@ pub(crate) fn register_ctx_handlers(
             "ctx.info" => CtxRead::Info,
             _ => CtxRead::Page,
         };
-        let store = store.clone();
-        let observer = observer.clone();
+        let store = store.cloned();
+        let observer = observer.cloned();
         handlers.register(
             request_type,
             host_handler(move |payload| {

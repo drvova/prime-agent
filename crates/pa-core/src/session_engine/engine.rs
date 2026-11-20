@@ -590,7 +590,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         &mut handlers,
         session_artifact_dir
             .as_deref()
-            .map(crate::kernel::spill::SpillStore::for_session_dir),
+            .map(crate::kernel::spill::SpillStore::for_session_dir)
+            .as_ref(),
         /*observer*/ None,
     );
     let local_harness_dir =

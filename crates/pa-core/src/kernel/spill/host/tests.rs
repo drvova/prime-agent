@@ -7,7 +7,7 @@ use crate::kernel::spill::{SpillCopy, SpillLookup, SpillStore, SPILL_DIR};
 
 fn handlers_over(store: Option<SpillStore>) -> HostRequestHandlers {
     let mut handlers = HostRequestHandlers::new();
-    register_ctx_handlers(&mut handlers, store, /*observer*/ None);
+    register_ctx_handlers(&mut handlers, store.as_ref(), /*observer*/ None);
     handlers
 }
 
