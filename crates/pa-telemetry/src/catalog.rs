@@ -1964,6 +1964,41 @@ const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
     ],
 };
 
+/// The kernel's read-only command cache (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a lookup ran: allowlisted read-only
+/// `bash()` commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) answered from the cache
+/// or run, and `fs.read` calls answered from the cache or read. Counts only: never a command, a
+/// path, or output.
+const AGENT_READONLY_CACHE: EventRule = EventRule {
+    name: "agent readonly cache",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("readonly_cache_hit_count", required(count())),
+        ("readonly_cache_miss_count", required(count())),
+        ("readonly_cache_fs_read_hit_count", required(count())),
+        ("readonly_cache_fs_read_miss_count", required(count())),
+    ],
+};
+
+/// Edit-then-check (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when an edit was checked: checks run after an edit (`fs.edit` or the
+/// `edit` skill), those that found diagnostics, those that outlived the edit's wait (their
+/// diagnostics arrive as a notice), those dropped because their learned cost exceeds their benefit,
+/// and those that could not run. Counts only: never a path, a command, or output.
+const AGENT_EDIT_CHECKS: EventRule = EventRule {
+    name: "agent edit checks",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("edit_check_run_count", required(count())),
+        ("edit_check_found_count", required(count())),
+        ("edit_check_late_count", required(count())),
+        ("edit_check_skipped_count", required(count())),
+        ("edit_check_failed_count", required(count())),
+    ],
+};
+
 /// Typed test-run summaries (v2), emitted at session end beside `agent session ended` (which sits
 /// near the backend's 128-key cap) only when the kernel summarized an awaited test run (cargo test,
 /// pytest, unittest, go test, jest, vitest): runs summarized, runs with failures, the failed tests
@@ -2101,6 +2136,8 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_ERROR_ENRICHMENT,
+        &AGENT_READONLY_CACHE,
+        &AGENT_EDIT_CHECKS,
         &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,

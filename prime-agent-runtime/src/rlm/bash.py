@@ -21,7 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
-from . import test_results
+from . import command_cache, test_results
 
 if TYPE_CHECKING:
     from . import _winjob
@@ -334,6 +334,12 @@ class BashResult:
     # An awaited test run's typed summary (counts, each failure's name, location, message, and
     # output handle); None for any other command. Out of the repr, which stays the one-line shape.
     tests: test_results.TestSummary | None = field(default=None, repr=False)
+    # Answered from the read-only command cache (the command did not run again).
+    cached: bool = field(default=False, compare=False)
+
+    def __repr__(self) -> str:
+        cached = ", cached=True" if self.cached else ""
+        return f"BashResult(exit_code={self.exit_code!r}, output={self.output!r}, duration={self.duration!r}{cached})"
 
     @property
     def running(self) -> bool:
@@ -347,8 +353,9 @@ class BashResult:
         # a one-line output keeps the dataclass repr.
         if len(self.output.splitlines()) < 2:
             return None
+        cached = ", cached" if self.cached else ""
         summary = f"\n{self.tests}" if self.tests is not None else ""
-        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f}){summary}\n{self.output}"
+        return f"BashResult(exit_code={self.exit_code}, duration={self.duration:.2f}{cached}){summary}\n{self.output}"
 
 
 @dataclass(frozen=True)
@@ -1445,7 +1452,71 @@ class PersistentBashHandle(BashHandle):
         return f"<BashHandle persistent pid={self._pid} {state} command={self.command!r}>"
 
 
-def bash(command: str, persistent: bool = False) -> BashHandle:
+class CachedBash:
+    """A read-only command answered from the cache (see `rlm.command_cache`): finished at once,
+    never spawned. It offers the BashHandle reads; its result has `cached` True."""
+
+    def __init__(self, command: str, result: BashResult) -> None:
+        self.command = command
+        self._result = result
+
+    pid = 0
+    running = False
+
+    def output(self) -> str:
+        return self._result.output
+
+    def tail(self, n: int = 50) -> str:
+        return "\n".join(self._result.output.splitlines()[-n:])
+
+    def poll(self) -> BashResult:
+        return self._result
+
+    def kill(self, sig: int = signal.SIGTERM, grace: float = 5.0) -> None:
+        pass
+
+    async def _value(self) -> BashResult:
+        return self._result
+
+    def __await__(self) -> Generator[Any, None, BashResult]:
+        return self._value().__await__()
+
+    def wait(self, seconds: float) -> Awaitable[BashResult]:
+        return self._value()
+
+    def __repr__(self) -> str:
+        return f"<BashHandle cached exit_code={self._result.exit_code} command={self.command!r}>"
+
+
+def _cached_or_spawned(command: str) -> BashHandle | CachedBash:
+    """An allowlisted read-only command whose inputs are unchanged answers from the cache; any
+    other command spawns, and a read-only one is remembered when its inputs held while it ran."""
+    deps = command_cache.plan(command)
+    if deps is None:
+        return BashHandle(command)
+    cwd = os.getcwd()
+    stamps = command_cache.fingerprint(cwd, deps)
+    if stamps is None:
+        return BashHandle(command)
+    key = command_cache.CacheKey(cwd, command)
+    hit = command_cache.lookup(key, stamps)
+    command_cache.note("bash", hit is not None)
+    if hit is not None:
+        return CachedBash(command, hit)
+    epoch = command_cache.current_epoch()
+    handle = BashHandle(command)
+
+    def remember() -> None:
+        result = handle._result
+        if result is not None and command_cache.fingerprint(cwd, deps) == stamps:
+            cached = replace(result, cached=True, duration=0.0)
+            command_cache.remember(key, stamps, epoch, cached, chars=len(result.output))
+
+    handle._add_done_callback(remember)
+    return handle
+
+
+def bash(command: str, persistent: bool = False) -> BashHandle | CachedBash:
     """Start a shell command immediately; await the handle for the result.
 
     `await bash(cmd)` is a one-shot: cancelling the await (e.g. an interrupt)
@@ -1485,10 +1556,10 @@ def bash(command: str, persistent: bool = False) -> BashHandle:
     if not isinstance(command, str) or not command:
         raise TypeError("command must be a non-empty str")
     if persistent:
-        handle: BashHandle = _spawn_persistent(command)
+        handle: BashHandle | CachedBash = _spawn_persistent(command)
     else:
         _install_shutdown_hook()
-        handle = BashHandle(command)
+        handle = _cached_or_spawned(command)
     from . import repl
 
     repl.emit(

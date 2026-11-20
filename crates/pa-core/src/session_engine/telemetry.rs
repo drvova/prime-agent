@@ -47,7 +47,9 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
 mod error_enrichment;
+mod readonly_cache;
 mod test_summaries;
 
 mod status;
@@ -442,6 +444,10 @@ struct CounterValues {
     /// Failed cells and commands given their error locations' source lines,
     /// reported by `agent error enrichment`.
     error_enrichment: error_enrichment::ErrorEnrichmentCounts,
+    /// Read-only command cache lookups, reported by `agent readonly cache`.
+    readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
+    edit_checks: edit_checks::EditCheckCounts,
     /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
     test_summaries: test_summaries::TestSummaryCounts,
 }
@@ -2005,6 +2011,8 @@ impl SessionTelemetry {
                 .track("agent repl background cells", cell_properties);
         }
         self.track_error_enrichment();
+        self.track_readonly_cache();
+        self.track_edit_checks();
         self.track_test_summaries();
         self.client.flush().await
     }

@@ -19,7 +19,8 @@ async def run(path: str, old_str: str, new_str: str) -> str:
         new_str: Replacement text.
 
     Returns:
-        A short confirmation message.
+        A short confirmation message, followed by the edited file's check (its
+        diagnostics, or `clean`) when the file has one that ends in time.
 
     Raises:
         FileNotFoundError: If ``path`` does not exist.
@@ -41,9 +42,20 @@ async def run(path: str, old_str: str, new_str: str) -> str:
     match_index = content.index(old_str)
     start_line = content.count("\n", 0, match_index) + 1
     filepath.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
+    try:
+        from rlm.command_cache import invalidate
+    except ImportError:
+        pass
+    else:
+        invalidate()
     resolved_path = str(filepath.resolve())
     _emit_diff(resolved_path, old_str, new_str, start_line)
-    return f"Edited {resolved_path}"
+    try:
+        from rlm.edit_check import after_edit
+    except ImportError:
+        return f"Edited {resolved_path}"
+    check = await after_edit(resolved_path)
+    return f"Edited {resolved_path}\n{check}" if check else f"Edited {resolved_path}"
 
 
 # Characters of the file and of old_str shown at the divergence point.
