@@ -19,6 +19,12 @@ pseudonymous installation identity for Prime Agent product analytics.
   `FileSink` (local JSONL transparency mirror at `<agentDir>/telemetry.jsonl`),
   `NoopSink` (opt-out fast path), `MockSink` (tests, also re-exported for
   downstream crate tests).
+- The kernel capabilities' standalone adoption events: one rule file per capability under
+  `src/catalog/capabilities/` (a pair that shares one event shares one file: todo+ask,
+  notify+model, resource_reload+settings, mcp+session; fs owns two events; the `web.search`
+  counts ride `agent session ended`, whose rule stays in the catalog), listed in emission order
+  as `CAPABILITY_EVENTS_BEFORE_SESSION_END` / `CAPABILITY_EVENTS_AFTER_SESSION_END`, which
+  pa-core's generic capability counter emits as they stand.
 - `install_id`: `<agentDir>/telemetry.json` `{version, installationId}`,
   exclusive 0600 create, validated on load (TS parity).
 - `rename_onto`: the shared rename-onto-destination primitive for durable

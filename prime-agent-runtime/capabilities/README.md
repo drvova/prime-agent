@@ -48,6 +48,10 @@ A new capability touches:
 - one `manifest!("<name>", docs = ["<name>"])` line in pa-core's `MANIFESTS`, which embeds
   both files (`include_str!` needs a literal path, so this list cannot be read from the
   directory without a build script).
+- for a `[[telemetry]]` block, its rule file in pa-telemetry (`src/catalog/capabilities/<name>.rs`,
+  listed in that module's emission order); its seam counts through pa-core's generic
+  `SessionCounters::note_capability` (or `note_capability_max`) under the rule's property names.
+  No shared counter struct changes.
 
 Do not grow a shared list in another file. Its `probe` statements may use only `inspect`, `rlm`,
 and the names its own earlier statements bind, since the probe runs the manifests in name order.
