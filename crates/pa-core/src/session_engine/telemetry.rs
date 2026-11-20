@@ -627,6 +627,12 @@ pub enum BetterTelemetryFact {
     Edited,
     /// The user never sent an inserted rewrite (or replaced most of it).
     Discarded,
+    /// A brief-mode run started (`better(mode="brief")`, `rlm.spawn(better=True)`).
+    BriefRun,
+    /// A brief-mode run found nothing to fix.
+    BriefUnchanged,
+    /// A verification found unresolved references and ran a refine pass.
+    VerificationPass,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -638,6 +644,9 @@ struct BetterCounts {
     sent_as_is: u64,
     edited: u64,
     discarded: u64,
+    brief_runs: u64,
+    brief_unchanged: u64,
+    verification_passes: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -759,6 +768,9 @@ impl SessionCounters {
                 BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
                 BetterTelemetryFact::Edited => &mut counts.edited,
                 BetterTelemetryFact::Discarded => &mut counts.discarded,
+                BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
+                BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
+                BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
             };
             *counter += 1;
         });
@@ -1568,6 +1580,9 @@ impl SessionTelemetry {
                 ("better_sent_as_is_count", better.sent_as_is),
                 ("better_edited_count", better.edited),
                 ("better_discarded_count", better.discarded),
+                ("better_brief_run_count", better.brief_runs),
+                ("better_brief_unchanged_count", better.brief_unchanged),
+                ("better_verification_pass_count", better.verification_passes),
             ] {
                 better_properties.set(key, Value::from(value));
             }
