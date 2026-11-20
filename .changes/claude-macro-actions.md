@@ -1,0 +1,1 @@
+- A Python REPL cell can now run a whole search, edit, test and retry loop on its own and ask the session's model only at real decision points: `await rlm.decide(question, options, context=...)` makes one short, bounded model call (at most 8 per cell) and shows each decision as one `[decide]` line in the cell output.

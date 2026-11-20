@@ -1017,6 +1017,11 @@ class _RLMNamespace:
         # unknown names to this namespace, so a from-import would recurse into this property.
         return importlib.import_module(f"{__name__}.cells")
 
+    async def decide(self, question: str, options: Any, *, context: str | None = None) -> str:
+        """One bounded judgment call by the session's model; the chosen option (see ``rlm.decision``)."""
+        decision = importlib.import_module(f"{__name__}.decision")
+        return await decision.decide(question, options, context=context)
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(_NOT_CALLABLE_MESSAGE)
 

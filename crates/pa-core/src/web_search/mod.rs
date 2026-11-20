@@ -16,6 +16,7 @@
 mod ai_search;
 mod catalog;
 pub(crate) mod dates;
+pub(crate) mod engine_limits;
 mod host;
 pub(crate) mod http;
 mod open_indexes;
@@ -263,6 +264,8 @@ pub struct WebSearchEngine {
     client: OnceLock<reqwest::Client>,
     /// Tests route every provider to `{base}/{provider id}{production path}`.
     base_override: Option<String>,
+    /// The scraped engines' learned rate, concurrency, cooldowns and latency.
+    limits: engine_limits::EngineLimits,
 }
 
 impl WebSearchEngine {
@@ -274,6 +277,7 @@ impl WebSearchEngine {
             Arc::new(WebSearchEngine {
                 client: OnceLock::new(),
                 base_override: None,
+                limits: engine_limits::EngineLimits::new(),
             })
         }))
     }
@@ -285,6 +289,7 @@ impl WebSearchEngine {
         let engine = WebSearchEngine {
             client: OnceLock::new(),
             base_override: Some(base.to_string()),
+            limits: engine_limits::EngineLimits::new(),
         };
         let _ = engine.client.set(
             reqwest::Client::builder()
@@ -379,6 +384,7 @@ impl WebSearchEngine {
                 recency: request.recency,
                 timeout: request.timeout,
                 access: credentials.access(provider),
+                limits: &self.limits,
             };
             match dispatch(&call).await {
                 Ok(mut response) => {
@@ -478,10 +484,19 @@ pub(crate) async fn dispatch(call: &ProviderCall<'_>) -> ProviderResult<SearchRe
         ProviderId::Firecrawl => ai_search::firecrawl(call).await,
         ProviderId::Searxng => open_indexes::searxng(call).await,
         ProviderId::Hackernews => open_indexes::hackernews(call).await,
-        ProviderId::Duckduckgo => scrapers::duckduckgo(call).await,
-        ProviderId::Startpage => scrapers::startpage(call).await,
-        ProviderId::Mojeek => scrapers::mojeek(call).await,
-        ProviderId::Ecosia => scrapers::ecosia(call).await,
+        // The scraped engines run under their own learned limits.
+        ProviderId::Duckduckgo => {
+            call.limits
+                .run(call.provider, scrapers::duckduckgo(call))
+                .await
+        }
+        ProviderId::Startpage => {
+            call.limits
+                .run(call.provider, scrapers::startpage(call))
+                .await
+        }
+        ProviderId::Mojeek => call.limits.run(call.provider, scrapers::mojeek(call)).await,
+        ProviderId::Ecosia => call.limits.run(call.provider, scrapers::ecosia(call)).await,
         ProviderId::Public => Box::pin(scrapers::public(call)).await,
     }
 }

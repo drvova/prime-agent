@@ -138,6 +138,8 @@ pub struct ModelSelection {
     pub api_key: Option<String>,
     /// `--credential <label|id>`: the stored named credential a new session pins.
     pub credential: Option<String>,
+    /// The profile new sessions are created under (`--profile`, switched by `/profile`).
+    pub profile: Option<String>,
     /// The requested thinking level (`--thinking`); the worker clamps it to the supported levels.
     pub thinking: Option<pa_types::ai::ModelThinkingLevel>,
 }
@@ -246,6 +248,10 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         source: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The run's profile state at start (event `agent profile state`): `active` reports whether
+    /// new sessions are created under a profile; the implementation counts the stored profiles.
+    /// Never a profile name. Implementations return at once: the run spawns it and never waits.
+    fn profile_state(&self, active: bool) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A submission parked in the follow-up queue behind a running turn: `lane` is `steering`
     /// (Enter) / `follow_up` (the follow-up key); `steering_mode` is the session's queue delivery
     /// mode (TS `steeringMode`: `all` = batched at the boundary, `one-at-a-time` = one steer per
@@ -554,6 +560,9 @@ impl InteractiveOptions {
         }
         if let Some(credential) = &self.model_selection.credential {
             config["credential"] = json!(credential);
+        }
+        if let Some(profile) = &self.model_selection.profile {
+            config["profile"] = json!(profile);
         }
         if let Some(thinking) = self.model_selection.thinking {
             config["thinking"] = json!(thinking.wire_name());

@@ -95,6 +95,7 @@ fn cached_prefix_is_stable_across_sessions() {
     options.generic_mcp_servers = vec!["slack".into(), "github".into()];
     options.context_files = vec![("AGENTS.md".into(), "Never commit main.".into())];
     options.append_system_prompt = Some("And one more thing.".into());
+    options.project_card = Some("# Project card\n\n- Test: `cargo test`".into());
     let second = system_prompt_breakdown(&options);
 
     assert_eq!(first.cached_prefix_len, second.cached_prefix_len);
@@ -120,6 +121,7 @@ fn cached_prefix_is_stable_across_sessions() {
     assert!(first_tail.contains("Pre-installed Python packages:"));
     let second_tail = &second.assembled[second.cached_prefix_len..];
     assert!(second_tail.contains("/completely/different"));
+    assert!(second_tail.contains("# Project card\n\n- Test: `cargo test`"));
     assert!(second_tail.contains("Enabled generic MCP servers: `github`, `slack`."));
     assert!(second_tail.contains("Recursive agent depth: 3 (not root)"));
     assert!(second_tail.contains("You are a child agent spawned by orchestrator."));

@@ -234,5 +234,34 @@ class FsHashlineClientTest(unittest.TestCase):
         host.assert_not_awaited()
 
 
+class FsSymbolClientTest(unittest.TestCase):
+    def test_symbol_sends_the_name_and_parses_definitions_and_references(self) -> None:
+        reply = {
+            "definitions": [{"path": "src/store.rs", "line": 4, "kind": "fn", "text": "pub fn load() {", "handle": "out:00000000ab"}],
+            "references": [{"path": "src/main.rs", "line": 9, "text": "store.load();"}],
+            "truncated": True,
+            "partial": False,
+        }
+        host = AsyncMock(return_value=reply)
+        with patch.object(fs, "host_request", host):
+            result = asyncio.run(fs.symbol("load", max_references=1))
+        host.assert_awaited_once_with("fs.symbol", {"name": "load", "maxReferences": 1})
+        self.assertEqual(
+            (result, str(result)),
+            (
+                fs.SymbolResult(
+                    name="load",
+                    definitions=[fs.SymbolLocation("src/store.rs", 4, "pub fn load() {", "fn", "out:00000000ab")],
+                    references=[fs.SymbolLocation("src/main.rs", 9, "store.load();")],
+                    truncated=True,
+                    partial=False,
+                ),
+                "load: 1 definitions, 1+ references\n"
+                "def src/store.rs:4 [fn] pub fn load() { · out:00000000ab\n"
+                "ref src/main.rs:9 store.load();",
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

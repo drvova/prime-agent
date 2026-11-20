@@ -1,0 +1,1 @@
+- Profiles: `--profile <name>` (or `PRIME_AGENT_PROFILE`) layers `profiles/<name>.json` between global and project settings and pins its mapped credential for new sessions; `/profile` switches the profile new sessions use, `/profile new <name>` saves the current model and accounts, and the top bar tags the active profile.

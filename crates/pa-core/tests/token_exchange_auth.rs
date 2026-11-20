@@ -330,6 +330,7 @@ fn served(token: &str) -> ResolvedRequestAuth {
         ])),
         error: None,
         request_model: None,
+        admission_credential: None,
     }
 }
 
@@ -363,6 +364,7 @@ fn a_provider_without_an_auth_block_keeps_its_static_key() {
             headers: None,
             error: None,
             request_model: None,
+            admission_credential: None,
         }
     );
 }
@@ -622,6 +624,7 @@ impl Session {
             model: model.clone(),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
         Session {
             stream_fn: switchable_stream_fn_with_live_auth(target, live_auth),
