@@ -1975,6 +1975,22 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the session asked a query: queries answered from the
+/// project's symbol index, those answered before its first full pass (partial), and the definitions
+/// and references returned. Counts only: never a name or a path.
+const AGENT_SYMBOL_INDEX: EventRule = EventRule {
+    name: "agent symbol index",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("symbol_query_count", required(count())),
+        ("symbol_query_partial_count", required(count())),
+        ("symbol_definition_count", required(count())),
+        ("symbol_reference_count", required(count())),
+    ],
+};
+
 /// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
 /// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
 /// got the source lines around their error locations, the locations attached, the parsed locations
@@ -2165,6 +2181,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_SYMBOL_INDEX,
         &AGENT_ERROR_ENRICHMENT,
         &AGENT_READONLY_CACHE,
         &AGENT_EDIT_CHECKS,
