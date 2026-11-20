@@ -2383,3 +2383,51 @@ async fn kernel_login_and_recall_ride_their_own_event() {
         })
     );
 }
+
+/// `fs.symbol` queries ride their own `agent symbol index` event at session end (counts only: never a name or a path).
+#[tokio::test]
+async fn symbol_index_ride_their_own_event() {
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    use crate::symbol_index::SymbolFact;
+    for fact in [
+        SymbolFact {
+            definitions: 1,
+            references: 4,
+            partial: true,
+        },
+        SymbolFact {
+            definitions: 2,
+            references: 0,
+            partial: false,
+        },
+    ] {
+        counters.note_symbol_query(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent symbol index"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent symbol index").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("symbol_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "symbol_query_count": 2,
+            "symbol_query_partial_count": 1,
+            "symbol_definition_count": 3,
+            "symbol_reference_count": 4,
+        })
+    );
+}

@@ -1,0 +1,1 @@
+- New `fs.symbol(name)` in the REPL: definitions, references, and a handle to each definition's source in one call, from a per-project symbol index (Rust, Python, JS/TS, Go, C/C++) kept on disk, refreshed incrementally, and built in the background; a query before the first full pass answers partial instead of waiting.

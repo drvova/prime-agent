@@ -47,6 +47,8 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod symbol_index;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -432,6 +434,8 @@ struct CounterValues {
     /// Cells that continued in the background, and where each cell's yield
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
+    /// `fs.symbol` queries, reported by `agent symbol index`.
+    symbol_index: symbol_index::SymbolIndexCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -1838,6 +1842,7 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_symbol_index();
         self.client.flush().await
     }
 

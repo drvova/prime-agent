@@ -1886,6 +1886,22 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `fs.symbol` adoption (v2), emitted at session end beside `agent session ended` (which sits
+/// near the backend's 128-key cap) only when the session asked a query: queries answered from the
+/// project's symbol index, those answered before its first full pass (partial), and the definitions
+/// and references returned. Counts only: never a name or a path.
+const AGENT_SYMBOL_INDEX: EventRule = EventRule {
+    name: "agent symbol index",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("symbol_query_count", required(count())),
+        ("symbol_query_partial_count", required(count())),
+        ("symbol_definition_count", required(count())),
+        ("symbol_reference_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2001,6 +2017,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_SYMBOL_INDEX,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

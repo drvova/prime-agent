@@ -592,13 +592,25 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     // `ctx.*`: page a cut cell output back in by its handle, from the
     // session's spill store (an ephemeral session answers `unavailable`).
+    let spill_store = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
-        session_artifact_dir
-            .as_deref()
-            .map(crate::kernel::spill::SpillStore::for_session_dir)
-            .as_ref(),
+        spill_store.as_ref(),
         /*observer*/ None,
+    );
+    // `fs.symbol`: the project's symbol index, built in the background from
+    // now on; a definition's source pages out to the spill store.
+    crate::symbol_index::register_symbol_handler(
+        &mut handlers,
+        crate::symbol_index::SymbolIndex::for_project(&cwd, Some(&config.agent_dir)),
+        spill_store,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_symbol_query(fact))
+                as crate::symbol_index::SymbolObserver
+        }),
     );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
