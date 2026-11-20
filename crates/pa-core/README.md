@@ -63,7 +63,11 @@ and a lenient post-filter, the normalized result shape and its rendering,
 and the `web.search` host request the kernel's `rlm.web` client and the
 bundled websearch skill reach. One process-wide engine serves every
 session; credentials resolve per search on the host and never enter the
-kernel; the HTTP client is built on the first search, never at startup.
+kernel; the HTTP client is built on the first search, never at startup. The scraped keyless engines run under per-engine
+limits (`web_search::engine_limits`: a `pa_types::control` controller per engine through pa-ai's
+permit pool; an engine with no permit now is skipped, never waited on; a block, CAPTCHA, or 429
+cools it down for 60 s doubling to 15 min; the public aggregate's soft deadline per engine is
+twice its recent latency, 1..=5 s), counted by `agent web search engines`.
 
 URL reading (`web_read`, crate-internal): the `web.read` host request the
 kernel's `rlm.web.read` reaches — one URL to markdown with its outline of
@@ -134,6 +138,13 @@ daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 `usage_host::branch_spend` is the one spend fold the RPC stats share. Adoption counts
 ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
+
+Session worktrees (`worktree_host`): the kernel `worktree` capability runs its git work in
+the kernel (`rlm.worktree`) and reports each operation through `worktree.record`; the host
+keeps the session's `WorktreeLedger` (exposed as `SessionEngine.worktrees`) of the worktrees
+made and not removed, which `dispose_kernel` names in the session-end notice. Adoption counts
+ride the `agent worktrees` event. Non-goals: git operations on the host, and any name, path,
+or diff in telemetry.
 
 Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
 `session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside

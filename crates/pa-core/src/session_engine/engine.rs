@@ -144,6 +144,9 @@ pub struct SessionEngine {
     pub turn_boundary: std::sync::Arc<super::turn_boundary::TurnBoundaryRequests>,
     /// `None` when telemetry is disabled or the session is not depth 0.
     pub telemetry: Option<std::sync::Arc<super::telemetry::SessionTelemetry>>,
+    /// The kernel `worktree` capability's ledger: the worktrees this session made and has not
+    /// removed, named by the session-end notice.
+    pub worktrees: std::sync::Arc<crate::worktree_host::WorktreeLedger>,
     /// The kernel `rlm.spawn` handler registers spawn targets into it; the
     /// embedding wires the child-observation sink onto it after the build.
     pub rlm_usage: std::sync::Arc<super::rlm_usage::RlmChildUsageAttributions>,
@@ -468,6 +471,19 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     }
     .register(&mut handlers);
+    // `worktree.record`: the kernel `worktree` capability's report after each operation, kept in
+    // the session's ledger (the session-end notice); telemetry counts each outcome (never a
+    // name, a path, or a diff).
+    let worktrees = std::sync::Arc::new(crate::worktree_host::WorktreeLedger::default());
+    crate::worktree_host::register_worktree_host_handler(
+        &mut handlers,
+        std::sync::Arc::clone(&worktrees),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_worktree(fact))
+                as crate::worktree_host::WorktreeObserver
+        }),
+    );
     // `usage.get`: the session's spend (and the no-daemon quota fallback);
     // telemetry counts each read (never a number).
     crate::usage_host::register_usage_host_handlers(
@@ -577,6 +593,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if compaction_settings.agent_callable.unwrap_or(true) {
         turn_boundary.register_compact_handlers(&mut handlers, keep_recent_tokens);
     }
+    // `rlm.decide`: one bounded decision by the session's model mid-cell; the decider binds
+    // once the agent exists. Telemetry counts decisions, refusals at the bound, and failures.
+    let decision_host = std::sync::Arc::new(super::decision::DecisionHost::new(
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_decision(fact))
+                as super::decision::DecideObserver
+        }),
+    ));
+    super::decision::register_decide_handler(&mut handlers, &decision_host);
     // `rlm.session.tool_result`: the recall path a thinned result's pointer names.
     super::context_thinning::register_tool_result_recall(&mut handlers, &wiring.session);
     // The daemon worker owns persistence outside the session manager, so
@@ -1231,6 +1257,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
             wiring.rlm_usage.store(),
         ));
+    decision_host.bind(super::decision::Decider::new(
+        Arc::downgrade(&agent),
+        std::sync::Arc::clone(&side_question_stream_fn),
+        wiring.rlm_usage.store(),
+    ));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),
@@ -1434,6 +1465,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         mcp_manager,
         turn_boundary,
         telemetry,
+        worktrees,
         rlm_usage: wiring.rlm_usage,
         factory_host,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
@@ -1560,6 +1592,10 @@ impl SessionEngine {
             pa_ai::responses_transport::close_session_websockets(session_id);
         }
         self.provisioner.dispose(None).await;
+        // The session ends: name the worktrees it made and never removed (they stay on disk).
+        if let Some(notice) = self.worktrees.unremoved_notice() {
+            eprintln!("prime-agent: {notice}");
+        }
     }
 
     /// Release the kernel with a final namespace snapshot, revivable: the next

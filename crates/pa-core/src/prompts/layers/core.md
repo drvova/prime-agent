@@ -8,6 +8,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{capability:bash}}
 {{capability:cells}}
+{{capability:decision}}
 - `edit.run(path: str, old_str: str, new_str: str) -> str`: edits a file by retyping its old text. async, exact-unique-match; the `edit` module is callable with the same arguments (`await edit(path=..., old_str=..., new_str=...)`). Prefer `fs.read` + `fs.edit` anchors (File reading and editing, below) for edits made from the REPL: no old text to retype, and a stale file is rejected instead of corrupted
 - `attach_image(*paths: str) -> str`: loads images directly into context if the agent's model is vision-capable, errors otherwise; the only way to see an image file (a screenshot, diagram, chart, or photo): reading its bytes does not show it
 {{capability:core.end_turn}}
@@ -92,6 +93,8 @@ In prime-agent, agents can create heartbeats to wake themselves up after a given
 
 {{capability:checkpoint}}
 
+{{capability:worktree}}
+
 ## Todos and questions
 
 {{capability:todo}}
@@ -115,4 +118,4 @@ Read-only views of what this session runs with; nothing here is a credential.
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for {{prompt_builtins:bash,core,better,mcp,web,fs,ctx,schedule,checkpoint,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for {{prompt_builtins:bash,core,better,mcp,web,fs,ctx,schedule,checkpoint,worktree,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
