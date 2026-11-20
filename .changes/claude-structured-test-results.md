@@ -1,0 +1,1 @@
+- An awaited test run (cargo test, pytest, unittest, go test, jest, vitest) now returns a typed summary on `result.tests` — passed/failed/skipped counts and each failure's name, location, assertion diff, and a handle to its own output — printed with the cell's output; the raw output stays available as a handle.

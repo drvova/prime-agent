@@ -157,6 +157,13 @@ it. Each lookup is reported through the fire-and-forget `command_cache.fact` hos
 Adoption counts ride the `agent readonly cache` event. Non-goals: caching anything with side
 effects, and a setting.
 
+Test-run handles (`kernel::test_runs`): the kernel summarizes an awaited test run itself
+(`rlm.test_results`: cargo test, pytest, unittest, go test, jest, vitest) into `BashResult.tests`;
+its `tests.summary` host request asks the host to keep the whole output and each failure's section
+in the session's spill store and answers their handles (`null` without a store). The spill only
+queues the write, so the reply never waits on disk. Adoption counts ride the `agent test summaries`
+event. Non-goals: running tests, and parsing in the host.
+
 Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
 session boot (a kernel's interpreter start here; the daemon's child worker spawns and
 crash-recovery adoption) under a permit of the session-boot budget

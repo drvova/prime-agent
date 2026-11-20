@@ -48,6 +48,7 @@ mod classify;
 pub use classify::provider_category;
 
 mod readonly_cache;
+mod test_summaries;
 
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
@@ -440,6 +441,8 @@ struct CounterValues {
     background_cells: BackgroundCellCounts,
     /// Read-only command cache lookups, reported by `agent readonly cache`.
     readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
+    test_summaries: test_summaries::TestSummaryCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -1986,6 +1989,7 @@ impl SessionTelemetry {
                 .track("agent repl background cells", cell_properties);
         }
         self.track_readonly_cache();
+        self.track_test_summaries();
         self.client.flush().await
     }
 
