@@ -631,6 +631,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let counters = std::sync::Arc::clone(&session_counters);
         store.set_observer(std::sync::Arc::new(move |fact| counters.note_spill(fact)));
     }
+    // Previews collapse this project's learned noise patterns: the session
+    // previews with the set stored at its start (a short bounded read), and
+    // what it learns is saved for the next session.
+    if let Some(store) = &spill_store {
+        let learner =
+            crate::kernel::spill::noise::NoiseLearner::for_project(&config.agent_dir, &cwd);
+        learner.load(crate::kernel::spill::noise::LOAD_BUDGET).await;
+        store.set_previewer(
+            learner,
+            config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_preview(fact))
+                    as crate::kernel::spill::PreviewObserver
+            }),
+        );
+    }
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
         spill_store.as_ref(),
@@ -639,8 +655,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .is_some()
             .then(|| {
                 let counters = std::sync::Arc::clone(&session_counters);
-                std::sync::Arc::new(move |read| counters.note_ctx_read(read))
-                    as crate::kernel::spill::host::CtxObserver
+                std::sync::Arc::new(move |read| {
+                    counters.note_ctx_read(read);
+                    counters.note_preview_followup();
+                }) as crate::kernel::spill::host::CtxObserver
             })
             .as_ref(),
     );

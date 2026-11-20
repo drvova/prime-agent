@@ -160,6 +160,18 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Surprise-weighted previews (`kernel::spill::preview`, `kernel::spill::noise`): where a cut cell
+stream pages out, and where a thinned tool result pages out, the text shown is chosen by
+information within the same budget: head/tail anchors, error/warning/failure lines (an error's own
+location ranks with it), then lines with the rarest tokens of that output; each distinct line once
+with its repeats as `×N`, kept lines in order with `[… N lines …]` gaps. Line shapes a project's
+tool family prints every run (three runs, decaying) collapse into one `[… N noise lines …]` marker,
+unless ever seen on or beside a failure line; a session previews with the set stored at its start
+(50 ms bounded read under `<agent dir>/preview-noise/`) so its request views stay a pure function of
+history, and saves what it learns fire-and-forget. Adoption counts, with the `ctx.*` reads that
+followed a preview, ride the `agent previews` event. Non-goals: encoding, and any model or
+dependency.
+
 Project card (`project_card`): a compact card (build/test/check commands from Cargo, npm, Python,
 and Go manifests, the Makefile, and CI `run:` steps; the largest top-level directories; the
 build/test commands this project's cells ran, counted) joins the system prompt's dynamic tail as

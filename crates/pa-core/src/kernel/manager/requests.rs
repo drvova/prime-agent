@@ -164,9 +164,24 @@ impl HeadTailBuffer {
     }
 
     /// [`Self::finish`], paging a cut stream out to `store`: the marker
-    /// becomes the spill's handle. A buffer without its copy (not built by
-    /// [`Self::spilling`]) keeps the plain marker.
-    pub(crate) fn finish_spilled(self, max_chars: usize, store: &SpillStore) -> String {
+    /// becomes the spill's handle, and the text shown is a surprise-weighted
+    /// preview of the whole stream (for tool or command `family`) instead of
+    /// its head and tail, when one applies. A buffer without its copy (not
+    /// built by [`Self::spilling`]) keeps the plain marker.
+    pub(crate) fn finish_spilled(
+        mut self,
+        max_chars: usize,
+        store: &SpillStore,
+        family: &str,
+    ) -> String {
+        if self.omitted > 0 {
+            if let Some(copy) = self.spill_copy.take() {
+                match store.spill_previewed(copy, max_chars, family) {
+                    Ok(previewed) => return previewed,
+                    Err(copy) => self.spill_copy = Some(copy),
+                }
+            }
+        }
         self.finish_with(max_chars, |omitted, copy| match copy {
             Some(copy) => store.spill(copy).marker(omitted),
             None => format!("[... {omitted} chars omitted ...]"),

@@ -33,6 +33,8 @@ mod budget;
 pub(crate) mod host;
 mod index;
 pub(crate) mod marker;
+pub(crate) mod noise;
+pub(crate) mod preview;
 #[cfg(test)]
 mod tests;
 
@@ -95,7 +97,33 @@ struct StoreInner {
     /// The writer thread's queue, started by the first spill.
     sender: OnceLock<SyncSender<Job>>,
     state: Arc<StoreState>,
+    /// The session's learned noise patterns and preview telemetry, set once
+    /// by the engine; without it previews use no noise patterns.
+    previewer: OnceLock<Previewer>,
 }
+
+/// What one surprise-weighted preview chose (adoption counts only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PreviewFact {
+    pub(crate) kept_lines: usize,
+    pub(crate) dropped_lines: usize,
+    pub(crate) repeats_collapsed: usize,
+    pub(crate) noise_lines: usize,
+    /// Noise patterns this output promoted (in the live learner, for the next session).
+    pub(crate) patterns_learned: usize,
+}
+
+/// Hears each built preview.
+pub(crate) type PreviewObserver = Arc<dyn Fn(PreviewFact) + Send + Sync>;
+
+struct Previewer {
+    learner: noise::NoiseLearner,
+    observer: Option<PreviewObserver>,
+}
+
+/// Outputs larger than this keep the head/tail cut (selection reads the
+/// whole text on the result path).
+const MAX_PREVIEW_INPUT_BYTES: usize = 2 * 1024 * 1024;
 
 /// State the writer thread shares with spills and reads. It never holds the
 /// sender, so dropping the last [`SpillStore`] ends the writer.
@@ -285,8 +313,65 @@ impl SpillStore {
                     settled: tokio::sync::Notify::new(),
                     observer: Mutex::new(None),
                 }),
+                previewer: OnceLock::new(),
             }),
         }
+    }
+
+    /// Give the store the session's noise learner (its snapshot already
+    /// loaded) and the preview observer. The first call wins.
+    pub(crate) fn set_previewer(
+        &self,
+        learner: noise::NoiseLearner,
+        observer: Option<PreviewObserver>,
+    ) {
+        let _ = self.inner.previewer.set(Previewer { learner, observer });
+    }
+
+    /// The surprise-weighted preview of `text` within `budget` characters,
+    /// for an output of tool or command `family` (`None` when it fits whole
+    /// or is too large to select over). Deterministic for one session: it
+    /// reads the noise snapshot, while the live learner learns from `text`.
+    pub(crate) fn preview(&self, text: &str, budget: usize, family: &str) -> Option<String> {
+        if text.len() > MAX_PREVIEW_INPUT_BYTES {
+            return None;
+        }
+        let previewer = self.inner.previewer.get();
+        let noise = previewer.map_or_else(noise::NoiseSet::default, |p| p.learner.snapshot(family));
+        let built = preview::build(text, budget, &noise)?;
+        if let Some(previewer) = previewer {
+            let patterns_learned = previewer.learner.observe(family, &content_id(text), text);
+            if let Some(observer) = &previewer.observer {
+                observer(PreviewFact {
+                    kept_lines: built.kept_lines,
+                    dropped_lines: built.dropped_lines,
+                    repeats_collapsed: built.repeats_collapsed,
+                    noise_lines: built.noise_lines,
+                    patterns_learned,
+                });
+            }
+        }
+        Some(built.text)
+    }
+
+    /// Page a cut stream out with a surprise-weighted preview: the preview
+    /// then the handle's marker, or the copy back when no preview applies
+    /// (a partial copy, or one too large).
+    pub(crate) fn spill_previewed(
+        &self,
+        copy: SpillCopy,
+        budget: usize,
+        family: &str,
+    ) -> Result<String, SpillCopy> {
+        if copy.partial {
+            return Err(copy);
+        }
+        let Some(preview) = self.preview(&copy.text, budget, family) else {
+            return Err(copy);
+        };
+        let not_shown = copy.total_chars.saturating_sub(preview.chars().count());
+        let marker = self.spill(copy).marker(not_shown);
+        Ok(format!("{preview}\n{marker}"))
     }
 
     /// Page `copy` out: queue its write and return its handle at once. Never
