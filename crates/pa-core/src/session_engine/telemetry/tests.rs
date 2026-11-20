@@ -12,6 +12,8 @@ use pa_telemetry::{MockSink, TelemetryClient, TelemetryClientConfig};
 
 use super::*;
 
+mod capability_events;
+
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
 /// The env is process-wide, so these tests (and the packages env tests)
