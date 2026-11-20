@@ -339,8 +339,8 @@ fn the_report_renders_notes_answer_and_numbered_sources() {
 }
 
 /// A loopback server answering `/<provider id>/...` from per-provider
-/// scripted (status, body) replies, recording each request's provider in
-/// arrival order.
+/// scripted (status, body) replies (status 0: never answer), recording each
+/// request's provider in arrival order.
 struct ProviderServer {
     base: String,
     hits: Arc<Mutex<Vec<String>>>,
@@ -401,6 +401,10 @@ impl ProviderServer {
                         .get(provider.as_str())
                         .cloned()
                         .unwrap_or((404, String::new()));
+                    // Status 0 scripts an engine that never answers.
+                    if status == 0 {
+                        std::future::pending::<()>().await;
+                    }
                     let response = format!(
                         "HTTP/1.1 {status} X\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
@@ -477,6 +481,46 @@ async fn auto_tries_keyed_providers_first_then_falls_through_the_keyless_engines
     assert_eq!(
         report.response.sources,
         vec![source("Tokio", "https://tokio.rs/", Some("runtime"))]
+    );
+}
+
+#[tokio::test]
+async fn the_aggregate_stops_waiting_for_an_engine_past_its_learned_latency() {
+    let mojeek = r#"<ul class="results-standard"><li><h2><a class="title" href="https://tokio.rs/">Tokio</a></h2><p class="s">runtime</p></li></ul>"#;
+    let server = ProviderServer::start(HashMap::from([
+        ("mojeek", (200, mojeek.to_string())),
+        ("duckduckgo", (0, String::new())),
+        ("startpage", (0, String::new())),
+        ("ecosia", (0, String::new())),
+    ]))
+    .await;
+    let engine = WebSearchEngine::for_test_server(&server.base);
+    // The hanging engines usually answer in 300 ms: their soft deadline is the 1 s floor, not
+    // the cold 5 s.
+    for slow in [
+        ProviderId::Duckduckgo,
+        ProviderId::Startpage,
+        ProviderId::Ecosia,
+    ] {
+        engine.limits.note_answer(slow, 300);
+    }
+    let request = SearchRequest {
+        provider: WebSearchProvider::Engine(ProviderId::Public),
+        ..auto_request("tokio")
+    };
+    let started = std::time::Instant::now();
+    let report = engine
+        .search(&request, &Credentials::default())
+        .await
+        .expect("mojeek answers");
+    let waited = started.elapsed();
+    assert_eq!(
+        report.response.sources,
+        vec![source("Tokio", "https://tokio.rs/", Some("runtime"))]
+    );
+    assert!(
+        waited < Duration::from_secs(3),
+        "the aggregate waited {waited:?} for engines past their deadline"
     );
 }
 

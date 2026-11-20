@@ -1486,6 +1486,20 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A process whose scraped search engines were never skipped or blocked sends no engine
+        // event (counts only: never a query).
+        let engines = crate::web_search::engine_limits::take_stats();
+        if engines != crate::web_search::engine_limits::EngineLimitStats::default() {
+            let mut engine_properties = self.session_properties();
+            for (key, value) in [
+                ("web_search_engine_skipped_count", engines.skipped_count),
+                ("web_search_engine_blocked_count", engines.blocked_count),
+            ] {
+                engine_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent web search engines", engine_properties);
+        }
         // A session whose provider never armed a declared quota fallback sends no fallback
         // event (counts only: never a provider, model, or credential).
         let auth = crate::auth::resolver::AuthMetrics::current().since(

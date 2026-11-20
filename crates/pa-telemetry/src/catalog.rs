@@ -1535,6 +1535,20 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Scraped web search engine limits for one session's process (v2), emitted at session close
+/// beside `agent session ended` (which sits at the 128-key cap) when an engine call was skipped
+/// (over its learned budget or cooling down after a block) or an engine answered with a block.
+/// Counts only: never a query, engine response, or URL.
+const AGENT_WEB_SEARCH_ENGINES: EventRule = EventRule {
+    name: "agent web search engines",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_search_engine_skipped_count", required(count())),
+        ("web_search_engine_blocked_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1929,6 +1943,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_WEB_SEARCH_ENGINES,
         &AGENT_QUOTA_FALLBACK,
         &AGENT_ENDPOINT_DISCOVERY,
     ];

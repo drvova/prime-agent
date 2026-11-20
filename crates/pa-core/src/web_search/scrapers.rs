@@ -503,14 +503,18 @@ const PUBLIC_ENGINES: [ProviderId; 4] = [
     ProviderId::Ecosia,
     ProviderId::Mojeek,
 ];
-/// Past this the aggregate returns as soon as one engine answered.
-const PUBLIC_SOFT_DEADLINE: Duration = Duration::from_secs(5);
-
 /// Every keyless engine in parallel, merged by cross-engine consensus (how
 /// many engines returned a URL), then best per-engine rank. Fails only when
-/// every engine fails.
+/// every engine fails. Each engine has its own soft deadline (from its observed latency,
+/// `engine_limits`): once one engine answered, the aggregate stops waiting for an engine past
+/// its own deadline.
 pub(crate) async fn public(call: &ProviderCall<'_>) -> ProviderResult<SearchResponse> {
     let count = call.count(15, 30);
+    let started = tokio::time::Instant::now();
+    let deadlines: Vec<tokio::time::Instant> = PUBLIC_ENGINES
+        .iter()
+        .map(|engine| started + call.limits.soft_deadline(*engine))
+        .collect();
     let mut pending: FuturesUnordered<_> = PUBLIC_ENGINES
         .iter()
         .enumerate()
@@ -523,24 +527,35 @@ pub(crate) async fn public(call: &ProviderCall<'_>) -> ProviderResult<SearchResp
         })
         .collect();
     let mut responses: Vec<Option<SearchResponse>> = vec![None; PUBLIC_ENGINES.len()];
+    let mut settled = [false; PUBLIC_ENGINES.len()];
     let mut failures = Vec::new();
-    let soft = tokio::time::sleep(PUBLIC_SOFT_DEADLINE);
     let hard = tokio::time::sleep(call.timeout);
-    tokio::pin!(soft, hard);
-    let mut soft_passed = false;
+    tokio::pin!(hard);
     loop {
-        if soft_passed && responses.iter().any(Option::is_some) {
+        // The latest soft deadline among the engines still out.
+        let still_due = deadlines
+            .iter()
+            .zip(settled)
+            .filter(|(_, settled)| !settled)
+            .map(|(deadline, _)| *deadline)
+            .filter(|deadline| *deadline > tokio::time::Instant::now())
+            .max();
+        if still_due.is_none() && responses.iter().any(Option::is_some) {
             break;
         }
         tokio::select! {
             next = pending.next() => match next {
-                Some((index, Ok(response))) => responses[index] = Some(response),
+                Some((index, Ok(response))) => {
+                    settled[index] = true;
+                    responses[index] = Some(response);
+                }
                 Some((index, Err(error))) => {
+                    settled[index] = true;
                     failures.push(format!("{}: {}", PUBLIC_ENGINES[index].id(), error.message));
                 }
                 None => break,
             },
-            () = &mut soft, if !soft_passed => soft_passed = true,
+            () = tokio::time::sleep_until(still_due.unwrap_or(started)), if still_due.is_some() => {}
             () = &mut hard => break,
         }
     }
