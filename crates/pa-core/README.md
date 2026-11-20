@@ -149,6 +149,17 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Error enrichment (`kernel::error_context`): a user cell that raised, or a `bash()` command a cell
+awaited that exited non-zero (the kernel's `command-failure` display), gets an `[error context]`
+block appended to its result: the source lines (±3) around each error location the output names,
+from a parser registry built from captured rustc/cargo, Rust panic, pytest, Python traceback and
+unittest, tsc, go, and gcc/clang output. Only files inside the session's working directory (and
+outside `site-packages`/`node_modules`) are read, each location once, at most six, the block under
+6,000 characters; a failed command's full output pages out to the spill store and the block names
+its handle. The reads run on a blocking worker under a 250 ms budget, so a hung file system costs
+the lines, never the result. Adoption counts ride the `agent error enrichment` event. Non-goals:
+fixing the error, and parsing a successful cell's output.
+
 Read-only command cache (`kernel::command_cache`): the kernel answers an allowlisted read-only
 `bash()` command (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`: one simple command, no shell
 syntax, no writing option) or an `fs.read` from its last result while the files it read keep their

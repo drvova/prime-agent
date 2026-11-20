@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/work/app/run.py", line 9, in <module>
+    main()
+    ~~~~^^
+  File "/work/app/run.py", line 6, in main
+    return [parse(v) for v in values]
+            ~~~~~^^^
+  File "/work/app/calc.py", line 6, in parse
+    return int(text)
+ValueError: invalid literal for int() with base 10: 'three'

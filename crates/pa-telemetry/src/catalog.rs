@@ -1946,6 +1946,24 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Error enrichment (v2), emitted at session end beside `agent session ended` (which sits near the
+/// backend's 128-key cap) only when a cell failed or awaited a failed `bash()` command: results that
+/// got the source lines around their error locations, the locations attached, the parsed locations
+/// left out (outside the workspace, unreadable, or past the cap), source reads that ran out of
+/// time, and the failed commands seen. Counts only: never a path, a line, a command, or output.
+const AGENT_ERROR_ENRICHMENT: EventRule = EventRule {
+    name: "agent error enrichment",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("error_enrichment_count", required(count())),
+        ("error_location_count", required(count())),
+        ("error_location_skipped_count", required(count())),
+        ("error_enrichment_timeout_count", required(count())),
+        ("error_failed_command_count", required(count())),
+    ],
+};
+
 /// The kernel's read-only command cache (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when a lookup ran: allowlisted read-only
 /// `bash()` commands (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`) answered from the cache
@@ -2117,6 +2135,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_ERROR_ENRICHMENT,
         &AGENT_READONLY_CACHE,
         &AGENT_EDIT_CHECKS,
         &AGENT_TEST_SUMMARIES,
