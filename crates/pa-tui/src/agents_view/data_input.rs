@@ -712,6 +712,35 @@ impl AgentsViewMode {
             self.running = false;
             return;
         }
+        // `app.agents.traffic` (default m, scoped view with an empty editor only; a typed query
+        // keeps `m` as search text): open or close the Traffic pane.
+        if !has_query && self.scope_active && self.keybindings.matches(key, "app.agents.traffic") {
+            self.traffic.toggle();
+            // Adoption: the view reports each pane open on its outcome (a count, no content).
+            if self.traffic.shown {
+                self.actions.push("traffic_opened");
+            }
+            return;
+        }
+        // `app.agents.pauseMessages` (default alt+p): pause or resume the selected live
+        // session's agent-message ingest (the daemon's existing pause; queued messages drop).
+        if self.keybindings.matches(key, "app.agents.pauseMessages") {
+            let target = self.rows.get(self.selected).and_then(|row| {
+                row.summary
+                    .get("activeSessionId")
+                    .and_then(Value::as_str)
+                    .map(|id| (id.to_string(), row.title.clone()))
+            });
+            match target {
+                Some((active_session_id, title)) => {
+                    let status = self.traffic.toggle_pause(&active_session_id, &title);
+                    self.set_status(&status);
+                    self.actions.push("messages_paused");
+                }
+                None => self.set_status("Select a live agent to pause its messages"),
+            }
+            return;
+        }
         // `app.agents.program` (default ctrl+o, empty editor only): show or hide the selected
         // row's target spawn program.
         if !has_query && self.keybindings.matches(key, "app.agents.program") {
