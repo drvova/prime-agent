@@ -2481,3 +2481,47 @@ async fn test_summaries_ride_their_own_event() {
         })
     );
 }
+
+/// Checks after edits ride their own `agent edit checks` event at session end (counts only: never a path or output).
+#[tokio::test]
+async fn edit_checks_ride_their_own_event() {
+    use crate::kernel::edit_checks::EditCheckOutcome;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for outcome in [
+        EditCheckOutcome::Late,
+        EditCheckOutcome::Found,
+        EditCheckOutcome::Clean,
+        EditCheckOutcome::Skipped,
+        EditCheckOutcome::Skipped,
+    ] {
+        counters.note_edit_check(outcome);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent edit checks"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent edit checks").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("edit_check_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "edit_check_run_count": 2,
+            "edit_check_found_count": 1,
+            "edit_check_late_count": 1,
+            "edit_check_skipped_count": 2,
+            "edit_check_failed_count": 0,
+        })
+    );
+}

@@ -640,6 +640,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::test_runs::TestRunObserver
         }),
     );
+    // `edit_check.fact`: how each check after an edit went (telemetry counts).
+    crate::kernel::edit_checks::register_edit_check_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_edit_check(outcome))
+                as crate::kernel::edit_checks::EditCheckObserver
+        }),
+    );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the
