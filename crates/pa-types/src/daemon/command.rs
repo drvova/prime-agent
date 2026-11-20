@@ -256,6 +256,31 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// Client opt-in to the display-only agent traffic feed: the response carries the ring's
+    /// current entries (`{ entries }`), every later entry arrives as an `agent_traffic` frame.
+    AgentTrafficSubscribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    AgentTrafficUnsubscribe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// Worker -> supervisor: one accepted agent-message delivery for the traffic ring
+    /// ([`crate::agent_traffic::AgentTrafficEntry`]; the supervisor fills the root).
+    WorkerAgentTraffic {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        worker_token: String,
+        entry: crate::agent_traffic::AgentTrafficEntry,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     Create {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,
@@ -524,6 +549,9 @@ pub enum DaemonCommand {
         question: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         previous_turns: Option<Value>,
+        /// `better` for a `/better` rewrite; absent for a `/btw` question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<crate::better::SideRunKind>,
         #[serde(flatten)]
         rest: JsonMap,
     },
@@ -534,6 +562,16 @@ pub enum DaemonCommand {
         // Optional on the wire, like `start_side_question`'s payload.
         #[serde(default)]
         side_question_id: String,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
+    /// `record_better_outcome`: what the user did with a rewrite `/better` put in the composer
+    /// (the session counts it).
+    RecordBetterOutcome {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        active_session_id: String,
+        outcome: crate::better::ComposerOutcome,
         #[serde(flatten)]
         rest: JsonMap,
     },

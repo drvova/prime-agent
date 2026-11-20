@@ -1,0 +1,50 @@
+============================= test session starts ==============================
+platform linux -- Python 3.13.18, pytest-9.1.1, pluggy-1.6.0
+rootdir: /work/app
+collected 5 items
+
+test_calc.py .FFFs                                                       [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_divide_wrong _______________________________
+
+    def test_divide_wrong():
+>       assert divide(7, 2) == 3
+E       assert 3.5 == 3
+E        +  where 3.5 = divide(7, 2)
+
+test_calc.py:11: AssertionError
+__________________________________ test_parse __________________________________
+
+    def test_parse():
+>       assert parse("x1") == 1
+               ^^^^^^^^^^^
+
+test_calc.py:15: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+text = 'x1'
+
+    def parse(text):
+>       return int(text)
+               ^^^^^^^^^
+E       ValueError: invalid literal for int() with base 10: 'x1'
+
+calc.py:6: ValueError
+__________________________________ test_dict ___________________________________
+
+    def test_dict():
+>       assert {"a": 1, "b": 2} == {"a": 1, "b": 3}
+E       AssertionError: assert {'a': 1, 'b': 2} == {'a': 1, 'b': 3}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Differing items:
+E         {'b': 2} != {'b': 3}
+E         Use -v to get more diff
+
+test_calc.py:19: AssertionError
+=========================== short test summary info ============================
+FAILED test_calc.py::test_divide_wrong - assert 3.5 == 3
+FAILED test_calc.py::test_parse - ValueError: invalid literal for int() with ...
+FAILED test_calc.py::test_dict - AssertionError: assert {'a': 1, 'b': 2} == {...
+==================== 3 failed, 1 passed, 1 skipped in 0.02s ====================

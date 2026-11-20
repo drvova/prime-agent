@@ -19,6 +19,29 @@ use super::token_exchange::TokenExchange;
 pub(crate) struct AuthResolveContext<'a> {
     /// The provider id the credential is stored and locked under.
     pub(crate) provider: &'a str,
+    /// The provider's credential slot the resolution reads: the default (`auth.json`) or the
+    /// session's pinned named credential. A resolver never serves another slot than this one.
+    pub(crate) credential: CredentialRef<'a>,
+}
+
+/// One of a provider's credential slots.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialRef<'a> {
+    /// `auth.json[provider]` through today's ladder.
+    Default,
+    /// The named credential with this id in `auth-accounts.json`.
+    Named(&'a str),
+}
+
+impl CredentialRef<'_> {
+    /// What keys a refresh single-flight per (provider, credential) after the provider's own key:
+    /// nothing for the default slot (today's key), the id for a named credential.
+    pub(crate) fn flight_suffix(self) -> String {
+        match self {
+            CredentialRef::Default => String::new(),
+            CredentialRef::Named(id) => format!("\u{1f}{id}"),
+        }
+    }
 }
 
 /// The request credential one resolution answers.

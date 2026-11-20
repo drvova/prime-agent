@@ -8,12 +8,16 @@ use pa_types::ai::{
     CompatKind, Model, ModelCompat, ModelThinkingLevel, OpenAiResponsesCompat, ThinkingLevelMap,
 };
 
+use crate::auth::accounts::{AuthAccounts, NamedRefresh, NamedSlotBackend};
 use crate::auth::descriptor::{AuthStrategy, ProviderAuthDescriptor};
 use crate::auth::descriptor_oauth::DescriptorOAuth;
 use crate::auth::manager::AuthStorage;
-use crate::auth::resolver::{AuthCounter, AuthResolveContext, ProviderAuthResolver, StaticKey};
+use crate::auth::resolver::{
+    AuthCounter, AuthResolveContext, CredentialRef, ProviderAuthResolver, StaticKey,
+};
 use crate::auth::token_exchange::TokenExchange;
 use crate::auth::types::{AuthCredential, AuthSource, PRIME_INFERENCE_PROVIDER_ID};
+use pa_types::session::CredentialPin;
 
 use super::catalog_chain;
 
@@ -107,6 +111,10 @@ pub struct ModelRegistry {
     /// `provider/id` of every models.json model at the last load: their declared API never
     /// moves, so background discovery never checks their route.
     custom_model_keys: std::collections::HashSet<(String, String)>,
+    /// The session's pinned named credential and the agent dir whose `auth-accounts.json` holds
+    /// it: requests to its provider resolve through exactly this credential (a runtime
+    /// `--api-key` still wins), never the default slot.
+    credential_pin: Option<(CredentialPin, PathBuf)>,
 }
 
 /// Under a stored xAI subscription the provider's models switch onto the
@@ -201,6 +209,7 @@ impl ModelRegistry {
             xai_model_sources: HashMap::new(),
             catalog,
             custom_model_keys: std::collections::HashSet::new(),
+            credential_pin: None,
         };
         registry.load_models();
         registry
@@ -668,6 +677,38 @@ impl ModelRegistry {
         self.get_available().into_iter().cloned().collect()
     }
 
+    /// Pin request auth for `pin`'s provider to that named credential in `agent_dir`'s
+    /// `auth-accounts.json` (the session header's pin); `None` serves the default slot.
+    pub fn set_credential_pin(&mut self, agent_dir: &Path, pin: Option<CredentialPin>) {
+        self.credential_pin = pin.map(|pin| (pin, agent_dir.to_path_buf()));
+    }
+
+    /// The pin serving `provider`, when the session holds one for it.
+    pub(super) fn pin_for(&self, provider: &str) -> Option<&(CredentialPin, PathBuf)> {
+        self.credential_pin
+            .as_ref()
+            .filter(|(pin, _)| pin.provider == provider)
+    }
+
+    /// Refresh the OAuth credential `provider` rejected: a pinned named credential refreshes
+    /// itself (never the default slot), any other the store's own.
+    ///
+    /// # Errors
+    ///
+    /// The refresh failure (its re-login sentence; never a credential value).
+    pub fn refresh_rejected_request_auth(&mut self, provider: &str) -> Result<(), String> {
+        let oauth = self.auth.oauth_integration();
+        match self.pin_for(provider) {
+            Some((pin, agent_dir)) => AuthAccounts::create(agent_dir)
+                .resolve_key(pin, oauth.as_ref(), NamedRefresh::Rejected)
+                .map(drop),
+            None => self
+                .auth
+                .refresh_rejected_oauth(provider)
+                .map_err(|failure| failure.to_string()),
+        }
+    }
+
     /// Resolve request auth: API key + merged headers for a model.
     ///
     /// A provider whose `auth` descriptor declares `fallback`, and whose
@@ -699,9 +740,54 @@ impl ModelRegistry {
         let stored = self
             .auth
             .get_api_key_with_source_token(&model.provider, false);
-        let mut api_key = stored.api_key;
+        let runtime_override = matches!(
+            &stored.source_token,
+            Some(token) if token.source == AuthSource::Runtime
+        );
+        let descriptor = self.provider_auth.get(&model.provider).cloned();
+        let descriptor_resolves = matches!(
+            descriptor.as_ref().map(|descriptor| &descriptor.strategy),
+            Some(AuthStrategy::TokenExchange(_) | AuthStrategy::Oauth(_))
+        );
+        // Selection order: a runtime `--api-key`, then the session's pinned credential, then
+        // the default slot's ladder. A pin that cannot serve fails the call: nothing falls back
+        // to another credential. A descriptor provider's pin resolves through its descriptor
+        // strategy, reading the pinned slot; any other pin serves its key here.
+        let pin = self
+            .pin_for(&model.provider)
+            .filter(|_| !runtime_override)
+            .cloned();
+        let pinned_key = match &pin {
+            Some((pin, agent_dir)) => {
+                let accounts = AuthAccounts::create(agent_dir);
+                let served = if descriptor_resolves {
+                    accounts.stored(pin).map(|_| None)
+                } else {
+                    let oauth = self.auth.oauth_integration();
+                    accounts
+                        .resolve_key(pin, oauth.as_ref(), NamedRefresh::WhenExpired)
+                        .map(Some)
+                };
+                match served {
+                    Ok(key) => key,
+                    Err(error) => {
+                        return ResolvedRequestAuth {
+                            ok: false,
+                            error: Some(error),
+                            ..Default::default()
+                        }
+                    }
+                }
+            }
+            None => None,
+        };
+        let mut api_key = match (&pin, &pinned_key) {
+            (_, Some(key)) => Some(key.api_key.clone()),
+            (Some(_), None) => None,
+            (None, None) => stored.api_key,
+        };
         let provider_config = self.provider_request_configs.get(&model.provider).cloned();
-        if api_key.is_none() {
+        if api_key.is_none() && pin.is_none() {
             if let Some(config) = &provider_config {
                 if let Some(configured) = &config.api_key {
                     if let Some(resolved) =
@@ -717,20 +803,23 @@ impl ModelRegistry {
         // `oauth` its signed-in access token (unless a runtime `--api-key`
         // override serves); every other provider keeps its static key, which
         // rides the provider's own key slot unchanged.
-        let descriptor = self.provider_auth.get(&model.provider).cloned();
-        let runtime_override = matches!(
-            &stored.source_token,
-            Some(token) if token.source == AuthSource::Runtime
-        );
+        let slot_backend = || -> std::sync::Arc<dyn crate::auth::AuthStorageBackend> {
+            match &pin {
+                Some((pin, agent_dir)) => {
+                    std::sync::Arc::new(NamedSlotBackend::new(agent_dir, pin.clone()))
+                }
+                None => self.auth.storage_backend(),
+            }
+        };
         let resolver = match descriptor.as_ref().map(|descriptor| &descriptor.strategy) {
             Some(AuthStrategy::TokenExchange(spec)) if !runtime_override => {
                 ProviderAuthResolver::TokenExchange(TokenExchange::new(
                     std::sync::Arc::clone(spec),
-                    self.auth.storage_backend(),
+                    slot_backend(),
                 ))
             }
             Some(AuthStrategy::Oauth(spec)) if !runtime_override => ProviderAuthResolver::Oauth(
-                DescriptorOAuth::new(std::sync::Arc::clone(spec), self.auth.storage_backend()),
+                DescriptorOAuth::new(std::sync::Arc::clone(spec), slot_backend()),
             ),
             Some(
                 AuthStrategy::TokenExchange(_) | AuthStrategy::Oauth(_) | AuthStrategy::ApiKey,
@@ -744,6 +833,9 @@ impl ModelRegistry {
         };
         let ctx = AuthResolveContext {
             provider: &model.provider,
+            credential: pin.as_ref().map_or(CredentialRef::Default, |(pin, _)| {
+                CredentialRef::Named(&pin.id)
+            }),
         };
         let resolution = resolver.resolve_blocking(&ctx);
         if matches!(
@@ -765,8 +857,17 @@ impl ModelRegistry {
             }
         };
         let api_key = resolved_auth.api_key;
-        // A failed OAuth refresh with nothing else to serve: fail with the re-login sentence.
-        if let (None, Some(failure)) = (&api_key, &stored.refresh_failure) {
+        // A pinned credential admits under its stable identity: an OAuth refresh rotates the
+        // token, never the learned limits' key.
+        if let (Some((pin, _)), Some(api_key)) = (&pin, &api_key) {
+            pa_ai::admission::alias_credential(
+                api_key,
+                &pa_ai::admission::credential_identity(&pin.provider, &pin.id),
+            );
+        }
+        // A failed default-slot OAuth refresh with nothing else to serve: fail with the re-login
+        // sentence.
+        if let (None, None, Some(failure)) = (&pin, &api_key, &stored.refresh_failure) {
             return ResolvedRequestAuth {
                 ok: false,
                 error: Some(failure.to_string()),
@@ -799,11 +900,17 @@ impl ModelRegistry {
                 .get(&model.id)
                 .cloned()
                 .unwrap_or_else(|| model.clone());
-            xai_subscription_serving = stored.credential_type == Some("oauth")
-                && matches!(
-                    &stored.source_token,
-                    Some(token) if token.source == crate::auth::types::AuthSource::Stored
-                );
+            xai_subscription_serving = match (&pin, &pinned_key) {
+                (_, Some(key)) => key.credential_type == "oauth",
+                (Some(_), None) => false,
+                (None, None) => {
+                    stored.credential_type == Some("oauth")
+                        && matches!(
+                            &stored.source_token,
+                            Some(token) if token.source == crate::auth::types::AuthSource::Stored
+                        )
+                }
+            };
             request_model = Some(if xai_subscription_serving {
                 xai_subscription_model(&configured)
             } else {
