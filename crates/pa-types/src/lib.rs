@@ -8,6 +8,7 @@
 
 pub mod agent_traffic;
 pub mod ai;
+pub mod better;
 pub mod billing;
 pub mod compaction;
 pub mod context_breakdown;

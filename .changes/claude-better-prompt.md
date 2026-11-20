@@ -1,0 +1,1 @@
+- Added `/better <prompt>`: a read-only helper rewrites your prompt into the deeper version a top professional would ask for, grounded in your code, and puts it in the input box unsent.
