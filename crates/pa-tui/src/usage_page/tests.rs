@@ -254,10 +254,10 @@ fn the_page_opens_loading_at_both_widths() {
                 String::new(),
                 String::new(),
                 "  Provider quotas".into(),
-                "  Loading provider quotas…".into(),
+                "    Loading provider quotas…".into(),
                 String::new(),
                 "  Spend · local sessions".into(),
-                "  Reading local sessions…".into(),
+                "    Reading local sessions…".into(),
                 "  R refresh · Enter details · Esc close".into(),
                 String::new(),
             ]
@@ -265,9 +265,10 @@ fn the_page_opens_loading_at_both_widths() {
     }
 }
 
-/// The filled page: aligned window rows with bars and resets, the failed card's own error line,
-/// the observed rate limit, the spend spans and spark. The narrow width drops the reset clock
-/// and the bars first, then the spend rows' calls and tokens.
+/// The filled page: window rows in the TUI's one gauge grammar with their columns shared by
+/// every card, the failed card's raw error wrapped whole, the observed rate limit, the spend
+/// table and spark. The narrow width drops the reset clock and the gauges first, and a card
+/// title drops its source before it truncates.
 #[test]
 fn the_filled_page_fits_both_widths() {
     let mut page = UsagePage::new(None, None);
@@ -282,8 +283,8 @@ fn the_filled_page_fits_both_widths() {
             String::new(),
             "  Provider quotas".into(),
             "  ● Anthropic · from provider".into(),
-            "    5-hour █████████░░░░░░░░░░░░░░░ 37% used  resets 14:13 (in 2h 13m)".into(),
-            "    Weekly ███████████████████████░ 95% used  resets Sat 07:00 (in 2d 19h)".into(),
+            "    5-hour ━━━━━━━━━─────────────── 37% used  resets 14:13 (in 2h 13m)".into(),
+            "    Weekly ━━━━━━━━━━━━━━━━━━━━━━━─ 95% used  resets Sat 07:00 (in 2d 19h)".into(),
             String::new(),
             "  ● GitHub Copilot · individual · from provider".into(),
             "    the usage endpoint did not answer in time".into(),
@@ -292,11 +293,12 @@ fn the_filled_page_fits_both_widths() {
             "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
             String::new(),
             "  Spend · local sessions".into(),
-            "    Today        $9.50     2.1k tokens  2 calls".into(),
-            "    7 days       $9.50     2.1k tokens  2 calls".into(),
-            "    30 days     $14.25     3.0k tokens  3 calls".into(),
-            "    All time    $20.00    12.0k tokens  7 calls".into(),
-            "    30 days  ····················▅········█".into(),
+            "    Today      $9.50   2.1k tokens  2 calls".into(),
+            "    7 days     $9.50   2.1k tokens  2 calls".into(),
+            "    30 days   $14.25   3.0k tokens  3 calls".into(),
+            "    All time  $20.00  12.0k tokens  7 calls".into(),
+            String::new(),
+            "    30 days   ····················▅········█".into(),
             "  R refresh · Enter details · Esc close".into(),
             String::new(),
         ]
@@ -313,27 +315,158 @@ fn the_filled_page_fits_both_widths() {
             "    5-hour 37% used  resets in 2h 13m".into(),
             "    Weekly 95% used  resets in 2d 19h".into(),
             String::new(),
-            "  ● GitHub Copilot · individual · from prov…".into(),
-            "    the usage endpoint did not answer in ti…".into(),
+            "  ● GitHub Copilot · individual".into(),
+            "    the usage endpoint did not answer in".into(),
+            "    time".into(),
             String::new(),
             "  ● ChatGPT (Codex) · observed on last resp…".into(),
             "    rate limited (HTTP 429) · resets in 1h".into(),
             String::new(),
             "  Spend · local sessions".into(),
-            "    Today        $9.50     2.1k tokens".into(),
-            "    7 days       $9.50     2.1k tokens".into(),
-            "    30 days     $14.25     3.0k tokens".into(),
-            "    All time    $20.00    12.0k tokens".into(),
-            "    30 days  ····················▅········█".into(),
+            "    Today      $9.50   2.1k tokens  2 calls".into(),
+            "    7 days     $9.50   2.1k tokens  2 calls".into(),
+            "    30 days   $14.25   3.0k tokens  3 calls".into(),
+            "    All time  $20.00  12.0k tokens  7 calls".into(),
+            String::new(),
+            "    30 days   ····················▅········█".into(),
             "  R refresh · Enter details · Esc close".into(),
             String::new(),
         ]
     );
 }
 
+/// The details view is the overview's quota half with each card's age, then the per-model and
+/// daily spend in the overview's columns and number formats: the gauge rows match the overview's
+/// cell for cell, so opening the details never re-flows the cards.
+#[test]
+fn the_details_view_reuses_the_overview_cards_at_both_widths() {
+    let kb = KeybindingsManager::new();
+    let mut page = UsagePage::new(None, None);
+    page.apply_quotas(Ok(quota_report()));
+    page.apply_spend(Ok(spend_history()));
+    assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
+    assert_eq!(
+        render(&mut page, 80, 70),
+        vec![
+            rule(80),
+            "  Usage › Details".into(),
+            "  checked 2m ago".into(),
+            String::new(),
+            "  Provider quotas".into(),
+            "  ● Anthropic · from provider · fetched 2m ago".into(),
+            "    5-hour ━━━━━━━━━─────────────── 37% used  resets 14:13 (in 2h 13m)".into(),
+            "    Weekly ━━━━━━━━━━━━━━━━━━━━━━━─ 95% used  resets Sat 07:00 (in 2d 19h)".into(),
+            String::new(),
+            "  ● GitHub Copilot · individual · from provider · fetched 2m ago".into(),
+            "    the usage endpoint did not answer in time".into(),
+            String::new(),
+            "  ● ChatGPT (Codex) · observed on last response · observed 30m ago".into(),
+            "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
+            String::new(),
+            "  Spend by model · last 30 days".into(),
+            "    Estimates: cached-token pricing varies; long-context and service tiers are".into(),
+            "    not modelled; plan percentages lag up to 5 minutes.".into(),
+            "    anthropic/claude-opus  $14.25  3.0k tokens  3 calls  all time $20.00".into(),
+            String::new(),
+            "  Daily spend · last 30 days".into(),
+            "    2026-11-02  $9.50  2.1k tokens  2 calls".into(),
+            "    2026-11-01  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-28  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-27  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-26  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-25  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-24  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-23  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-22  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-21  $4.75   900 tokens  1 call".into(),
+            "    2026-11-20  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-19  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-18  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-17  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-16  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-15  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-14  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-13  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-12  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-11  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-10  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-09  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-08  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-07  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-06  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-05  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-04  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-03  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-02  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-01  $0.00     0 tokens  0 calls".into(),
+            "  R refresh · Tab overview · Esc back".into(),
+            String::new(),
+        ]
+    );
+    assert_eq!(
+        render(&mut page, 60, 70),
+        vec![
+            rule(60),
+            "  Usage › Details".into(),
+            "  checked 2m ago".into(),
+            String::new(),
+            "  Provider quotas".into(),
+            "  ● Anthropic · from provider · fetched 2m ago".into(),
+            "    5-hour ━━━━────── 37% used  resets 14:13 (in 2h 13m)".into(),
+            "    Weekly ━━━━━━━━━━ 95% used  resets Sat 07:00 (in 2d 19h)".into(),
+            String::new(),
+            "  ● GitHub Copilot · individual · fetched 2m ago".into(),
+            "    the usage endpoint did not answer in time".into(),
+            String::new(),
+            "  ● ChatGPT (Codex) · observed 30m ago".into(),
+            "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
+            String::new(),
+            "  Spend by model · last 30 days".into(),
+            "    Estimates: cached-token pricing varies; long-context and".into(),
+            "    service tiers are not modelled; plan percentages lag up".into(),
+            "    to 5 minutes.".into(),
+            "    anthropic/claude-opus  $14.25  3.0k tokens  3 calls".into(),
+            String::new(),
+            "  Daily spend · last 30 days".into(),
+            "    2026-11-02  $9.50  2.1k tokens  2 calls".into(),
+            "    2026-11-01  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-28  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-27  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-26  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-25  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-24  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-23  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-22  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-21  $4.75   900 tokens  1 call".into(),
+            "    2026-11-20  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-19  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-18  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-17  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-16  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-15  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-14  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-13  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-12  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-11  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-10  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-09  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-08  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-07  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-06  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-05  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-04  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-03  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-02  $0.00     0 tokens  0 calls".into(),
+            "    2026-11-01  $0.00     0 tokens  0 calls".into(),
+            "  R refresh · Tab overview · Esc back".into(),
+            String::new(),
+        ]
+    );
+}
+
 /// Spend the session files stamped with billing modes splits into the billed share, the plan's
-/// API-equivalent value (never billed), and free or unpriced calls; the model rows name each
-/// model's mode, and the page close counts the calls per share.
+/// API-equivalent value (never billed), and free or unpriced calls, in the span rows' columns;
+/// the model rows name each model's mode, and the page close counts the calls per share.
 #[test]
 fn the_spend_half_splits_billed_plan_and_free_calls() {
     use pa_types::billing::{BillingMode, BillingSplit, CostSource, ModeSpend};
@@ -380,30 +513,32 @@ fn the_spend_half_splits_billed_plan_and_free_calls() {
         overview[spend_at..overview.len() - 2].to_vec(),
         vec![
             "  Spend · local sessions".to_string(),
-            "    Today        $9.50     2.1k tokens  2 calls".into(),
-            "    7 days       $9.50     2.1k tokens  2 calls".into(),
-            "    30 days     $14.25     3.0k tokens  3 calls".into(),
-            "    All time    $20.00    12.0k tokens  7 calls".into(),
+            "    Today               $9.50   2.1k tokens  2 calls".into(),
+            "    7 days              $9.50   2.1k tokens  2 calls".into(),
+            "    30 days            $14.25   3.0k tokens  3 calls".into(),
+            "    All time           $20.00  12.0k tokens  7 calls".into(),
+            String::new(),
             "    30 days by billing".into(),
-            "    Billed (pay-as-you-go)  $0.40  1 call".into(),
-            "    Plan usage (API-equivalent value, not billed)  $13.85  2 calls".into(),
-            "    Free / unpriced  3 calls".into(),
-            "    30 days  ····················▅········█".into(),
+            "    Billed              $0.40                1 call   pay-as-you-go".into(),
+            "    Plan (not billed)  $13.85                2 calls  API-equivalent value".into(),
+            "    Free / unpriced                          3 calls".into(),
+            String::new(),
+            "    30 days            ····················▅········█".into(),
         ]
     );
     let kb = KeybindingsManager::new();
     assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
-    let details = render(&mut page, 100, 60);
+    let details = render(&mut page, 100, 70);
     let models_at = details
         .iter()
-        .position(|row| row == "  Spend by model · 30 days / all time")
+        .position(|row| row == "  Spend by model · last 30 days")
         .expect("the model rows");
     assert_eq!(
         details[models_at + 3..models_at + 5].to_vec(),
         vec![
-            "    anthropic/claude-opus  $14.25 · 3.0k tok  /  $20.00 · 12.0k tok · plan, not billed"
+            "    anthropic/claude-opus  $14.25  3.0k tokens  3 calls  all time $20.00 · plan, not billed"
                 .to_string(),
-            "    openrouter/glm  $0.40 · 100 tok  /  $0.40 · 100 tok · billed".into(),
+            "    openrouter/glm          $0.40   100 tokens  1 call   all time $0.40 · billed".into(),
         ]
     );
     assert_eq!(
@@ -416,7 +551,8 @@ fn the_spend_half_splits_billed_plan_and_free_calls() {
     );
 }
 
-/// A failed half keeps the other: the quota half's error state beside an empty history.
+/// A failed half keeps the other: the quota half's raw error, wrapped whole, beside an empty
+/// history; the details view shows the same states instead of empty tables.
 #[test]
 fn failed_and_empty_halves_render_their_own_states() {
     let mut page = UsagePage::new(None, None);
@@ -431,45 +567,55 @@ fn failed_and_empty_halves_render_their_own_states() {
         rate_limits: Vec::new(),
         sessions: 0,
     }));
-    for width in [80, 44] {
-        let quota_error = if width == 80 {
-            "  Provider quotas unavailable (the daemon did not answer in time)."
-        } else {
-            "  Provider quotas unavailable (the daemon d…"
-        };
-        let empty_spend = if width == 80 {
-            "  No billed model calls in local sessions yet."
-        } else {
-            "  No billed model calls in local sessions y…"
-        };
-        assert_eq!(
-            render(&mut page, width, 30),
-            vec![
-                rule(width),
-                "  Usage".into(),
-                String::new(),
-                String::new(),
-                "  Provider quotas".into(),
-                quota_error.into(),
-                String::new(),
-                "  Spend · local sessions".into(),
-                empty_spend.into(),
-                "  R refresh · Enter details · Esc close".into(),
-                String::new(),
-            ]
-        );
-    }
+    let frame =
+        |rows: &[&str]| -> Vec<String> { rows.iter().map(|row| (*row).to_string()).collect() };
+    assert_eq!(
+        render(&mut page, 80, 30)[4..9].to_vec(),
+        frame(&[
+            "  Provider quotas",
+            "    Provider quotas unavailable (the daemon did not answer in time).",
+            "",
+            "  Spend · local sessions",
+            "    No billed model calls in local sessions yet.",
+        ])
+    );
+    assert_eq!(
+        render(&mut page, 44, 30)[4..11].to_vec(),
+        frame(&[
+            "  Provider quotas",
+            "    Provider quotas unavailable (the daemon",
+            "    did not answer in time).",
+            "",
+            "  Spend · local sessions",
+            "    No billed model calls in local sessions",
+            "    yet.",
+        ])
+    );
+    let kb = KeybindingsManager::new();
+    assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
+    assert_eq!(
+        render(&mut page, 80, 30)[4..9].to_vec(),
+        frame(&[
+            "  Provider quotas",
+            "    Provider quotas unavailable (the daemon did not answer in time).",
+            "",
+            "  Spend by model · last 30 days",
+            "    No billed model calls in local sessions yet.",
+        ])
+    );
+    assert_eq!(page.handle_key("escape", &kb), UsagePageAction::None);
     page.apply_quotas(Ok(QuotaReport {
         providers: Vec::new(),
         pacing: Vec::new(),
     }));
     assert_eq!(
         render(&mut page, 80, 30)[5],
-        "  No subscription sign-in reports quotas (/login adds one)."
+        "    No subscription sign-in reports quotas (/login adds one)."
     );
 }
 
-/// The daemon's live pacing rides the quota half as one read-only row per provider/model.
+/// The daemon's live pacing rides the quota half as one read-only row per provider/model, at
+/// the content column with the label column shared.
 #[test]
 fn the_quota_half_lists_the_live_request_pacing() {
     let mut page = UsagePage::new(None, Some(spend_history()));
@@ -493,12 +639,12 @@ fn the_quota_half_lists_the_live_request_pacing() {
         .expect("the pacing section");
     assert_eq!(
         rendered[at + 1],
-        "  anthropic/claude-x  2/3 in flight (ceiling 6) · 50/min · backed off (429)"
+        "    anthropic/claude-x  2/3 in flight · ceiling 6 · 50/min · backed off (429)"
     );
 }
 
-/// Enter opens the details (full reset dates, fetch ages, per-model and daily spend); Tab and
-/// Esc go back; Esc on the overview closes. Refresh waits out a fetch in flight.
+/// Enter opens the details; Tab and Esc go back; Esc on the overview closes. Refresh waits out
+/// a fetch in flight.
 #[test]
 fn details_navigation_and_refresh() {
     let kb = KeybindingsManager::new();
@@ -507,43 +653,8 @@ fn details_navigation_and_refresh() {
     page.apply_quotas(Ok(quota_report()));
     page.apply_spend(Ok(spend_history()));
     assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
-    let details = render(&mut page, 80, 60);
-    assert_eq!(
-        details[..16].to_vec(),
-        vec![
-            rule(80),
-            "  Usage · Details".to_string(),
-            "  checked 2m ago".into(),
-            String::new(),
-            "  Provider quotas".into(),
-            "  ● Anthropic · from provider".into(),
-            "    fetched 2m ago".into(),
-            "    5-hour: 37% used · resets 14:13 (in 2h 13m)".into(),
-            "    Weekly: 95% used · resets Sat 07:00 (in 2d 19h)".into(),
-            "  ● GitHub Copilot · individual · from provider".into(),
-            "    fetched 2m ago".into(),
-            "    the usage endpoint did not answer in time".into(),
-            "  ● ChatGPT (Codex) · observed on last response".into(),
-            "    observed 30m ago".into(),
-            "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
-            String::new(),
-        ]
-    );
-    assert_eq!(
-        details[16..21].to_vec(),
-        vec![
-            "  Spend by model · 30 days / all time".to_string(),
-            "    Estimates: cached-token pricing varies; long-context and service tiers".into(),
-            "    are not modelled; plan percentages lag up to 5 minutes.".into(),
-            "    anthropic/claude-opus  $14.25 · 3.0k tok  /  $20.00 · 12.0k tok".into(),
-            String::new(),
-        ]
-    );
-    assert_eq!(
-        details.last().cloned(),
-        Some(String::new()),
-        "the frame ends on the blank under the footer"
-    );
+    let details = render(&mut page, 80, 70);
+    assert_eq!(details[1], "  Usage \u{203a} Details");
     // A short frame windows the details with the scroll row and the scroll hint.
     let short = render(&mut page, 80, 20);
     assert_eq!(
@@ -587,10 +698,35 @@ fn a_loading_quota_half_shows_beside_an_observed_card() {
         render(&mut page, 80, 40)[4..9].to_vec(),
         vec![
             "  Provider quotas".to_string(),
-            "  Loading provider quotas…".into(),
+            "    Loading provider quotas…".into(),
             String::new(),
             "  ● ChatGPT (Codex) · observed on last response".into(),
             "    rate limited (HTTP 429) · resets 13:00 (in 1h)".into(),
         ]
     );
+}
+
+/// Esc and Tab out of the details bring back the overview exactly as it was scrolled; the
+/// details themselves open at their top.
+#[test]
+fn back_from_the_details_restores_the_overview_scroll() {
+    let kb = KeybindingsManager::new();
+    let mut page = UsagePage::new(Some(quota_report()), Some(spend_history()));
+    page.apply_quotas(Ok(quota_report()));
+    page.apply_spend(Ok(spend_history()));
+    render(&mut page, 80, 16);
+    for _ in 0..3 {
+        assert_eq!(page.handle_key("down", &kb), UsagePageAction::None);
+    }
+    let scrolled = render(&mut page, 80, 16);
+    for back in ["escape", "tab"] {
+        assert_eq!(page.handle_key("enter", &kb), UsagePageAction::None);
+        let details = render(&mut page, 80, 16);
+        assert_eq!(
+            details[4], "  Provider quotas",
+            "the details open at their top"
+        );
+        assert_eq!(page.handle_key(back, &kb), UsagePageAction::None);
+        assert_eq!(render(&mut page, 80, 16), scrolled, "back with {back}");
+    }
 }

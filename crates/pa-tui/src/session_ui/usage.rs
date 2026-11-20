@@ -397,7 +397,7 @@ mod tests {
             );
             let first = frame_text(&mut view);
             assert!(
-                first.contains(&"  Loading provider quotas…".to_string()),
+                first.contains(&"    Loading provider quotas…".to_string()),
                 "{first:#?}"
             );
 
@@ -406,9 +406,9 @@ mod tests {
             session.apply_usage_update(update, &mut view);
             let filled = frame_text(&mut view);
             assert!(
-                filled.contains(&"  Loading provider quotas…".to_string())
+                filled.contains(&"    Loading provider quotas…".to_string())
                     && filled
-                        .contains(&"  No billed model calls in local sessions yet.".to_string()),
+                        .contains(&"    No billed model calls in local sessions yet.".to_string()),
                 "{filled:#?}"
             );
             drop(session);
