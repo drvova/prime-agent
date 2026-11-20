@@ -1535,6 +1535,22 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Session-boot admission for one session's process (v2), emitted at session close beside
+/// `agent session ended` (which sits at the 128-key cap) when a session boot (a subagent's
+/// worker spawn or a kernel start) waited for the daemon-wide boot budget or finished under
+/// CPU or memory pressure: boots that waited, their summed wait, and boots under pressure.
+/// Counts only.
+const AGENT_SESSION_BOOT_ADMISSION: EventRule = EventRule {
+    name: "agent session boot admission",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("boot_admission_waited_count", required(count())),
+        ("boot_admission_wait_ms", required(duration())),
+        ("boot_pressure_count", required(count())),
+    ],
+};
+
 /// Goal verification adoption for one session (v2), emitted at session end beside `agent session
 /// ended` only when a goal ran a verifier or hit a budget: `check` runs, failures, and dedupe skips
 /// (an unchanged workspace), judge calls and NOT MET verdicts, and token/dollar budget stops.
@@ -1929,6 +1945,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_SESSION_BOOT_ADMISSION,
         &AGENT_QUOTA_FALLBACK,
         &AGENT_ENDPOINT_DISCOVERY,
     ];

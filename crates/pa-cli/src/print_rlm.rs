@@ -875,6 +875,8 @@ impl RlmSubagentHost for InlineHost {
                 name,
                 session_dir: child_node.session_dir.clone(),
                 model: selector,
+                // In-process children start no worker: nothing to queue for.
+                queued_ms: 0,
             })
         })
     }
@@ -975,6 +977,7 @@ impl RlmSubagentHost for InlineHost {
                         ),
                         tool_use_count: None,
                         replied_since_task: Some(state.replied_since_task),
+                        queued_ms: None,
                     });
                 }
                 if all_settled || deadline <= tokio::time::Instant::now() {

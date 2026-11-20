@@ -149,6 +149,17 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
+session boot (a kernel's interpreter start here; the daemon's child worker spawns and
+crash-recovery adoption) under a permit of the session-boot budget
+(`pa_ai::admission::AdmissionKey::session_boot`), and returns the permit with the boot's latency
+and the host's load (`HostLoad`: Linux `/proc` load average and available memory; pressure is an
+overload). The width is `pa_types::control`'s controller with
+`pa_ai::admission::session_boot_controller_config`; `PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS`
+pins it. A permit covers the boot only; a permit granted after its waiter gave up goes straight
+back. `take_stats` feeds the `agent session boot admission` event. Non-goals: bounding how many
+sessions run (only how many boot at once), and a user setting.
+
 Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per kernel
 capability under `prime-agent-runtime/capabilities/`, embedded with `include_str!`, recording each
 capability's runtime-ready probe statements, closure seed, bootstrap binding, prompt names, host

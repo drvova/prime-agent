@@ -23,50 +23,21 @@ use crate::kernel::shared::{
 use crate::kernel::state_snapshot::RestoreResult;
 use crate::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
-/// Above core count because boots are IO-bound, capped so a fan-out can't
-/// thrash the FS past the ready-handshake window.
-fn default_kernel_boot_concurrency() -> usize {
-    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
-    16.min((cores * 2).max(4))
-}
-
-fn resolve_kernel_boot_concurrency() -> usize {
-    let Ok(raw) = std::env::var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS") else {
-        return default_kernel_boot_concurrency();
-    };
-    if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_digit()) {
-        return default_kernel_boot_concurrency();
-    }
-    let parsed: usize = raw.parse().unwrap_or(0);
-    if parsed < 1 {
-        return default_kernel_boot_concurrency();
-    }
-    parsed.min(64)
-}
-
-/// Semaphore bounding concurrent kernel boots. Resolved lazily on first boot so
-/// an env override set before the first kernel starts is honored.
-static BOOT_PERMITS: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
-
-async fn with_kernel_boot_permit<F, Fut>(boot: F) -> Fut::Output
+/// Run a kernel's interpreter start under a session-boot permit: the daemon-wide adaptive
+/// boot budget inside a worker (`PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS` pins its width), at
+/// the process's own class (the foreground session's kernels ahead of subagents').
+async fn with_kernel_boot_permit<F, Fut>(boot: F) -> anyhow::Result<()>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
 {
-    let permits = {
-        let mut guard = BOOT_PERMITS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        guard
-            .get_or_insert_with(|| {
-                Arc::new(tokio::sync::Semaphore::new(
-                    resolve_kernel_boot_concurrency(),
-                ))
-            })
-            .clone()
-    };
-    let _permit = permits.acquire().await;
-    boot().await
+    crate::kernel::boot_admission::admitted_boot(
+        pa_ai::admission::current_source(),
+        pa_ai::admission::process_priority(),
+        boot(),
+    )
+    .await
+    .result
 }
 
 /// Resolves once another kernel sharing the snapshot dir has flushed its final snapshot.
@@ -1784,21 +1755,6 @@ mod tests {
             "the stale gate is replaced"
         );
         drop(gate);
-    }
-
-    #[test]
-    fn boot_concurrency_defaults_and_override() {
-        let default = default_kernel_boot_concurrency();
-        assert!(default >= 4);
-        std::env::set_var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS", "2");
-        assert_eq!(resolve_kernel_boot_concurrency(), 2);
-        std::env::set_var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS", "0");
-        assert_eq!(resolve_kernel_boot_concurrency(), default);
-        std::env::set_var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS", "junk");
-        assert_eq!(resolve_kernel_boot_concurrency(), default);
-        std::env::set_var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS", "1000");
-        assert_eq!(resolve_kernel_boot_concurrency(), 64);
-        std::env::remove_var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS");
     }
 
     #[tokio::test]
