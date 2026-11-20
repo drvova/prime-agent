@@ -462,3 +462,50 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
     }
     assert_eq!(paged_back, originals);
 }
+
+/// The request path never waits on the spill write: with the store's writer
+/// hung on its first file, thinning returns at once, and its view is the one
+/// a working store gives (the handle is the content hash, not a store state).
+#[cfg(unix)]
+#[test]
+fn a_hanging_spill_writer_never_delays_the_thinned_view() {
+    use crate::kernel::spill::{content_id, SpillStore};
+
+    let messages = history(20, 4_000);
+    let working = tempfile::TempDir::new().expect("temp dir");
+    let expected = thin_context(
+        messages.clone(),
+        20_000,
+        &ThinningSettings::default(),
+        &ThinnedRecall::Spill(SpillStore::for_session_dir(working.path())),
+    );
+    let hung = tempfile::TempDir::new().expect("temp dir");
+    let spill_dir = hung.path().join("spill");
+    std::fs::create_dir_all(&spill_dir).expect("spill dir");
+    // Opening a FIFO for writing blocks until a reader opens it: the writer
+    // thread's temp-file create for the first thinned result never returns.
+    let fifo = spill_dir.join(format!("{}.tmp", content_id(&result_text(&messages[2]))));
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("mkfifo");
+    assert!(status.success());
+    let store = SpillStore::for_session_dir(hung.path());
+
+    // On its own thread, so a thinning that waited on the write fails this
+    // test instead of hanging it.
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let view = thin_context(
+            messages,
+            20_000,
+            &ThinningSettings::default(),
+            &ThinnedRecall::Spill(store),
+        );
+        let _ = sender.send(view);
+    });
+    let view = receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("thinning must not wait on the spill write");
+    assert_eq!(view, expected);
+}
