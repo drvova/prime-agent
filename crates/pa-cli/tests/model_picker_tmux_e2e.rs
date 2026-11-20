@@ -256,8 +256,8 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
             && screen.contains("Claude Plan Two")
     });
     println!("--- billing: plan ---\n{filtered}");
-    // The recent group holds the current model; the anthropic group's first row is the other.
-    pane.keys(&["Down"]);
+    // The fuzzy search composes with the chip: the query's first match is selected.
+    pane.type_text("Plan Two");
     pane.wait("the selection on Claude Plan Two", |screen| {
         screen.contains("enter switches to Claude Plan Two")
     });
@@ -273,9 +273,17 @@ fn the_picker_filters_by_billing_favorites_and_switches_the_session() {
     pane.wait("the favorite toggle", |screen| {
         screen.contains("Remove from favorites")
     });
+    // Esc steps back to the list, a second Esc clears the query: the grouped view, the
+    // favorite heading it and still selected.
+    pane.keys(&["Escape"]);
+    pane.wait("the list", |screen| {
+        screen.contains("enter switches to Claude Plan Two")
+            && !screen.contains("Remove from favorites")
+    });
     pane.keys(&["Escape"]);
     let favorited = pane.wait("the favorites group", |screen| {
-        screen.contains("favorites")
+        screen.contains("enter switches to Claude Plan Two")
+            && screen.lines().any(|line| line.trim() == "favorites")
             && row(screen, "Claude Plan Two").is_some_and(|line| line.contains("\u{2605}"))
     });
     println!("--- favorited ---\n{favorited}");
