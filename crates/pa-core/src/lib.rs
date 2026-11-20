@@ -65,6 +65,7 @@ pub mod session_engine;
 pub mod settings;
 pub mod skills;
 pub mod slash_command_args;
+pub(crate) mod symbol_index;
 pub mod update;
 pub mod usage_host;
 pub(crate) mod web_read;

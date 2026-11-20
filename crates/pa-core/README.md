@@ -158,6 +158,16 @@ session reads the card the previous refresh stored under `<agent dir>/project-ca
 50 ms budget, then re-derives it on a background thread for the next session; a reload keeps the
 session's card. Non-goals: running the commands, and deriving on the session-start path.
 
+Symbol index (`symbol_index`): the kernel's `fs.symbol` host request answers one name's
+definitions, references, and a spill handle to each definition's source, from a per-project index
+kept under `<agent dir>/symbol-index/<project hash>.json`. Definitions come from per-language line
+patterns (Rust, Python, JS/TS, Go, C/C++; no parser dependency), references from each file's
+identifier set plus a whole-word scan of the files that hold the name. The walk respects
+`.gitignore`; a refresh re-reads only files whose size or mtime changed, and a query re-checks the
+files it answers from. The first query starts the build and waits at most 300 ms for it; past that
+it answers partial. Adoption counts ride the `agent symbol index` event. Non-goals: type-aware
+resolution and cross-language references.
+
 Error enrichment (`kernel::error_context`): a user cell that raised, or a `bash()` command a cell
 awaited that exited non-zero (the kernel's `command-failure` display), gets an `[error context]`
 block appended to its result: the source lines (±3) around each error location the output names,
