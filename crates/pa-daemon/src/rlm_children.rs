@@ -222,6 +222,8 @@ struct ChildRecord {
     last_emitted_status: Option<&'static str>,
     /// Serializes parent-directed rename and delete for this child.
     rename_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// How long the child's boot waited for a session-boot permit (0: one was free).
+    queued_ms: u64,
 }
 
 impl ChildRecord {
@@ -769,6 +771,7 @@ impl SupervisorChildSessions {
                 emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                 last_emitted_status: None,
                 rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                queued_ms: 0,
             })));
     }
 
@@ -851,6 +854,7 @@ impl SupervisorChildSessions {
             duration_ms: Some(now_ms().saturating_sub(record.started_at_ms)),
             tool_use_count: record.tool_use_count,
             replied_since_task: Some(record.replied_since_task),
+            queued_ms: Some(record.queued_ms).filter(|queued_ms| *queued_ms > 0),
         }
     }
 
@@ -869,6 +873,7 @@ impl SupervisorChildSessions {
             duration_ms: Some(now_ms().saturating_sub(deleted.started_at_ms)),
             tool_use_count: None,
             replied_since_task: None,
+            queued_ms: None,
         }
     }
 }

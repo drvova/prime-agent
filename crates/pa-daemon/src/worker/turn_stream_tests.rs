@@ -415,6 +415,7 @@ async fn a_turns_tool_executions_count_onto_the_summary() {
                 bash_running: false,
                 subagents_running: false,
                 progress_note: None,
+                waiting_on: None,
             },
         )
     };

@@ -281,6 +281,28 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn credential_added(
+        &self,
+        kind: &'static str,
+        slot: &'static str,
+        surface: &'static str,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui image paste`; the login path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("kind", serde_json::Value::from(kind));
+            properties.set("slot", serde_json::Value::from(slot));
+            properties.set("surface", serde_json::Value::from(surface));
+            properties.set("outcome", serde_json::Value::from(outcome));
+            client.track("agent credential added", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn queued_input(
         &self,
         _lane: &'static str,

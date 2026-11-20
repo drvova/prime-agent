@@ -438,6 +438,7 @@ pub(crate) struct SummaryInputs {
     pub(crate) bash_running: bool,
     pub(crate) subagents_running: bool,
     pub(crate) progress_note: Option<String>,
+    pub(crate) waiting_on: Option<String>,
 }
 
 impl SummaryInputs {
@@ -473,6 +474,9 @@ impl SummaryInputs {
             bash_running: user_bash.is_running(),
             subagents_running: engine.has_running_subagents(),
             progress_note: engine.progress_note(),
+            waiting_on: engine
+                .agent_message_waits()
+                .and_then(|waits| waits.waiting_on()),
         }
     }
 }
@@ -607,6 +611,7 @@ pub(crate) fn session_summary(core: &SessionCore, inputs: SummaryInputs) -> Sess
         modified,
         first_message: store.and_then(crate::session_store::SessionFile::first_message),
         progress_note: inputs.progress_note,
+        waiting_on: inputs.waiting_on,
         tool_use_count: (core.tool_use_count > 0).then_some(core.tool_use_count),
         parent_session_path: store.and_then(|store| store.header.parent_session.clone()),
         parent_active_session_id: core.parent_active_session_id.clone(),

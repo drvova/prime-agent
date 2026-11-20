@@ -149,6 +149,32 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
+session boot (a kernel's interpreter start here; the daemon's child worker spawns and
+crash-recovery adoption) under a permit of the session-boot budget
+(`pa_ai::admission::AdmissionKey::session_boot`), and returns the permit with the boot's latency
+and the host's load (`HostLoad`: Linux `/proc` load average and available memory; pressure is an
+overload). The width is `pa_types::control`'s controller with
+`pa_ai::admission::session_boot_controller_config`; `PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS`
+pins it. A permit covers the boot only; a permit granted after its waiter gave up goes straight
+back. `take_stats` feeds the `agent session boot admission` event. Non-goals: bounding how many
+sessions run (only how many boot at once), and a user setting.
+
+Paged-out cell output (`kernel::spill`): a persistent session's content-addressed store of the
+cell output its transcript cut. When a `python_repl` cell's stdout, stderr, or result runs past
+its cap, the kernel manager hands the whole text (up to 8 MiB per stream) to the session's
+`SpillStore` and writes the spill's handle (`[out:<id> · N chars · L lines · M chars not shown]`)
+where the truncation marker was. The host owns the store, not the kernel runtime: the host sees
+every byte and owns the session directory, and the store outlives kernel processes. The write
+runs on the store's writer thread (bounded queue, bounded retries), never on the cell-result path;
+a spill the writer cannot take or keep answers "not stored". Files live under
+`<session artifact dir>/spill/` with an append-only `index.jsonl` (stored, failed, evicted), so
+handles survive resume and daemon restart; past 64 MiB per session the oldest spills are evicted
+and answer "evicted". Public surface: `SpillStore::for_session_dir` and the
+`ExecuteOptions::spill` slot. Non-goals: the kernel's own in-process caps (the 1 MiB result
+transit cap and `bash()`'s 2 MiB head/tail buffer bound memory before the host sees the text)
+and any cross-session sharing.
+
 Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per kernel
 capability under `prime-agent-runtime/capabilities/`, embedded with `include_str!`, recording each
 capability's runtime-ready probe statements, closure seed, bootstrap binding, prompt names, host
