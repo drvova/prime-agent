@@ -26,6 +26,7 @@ pub mod acp;
 pub mod agent_engine;
 pub mod agent_message_broadcast;
 pub mod agent_message_ingest;
+pub mod agent_message_wait;
 pub mod agent_messaging;
 pub(crate) mod agent_roster;
 mod async_safe_runtime;

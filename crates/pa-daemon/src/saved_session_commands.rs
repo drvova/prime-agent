@@ -817,6 +817,8 @@ fn agent_peer_summary(summary: &Value) -> Value {
         // parent registry's roster read joins them onto its subagent rows.
         "progressNote",
         "toolUseCount",
+        // A parked `agent_message.wait`'s target: the waiter's cycle walk follows it.
+        "waitingOn",
         "workerInstanceId",
         "rosterDeltaSequence",
     ] {

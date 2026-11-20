@@ -230,6 +230,8 @@ pub struct AgentSessionEngine {
         Option<std::sync::Arc<dyn pa_core::session_engine::rlm_usage::RlmChildUsageStore>>,
     >,
     own_summary: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    /// The session's `agent_message.wait` side, shared with its message controller.
+    agent_message_waits: std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>,
     pub(crate) create_resources: std::sync::RwLock<CreateSessionResources>,
     pub(crate) autonomous:
         std::sync::Arc<tokio::sync::Mutex<pa_core::autonomous::AutonomousRuntimeState>>,

@@ -348,6 +348,15 @@ pub struct SessionCounters {
     telemetry_enabled: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
+/// `agent_message.wait` outcomes for one session (counts only).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct AgentMessageWaitCounts {
+    message: u64,
+    timeout: u64,
+    cycle: u64,
+    no_sender: u64,
+}
+
 #[derive(Default)]
 struct CounterValues {
     skill_use_count: u64,
@@ -409,6 +418,8 @@ struct CounterValues {
     /// `agent_message.send` deliveries the per-sender rate bucket or a receiver's wake budget
     /// refused, reported by `agent messages`.
     agent_message_refusals: super::agent_messaging::AgentMessageRefusals,
+    /// `agent_message.wait` outcomes, reported by `agent message waits`.
+    agent_message_waits: AgentMessageWaitCounts,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
     rlm_abort: RlmAbortCounts,
     /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
@@ -833,6 +844,21 @@ impl SessionCounters {
     /// One recorded assistant call's billing mode (a count: never its cost or provider).
     pub(crate) fn note_billing_mode(&self, mode: pa_types::billing::BillingMode) {
         self.with(|values| values.billing_modes.add(Some(&mode), 0.0));
+    }
+
+    /// One settled `agent_message.wait`, by outcome name (counts only: never a sender or body).
+    pub(crate) fn note_agent_message_wait(&self, outcome: &str) {
+        self.with(|values| {
+            let waits = &mut values.agent_message_waits;
+            match outcome {
+                "message" => waits.message += 1,
+                "timeout" => waits.timeout += 1,
+                "cycle" => waits.cycle += 1,
+                "no_sender" => waits.no_sender += 1,
+                // The wait handler renders only the four outcomes above.
+                _ => {}
+            }
+        });
     }
 
     /// `agent_message.send` deliveries the rate bucket or a receiver's wake budget refused
@@ -1706,6 +1732,22 @@ impl SessionTelemetry {
                 Value::from(refusals.wake_refused),
             );
             self.client.track("agent messages", message_properties);
+        }
+        // A session that never waited for an agent message sends no wait event.
+        let mut waits = AgentMessageWaitCounts::default();
+        self.counters
+            .with(|values| waits = values.agent_message_waits);
+        if waits != AgentMessageWaitCounts::default() {
+            let mut wait_properties = self.session_properties();
+            for (key, count) in [
+                ("agent_message_wait_message_count", waits.message),
+                ("agent_message_wait_timeout_count", waits.timeout),
+                ("agent_message_wait_cycle_count", waits.cycle),
+                ("agent_message_wait_no_sender_count", waits.no_sender),
+            ] {
+                wait_properties.set(key, Value::from(count));
+            }
+            self.client.track("agent message waits", wait_properties);
         }
         // A session that never aborted a child from the kernel sends no abort event.
         let mut abort = RlmAbortCounts::default();

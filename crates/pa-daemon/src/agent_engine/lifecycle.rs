@@ -165,6 +165,7 @@ impl AgentSessionEngine {
             image_route: std::sync::Mutex::new(None),
             reload_lock: std::sync::Mutex::new(()),
             own_summary: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            agent_message_waits: std::sync::Arc::default(),
             create_resources: std::sync::RwLock::default(),
             autonomous: std::sync::Arc::new(tokio::sync::Mutex::new(
                 pa_core::autonomous::create_autonomous_runtime_state(None, None),
@@ -800,6 +801,7 @@ impl AgentSessionEngine {
             config.worker_token.clone(),
             Arc::clone(&self.own_summary),
             self.children.clone(),
+            Arc::clone(&self.agent_message_waits),
         ));
         let observer = Arc::new(LinkAgentObserveController::new(
             Arc::clone(&self.link),
