@@ -71,6 +71,7 @@ pub(crate) use config::CreateSessionResources;
 pub use config::SupervisorLinkConfig;
 use config::{GoalRuntimeHandles, ProducerUsageSink, RestoredSessionModel, StartupScope};
 
+mod better;
 mod effort;
 mod reload;
 mod session_engine_impl;

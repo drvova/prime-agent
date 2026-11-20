@@ -355,7 +355,7 @@ const SNAPSHOT_EXCLUDES: [&str; 6] = [
 ///
 /// `.gitattributes` clean/process filters still run on modified tracked files, in the
 /// repository and inside its submodules; no flag disables them.
-const SNAPSHOT_GIT_OVERRIDES: [&str; 5] = [
+pub(crate) const SNAPSHOT_GIT_OVERRIDES: [&str; 5] = [
     "-c",
     "core.fsmonitor=false",
     "-c",
@@ -502,7 +502,7 @@ fn hash_untracked_path(path: &Path) -> String {
 /// Run a child process with a timeout, draining both output pipes
 /// concurrently (a chatty command cannot wedge the wait on a full pipe);
 /// `envs` are extra environment entries for the child.
-async fn run_child_process(
+pub(crate) async fn run_child_process(
     program: &str,
     args: &[String],
     cwd: &Path,
