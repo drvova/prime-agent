@@ -35,10 +35,10 @@ impl WorktreeFact {
             ("merge", "applied") => WorktreeFact::Merged,
             ("merge", "branch") => WorktreeFact::Branched,
             ("merge", "conflicts") => WorktreeFact::Conflicted,
-            // An empty merge brought nothing home: an outcome, not an adoption count.
-            ("merge", "empty") => return None,
             ("remove", "ok") => WorktreeFact::Removed,
             (_, "failed") => WorktreeFact::Failed,
+            // An empty merge brought nothing home (an outcome, not an adoption count), and
+            // `list` counts nothing.
             _ => return None,
         })
     }
@@ -111,7 +111,8 @@ pub(crate) fn register_worktree_host_handler(
                 let op = field("op").context("worktree.record needs an op")?;
                 let outcome = field("outcome").context("worktree.record needs an outcome")?;
                 ledger.note(op, outcome, field("name"), field("path"));
-                if let (Some(observer), Some(fact)) = (&observer, WorktreeFact::parse(op, outcome)) {
+                if let (Some(observer), Some(fact)) = (&observer, WorktreeFact::parse(op, outcome))
+                {
                     observer(fact);
                 }
                 Ok(json!({}))
