@@ -2,7 +2,7 @@ module = "rlm.bash"
 closure_seed = true
 prompt_builtins = ["bash"]
 documented = ["bash"]
-internal_host_requests = ["bash.completed", "bash.consumed"]
+internal_host_requests = ["bash.completed", "bash.consumed", "tests.summary", "command_cache.fact"]
 probe = [
   "from rlm.bash import BashHandle, BashResult",
   "assert callable(rlm.bash)",
@@ -11,4 +11,23 @@ probe = [
   "assert callable(rlm._set_completion_notices_wired)",
   "assert all(callable(getattr(BashHandle, _m, None)) for _m in ('tail', 'output', 'poll', 'kill'))",
   "assert {'exit_code', 'output', 'duration'} <= set(BashResult.__dataclass_fields__)",
+]
+
+[[telemetry]]
+event = "agent test summaries"
+properties = [
+  "test_summary_count",
+  "test_summary_failing_count",
+  "test_summary_failed_test_count",
+  "test_summary_failure_handle_count",
+  "test_summary_stored_count",
+]
+
+[[telemetry]]
+event = "agent readonly cache"
+properties = [
+  "readonly_cache_hit_count",
+  "readonly_cache_miss_count",
+  "readonly_cache_fs_read_hit_count",
+  "readonly_cache_fs_read_miss_count",
 ]

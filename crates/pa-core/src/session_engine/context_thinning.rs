@@ -21,9 +21,14 @@
 //!   neither is a result whose tool call id the latest assistant text names,
 //!   nor an error result no later call of the same tool has superseded with a
 //!   success (the output an active fix still needs).
-//! - **Recall.** The pointer names `rlm.session.tool_result(<tool call id>)`,
-//!   which the `rlm.session.tool_result` host request below answers from the
-//!   stored transcript.
+//! - **Recall.** A persistent session pages the thinned result's whole text
+//!   out to its spill store ([`ThinnedRecall::Spill`]): the pointer is the
+//!   spill's content handle, read back with `ctx.page`/`ctx.grep`, so nothing
+//!   thinned is lost even after compaction drops the row. Without a store the
+//!   pointer names `rlm.session.tool_result(<tool call id>)`, which the
+//!   `rlm.session.tool_result` host request below answers from the stored
+//!   transcript. The handle is a hash of the text, so the view stays a pure
+//!   function of the history; the write is queued off the request path.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -37,6 +42,7 @@ use pa_types::session::FileEntry;
 use serde_json::{json, Value};
 
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
+use crate::kernel::spill::{OutputBudget, SpillStore};
 use crate::session::manager::SessionManager;
 
 #[cfg(test)]
@@ -124,6 +130,17 @@ impl ThinningStats {
     }
 }
 
+/// Where a thinned result's whole text is read back from.
+#[derive(Debug, Clone)]
+pub enum ThinnedRecall {
+    /// The stored transcript, through `rlm.session.tool_result(<call id>)`
+    /// (an ephemeral session, which keeps no spill store).
+    ToolResult,
+    /// The session's spill store: the text pages out under its content
+    /// handle, which `ctx.*` reads.
+    Spill(SpillStore),
+}
+
 /// The thinned request view and what it saved.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThinnedView {
@@ -132,12 +149,15 @@ pub struct ThinnedView {
 }
 
 /// Thin the request view of `messages` for a model with `context_window`
-/// tokens. Pure: the same history and settings always produce the same view.
+/// tokens, pointing each thinned result at `recall`. Pure: the same history
+/// and settings always produce the same view (a spill store only gains the
+/// thinned texts it does not hold yet, off this path).
 #[must_use]
 pub fn thin_context(
     messages: Vec<AgentMessage>,
     context_window: u64,
     settings: &ThinningSettings,
+    recall: &ThinnedRecall,
 ) -> ThinnedView {
     let unchanged = |messages| ThinnedView {
         messages,
@@ -146,45 +166,7 @@ pub fn thin_context(
     if !settings.enabled || context_window == 0 {
         return unchanged(messages);
     }
-    // The chars/4 estimate of the unthinned history (the compaction
-    // estimator's sizing, on the loop's wire types).
-    let chars = |text: &str| text.chars().count() as u64;
-    let estimated_tokens = messages
-        .iter()
-        .map(|message| match message {
-            AgentMessage::Standard(Message::User(user)) => match &user.content {
-                UserContent::Text(text) => chars(text),
-                UserContent::Parts(parts) => parts
-                    .iter()
-                    .map(|part| match part {
-                        UserPart::Text(text) => chars(&text.text),
-                        UserPart::Image(_) => IMAGE_CHARS,
-                    })
-                    .sum(),
-            },
-            AgentMessage::Standard(Message::Assistant(assistant)) => assistant
-                .content
-                .iter()
-                .map(|block| match block {
-                    AssistantContent::Text(text) => chars(&text.text),
-                    AssistantContent::Thinking(thinking) => chars(&thinking.thinking),
-                    AssistantContent::ToolCall(call) => {
-                        chars(&call.name) + chars(&call.arguments.to_string())
-                    }
-                })
-                .sum(),
-            AgentMessage::Standard(Message::ToolResult(result)) => result
-                .content
-                .iter()
-                .map(|block| match block {
-                    ToolResultContent::Text(text) => chars(&text.text),
-                    ToolResultContent::Image(_) => IMAGE_CHARS,
-                })
-                .sum(),
-            AgentMessage::Custom(custom) => chars(&custom.payload.to_string()),
-        })
-        .sum::<u64>()
-        .div_ceil(4);
+    let estimated_tokens = estimate_tokens(&messages);
     if (estimated_tokens as f64) < context_window as f64 * settings.threshold_percent / 100.0 {
         return unchanged(messages);
     }
@@ -282,11 +264,18 @@ pub fn thin_context(
                 let omitted = total - HEAD_CHARS - TAIL_CHARS;
                 let mut thinned = String::with_capacity(HEAD_CHARS + TAIL_CHARS + 192);
                 thinned.push_str(&text[..head_end]);
-                let _ = write!(
-                    thinned,
-                    "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: await rlm.session.tool_result({:?}) ...]\n",
-                    result.tool_call_id
-                );
+                match recall {
+                    ThinnedRecall::Spill(store) => {
+                        let _ = write!(thinned, "\n{}\n", store.retain(&text).thinned_marker());
+                    }
+                    ThinnedRecall::ToolResult => {
+                        let _ = write!(
+                            thinned,
+                            "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: await rlm.session.tool_result({:?}) ...]\n",
+                            result.tool_call_id
+                        );
+                    }
+                }
                 thinned.push_str(&text[tail_start..]);
                 let kept = thinned.chars().count();
                 if kept >= total {
@@ -312,29 +301,80 @@ pub fn thin_context(
     ThinnedView { messages, stats }
 }
 
+/// The chars/4 token estimate of the unthinned history (the compaction
+/// estimator's sizing, on the loop's wire types).
+fn estimate_tokens(messages: &[AgentMessage]) -> u64 {
+    let chars = |text: &str| text.chars().count() as u64;
+    messages
+        .iter()
+        .map(|message| match message {
+            AgentMessage::Standard(Message::User(user)) => match &user.content {
+                UserContent::Text(text) => chars(text),
+                UserContent::Parts(parts) => parts
+                    .iter()
+                    .map(|part| match part {
+                        UserPart::Text(text) => chars(&text.text),
+                        UserPart::Image(_) => IMAGE_CHARS,
+                    })
+                    .sum(),
+            },
+            AgentMessage::Standard(Message::Assistant(assistant)) => assistant
+                .content
+                .iter()
+                .map(|block| match block {
+                    AssistantContent::Text(text) => chars(&text.text),
+                    AssistantContent::Thinking(thinking) => chars(&thinking.thinking),
+                    AssistantContent::ToolCall(call) => {
+                        chars(&call.name) + chars(&call.arguments.to_string())
+                    }
+                })
+                .sum(),
+            AgentMessage::Standard(Message::ToolResult(result)) => result
+                .content
+                .iter()
+                .map(|block| match block {
+                    ToolResultContent::Text(text) => chars(&text.text),
+                    ToolResultContent::Image(_) => IMAGE_CHARS,
+                })
+                .sum(),
+            AgentMessage::Custom(custom) => chars(&custom.payload.to_string()),
+        })
+        .sum::<u64>()
+        .div_ceil(4)
+}
+
 /// Reads the context window of the model the next request goes to.
 pub type ContextWindowProbe = Arc<dyn Fn() -> pa_agent::BoxFut<'static, u64> + Send + Sync>;
 
 /// Observes each request that thinned at least one result (telemetry).
 pub type ThinningObserver = Arc<dyn Fn(&ThinningStats) + Send + Sync>;
 
-/// The `transform_context` seam: thin each request's view. Pure CPU over the
+/// The `transform_context` seam: publish each request's context fill to
+/// `budget` (the cell output cap), and thin its view. Pure CPU over the
 /// copy the loop hands it; it never awaits disk or network (the probe reads
 /// in-memory model state).
 #[must_use]
 pub fn thinning_transform(
     settings: ThinningSettings,
     context_window: ContextWindowProbe,
+    recall: ThinnedRecall,
+    budget: OutputBudget,
     observer: Option<ThinningObserver>,
 ) -> TransformContextFn {
     Arc::new(move |messages, _signal| {
         let context_window = Arc::clone(&context_window);
         let observer = observer.clone();
+        let recall = recall.clone();
+        let budget = budget.clone();
         Box::pin(async move {
+            let window = context_window().await;
+            // The cells this request's answer runs size their output cap to
+            // the context left (in-memory atomics; the executor reads them).
+            budget.observe(estimate_tokens(&messages), window);
             if !settings.enabled {
                 return Ok(messages);
             }
-            let view = thin_context(messages, context_window().await, &settings);
+            let view = thin_context(messages, window, &settings, &recall);
             if view.stats.thinned_results > 0 {
                 tracing::debug!(
                     thinned_results = view.stats.thinned_results,

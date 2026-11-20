@@ -2081,6 +2081,55 @@ async fn usage_reads_ride_their_own_event() {
     );
 }
 
+/// Spills and kernel `ctx.*` reads ride their own `agent context paging` event at session end
+/// (counts and a size bucket, never a handle or text).
+#[tokio::test]
+async fn context_paging_rides_its_own_event() {
+    use crate::kernel::spill::host::CtxRead;
+    use crate::kernel::spill::SpillFact;
+
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_spill(SpillFact::Queued { bytes: 2_000_000 });
+    counters.note_spill(SpillFact::Queued { bytes: 48_211 });
+    counters.note_spill(SpillFact::NotStored);
+    counters.note_spill(SpillFact::Evicted);
+    counters.note_ctx_read(CtxRead::Page);
+    counters.note_ctx_read(CtxRead::Page);
+    counters.note_ctx_read(CtxRead::Grep);
+    counters.note_ctx_read(CtxRead::Info);
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent context paging"]
+    );
+    let paging = &event_properties(&fixture.mock, "agent context paging").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = paging
+        .iter()
+        .filter(|(key, _)| key.starts_with("spill_") || key.starts_with("ctx_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "spill_count": 2,
+            "spill_bytes_bucket": "lt_16mb",
+            "spill_not_stored_count": 1,
+            "spill_evicted_count": 1,
+            "ctx_page_count": 2,
+            "ctx_grep_count": 1,
+            "ctx_tail_count": 0,
+            "ctx_info_count": 1,
+        })
+    );
+}
+
 /// Rate-limited `agent_message.send` deliveries ride their own `agent messages` event at session
 /// end (a count, never a target or a body), and a session never throttled sends none.
 #[tokio::test]
@@ -2380,6 +2429,187 @@ async fn kernel_login_and_recall_ride_their_own_event() {
             "session_search_hit_count": 3,
             "session_search_read_count": 1,
             "session_search_failed_count": 1,
+        })
+    );
+}
+
+/// Summarized test runs ride their own `agent test summaries` event at session end (counts only: never a test name or output).
+#[tokio::test]
+async fn test_summaries_ride_their_own_event() {
+    use crate::kernel::test_runs::TestRunFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        TestRunFact {
+            failed: 2,
+            failures: 2,
+            stored: true,
+        },
+        TestRunFact {
+            failed: 0,
+            failures: 0,
+            stored: false,
+        },
+    ] {
+        counters.note_test_summary(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent test summaries"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent test summaries").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("test_summary_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "test_summary_count": 2,
+            "test_summary_failing_count": 1,
+            "test_summary_failed_test_count": 2,
+            "test_summary_failure_handle_count": 2,
+            "test_summary_stored_count": 1,
+        })
+    );
+}
+
+/// Checks after edits ride their own `agent edit checks` event at session end (counts only: never a path or output).
+#[tokio::test]
+async fn edit_checks_ride_their_own_event() {
+    use crate::kernel::edit_checks::EditCheckOutcome;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for outcome in [
+        EditCheckOutcome::Late,
+        EditCheckOutcome::Found,
+        EditCheckOutcome::Clean,
+        EditCheckOutcome::Skipped,
+        EditCheckOutcome::Skipped,
+    ] {
+        counters.note_edit_check(outcome);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent edit checks"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent edit checks").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("edit_check_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "edit_check_run_count": 2,
+            "edit_check_found_count": 1,
+            "edit_check_late_count": 1,
+            "edit_check_skipped_count": 2,
+            "edit_check_failed_count": 0,
+        })
+    );
+}
+
+/// Read-only cache lookups ride their own `agent readonly cache` event at session end (counts only: never a command or a path).
+#[tokio::test]
+async fn readonly_cache_ride_their_own_event() {
+    use crate::kernel::command_cache::CacheLookup;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for (file_read, hit) in [(false, true), (false, true), (false, false), (true, true)] {
+        counters.note_cache_lookup(CacheLookup { file_read, hit });
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent readonly cache"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent readonly cache").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("readonly_cache_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "readonly_cache_hit_count": 2,
+            "readonly_cache_miss_count": 1,
+            "readonly_cache_fs_read_hit_count": 1,
+            "readonly_cache_fs_read_miss_count": 0,
+        })
+    );
+}
+
+/// Error enrichments ride their own `agent error enrichment` event at session end (counts only: never a path, a line, or output).
+#[tokio::test]
+async fn error_enrichment_ride_their_own_event() {
+    use crate::kernel::error_context::EnrichmentFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        EnrichmentFact {
+            failed_commands: 1,
+            locations: 2,
+            skipped: 1,
+            timed_out: false,
+        },
+        EnrichmentFact {
+            failed_commands: 0,
+            locations: 0,
+            skipped: 3,
+            timed_out: true,
+        },
+    ] {
+        counters.note_error_enrichment(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent error enrichment"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent error enrichment").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("error_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "error_enrichment_count": 1,
+            "error_location_count": 2,
+            "error_location_skipped_count": 4,
+            "error_enrichment_timeout_count": 1,
+            "error_failed_command_count": 1,
         })
     );
 }
