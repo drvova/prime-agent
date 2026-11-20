@@ -22,6 +22,7 @@ pub mod effort_switch;
 pub mod engine;
 pub mod error_classify;
 pub mod factory_host;
+mod frida_usage;
 pub mod goal_boundary;
 pub mod goal_continuation;
 pub mod goal_driver;

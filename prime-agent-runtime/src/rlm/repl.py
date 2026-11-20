@@ -1557,6 +1557,9 @@ async def _serve(queue: asyncio.Queue[dict[str, Any]], ns: dict[str, Any]) -> No
                     print(f"MCP shutdown failed: {type(exc).__name__}: {exc}", file=sys.stderr)
             # Kill live bash children now; atexit would wait on parked executor threads.
             _kill_live_handles()
+            # Frida sessions detach too, killing the targets they spawned.
+            if (frida_sessions := sys.modules.get("rlm._frida_session")) is not None:
+                frida_sessions.detach_all()
             if isinstance(rid, str):
                 _send({"event": "done", "id": rid, "status": "ok"})
             return
@@ -1839,6 +1842,8 @@ def _owner_watchdog(owner: int, initial_ppid: int) -> None:
     # loop, so the queued EOF shutdown can never run; hard-exit from here.
     try:
         _kill_live_handles()
+        if (frida_sessions := sys.modules.get("rlm._frida_session")) is not None:
+            frida_sessions.detach_all()
     except BaseException:  # noqa: BLE001
         pass
     os._exit(1)

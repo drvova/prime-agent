@@ -1,0 +1,40 @@
+module = "rlm.frida"
+closure_seed = true
+bound_module = "frida"
+prompt_builtins = ["frida.*"]
+documented = [
+  "frida.devices",
+  "frida.add_remote",
+  "frida.ps",
+  "frida.kill",
+  "frida.attach",
+  "frida.trace",
+  "frida.discover",
+  "frida.compile",
+  "frida.tool",
+  "frida.graft",
+]
+internal_host_requests = ["frida.used"]
+# Never imports frida itself: a platform without a frida wheel keeps a ready kernel.
+probe = [
+  "import rlm.frida as _frida",
+  "assert all(callable(getattr(_frida, _m, None)) for _m in ('devices', 'add_remote', 'ps', 'kill', 'attach', 'trace', 'discover', 'compile', 'tool', 'graft'))",
+  "assert issubclass(_frida.FridaUnavailable, RuntimeError) and issubclass(_frida.FridaInstalling, RuntimeError)",
+]
+
+[[telemetry]]
+event = "agent repl frida"
+properties = [
+  "frida_devices_count",
+  "frida_ps_count",
+  "frida_kill_count",
+  "frida_attach_count",
+  "frida_spawn_count",
+  "frida_script_load_count",
+  "frida_trace_count",
+  "frida_discover_count",
+  "frida_tool_count",
+  "frida_graft_count",
+  "frida_unavailable_count",
+  "frida_installing_count",
+]

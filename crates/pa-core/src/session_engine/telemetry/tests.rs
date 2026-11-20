@@ -2200,6 +2200,58 @@ async fn rlm_child_aborts_ride_their_own_event() {
     );
 }
 
+/// Kernel `frida.*` calls ride their own `agent repl frida` event at session end, each kind in its
+/// own count (counts only: never a target, a pid, a script, or a path).
+#[tokio::test]
+async fn frida_calls_ride_their_own_event() {
+    use crate::session_engine::frida_usage::FridaFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        FridaFact::Spawn,
+        FridaFact::ScriptLoad,
+        FridaFact::ScriptLoad,
+        FridaFact::Trace,
+        FridaFact::Installing,
+    ] {
+        counters.note_frida(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl frida"]
+    );
+    let frida = &event_properties(&fixture.mock, "agent repl frida").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = frida
+        .iter()
+        .filter(|(key, _)| key.starts_with("frida_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "frida_devices_count": 0,
+            "frida_ps_count": 0,
+            "frida_kill_count": 0,
+            "frida_attach_count": 0,
+            "frida_spawn_count": 1,
+            "frida_script_load_count": 2,
+            "frida_trace_count": 1,
+            "frida_discover_count": 0,
+            "frida_tool_count": 0,
+            "frida_graft_count": 0,
+            "frida_unavailable_count": 0,
+            "frida_installing_count": 1,
+        })
+    );
+}
+
 /// Cells that continued in the background, and the source of each armed cell window, ride their
 /// own `agent repl background cells` event at session end (counts only: never code, output, a
 /// cell id, or a duration).

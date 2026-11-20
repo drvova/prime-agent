@@ -87,6 +87,8 @@ In prime-agent, agents can create heartbeats to wake themselves up after a given
 
 {{capability:fs}}
 
+{{capability:frida}}
+
 {{capability:schedule}}
 
 {{capability:checkpoint}}
@@ -114,4 +116,4 @@ Read-only views of what this session runs with; nothing here is a credential.
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for {{prompt_builtins:bash,core,mcp,web,fs,ctx,schedule,checkpoint,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for {{prompt_builtins:bash,core,mcp,web,fs,frida,ctx,schedule,checkpoint,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

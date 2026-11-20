@@ -387,11 +387,12 @@ fn run_runtime_bootstrap() -> Result<i32, String> {
         .build()
         .map_err(|error| error.to_string())?;
     // The user is already waiting on the installer: compile the venv's
-    // bytecode before returning, so the first session neither pays lazy
-    // compiles nor competes with a background one.
+    // bytecode and install frida before returning, so the first session
+    // neither pays lazy compiles nor competes with a background job.
     match runtime.block_on(pa_core::kernel::ensure_kernel_python(
         pa_core::kernel::EnsureKernelPythonOptions {
             bytecode: pa_core::kernel::KernelBytecode::CompileBeforeReturn,
+            frida: pa_core::kernel::KernelFrida::InstallBeforeReturn,
             ..Default::default()
         },
     )) {

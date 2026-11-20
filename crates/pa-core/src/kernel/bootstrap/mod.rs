@@ -25,9 +25,10 @@ use venv::{
     resolve_writable_kernel_venv_dir, sync_python_skills, BootstrapPythonSkill, TreeIdentityCache,
     UvCommand,
 };
-use venv::{compile_venv_bytecode, kernel_base_ready, kernel_ready};
+use venv::{compile_venv_bytecode, install_frida, kernel_base_ready, kernel_ready};
 pub use venv::{
     invalidate_runtime_probe_cache, kernel_venv_dir, kernel_venv_python, KernelBytecode,
+    KernelFrida,
 };
 
 /// One Python skill the kernel should import at bootstrap.
@@ -90,6 +91,8 @@ pub struct EnsureKernelPythonOptions {
     pub on_progress: Option<KernelBootstrapProgressHandler>,
     /// When the ready venv's bytecode compile runs relative to the return.
     pub bytecode: KernelBytecode,
+    /// When the ready venv's frida install runs relative to the return.
+    pub frida: KernelFrida,
 }
 
 impl EnsureKernelPythonOptions {
@@ -306,6 +309,7 @@ async fn ensure_kernel_venv(
     .await?
     {
         compile_venv_bytecode(&python, &venv, options.bytecode).await;
+        install_frida(&python, &venv, options.frida, || ensure_uv(project)).await;
         return Ok(python);
     }
 
@@ -383,6 +387,7 @@ async fn ensure_kernel_venv(
     options.report("✓ ready");
     if let Ok(python) = &result {
         compile_venv_bytecode(python, &venv, options.bytecode).await;
+        install_frida(python, &venv, options.frida, || ensure_uv(project)).await;
     }
     result.map_err(|error| format_bootstrap_failure(&error))
 }

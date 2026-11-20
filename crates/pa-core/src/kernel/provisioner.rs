@@ -320,6 +320,7 @@ impl IpythonKernelProvisioner {
                 python_skills: all.to_vec(),
                 on_progress: None,
                 bytecode: crate::kernel::bootstrap::KernelBytecode::CompileInBackground,
+                frida: crate::kernel::bootstrap::KernelFrida::InstallInBackground,
             },
             Some(self.inner.cwd.clone()),
         )

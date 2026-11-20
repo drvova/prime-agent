@@ -12,7 +12,9 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["dill"]
+# The runtime suite also runs rlm.frida's live test against the pinned frida wheels, which the
+# host installs into the kernel venv after it is ready (pa-core's FRIDA_PACKAGES); keep the pins equal.
+dev = ["dill", "frida==17.27.2", "frida-tools==14.13.2"]
 
 [build-system]
 requires = ["hatchling"]

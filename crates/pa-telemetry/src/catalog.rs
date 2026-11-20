@@ -1886,6 +1886,32 @@ const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule {
     ],
 };
 
+/// Kernel `frida.*` (Frida dynamic instrumentation) adoption for one session (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// the session used it: device and process listings, kills, attaches and spawns, scripts loaded,
+/// traces, discovers, console-tool runs (`frida.tool` and `frida.compile`), `gum-graft` runs, and
+/// calls refused because frida was unavailable or still installing. Counts only: never a target,
+/// a pid, a device, a script, or a path.
+const AGENT_REPL_FRIDA: EventRule = EventRule {
+    name: "agent repl frida",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("frida_devices_count", required(count())),
+        ("frida_ps_count", required(count())),
+        ("frida_kill_count", required(count())),
+        ("frida_attach_count", required(count())),
+        ("frida_spawn_count", required(count())),
+        ("frida_script_load_count", required(count())),
+        ("frida_trace_count", required(count())),
+        ("frida_discover_count", required(count())),
+        ("frida_tool_count", required(count())),
+        ("frida_graft_count", required(count())),
+        ("frida_unavailable_count", required(count())),
+        ("frida_installing_count", required(count())),
+    ],
+};
+
 /// One descriptor-driven provider sign-in settled (v2): a models.json provider whose `auth`
 /// block declares `oauth`, signed in through `login <provider>` (`surface` `cli`) or the TUI's
 /// `/login` picker (`tui`). The flow the sign-in ran (`none` when it never started), how it
@@ -2001,6 +2027,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
         &AGENT_REPL_BACKGROUND_CELLS,
+        &AGENT_REPL_FRIDA,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_RELOAD,

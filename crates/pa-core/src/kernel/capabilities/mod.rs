@@ -60,6 +60,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
         docs = ["core", "core.end_turn", "core.progress_note"]
     ),
     manifest!("ctx", docs = ["ctx"]),
+    manifest!("frida", docs = ["frida"]),
     manifest!("fs", docs = ["fs"]),
     manifest!("harness", docs = ["harness"]),
     manifest!("mcp", docs = ["mcp"]),
