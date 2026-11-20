@@ -1,0 +1,1 @@
+- The REPL gains `better(task, *, cwd=None, mode="deepen"|"brief")`, and `rlm.spawn(..., better=True)` checks a delegation brief against the repository before the child starts.

@@ -1,0 +1,1 @@
+- `/better` adapts its reading to each project and checks every path, symbol, and command its rewrite cites, naming any it could not verify.

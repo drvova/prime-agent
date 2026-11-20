@@ -141,6 +141,12 @@ pub trait SessionEngine: Send + Sync {
         sink: &SideQuestionSink,
     ) -> SideQuestionOutcome;
 
+    /// Count what the user did with a rewrite `/better` put in the composer. Engines without a
+    /// session behind them (scripted tests) count nothing.
+    fn note_better_outcome(&self, outcome: pa_types::better::ComposerOutcome) {
+        let _ = outcome;
+    }
+
     /// Run one compaction (`compact` command): summarize the pre-cut
     /// history. The engine owns the model call; `signal` aborts the run.
     fn run_compaction(&self, request: CompactionRequest, signal: &AbortSignal)

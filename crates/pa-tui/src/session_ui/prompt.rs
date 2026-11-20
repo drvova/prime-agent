@@ -459,6 +459,8 @@ impl SessionUi {
         if text.is_empty() {
             return Ok(());
         }
+        // A `/better` rewrite waiting in the composer is settled by whatever is sent next.
+        self.settle_inserted_rewrite(Some(text));
         // The `!`/`!!` bash shortcut routes before the side-question capture and
         // every prompt path; a bare `!`/`!!` is never sent as a prompt.
         if let Some(bang) = crate::bash_bang::parse_bash_bang(text) {
@@ -594,6 +596,7 @@ impl SessionUi {
                     side_question_id: id.clone(),
                     question: question.to_string(),
                     previous_turns,
+                    kind: None,
                     rest: Map::default(),
                 },
             )
@@ -653,6 +656,9 @@ impl SessionUi {
     }
 
     pub(super) fn apply_side_question_event(&mut self, event: &Value, view: &mut AgentView) {
+        if self.apply_better_event(event, view) {
+            return;
+        }
         let id = event
             .get("id")
             .and_then(Value::as_str)
