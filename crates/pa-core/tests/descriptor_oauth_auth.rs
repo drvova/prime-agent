@@ -291,6 +291,7 @@ fn served(token: &str) -> ResolvedRequestAuth {
         headers: Some(pairs(&[("Authorization", &format!("Bearer {token}"))])),
         error: None,
         request_model: None,
+        admission_credential: None,
     }
 }
 

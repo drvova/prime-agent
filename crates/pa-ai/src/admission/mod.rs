@@ -44,21 +44,13 @@ pub use pool::LocalAdmission;
 #[serde(rename_all = "camelCase")]
 pub struct AdmissionKey {
     pub provider: String,
-    /// The first 12 hex digits of the credential's SHA-256 (empty input
-    /// for a provider that resolves its own auth).
+    /// The request's stable credential identity when it carries one (a pinned named
+    /// credential's [`credential_identity`]), else the first 12 hex digits of the api key's
+    /// SHA-256 (empty input for a provider that resolves its own auth).
     pub credential: String,
     /// The model id (providers scope their limits per model).
     pub scope: String,
 }
-
-/// Key hashes that belong to one stable credential identity (a pinned named credential's
-/// `sha256(provider:id)` prefix): an OAuth refresh rotates the token, never the admission key.
-static CREDENTIAL_ALIASES: std::sync::OnceLock<
-    std::sync::Mutex<std::collections::HashMap<String, String>>,
-> = std::sync::OnceLock::new();
-
-/// The most aliases one process keeps: one per refresh of the session's pinned credential.
-const MAX_CREDENTIAL_ALIASES: usize = 256;
 
 fn key_hash(api_key: &str) -> String {
     use sha2::Digest;
@@ -74,35 +66,23 @@ pub fn credential_identity(provider: &str, id: &str) -> String {
     key_hash(&format!("{provider}:{id}"))
 }
 
-/// Admit requests made with `api_key` under `identity` instead of the key's own hash. The
-/// identity carries no secret; the key itself is never stored, only its short hash.
-pub fn alias_credential(api_key: &str, identity: &str) {
-    let mut aliases = CREDENTIAL_ALIASES
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if aliases.len() >= MAX_CREDENTIAL_ALIASES {
-        aliases.clear();
-    }
-    aliases.insert(key_hash(api_key), identity.to_string());
-}
-
 impl AdmissionKey {
-    /// The key for a request to `model` with `api_key`: the key's short hash, or the stable
-    /// identity [`alias_credential`] registered for it.
+    /// The key for a request to `model` under `options`: the request's stable
+    /// [`StreamOptions::admission_credential`](crate::types::StreamOptions::admission_credential)
+    /// when it carries one (a pinned named credential), else its api key's short hash.
     #[must_use]
-    pub fn for_request(model: &crate::types::Model, api_key: Option<&str>) -> Self {
-        let hashed = key_hash(api_key.unwrap_or_default());
-        let credential = CREDENTIAL_ALIASES
-            .get()
-            .and_then(|aliases| {
-                aliases
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get(&hashed)
-                    .cloned()
-            })
-            .unwrap_or(hashed);
+    pub fn for_request(
+        model: &crate::types::Model,
+        options: Option<&crate::types::StreamOptions>,
+    ) -> Self {
+        let credential = match options.and_then(|options| options.admission_credential.clone()) {
+            Some(identity) => identity,
+            None => key_hash(
+                options
+                    .and_then(|options| options.api_key.as_deref())
+                    .unwrap_or_default(),
+            ),
+        };
         Self {
             provider: model.provider.clone(),
             credential,

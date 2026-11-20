@@ -47,6 +47,7 @@ try:
     import rlm.ctx as ctx
     import rlm.schedule as schedule
     import rlm.checkpoint as checkpoint
+    import rlm.worktree as worktree
     import rlm.todo as todo
     import rlm.usage as usage
     import rlm.settings as settings

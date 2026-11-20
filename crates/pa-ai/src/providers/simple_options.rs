@@ -63,6 +63,7 @@ pub fn build_base_options(
         metadata: base.metadata,
         loop_guard: base.loop_guard,
         priority: base.priority,
+        admission_credential: base.admission_credential,
     }
 }
 

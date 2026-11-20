@@ -175,7 +175,7 @@ impl SessionUi {
 
     /// The session's current model, resolved with the same provider-aware match as
     /// [`Self::current_model_entry`].
-    fn current_model(&self, view: &AgentView) -> Option<CurrentModel> {
+    pub(super) fn current_model(&self, view: &AgentView) -> Option<CurrentModel> {
         let model = self.current_model_entry(view)?;
         Some(CurrentModel {
             provider: model.provider.clone(),
