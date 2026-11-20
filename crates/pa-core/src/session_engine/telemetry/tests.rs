@@ -2387,6 +2387,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// Checks after edits ride their own `agent edit checks` event at session end (counts only: never a path or output).
 #[tokio::test]
 async fn edit_checks_ride_their_own_event() {
+    use crate::kernel::edit_checks::EditCheckOutcome;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2395,7 +2396,6 @@ async fn edit_checks_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::kernel::edit_checks::EditCheckOutcome;
     for outcome in [
         EditCheckOutcome::Late,
         EditCheckOutcome::Found,
