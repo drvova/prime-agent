@@ -163,9 +163,7 @@ impl BetterHost {
             if ended_cleanly != Some(true) || state.running {
                 return None;
             }
-            let Some(armed) = state.armed.as_mut() else {
-                return None;
-            };
+            let armed = state.armed.as_mut()?;
             armed.rounds += 1;
             let (round, checks) = (armed.rounds, armed.checks.clone());
             state.running = true;
