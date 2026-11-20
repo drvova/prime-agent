@@ -72,7 +72,10 @@ impl Fixture {
 }
 
 fn numbered(lines: usize) -> String {
-    (1..=lines).map(|n| format!("line {n}\n")).collect()
+    (1..=lines).fold(String::new(), |mut text, n| {
+        let _ = writeln!(text, "line {n}");
+        text
+    })
 }
 
 /// The reply as the plain read gives it (what code sees through `view.lines`).
@@ -175,7 +178,7 @@ async fn compaction_and_age_show_the_file_whole_again() {
     std::fs::write(fixture.path("a.py"), numbered(40)).unwrap();
     fixture.at_turn(1);
     let first = fixture.read("a.py").await;
-    fixture.mark.lock().unwrap().compacted_at_ms = Some(pa_agent::now_ms() + 1);
+    fixture.mark.lock().unwrap().compacted_at_ms = Some(pa_ai::admission::now_ms() + 1);
     fixture.at_turn(2);
     let after_compaction = fixture.read("a.py").await;
     // That compaction is now older than the read that followed it.

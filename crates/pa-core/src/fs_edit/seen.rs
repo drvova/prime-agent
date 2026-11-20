@@ -127,7 +127,7 @@ impl SeenFiles {
             .iter()
             .map(|row| row["text"].as_str().unwrap_or_default().to_string())
             .collect();
-        let now = pa_agent::now_ms();
+        let now = pa_ai::admission::now_ms();
         let prior = lock(&self.files).get(path).cloned();
         let seen_now = SeenVersion {
             lines: lines.clone(),
@@ -188,7 +188,7 @@ impl SeenFiles {
                 SeenVersion {
                     lines: after,
                     turn: mark.turn,
-                    at_ms: pa_agent::now_ms(),
+                    at_ms: pa_ai::admission::now_ms(),
                 },
             );
         }

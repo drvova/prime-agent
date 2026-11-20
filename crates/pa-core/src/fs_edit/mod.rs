@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 
 use document::{Document, Encoding, LineEnds};
 pub(crate) use host::{EditObserver, FsEditHost};
-pub(crate) use seen::{ContextMark, ContextProbe, RereadFact, RereadObserver, SeenFiles};
+pub(crate) use seen::{ContextMark, RereadFact, RereadObserver, SeenFiles};
 
 /// Letters in an anchor's hash.
 const HASH_LETTERS: usize = 3;
