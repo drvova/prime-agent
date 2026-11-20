@@ -649,16 +649,24 @@ pub(crate) async fn run_helper(
         if !unverified.is_empty() {
             verification_passes += 1;
             let reads = GROWTH_STEP.min(READ_CEILING.saturating_sub(helper.budget.limit()));
-            parsed = match pass(instructions::refine_pass(&unverified, reads), reads)
+            match pass(instructions::refine_pass(&unverified, reads), reads)
                 .await
                 .map(parse)
             {
-                Ok(Ok(parsed)) => parsed,
-                Ok(Err(unparsed)) => return unparsed,
+                Ok(Ok(refined)) => {
+                    parsed = refined;
+                    unverified = unresolved_references(
+                        parsed.rewrite.as_deref().unwrap_or(&task),
+                        input.cwd,
+                    )
+                    .await;
+                }
+                // The refine reply broke the contract: the verified rewrite before it stands,
+                // with what did not resolve still named under it. Verification only ever adds
+                // to a rewrite; it never throws a good one away.
+                Ok(Err(_unparsed)) => {}
                 Err(stop) => return stopped(stop),
-            };
-            unverified =
-                unresolved_references(parsed.rewrite.as_deref().unwrap_or(&task), input.cwd).await;
+            }
         }
         HelperEnd::Replied {
             rewrite: parsed.rewrite,

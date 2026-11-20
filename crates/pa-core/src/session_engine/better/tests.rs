@@ -386,3 +386,26 @@ async fn unresolved_references_earn_a_grounding_pass_and_resolved_ones_end_the_r
     );
     assert_eq!(provider.calls().len(), 3);
 }
+
+/// A refine reply without the contract's blocks never costs the user the rewrite they already
+/// had: it stands, with the unresolved reference named under it.
+#[tokio::test]
+async fn a_refine_reply_without_blocks_keeps_the_rewrite_and_names_what_did_not_resolve() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn(&reply_citing("Run `no-such-tool-xyz --check` first.", ""));
+    provider.push_text_turn("I could not find anything better.");
+    let parent = parent_agent(&provider);
+    let outcome = host(&provider, &parent, dir.path(), None)
+        .run(&deepen("check it"), &AbortSignal::never(), &quiet())
+        .await;
+    assert_eq!(
+        outcome,
+        BetterOutcome::Rewritten {
+            rewrite: format!(
+                "Run `no-such-tool-xyz --check` first.\n\n{UNVERIFIED_LABEL} `no-such-tool-xyz --check`"
+            ),
+            unchanged: false,
+        }
+    );
+}
