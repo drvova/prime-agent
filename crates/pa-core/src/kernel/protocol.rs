@@ -115,16 +115,18 @@ impl Request {
     }
 }
 
-/// One parsed event frame.
 /// Who sent a host request: the cell the user's turn is executing (its own awaits), or
 /// background work (detached tasks, backgrounded cells, a cell's gathered fan-out). The host
 /// dispatches the cell's requests first; background requests share a soft bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostRequestOrigin {
+    /// The awaits of the cell the turn is executing.
     Cell,
+    /// Detached tasks, backgrounded cells, and a cell's gathered fan-out.
     Background,
 }
 
+/// One parsed event frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Ready {
