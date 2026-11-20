@@ -1130,6 +1130,17 @@ const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
     properties: &[("source", required(enum_rule(&["flag"], "flag")))],
 };
 
+/// One interactive run's profile state (v2), at run start: whether the run creates sessions under
+/// a profile, and how many profiles the agent dir stores. Never a profile name.
+const AGENT_PROFILE_STATE: EventRule = EventRule {
+    name: "agent profile state",
+    since: 2,
+    properties: &[
+        ("profile_active", required(boolean())),
+        ("profile_count", required(count())),
+    ],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -2156,6 +2167,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
+        &AGENT_PROFILE_STATE,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_MODEL_PICKER_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
