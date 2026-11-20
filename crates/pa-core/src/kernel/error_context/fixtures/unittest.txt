@@ -1,0 +1,26 @@
+F.sE
+======================================================================
+ERROR: test_zero (test_unit.DivideTest.test_zero)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/app/test_unit.py", line 14, in test_zero
+    divide(1, 0)
+    ~~~~~~^^^^^^
+  File "/work/app/calc.py", line 2, in divide
+    return a / b
+           ~~^~~
+ZeroDivisionError: division by zero
+
+======================================================================
+FAIL: test_bad (test_unit.DivideTest.test_bad)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/work/app/test_unit.py", line 11, in test_bad
+    self.assertEqual(divide(5, 2), 2)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+AssertionError: 2.5 != 2
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.001s
+
+FAILED (failures=1, errors=1, skipped=1)

@@ -320,6 +320,12 @@ pub enum DaemonOutbound {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// One new agent traffic entry, to the clients holding `agent_traffic_subscribe`.
+    AgentTraffic {
+        entry: crate::agent_traffic::AgentTrafficEntry,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     RosterUpdate {
         changed: Value,
         #[serde(default, skip_serializing_if = "Option::is_none")]
