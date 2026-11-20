@@ -48,7 +48,7 @@ use super::model_usage::ModelUsage;
 use super::provider_retry::{ProviderRetryPolicy, DEFAULT_PROVIDER_RETRY_POLICY};
 use super::side_question::{run_attempts, SideQuestionSink, SideQuestionStatus, SideRunObserver};
 use super::telemetry::{BetterTelemetryFact, SessionCounters};
-pub use acceptance::{CheckStatus, Evidence};
+pub use acceptance::{check_status_from_session_file, CheckStatus, Evidence};
 pub use checks::{AcceptanceCheck, CheckOutcome, CheckVerdict};
 pub use read_only::ReadProgress as BetterProgress;
 use read_only::{ReadBudget, ReadContext};
@@ -170,6 +170,9 @@ pub struct BetterHost {
     /// Where a check round's notice goes (see [`BetterHost::bind_notice_sink`]).
     notice: OnceLock<super::bash_notices::KernelNoticeSink>,
     acceptance: std::sync::Mutex<acceptance::AcceptanceState>,
+    /// The session's delegation depth bound, when it runs children: a brief's depth follows the
+    /// levels its subagent may still delegate.
+    delegation: OnceLock<Arc<super::rlm_depth::DelegationDepth>>,
 }
 
 impl BetterHost {
@@ -194,7 +197,13 @@ impl BetterHost {
             check_runner,
             notice: OnceLock::new(),
             acceptance: std::sync::Mutex::default(),
+            delegation: OnceLock::new(),
         }
+    }
+
+    /// Bind the session's delegation depth bound (first bind wins).
+    pub fn bind_delegation_depth(&self, depth: Arc<super::rlm_depth::DelegationDepth>) {
+        let _ = self.delegation.set(depth);
     }
 
     /// Bind the assembled session (first bind wins). The agent is held weakly: the kernel's
@@ -292,7 +301,17 @@ impl BetterHost {
         ) else {
             return failed("the session is still starting; try again");
         };
-        let first_pass_reads = self.learning.estimate().await.first_pass_budget();
+        // A delegation brief is refined as deeply as its subagent may still delegate: a leaf
+        // gets a lean pass, a subagent that will hand work on gets a deeper one.
+        let brief_depth = match (request.mode, self.delegation.get()) {
+            (BetterMode::Brief, Some(depth)) => BriefDepth::Levels(depth.levels_below_child()),
+            (BetterMode::Brief, None) | (BetterMode::Deepen, _) => BriefDepth::Unscaled,
+        };
+        if let (BriefDepth::Levels(_), Some(counters)) = (brief_depth, &self.counters) {
+            counters.note_scaled_brief();
+        }
+        let first_pass_reads =
+            brief_depth.scaled_reads(self.learning.estimate().await.first_pass_budget());
         let run = run_helper(
             &agent,
             stream_fn,
@@ -300,6 +319,7 @@ impl BetterHost {
                 request,
                 cwd: &cwd,
                 first_pass_reads,
+                brief_depth,
             },
             &DEFAULT_PROVIDER_RETRY_POLICY,
             signal,
@@ -498,8 +518,30 @@ pub(crate) struct HelperInput<'a> {
     pub(crate) request: &'a BetterRequest,
     /// Where reads resolve.
     pub(crate) cwd: &'a Path,
-    /// The first pass's reads (this project's learned start).
+    /// The first pass's reads (this project's learned start, scaled by `brief_depth`).
     pub(crate) first_pass_reads: u32,
+    pub(crate) brief_depth: BriefDepth,
+}
+
+/// How deeply a brief is refined (Rieseberg's Depth, measured in delegation levels): the levels
+/// the subagent it briefs may still delegate below itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BriefDepth {
+    /// Not a delegation brief, or a session that runs no children.
+    Unscaled,
+    /// The briefed subagent may delegate this many more levels.
+    Levels(u32),
+}
+
+impl BriefDepth {
+    /// The first pass's reads at this depth: half the learned start for a leaf, growing by half
+    /// per level the subagent may delegate, inside [`GROWTH_STEP`]..=[`READ_CEILING`].
+    pub(crate) fn scaled_reads(self, reads: u32) -> u32 {
+        match self {
+            Self::Unscaled => reads,
+            Self::Levels(levels) => (reads * (levels + 1) / 2).clamp(GROWTH_STEP, READ_CEILING),
+        }
+    }
 }
 
 /// How one pass ended short of a reply.
@@ -671,6 +713,7 @@ pub(crate) async fn run_helper(
             &request.task,
             input.cwd,
             input.first_pass_reads,
+            input.brief_depth,
         );
         let mut parsed = match pass(first, input.first_pass_reads).await.map(parse) {
             Ok(Ok(parsed)) => parsed,

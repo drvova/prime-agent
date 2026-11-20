@@ -42,6 +42,7 @@ pub mod refine;
 mod refinement_gate;
 pub mod request_timing;
 pub mod resource_reload;
+pub mod rlm_depth;
 pub mod rlm_host;
 pub mod rlm_notices;
 pub mod rlm_usage;

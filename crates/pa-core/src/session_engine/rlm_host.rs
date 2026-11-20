@@ -154,6 +154,11 @@ pub struct RlmChildResult {
     /// reads against the whole wait.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queued_ms: Option<u64>,
+    /// Where the child's acceptance checks stand (`none` | `pending` | `passed` | `failed`,
+    /// [`crate::session_engine::better::CheckStatus`]); `None` when the host cannot read them
+    /// (a deleted child).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub check_status: Option<&'static str>,
 }
 
 // Requests into the host
@@ -225,6 +230,11 @@ pub trait RlmSubagentHost: Send + Sync {
     }
     /// A timeout returns snapshots, never errors.
     fn collect(&self, targets: Vec<String>, timeout_ms: u64) -> RlmHostFuture<Vec<RlmChildResult>>;
+    /// This session's delegation depth bound, when the host runs children: the spawn check
+    /// reads it, the collect handler feeds it, and brief-mode `better` scales with it.
+    fn delegation_depth(&self) -> Option<Arc<super::rlm_depth::DelegationDepth>> {
+        None
+    }
     /// Rename the current session (`session_id` absent) or one direct
     /// child (TS `rlm.rename`); answers the applied name.
     fn rename(&self, name: String, session_id: Option<String>) -> RlmHostFuture<String>;
@@ -323,8 +333,9 @@ pub fn no_children_collect(targets: &[String]) -> anyhow::Result<Vec<RlmChildRes
 // Shared spawn-site extractions (the daemon's supervisor host and the
 // daemonless inline host answer with the same text and the same layout).
 
-/// The workspace's default recursion bound (TS `DEFAULT_RLM_MAX_DEPTH`).
-pub const DEFAULT_RLM_MAX_DEPTH: u32 = 2;
+/// The workspace's default recursion bound (TS `DEFAULT_RLM_MAX_DEPTH`): where the adaptive
+/// bound starts when nothing fixes it ([`super::rlm_depth`]).
+pub const DEFAULT_RLM_MAX_DEPTH: u32 = pa_types::control::DEPTH_INITIAL;
 
 /// The spawn refusal at the recursion bound.
 #[must_use]
@@ -860,11 +871,14 @@ fn register_abort(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge
 
 fn register_collect(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBridge>) {
     let host = Arc::clone(&bridge.host);
+    let bridge = Arc::clone(bridge);
     handlers.register(
         "rlm.collect",
         host_handler(move |payload| {
             let host = Arc::clone(&host);
+            let bridge = Arc::clone(&bridge);
             Box::pin(async move {
+                let bridge_telemetry = &bridge.telemetry;
                 let data = &payload.data;
                 let targets = match data.get("targets") {
                     None | Some(Value::Null) => Vec::new(),
@@ -897,6 +911,19 @@ fn register_collect(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBrid
                     );
                 };
                 let results = host.collect(targets, timeout_ms).await?;
+                if let Some(depth) = host.delegation_depth() {
+                    let wait = if timeout_ms == 0 {
+                        super::rlm_depth::CollectWait::Snapshot
+                    } else {
+                        super::rlm_depth::CollectWait::Bounded
+                    };
+                    let changes = depth.observe(&results, wait);
+                    if let Some(counters) = bridge_telemetry.get() {
+                        for change in changes {
+                            counters.note_rlm_depth(change);
+                        }
+                    }
+                }
                 Ok(json!({ "results": results }))
             })
         }),
@@ -1022,6 +1049,7 @@ mod tests {
         targets: Arc<Mutex<Vec<String>>>,
         collects: Arc<Mutex<Vec<CollectCall>>>,
         renames: Arc<Mutex<Vec<RecordedRename>>>,
+        depth: Arc<super::super::rlm_depth::DelegationDepth>,
     }
 
     impl RecordingHost {
@@ -1032,11 +1060,15 @@ mod tests {
                 targets: Arc::new(Mutex::new(Vec::new())),
                 collects: Arc::new(Mutex::new(Vec::new())),
                 renames: Arc::new(Mutex::new(Vec::new())),
+                depth: Arc::default(),
             })
         }
     }
 
     impl RlmSubagentHost for RecordingHost {
+        fn delegation_depth(&self) -> Option<Arc<super::super::rlm_depth::DelegationDepth>> {
+            Some(Arc::clone(&self.depth))
+        }
         fn spawn(&self, request: RlmSpawnRequest) -> RlmHostFuture<RlmSpawnHandle> {
             let requests = Arc::clone(&self.spawn_requests);
             Box::pin(async move {
@@ -1150,10 +1182,10 @@ mod tests {
             let collects = Arc::clone(&self.collects);
             Box::pin(async move {
                 collects.lock().await.push((targets, timeout_ms));
-                Ok(vec![RlmChildResult {
-                    rlm_child_id: "sub-1".into(),
+                let checked = |id: &str| RlmChildResult {
+                    rlm_child_id: id.into(),
                     session_name: Some("worker".into()),
-                    session_dir: Some("/tmp/sub-1".into()),
+                    session_dir: Some(format!("/tmp/{id}")),
                     status: "done",
                     settled: true,
                     answer_preview: Some("all done".into()),
@@ -1163,7 +1195,9 @@ mod tests {
                     tool_use_count: Some(3),
                     replied_since_task: Some(true),
                     queued_ms: None,
-                }])
+                    check_status: Some("passed"),
+                };
+                Ok(vec![checked("sub-1"), checked("sub-2")])
             })
         }
         fn rename(&self, name: String, session_id: Option<String>) -> RlmHostFuture<String> {
@@ -1642,6 +1676,7 @@ mod tests {
         let host = RecordingHost::new();
         let targets = Arc::clone(&host.targets);
         let collects = Arc::clone(&host.collects);
+        let depth = Arc::clone(&host.depth);
         let wiring = wired(dir.path(), Some(host));
         let listed = call(&wiring, "rlm.list_subagents", json!({}))
             .await
@@ -1685,12 +1720,17 @@ mod tests {
         assert_eq!(collected["results"][0]["status"], "done");
         assert_eq!(collected["results"][0]["settled"], true);
         assert_eq!(collected["results"][0]["answer_preview"], "all done");
+        // Two children back checked and passing raise the adaptive depth bound one level, and
+        // reading them again counts nothing.
+        assert_eq!(collected["results"][0]["check_status"], "passed");
+        assert_eq!(depth.max_depth(), pa_types::control::DEPTH_INITIAL + 1);
         assert_eq!(
             *collects.lock().await,
             vec![(vec!["sub-1".to_string()], 250u64)]
         );
         // Defaults: absent targets mean every child, absent timeout is 0.
         call(&wiring, "rlm.collect", json!({})).await.unwrap();
+        assert_eq!(depth.max_depth(), pa_types::control::DEPTH_INITIAL + 1);
         assert_eq!(
             collects
                 .lock()

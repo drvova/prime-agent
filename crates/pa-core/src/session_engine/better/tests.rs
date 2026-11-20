@@ -415,3 +415,57 @@ async fn a_refine_reply_without_blocks_keeps_the_rewrite_and_names_what_did_not_
         }
     );
 }
+
+/// A delegation brief is refined as deeply as its subagent may still delegate: the first pass's
+/// reads and its instructions follow the levels left under the session's depth bound.
+#[tokio::test]
+async fn a_brief_scales_its_depth_with_the_levels_its_subagent_may_still_delegate() {
+    let dir = tempfile::tempdir().unwrap();
+    let brief_at = |levels: Option<u32>| {
+        let dir = dir.path().to_path_buf();
+        async move {
+            let provider = Arc::new(ScriptedProvider::new(test_model()));
+            provider.push_text_turn("<unchanged/>");
+            let parent = parent_agent(&provider);
+            let host = host(&provider, &parent, &dir, None);
+            if let Some(levels) = levels {
+                // A session at depth 0 whose bound leaves `levels` below its child.
+                host.bind_delegation_depth(Arc::new(
+                    crate::session_engine::rlm_depth::DelegationDepth::new(
+                        0,
+                        crate::session_engine::rlm_depth::DepthBound::Fixed(levels + 1),
+                    ),
+                ));
+            }
+            let request = BetterRequest {
+                task: "Add a test for `parse`.".to_string(),
+                mode: BetterMode::Brief,
+                cwd: None,
+            };
+            host.run(&request, &AbortSignal::never(), &quiet()).await;
+            let prompt = last_prompt(&provider, 0);
+            let reads = prompt
+                .split("You have ")
+                .nth(1)
+                .and_then(|rest| rest.split(' ').next())
+                .unwrap_or_default()
+                .to_string();
+            let rule = ["cannot delegate further", "may delegate 2 more level(s)"]
+                .into_iter()
+                .find(|rule| prompt.contains(rule));
+            (reads, rule)
+        }
+    };
+    assert_eq!(
+        [
+            brief_at(None).await,
+            brief_at(Some(0)).await,
+            brief_at(Some(2)).await
+        ],
+        [
+            ("8".to_string(), None),
+            ("4".to_string(), Some("cannot delegate further")),
+            ("12".to_string(), Some("may delegate 2 more level(s)")),
+        ]
+    );
+}

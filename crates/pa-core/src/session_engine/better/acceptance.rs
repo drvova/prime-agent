@@ -282,6 +282,52 @@ fn status_of(state: &AcceptanceState) -> CheckStatus {
     }
 }
 
+/// Where the acceptance checks of the session whose durable file is `session_file` stand, read
+/// from its rows (blocking: call off the async threads): a check round's row decides, a later
+/// prompt that arms new checks reads pending, and a session with neither reads none. This is
+/// how a parent reads a child whose host runs in another process.
+#[must_use]
+pub fn check_status_from_session_file(session_file: &std::path::Path) -> CheckStatus {
+    let Ok(content) = std::fs::read_to_string(session_file) else {
+        return CheckStatus::None;
+    };
+    let mut status = CheckStatus::None;
+    for line in content.lines() {
+        let Ok(entry) = serde_json::from_str::<Value>(line.trim()) else {
+            continue;
+        };
+        // A round's row: a recorded `custom_message`, or a steered notice the next turn carried.
+        let row = match entry.get("type").and_then(Value::as_str) {
+            Some("custom_message") => Some(&entry),
+            Some("message") => entry.get("message"),
+            _ => None,
+        };
+        let Some(row) = row else {
+            continue;
+        };
+        if row.get("customType").and_then(Value::as_str) == Some(BETTER_CHECKS_CUSTOM_TYPE) {
+            status = match row.pointer("/details/failed").and_then(Value::as_u64) {
+                Some(0) => CheckStatus::Passed,
+                _ => CheckStatus::Failed,
+            };
+        } else if row.get("role").and_then(Value::as_str) == Some("user") {
+            let text = match row.get("content") {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Array(blocks)) => blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                _ => String::new(),
+            };
+            if parse_acceptance(&text).is_some() {
+                status = CheckStatus::Pending;
+            }
+        }
+    }
+    status
+}
+
 /// The text of a run's prompt: a user message (a notice or other custom row is not a prompt).
 fn prompt_text(message: &AgentMessage) -> Option<String> {
     match message {
@@ -560,6 +606,45 @@ mod tests {
             .turn_ended(&[AgentMessage::user("thanks"), assistant(StopReason::Stop)])
             .is_none());
         assert!(host.turn_ended(&continuation()).is_none());
+    }
+
+    #[test]
+    fn a_session_file_reads_its_last_round_or_a_pending_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("child.jsonl");
+        let status_after = |lines: &[Value]| {
+            let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+            std::fs::write(&file, text.join("\n")).unwrap();
+            check_status_from_session_file(&file)
+        };
+        let prompt = json!({ "type": "message", "message": {
+            "role": "user", "content": [{ "type": "text", "text": "Do it.\n<acceptance>\nrun: true\n</acceptance>" }],
+        }});
+        let failed = json!({ "type": "message", "message": {
+            "role": "custom", "customType": BETTER_CHECKS_CUSTOM_TYPE, "details": { "failed": 1 },
+        }});
+        let passed = json!({ "type": "custom_message", "customType": BETTER_CHECKS_CUSTOM_TYPE,
+            "details": { "failed": 0 } });
+        let plain =
+            json!({ "type": "message", "message": { "role": "user", "content": "thanks" } });
+        assert_eq!(
+            [
+                check_status_from_session_file(&dir.path().join("missing.jsonl")),
+                status_after(&[plain.clone()]),
+                status_after(&[prompt.clone()]),
+                status_after(&[prompt.clone(), failed.clone()]),
+                status_after(&[prompt.clone(), failed, passed.clone(), plain]),
+                status_after(&[passed, prompt]),
+            ],
+            [
+                CheckStatus::None,
+                CheckStatus::None,
+                CheckStatus::Pending,
+                CheckStatus::Failed,
+                CheckStatus::Passed,
+                CheckStatus::Pending,
+            ]
+        );
     }
 
     /// The red-first guard of the fire-and-forget boundary: a check that never answers must not

@@ -1,0 +1,1 @@
+- Subagent nesting now adapts when no recursion limit is set: the bound starts at 2 levels and moves between 1 and 4, rising when children come back with their acceptance checks passing and dropping on failures or timeouts; `rlm.spawn(..., better=True)` refines a child's brief as deeply as the child may still delegate, and `rlm.collect` results report each child's `check_status`.

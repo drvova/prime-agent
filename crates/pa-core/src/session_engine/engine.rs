@@ -630,6 +630,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         std::sync::Arc::new(crate::autonomous::ShellGateRunner::new(cwd.clone())),
     ));
     super::better::register_better_handler(&mut handlers, &better);
+    // A delegation brief's depth follows the levels its subagent may still delegate.
+    if let Some(depth) = config
+        .rlm_subagent_host
+        .as_ref()
+        .and_then(|host| host.delegation_depth())
+    {
+        better.bind_delegation_depth(depth);
+    }
     // `tests.summary`: an awaited test run's output and failures get handles
     // in the same store; telemetry counts each summarized run.
     crate::kernel::test_runs::register_test_summary_handler(

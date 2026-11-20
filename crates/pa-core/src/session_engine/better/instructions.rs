@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use super::BetterMode;
+use super::{BetterMode, BriefDepth};
 
 /// What the helper may do, shared by both modes.
 const READ_ONLY_RULES: &str = "\
@@ -70,9 +70,33 @@ pub(super) fn refine_pass(unverified: &[String], reads: u32) -> String {
 const REPLY_FORMAT_REMINDER: &str =
     "In brief mode, `<unchanged/>` alone still means the brief needs no fix.";
 
+/// What a brief must hold for the levels its subagent may still delegate.
+fn delegation_rule(depth: BriefDepth) -> String {
+    match depth {
+        BriefDepth::Unscaled => String::new(),
+        BriefDepth::Levels(0) => {
+            "\n\nThe subagent cannot delegate further: the brief must be complete \
+             enough to finish in one session, every step and check spelled out."
+                .to_string()
+        }
+        BriefDepth::Levels(levels) => format!(
+            "\n\nThe subagent may delegate {levels} more level(s) below itself: make the brief \
+             decomposable (name its separable parts, each with its own acceptance check) so it \
+             can hand them on."
+        ),
+    }
+}
+
 /// The first-pass message for one run.
-pub(super) fn first_pass(mode: BetterMode, task: &str, cwd: &Path, read_budget: u32) -> String {
+pub(super) fn first_pass(
+    mode: BetterMode,
+    task: &str,
+    cwd: &Path,
+    read_budget: u32,
+    brief_depth: BriefDepth,
+) -> String {
     let cwd = cwd.display();
+    let delegation = delegation_rule(brief_depth);
     match mode {
         BetterMode::Deepen => format!(
             "<prime_better mode=\"deepen\">
@@ -95,7 +119,7 @@ Rewrite the prompt below into the version a top professional in its field would 
         ),
         BetterMode::Brief => format!(
             "<prime_better mode=\"brief\">
-The brief below will be handed to a subagent that works in `{cwd}`. Check it against the repository before it goes out: every path, name, and command it mentions must exist there (or run read-only). Fix what is wrong or missing: a wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is done (a brief with no <acceptance> block has none). Keep everything else as written.
+The brief below will be handed to a subagent that works in `{cwd}`. Check it against the repository before it goes out: every path, name, and command it mentions must exist there (or run read-only). Fix what is wrong or missing: a wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is done (a brief with no <acceptance> block has none). Keep everything else as written.{delegation}
 
 {READ_ONLY_RULES} You have {read_budget} reads for this pass.
 

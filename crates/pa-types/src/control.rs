@@ -31,6 +31,15 @@
 //! The provider request limiter (`pa_ai::admission`) is the first user; a
 //! warm pool, a worker pool, or a fan-out gate plug in the same way with
 //! their own [`ControllerConfig`] and their own notion of "throttled".
+//! The delegation depth bound ([`DepthController`]) is the same idea on a
+//! coarser resource: how many levels of subagents a session may spawn.
+
+mod depth;
+
+pub use depth::{
+    DelegationOutcome, DepthChange, DepthController, DEPTH_CEILING, DEPTH_FLOOR, DEPTH_INITIAL,
+    DEPTH_RAISE_STREAK,
+};
 
 use serde::{Deserialize, Serialize};
 

@@ -148,6 +148,9 @@ class RLMChildResult:
     # The time the child's boot queued for a session-boot slot, when it queued (not part of
     # ``duration_ms``, which starts once the child booted).
     queued_ms: int | None = None
+    # Where the child's acceptance checks stand: "none", "pending", "passed", or "failed"
+    # (``None`` when the host cannot read them, e.g. a deleted child).
+    check_status: str | None = None
 
 
 def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
@@ -502,7 +505,19 @@ def _child_result_from_payload(payload: Any) -> RLMChildResult:
         tool_use_count=_optional_int("tool_use_count"),
         replied_since_task=replied,
         queued_ms=_optional_int("queued_ms"),
+        check_status=_check_status(payload.get("check_status")),
     )
+
+
+CHECK_STATUSES = ("none", "pending", "passed", "failed")
+
+
+def _check_status(value: Any) -> str | None:
+    if value is None:
+        return None
+    if value not in CHECK_STATUSES:
+        raise RuntimeError("rlm.collect entry has invalid check_status")
+    return value
 
 
 async def collect(

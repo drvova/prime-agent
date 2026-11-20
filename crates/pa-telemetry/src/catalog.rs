@@ -1920,6 +1920,22 @@ const AGENT_RLM_CHILD_ABORT: EventRule = EventRule {
     ],
 };
 
+/// The adaptive delegation depth bound for one session (v2), emitted at session end beside `agent
+/// session ended` (which sits near the backend's 128-key cap) only when the bound moved or a
+/// brief followed it: raises after children came back checked and passing, drops after failed
+/// or timed-out children, and brief-mode `better` runs scaled to the remaining bound. Counts
+/// only: never a child id, a name, or a brief.
+const AGENT_RLM_DELEGATION_DEPTH: EventRule = EventRule {
+    name: "agent rlm delegation depth",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_depth_raised_count", required(count())),
+        ("rlm_depth_lowered_count", required(count())),
+        ("rlm_depth_scaled_brief_count", required(count())),
+    ],
+};
+
 /// Python cells that continued in the background (v2), emitted at session end beside `agent
 /// session ended` (which sits near the backend's 128-key cap) only when a cell was armed with a
 /// yield window or outlived one: cells backgrounded, how they ended (value, exception,
@@ -2076,6 +2092,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_MESSAGES,
         &AGENT_MESSAGE_WAITS,
         &AGENT_RLM_CHILD_ABORT,
+        &AGENT_RLM_DELEGATION_DEPTH,
         &AGENT_REPL_BACKGROUND_CELLS,
         &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,

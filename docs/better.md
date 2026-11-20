@@ -109,3 +109,25 @@ The same checks are readable from the REPL. `better.checks()` returns where they
 latest round's evidence). `better.evidence("out:7f3a9c1e04")` returns one round's per-check
 results with each failure's raw reason. Telemetry counts the rounds and the checks that passed
 and failed, and nothing else.
+
+## Depth-aware delegation
+
+Two kinds of depth meet when a session delegates. One is how many levels of subagents may
+nest below it. The other is how deeply a brief was refined before it went out (the "Depth" in
+the questions above).
+
+- With no recursion setting (no `/rlm-max-depth`, no `rlmMaxDepth` setting, no `RLM_MAX_DEPTH`
+  in the environment), the nesting bound adapts. It starts at 2 levels and stays between 1 and
+  4. Two children in a row that come back from `rlm.collect` finished with their acceptance
+  checks passing raise it one level. A child that fails, whose checks fail, or that a bounded
+  `rlm.collect(..., timeout_ms=...)` wait times out on lowers it one level. A child inherits
+  the bound as it stood when it was spawned. A setting always fixes the bound, and nothing
+  adapts then.
+- `rlm.spawn(..., better=True)` refines the brief as deeply as the child may still delegate.
+  A child at the last level gets a lean check and is told to finish in one session. A child
+  that may delegate further gets more reads and is asked for a brief it can split, each part
+  with its own acceptance check.
+- `rlm.collect` results carry `check_status`: `none` (the child's task carried no checks),
+  `pending` (armed, no round finished yet), `passed`, or `failed`.
+
+Telemetry counts the bound's raises and drops and the briefs scaled to it, and nothing else.

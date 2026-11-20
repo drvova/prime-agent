@@ -945,6 +945,10 @@ impl SessionEngine for AgentSessionEngine {
                 child_script: identity.child_script,
             };
             children.set_identity(parent);
+            // With no setting the bound adapts to how this session's children come back.
+            children.set_depth_bound(pa_core::session_engine::rlm_depth::DepthBound::resolved(
+                max_depth, source,
+            ));
         }
         Ok(())
     }

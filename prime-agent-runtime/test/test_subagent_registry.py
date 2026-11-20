@@ -627,6 +627,22 @@ class RlmCollectTest(unittest.TestCase):
                 asyncio.run(rlm_module.rlm.collect())
 
 
+class RlmCollectCheckStatusTest(unittest.TestCase):
+    def test_a_collect_result_carries_the_childs_check_status(self) -> None:
+        rlm = importlib.import_module("rlm")
+        entry = {"rlm_child_id": "sub-1", "status": "done", "settled": True}
+        statuses = [
+            rlm._child_result_from_payload({**entry, "check_status": status}).check_status
+            for status in ("passed", "failed", "pending", "none")
+        ]
+        self.assertEqual(
+            (statuses, rlm._child_result_from_payload(entry).check_status),
+            (["passed", "failed", "pending", "none"], None),
+        )
+        with self.assertRaisesRegex(RuntimeError, "invalid check_status"):
+            rlm._child_result_from_payload({**entry, "check_status": "green"})
+
+
 class RlmSpawnQueueTest(unittest.TestCase):
     def test_a_spawn_handle_and_collect_result_carry_the_boot_queue_time(self):
         rlm = importlib.import_module("rlm")
