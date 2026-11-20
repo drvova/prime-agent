@@ -2,6 +2,7 @@ use super::{
     content_id, SpillCopy, SpillHandle, SpillLookup, SpillOutcome, SpillStore, StoredSpill,
     SPILL_DIR,
 };
+use std::fmt::Write as _;
 
 /// A store over a fresh temp dir; `cap` bounds its stored bytes.
 fn store_in(dir: &tempfile::TempDir, cap: u64) -> SpillStore {
@@ -10,9 +11,10 @@ fn store_in(dir: &tempfile::TempDir, cap: u64) -> SpillStore {
 
 /// `lines` distinct lines of mixed-width text, about `lines * 40` bytes.
 fn output(lines: usize, tag: &str) -> String {
-    (0..lines)
-        .map(|n| format!("{tag} line {n:06} · é界🦀 payload\n"))
-        .collect()
+    (0..lines).fold(String::new(), |mut out, n| {
+        let _ = writeln!(out, "{tag} line {n:06} · é界🦀 payload");
+        out
+    })
 }
 
 fn stored(text: &str) -> SpillLookup {
@@ -28,7 +30,7 @@ fn stored(text: &str) -> SpillLookup {
 async fn a_megabyte_spill_round_trips_byte_for_byte() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let store = store_in(&dir, u64::MAX);
-    let text = output(26_000, "big");
+    let text = output(30_000, "big");
     assert!(text.len() > 1_000_000);
 
     let handle = store.spill(SpillCopy::of_text(&text));
@@ -37,14 +39,18 @@ async fn a_megabyte_spill_round_trips_byte_for_byte() {
         SpillHandle {
             id: content_id(&text),
             total_chars: text.chars().count(),
-            lines: 26_000,
+            lines: 30_000,
             stored_chars: text.chars().count(),
             outcome: SpillOutcome::Queued,
         }
     );
     assert_eq!(store.lookup(&handle.id).await, stored(&text));
-    let on_disk = std::fs::read(dir.path().join(SPILL_DIR).join(format!("{}.txt", handle.id)))
-        .expect("spill file");
+    let on_disk = std::fs::read(
+        dir.path()
+            .join(SPILL_DIR)
+            .join(format!("{}.txt", handle.id)),
+    )
+    .expect("spill file");
     assert_eq!(on_disk, text.as_bytes());
 }
 
@@ -61,7 +67,10 @@ async fn handles_survive_a_fresh_process() {
     // A restarted daemon or a resumed session opens the directory afresh.
     let reopened = store_in(&dir, u64::MAX);
     assert_eq!(
-        (reopened.lookup(&id).await, reopened.lookup("0123456789").await),
+        (
+            reopened.lookup(&id).await,
+            reopened.lookup("0123456789").await
+        ),
         (stored(&text), SpillLookup::Unknown)
     );
 }
