@@ -120,22 +120,60 @@ fn wait(needle: &str) -> HeadlessStep {
     }
 }
 
-/// The composer's text rows in a frame: the lines between the last two horizontal rules.
+/// The composer's first row in a frame: the prompt marker (`>`) line, the last one drawn.
+fn prompt_row(frame: &str) -> Option<usize> {
+    frame
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.trim_start().starts_with('>'))
+        .map(|(index, _)| index)
+        .last()
+}
+
+/// The newest frame that shows `needle` with the composer drawn. The run's frame list also
+/// holds frames from before the chat is ready, so the assertions read the frame where the
+/// observed state and the composer appear together.
+fn frame_with<'a>(frames: &'a [String], needle: &str) -> &'a str {
+    frames
+        .iter()
+        .rev()
+        .find(|frame| frame.contains(needle) && prompt_row(frame).is_some())
+        .unwrap_or_else(|| {
+            panic!(
+                "no frame shows {needle:?} with the composer; the newest frame:\n{}",
+                frames.last().map(String::as_str).unwrap_or_default()
+            )
+        })
+}
+
+/// The composer's text in a frame, one entry per row with the gutter and the prompt marker
+/// removed: from the prompt row down to the dock (the `←` hint or the rule), trailing blank rows
+/// dropped. Independent of the terminal width and of which chrome is drawn around it.
 fn composer_rows(frame: &str) -> Vec<String> {
     let lines: Vec<&str> = frame.lines().collect();
-    let rules: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| line.trim_start().starts_with("\u{2500}\u{2500}\u{2500}"))
-        .map(|(index, _)| index)
-        .collect();
-    let [.., top, bottom] = rules[..] else {
-        panic!("no composer rules in the frame:\n{frame}");
+    let Some(start) = prompt_row(frame) else {
+        panic!("no composer prompt in the frame:\n{frame}");
     };
-    lines[top + 1..bottom]
+    let mut rows: Vec<String> = lines[start..]
         .iter()
-        .map(|line| line.trim_end().to_string())
-        .collect()
+        .take_while(|line| {
+            let line = line.trim_start();
+            !line.starts_with('\u{2190}') && !line.starts_with('\u{2500}')
+        })
+        .enumerate()
+        .map(|(index, line)| {
+            let line = line.trim();
+            if index == 0 {
+                line.trim_start_matches('>').trim_start().to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    while rows.last().is_some_and(String::is_empty) {
+        rows.pop();
+    }
+    rows
 }
 
 #[test]
@@ -149,14 +187,14 @@ fn the_rewrite_lands_above_the_draft_and_nothing_is_sent() {
             wait("Improved prompt is in your input box"),
         ],
     );
-    let last = frames.last().expect("a frame painted");
+    let last = frame_with(&frames, "Improved prompt is in your input box");
     assert_eq!(
         composer_rows(last),
         vec![
-            " Fix `parse_expr` in `src/parser.rs`.".to_string(),
-            " Prove it with `cargo test -p parser`.".to_string(),
+            "Fix `parse_expr` in `src/parser.rs`.".to_string(),
+            "Prove it with `cargo test -p parser`.".to_string(),
             String::new(),
-            " my draft".to_string(),
+            "my draft".to_string(),
         ],
         "{last}"
     );
@@ -191,7 +229,7 @@ fn esc_cancels_the_run_and_says_nothing_was_sent() {
             wait("/better cancelled; nothing was sent."),
         ],
     );
-    let last = frames.last().expect("a frame painted");
+    let last = frame_with(&frames, "/better cancelled; nothing was sent.");
     assert!(!last.contains("Improved prompt"), "{last}");
     let run_id = commands
         .iter()
@@ -228,14 +266,14 @@ fn a_hanging_helper_never_holds_the_composer() {
             wait("still typing"),
         ],
     );
-    let last = frames.last().expect("a frame painted");
+    let last = frame_with(&frames, "still typing");
     assert!(
         last.contains("Improving your prompt: reading the code"),
         "{last}"
     );
     assert_eq!(
         composer_rows(last),
-        vec![" still typing".to_string()],
+        vec!["still typing".to_string()],
         "{last}"
     );
     assert!(!kinds(&commands).contains(&"prompt"));
