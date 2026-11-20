@@ -28,6 +28,7 @@ mod saved_pages;
 mod search_selection;
 mod selection_churn;
 mod shell_enter;
+mod traffic_pane;
 mod transcript_search;
 
 /// One idle row under test plus a holder row that keeps the selection, with the given title

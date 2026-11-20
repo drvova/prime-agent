@@ -158,6 +158,21 @@ session reads the card the previous refresh stored under `<agent dir>/project-ca
 50 ms budget, then re-derives it on a background thread for the next session; a reload keeps the
 session's card. Non-goals: running the commands, and deriving on the session-start path.
 
+Read-only command cache (`kernel::command_cache`): the kernel answers an allowlisted read-only
+`bash()` command (`git status`/`log`/`diff`, `ls`, `rg`/`grep`, `cat`: one simple command, no shell
+syntax, no writing option) or an `fs.read` from its last result while the files it read keep their
+size, mtime, and inode (`rlm.command_cache`), marked `cached`; `fs.edit` and the `edit` skill clear
+it. Each lookup is reported through the fire-and-forget `command_cache.fact` host request.
+Adoption counts ride the `agent readonly cache` event. Non-goals: caching anything with side
+effects, and a setting.
+
+Edit checks (`kernel::edit_checks`): the kernel runs the touched file's cheapest check after
+`fs.edit` and the `edit` skill (`rlm.edit_check`: fatal-rule `ruff` or `py_compile`, `cargo check
+-p`, `tsc --noEmit`, `go vet`), learns per project which checks pay for themselves, and reports
+each outcome through the fire-and-forget `edit_check.fact` host request; a late check's diagnostics
+ride the existing `bash.completed` notice. Adoption counts ride the `agent edit checks` event.
+Non-goals: running checks in the host, and a setting to choose them.
+
 Test-run handles (`kernel::test_runs`): the kernel summarizes an awaited test run itself
 (`rlm.test_results`: cargo test, pytest, unittest, go test, jest, vitest) into `BashResult.tests`;
 its `tests.summary` host request asks the host to keep the whole output and each failure's section
