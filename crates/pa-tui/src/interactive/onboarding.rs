@@ -405,12 +405,25 @@ async fn run_onboarding_flow(
     });
     let prime_row_for_flow = prime_row.clone();
     let prime_auth = provider_auth.clone();
+    let prime_telemetry = session.telemetry.clone();
     let prime_flow = OnboardingFlowTask::spawn(
         async move {
-            prime_auth
+            let outcome = prime_auth
                 .0
-                .login_on_panel(&prime_row_for_flow, prime_panel)
-                .await
+                .login_on_panel(
+                    &prime_row_for_flow,
+                    prime_panel,
+                    &crate::provider_auth::LoginTarget::ReplaceDefault,
+                )
+                .await;
+            crate::provider_auth::track_credential_added(
+                prime_telemetry.as_ref(),
+                &prime_row_for_flow,
+                &crate::provider_auth::LoginTarget::ReplaceDefault,
+                crate::provider_auth::CredentialSurface::Onboarding,
+                &outcome,
+            );
+            outcome
         },
         prime_cancel,
     );
@@ -539,6 +552,7 @@ async fn run_onboarding_flow(
             let provider_id = row.id.clone();
             let row = row.clone();
             let prompt_auth = provider_auth.clone();
+            let prompt_telemetry = session.telemetry.clone();
             let prompt_flow = OnboardingFlowTask::spawn(
                 async move {
                     // The submitted key stores through the composition root; a cancel is
@@ -556,7 +570,22 @@ async fn run_onboarding_flow(
                         .await
                     {
                         Some(api_key) if !prompt_cancel_body.cancelled() => {
-                            prompt_auth.0.login(&row, Some(&api_key)).await
+                            let outcome = prompt_auth
+                                .0
+                                .login(
+                                    &row,
+                                    Some(&api_key),
+                                    &crate::provider_auth::LoginTarget::ReplaceDefault,
+                                )
+                                .await;
+                            crate::provider_auth::track_credential_added(
+                                prompt_telemetry.as_ref(),
+                                &row,
+                                &crate::provider_auth::LoginTarget::ReplaceDefault,
+                                crate::provider_auth::CredentialSurface::Onboarding,
+                                &outcome,
+                            );
+                            outcome
                         }
                         _ => crate::provider_auth::ProviderAuthOutcome::Cancelled,
                     }
@@ -608,8 +637,26 @@ async fn run_onboarding_flow(
             let provider_id = row.id.clone();
             let row = row.clone();
             let service_auth = provider_auth.clone();
+            let service_telemetry = session.telemetry.clone();
             let provider_login = OnboardingFlowTask::spawn(
-                async move { service_auth.0.login_on_panel(&row, panel).await },
+                async move {
+                    let outcome = service_auth
+                        .0
+                        .login_on_panel(
+                            &row,
+                            panel,
+                            &crate::provider_auth::LoginTarget::ReplaceDefault,
+                        )
+                        .await;
+                    crate::provider_auth::track_credential_added(
+                        service_telemetry.as_ref(),
+                        &row,
+                        &crate::provider_auth::LoginTarget::ReplaceDefault,
+                        crate::provider_auth::CredentialSurface::Onboarding,
+                        &outcome,
+                    );
+                    outcome
+                },
                 service_cancel,
             );
             let (login_screen, outcome) = drive_onboarding_pane(
