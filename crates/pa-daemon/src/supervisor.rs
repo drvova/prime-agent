@@ -166,6 +166,8 @@ pub struct Supervisor {
     /// The supervisor's agent roster (classified entries; the roster arms
     /// live in `supervisor_roster.rs`).
     pub(crate) roster: std::sync::Mutex<crate::agent_roster::AgentRoster>,
+    /// The display-only agent traffic rings, per root tree (in memory only).
+    pub(crate) agent_traffic: crate::agent_traffic::AgentTrafficRings,
     /// The last `roster_update` content published per agent id (the content-diff
     /// guard): an unchanged row is dropped from the push.
     pub(crate) last_published_roster:
@@ -283,6 +285,7 @@ impl Supervisor {
             session_subscribers: subscribers::SessionSubscribers::new(),
             client_connections: std::sync::Mutex::new(std::collections::HashMap::new()),
             roster: std::sync::Mutex::new(crate::agent_roster::AgentRoster::new()),
+            agent_traffic: crate::agent_traffic::AgentTrafficRings::default(),
             last_published_roster: std::sync::Mutex::new(std::collections::HashMap::new()),
             pending_registration_seeds: std::sync::Mutex::new(Vec::new()),
             pending_session_names: std::sync::Mutex::new(std::collections::HashSet::new()),

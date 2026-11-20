@@ -163,6 +163,9 @@ pub const KNOWN_COMMAND_TYPES: &[&str] = &[
     "worker_roster_delta",
     "provider_admission_acquire",
     "provider_admission_release",
+    "agent_traffic_subscribe",
+    "agent_traffic_unsubscribe",
+    "worker_agent_traffic",
     "get_worker_peer_transport",
     "commit_update_restart",
     "update_restore_status",
@@ -944,6 +947,9 @@ pub fn command_active_session_id(command: &DaemonCommand) -> Option<&str> {
         | DaemonCommand::ProviderAdmissionAcquire { .. }
         | DaemonCommand::ProviderAdmissionRelease { .. }
         | DaemonCommand::RosterUnsubscribe { .. }
+        | DaemonCommand::AgentTrafficSubscribe { .. }
+        | DaemonCommand::AgentTrafficUnsubscribe { .. }
+        | DaemonCommand::WorkerAgentTraffic { .. }
         | DaemonCommand::Create { .. }
         | DaemonCommand::SendMessage { .. }
         | DaemonCommand::AckResult { .. }
@@ -972,6 +978,9 @@ pub fn command_type_name(command: &DaemonCommand) -> &'static str {
         DaemonCommand::ProviderAdmissionAcquire { .. } => "provider_admission_acquire",
         DaemonCommand::ProviderAdmissionRelease { .. } => "provider_admission_release",
         DaemonCommand::RosterUnsubscribe { .. } => "roster_unsubscribe",
+        DaemonCommand::AgentTrafficSubscribe { .. } => "agent_traffic_subscribe",
+        DaemonCommand::AgentTrafficUnsubscribe { .. } => "agent_traffic_unsubscribe",
+        DaemonCommand::WorkerAgentTraffic { .. } => "worker_agent_traffic",
         DaemonCommand::Create { .. } => "create",
         DaemonCommand::Attach { .. } => "attach",
         DaemonCommand::Reattach { .. } => "reattach",

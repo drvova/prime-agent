@@ -25,6 +25,8 @@ pub(crate) struct ClientConnectionState {
     /// The connection's prompt-admission registry (TS `promptAdmissions`
     /// per client): the `prompt`/`prompt_and_wait` admissions.
     pub(crate) prompt_admissions: crate::prompt_admission::PromptAdmissionTable,
+    /// Whether this connection opted in to the agent traffic feed (`agent_traffic_subscribe`).
+    pub(crate) agent_traffic_subscribed: std::sync::atomic::AtomicBool,
 }
 
 impl ClientConnectionState {
@@ -34,6 +36,7 @@ impl ClientConnectionState {
             pause_epoch: AtomicU64::new(0),
             detaching_sessions: std::sync::Mutex::new(HashSet::new()),
             prompt_admissions: crate::prompt_admission::PromptAdmissionTable::default(),
+            agent_traffic_subscribed: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

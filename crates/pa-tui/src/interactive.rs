@@ -519,6 +519,9 @@ impl InteractiveOptions {
         }
         if let Some(script) = &self.script_path {
             config["script"] = json!(script.display().to_string());
+            // A scripted root's spawned children run the same script (the daemon carries
+            // `childScript` down the recursion; the print runtime's create sets it too).
+            config["childScript"] = json!(script.display().to_string());
         }
         if let Some(provider) = &self.model_selection.provider {
             config["provider"] = json!(provider);

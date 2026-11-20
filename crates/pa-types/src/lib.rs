@@ -6,6 +6,7 @@
 //! Every wire struct carries a `#[serde(flatten)] rest: JsonMap` catch-all, so unmodeled fields
 //! survive a parse/serialize round trip: the re-parsed JSON must equal the original.
 
+pub mod agent_traffic;
 pub mod ai;
 pub mod billing;
 pub mod compaction;

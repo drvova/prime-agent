@@ -294,6 +294,7 @@ impl Worker {
             .unwrap_or("unknown")
             .to_string();
         let sender_label = sender_name.clone();
+        let sender_name_for_traffic = sender_name.clone();
         // The relationship label derives from the sender's durable parent edge,
         // never the runtime kind alone: a subagent spawned by a DIFFERENT parent
         // is not this session's child.
@@ -304,6 +305,15 @@ impl Worker {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             sender_is_child_of(&sender, &core).then_some(AgentFamilyRelationship::Child)
         };
+        // The traffic pane's relationship label (display only): the prompt header above keeps
+        // its child-only label.
+        let traffic_relationship = from_relationship.or_else(|| {
+            let core = self
+                .core
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            traffic_relationship(&sender, &core)
+        });
         let prompt = pa_core::session_engine::agent_messaging::create_agent_session_message_prompt(
             &AgentMessagePromptPayload {
                 message: message.to_string(),
@@ -419,6 +429,35 @@ impl Worker {
                 kind,
             });
         }
+        self.report_agent_traffic(&pa_types::agent_traffic::AgentTrafficEntry {
+            root_active_session_id: String::new(),
+            from: sender_name_for_traffic,
+            from_active_session_id: sender
+                .get("activeSessionId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
+            to: target
+                .get("sessionName")
+                .and_then(Value::as_str)
+                .unwrap_or(&self.config.active_session_id)
+                .to_string(),
+            to_active_session_id: self.config.active_session_id.clone(),
+            relationship: traffic_relationship
+                .map(|relationship| relationship.as_str().to_string()),
+            kind: match kind {
+                pa_core::session_engine::agent_messaging::AgentMessageKind::Direct => "direct",
+                pa_core::session_engine::agent_messaging::AgentMessageKind::Broadcast => {
+                    "broadcast"
+                }
+            }
+            .to_string(),
+            outcome: if queued { "queued" } else { "delivered" }.to_string(),
+            chars: message.chars().count() as u64,
+            preview: pa_types::agent_traffic::sanitize_agent_traffic_preview(message),
+            timestamp_ms: crate::util::now_ms(),
+            rest: serde_json::Map::default(),
+        });
         let timestamp = crate::util::now_iso();
         let mut receipt = json!({
             "id": id,
@@ -441,4 +480,51 @@ impl Worker {
         }
         response_success(None, "worker_deliver_message", Some(receipt))
     }
+
+    /// Report one accepted delivery to the supervisor's display-only traffic ring: fire and
+    /// forget, after the delivery landed (never on the delivery's own path). A worker without a
+    /// supervisor link reports nothing.
+    fn report_agent_traffic(&self, entry: &pa_types::agent_traffic::AgentTrafficEntry) {
+        if self.config.token.is_empty() || self.roster_link.socket_path().as_os_str().is_empty() {
+            return;
+        }
+        let command = json!({
+            "type": "worker_agent_traffic",
+            "workerToken": self.config.token,
+            "entry": entry,
+        });
+        let link = std::sync::Arc::clone(&self.roster_link);
+        tokio::spawn(async move {
+            let _ = link
+                .request(command, std::time::Duration::from_secs(5))
+                .await;
+        });
+    }
+}
+
+/// The sender's relationship to this session for the traffic pane: its parent (the sender is
+/// this session's recorded parent edge) or a sibling (both share one parent edge, or both are
+/// roots); `None` for a client-origin sender.
+fn traffic_relationship(
+    sender: &Value,
+    core: &super::SessionCore,
+) -> Option<AgentFamilyRelationship> {
+    let field = |key: &str| {
+        sender
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+    };
+    let sender_active = field("activeSessionId")?;
+    if core.parent_active_session_id.as_deref() == Some(sender_active)
+        || field("sessionId").is_some_and(|id| core.parent_session_id.as_deref() == Some(id))
+    {
+        return Some(AgentFamilyRelationship::Parent);
+    }
+    let sender_parent = field("parentActiveSessionId");
+    let own_parent = core
+        .parent_active_session_id
+        .as_deref()
+        .filter(|id| !id.is_empty());
+    (sender_parent == own_parent).then_some(AgentFamilyRelationship::Sibling)
 }
