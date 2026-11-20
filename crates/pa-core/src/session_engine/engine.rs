@@ -666,6 +666,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .then(|| std::sync::Arc::clone(&session_counters)),
         spill_store.clone(),
     ));
+    // `hypotheses.record`: each finished `rlm.hypotheses` run (telemetry counts).
+    crate::kernel::hypotheses::register_hypotheses_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |run| counters.note_hypotheses(run))
+                as crate::kernel::hypotheses::HypothesesObserver
+        }),
+    );
     // `command_cache.fact`: read-only cache lookups (telemetry counts).
     crate::kernel::command_cache::register_command_cache_handler(
         &mut handlers,

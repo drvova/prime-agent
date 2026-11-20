@@ -2129,6 +2129,23 @@ const AGENT_REPL_DECIDE: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.hypotheses(...)` adoption for one session (v2), emitted at session end beside
+/// `agent session ended` (which sits near the backend's 128-key cap) only when a run finished:
+/// runs, the approaches they tried (one worktree and child each), the approaches that passed the
+/// acceptance check, and the runs no approach won. Counts only: never a task, an approach, a
+/// check, or a diff.
+const AGENT_REPL_HYPOTHESES: EventRule = EventRule {
+    name: "agent repl hypotheses",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("hypotheses_run_count", required(count())),
+        ("hypotheses_approach_count", required(count())),
+        ("hypotheses_passed_count", required(count())),
+        ("hypotheses_no_winner_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
 /// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
 /// session reloaded or read its settings: reloads, the skills they added, and settings reads.
@@ -2220,6 +2237,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
         &AGENT_REPL_DECIDE,
+        &AGENT_REPL_HYPOTHESES,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,

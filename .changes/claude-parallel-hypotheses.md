@@ -1,0 +1,1 @@
+- New kernel call `rlm.hypotheses(task, approaches=[...], check=...)`: tries each approach in parallel in its own worktree and child, runs the acceptance check in each checkout, and returns a ranked table (passing first, diffs as handles); every worktree but the winner's is removed, and the model merges the winner with `worktree.merge`.

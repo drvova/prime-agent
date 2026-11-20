@@ -94,6 +94,7 @@ In prime-agent, agents can create heartbeats to wake themselves up after a given
 {{capability:checkpoint}}
 
 {{capability:worktree}}
+{{capability:hypothesis}}
 
 ## Todos and questions
 
