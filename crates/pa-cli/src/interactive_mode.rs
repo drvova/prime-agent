@@ -543,6 +543,8 @@ fn build_tui_options(
             provider: config.provider.clone(),
             model: config.model.clone(),
             api_key: config.api_key.clone(),
+            credential: config.credential.clone(),
+            profile: config.profile.clone(),
             // The worker clamps `--thinking` to the model's levels.
             thinking: config.thinking,
         },

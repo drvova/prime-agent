@@ -303,6 +303,37 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn credential_pinned(
+        &self,
+        source: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `agent credential added`; the run spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("source", serde_json::Value::from(source));
+            client.track("agent credential pinned", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn profile_state(&self, active: bool) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone; the run spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let count = pa_core::settings::list_profiles(&self.agent_dir).len();
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("profile_active", serde_json::Value::from(active));
+            properties.set("profile_count", serde_json::Value::from(count));
+            client.track("agent profile state", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn queued_input(
         &self,
         _lane: &'static str,

@@ -30,6 +30,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
 - `billing`: how one model call is paid for (`BillingMode`, stamped as the optional
   `usage.billing` of each recorded assistant message; a missing or unknown mode reads as
   unclassified) and the per-mode spend split (`BillingSplit`) the daemon's session summaries carry.
+- `agent_traffic`: the display-only agent traffic entry (`AgentTrafficEntry`: from, to,
+  relationship, kind, outcome, chars, a sanitized preview of at most 240 chars) the receiving
+  worker reports, the supervisor rings per root tree, and the TUI's Traffic pane renders;
+  never model context, never a transcript.
 - `slash_commands`: the builtin slash-command table every surface shares
   (the TUI dispatch + autocomplete, the session engine's command admission,
   CLI suggestion help) plus its pure parse/suggestion helpers — the TS

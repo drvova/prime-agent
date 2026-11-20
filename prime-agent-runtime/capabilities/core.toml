@@ -19,6 +19,7 @@ probe = [
   "assert callable(rlm.spawn)",
   "assert hasattr(rlm, 'rlm')",
   "assert callable(rlm.rlm.spawn)",
+  "assert 'better' in inspect.signature(rlm.rlm.spawn).parameters",
   "assert inspect.signature(rlm.spawn).parameters['name'].default is inspect.Parameter.empty",
   "assert not hasattr(rlm, 'run')",
   "assert not hasattr(rlm.rlm, 'run')",

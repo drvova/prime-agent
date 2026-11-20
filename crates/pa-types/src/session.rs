@@ -49,6 +49,55 @@ pub struct SessionHeader {
     pub rest: JsonMap,
 }
 
+/// The header key that tags a session with the profile it was created under.
+pub const PROFILE_HEADER_KEY: &str = "profile";
+
+/// The header key that pins a session to one named credential.
+pub const CREDENTIAL_PIN_HEADER_KEY: &str = "credential";
+
+/// A session's pinned credential: the provider and the named credential's random id, plus the
+/// label it carried at create (the user's own text, never key material) so a credential deleted
+/// later is still named in the error. Written once at create, restored as-is on resume; requests
+/// to that provider resolve through exactly this credential or fail.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CredentialPin {
+    pub provider: String,
+    pub id: String,
+    pub label: String,
+}
+
+impl SessionHeader {
+    /// The header's credential pin, when it carries a well-formed one.
+    #[must_use]
+    pub fn credential_pin(&self) -> Option<CredentialPin> {
+        self.rest
+            .get(CREDENTIAL_PIN_HEADER_KEY)
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+    }
+
+    /// The profile the session was created under, when it was.
+    #[must_use]
+    pub fn profile(&self) -> Option<&str> {
+        self.rest
+            .get(PROFILE_HEADER_KEY)
+            .and_then(serde_json::Value::as_str)
+    }
+
+    /// Tag a fresh header with the profile it is created under.
+    pub fn set_profile(&mut self, name: &str) {
+        self.rest
+            .insert(PROFILE_HEADER_KEY.to_string(), serde_json::json!(name));
+    }
+
+    /// Pin the session to `pin` (a fresh header only: a resume keeps the pin it has).
+    pub fn set_credential_pin(&mut self, pin: &CredentialPin) {
+        self.rest.insert(
+            CREDENTIAL_PIN_HEADER_KEY.to_string(),
+            serde_json::json!({ "provider": pin.provider, "id": pin.id, "label": pin.label }),
+        );
+    }
+}
+
 fn deserialize_session_id<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<String, D::Error> {

@@ -141,6 +141,64 @@ impl Worker {
             .get("parentSessionPath")
             .and_then(Value::as_str)
             .map(str::to_string);
+        // `--profile <name>` (one worker serves one session): every settings read from here on
+        // layers the profile's overlay. An unknown profile fails the create.
+        let profile = match payload.get("profile").and_then(Value::as_str) {
+            Some(name) => match pa_core::settings::load_profile(&self.config.agent_dir, name) {
+                Ok(Some(profile)) => {
+                    pa_core::settings::set_active_profile(Some(name.to_string()));
+                    Some((name.to_string(), profile))
+                }
+                Ok(None) => {
+                    return response_failure(
+                        None,
+                        "create",
+                        &format!("profile '{name}' does not exist; /profile new {name} saves one"),
+                        None,
+                    )
+                }
+                Err(error) => return response_failure(None, "create", &format!("{error:#}"), None),
+            },
+            None => None,
+        };
+        // The new session's pin, resolved before any file is created (an unknown credential
+        // fails the create instead of leaving an empty session behind): the profile's mapping
+        // for the session's provider (the create's `--provider`, else the profile's default
+        // provider, else its one named credential), then `--credential <label|id>`.
+        let profile_credential = profile.as_ref().and_then(|(_, profile)| {
+            let provider = payload.get("provider").and_then(Value::as_str).or_else(|| {
+                profile
+                    .settings
+                    .get("defaultProvider")
+                    .and_then(Value::as_str)
+            });
+            let mut named = profile
+                .credentials
+                .iter()
+                .filter(|(_, id)| id.as_str() != pa_core::settings::DEFAULT_CREDENTIAL);
+            if let Some(provider) = provider {
+                named
+                    .find(|(mapped, _)| mapped.as_str() == provider)
+                    .map(|(_, id)| id.clone())
+            } else {
+                match (named.next(), named.next()) {
+                    (Some((_, id)), None) => Some(id.clone()),
+                    (Some(_), Some(_)) | (None, _) => None,
+                }
+            }
+        });
+        let requested_pin = match profile_credential
+            .as_deref()
+            .or_else(|| payload.get("credential").and_then(Value::as_str))
+        {
+            Some(selector) => {
+                match pa_core::auth::AuthAccounts::create(&self.config.agent_dir).select(selector) {
+                    Ok(pin) => Some(pin),
+                    Err(error) => return response_failure(None, "create", &error, None),
+                }
+            }
+            None => None,
+        };
         // The subagent runtime identity (TS `runtimeMetadata` on the create
         // command): the child id and the parent's live/persisted ids ride
         // the session summaries so the roster can key children
@@ -392,6 +450,30 @@ impl Worker {
         if !store.path.as_os_str().is_empty() {
             self.engine.set_session_file(store.path.clone());
         }
+        // The credential pin: a reopened session's header pin is restored as-is; a new session
+        // takes the create's `--credential` pin, else its parent's (a subagent inherits it), and
+        // writes it into the fresh header (persisted with the creation rewrite).
+        let credential_pin = if opened_existing_session {
+            store.header.credential_pin()
+        } else {
+            let pin = requested_pin.or_else(|| {
+                parent_session_path
+                    .as_deref()
+                    .and_then(|path| {
+                        pa_core::session::manager::read_session_header(std::path::Path::new(path))
+                    })
+                    .and_then(|parent| parent.credential_pin())
+            });
+            if let Some(pin) = &pin {
+                store.header.set_credential_pin(pin);
+            }
+            // The `profile` tag (for filtering; sessions are not separated by profile).
+            if let Some((name, _)) = &profile {
+                store.header.set_profile(name);
+            }
+            pin
+        };
+        self.engine.set_credential_pin(credential_pin);
 
         // The `models` patterns (else settings `enabledModels`) resolve once into
         // the scoped list, AFTER the store open (the saved-model restore's wait
@@ -883,3 +965,6 @@ fn append_creation_prefix(
 #[cfg(test)]
 #[path = "create_collapse_tests.rs"]
 mod create_collapse_tests;
+#[cfg(test)]
+#[path = "credential_pin_tests.rs"]
+mod credential_pin_tests;

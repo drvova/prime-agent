@@ -89,6 +89,11 @@ impl SessionUi {
         // per submitted builtin, client and session commands alike, by its
         // canonical name, before the command runs.
         self.track_command_used(resolved.name);
+        // `/better` is a session command for every other surface (the rewrite comes back as a
+        // result row); here it runs in the background and lands in the composer instead.
+        if resolved.name == "better" {
+            return self.start_better(&resolved.args, view).await;
+        }
         match command.execution {
             SlashCommandExecution::Session => self.send_prompt(text, behavior, view),
             SlashCommandExecution::Client => {
@@ -303,6 +308,77 @@ impl SessionUi {
                     view.editor
                         .set_text(&format!("/{} {}", resolved.original_name, resolved.args));
                     self.error_row("Usage: /logout", view);
+                }
+            }
+            "profile" => {
+                let args = resolved.args.trim();
+                let (verb, rest) = args
+                    .split_once(char::is_whitespace)
+                    .map_or((args, ""), |(verb, rest)| (verb, rest.trim()));
+                let Some(settings) = self.client_settings.clone() else {
+                    self.error_row("Profiles are unavailable", view);
+                    return Ok(());
+                };
+                let stored = settings.profiles();
+                match (verb, rest) {
+                    ("", _) => {
+                        let current = self
+                            .model_selection
+                            .profile
+                            .clone()
+                            .unwrap_or_else(|| "default".to_string());
+                        let stored = if stored.is_empty() {
+                            "none stored".to_string()
+                        } else {
+                            stored.join(", ")
+                        };
+                        self.note(
+                            &format!("new sessions use profile {current} (profiles: {stored})"),
+                            view,
+                        );
+                    }
+                    ("new", name) if !name.is_empty() => {
+                        let current = self.current_model(view);
+                        let choices = crate::client_settings::ProfileChoices {
+                            provider: current.as_ref().map(|model| model.provider.clone()),
+                            model: current.map(|model| model.model_id),
+                            accounts: self.model_accounts.clone(),
+                        };
+                        match settings.save_profile(name, &choices) {
+                            Ok(()) => {
+                                self.model_selection.profile = Some(name.to_string());
+                                view.chrome.profile = Some(name.to_string());
+                                self.note(
+                                    &format!("saved profile {name}; new sessions use it"),
+                                    view,
+                                );
+                            }
+                            Err(error) => self.error_row(&format!("{error:#}"), view),
+                        }
+                    }
+                    ("default", "") => {
+                        self.model_selection.profile = None;
+                        view.chrome.profile = None;
+                        self.note("new sessions use no profile", view);
+                    }
+                    (name, "") if stored.iter().any(|stored| stored == name) => {
+                        self.model_selection.profile = Some(name.to_string());
+                        view.chrome.profile = Some(name.to_string());
+                        self.note(&format!("new sessions use profile {name}"), view);
+                    }
+                    (name, "") if name != "new" => {
+                        self.error_row(
+                            &format!(
+                                "profile '{name}' does not exist; /profile new {name} saves one"
+                            ),
+                            view,
+                        );
+                    }
+                    (_, _) => {
+                        view.editor
+                            .set_text(&format!("/{} {}", resolved.original_name, resolved.args));
+                        self.error_row("Usage: /profile [<name>|default|new <name>]", view);
+                    }
                 }
             }
             "import" => {

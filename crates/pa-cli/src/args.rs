@@ -134,6 +134,10 @@ pub struct Args {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// `--credential <label|id>`: pin a new session to one stored named credential.
+    pub credential: Option<String>,
+    /// `--profile <name>` (else `PRIME_AGENT_PROFILE`): the profile this run's settings layer.
+    pub profile: Option<String>,
     pub cwd: Option<String>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Vec<String>,
@@ -287,6 +291,8 @@ pub fn parse_args(args: &[String]) -> Args {
             "--provider" => result.provider = Some(require_value!(arg)),
             "--model" => result.model = Some(require_value!(arg)),
             "--api-key" => result.api_key = Some(require_value!(arg)),
+            "--credential" => result.credential = Some(require_value!(arg)),
+            "--profile" => result.profile = Some(require_value!(arg)),
             "--cwd" => result.cwd = Some(require_value!(arg)),
             "--system-prompt" => result.system_prompt = Some(require_value!(arg)),
             "--append-system-prompt" => {

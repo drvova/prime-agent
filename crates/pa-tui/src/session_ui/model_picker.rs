@@ -25,6 +25,8 @@ pub(crate) struct ThinkingCycleNote {
 pub(crate) struct ModelCatalogUpdate {
     pub models: Vec<pa_types::ai::Model>,
     pub configured_providers: std::collections::HashSet<String>,
+    /// The session's account per multi-credential provider (`accounts`).
+    pub accounts: std::collections::BTreeMap<String, String>,
 }
 
 impl SessionUi {
@@ -74,6 +76,7 @@ impl SessionUi {
             models: self.model_catalog.clone(),
             current,
             configured_providers: self.model_configured_providers.clone(),
+            accounts: self.model_accounts.clone(),
             recent_models: self.model_recent_models.clone(),
             thinking_level,
             scoped_models,
@@ -172,7 +175,7 @@ impl SessionUi {
 
     /// The session's current model, resolved with the same provider-aware match as
     /// [`Self::current_model_entry`].
-    fn current_model(&self, view: &AgentView) -> Option<CurrentModel> {
+    pub(super) fn current_model(&self, view: &AgentView) -> Option<CurrentModel> {
         let model = self.current_model_entry(view)?;
         Some(CurrentModel {
             provider: model.provider.clone(),
@@ -214,9 +217,15 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default();
+            let accounts = value
+                .get("accounts")
+                .cloned()
+                .and_then(|accounts| serde_json::from_value(accounts).ok())
+                .unwrap_or_default();
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,
+                accounts,
             });
         });
     }
@@ -246,6 +255,7 @@ impl SessionUi {
         self.model_catalog = update.models;
         self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
+        self.model_accounts = update.accounts;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
         if let Some(picker) = view.model_picker.as_mut() {
@@ -253,6 +263,7 @@ impl SessionUi {
                 current,
                 self.model_catalog.clone(),
                 self.model_configured_providers.clone(),
+                self.model_accounts.clone(),
             );
         }
         self.update_model_eligibility_filters(view);

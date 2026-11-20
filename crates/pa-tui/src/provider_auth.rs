@@ -1224,6 +1224,17 @@ mod tests {
     }
 
     impl crate::interactive::InteractionTelemetry for HangingTelemetry {
+        fn profile_state(&self, _active: bool) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
+        fn credential_pinned(
+            &self,
+            _source: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
         fn scroll_used(
             &self,
             _action: &'static str,

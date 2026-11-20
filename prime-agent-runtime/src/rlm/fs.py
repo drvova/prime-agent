@@ -18,10 +18,10 @@ whole patch is rejected (``StaleAnchorsError``) and nothing is written.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
-from . import host_request
+from . import command_cache, edit_check, host_request
 
 __all__ = [
     "AnchoredLine",
@@ -33,11 +33,14 @@ __all__ = [
     "GrepResult",
     "StaleAnchor",
     "StaleAnchorsError",
+    "SymbolLocation",
+    "SymbolResult",
     "edit",
     "find",
     "glob",
     "grep",
     "read",
+    "symbol",
 ]
 
 _CASES = ("sensitive", "insensitive", "smart")
@@ -327,6 +330,8 @@ class FileView:
     encoding: str = "utf-8"
     final_newline: bool = True
     text: str = ""
+    # Answered from the read-only cache: the file is unchanged since the same read.
+    cached: bool = field(default=False, compare=False)
 
     def anchor(self, line: int) -> str:
         """The anchor of 1-based ``line`` (which this view must show)."""
@@ -358,6 +363,9 @@ class EditResult:
     total_lines: int
     hunks: list[list[AnchoredLine]]
     text: str = ""
+    # The touched file's check (`[check: ...]` and its diagnostics), when it has one; also the
+    # last lines of `text`.
+    check: str | None = None
 
     def __str__(self) -> str:
         return self.text
@@ -413,10 +421,20 @@ async def read(path: str | os.PathLike[str], *, start: int | None = None, end: i
         payload["start"] = _count("start", start, minimum=1)
     if end is not None:
         payload["end"] = _count("end", end, minimum=1)
+    # The same read of an unchanged file answers from the cache, marked `cached`.
+    key = ("fs.read", payload["path"], payload.get("start"), payload.get("end"))
+    stamps = command_cache.fingerprint("", command_cache.plan_files(payload["path"]))
+    if stamps is not None and None in stamps[0]:
+        stamps = None  # a file that is not there is never cached
+    hit = command_cache.lookup(key, stamps) if stamps is not None else None
+    command_cache.note("fs.read", hit is not None)
+    if hit is not None:
+        return hit
+    epoch = command_cache.current_epoch()
     reply = await host_request("fs.read", payload)
     if not isinstance(reply, dict):
         raise RuntimeError(f"fs.read returned a non-object result: {reply!r}")
-    return FileView(
+    view = FileView(
         path=str(reply.get("path") or ""),
         lines=_rows(reply.get("lines")),
         total_lines=int(reply.get("totalLines") or 0),
@@ -428,6 +446,11 @@ async def read(path: str | os.PathLike[str], *, start: int | None = None, end: i
         final_newline=bool(reply.get("finalNewline")),
         text=str(reply.get("text") or ""),
     )
+    if stamps is not None:
+        header, _, rows = view.text.partition("\n")
+        cached = replace(view, cached=True, text=f"{header} · cached\n{rows}" if rows else f"{header} · cached")
+        command_cache.remember(key, stamps, epoch, cached, chars=len(view.text))
+    return view
 
 
 def _anchor(value: Any, number: int) -> str:
@@ -493,6 +516,8 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
     if not isinstance(items, (list, tuple)) or not items:
         raise TypeError("edits must be a non-empty list of edit dicts (or one dict)")
     payload = {**_target(path), "edits": [_wire_edit(item, number) for number, item in enumerate(items, 1)]}
+    # Any write ends every cached read (a rejected patch wrote nothing, but costs one re-read).
+    command_cache.invalidate()
     reply = await host_request("fs.edit", payload)
     if not isinstance(reply, dict):
         raise RuntimeError(f"fs.edit returned a non-object result: {reply!r}")
@@ -510,6 +535,9 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
             ],
             lines=_rows(reply.get("lines")),
         )
+    # The touched file's cheapest check rides the result (bounded wait; a slow one notifies later).
+    check = await edit_check.after_edit(payload["path"])
+    text = str(reply.get("text") or "")
     return EditResult(
         path=str(reply.get("path") or ""),
         edits=int(reply.get("edits") or 0),
@@ -517,5 +545,79 @@ async def edit(path: str | os.PathLike[str], edits: dict[str, Any] | list[dict[s
         added=int(reply.get("added") or 0),
         total_lines=int(reply.get("totalLines") or 0),
         hunks=[_rows(hunk.get("lines")) for hunk in reply.get("hunks") or [] if isinstance(hunk, dict)],
-        text=str(reply.get("text") or ""),
+        text=f"{text}\n{check}" if check else text,
+        check=check,
+    )
+
+
+@dataclass(frozen=True)
+class SymbolLocation:
+    """One definition or reference: ``path`` relative to the project, 1-based ``line``, the
+    line's ``text``; a definition also has its ``kind`` (``fn``, ``class``, ...) and a ``handle``
+    to its source from that line on (page it with ``ctx.page``)."""
+
+    path: str
+    line: int
+    text: str
+    kind: str | None = None
+    handle: str | None = None
+
+
+@dataclass(frozen=True)
+class SymbolResult:
+    """Where ``name`` is defined and used. ``truncated``: more references exist than were
+    returned; ``partial``: the index is still building, so files not yet indexed are missing."""
+
+    name: str
+    definitions: list[SymbolLocation]
+    references: list[SymbolLocation]
+    truncated: bool
+    partial: bool
+
+    def __str__(self) -> str:
+        more = "+" if self.truncated else ""
+        lines = [f"{self.name}: {len(self.definitions)} definitions, {len(self.references)}{more} references"]
+        if self.partial:
+            lines[0] += " (partial: the index is still building)"
+        for found in self.definitions:
+            handle = f" · {found.handle}" if found.handle else ""
+            lines.append(f"def {found.path}:{found.line} [{found.kind}] {found.text}{handle}")
+        lines.extend(f"ref {found.path}:{found.line} {found.text}" for found in self.references)
+        return "\n".join(lines)
+
+
+def _locations(items: Any) -> list[SymbolLocation]:
+    return [
+        SymbolLocation(
+            path=str(item.get("path") or ""),
+            line=int(item.get("line") or 0),
+            text=str(item.get("text") or ""),
+            kind=item.get("kind") if isinstance(item.get("kind"), str) else None,
+            handle=item.get("handle") if isinstance(item.get("handle"), str) else None,
+        )
+        for item in items or []
+        if isinstance(item, dict)
+    ]
+
+
+async def symbol(name: str, *, max_references: int = 50) -> SymbolResult:
+    """Where ``name`` is defined and used in the project, from its symbol index.
+
+    The index (definitions per language, plus each file's identifiers) is kept per project and
+    built in the background; a query never waits for it, and ``result.partial`` says files not
+    yet indexed are missing. A definition's ``handle`` holds its source from its line on.
+    """
+    if not isinstance(name, str) or not name.strip() or any(ch.isspace() for ch in name):
+        raise ValueError("name must be one identifier, like 'SpillStore' or 'load'")
+    reply = await host_request(
+        "fs.symbol", {"name": name, "maxReferences": _count("max_references", max_references, minimum=1)}
+    )
+    if not isinstance(reply, dict):
+        raise RuntimeError(f"fs.symbol returned a non-object result: {reply!r}")
+    return SymbolResult(
+        name=name,
+        definitions=_locations(reply.get("definitions")),
+        references=_locations(reply.get("references")),
+        truncated=bool(reply.get("truncated")),
+        partial=bool(reply.get("partial")),
     )

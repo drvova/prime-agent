@@ -296,6 +296,7 @@ async fn run_interactive_surface(
     view.editor.set_autocomplete_provider(Box::new(provider));
     view.editor.set_keybindings(options.keybindings.clone());
     view.show_images = options.show_images;
+    view.chrome.profile = options.model_selection.profile.clone();
     view.editor.set_emoji_shortcodes(
         options
             .client_settings
@@ -915,6 +916,18 @@ async fn run_interactive_surface(
     let mut enhanced_keys_pending = renderer.is_terminal();
     // The hyperlink capability is env-based, settles at run start; terminal runs report it once.
     let mut hyperlinks_pending = renderer.is_terminal();
+    // A `--credential` pin and the profile state report one adoption event each, spawned:
+    // their flushes never hold the run.
+    if let Some(telemetry) = session.telemetry.clone() {
+        let pinned = options.model_selection.credential.is_some();
+        let profile_active = options.model_selection.profile.is_some();
+        tokio::spawn(async move {
+            if pinned {
+                telemetry.credential_pinned("flag").await;
+            }
+            telemetry.profile_state(profile_active).await;
+        });
+    }
     // State changes coalesce into at most one frame per MIN_RENDER_INTERVAL_MS; `render_deadline`
     // is armed while a dirty frame waits out the interval.
     let mut last_render_at: Option<Instant> = None;

@@ -117,6 +117,7 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         models: catalog,
         current: Some(current()),
         configured_providers: configured(),
+        accounts: std::collections::BTreeMap::new(),
         recent_models: Vec::new(),
         scoped_models: Vec::new(),
         thinking_level: Some(ModelThinkingLevel::Medium),
@@ -231,7 +232,12 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
     );
     let mut refreshed = battery_catalog();
     refreshed.push(model("prime-inference", "mock-9", "Mock 9", false, None));
-    picker.update_state(None, refreshed, configured());
+    picker.update_state(
+        None,
+        refreshed,
+        configured(),
+        std::collections::BTreeMap::new(),
+    );
     assert_eq!(
         picker.filtered_len(),
         1,
@@ -525,7 +531,12 @@ fn update_state_keeps_the_selection_on_the_surviving_model() {
         false,
         None,
     ));
-    picker.update_state(Some(current()), catalog, configured());
+    picker.update_state(
+        Some(current()),
+        catalog,
+        configured(),
+        std::collections::BTreeMap::new(),
+    );
     let selected = picker.selected_model().expect("selection").clone();
     assert_eq!(selected.id, "anthropic/claude-fable-5");
 }
