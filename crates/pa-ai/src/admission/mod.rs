@@ -66,6 +66,14 @@ fn key_hash(api_key: &str) -> String {
     hex::encode(&digest[..6])
 }
 
+/// The stable admission identity of a named credential: the first 12 hex digits of
+/// `sha256(provider:id)`. It never changes when an OAuth refresh rotates the token, and it carries
+/// no secret.
+#[must_use]
+pub fn credential_identity(provider: &str, id: &str) -> String {
+    key_hash(&format!("{provider}:{id}"))
+}
+
 /// Admit requests made with `api_key` under `identity` instead of the key's own hash. The
 /// identity carries no secret; the key itself is never stored, only its short hash.
 pub fn alias_credential(api_key: &str, identity: &str) {

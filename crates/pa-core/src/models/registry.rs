@@ -8,7 +8,7 @@ use pa_types::ai::{
     CompatKind, Model, ModelCompat, ModelThinkingLevel, OpenAiResponsesCompat, ThinkingLevelMap,
 };
 
-use crate::auth::accounts::{admission_identity, AuthAccounts, NamedRefresh, NamedSlotBackend};
+use crate::auth::accounts::{AuthAccounts, NamedRefresh, NamedSlotBackend};
 use crate::auth::descriptor::{AuthStrategy, ProviderAuthDescriptor};
 use crate::auth::descriptor_oauth::DescriptorOAuth;
 use crate::auth::manager::AuthStorage;
@@ -860,7 +860,10 @@ impl ModelRegistry {
         // A pinned credential admits under its stable identity: an OAuth refresh rotates the
         // token, never the learned limits' key.
         if let (Some((pin, _)), Some(api_key)) = (&pin, &api_key) {
-            pa_ai::admission::alias_credential(api_key, &admission_identity(pin));
+            pa_ai::admission::alias_credential(
+                api_key,
+                &pa_ai::admission::credential_identity(&pin.provider, &pin.id),
+            );
         }
         // A failed default-slot OAuth refresh with nothing else to serve: fail with the re-login
         // sentence.

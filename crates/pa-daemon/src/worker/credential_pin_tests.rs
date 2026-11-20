@@ -65,7 +65,8 @@ impl SessionEngine for PinEngine {
     }
 }
 
-/// One create on a fresh worker: the response and the pin its engine was handed.
+/// One create on a fresh worker (killed afterwards): the response and the pin its engine was
+/// handed.
 async fn create(dir: &Path, payload: Value) -> (DaemonResponse, Option<CredentialPin>) {
     let mut worker = Worker::new(
         WorkerConfig {
@@ -84,7 +85,11 @@ async fn create(dir: &Path, payload: Value) -> (DaemonResponse, Option<Credentia
     let engine = std::sync::Arc::new(PinEngine::default());
     worker.engine = engine.clone();
     let response = worker.dispatch("create", &payload).await;
-    (response, engine.credential_pin())
+    let pin = engine.credential_pin();
+    // Release the session's runtime lease so the next create may reopen the file (a failed
+    // create holds none).
+    let _killed = worker.dispatch("kill", &json!({})).await;
+    (response, pin)
 }
 
 #[tokio::test]

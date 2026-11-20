@@ -433,19 +433,6 @@ impl std::fmt::Debug for NamedKey {
     }
 }
 
-/// The stable admission identity of a pinned credential: the first 12 hex digits of
-/// `sha256(provider:id)`. It never changes when an OAuth refresh rotates the token, and it carries
-/// no secret.
-#[must_use]
-pub(crate) fn admission_identity(pin: &CredentialPin) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(format!("{}:{}", pin.provider, pin.id).as_bytes());
-    digest[..6]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 /// The document, or an empty one for an absent or freshly initialized (`{}`) file.
 fn parse(content: Option<&str>) -> Result<AccountsDocument> {
     let Some(content) = content.map(str::trim).filter(|content| !content.is_empty()) else {
