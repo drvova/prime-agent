@@ -109,6 +109,11 @@ fn card_title(theme: &Theme, width: usize, card: &ProviderQuota) -> Line {
         QuotaState::Failed { .. } => ThemeColor::Error,
     };
     let mut meta = Vec::new();
+    // A provider holding several credentials shows one card per credential: `Provider · label ·
+    // plan`.
+    if let Some(account) = &card.account {
+        meta.push(account.clone());
+    }
     if let Some(plan) = &card.plan {
         meta.push(plan.clone());
     }
@@ -300,6 +305,7 @@ pub(crate) fn cards(
         cards.push(ProviderQuota {
             provider: observed.provider.clone(),
             plan: None,
+            account: None,
             source: QuotaSource::ObservedResponse,
             fetched_at_ms: observed.observed_at_ms,
             state: QuotaState::RateLimited {

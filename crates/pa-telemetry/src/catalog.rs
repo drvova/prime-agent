@@ -1122,6 +1122,14 @@ const AGENT_CREDENTIAL_ADDED: EventRule = EventRule {
     ],
 };
 
+/// One interactive run started its session pinned to a stored named credential (v2): `source` is
+/// how the pin was chosen (`flag`: `--credential`). Never a provider, a label, or a credential id.
+const AGENT_CREDENTIAL_PINNED: EventRule = EventRule {
+    name: "agent credential pinned",
+    since: 2,
+    properties: &[("source", required(enum_rule(&["flag"], "flag")))],
+};
+
 /// One interactive run showed inline transcript images (v2), emitted at the run's exit when
 /// any image was shown: the distinct images drawn per protocol and the protocol the terminal
 /// resolved to. Standalone because `tui exit` sits at the backend's 128-key cap. Counts only,
@@ -1616,7 +1624,8 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
 /// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
 /// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
-/// edited, discarded). Counts only: never a prompt, a rewrite, or a path.
+/// edited, discarded), the kernel's brief-mode runs and how many needed no fix, and the refine passes verification ran. Counts only:
+/// never a prompt, a rewrite, or a path.
 const AGENT_BETTER_PROMPT: EventRule = EventRule {
     name: "agent better prompt",
     since: 2,
@@ -1629,6 +1638,9 @@ const AGENT_BETTER_PROMPT: EventRule = EventRule {
         ("better_sent_as_is_count", required(count())),
         ("better_edited_count", required(count())),
         ("better_discarded_count", required(count())),
+        ("better_brief_run_count", required(count())),
+        ("better_brief_unchanged_count", required(count())),
+        ("better_verification_pass_count", required(count())),
     ],
 };
 
@@ -2068,6 +2080,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
         &AGENT_CREDENTIAL_ADDED,
+        &AGENT_CREDENTIAL_PINNED,
         &TUI_CONTEXT_WINDOW_CLOSED,
         &TUI_INLINE_IMAGES_RENDERED,
         &TUI_TODOS_AND_QUESTIONS,

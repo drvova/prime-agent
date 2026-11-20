@@ -1,0 +1,1 @@
+- `--credential <label|id>` pins a new session to one stored credential: the pin is saved in the session, kept on resume, inherited by subagents, and never switched to another key; a deleted pinned credential fails with a message naming it. The model picker shows `account: <label>` for providers holding several credentials.

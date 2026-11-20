@@ -510,6 +510,12 @@ impl AuthStorage {
             })
     }
 
+    /// The OAuth integration this store refreshes through (a pinned named credential refreshes
+    /// through the same one).
+    pub(crate) fn oauth_integration(&self) -> Arc<dyn OAuthIntegration> {
+        Arc::clone(&self.oauth)
+    }
+
     /// The backend under this store: a request-auth resolver reads,
     /// locks, and writes the same document.
     pub(crate) fn storage_backend(&self) -> Arc<dyn AuthStorageBackend> {
