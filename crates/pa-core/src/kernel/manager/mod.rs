@@ -18,7 +18,9 @@ use tokio::sync::{oneshot, Notify};
 use crate::kernel::cancellation::{merge_signals, AbortSignal};
 use crate::kernel::live_kernels;
 use crate::kernel::orphan_journal;
-use crate::kernel::protocol::{parse_event, Event, Request, REPL_PROTOCOL_VERSION};
+use crate::kernel::protocol::{
+    parse_event, Event, HostRequestOrigin, Request, REPL_PROTOCOL_VERSION,
+};
 use crate::kernel::shared::FACTORY_ACTIVITY_ACTIONS;
 use crate::kernel::shared::{
     parse_attachment_display, parse_diff_display, parse_sent_agent_message, BackgroundCellFact,
@@ -329,6 +331,8 @@ struct Guarded {
     /// never hold the execution queue a python cell needs).
     mcp_status_waiters: HashMap<String, oneshot::Sender<Value>>,
     host_inflight: Vec<tokio::task::JoinHandle<()>>,
+    /// The background host requests in flight and the ones waiting for the soft bound.
+    host_dispatch: host_requests::HostDispatch,
     active_execution: Option<Arc<ActiveExecution>>,
 }
 
@@ -474,6 +478,7 @@ impl ReplKernelManager {
                 factory_activity_waiters: HashMap::new(),
                 mcp_status_waiters: HashMap::new(),
                 host_inflight: Vec::new(),
+                host_dispatch: host_requests::HostDispatch::default(),
                 active_execution: None,
             }),
             child: Mutex::new(None),

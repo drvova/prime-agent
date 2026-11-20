@@ -1,0 +1,1 @@
+- The running cell's own requests to the host (subagent spawns, messages, settings and more) are now answered first: requests from background tasks and fanned-out work share a bounded set of handlers and wait their turn beyond it, so a large spawn flood can no longer slow the cell you are waiting on. Every request is still answered. No settings.
