@@ -4,13 +4,14 @@
 //! or refreshes anything. Every request goes through the caller's [`ProviderHttp`] with a bounded
 //! timeout, so the daemon runs them off every paint path and tests serve them from loopback.
 //!
-//! Which response fields are confirmed: the shapes follow the endpoints' observed wire shapes
-//! (the fixtures under `fixtures/` mirror them); each parser's doc names the fields it reads
-//! and which of them are inferred rather than observed.
+//! Which response fields are confirmed: the shapes follow the endpoints' observed or documented
+//! wire shapes (the fixtures under `fixtures/` mirror them); each parser's doc names the fields
+//! it reads and which of them are inferred rather than observed.
 
 mod anthropic;
 mod github_copilot;
 mod openai_codex;
+mod synthetic;
 
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,7 @@ mod tests;
 pub use anthropic::{fetch_anthropic_quota, ANTHROPIC_USAGE_BASE_URL};
 pub use github_copilot::{fetch_github_copilot_quota, github_api_base_url};
 pub use openai_codex::{fetch_openai_codex_quota, OPENAI_CODEX_USAGE_BASE_URL};
+pub use synthetic::{fetch_synthetic_quota, SYNTHETIC_QUOTA_BASE_URL};
 
 use pa_types::provider_usage::QuotaWindow;
 use serde_json::Value;

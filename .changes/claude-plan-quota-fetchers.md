@@ -1,0 +1,1 @@
+- `/usage` shows a Synthetic subscription quota card (requests used of the plan's limit and its renewal time), and Synthetic calls count as plan usage.
