@@ -32,6 +32,36 @@ one reference per line that the prompt depends on and you have not located yet (
 the rewritten prompt, ready to send as is
 </rewrite>";
 
+/// A grounding pass: the helper listed references it has not located, and gets `reads` more.
+pub(super) fn grounding_pass(unresolved: &[String], reads: u32) -> String {
+    let listed = unresolved.join("\n");
+    format!(
+        "You listed references you have not located yet:\n{listed}\n\nYou have {reads} more \
+         reads. Locate them (or confirm they do not exist), then reply again with all three \
+         blocks. {REPLY_FORMAT_REMINDER}"
+    )
+}
+
+/// The refine pass: references the rewrite cites that do not resolve in the repository.
+pub(super) fn refine_pass(unverified: &[String], reads: u32) -> String {
+    let listed = unverified
+        .iter()
+        .map(|reference| format!("- `{reference}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "These references in your reply do not resolve in the repository (no such path, no file \
+         defines the name, or the program is not installed):\n{listed}\n\nYou have {reads} \
+         more reads. Replace each with what the repository really has, or drop it; never keep \
+         a reference you have not located. Reply again with all three blocks. \
+         {REPLY_FORMAT_REMINDER}"
+    )
+}
+
+/// The reminder every later pass carries.
+const REPLY_FORMAT_REMINDER: &str =
+    "In brief mode, `<unchanged/>` alone still means the brief needs no fix.";
+
 /// The first-pass message for one run.
 pub(super) fn first_pass(mode: BetterMode, task: &str, cwd: &Path, read_budget: u32) -> String {
     let cwd = cwd.display();
