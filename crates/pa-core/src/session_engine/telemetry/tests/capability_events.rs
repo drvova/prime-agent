@@ -219,7 +219,14 @@ fn drive(counters: &SessionCounters) {
             wake_refused: 4,
         },
     );
-    for outcome in ["message", "message", "timeout", "cycle", "no_sender", "no_sender"] {
+    for outcome in [
+        "message",
+        "message",
+        "timeout",
+        "cycle",
+        "no_sender",
+        "no_sender",
+    ] {
         counters.note_agent_message_wait(outcome);
     }
 }
