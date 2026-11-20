@@ -276,6 +276,12 @@ impl IpythonKernelProvisioner {
             .map(crate::kernel::spill::SpillStore::for_session_dir)
     }
 
+    /// The session's working directory (the project the kernel runs in).
+    #[must_use]
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        &self.inner.cwd
+    }
+
     /// The yield window policy the kernel executor arms user cells with.
     #[must_use]
     pub(crate) fn cell_window(&self) -> &crate::kernel::cell_window::CellWindow {

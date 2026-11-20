@@ -600,6 +600,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .as_ref(),
         /*observer*/ None,
     );
+    // The project card's detail pages out to the same store.
+    let card_spill = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the
@@ -801,6 +805,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 &model_prompts.errors,
             ));
     }
+    // The project card the previous session stored (a short bounded read,
+    // never the derivation); a background refresh stores the next one.
+    let project_card = crate::project_card::ProjectCard::for_project(&cwd, &config.agent_dir);
+    project_card.load(crate::project_card::LOAD_BUDGET).await;
+    project_card.refresh();
+    let project_card_text = project_card.render(card_spill.as_ref());
     let system_prompt_breakdown = crate::prompts::system_prompt::system_prompt_breakdown(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
             custom_prompt: resources.system_prompt.clone(),
@@ -828,6 +838,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers: generic_mcp_servers.clone(),
+            project_card: project_card_text.clone(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
@@ -852,6 +863,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 daemonless: config.daemonless,
                 can_spawn: config.rlm_subagent_host.is_some(),
                 generic_mcp_servers,
+                project_card: project_card_text,
             },
         },
         resources.skills.clone(),

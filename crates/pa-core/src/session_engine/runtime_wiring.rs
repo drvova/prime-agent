@@ -373,6 +373,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
                 manager,
                 cell_window: this.cell_window().clone(),
                 spill: this.spill_store(),
+                project_card: crate::project_card::ProjectCard::registered(this.cwd()),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -392,6 +393,8 @@ struct KernelManagerExecutor {
     cell_window: crate::kernel::cell_window::CellWindow,
     /// Where a user cell's cut output pages out (persistent sessions).
     spill: Option<crate::kernel::spill::SpillStore>,
+    /// The project card, which learns the build/test commands cells run.
+    project_card: Option<crate::project_card::ProjectCard>,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -411,6 +414,7 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
+        let project_card = self.project_card.clone();
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -435,6 +439,9 @@ impl KernelExecutor for KernelManagerExecutor {
                     }
                     crate::kernel::shared::ExecuteStatus::Aborted => {}
                 }
+            }
+            if let (Some(card), Some(commands)) = (&project_card, &result.bash_commands) {
+                card.observe_command(&commands.first);
             }
             Ok(convert_execute_result(result))
         })
