@@ -44,6 +44,23 @@ fn resolve_kernel_boot_concurrency() -> usize {
     parsed.min(64)
 }
 
+/// The concurrency ceilings the kernel's runtime reads from its env, sized for a host with
+/// `cores` cores: running `bash()` commands (`PRIME_AGENT_BASH_MAX_JOBS`; over it a command is
+/// held at its start gate and its handle says `queued`) and the in-flight calls one HTTP MCP
+/// server may widen to (`PRIME_AGENT_MCP_MAX_CONCURRENCY`; stdio servers stay at one).
+fn kernel_concurrency_env(cores: usize) -> [(&'static str, String); 2] {
+    [
+        (
+            "PRIME_AGENT_BASH_MAX_JOBS",
+            (cores.saturating_mul(2)).clamp(4, 32).to_string(),
+        ),
+        (
+            "PRIME_AGENT_MCP_MAX_CONCURRENCY",
+            cores.clamp(2, 8).to_string(),
+        ),
+    ]
+}
+
 /// Semaphore bounding concurrent kernel boots. Resolved lazily on first boot so
 /// an env override set before the first kernel starts is honored.
 static BOOT_PERMITS: Mutex<Option<Arc<tokio::sync::Semaphore>>> = Mutex::new(None);
@@ -1125,6 +1142,11 @@ async fn start_kernel_impl(
             .is_some(),
     );
     let mut env = options.env.clone();
+    // An embedding (or the user's shell) that already set a ceiling keeps it.
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    for (key, value) in kernel_concurrency_env(cores) {
+        env.entry(key.to_string()).or_insert(value);
+    }
     if let Some(shell_path) = &options.shell_path {
         env.insert(
             "PRIME_AGENT_BASH_SHELL".into(),
@@ -1784,6 +1806,27 @@ mod tests {
             "the stale gate is replaced"
         );
         drop(gate);
+    }
+
+    #[test]
+    fn the_kernel_concurrency_ceilings_scale_with_the_cores() {
+        assert_eq!(
+            [1, 4, 32].map(kernel_concurrency_env),
+            [
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "4".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "2".to_string()),
+                ],
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "8".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "4".to_string()),
+                ],
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "32".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "8".to_string()),
+                ],
+            ]
+        );
     }
 
     #[test]

@@ -119,6 +119,45 @@ class BashTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(tail.endswith("AAAAAAAA"), tail[-60:])
         self.assertLessEqual(len(json.dumps({"tail": tail})), 16_384)
 
+    @unittest.skipUnless(os.name == "posix", "the job cap holds commands at the POSIX start gate")
+    async def test_commands_over_the_job_cap_queue_until_a_slot_frees(self):
+        with tempfile.TemporaryDirectory() as scratch, mock.patch.dict(
+            os.environ, {"PRIME_AGENT_BASH_MAX_JOBS": "1"}
+        ):
+            release = os.path.join(scratch, "release")
+            first = bash(f"while [ ! -e {shlex.quote(release)} ]; do sleep 0.02; done; echo first")
+            second = bash("echo second")
+            queued = (first.queued, second.queued, "queued" in repr(second))
+            # Nothing of the queued command ran: its shell is held at the start gate.
+            await asyncio.sleep(0.2)
+            held_output = second.output()
+            open(release, "w").close()
+            first_result = await first
+            second_result = await second
+        self.assertEqual(
+            (queued, held_output, first_result.output.strip(), second_result.output.strip(), second.queued),
+            ((False, True, True), "", "first", "second", False),
+        )
+
+    @unittest.skipUnless(os.name == "posix", "the job cap holds commands at the POSIX start gate")
+    async def test_a_killed_queued_command_frees_its_place(self):
+        with tempfile.TemporaryDirectory() as scratch, mock.patch.dict(
+            os.environ, {"PRIME_AGENT_BASH_MAX_JOBS": "1"}
+        ):
+            release = os.path.join(scratch, "release")
+            running = bash(f"while [ ! -e {shlex.quote(release)} ]; do sleep 0.02; done")
+            abandoned = bash("echo never")
+            waiting = bash("echo next")
+            abandoned.kill()
+            killed = await abandoned
+            open(release, "w").close()
+            await running
+            next_result = await waiting
+        self.assertEqual(
+            (killed.output, next_result.output.strip(), bash_module._job_admission.queued()),
+            ("", "next", 0),
+        )
+
     async def test_await_returns_result(self):
         result = await bash("echo hi")
         self.assertEqual(result.exit_code, 0)
