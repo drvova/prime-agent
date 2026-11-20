@@ -53,6 +53,7 @@ pub(crate) struct EmbeddedCapability {
 pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
     manifest!("ask", docs = ["ask"]),
     manifest!("bash", docs = ["bash"]),
+    manifest!("better", docs = ["better"]),
     manifest!("cells", docs = ["cells"]),
     manifest!("checkpoint", docs = ["checkpoint"]),
     manifest!(

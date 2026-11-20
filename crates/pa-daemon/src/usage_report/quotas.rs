@@ -61,16 +61,28 @@ impl QuotaProvider {
     }
 }
 
-/// One provider's usable token, or why the stored sign-in cannot open its usage endpoint.
+/// Which of a provider's credentials a card reads: set only when the provider holds several
+/// (the default slot and named credentials from `auth-accounts.json`).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct QuotaAccount {
+    /// The named credential's id, or `default` (the cache key).
+    id: String,
+    /// The card title's label: the credential's label, or `default`.
+    label: String,
+}
+
+/// One credential's usable token, or why the stored sign-in cannot open its usage endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum QuotaCredential {
     Token {
         provider: QuotaProvider,
+        account: Option<QuotaAccount>,
         token: String,
         enterprise_domain: Option<String>,
     },
     Unusable {
         provider: QuotaProvider,
+        account: Option<QuotaAccount>,
         reason: String,
     },
 }
@@ -99,86 +111,159 @@ impl QuotaFetchConfig {
     }
 }
 
-type QuotaCache = Mutex<HashMap<(PathBuf, QuotaProvider), ProviderQuota>>;
+type QuotaCache = Mutex<HashMap<(PathBuf, QuotaProvider, Option<QuotaAccount>), ProviderQuota>>;
 
 fn quota_cache() -> &'static QuotaCache {
     static CACHE: OnceLock<QuotaCache> = OnceLock::new();
     CACHE.get_or_init(Default::default)
 }
 
-/// The stored plan credentials, each with a usable token. Blocking: the auth store reads
-/// its file and refreshes an expired OAuth token synchronously.
-fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
+/// The stored plan credentials, each with a usable token: the default slot, then every named
+/// credential of the provider (one card each). Blocking: the auth store reads its file and
+/// refreshes an expired default-slot OAuth token synchronously; a named sign-in serves its stored
+/// access token while it is fresh (its refresh belongs to the session that pins it).
+fn quota_credentials(agent_dir: &Path, now_ms: i64) -> Vec<QuotaCredential> {
     let mut auth = AuthStorage::create(agent_dir);
     let stored = auth.get_all();
+    let named_store = pa_core::auth::AuthAccounts::create(agent_dir);
     let mut credentials = Vec::new();
     for provider in QuotaProvider::ALL {
-        let credential = match provider {
-            QuotaProvider::Anthropic | QuotaProvider::OpenAiCodex => {
-                let Some(credential) = stored.credential(provider.id()) else {
-                    continue;
-                };
-                let usable = match &credential {
-                    AuthCredential::Oauth { .. } => true,
-                    // A Claude OAuth token pasted into the API-key slot opens the usage route
-                    // too; a plain API key has no subscription quota to show.
-                    AuthCredential::ApiKey { key, .. } => {
-                        provider == QuotaProvider::Anthropic && key.starts_with("sk-ant-oat")
+        // An unreadable `auth-accounts.json` shows the default slot alone (`/logout` reports it).
+        let named = named_store.list(provider.id()).unwrap_or_default();
+        let default_account = (!named.is_empty()).then(|| QuotaAccount {
+            id: "default".to_string(),
+            label: "default".to_string(),
+        });
+        let default = 'slot: {
+            Some(match provider {
+                QuotaProvider::Anthropic | QuotaProvider::OpenAiCodex => {
+                    let Some(credential) = stored.credential(provider.id()) else {
+                        break 'slot None;
+                    };
+                    let usable = match &credential {
+                        AuthCredential::Oauth { .. } => true,
+                        // A Claude OAuth token pasted into the API-key slot opens the usage route
+                        // too; a plain API key has no subscription quota to show.
+                        AuthCredential::ApiKey { key, .. } => {
+                            provider == QuotaProvider::Anthropic && key.starts_with("sk-ant-oat")
+                        }
+                        // A token-exchange sign-in (a models.json `auth` descriptor) has no
+                        // subscription usage endpoint: its card comes from observed rate limits and
+                        // local spend.
+                        AuthCredential::McpStaticToken { .. }
+                        | AuthCredential::TokenExchange { .. } => false,
+                    };
+                    if !usable {
+                        break 'slot None;
                     }
-                    // A token-exchange sign-in (a models.json `auth` descriptor) has no
-                    // subscription usage endpoint: its card comes from observed rate limits and
-                    // local spend.
-                    AuthCredential::McpStaticToken { .. }
-                    | AuthCredential::TokenExchange { .. } => false,
-                };
-                if !usable {
-                    continue;
+                    match auth.get_api_key(provider.id()) {
+                        Some(token) => QuotaCredential::Token {
+                            provider,
+                            account: default_account.clone(),
+                            token,
+                            enterprise_domain: None,
+                        },
+                        None => QuotaCredential::Unusable {
+                            provider,
+                            account: default_account.clone(),
+                            reason: "the stored sign-in has expired; run /login".to_string(),
+                        },
+                    }
                 }
-                match auth.get_api_key(provider.id()) {
+                QuotaProvider::GithubCopilot => match stored.credential(provider.id()) {
+                    // The GitHub OAuth token is the refresh token: the Copilot API token in
+                    // `access` does not open the GitHub REST route.
+                    Some(AuthCredential::Oauth {
+                        refresh: Some(token),
+                        enterprise_url,
+                        ..
+                    }) => QuotaCredential::Token {
+                        provider,
+                        account: default_account.clone(),
+                        token,
+                        enterprise_domain: enterprise_url,
+                    },
+                    // No GitHub OAuth token, so no route to read; a token-exchange sign-in has no
+                    // usage endpoint and falls through to observed rate limits and local spend.
+                    None
+                    | Some(
+                        AuthCredential::Oauth { refresh: None, .. }
+                        | AuthCredential::ApiKey { .. }
+                        | AuthCredential::McpStaticToken { .. }
+                        | AuthCredential::TokenExchange { .. },
+                    ) => break 'slot None,
+                },
+                // The plan is sold on an API key, stored or from the environment.
+                QuotaProvider::Synthetic => match auth.get_api_key(provider.id()) {
                     Some(token) => QuotaCredential::Token {
                         provider,
+                        account: default_account.clone(),
                         token,
                         enterprise_domain: None,
                     },
-                    None => QuotaCredential::Unusable {
-                        provider,
-                        reason: "the stored sign-in has expired; run /login".to_string(),
-                    },
-                }
-            }
-            QuotaProvider::GithubCopilot => match stored.credential(provider.id()) {
-                // The GitHub OAuth token is the refresh token: the Copilot API token in
-                // `access` does not open the GitHub REST route.
-                Some(AuthCredential::Oauth {
-                    refresh: Some(token),
-                    enterprise_url,
-                    ..
-                }) => QuotaCredential::Token {
-                    provider,
-                    token,
-                    enterprise_domain: enterprise_url,
+                    None => break 'slot None,
                 },
-                // No GitHub OAuth token, so no route to read; a token-exchange sign-in has no
-                // usage endpoint and falls through to observed rate limits and local spend.
-                None
-                | Some(
-                    AuthCredential::Oauth { refresh: None, .. }
+            })
+        };
+        credentials.extend(default);
+        for named in named {
+            let account = Some(QuotaAccount {
+                id: named.id,
+                label: named.label,
+            });
+            let token = match (provider, named.credential) {
+                (
+                    QuotaProvider::Anthropic | QuotaProvider::OpenAiCodex,
+                    AuthCredential::Oauth {
+                        access, expires, ..
+                    },
+                ) => Some((now_ms < expires).then_some((access, None))),
+                (QuotaProvider::Anthropic, AuthCredential::ApiKey { key, .. })
+                    if key.starts_with("sk-ant-oat") =>
+                {
+                    Some(Some((key, None)))
+                }
+                (
+                    QuotaProvider::GithubCopilot,
+                    AuthCredential::Oauth {
+                        refresh: Some(token),
+                        enterprise_url,
+                        ..
+                    },
+                ) => Some(Some((token, enterprise_url))),
+                (QuotaProvider::Synthetic, AuthCredential::ApiKey { key, .. }) => {
+                    Some(Some((key, None)))
+                }
+                // No subscription usage endpoint for this credential's kind.
+                (
+                    QuotaProvider::Anthropic
+                    | QuotaProvider::OpenAiCodex
+                    | QuotaProvider::GithubCopilot
+                    | QuotaProvider::Synthetic,
+                    AuthCredential::Oauth { .. }
                     | AuthCredential::ApiKey { .. }
                     | AuthCredential::McpStaticToken { .. }
                     | AuthCredential::TokenExchange { .. },
-                ) => continue,
-            },
-            // The plan is sold on an API key, stored or from the environment.
-            QuotaProvider::Synthetic => match auth.get_api_key(provider.id()) {
-                Some(token) => QuotaCredential::Token {
+                ) => None,
+            };
+            match token {
+                Some(Some((token, enterprise_domain))) => {
+                    credentials.push(QuotaCredential::Token {
+                        provider,
+                        account,
+                        token,
+                        enterprise_domain,
+                    });
+                }
+                Some(None) => credentials.push(QuotaCredential::Unusable {
                     provider,
-                    token,
-                    enterprise_domain: None,
-                },
-                None => continue,
-            },
-        };
-        credentials.push(credential);
+                    account,
+                    reason: "the stored sign-in has expired; a session pinned to it refreshes it"
+                        .to_string(),
+                }),
+                None => {}
+            }
+        }
     }
     credentials
 }
@@ -187,6 +272,7 @@ fn quota_credentials(agent_dir: &Path) -> Vec<QuotaCredential> {
 async fn fetch_card(
     config: &QuotaFetchConfig,
     provider: QuotaProvider,
+    account: Option<&QuotaAccount>,
     token: &str,
     enterprise_domain: Option<&str>,
     now_ms: i64,
@@ -230,6 +316,7 @@ async fn fetch_card(
     ProviderQuota {
         provider: provider.id().to_string(),
         plan,
+        account: account.map(|account| account.label.clone()),
         source: QuotaSource::Provider,
         fetched_at_ms: now_ms,
         state,
@@ -245,29 +332,36 @@ pub(crate) async fn quota_report(
     now_ms: i64,
 ) -> QuotaReport {
     let credential_dir = agent_dir.clone();
-    let credentials = tokio::task::spawn_blocking(move || quota_credentials(&credential_dir))
-        .await
-        .unwrap_or_default();
+    let credentials =
+        tokio::task::spawn_blocking(move || quota_credentials(&credential_dir, now_ms))
+            .await
+            .unwrap_or_default();
     let fetches = credentials.into_iter().map(|credential| {
         let agent_dir = agent_dir.clone();
         async move {
-            let (provider, token, enterprise_domain) = match credential {
+            let (provider, account, token, enterprise_domain) = match credential {
                 QuotaCredential::Token {
                     provider,
+                    account,
                     token,
                     enterprise_domain,
-                } => (provider, token, enterprise_domain),
-                QuotaCredential::Unusable { provider, reason } => {
+                } => (provider, account, token, enterprise_domain),
+                QuotaCredential::Unusable {
+                    provider,
+                    account,
+                    reason,
+                } => {
                     return ProviderQuota {
                         provider: provider.id().to_string(),
                         plan: None,
+                        account: account.map(|account| account.label),
                         source: QuotaSource::Provider,
                         fetched_at_ms: now_ms,
                         state: QuotaState::Failed { error: reason },
                     };
                 }
             };
-            let key = (agent_dir, provider);
+            let key = (agent_dir, provider, account.clone());
             let cached = quota_cache()
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -287,6 +381,7 @@ pub(crate) async fn quota_report(
             let card = fetch_card(
                 config,
                 provider,
+                account.as_ref(),
                 &token,
                 enterprise_domain.as_deref(),
                 now_ms,

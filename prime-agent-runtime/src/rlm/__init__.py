@@ -248,6 +248,7 @@ async def spawn(
     model: str | None = None,
     thinking: str | None = None,
     cwd: str | None = None,
+    better: bool = False,
 ) -> RLMSpawnHandle:
     """Spawn a recursive Prime Agent child and return once its task is admitted.
 
@@ -257,7 +258,15 @@ async def spawn(
     defaults to the parent level; levels invalid for the resolved model fail the spawn.
     ``cwd`` starts the child in that directory (relative to the session cwd); defaults
     to the session cwd.
+    ``better=True`` first checks ``prompt`` as a delegation brief against the repository
+    from ``cwd`` (``better(prompt, cwd=cwd, mode="brief")``) and spawns the checked brief.
     """
+    if not isinstance(better, bool):
+        raise TypeError(f"better must be a bool, got {type(better).__name__}")
+    if better:
+        from .better import better as _check_brief
+
+        prompt = await _check_brief(prompt, cwd=cwd, mode="brief")
     return await _spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd)
 
 
@@ -935,8 +944,9 @@ class _RLMNamespace:
         model: str | None = None,
         thinking: str | None = None,
         cwd: str | None = None,
+        better: bool = False,
     ) -> RLMSpawnHandle:
-        return await spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd)
+        return await spawn(prompt, name=name, model=model, thinking=thinking, cwd=cwd, better=better)
 
     async def create_session(
         self,

@@ -47,7 +47,7 @@ the goal/autonomous deferral behind unsettled work, and the exit
 disposal (kernels snapshotted, drivers joined; no child outlives the
 process).
 Session slash commands (`print_session_command.rs`, the #253 residue): print
-prompts that are `/compact`, `/refine`, `/goal`, or `/autonomous` execute
+prompts that are `/compact`, `/refine`, `/goal`, `/autonomous`, or `/better` execute
 through the pa-core session-command executor (the daemon worker's seam — no
 parallel implementation), streaming the TS shapes: the
 `session_action_update` phase frames around the durable echo row, the

@@ -13,3 +13,16 @@ probe = [
 "ctx.grep" = "ctx.grep"
 "ctx.tail" = "ctx.tail"
 "ctx.info" = "ctx.info"
+
+[[telemetry]]
+event = "agent context paging"
+properties = [
+  "spill_count",
+  "spill_bytes_bucket",
+  "spill_not_stored_count",
+  "spill_evicted_count",
+  "ctx_page_count",
+  "ctx_grep_count",
+  "ctx_tail_count",
+  "ctx_info_count",
+]
