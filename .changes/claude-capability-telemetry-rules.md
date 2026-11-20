@@ -1,0 +1,1 @@
+- Kernel capability adoption telemetry now comes from one rule file per capability; every event name and property is unchanged.
