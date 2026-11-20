@@ -601,13 +601,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         });
     // `ctx.*`: page a cut cell output back in by its handle, from the
     // session's spill store (an ephemeral session answers `unavailable`).
+    let spill_store = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
+    // The cell output cap follows the context the session has left: the
+    // thinning transform publishes each request's fill, the executor reads it.
+    let output_budget = crate::kernel::spill::OutputBudget::default();
+    // Telemetry counts spills and reads (never a handle, a pattern, or text).
+    if let (Some(store), true) = (&spill_store, config.telemetry.is_some()) {
+        let counters = std::sync::Arc::clone(&session_counters);
+        store.set_observer(std::sync::Arc::new(move |fact| counters.note_spill(fact)));
+    }
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
-        session_artifact_dir
-            .as_deref()
-            .map(crate::kernel::spill::SpillStore::for_session_dir)
+        spill_store.as_ref(),
+        config
+            .telemetry
+            .is_some()
+            .then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |read| counters.note_ctx_read(read))
+                    as crate::kernel::spill::host::CtxObserver
+            })
             .as_ref(),
-        /*observer*/ None,
     );
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
@@ -712,6 +728,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         websearch_env,
         session_artifact_dir,
         cell_window.clone(),
+        output_budget.clone(),
         on_restore,
         config.on_background_work_settled.clone(),
         // Telemetry counts each cell that continues in the background and how it
@@ -1003,6 +1020,13 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 })
             })
         },
+        // A persistent session pages thinned results out to its spill store,
+        // so the pointer is a handle `ctx.*` reads even after compaction.
+        match spill_store.clone() {
+            Some(store) => super::context_thinning::ThinnedRecall::Spill(store),
+            None => super::context_thinning::ThinnedRecall::ToolResult,
+        },
+        output_budget,
         config.telemetry.is_some().then(|| {
             let counters = std::sync::Arc::clone(&session_counters);
             std::sync::Arc::new(move |stats: &_| counters.note_context_thinning(stats))
