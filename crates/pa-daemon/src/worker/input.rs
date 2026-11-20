@@ -277,15 +277,16 @@ impl Worker {
             }
         }
         let sender = payload.get("sender").cloned().unwrap_or(Value::Null);
-        // A delivery from one of this session's RLM children counts as the
-        // child's reply: the settle watcher withholds the no-reply notice.
-        if let Some(child) = sender
-            .get("activeSessionId")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-        {
-            self.engine.mark_child_reply(child);
-        }
+        // The wake-budget key: the sending session's durable id (its live id
+        // when it has none yet). A client-origin sender carries neither and is
+        // never budgeted: only agent sessions can ping-pong.
+        let wake_sender = ["sessionId", "activeSessionId"].iter().find_map(|key| {
+            sender
+                .get(*key)
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        });
         // Sender label precedence (TS `createAgentSessionMessagePrompt`):
         // session name, session id, active session id, client id.
         let sender_name = ["sessionName", "sessionId", "activeSessionId", "clientId"]
@@ -348,6 +349,29 @@ impl Worker {
             if let Some(name) = summary.session_name.filter(|name| !name.is_empty()) {
                 target["sessionName"] = json!(name);
             }
+            // Only a delivery that would wake this idle session spends the sender's wake
+            // budget; a busy session queues it (up to the pending cap) unbudgeted.
+            if !queued {
+                if let Some(wake_sender) = &wake_sender {
+                    if let Err(retry_after_ms) = self
+                        .agent_messages
+                        .admit_wake(wake_sender, std::time::Instant::now())
+                    {
+                        drop(core);
+                        let mut receipt = json!({
+                            "id": id,
+                            "source": AGENT_MESSAGE_SOURCE,
+                            "target": target,
+                            "message": message,
+                            "deliveryMode": if lane == Lane::FollowUp { "follow_up" } else { "steer" },
+                            "deliveryStatus": pa_core::session_engine::agent_messaging::AGENT_MESSAGE_WAKE_REFUSED_STATUS,
+                            "retryAfterMs": retry_after_ms,
+                        });
+                        receipt["from"] = sender;
+                        return response_success(None, "worker_deliver_message", Some(receipt));
+                    }
+                }
+            }
             // The queued turn carries the `agent_message` row so the transcript renders
             // the collapsed card, while the row's `content` IS the rendered prompt —
             // the model context stays byte-identical to the plain-prompt delivery.
@@ -391,6 +415,15 @@ impl Worker {
             let snapshot = Self::snapshot_locked(&core);
             (id, queued, snapshot, target)
         };
+        // A delivery from one of this session's RLM children counts as the
+        // child's reply: the settle watcher withholds the no-reply notice.
+        if let Some(child) = sender
+            .get("activeSessionId")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        {
+            self.engine.mark_child_reply(child);
+        }
         // The queued agent message is admitted live work — a restart must revive
         // the worker to deliver it (no client reopens the session).
         self.checkpoint_queue(QueueCheckpoint::Admitted {

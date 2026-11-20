@@ -35,6 +35,26 @@ class AgentMessageSkillTest(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "unexpected keyword argument 'mode'"):
             asyncio.run(module.send("hello", receiver_role="parent", mode="follow_up"))
 
+    def test_a_wake_refused_receipt_is_labeled_refused(self) -> None:
+        spec = importlib.util.spec_from_file_location("agent_message_wake_refused", SKILL)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        receipt = {"deliveryStatus": "wake_refused", "retryAfterMs": 1000}
+        host = AsyncMock(return_value=receipt)
+        with patch.object(module, "host_request", host), patch("rlm.emit") as emit:
+            asyncio.run(module.send("again", receiver_role="parent"))
+        emit.assert_called_once_with(
+            {
+                "application/vnd.prime-agent.agent-message+json": {
+                    **receipt,
+                    "receiverRole": "parent",
+                },
+                "text/plain": "Agent message refused: wake budget spent",
+            }
+        )
+
+
     def test_wait_requires_a_bounded_timeout_and_forwards_the_selector(self) -> None:
         spec = importlib.util.spec_from_file_location("agent_message_wait", SKILL)
         assert spec and spec.loader

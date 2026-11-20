@@ -415,9 +415,9 @@ struct CounterValues {
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
-    /// `agent_message.send` deliveries the per-sender rate bucket refused, reported by
-    /// `agent messages`.
-    agent_message_throttled_count: u64,
+    /// `agent_message.send` deliveries the per-sender rate bucket or a receiver's wake budget
+    /// refused, reported by `agent messages`.
+    agent_message_refusals: super::agent_messaging::AgentMessageRefusals,
     /// `agent_message.wait` outcomes, reported by `agent message waits`.
     agent_message_waits: AgentMessageWaitCounts,
     /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
@@ -861,9 +861,16 @@ impl SessionCounters {
         });
     }
 
-    /// `agent_message.send` deliveries the rate bucket refused (a count: never a target or body).
-    pub(crate) fn note_agent_message_throttled(&self, count: u64) {
-        self.with(|values| values.agent_message_throttled_count += count);
+    /// `agent_message.send` deliveries the rate bucket or a receiver's wake budget refused
+    /// (counts: never a target or body).
+    pub(crate) fn note_agent_message_refusals(
+        &self,
+        refusals: super::agent_messaging::AgentMessageRefusals,
+    ) {
+        self.with(|values| {
+            values.agent_message_refusals.throttled += refusals.throttled;
+            values.agent_message_refusals.wake_refused += refusals.wake_refused;
+        });
     }
 
     /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
@@ -1695,13 +1702,20 @@ impl SessionTelemetry {
             }
             self.client.track("agent billing modes", billing_properties);
         }
-        // A session whose sends were never throttled sends no agent-message event.
-        let mut throttled = 0;
+        // A session whose sends were never refused sends no agent-message event.
+        let mut refusals = super::agent_messaging::AgentMessageRefusals::default();
         self.counters
-            .with(|values| throttled = values.agent_message_throttled_count);
-        if throttled > 0 {
+            .with(|values| refusals = values.agent_message_refusals);
+        if refusals != super::agent_messaging::AgentMessageRefusals::default() {
             let mut message_properties = self.session_properties();
-            message_properties.set("agent_message_throttled_count", Value::from(throttled));
+            message_properties.set(
+                "agent_message_throttled_count",
+                Value::from(refusals.throttled),
+            );
+            message_properties.set(
+                "agent_message_wake_refused_count",
+                Value::from(refusals.wake_refused),
+            );
             self.client.track("agent messages", message_properties);
         }
         // A session that never waited for an agent message sends no wait event.

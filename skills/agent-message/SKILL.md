@@ -82,3 +82,7 @@ if child is not None:
   `retry after <ms> ms`, and a broadcast's refused entries carry the `error` and
   a `retryAfterMs` hint. The daemon enforces message size and pending-queue
   limits before accepting delivery.
+- Each sender may wake one idle receiver 20 times per 10 minutes. Past that, the
+  receiver answers `deliveryStatus: "wake_refused"` with an `error` and a
+  `retryAfterMs` hint, and nothing is delivered. A receiver that is busy still
+  queues the message. Treat a refusal as a sign that the exchange is looping.
