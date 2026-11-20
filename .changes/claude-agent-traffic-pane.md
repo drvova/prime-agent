@@ -1,0 +1,1 @@
+- The scoped agents view gains a Traffic pane (`m`) that shows the family's agent messages as they are delivered, `✉N` unread badges, a "waiting on <name>" status for agents parked in `agent_message.wait`, and `alt+p` to pause or resume an agent's incoming messages.

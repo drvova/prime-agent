@@ -96,7 +96,7 @@ pub(crate) fn build(text: &str, budget: usize, noise: &NoiseSet) -> Option<Previ
         count[first] += 1;
     }
     let distinct: Vec<usize> = (0..lines.len()).filter(|at| count[*at] > 0).collect();
-    let noisy: Vec<bool> = lines
+    let is_noise: Vec<bool> = lines
         .iter()
         .map(|line| !is_failure_line(line) && noise.contains(&line_shape(line)))
         .collect();
@@ -151,7 +151,7 @@ pub(crate) fn build(text: &str, budget: usize, noise: &NoiseSet) -> Option<Previ
     };
     let mut candidates: Vec<(Rank, usize)> = distinct
         .iter()
-        .filter(|at| !noisy[**at])
+        .filter(|at| !is_noise[**at])
         .map(|at| (rank(*at), *at))
         .collect();
     candidates.sort();
@@ -181,7 +181,7 @@ pub(crate) fn build(text: &str, budget: usize, noise: &NoiseSet) -> Option<Previ
         chosen.push(*at);
     }
     loop {
-        let preview = render(&lines, &count, &noisy, &keep, &shown);
+        let preview = render(&lines, &count, &is_noise, &keep, &shown);
         if preview.text.chars().count() <= budget || chosen.is_empty() {
             return Some(preview);
         }
@@ -195,7 +195,7 @@ pub(crate) fn build(text: &str, budget: usize, noise: &NoiseSet) -> Option<Previ
 fn render(
     lines: &[&str],
     count: &[usize],
-    noisy: &[bool],
+    is_noise: &[bool],
     keep: &[bool],
     shown: &dyn Fn(usize) -> String,
 ) -> Preview {
@@ -227,17 +227,17 @@ fn render(
             preview.repeats_collapsed += line_count - 1;
             continue;
         }
-        let noise = noisy[at];
-        if noise {
+        let noise_line = is_noise[at];
+        if noise_line {
             preview.noise_lines += line_count;
         } else {
             preview.dropped_lines += line_count;
         }
         run = match run {
-            Some((kind, lines)) if kind == noise => Some((kind, lines + line_count)),
+            Some((kind, lines)) if kind == noise_line => Some((kind, lines + line_count)),
             other => {
                 out.extend(other.map(marker));
-                Some((noise, *line_count))
+                Some((noise_line, *line_count))
             }
         };
     }
@@ -269,7 +269,7 @@ mod tests {
         ])
     }
 
-    /// A noisy failed build previews its error, warning, and location lines,
+    /// A is_noise failed build previews its error, warning, and location lines,
     /// folds a repeated line into `×N` and the learned banners into one
     /// marker, keeps under its budget, and is the same preview every time.
     #[test]

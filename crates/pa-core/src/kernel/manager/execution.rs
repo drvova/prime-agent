@@ -177,7 +177,7 @@ impl Inner {
                 .bash_commands
                 .as_ref()
                 .and_then(|commands| {
-                    let last = commands.first.rsplit(["&", ";", "|"]).next()?;
+                    let last = commands.first.rsplit(['&', ';', '|']).next()?;
                     last.split_whitespace().next().map(str::to_string)
                 })
                 .unwrap_or_else(|| "python_repl".to_string());
