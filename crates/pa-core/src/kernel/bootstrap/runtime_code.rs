@@ -44,6 +44,7 @@ try:
     import rlm.mcp as mcp
     import rlm.web as web
     import rlm.fs as fs
+    import rlm.ctx as ctx
     import rlm.schedule as schedule
     import rlm.checkpoint as checkpoint
     import rlm.worktree as worktree

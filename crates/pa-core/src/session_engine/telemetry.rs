@@ -850,7 +850,6 @@ impl SessionCounters {
         });
     }
 
-    /// One kernel `usage.get()` read (a count: never a cost or a token number).
     /// One kernel `worktree` operation (counts only: never a name, a path, or a diff).
     pub(crate) fn note_worktree(&self, fact: crate::worktree_host::WorktreeFact) {
         use crate::worktree_host::WorktreeFact;
@@ -868,6 +867,7 @@ impl SessionCounters {
         });
     }
 
+    /// One kernel `usage.get()` read (a count: never a cost or a token number).
     pub(crate) fn note_usage_read(&self) {
         self.with(|values| values.usage_read_count += 1);
     }
