@@ -29,7 +29,10 @@ fn drive(counters: &SessionCounters) {
         note: None,
     };
     let open = TodoList {
-        items: vec![item("1", TodoStatus::Pending), item("2", TodoStatus::Pending)],
+        items: vec![
+            item("1", TodoStatus::Pending),
+            item("2", TodoStatus::Pending),
+        ],
     };
     let done = TodoList {
         items: vec![item("1", TodoStatus::Done), item("2", TodoStatus::Done)],
@@ -47,10 +50,34 @@ fn drive(counters: &SessionCounters) {
         counters.note_question(status);
     }
     for (outcome, ms) in [
-        (ReadOutcome::Read { kind: ReadKind::Site, truncated: true }, 40),
-        (ReadOutcome::Read { kind: ReadKind::Pdf, truncated: false }, 70),
-        (ReadOutcome::Read { kind: ReadKind::Page, truncated: false }, 10),
-        (ReadOutcome::Read { kind: ReadKind::Page, truncated: false }, 20),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Site,
+                truncated: true,
+            },
+            40,
+        ),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Pdf,
+                truncated: false,
+            },
+            70,
+        ),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Page,
+                truncated: false,
+            },
+            10,
+        ),
+        (
+            ReadOutcome::Read {
+                kind: ReadKind::Page,
+                truncated: false,
+            },
+            20,
+        ),
         (ReadOutcome::Failed, 5),
     ] {
         counters.note_web_read(outcome, Duration::from_millis(ms));
@@ -73,9 +100,15 @@ fn drive(counters: &SessionCounters) {
         EditFact::Read { lines: 3 },
         EditFact::Applied { edits: 4 },
         EditFact::Rejected { stale: 2 },
-        EditFact::Failed { operation: FsEditOperation::Read },
-        EditFact::Failed { operation: FsEditOperation::Edit },
-        EditFact::Failed { operation: FsEditOperation::Edit },
+        EditFact::Failed {
+            operation: FsEditOperation::Read,
+        },
+        EditFact::Failed {
+            operation: FsEditOperation::Edit,
+        },
+        EditFact::Failed {
+            operation: FsEditOperation::Edit,
+        },
     ] {
         counters.note_fs_edit(fact);
     }
@@ -216,16 +249,49 @@ async fn capability_events_stay_byte_identical() {
 
 /// Captured from the per-feature counter structs (the pre-refactor emission).
 const EXPECTED: &[(&str, &str)] = &[
-    ("agent fs edit", r#"{"fs_read_count":2,"fs_read_line_count":123,"fs_read_failed_count":1,"fs_edit_count":1,"fs_edit_op_count":4,"fs_edit_rejected_count":1,"fs_edit_stale_anchor_count":2,"fs_edit_failed_count":2}"#),
-    ("agent fs search", r#"{"fs_grep_count":2,"fs_glob_count":1,"fs_find_count":1,"fs_search_failed_count":1,"fs_search_truncated_count":1,"fs_search_result_count":20,"fs_search_max_ms":55}"#),
-    ("agent kernel login and recall", r#"{"kernel_mcp_login_count":1,"kernel_mcp_login_failed_count":2,"kernel_mcp_login_unavailable_count":1,"session_search_count":2,"session_search_hit_count":5,"session_search_read_count":1,"session_search_failed_count":1}"#),
-    ("agent repl background cells", r#"{"cell_backgrounded_count":2,"cell_background_ok_count":1,"cell_background_error_count":1,"cell_background_interrupted_count":1,"cell_window_learned_count":1,"cell_window_timeout_count":2,"cell_window_setting_count":1,"cell_window_default_count":1}"#),
-    ("agent repl checkpoint", r#"{"checkpoint_created_count":2,"checkpoint_list_count":1,"checkpoint_restored_count":1,"checkpoint_restore_declined_count":1,"checkpoint_restore_disabled_count":2,"checkpoint_failed_count":1}"#),
-    ("agent repl notify", r#"{"notify_count":3,"notify_undelivered_count":1,"effort_set_count":1,"effort_refused_count":2}"#),
-    ("agent repl reload", r#"{"repl_reload_count":2,"repl_reload_skills_added_count":5,"repl_settings_get_count":1}"#),
-    ("agent repl schedule", r#"{"schedule_once_added_count":1,"schedule_recurring_added_count":2,"schedule_list_count":1,"schedule_cancelled_count":1,"schedule_rejected_count":3}"#),
-    ("agent rlm child abort", r#"{"rlm_abort_aborted_count":1,"rlm_abort_idle_count":2,"rlm_abort_failed_count":1}"#),
-    ("agent todos and questions", r#"{"todo_list_set_count":1,"todo_item_done_count":2,"question_asked_count":6,"question_answered_count":2,"question_declined_count":1,"question_timed_out_count":1,"question_no_user_count":1,"question_cancelled_count":1}"#),
+    (
+        "agent fs edit",
+        r#"{"fs_read_count":2,"fs_read_line_count":123,"fs_read_failed_count":1,"fs_edit_count":1,"fs_edit_op_count":4,"fs_edit_rejected_count":1,"fs_edit_stale_anchor_count":2,"fs_edit_failed_count":2}"#,
+    ),
+    (
+        "agent fs search",
+        r#"{"fs_grep_count":2,"fs_glob_count":1,"fs_find_count":1,"fs_search_failed_count":1,"fs_search_truncated_count":1,"fs_search_result_count":20,"fs_search_max_ms":55}"#,
+    ),
+    (
+        "agent kernel login and recall",
+        r#"{"kernel_mcp_login_count":1,"kernel_mcp_login_failed_count":2,"kernel_mcp_login_unavailable_count":1,"session_search_count":2,"session_search_hit_count":5,"session_search_read_count":1,"session_search_failed_count":1}"#,
+    ),
+    (
+        "agent repl background cells",
+        r#"{"cell_backgrounded_count":2,"cell_background_ok_count":1,"cell_background_error_count":1,"cell_background_interrupted_count":1,"cell_window_learned_count":1,"cell_window_timeout_count":2,"cell_window_setting_count":1,"cell_window_default_count":1}"#,
+    ),
+    (
+        "agent repl checkpoint",
+        r#"{"checkpoint_created_count":2,"checkpoint_list_count":1,"checkpoint_restored_count":1,"checkpoint_restore_declined_count":1,"checkpoint_restore_disabled_count":2,"checkpoint_failed_count":1}"#,
+    ),
+    (
+        "agent repl notify",
+        r#"{"notify_count":3,"notify_undelivered_count":1,"effort_set_count":1,"effort_refused_count":2}"#,
+    ),
+    (
+        "agent repl reload",
+        r#"{"repl_reload_count":2,"repl_reload_skills_added_count":5,"repl_settings_get_count":1}"#,
+    ),
+    (
+        "agent repl schedule",
+        r#"{"schedule_once_added_count":1,"schedule_recurring_added_count":2,"schedule_list_count":1,"schedule_cancelled_count":1,"schedule_rejected_count":3}"#,
+    ),
+    (
+        "agent rlm child abort",
+        r#"{"rlm_abort_aborted_count":1,"rlm_abort_idle_count":2,"rlm_abort_failed_count":1}"#,
+    ),
+    (
+        "agent todos and questions",
+        r#"{"todo_list_set_count":1,"todo_item_done_count":2,"question_asked_count":6,"question_answered_count":2,"question_declined_count":1,"question_timed_out_count":1,"question_no_user_count":1,"question_cancelled_count":1}"#,
+    ),
     ("agent usage reads", r#"{"usage_read_count":3}"#),
-    ("agent web reads", r#"{"web_read_count":5,"web_read_failed_count":1,"web_read_site_count":1,"web_read_pdf_count":1,"web_read_page_count":2,"web_read_truncated_count":1,"web_read_max_ms":70}"#),
+    (
+        "agent web reads",
+        r#"{"web_read_count":5,"web_read_failed_count":1,"web_read_site_count":1,"web_read_pdf_count":1,"web_read_page_count":2,"web_read_truncated_count":1,"web_read_max_ms":70}"#,
+    ),
 ];
