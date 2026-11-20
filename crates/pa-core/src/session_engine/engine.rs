@@ -611,6 +611,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             .then(|| std::sync::Arc::clone(&session_counters)),
         spill_store,
     ));
+    super::better::register_better_handler(&mut handlers, &better);
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the

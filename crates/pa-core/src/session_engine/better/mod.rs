@@ -195,12 +195,19 @@ impl BetterHost {
         progress: &BetterProgress,
     ) -> BetterOutcome {
         self.note(BetterTelemetryFact::Run);
+        let brief = request.mode == BetterMode::Brief;
+        if brief {
+            self.note(BetterTelemetryFact::BriefRun);
+        }
         let outcome = self.run_counted(request, signal, progress).await;
         self.note(match &outcome {
             BetterOutcome::Rewritten { .. } => BetterTelemetryFact::Completed,
             BetterOutcome::Cancelled => BetterTelemetryFact::Cancelled,
             BetterOutcome::Failed { .. } => BetterTelemetryFact::Failed,
         });
+        if brief && matches!(outcome, BetterOutcome::Rewritten { unchanged: true, .. }) {
+            self.note(BetterTelemetryFact::BriefUnchanged);
+        }
         outcome
     }
 
@@ -281,6 +288,69 @@ impl BetterHost {
             })
         });
         KeptReply { text, stored }
+    }
+}
+
+/// The kernel's `better(task, *, cwd=None, mode=...)` request (`better.run`): one run on the
+/// session's helper, its rewrite as `{rewrite, unchanged}`, or its raw error. A cell that stops
+/// waiting (interrupted, or its kernel gone) cancels the run.
+pub(crate) const BETTER_REQUEST_TYPE: &str = "better.run";
+
+/// Register [`BETTER_REQUEST_TYPE`] on `host`.
+pub(crate) fn register_better_handler(
+    handlers: &mut crate::kernel::shared::HostRequestHandlers,
+    host: &Arc<BetterHost>,
+) {
+    let host = Arc::clone(host);
+    handlers.register(
+        BETTER_REQUEST_TYPE,
+        crate::kernel::shared::host_handler(move |payload| {
+            let host = Arc::clone(&host);
+            async move {
+                let data = &payload.data;
+                let Some(task) = data.get("task").and_then(serde_json::Value::as_str) else {
+                    anyhow::bail!("better task must be a string");
+                };
+                let mode = match data.get("mode").and_then(serde_json::Value::as_str) {
+                    None => BetterMode::Deepen,
+                    Some(name) => BetterMode::parse(name).ok_or_else(|| {
+                        anyhow::anyhow!("better mode must be \"deepen\" or \"brief\", got {name:?}")
+                    })?,
+                };
+                let cwd = match data.get("cwd") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(serde_json::Value::String(cwd)) => Some(PathBuf::from(cwd)),
+                    Some(_) => anyhow::bail!("better cwd must be a string"),
+                };
+                let request = BetterRequest {
+                    task: task.to_string(),
+                    mode,
+                    cwd,
+                };
+                // Dropping this future (the cell stopped waiting) aborts the run.
+                let controller = AbortController::new();
+                let _cancel_on_drop = CancelOnDrop(controller.clone());
+                let progress: BetterProgress = Arc::new(|_| {});
+                match host.run(&request, &controller.signal(), &progress).await {
+                    BetterOutcome::Rewritten { rewrite, unchanged } => {
+                        Ok(serde_json::json!({ "rewrite": rewrite, "unchanged": unchanged }))
+                    }
+                    BetterOutcome::Cancelled => anyhow::bail!("the better run was cancelled"),
+                    failed @ BetterOutcome::Failed { .. } => {
+                        anyhow::bail!(failed.error_text().unwrap_or_default())
+                    }
+                }
+            }
+        }),
+    );
+}
+
+/// Aborts its controller when dropped.
+struct CancelOnDrop(AbortController);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

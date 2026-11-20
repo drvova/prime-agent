@@ -42,3 +42,22 @@ it found.
 In print mode, RPC, and other non-interactive surfaces, `/better <prompt>` returns the
 rewrite as the command's result message instead of filling an input box. Nothing is sent to
 the model there either.
+
+## From the REPL: `better(...)` and `rlm.spawn(..., better=True)`
+
+The agent can call the same helper from its Python REPL:
+
+```python
+deeper = await better("fix the parser")
+brief = await better("Add a test for parse_expr in src/parser.rs", cwd="crates/parser", mode="brief")
+child = await rlm.spawn(brief_text, name="parser-tests", cwd="crates/parser", better=True)
+```
+
+`mode="brief"` checks a delegation brief against the repository from `cwd`: every path, name,
+and command it mentions must exist there, or run read-only. The helper fixes what is wrong (a
+wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is
+done) and returns the brief unchanged when nothing needs fixing. It starts from no
+conversation: a brief is checked against the repository, not against the chat.
+`rlm.spawn(..., better=True)` runs brief mode first and spawns the checked brief; the spawn
+still waits for a session-boot slot like every other spawn, and the helper's model calls pass
+the same provider admission as the session's own.

@@ -223,3 +223,27 @@ async fn cancelling_a_run_ends_it_cancelled() {
     let (outcome, ()) = tokio::join!(run, cancel);
     assert_eq!(outcome, BetterOutcome::Cancelled);
 }
+
+/// `better.run` in brief mode: the helper starts from no conversation, and a brief that needs
+/// nothing comes back unchanged.
+#[tokio::test]
+async fn a_brief_that_needs_nothing_comes_back_unchanged_through_the_kernel_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn("<unchanged/>");
+    let parent = parent_agent(&provider);
+    let host = Arc::new(host(&provider, &parent, dir.path(), None));
+    let mut handlers = crate::kernel::shared::HostRequestHandlers::new();
+    register_better_handler(&mut handlers, &host);
+    let handler = handlers.get(BETTER_REQUEST_TYPE).expect("registered");
+    let brief = "Add a test for `parse` in `parser.rs`.";
+    let reply = handler(crate::kernel::shared::HostRequestPayload {
+        data: json!({ "task": brief, "mode": "brief" }),
+    })
+    .await
+    .unwrap();
+    assert_eq!(reply, json!({ "rewrite": brief, "unchanged": true }));
+    let sent = serde_json::to_string(&provider.calls()[0].messages).unwrap();
+    assert!(!sent.contains("we talked about the parser"), "{sent}");
+    assert!(sent.contains("<prime_better mode=\\\"brief\\\">"), "{sent}");
+}
