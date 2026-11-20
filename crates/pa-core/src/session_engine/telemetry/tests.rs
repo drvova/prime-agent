@@ -2653,6 +2653,48 @@ async fn readonly_cache_ride_their_own_event() {
     );
 }
 
+/// Finished `rlm.hypotheses` runs ride their own `agent repl hypotheses` event at session end
+/// (counts only: never a task, an approach, or a diff).
+#[tokio::test]
+async fn hypotheses_runs_ride_their_own_event() {
+    use crate::kernel::hypotheses::HypothesesRun;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for (approaches, passed, winner) in [(2, 1, true), (3, 0, false)] {
+        counters.note_hypotheses(HypothesesRun {
+            approaches,
+            passed,
+            winner,
+        });
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent repl hypotheses"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent repl hypotheses").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("hypotheses_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "hypotheses_run_count": 2,
+            "hypotheses_approach_count": 5,
+            "hypotheses_passed_count": 1,
+            "hypotheses_no_winner_count": 1,
+        })
+    );
+}
+
 /// Error enrichments ride their own `agent error enrichment` event at session end (counts only: never a path, a line, or output).
 #[tokio::test]
 async fn error_enrichment_ride_their_own_event() {

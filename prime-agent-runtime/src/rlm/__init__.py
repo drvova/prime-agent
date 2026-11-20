@@ -1007,6 +1007,19 @@ class _RLMNamespace:
         decision = importlib.import_module(f"{__name__}.decision")
         return await decision.decide(question, options, context=context)
 
+    async def hypotheses(
+        self,
+        task: str,
+        approaches: Any,
+        *,
+        check: Any,
+        timeout_ms: int = 1_800_000,
+        better: bool = False,
+    ) -> Any:
+        """Try each approach in its own worktree and child; the ranked table (see ``rlm.hypothesis``)."""
+        hypothesis = importlib.import_module(f"{__name__}.hypothesis")
+        return await hypothesis.hypotheses(task, approaches, check=check, timeout_ms=timeout_ms, better=better)
+
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(_NOT_CALLABLE_MESSAGE)
 

@@ -146,6 +146,14 @@ made and not removed, which `dispose_kernel` names in the session-end notice. Ad
 ride the `agent worktrees` event. Non-goals: git operations on the host, and any name, path,
 or diff in telemetry.
 
+Parallel hypotheses (`kernel::hypotheses`): the kernel's `rlm.hypotheses` makes one `worktree`
+and spawns one child per approach, runs the acceptance check in each checkout, ranks the
+approaches (passing first, then the smaller diff), and removes every worktree but the winner's; it
+refuses at the RLM depth bound before making any, and each child's boot goes through session-boot
+admission. The host only counts each finished run (`hypotheses.record`, the `agent repl
+hypotheses` event). Non-goals: merging the winner (the model calls `worktree.merge`), and any
+task, approach, or diff in telemetry.
+
 Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
 `session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside
 the call (the model's `timeout`, else a `pythonCellTimeoutMs` the user set, else a window learned

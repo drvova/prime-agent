@@ -64,6 +64,7 @@ pub(crate) const MANIFESTS: &[EmbeddedCapability] = &[
     manifest!("decision", docs = ["decision"]),
     manifest!("fs", docs = ["fs"]),
     manifest!("harness", docs = ["harness"]),
+    manifest!("hypothesis", docs = ["hypothesis"]),
     manifest!("mcp", docs = ["mcp"]),
     manifest!("model", docs = ["model", "model.set_effort"]),
     manifest!("notify", docs = ["notify"]),
