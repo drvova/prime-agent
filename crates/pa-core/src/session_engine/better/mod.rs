@@ -205,7 +205,15 @@ impl BetterHost {
             BetterOutcome::Cancelled => BetterTelemetryFact::Cancelled,
             BetterOutcome::Failed { .. } => BetterTelemetryFact::Failed,
         });
-        if brief && matches!(outcome, BetterOutcome::Rewritten { unchanged: true, .. }) {
+        if brief
+            && matches!(
+                outcome,
+                BetterOutcome::Rewritten {
+                    unchanged: true,
+                    ..
+                }
+            )
+        {
             self.note(BetterTelemetryFact::BriefUnchanged);
         }
         outcome
