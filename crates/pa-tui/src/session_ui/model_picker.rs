@@ -196,11 +196,13 @@ impl SessionUi {
     }
 
     /// The tightest cached quota window per provider at `now_ms` (`5h 42%`), from the last
-    /// `/usage` cards: nothing is fetched here.
+    /// `/usage` cards: for a provider holding several credentials, the card of the account this
+    /// session serves it with. Nothing is fetched here.
     fn cached_quota_labels(&self, now_ms: i64) -> std::collections::HashMap<String, String> {
         self.usage_quotas
             .iter()
             .flat_map(|report| report.providers.iter())
+            .filter(|card| card.account.as_ref() == self.model_accounts.get(&card.provider))
             .filter_map(|card| {
                 let (window, fraction) = crate::usage_page::tightest_window(card, now_ms)?;
                 Some((
