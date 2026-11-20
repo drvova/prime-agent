@@ -1,0 +1,1 @@
+- `/usage` shows one quota card per stored credential of a plan provider, titled `Provider · label · plan`.
