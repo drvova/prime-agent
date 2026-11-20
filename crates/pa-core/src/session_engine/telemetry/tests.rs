@@ -11,6 +11,7 @@ use pa_agent::types::{
 use pa_telemetry::{MockSink, TelemetryClient, TelemetryClientConfig};
 
 use super::*;
+use crate::session_engine::agent_messaging::AgentMessageRefusals;
 
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
@@ -2139,8 +2140,14 @@ async fn agent_message_throttles_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    counters.note_agent_message_throttled(1);
-    counters.note_agent_message_throttled(3);
+    counters.note_agent_message_refusals(AgentMessageRefusals {
+        throttled: 1,
+        wake_refused: 0,
+    });
+    counters.note_agent_message_refusals(AgentMessageRefusals {
+        throttled: 3,
+        wake_refused: 2,
+    });
     telemetry.end().await.unwrap();
     assert_eq!(
         fixture.mock.event_names(),
@@ -2154,7 +2161,10 @@ async fn agent_message_throttles_ride_their_own_event() {
         .collect();
     assert_eq!(
         serde_json::Value::Object(counts),
-        serde_json::json!({"agent_message_throttled_count": 4})
+        serde_json::json!({
+            "agent_message_throttled_count": 4,
+            "agent_message_wake_refused_count": 2,
+        })
     );
 }
 
