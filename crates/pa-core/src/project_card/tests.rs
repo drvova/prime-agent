@@ -2,7 +2,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use super::{derive, Derived, Inner, ProjectCard, Stored, LOAD_BUDGET, SCHEMA};
+use std::collections::BTreeMap;
+
+use super::{derive, Derived, Inner, ProjectCard, Stored, SCHEMA};
 use crate::kernel::spill::{content_id, SpillStore};
 
 fn write(root: &Path, name: &str, text: &str) {
@@ -97,7 +99,7 @@ async fn the_next_session_starts_with_the_stored_card_and_learned_commands() {
     *super::lock(&first.inner.state) = Stored {
         schema: SCHEMA,
         derived: Some(derive(repo.path())),
-        commands: Default::default(),
+        commands: BTreeMap::default(),
     };
     for command in [
         "cargo test -p core",
@@ -138,7 +140,7 @@ async fn a_hanging_store_never_holds_the_session_start() {
     nix::unistd::mkfifo(&store, nix::sys::stat::Mode::S_IRWXU).expect("fifo");
     let card = card_over(agent.path(), &store);
     let started = std::time::Instant::now();
-    tokio::time::timeout(Duration::from_secs(5), card.load(LOAD_BUDGET))
+    tokio::time::timeout(Duration::from_secs(5), card.load(super::LOAD_BUDGET))
         .await
         .expect("the load returned at its budget");
     assert_eq!(
