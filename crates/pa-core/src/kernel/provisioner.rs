@@ -88,6 +88,9 @@ pub struct IpythonKernelProvisionerOptions {
     /// How a failed user cell or awaited command gets the source lines around
     /// its error locations (off by default, as without a workspace).
     pub error_context: crate::kernel::error_context::ErrorContext,
+    /// The per-stream output cap user cells run with, scaled to the context
+    /// the session has left; the default keeps the fixed cap.
+    pub output_budget: crate::kernel::spill::OutputBudget,
     pub env: HashMap<String, String>,
     /// Command prefix prepended to every kernel `bash()` invocation.
     pub command_prefix: Option<String>,
@@ -283,6 +286,12 @@ impl IpythonKernelProvisioner {
     #[must_use]
     pub(crate) fn error_context(&self) -> &crate::kernel::error_context::ErrorContext {
         &self.inner.options.error_context
+    }
+
+    /// The output cap policy the kernel executor sizes user cells with.
+    #[must_use]
+    pub(crate) fn output_budget(&self) -> &crate::kernel::spill::OutputBudget {
+        &self.inner.options.output_budget
     }
 
     /// The yield window policy the kernel executor arms user cells with.

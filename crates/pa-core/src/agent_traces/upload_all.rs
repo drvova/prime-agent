@@ -1,52 +1,15 @@
-//! The upload-all concern: the serialized request gate (the platform rate
-//! limit), the session-file find walk, and the concurrent sweep with its
-//! progress notes and cancel checks.
+//! The upload-all concern: the session-file find walk and the concurrent sweep with its
+//! progress notes and cancel checks; every request goes through the shared trace controller
+//! (`pacing`).
 
 use super::{
-    delay, log_agent_trace_outcome, now_ms, perform_agent_trace_upload, read_trace_session_header,
-    resolve_path, Ordering, Path, PathBuf, TraceHttp, TraceHttpError, TraceUploadAllProgress,
-    TraceUploadAllResult, TraceUploadCancel, TraceUploadDelay, TraceUploadDelaySink,
-    TraceUploadOptions, TraceUploadResult, TRACE_UPLOAD_ALL_CONCURRENCY,
-    TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS,
+    log_agent_trace_outcome, perform_agent_trace_upload, read_trace_session_header, resolve_path,
+    Ordering, Path, PathBuf, TraceHttp, TraceRequestGate, TraceUploadAllProgress,
+    TraceUploadAllResult, TraceUploadCancel, TraceUploadDelaySink, TraceUploadOptions,
+    TraceUploadResult, TRACE_UPLOAD_ALL_CONCURRENCY,
 };
 use std::collections::HashSet;
 use std::sync::atomic::AtomicUsize;
-
-/// One serialized slot per request, holding the platform's rate limit
-/// (5 requests a minute, spaced by the computed minimum interval).
-#[derive(Default)]
-pub struct TraceRequestGate {
-    next_request_at: tokio::sync::Mutex<u64>,
-}
-
-impl TraceRequestGate {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Wait out the interval since the previous request, then arm the
-    /// next one; a cancel ends the queued slot.
-    pub(super) async fn before_request(
-        &self,
-        cancel: Option<&TraceUploadCancel>,
-        on_upload_delay: Option<&TraceUploadDelaySink>,
-    ) -> Result<(), TraceHttpError> {
-        let mut next_request_at = self.next_request_at.lock().await;
-        let wait_ms = next_request_at.saturating_sub(now_ms());
-        if wait_ms > 0 {
-            if let Some(sink) = on_upload_delay {
-                sink(TraceUploadDelay::RateLimit(wait_ms));
-            }
-            delay(wait_ms, cancel).await;
-            if cancel.is_some_and(TraceUploadCancel::is_cancelled) {
-                return Err(TraceHttpError::Cancelled);
-            }
-        }
-        *next_request_at = now_ms() + TRACE_UPLOAD_ALL_MIN_REQUEST_INTERVAL_MS;
-        Ok(())
-    }
-}
 
 /// The session directory (`None` is the `getSessionsDir()` default), the
 /// concurrency, and the progress sink.
@@ -114,7 +77,7 @@ pub fn find_trace_files(session_dir: &Path) -> Vec<PathBuf> {
     sorted
 }
 
-/// The concurrent sweep (default 4 workers) through the shared request gate, with the
+/// The concurrent sweep (default 4 workers) through the shared trace controller, with the
 /// per-file progress and the cancel checks at the worker boundaries.
 ///
 /// # Panics
@@ -134,7 +97,8 @@ pub async fn upload_all_traces(options: &TraceUploadAllOptions<'_>) -> TraceUplo
     );
     let session_files = find_trace_files(&session_dir);
     let total = session_files.len();
-    let gate = TraceRequestGate::new();
+    // Every request takes the process-wide trace controller, shared with continuous delivery.
+    let gate = TraceRequestGate::shared();
     let results: Vec<std::sync::Mutex<Option<TraceUploadResult>>> = session_files
         .iter()
         .map(|_| std::sync::Mutex::new(None))

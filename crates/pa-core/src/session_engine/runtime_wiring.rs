@@ -271,6 +271,7 @@ pub fn kernel_provisioner(
     session_artifact_dir: Option<std::path::PathBuf>,
     cell_window: crate::kernel::cell_window::CellWindow,
     error_context: crate::kernel::error_context::ErrorContext,
+    output_budget: crate::kernel::spill::OutputBudget,
     on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
     on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
@@ -328,6 +329,7 @@ pub fn kernel_provisioner(
             // the runtime bootstrap and state ops never use it).
             cell_window,
             error_context,
+            output_budget,
             ready_gate,
             on_restore,
             on_background_work_settled,
@@ -376,6 +378,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
                 cell_window: this.cell_window().clone(),
                 error_context: this.error_context().clone(),
                 spill: this.spill_store(),
+                output_budget: this.output_budget().clone(),
             }) as Box<dyn KernelExecutor>)
         })
     }
@@ -397,6 +400,8 @@ struct KernelManagerExecutor {
     spill: Option<crate::kernel::spill::SpillStore>,
     /// The source lines a failed cell or awaited command gets.
     error_context: crate::kernel::error_context::ErrorContext,
+    /// The session's output cap policy, read when each cell starts.
+    output_budget: crate::kernel::spill::OutputBudget,
 }
 
 impl KernelExecutor for KernelManagerExecutor {
@@ -417,6 +422,11 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
         let error_context = self.error_context.clone();
+        // Only a session that keeps cut text tightens the cap: without a
+        // store a tighter cap would destroy more.
+        let max_output_chars = spill
+            .is_some()
+            .then(|| self.output_budget.max_output_chars());
         Box::pin(async move {
             let result = manager
                 .execute(
@@ -426,6 +436,7 @@ impl KernelExecutor for KernelManagerExecutor {
                         on_late_sent_agent_message,
                         cell_yield_ms,
                         spill: spill.clone(),
+                        max_output_chars,
                         ..Default::default()
                     },
                 )

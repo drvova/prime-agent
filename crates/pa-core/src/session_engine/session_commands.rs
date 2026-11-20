@@ -1,5 +1,5 @@
 //! Session slash-command execution: the daemon-side behavior behind
-//! `/compact`, `/refine`, `/goal`, and `/autonomous`. The host runtime owns
+//! `/compact`, `/refine`, `/goal`, `/autonomous`, and `/better`. The host runtime owns
 //! persistence of what this returns; errors carry the exact TS message and
 //! the host renders the `Command failed: ...` result row.
 
@@ -190,6 +190,7 @@ pub async fn execute_session_command(
         "refine" => execute_refine(engine, params, command, &mut execution),
         "goal" => execute_goal(engine, command, images, &mut execution).await,
         "autonomous" => execute_autonomous(params, command, &mut execution),
+        "better" => execute_better(engine, command, &mut execution).await,
         other => Err(format!("Unknown session command: {other}")),
     };
     if let Err(message) = result {
@@ -272,6 +273,43 @@ async fn execute_compact(
         }
     }
     Ok(())
+}
+
+/// `/better <prompt>` outside the TUI (print, RPC, a reply typed in the agents view): the
+/// rewrite comes back as the result row, and nothing is sent to the model.
+async fn execute_better(
+    engine: &SessionEngine,
+    command: &SessionSlashCommand,
+    execution: &mut SessionCommandExecution,
+) -> Result<(), String> {
+    if command.args.trim().is_empty() {
+        return Err("Usage: /better <prompt>".to_string());
+    }
+    let request = super::better::BetterRequest {
+        task: command.args.clone(),
+        mode: super::better::BetterMode::Deepen,
+        cwd: None,
+    };
+    let outcome = engine
+        .better
+        .run(
+            &request,
+            &pa_agent::abort::AbortSignal::never(),
+            &(Arc::new(|_: &str| {}) as super::better::BetterProgress),
+        )
+        .await;
+    match outcome {
+        super::better::BetterOutcome::Rewritten { rewrite, .. } => {
+            execution.push_message(slash_command_result(
+                command, rewrite, true, "info", None, true,
+            ));
+            Ok(())
+        }
+        super::better::BetterOutcome::Cancelled => Err("the rewrite was cancelled".to_string()),
+        failed @ super::better::BetterOutcome::Failed { .. } => {
+            Err(failed.error_text().unwrap_or_default())
+        }
+    }
 }
 
 /// `/refine`: schedule planning without holding the host command runner.
