@@ -34,8 +34,6 @@ const NON_CAPABILITY_SESSION_EVENTS: &[&str] = &[
     "agent billing modes",
     // Error enrichment reads the cell result host-side (no kernel capability).
     "agent error enrichment",
-    // `/better` runs from the TUI and the session commands (no kernel capability yet).
-    "agent better prompt",
 ];
 
 fn manifests() -> Vec<CapabilityManifest> {
