@@ -854,7 +854,7 @@ fn a_pinned_credential_admits_under_one_key_across_a_token_refresh() {
         before,
         pa_ai::admission::AdmissionKey {
             provider: "anthropic".to_string(),
-            credential: admission_identity(&pin),
+            credential: pa_ai::admission::credential_identity(&pin.provider, &pin.id),
             scope: "m".to_string(),
         }
     );
@@ -893,7 +893,7 @@ fn a_declared_quota_fallback_still_serves_a_pinned_session() {
             "opencode": { "type": "api_key", "key": "default-free" },
             "opencode-go": { "type": "api_key", "key": "go-key" },
         })),
-        &dir.path().join("models.json"),
+        dir.path().join("models.json"),
     );
     registry.set_credential_pin(
         dir.path(),

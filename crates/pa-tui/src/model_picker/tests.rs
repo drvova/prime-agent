@@ -117,6 +117,7 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         models: catalog,
         current: Some(current()),
         configured_providers: configured(),
+        accounts: std::collections::BTreeMap::new(),
         recent_models: Vec::new(),
         scoped_models: Vec::new(),
         thinking_level: Some(ModelThinkingLevel::Medium),

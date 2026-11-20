@@ -370,3 +370,15 @@ fn the_startup_placeholder_carries_the_dock_a_fresh_session_mounts() {
         "the placeholder's last two rows are the dock's rule and zero row"
     );
 }
+
+#[test]
+fn create_config_carries_the_profile() {
+    assert_eq!(
+        options(ModelSelection {
+            profile: Some("work".to_string()),
+            ..Default::default()
+        })
+        .create_config(),
+        json!({ "cwd": "/tmp", "executionMode": "interactive", "profile": "work" })
+    );
+}

@@ -1,5 +1,6 @@
-//! The session credential pin at create: `--credential` writes it into a fresh header, a resume
-//! restores the header's pin as-is, and a subagent inherits its parent's.
+//! The session credential pin and profile at create: `--credential` (or the profile's mapping)
+//! writes the pin into a fresh header, a resume restores the header's pin as-is, a subagent
+//! inherits its parent's, and `--profile` tags the header.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -65,7 +66,8 @@ impl SessionEngine for PinEngine {
     }
 }
 
-/// One create on a fresh worker: the response and the pin its engine was handed.
+/// One create on a fresh worker (killed afterwards): the response and the pin its engine was
+/// handed.
 async fn create(dir: &Path, payload: Value) -> (DaemonResponse, Option<CredentialPin>) {
     let mut worker = Worker::new(
         WorkerConfig {
@@ -84,7 +86,11 @@ async fn create(dir: &Path, payload: Value) -> (DaemonResponse, Option<Credentia
     let engine = std::sync::Arc::new(PinEngine::default());
     worker.engine = engine.clone();
     let response = worker.dispatch("create", &payload).await;
-    (response, engine.credential_pin())
+    let pin = engine.credential_pin();
+    // Release the session's runtime lease so the next create may reopen the file (a failed
+    // create holds none).
+    let _killed = worker.dispatch("kill", &json!({})).await;
+    (response, pin)
 }
 
 #[tokio::test]
@@ -160,5 +166,53 @@ async fn an_unknown_credential_selector_fails_the_create_before_any_file_exists(
             None,
             false
         )
+    );
+}
+
+#[tokio::test]
+async fn a_profile_create_tags_the_header_and_pins_the_profile_credential() {
+    let dir = tempfile::tempdir().unwrap();
+    let agent_dir = dir.path().join("agent");
+    let id = pa_core::auth::AuthAccounts::create(&agent_dir)
+        .add(
+            "openai",
+            "work",
+            pa_core::auth::AuthCredential::ApiKey {
+                key: "key-work".to_string(),
+                prime_team: None,
+            },
+            0,
+        )
+        .unwrap();
+    pa_core::settings::save_profile(
+        &agent_dir,
+        "work",
+        &pa_core::settings::Profile {
+            version: 1,
+            credentials: [("openai".to_string(), id.clone())].into(),
+            settings: json!({ "defaultProvider": "openai" })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        },
+    )
+    .unwrap();
+    let path = dir.path().join("session.jsonl").display().to_string();
+    let (response, pin) = create(
+        dir.path(),
+        json!({"cwd": "/tmp", "sessionPath": path, "profile": "work"}),
+    )
+    .await;
+    pa_core::settings::set_active_profile(None);
+    assert!(response.success, "{response:?}");
+    let header = pa_core::session::manager::read_session_header(Path::new(&path)).unwrap();
+    let expected = CredentialPin {
+        provider: "openai".to_string(),
+        id,
+        label: "work".to_string(),
+    };
+    assert_eq!(
+        (header.profile(), header.credential_pin(), pin),
+        (Some("work"), Some(expected.clone()), Some(expected))
     );
 }

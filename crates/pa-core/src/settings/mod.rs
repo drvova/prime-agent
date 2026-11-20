@@ -8,6 +8,7 @@ pub(crate) mod interactive_settings;
 pub(crate) mod load;
 pub(crate) mod manager;
 pub(crate) mod merge;
+pub(crate) mod profiles;
 pub(crate) mod storage;
 pub(crate) mod types;
 
@@ -20,6 +21,10 @@ pub use history_import::{
     HistoryImportPlan, HistoryImportReport, HistoryImportRun, HISTORY_IMPORT_MARKER,
 };
 pub use manager::{IdleEviction, SettingsError, SettingsManager, DEFAULT_IDLE_EVICTION_MINUTES};
+pub use profiles::{
+    active_profile, list_profiles, load_profile, profile_path, save_profile, set_active_profile,
+    validate_profile_name, Profile, DEFAULT_CREDENTIAL, PROFILES_DIR, PROFILE_ENV_VAR,
+};
 pub use storage::{
     FileSettingsStorage, InMemorySettingsStorage, SettingsScope, SettingsStorage, CONFIG_DIR_NAME,
 };

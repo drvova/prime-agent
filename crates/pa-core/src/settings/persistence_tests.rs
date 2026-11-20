@@ -338,3 +338,34 @@ fn project_percentage_overrides_global_and_stale_writes_preserve_external_settin
     first.reload().unwrap();
     assert_eq!(first.get_compaction_threshold_percent(), 60.5);
 }
+
+#[test]
+fn settings_layer_global_then_the_profile_then_the_project() {
+    let (storage, mut manager) = fixture(
+        r#"{"defaultProvider":"anthropic","defaultModel":"global-model","theme":"global","compaction":{"enabled":true,"reserveTokens":1000}}"#,
+    );
+    storage.set_profile(
+        "work",
+        &json!({ "version": 1, "credentials": { "openai": "c_1" }, "settings": {
+            "defaultProvider": "openai", "defaultModel": "profile-model", "theme": "profile",
+            "compaction": { "reserveTokens": 2000 }
+        } })
+        .to_string(),
+    );
+    storage
+        .with_lock(SettingsScope::Project, &mut |_| {
+            Some(json!({ "theme": "project" }).to_string())
+        })
+        .unwrap();
+    manager.reload().unwrap();
+    let expected = super::load::from_value_lenient(&json!({
+        "defaultProvider": "openai",
+        "defaultModel": "profile-model",
+        "theme": "project",
+        "compaction": { "enabled": true, "reserveTokens": 2000 }
+    }));
+    assert_eq!(
+        serde_json::to_value(manager.settings()).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}

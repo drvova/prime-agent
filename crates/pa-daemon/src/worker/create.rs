@@ -141,9 +141,59 @@ impl Worker {
             .get("parentSessionPath")
             .and_then(Value::as_str)
             .map(str::to_string);
-        // `--credential <label|id>` resolves before any file is created: an unknown selector
-        // fails the create instead of leaving an empty session behind.
-        let requested_pin = match payload.get("credential").and_then(Value::as_str) {
+        // `--profile <name>` (one worker serves one session): every settings read from here on
+        // layers the profile's overlay. An unknown profile fails the create.
+        let profile = match payload.get("profile").and_then(Value::as_str) {
+            Some(name) => match pa_core::settings::load_profile(&self.config.agent_dir, name) {
+                Ok(Some(profile)) => {
+                    pa_core::settings::set_active_profile(Some(name.to_string()));
+                    Some((name.to_string(), profile))
+                }
+                Ok(None) => {
+                    return response_failure(
+                        None,
+                        "create",
+                        &format!("profile '{name}' does not exist; /profile new {name} saves one"),
+                        None,
+                    )
+                }
+                Err(error) => return response_failure(None, "create", &format!("{error:#}"), None),
+            },
+            None => None,
+        };
+        // The new session's pin, resolved before any file is created (an unknown credential
+        // fails the create instead of leaving an empty session behind): the profile's mapping
+        // for the session's provider (the create's `--provider`, else the profile's default
+        // provider, else its one named credential), then `--credential <label|id>`.
+        let profile_credential = profile.as_ref().and_then(|(_, profile)| {
+            let provider = payload.get("provider").and_then(Value::as_str).or_else(|| {
+                profile
+                    .settings
+                    .get("defaultProvider")
+                    .and_then(Value::as_str)
+            });
+            let named = profile
+                .credentials
+                .iter()
+                .filter(|(_, id)| id.as_str() != pa_core::settings::DEFAULT_CREDENTIAL);
+            match provider {
+                Some(provider) => named
+                    .clone()
+                    .find(|(mapped, _)| mapped.as_str() == provider)
+                    .map(|(_, id)| id.clone()),
+                None => {
+                    let mut named = named;
+                    match (named.next(), named.next()) {
+                        (Some((_, id)), None) => Some(id.clone()),
+                        (Some(_), Some(_)) | (None, _) => None,
+                    }
+                }
+            }
+        });
+        let requested_pin = match profile_credential
+            .as_deref()
+            .or_else(|| payload.get("credential").and_then(Value::as_str))
+        {
             Some(selector) => {
                 match pa_core::auth::AuthAccounts::create(&self.config.agent_dir).select(selector) {
                     Ok(pin) => Some(pin),
@@ -419,6 +469,10 @@ impl Worker {
             });
             if let Some(pin) = &pin {
                 store.header.set_credential_pin(pin);
+            }
+            // The `profile` tag (for filtering; sessions are not separated by profile).
+            if let Some((name, _)) = &profile {
+                store.header.set_profile(name);
             }
             pin
         };

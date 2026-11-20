@@ -75,6 +75,8 @@ pub struct RuntimeConfig {
     pub api_key: Option<String>,
     /// `--credential <label|id>`.
     pub credential: Option<String>,
+    /// The resolved profile (`--profile`, else `PRIME_AGENT_PROFILE`).
+    pub profile: Option<String>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Vec<String>,
     pub thinking: Option<pa_types::ai::ModelThinkingLevel>,
@@ -259,6 +261,7 @@ pub fn runtime_config_from_args(
         model: parsed.model.clone(),
         api_key: parsed.api_key.clone(),
         credential: parsed.credential.clone(),
+        profile: parsed.profile.clone(),
         system_prompt: parsed.system_prompt.clone(),
         append_system_prompt: parsed.append_system_prompt.clone(),
         thinking: parsed.thinking,
