@@ -308,12 +308,11 @@ fn the_capability_rule_files_hold_exactly_the_claimed_events() {
         .chain(pa_telemetry::CAPABILITY_EVENTS_AFTER_SESSION_END)
         .map(|rule| rule.name)
         .collect();
-    let claimed: BTreeSet<&str> = manifests()
+    let manifests = manifests();
+    let claimed: BTreeSet<&str> = manifests
         .iter()
         .flat_map(|manifest| &manifest.telemetry)
         .map(|claim| claim.event.as_str())
-        .collect::<BTreeSet<&str>>()
-        .into_iter()
         .collect();
     assert_eq!(emitted, claimed);
 }
