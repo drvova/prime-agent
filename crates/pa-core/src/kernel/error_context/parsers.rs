@@ -52,9 +52,11 @@ pub(crate) struct ParsedLocation {
     pub(crate) message: String,
 }
 
+/// One parser: the locations it finds in a text's lines.
+type Parser = fn(&[&str]) -> Vec<ParsedLocation>;
+
 /// Every parser, in the order their locations are reported.
-const REGISTRY: [fn(&[&str]) -> Vec<ParsedLocation>; 7] =
-    [rustc, rust_panic, pytest, python_traceback, tsc, go, cc];
+const REGISTRY: [Parser; 7] = [rustc, rust_panic, pytest, python_traceback, tsc, go, cc];
 
 /// Characters of one message kept.
 const MESSAGE_CHARS: usize = 160;

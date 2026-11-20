@@ -193,20 +193,17 @@ impl ErrorContext {
                     read_locations(&settings.workspace, settings.reader.as_ref(), &candidates)
                 })
             };
-            let block = match tokio::time::timeout(settings.budget, worker).await {
-                Ok(Ok(reads)) => {
-                    fact.locations = reads.resolved.len();
-                    fact.skipped = candidates.len() - reads.resolved.len();
-                    (!reads.resolved.is_empty())
-                        .then(|| render(&reads.resolved, reads.skipped, failure.commands, spill))
-                }
-                Ok(Err(_)) | Err(_) => {
-                    fact.timed_out = true;
-                    fact.skipped = candidates.len();
-                    None
-                }
-            };
-            block
+            // A worker that panicked counts like one that ran out of time.
+            if let Ok(Ok(reads)) = tokio::time::timeout(settings.budget, worker).await {
+                fact.locations = reads.resolved.len();
+                fact.skipped = candidates.len() - reads.resolved.len();
+                (!reads.resolved.is_empty())
+                    .then(|| render(&reads.resolved, reads.skipped, failure.commands, spill))
+            } else {
+                fact.timed_out = true;
+                fact.skipped = candidates.len();
+                None
+            }
         };
         if let Some(observer) = &settings.observer {
             observer(fact);
