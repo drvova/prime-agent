@@ -51,6 +51,7 @@ mod edit_checks;
 mod error_enrichment;
 mod frida;
 mod readonly_cache;
+mod symbol_index;
 mod test_summaries;
 
 mod status;
@@ -444,6 +445,8 @@ struct CounterValues {
     background_cells: BackgroundCellCounts,
     /// Kernel `frida.*` calls by kind, reported by `agent repl frida`.
     frida: frida::FridaCounts,
+    /// `fs.symbol` queries, reported by `agent symbol index`.
+    symbol_index: symbol_index::SymbolIndexCounts,
     /// Failed cells and commands given their error locations' source lines,
     /// reported by `agent error enrichment`.
     error_enrichment: error_enrichment::ErrorEnrichmentCounts,
@@ -2013,6 +2016,7 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_symbol_index();
         self.track_error_enrichment();
         self.track_readonly_cache();
         self.track_edit_checks();
