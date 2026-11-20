@@ -708,6 +708,30 @@ impl Worker {
                     roster_delta_sequence: std::sync::Arc::clone(&roster_delta_sequence),
                 });
             crate::roster_activity::spawn_roster_activity_watch(&events, roster_pushes.clone());
+            // `agent_message.wait`: a `waitingOn` change reaches the roster as a delta, and a
+            // backlog arrival counts only while its delivery is still queued.
+            if let Some(waits) = engine.agent_message_waits() {
+                let waiting_roster = roster_pushes.clone();
+                let queue_core = Arc::clone(&core);
+                waits.set_hooks(
+                    Arc::new(move || waiting_roster.push()),
+                    Arc::new(move |message_id| {
+                        let core = queue_core
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        core.steering
+                            .iter()
+                            .chain(core.follow_up.iter())
+                            .any(|item| {
+                                item.custom_message
+                                    .as_ref()
+                                    .and_then(|row| row.pointer("/details/id"))
+                                    .and_then(Value::as_str)
+                                    == Some(message_id)
+                            })
+                    }),
+                );
+            }
             // The kernel's opt-in `model.set_effort` applies through the same thinking switch
             // as the `set_thinking_level` command (minus the settings default).
             if let Some(concrete) = agent_engine.as_ref() {

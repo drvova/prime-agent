@@ -200,6 +200,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
                     last_emitted_status: None,
                     rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+                    queued_ms: created.queued_ms,
                 };
                 let record = Arc::new(Mutex::new(record));
                 this.children.lock().await.push(Arc::clone(&record));
@@ -334,6 +335,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 name,
                 session_dir: created.session_dir,
                 model,
+                queued_ms: created.queued_ms,
             })
         })
     }

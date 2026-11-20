@@ -95,12 +95,28 @@ impl SessionUi {
                 self.pending_model_sign_in = None;
                 self.error_row(&message, view);
             }
-            AuthSelectorAction::Login { provider, api_key } => {
+            AuthSelectorAction::Login {
+                provider,
+                api_key,
+                target,
+            } => {
                 view.provider_auth = None;
+                let surface = if self.pending_model_sign_in.is_some() {
+                    crate::provider_auth::CredentialSurface::ModelPicker
+                } else {
+                    crate::provider_auth::CredentialSurface::Login
+                };
                 // The panel-prompted key: store it directly, no panel needed.
                 if let Some(api_key) = api_key {
                     let auth = self.provider_auth.clone().expect("the selector was open");
-                    let outcome = auth.0.login(&provider, Some(&api_key)).await;
+                    let outcome = auth.0.login(&provider, Some(&api_key), &target).await;
+                    crate::provider_auth::track_credential_added(
+                        self.telemetry.as_ref(),
+                        &provider,
+                        &target,
+                        surface,
+                        &outcome,
+                    );
                     self.apply_auth_outcome(outcome, &provider.id, view).await;
                     // Re-check the Anthropic subscription warning after credentials change —
                     // the credential's shape decides (a plain API key never warns).
@@ -116,11 +132,11 @@ impl SessionUi {
                         || crate::provider_auth::SUBSCRIPTION_PROVIDER_IDS
                             .contains(&provider.id.as_str())
                     {
-                        self.start_provider_panel_login(&provider, auth, view);
+                        self.start_provider_panel_login(&provider, &target, surface, auth, view);
                     } else {
                         // A row reaching here answers the silent cancel — no after-selection
                         // error wall.
-                        let outcome = auth.0.login(&provider, None).await;
+                        let outcome = auth.0.login(&provider, None, &target).await;
                         self.apply_auth_outcome(outcome, &provider.id, view).await;
                     }
                 }
@@ -151,6 +167,8 @@ impl SessionUi {
     fn start_provider_panel_login(
         &mut self,
         provider: &crate::provider_auth::ProviderRow,
+        target: &crate::provider_auth::LoginTarget,
+        surface: crate::provider_auth::CredentialSurface,
         auth: crate::provider_auth::ProviderAuthCommandsHandle,
         view: &mut AgentView,
     ) {
@@ -168,8 +186,20 @@ impl SessionUi {
             .contains(&provider.id.as_str())
             .then(|| panel.cancel_flag());
         let provider = provider.clone();
+        let target = target.clone();
+        let telemetry = self.telemetry.clone();
         tokio::spawn(async move {
-            let outcome = auth.0.login_on_panel(&provider, panel.clone()).await;
+            let outcome = auth
+                .0
+                .login_on_panel(&provider, panel.clone(), &target)
+                .await;
+            crate::provider_auth::track_credential_added(
+                telemetry.as_ref(),
+                &provider,
+                &target,
+                surface,
+                &outcome,
+            );
             // The driving surface already exited (Esc, or a newer login re-armed): applying a stale
             // settle would close the NEWER flow's panel — so it never lands.
             if !panel.cancelled() {

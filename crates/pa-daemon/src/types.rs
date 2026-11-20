@@ -96,6 +96,10 @@ pub struct SessionSummary {
     /// boundaries so an idle row never carries one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub progress_note: Option<String>,
+    /// The family member a parked `agent_message.wait` names (its active session id, or durable
+    /// id for a passivated child); omitted while no named wait is parked. Cycle detection walks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_on: Option<String>,
     /// The session's tool calls so far (TS `toolUseCount`, omitted when
     /// zero): bumped per `tool_execution_start`, re-seeded from the session
     /// file when a worker opens it so a revived child never resets it.

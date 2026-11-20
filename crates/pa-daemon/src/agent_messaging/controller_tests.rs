@@ -6,7 +6,9 @@ use super::*;
 use crate::protocol::{response_failure, response_success};
 use crate::rlm_children::RlmChildIdentity;
 use crate::supervisor_link::SupervisorLink;
-use pa_core::session_engine::agent_messaging::{AgentMessageController, AgentObserveController};
+use pa_core::session_engine::agent_messaging::{
+    AgentMessageController, AgentMessageKind, AgentObserveController,
+};
 use pa_types::platform::transport::bind_transport;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -142,6 +144,7 @@ fn controller(
         worker_token: "tok-a".to_string(),
         own_summary: Arc::new(std::sync::Mutex::new(own_summary)),
         children: None,
+        waits: Arc::default(),
     }
 }
 
@@ -214,6 +217,7 @@ fn input() -> AgentMessageSendInput {
         target: "bbb222".to_string(),
         message: "hello there".to_string(),
         receiver_role: Some(AgentFamilyRelationship::Sibling),
+        kind: AgentMessageKind::Direct,
     }
 }
 
@@ -390,6 +394,7 @@ async fn self_target_is_refused() {
             target: "aaa111".to_string(),
             message: "note to self".to_string(),
             receiver_role: None,
+            kind: AgentMessageKind::Direct,
         })
         .await
         .unwrap_err();
