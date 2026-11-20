@@ -1757,7 +1757,9 @@ const AGENT_CONTEXT_PAGING: EventRule = EventRule {
         (
             "spill_bytes_bucket",
             required(enum_rule(
-                &["none", "lt_1mb", "lt_16mb", "lt_64mb", "lt_256mb", "ge_256mb"],
+                &[
+                    "none", "lt_1mb", "lt_16mb", "lt_64mb", "lt_256mb", "ge_256mb",
+                ],
                 "none",
             )),
         ),

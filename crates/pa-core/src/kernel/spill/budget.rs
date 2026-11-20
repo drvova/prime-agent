@@ -49,7 +49,9 @@ impl OutputBudget {
     /// Record the fill of the request about to go out.
     pub(crate) fn observe(&self, used_tokens: u64, window_tokens: u64) {
         self.fill.used_tokens.store(used_tokens, Ordering::Relaxed);
-        self.fill.window_tokens.store(window_tokens, Ordering::Relaxed);
+        self.fill
+            .window_tokens
+            .store(window_tokens, Ordering::Relaxed);
     }
 
     /// The per-stream cap the next cell runs with.

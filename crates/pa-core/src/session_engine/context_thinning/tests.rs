@@ -124,7 +124,12 @@ fn request_bytes(messages: &[AgentMessage]) -> Vec<u8> {
 fn below_the_threshold_the_view_is_unchanged() {
     let messages = history(20, 4_000);
 
-    let view = thin_context(messages.clone(), 1_000_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
+    let view = thin_context(
+        messages.clone(),
+        1_000_000,
+        &ThinningSettings::default(),
+        &ThinnedRecall::ToolResult,
+    );
 
     assert_eq!(
         view,
@@ -158,7 +163,12 @@ fn above_the_threshold_old_big_results_thin_and_protected_ones_stay() {
         "python_repl",
     ));
 
-    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
+    let view = thin_context(
+        messages.clone(),
+        20_000,
+        &ThinningSettings::default(),
+        &ThinnedRecall::ToolResult,
+    );
 
     let mut expected = messages.clone();
     let mut chars_saved = 0;
@@ -188,7 +198,12 @@ fn the_prefix_holds_byte_identical_until_the_boundary_advances() {
     // 17..=23 rounds: thinnable 9..=15, so the boundary stays at round 8.
     for rounds in 17..=23 {
         let messages = history(rounds, 4_000);
-        let view = thin_context(messages.clone(), 20_000, &settings, &ThinnedRecall::ToolResult);
+        let view = thin_context(
+            messages.clone(),
+            20_000,
+            &settings,
+            &ThinnedRecall::ToolResult,
+        );
         assert_eq!(
             view,
             thin_context(messages, 20_000, &settings, &ThinnedRecall::ToolResult),
@@ -203,7 +218,12 @@ fn the_prefix_holds_byte_identical_until_the_boundary_advances() {
         previous = Some(view.messages);
     }
     // Round 24 advances the boundary by a whole block: rounds 8..16 thin.
-    let advanced = thin_context(history(24, 4_000), 20_000, &settings, &ThinnedRecall::ToolResult);
+    let advanced = thin_context(
+        history(24, 4_000),
+        20_000,
+        &settings,
+        &ThinnedRecall::ToolResult,
+    );
     let previous = previous.expect("prior view");
     assert_eq!(advanced.stats.thinned_results, 16);
     assert_eq!(advanced.messages[..18], previous[..18]);
@@ -226,7 +246,12 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     register_tool_result_recall(&mut handlers, &session);
     let recall = handlers.get("rlm.session.tool_result").expect("registered");
 
-    let view = thin_context(messages.clone(), 20_000, &ThinningSettings::default(), &ThinnedRecall::ToolResult);
+    let view = thin_context(
+        messages.clone(),
+        20_000,
+        &ThinningSettings::default(),
+        &ThinnedRecall::ToolResult,
+    );
     let pointer = result_text(&view.messages[2]);
     let call = pointer
         .split("rlm.session.tool_result(\"")
@@ -341,7 +366,12 @@ fn a_long_session_sends_fewer_request_bytes_per_turn() {
             false,
         ));
         let before = request_bytes(&messages).len();
-        let view = thin_context(messages.clone(), 200_000, &settings, &ThinnedRecall::ToolResult);
+        let view = thin_context(
+            messages.clone(),
+            200_000,
+            &settings,
+            &ThinnedRecall::ToolResult,
+        );
         let after = request_bytes(&view.messages).len();
         before_total += before;
         after_total += after;
@@ -365,7 +395,10 @@ fn a_long_session_sends_fewer_request_bytes_per_turn() {
     );
     // The last turn carries the whole history; thinning must cut it hard.
     let last_before = request_bytes(&messages).len();
-    let last_after = request_bytes(&thin_context(messages, 200_000, &settings, &ThinnedRecall::ToolResult).messages).len();
+    let last_after = request_bytes(
+        &thin_context(messages, 200_000, &settings, &ThinnedRecall::ToolResult).messages,
+    )
+    .len();
     assert!(
         last_after * 3 < last_before,
         "thinning kept {last_after} of {last_before} bytes"
