@@ -133,27 +133,23 @@ impl TurnRunner {
                 // while memory was plentiful shortens when it runs low (the idle clock keeps
                 // running: a recheck is not a park).
                 loop {
-                    match self.idle_passivation_window() {
-                        Some((remaining, threshold)) => {
-                            let wait = match threshold.source {
-                                crate::idle_eviction::ThresholdSource::User => remaining,
-                                crate::idle_eviction::ThresholdSource::MemoryPressure => {
-                                    remaining.min(crate::idle_eviction::ADAPTIVE_RECHECK)
-                                }
-                            };
-                            tokio::select! {
-                                () = self.work_notify.notified() => break,
-                                () = tokio::time::sleep(wait) => {
-                                    if wait >= remaining {
-                                        self.maybe_request_idle_passivation().await;
-                                        break;
-                                    }
-                                }
-                            }
+                    let Some((remaining, threshold)) = self.idle_passivation_window() else {
+                        self.work_notify.notified().await;
+                        break;
+                    };
+                    let wait = match threshold.source {
+                        crate::idle_eviction::ThresholdSource::User => remaining,
+                        crate::idle_eviction::ThresholdSource::MemoryPressure => {
+                            remaining.min(crate::idle_eviction::ADAPTIVE_RECHECK)
                         }
-                        None => {
-                            self.work_notify.notified().await;
-                            break;
+                    };
+                    tokio::select! {
+                        () = self.work_notify.notified() => break,
+                        () = tokio::time::sleep(wait) => {
+                            if wait >= remaining {
+                                self.maybe_request_idle_passivation().await;
+                                break;
+                            }
                         }
                     }
                 }
