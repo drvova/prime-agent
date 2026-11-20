@@ -686,6 +686,13 @@ impl SessionUi {
                 self.clear_side_question(true, view);
                 return Ok(());
             }
+            // A running `/better` owns the first press: it cancels, and nothing was sent. The
+            // next press runs the ladder below (stopping the agent as usual).
+            if self.cancel_better(view) {
+                self.escape_repeat_action = None;
+                self.escape_repeat_until = None;
+                return Ok(());
+            }
             // Leaving browse mode restores the stashed draft instead of arming an
             // accidental empty-submit delete of the selected queued message.
             if self.queue_selection.has_draft() {

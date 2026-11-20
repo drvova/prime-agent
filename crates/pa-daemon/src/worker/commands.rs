@@ -63,6 +63,12 @@ impl Worker {
                 }
                 self.side_questions.abort(payload)
             }
+            "record_better_outcome" => {
+                if let Err(response) = self.require_created("record_better_outcome") {
+                    return response;
+                }
+                self.side_questions.record_better_outcome(payload)
+            }
             "compact" => self.handle_compaction(payload).await,
             "abort_compaction" => {
                 self.compaction.abort();

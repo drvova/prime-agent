@@ -1008,6 +1008,9 @@ impl SessionEngine for AgentSessionEngine {
         signal: &pa_agent::abort::AbortSignal,
         sink: &pa_core::session_engine::side_question::SideQuestionSink,
     ) -> SideQuestionOutcome {
+        if request.kind == pa_types::better::SideRunKind::Better {
+            return self.run_better(&request.question, signal, sink);
+        }
         let model = match self.session_model() {
             Ok(model) => model,
             Err(error) => {
@@ -1079,6 +1082,12 @@ impl SessionEngine for AgentSessionEngine {
                         .unwrap_or_else(|| "Side question failed".to_string()),
                 }
             }
+        }
+    }
+
+    fn note_better_outcome(&self, outcome: pa_types::better::ComposerOutcome) {
+        if let Some(built) = self.session.blocking_lock().clone() {
+            built.better.note_composer_outcome(outcome);
         }
     }
 

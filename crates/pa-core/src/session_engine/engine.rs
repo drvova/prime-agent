@@ -165,6 +165,8 @@ pub struct SessionEngine {
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
     /// The session's current resources and the `rlm.reload`/`/reload` re-read.
     pub resource_reload: std::sync::Arc<super::resource_reload::ResourceReload>,
+    /// The `/better` runner the TUI command, the session command, and the kernel share.
+    pub better: std::sync::Arc<super::better::BetterHost>,
 }
 
 /// Skill overrides for built-in integrations the user is not logged into,
@@ -590,6 +592,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .as_deref()
                 .and_then(super::harness_digest::session_artifact_dir_for_log)
         });
+    // `/better`: its helper binds to the agent once it exists; an unparsed reply is kept in the
+    // session's spill store.
+    let better = std::sync::Arc::new(super::better::BetterHost::new(
+        cwd.clone(),
+        config
+            .telemetry
+            .is_some()
+            .then(|| std::sync::Arc::clone(&session_counters)),
+        session_artifact_dir
+            .as_deref()
+            .map(crate::kernel::spill::SpillStore::for_session_dir),
+    ));
     let local_harness_dir =
         crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref());
     // The only sessions whose `refine.*` host requests register and the
@@ -1212,6 +1226,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // park read the recorder; the side question keeps the pre-semantic
     // fn so its calls carry no id.
     session.set_semantic_edges(semantic_recorder);
+    // The helper rides the side question's pre-semantic fn for the same reason.
+    better.bind(
+        &agent,
+        std::sync::Arc::clone(&side_question_stream_fn),
+        session.model_usage_recorder(),
+    );
     session.set_side_question_stream_fn(side_question_stream_fn);
     // The armed image route never outlives the run that armed it (TS
     // `_clearModelOverrideWhenIdle`: the override drops once the turn is
@@ -1335,6 +1355,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         resource_reload,
+        better,
     })
 }
 

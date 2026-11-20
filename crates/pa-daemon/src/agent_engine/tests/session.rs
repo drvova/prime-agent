@@ -159,6 +159,7 @@ fn a_side_question_bills_the_session_it_ran_on() {
         crate::engine::SideQuestionRequest {
             side_question_id: "sq".to_string(),
             question: "why?".to_string(),
+            kind: pa_types::better::SideRunKind::Question,
             previous_turns: Vec::new(),
         },
         &pa_agent::abort::AbortController::new().signal(),

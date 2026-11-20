@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 
 /// Session-executed commands (their behavior lives in the session engine).
-pub const SESSION_SLASH_COMMAND_NAMES: [&str; 4] = ["compact", "refine", "goal", "autonomous"];
+/// `better` runs client-side in the TUI (the rewrite lands in the composer) and in the session
+/// everywhere else (the rewrite comes back as the result row).
+pub const SESSION_SLASH_COMMAND_NAMES: [&str; 5] = ["compact", "refine", "goal", "autonomous", "better"];
 
 /// Durable row custom types (TS `messages.ts`): the command echo and its
 /// result, persisted in sessions and rendered by every surface.
@@ -73,6 +75,7 @@ const CANONICAL_BUILTIN_SLASH_COMMANDS: &[BuiltinSlashCommand] = &[
     BuiltinSlashCommand { name: "compact", description: "Compact the session context; optional instructions focus the summary", execution: SlashCommandExecution::Session, argument_hint: Some("[instructions]"), aliases: &[], takes_argument: false },
     BuiltinSlashCommand { name: "refine", description: "Refine continual harness prompt notes, skills, subagents, and memory", execution: SlashCommandExecution::Session, argument_hint: None, aliases: &[], takes_argument: false },
     BuiltinSlashCommand { name: "goal", description: "Set or view a persistent goal; supports pause, resume, and clear", execution: SlashCommandExecution::Session, argument_hint: Some("[objective]"), aliases: &[], takes_argument: true },
+    BuiltinSlashCommand { name: "better", description: "Rewrite a prompt into the deeper version a top professional would ask for, grounded in your code; it lands in the input box unsent", execution: SlashCommandExecution::Session, argument_hint: Some("<prompt>"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "autonomous", description: "Set or view autonomous mode with an optional budget", execution: SlashCommandExecution::Session, argument_hint: Some("[status|off|on [--max-continuations <n>] [--max-turns <n>] [--max-tokens <n>] [--timeout-ms <n>] [--gate <command>]]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "rlm-max-depth", description: "Set/view the per-chat persistent RLM max depth immediately; never interrupts or queues the running turn", execution: SlashCommandExecution::Client, argument_hint: Some("[<int> [--global]]"), aliases: &[], takes_argument: true },
     BuiltinSlashCommand { name: "heartbeat", description: "Set or view a persistent heartbeat; delivery defaults to steer, use --follow-up to queue; supports pause, resume, stop, and clear", execution: SlashCommandExecution::Client, argument_hint: Some("[status|pause|resume|stop|[every <duration>] [--steer|--follow-up] <instruction>]"), aliases: &[], takes_argument: true },

@@ -322,6 +322,11 @@ impl SpillStore {
         handle
     }
 
+    /// The file a stored spill's text lives in (the user can open it while no reader exists).
+    pub(crate) fn stored_path(&self, id: &str) -> PathBuf {
+        self.inner.state.spill_path(id)
+    }
+
     /// The writer thread's queue, starting the thread on first use. A thread
     /// that cannot start leaves a disconnected queue: every spill then
     /// answers "not stored".

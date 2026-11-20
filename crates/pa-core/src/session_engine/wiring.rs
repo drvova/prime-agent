@@ -107,6 +107,23 @@ impl AgentSession {
         self.usage_store = store;
     }
 
+    /// The `/better` helper's bill recorder: [`Self::record_model_usage`] for a run that
+    /// outlives this borrow.
+    #[must_use]
+    pub fn model_usage_recorder(&self) -> super::better::UsageRecorder {
+        let session = std::sync::Arc::clone(&self.session);
+        let store = std::sync::Arc::clone(&self.usage_store);
+        std::sync::Arc::new(move |usage| {
+            let (session, store) = (std::sync::Arc::clone(&session), std::sync::Arc::clone(&store));
+            Box::pin(async move {
+                let session_id = session.lock().await.get_session_id().to_string();
+                if let Err(error) = store.append_model_usage(session_id, usage).await {
+                    eprintln!("pa-core: model usage row not persisted: {error}");
+                }
+            })
+        })
+    }
+
     /// Record one billed model call made outside the agent loop. A failed
     /// append is logged; the call's result stands either way. Once handed
     /// off, the append survives cancellation of this caller, and it lands
