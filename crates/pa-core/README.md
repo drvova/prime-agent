@@ -247,7 +247,10 @@ attach `persisted` after successful disk writes, and own the returned installati
 for the session lifetime. Replacements use `rebind` with the effective cwd; forks
 use `forked`. The installation never drains on drop. A detached process-wide runtime
 owns all transcript reads, scans, settings reloads, networking and retries; a maximum
-of 256 registered controllers and four deliveries bounds resident work. Admission
+of 256 registered controllers bounds resident work, and every request (live delivery, its
+recovery sweep, and `upload_all_traces`) takes a permit from one shared, background-class trace
+controller (`TraceRequestGate::shared`: `pa_types::control` through pa-ai's permit pool, 5
+requests a minute and 2..=4 in flight, cut on 429/503 with `Retry-After`). Admission
 returns `None` at capacity and logs rejection; hosts attach no hook in that case.
 Retired descriptors free capacity only after background recovery acknowledges them.
 Session replacement transfers its existing slot and cancels the predecessor; forks
