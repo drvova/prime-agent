@@ -31,8 +31,16 @@ it found.
   calls with literal arguments, and its `bash` accepts one read-only `git` command (`log`,
   `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) with no pipes, redirects, or
   substitutions. The host refuses every edit and write.
-- Its reads are bounded (a small read budget and a wall-clock limit), and nothing it reads or
-  writes enters the session's history. Its model calls are billed to the session.
+- Its reads adapt, with nothing to configure. A run starts with the reads this project has
+  learned it needs (rewrites you discard make later runs start deeper; rewrites you send as is
+  make them start lean), and gets more only while the helper still lists references it has not
+  located, up to a hard ceiling and a wall-clock limit. Nothing it reads or writes enters the
+  session's history. Its model calls are billed to the session.
+- The result is verified mechanically. Every path, symbol, and command the rewrite cites in
+  backticks must resolve in the repository (a path must exist, a symbol must occur in a file, a
+  command's program must be installed; nothing is run). Unverified references go back to the
+  helper for one refine pass, and any that still do not resolve are named on a last
+  `Unverified (not found in the repository):` line under the rewrite.
 - One run at a time. Esc cancels a running rewrite; nothing is sent either way.
 - Errors are shown as they came. When the helper's reply has no rewrite, the whole reply is
   kept in the session's spill store and the error names its `out:<id>` handle and file.

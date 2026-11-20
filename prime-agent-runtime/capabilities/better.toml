@@ -19,4 +19,5 @@ properties = [
   "better_discarded_count",
   "better_brief_run_count",
   "better_brief_unchanged_count",
+  "better_verification_pass_count",
 ]

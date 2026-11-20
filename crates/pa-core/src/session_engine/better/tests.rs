@@ -40,7 +40,7 @@ pub(super) fn host(
     cwd: &Path,
     spill: Option<crate::kernel::spill::SpillStore>,
 ) -> BetterHost {
-    let host = BetterHost::new(cwd.to_path_buf(), None, spill);
+    let host = BetterHost::new(cwd.to_path_buf(), None, None, spill);
     host.bind(
         parent,
         provider.stream_fn(),
@@ -257,6 +257,7 @@ async fn cancelling_a_run_ends_it_cancelled() {
 #[tokio::test]
 async fn a_brief_that_needs_nothing_comes_back_unchanged_through_the_kernel_request() {
     let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("parser.rs"), "fn parse() {}\n").unwrap();
     let provider = Arc::new(ScriptedProvider::new(test_model()));
     provider.push_text_turn("<unchanged/>");
     let parent = parent_agent(&provider);
@@ -274,4 +275,114 @@ async fn a_brief_that_needs_nothing_comes_back_unchanged_through_the_kernel_requ
     let sent = serde_json::to_string(&provider.calls()[0].messages).unwrap();
     assert!(!sent.contains("we talked about the parser"), "{sent}");
     assert!(sent.contains("<prime_better mode=\\\"brief\\\">"), "{sent}");
+}
+
+/// The last user message the helper sent in the given provider call.
+fn last_prompt(provider: &ScriptedProvider, call: usize) -> String {
+    provider.calls()[call]
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            Message::User(user) => Some(serde_json::to_string(&user.content).unwrap()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+fn reply_citing(rewrite: &str, unresolved: &str) -> String {
+    format!("<depth>(4) a test</depth>\n<unresolved>\n{unresolved}\n</unresolved>\n<rewrite>\n{rewrite}\n</rewrite>")
+}
+
+/// A rewrite that cites a path the repository does not have goes back for one refine pass, and
+/// the refined rewrite (which dropped it) is what the user gets.
+#[tokio::test]
+async fn an_invented_path_is_dropped_by_verification() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("parser.rs"), "fn parse_expr() {}\n").unwrap();
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn(&reply_citing(
+        "Fix `parse_expr` in `parser.rs` and `src/lexer.rs`.",
+        "",
+    ));
+    provider.push_text_turn(&reply_citing("Fix `parse_expr` in `parser.rs`.", ""));
+    let parent = parent_agent(&provider);
+    let outcome = host(&provider, &parent, dir.path(), None)
+        .run(&deepen("fix the parser"), &AbortSignal::never(), &quiet())
+        .await;
+    assert_eq!(
+        outcome,
+        BetterOutcome::Rewritten {
+            rewrite: "Fix `parse_expr` in `parser.rs`.".to_string(),
+            unchanged: false,
+        }
+    );
+    let refine = last_prompt(&provider, 1);
+    assert!(refine.contains("- `src/lexer.rs`"), "{refine}");
+    assert!(!refine.contains("- `parser.rs`"), "{refine}");
+}
+
+/// A reference the refine pass keeps is named under the rewrite; verification never runs a
+/// second refine pass.
+#[tokio::test]
+async fn a_reference_that_still_does_not_resolve_is_reported_under_the_rewrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    for _ in 0..2 {
+        provider.push_text_turn(&reply_citing("Run `no-such-tool-xyz --check` first.", ""));
+    }
+    let parent = parent_agent(&provider);
+    let outcome = host(&provider, &parent, dir.path(), None)
+        .run(&deepen("check it"), &AbortSignal::never(), &quiet())
+        .await;
+    assert_eq!(
+        outcome,
+        BetterOutcome::Rewritten {
+            rewrite: format!(
+                "Run `no-such-tool-xyz --check` first.\n\n{UNVERIFIED_LABEL} `no-such-tool-xyz --check`"
+            ),
+            unchanged: false,
+        }
+    );
+    assert_eq!(provider.calls().len(), 2);
+}
+
+/// The budget grows only while references stay unresolved: a reply listing one earns a
+/// grounding pass with more reads, and a reply listing none ends the run.
+#[tokio::test]
+async fn unresolved_references_earn_a_grounding_pass_and_resolved_ones_end_the_run() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("lexer.rs"), "fn lex() {}\n").unwrap();
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    provider.push_text_turn(&reply_citing("Fix the parser.", "the lexer source"));
+    provider.push_tool_call_turn(
+        None,
+        vec![(
+            "c1",
+            pa_types::ai::PYTHON_TOOL_NAME,
+            json!({ "code": "print(await fs.read('lexer.rs'))" }),
+        )],
+    );
+    provider.push_text_turn(&reply_citing(
+        "Fix the parser; the tokens come from `lexer.rs`.",
+        "",
+    ));
+    let parent = parent_agent(&provider);
+    let outcome = host(&provider, &parent, dir.path(), None)
+        .run(&deepen("fix the parser"), &AbortSignal::never(), &quiet())
+        .await;
+    assert_eq!(
+        outcome,
+        BetterOutcome::Rewritten {
+            rewrite: "Fix the parser; the tokens come from `lexer.rs`.".to_string(),
+            unchanged: false,
+        }
+    );
+    let grounding = last_prompt(&provider, 1);
+    assert!(grounding.contains("the lexer source"), "{grounding}");
+    assert!(
+        grounding.contains(&format!("You have {GROWTH_STEP} more reads")),
+        "{grounding}"
+    );
+    assert_eq!(provider.calls().len(), 3);
 }

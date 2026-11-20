@@ -605,6 +605,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
+        Some(&config.agent_dir),
         config
             .telemetry
             .is_some()

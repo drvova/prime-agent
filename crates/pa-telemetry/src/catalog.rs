@@ -1616,7 +1616,7 @@ const AGENT_GOAL_VERIFICATION: EventRule = EventRule {
 /// `/better` adoption for one session (v2), emitted at session end beside `agent session ended`
 /// (which sits near the backend's 128-key cap) only when a rewrite ran: runs and how each ended
 /// (completed, cancelled, failed), and what the user did with an inserted rewrite (sent as is,
-/// edited, discarded), and the kernel's brief-mode runs and how many needed no fix. Counts only:
+/// edited, discarded), the kernel's brief-mode runs and how many needed no fix, and the refine passes verification ran. Counts only:
 /// never a prompt, a rewrite, or a path.
 const AGENT_BETTER_PROMPT: EventRule = EventRule {
     name: "agent better prompt",
@@ -1632,6 +1632,7 @@ const AGENT_BETTER_PROMPT: EventRule = EventRule {
         ("better_discarded_count", required(count())),
         ("better_brief_run_count", required(count())),
         ("better_brief_unchanged_count", required(count())),
+        ("better_verification_pass_count", required(count())),
     ],
 };
 
