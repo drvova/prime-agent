@@ -25,6 +25,7 @@ The following programmatic tools are available in the REPL for subagent manageme
 The following programmatic tools are available in the REPL for a2a communication:
 
 - `agent_message.send(message: str, *, receiver_role: Literal["parent", "sibling", "child"], receiver_name: str | None) -> dict`: send a message to the receiver; returns a receipt with the message id and a delivery status (delivered, queued, or wake_refused); all root sessions are siblings; `send("all", broadcast_message)` broadcasts to the family roster and returns `{receipts: [...]}`
+- `agent_message.wait(*, sender: str | None = None, sender_role: str | None = None, timeout_ms: int) -> dict`: wait (1 to 600000 ms) for a direct message from that family member (anyone when both are omitted; broadcasts never end a wait); returns `{outcome, messageId, senderName, senderRole, preview, blockedVia}` with outcome `message`, `timeout`, `cycle` (the sender already waits on you, so send instead) or `no_sender`; the body still arrives as the normal agent-message turn
 - `agent_observe.list_agents() -> dict`: list nuclear family
 - `agent_observe.get_agent(target: str) -> dict`: one agent's status detail
 - `agent_observe.recent_messages(target: str, limit: int = 8, max_chars: int = 800) -> dict`: transcript preview; `limit` errors outside [1-50], `max_chars` outside [80-2000]
@@ -60,6 +61,8 @@ prime-agent compacts automatically when there is only a given number of tokens l
 - `compact.run(instructions: str | None = None) -> dict`: schedule a compaction at the next assistant turn boundary
 - `compact.status() -> dict`: context usage & threshold before auto-compaction
 {{capability:session}}
+
+{{capability:ctx}}
 
 ## Goal
 
@@ -111,4 +114,4 @@ Read-only views of what this session runs with; nothing here is a credential.
 
 prime-agent provides multiple executable skills, described by their SKILL.md and executable code. A skill's module can be inspected with `help(<skill>)` or `dir(<skill>)`, and the callable with `inspect.signature(<skill>.<function>)`, if information is missing. The executable code is always pre-imported in the REPL as a programmatic tool, and a callable skill module can be called directly (`await <skill>(...)`).
 
-All programmatic tools described above except for {{prompt_builtins:bash,core,mcp,web,fs,schedule,checkpoint,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.
+All programmatic tools described above except for {{prompt_builtins:bash,core,mcp,web,fs,ctx,schedule,checkpoint,todo,usage,model,settings,ask,notify}} are implemented as executable skills and will be listed again in the dynamic tail of this prompt. Additional executable and non-executable skills may exist as well; non-executable (markdown) skills are documentation read from disk, and each skill is also available as a shell command by the same name.

@@ -294,6 +294,7 @@ impl Worker {
             .find_map(|key| sender.get(*key).and_then(Value::as_str))
             .unwrap_or("unknown")
             .to_string();
+        let sender_label = sender_name.clone();
         // The relationship label derives from the sender's durable parent edge,
         // never the runtime kind alone: a subagent spawned by a DIFFERENT parent
         // is not this session's child.
@@ -310,6 +311,9 @@ impl Worker {
                 sender_name,
                 from_relationship,
             },
+        );
+        let kind = pa_core::session_engine::agent_messaging::AgentMessageKind::from_wire(
+            payload.get("messageKind").and_then(Value::as_str),
         );
         let lane = if payload.get("deliveryMode").and_then(Value::as_str) == Some("follow_up") {
             Lane::FollowUp
@@ -430,6 +434,24 @@ impl Worker {
         });
         let _ = self.emit_action_update(&snapshot);
         self.work_notify.notify_one();
+        // A parked `agent_message.wait` hears the accepted delivery (identity and preview only:
+        // the body still arrives once, as the queued turn above).
+        if let Some(waits) = self.engine.agent_message_waits() {
+            waits.deliver(crate::agent_message_wait::AgentMessageArrival {
+                message_id: id.clone(),
+                sender_ids: ["activeSessionId", "sessionId"]
+                    .iter()
+                    .filter_map(|key| sender.get(*key).and_then(Value::as_str))
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                sender_name: sender_label,
+                preview: pa_core::session_engine::agent_messaging::create_agent_message_preview(
+                    message,
+                ),
+                kind,
+            });
+        }
         let timestamp = crate::util::now_iso();
         let mut receipt = json!({
             "id": id,

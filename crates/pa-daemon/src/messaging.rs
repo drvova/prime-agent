@@ -33,6 +33,7 @@ impl Supervisor {
             message,
             from_active_session_id,
             delivery_mode,
+            rest,
             ..
         } = command
         else {
@@ -117,7 +118,12 @@ impl Supervisor {
             message: message.clone(),
             sender,
             delivery_mode: delivery_mode.clone(),
-            rest: Map::default(),
+            // A broadcast's `messageKind` rides to the receiver (it never ends a wait there).
+            rest: rest
+                .get("messageKind")
+                .filter(|kind| kind.is_string())
+                .map(|kind| Map::from_iter([("messageKind".to_string(), kind.clone())]))
+                .unwrap_or_default(),
         };
         let payload = match serde_json::to_value(&delivery) {
             Ok(payload) => payload,

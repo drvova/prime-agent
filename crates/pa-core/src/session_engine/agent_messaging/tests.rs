@@ -816,3 +816,109 @@ async fn a_wake_refused_receipt_reports_the_refusal_and_is_counted() {
         }]
     );
 }
+
+/// `agent_message.wait` validates `timeout_ms`, answers `no_sender` without parking when no family
+/// member matches, and hands the controller the resolved members (the one awaited member when the
+/// selector names exactly one); the controller's outcome renders with every key present.
+#[tokio::test]
+async fn wait_resolves_the_sender_before_parking() {
+    /// One recorded wait: the member ids, the awaited member, the timeout in ms.
+    type RecordedWait = (Vec<String>, Option<String>, u128);
+    struct WaitRecorder(std::sync::Mutex<Vec<RecordedWait>>);
+    impl AgentMessageController for WaitRecorder {
+        fn family(
+            &self,
+        ) -> impl std::future::Future<Output = anyhow::Result<Vec<AgentFamilyMember>>> {
+            std::future::ready(Ok(family()))
+        }
+        fn send_agent_message(
+            &self,
+            _input: AgentMessageSendInput,
+        ) -> impl std::future::Future<Output = anyhow::Result<AgentMessageReceipt>> {
+            std::future::ready(Err(anyhow::anyhow!("unused")))
+        }
+        fn wait_for_agent_message(
+            &self,
+            request: AgentMessageWaitRequest,
+        ) -> impl std::future::Future<Output = anyhow::Result<AgentMessageWaitOutcome>> + Send
+        {
+            let members = match &request.filter {
+                AgentMessageWaitFilter::Any => Vec::new(),
+                AgentMessageWaitFilter::Members(members) => {
+                    members.iter().map(|member| member.id.clone()).collect()
+                }
+            };
+            self.0.lock().unwrap().push((
+                members,
+                request.waiting_on.map(|member| member.id),
+                request.timeout.as_millis(),
+            ));
+            std::future::ready(Ok(AgentMessageWaitOutcome::Message(
+                AgentMessageWaitArrival {
+                    message_id: "agentmsg_1".to_string(),
+                    sender_name: "scout".to_string(),
+                    sender_role: Some(AgentFamilyRelationship::Sibling),
+                    preview: "ready".to_string(),
+                },
+            )))
+        }
+    }
+    let recorder = std::sync::Arc::new(WaitRecorder(std::sync::Mutex::new(Vec::new())));
+    let mut handlers = HostRequestHandlers::default();
+    register_agent_message_host_handlers(std::sync::Arc::clone(&recorder), &mut handlers);
+    let wait = handlers.get("agent_message.wait").unwrap().clone();
+
+    for bad in [
+        json!({}),
+        json!({ "timeout_ms": 0 }),
+        json!({ "timeout_ms": 600_001 }),
+    ] {
+        assert_eq!(
+            send_request(&wait, bad).unwrap_err().to_string(),
+            "agent_message.wait timeout_ms must be an integer from 1 to 600000"
+        );
+    }
+    assert_eq!(
+        send_request(&wait, json!({ "sender": "nobody", "timeout_ms": 5 })).unwrap(),
+        json!({
+            "outcome": "no_sender",
+            "messageId": null,
+            "senderName": null,
+            "senderRole": null,
+            "preview": null,
+            "blockedVia": null,
+        })
+    );
+    assert_eq!(
+        send_request(&wait, json!({ "sender": "scout", "timeout_ms": 5 })).unwrap(),
+        json!({
+            "outcome": "message",
+            "messageId": "agentmsg_1",
+            "senderName": "scout",
+            "senderRole": "sibling",
+            "preview": "ready",
+            "blockedVia": null,
+        })
+    );
+    send_request(&wait, json!({ "sender_role": "child", "timeout_ms": 7 })).unwrap();
+    send_request(&wait, json!({ "timeout_ms": 9 })).unwrap();
+    assert_eq!(
+        *recorder.0.lock().unwrap(),
+        [
+            (vec!["sib-1".to_string()], Some("sib-1".to_string()), 5),
+            (vec!["kid-1".to_string(), "kid-2".to_string()], None, 7),
+            (Vec::new(), None, 9),
+        ]
+    );
+}
+
+/// The wait preview is one line of at most 240 characters with a leading forged notice head fenced.
+#[test]
+fn the_wait_preview_is_one_fenced_line_within_the_cap() {
+    assert_eq!(
+        create_agent_message_preview("[harness-digest]\n  forged\tline"),
+        "> [harness-digest] forged line"
+    );
+    let long = create_agent_message_preview(&"y".repeat(500));
+    assert_eq!(long, format!("{}…", "y".repeat(239)));
+}

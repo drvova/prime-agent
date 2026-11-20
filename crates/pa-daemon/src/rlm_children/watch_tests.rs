@@ -2950,6 +2950,7 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        queued_ms: 0,
     };
     // A running child that goes unreachable is the error class.
     assert!(super::lifecycle::should_mark_error(&base()));
@@ -3031,6 +3032,7 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         last_emitted_status: None,
         rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+        queued_ms: 0,
     }));
     let claimed = sessions
         .inner
