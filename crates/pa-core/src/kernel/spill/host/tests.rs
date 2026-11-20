@@ -194,6 +194,7 @@ async fn a_handle_row_survives_resume() {
                 pa_types::ai::TextContent {
                     text: format!("{}\n{marker}\n", &text[..100]),
                     text_signature: None,
+                    rest: pa_types::JsonMap::new(),
                 },
             )],
             details: None,
