@@ -422,13 +422,21 @@ pub struct InMemorySettingsStorage {
 impl InMemorySettingsStorage {
     /// Serve `document` as the active profile `name`.
     pub fn set_profile(&self, name: &str, document: &str) {
-        *self.profile.lock().unwrap() = Some((name.to_string(), document.to_string()));
+        *self
+            .profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some((name.to_string(), document.to_string()));
     }
 }
 
 impl SettingsStorage for InMemorySettingsStorage {
     fn profile(&self) -> Result<Option<(String, String)>> {
-        Ok(self.profile.lock().unwrap().clone())
+        Ok(self
+            .profile
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
     }
 
     fn with_lock(
