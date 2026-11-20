@@ -311,6 +311,17 @@ impl IpythonKernelProvisioner {
         self.lock_state().manager.clone()
     }
 
+    /// The spill store user cells page cut output out to: the persistent
+    /// session's, under its artifact directory; `None` for an ephemeral one.
+    #[must_use]
+    pub(crate) fn spill_store(&self) -> Option<crate::kernel::spill::SpillStore> {
+        self.inner
+            .options
+            .snapshot_dir
+            .as_deref()
+            .map(crate::kernel::spill::SpillStore::for_session_dir)
+    }
+
     /// The yield window policy the kernel executor arms user cells with.
     #[must_use]
     pub(crate) fn cell_window(&self) -> &crate::kernel::cell_window::CellWindow {
