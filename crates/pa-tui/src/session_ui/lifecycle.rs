@@ -97,6 +97,8 @@ impl SessionUi {
             anthropic_warning_mark_pending: std::sync::Arc::default(),
             active_side_question_id: None,
             side_question_counter: 0,
+            better_run: None,
+            better_inserted: None,
             share: None,
             reload: None,
             reload_notes,
