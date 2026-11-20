@@ -29,13 +29,14 @@
 //! stay under the store's cap ([`SPILL_STORE_CAP_BYTES`]) by evicting the
 //! oldest stored spills first; an evicted handle answers "evicted".
 
+mod budget;
 pub(crate) mod host;
 mod index;
 mod marker;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
@@ -44,7 +45,10 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
+pub use budget::OutputBudget;
 use index::{Entry, Index, IndexRecord, StoredMeta};
+#[cfg(test)]
+pub(crate) use marker::group_digits;
 
 /// The prefix every spill handle carries (`out:7f3a9c1e04`).
 pub(crate) const HANDLE_PREFIX: &str = "out:";
@@ -105,11 +109,30 @@ struct StoreState {
     /// Spills this process could not queue, with the reason, so their handle
     /// answers "not stored" instead of "unknown".
     refused: Mutex<HashMap<String, String>>,
+    /// Ids this process queued: [`SpillStore::retain`] queues each content
+    /// once.
+    known: Mutex<HashSet<String>>,
     /// The folded index, loaded on first use by the writer or a read.
     index: Mutex<Option<Index>>,
     /// Woken whenever a queued spill resolves.
     settled: tokio::sync::Notify,
+    /// The session's telemetry, once the engine sets it.
+    observer: Mutex<Option<SpillObserver>>,
 }
+
+/// One store event, reported to telemetry (counts and sizes only).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SpillFact {
+    /// A spill was handed to the writer.
+    Queued { bytes: u64 },
+    /// A spill the writer could not take or keep.
+    NotStored,
+    /// The size cap evicted a stored spill.
+    Evicted,
+}
+
+/// Hears each [`SpillFact`] of one store.
+pub(crate) type SpillObserver = Arc<dyn Fn(SpillFact) + Send + Sync>;
 
 /// One queued write.
 struct Job {
@@ -257,8 +280,10 @@ impl SpillStore {
                     cap_bytes,
                     pending: Mutex::new(HashMap::new()),
                     refused: Mutex::new(HashMap::new()),
+                    known: Mutex::new(HashSet::new()),
                     index: Mutex::new(None),
                     settled: tokio::sync::Notify::new(),
+                    observer: Mutex::new(None),
                 }),
             }),
         }
@@ -268,6 +293,30 @@ impl SpillStore {
     /// touches disk and never blocks on the writer.
     pub(crate) fn spill(&self, copy: SpillCopy) -> SpillHandle {
         let id = content_id(&copy.text);
+        self.spill_as(id, copy)
+    }
+
+    /// Page `text` out once per process: its handle, queuing the write only
+    /// when this process has not queued the same content (a refused write
+    /// is queued again by the next call). The request view's thinning calls
+    /// it on every request; its marker never depends on the writer.
+    pub(crate) fn retain(&self, text: &str) -> SpillHandle {
+        let copy = SpillCopy::of_text(text);
+        let id = content_id(&copy.text);
+        if lock(&self.inner.state.known).contains(&id) {
+            return SpillHandle {
+                id,
+                total_chars: copy.total_chars,
+                lines: copy.lines(),
+                stored_chars: copy.total_chars,
+                outcome: SpillOutcome::Queued,
+            };
+        }
+        self.spill_as(id, copy)
+    }
+
+    /// Queue `copy`'s write under `id` (its content hash).
+    fn spill_as(&self, id: String, copy: SpillCopy) -> SpillHandle {
         let meta = StoredMeta {
             bytes: copy.text.len() as u64,
             chars: copy.text.chars().count(),
@@ -283,6 +332,7 @@ impl SpillStore {
         };
         let state = &self.inner.state;
         *lock(&state.pending).entry(id.clone()).or_insert(0) += 1;
+        let handle_bytes = meta.bytes;
         let job = Job {
             id: id.clone(),
             text: copy.text,
@@ -291,12 +341,17 @@ impl SpillStore {
         let refusal = match self.sender().try_send(job) {
             Ok(()) => {
                 lock(&state.refused).remove(&id);
+                lock(&state.known).insert(id);
+                state.note(SpillFact::Queued {
+                    bytes: handle_bytes,
+                });
                 return handle;
             }
             Err(TrySendError::Full(_)) => "the spill writer is busy",
             Err(TrySendError::Disconnected(_)) => "the spill writer is not running",
         };
         state.resolve_pending(&id);
+        state.note(SpillFact::NotStored);
         lock(&state.refused).insert(id, refusal.to_string());
         handle.outcome = SpillOutcome::NotStored(refusal.to_string());
         handle
@@ -305,6 +360,12 @@ impl SpillStore {
     /// The file a stored spill's text lives in (the user can open it while no reader exists).
     pub(crate) fn stored_path(&self, id: &str) -> PathBuf {
         self.inner.state.spill_path(id)
+    }
+
+    /// Report this store's spills, refusals, and evictions to `observer`
+    /// (the session's telemetry).
+    pub(crate) fn set_observer(&self, observer: SpillObserver) {
+        *lock(&self.inner.state.observer) = Some(observer);
     }
 
     /// The writer thread's queue, starting the thread on first use. A thread
@@ -343,6 +404,13 @@ impl SpillStore {
 }
 
 impl StoreState {
+    fn note(&self, fact: SpillFact) {
+        let observer = lock(&self.observer).clone();
+        if let Some(observer) = observer {
+            observer(fact);
+        }
+    }
+
     fn resolve_pending(&self, id: &str) {
         let mut pending = lock(&self.pending);
         if let Some(count) = pending.get_mut(id) {
@@ -468,6 +536,7 @@ impl StoreState {
         let mut guard = lock(&self.index);
         let index = guard.get_or_insert_with(|| Index::load(&self.dir.join(INDEX_FILE)));
         if let Err(error) = attempt {
+            self.note(SpillFact::NotStored);
             self.record(
                 index,
                 IndexRecord::Failed {
@@ -495,6 +564,7 @@ impl StoreState {
                 }
             }
             self.record(index, IndexRecord::Evicted { id: oldest });
+            self.note(SpillFact::Evicted);
         }
     }
 }

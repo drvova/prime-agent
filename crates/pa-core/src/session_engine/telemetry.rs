@@ -414,6 +414,8 @@ struct CounterValues {
     repl_checkpoint: ReplCheckpointCounts,
     /// Kernel `usage.get()` reads, reported by `agent usage reads`.
     usage_read_count: u64,
+    /// Spills and `ctx.*` reads, reported by `agent context paging`.
+    context_paging: ContextPagingCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -500,6 +502,34 @@ struct FsEditCounts {
     rejected: u64,
     stale_anchors: u64,
     edit_failed: u64,
+}
+
+/// `agent context paging`: spills with their bytes, refusals, evictions, and `ctx.*` reads.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct ContextPagingCounts {
+    spills: u64,
+    spill_bytes: u64,
+    not_stored: u64,
+    evicted: u64,
+    page: u64,
+    grep: u64,
+    tail: u64,
+    info: u64,
+}
+
+impl ContextPagingCounts {
+    /// The spilled bytes as a size bucket (never the size itself).
+    fn bytes_bucket(&self) -> &'static str {
+        const MB: u64 = 1024 * 1024;
+        match self.spill_bytes {
+            0 => "none",
+            bytes if bytes < MB => "lt_1mb",
+            bytes if bytes < 16 * MB => "lt_16mb",
+            bytes if bytes < 64 * MB => "lt_64mb",
+            bytes if bytes < 256 * MB => "lt_256mb",
+            _ => "ge_256mb",
+        }
+    }
 }
 
 /// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
@@ -886,6 +916,36 @@ impl SessionCounters {
                 CellWindowSource::ModelTimeout => &mut counts.window_timeout,
                 CellWindowSource::Setting => &mut counts.window_setting,
                 CellWindowSource::ColdDefault => &mut counts.window_default,
+            } += 1;
+        });
+    }
+
+    /// One spill-store event of this session (counts and bytes: never a handle or text).
+    pub(crate) fn note_spill(&self, fact: crate::kernel::spill::SpillFact) {
+        use crate::kernel::spill::SpillFact;
+        self.with(|values| {
+            let counts = &mut values.context_paging;
+            match fact {
+                SpillFact::Queued { bytes } => {
+                    counts.spills += 1;
+                    counts.spill_bytes += bytes;
+                }
+                SpillFact::NotStored => counts.not_stored += 1,
+                SpillFact::Evicted => counts.evicted += 1,
+            }
+        });
+    }
+
+    /// One kernel `ctx.*` read (a count: never a handle or a pattern).
+    pub(crate) fn note_ctx_read(&self, read: crate::kernel::spill::host::CtxRead) {
+        use crate::kernel::spill::host::CtxRead;
+        self.with(|values| {
+            let counts = &mut values.context_paging;
+            *match read {
+                CtxRead::Page => &mut counts.page,
+                CtxRead::Grep => &mut counts.grep,
+                CtxRead::Tail => &mut counts.tail,
+                CtxRead::Info => &mut counts.info,
             } += 1;
         });
     }
@@ -1774,6 +1834,25 @@ impl SessionTelemetry {
             let mut usage_properties = self.session_properties();
             usage_properties.set("usage_read_count", Value::from(usage_reads));
             self.client.track("agent usage reads", usage_properties);
+        }
+        // A session that neither spilled nor read paged-out output sends no paging event.
+        let mut paging = ContextPagingCounts::default();
+        self.counters.with(|values| paging = values.context_paging);
+        if paging != ContextPagingCounts::default() {
+            let mut paging_properties = self.session_properties();
+            for (key, value) in [
+                ("spill_count", paging.spills),
+                ("spill_not_stored_count", paging.not_stored),
+                ("spill_evicted_count", paging.evicted),
+                ("ctx_page_count", paging.page),
+                ("ctx_grep_count", paging.grep),
+                ("ctx_tail_count", paging.tail),
+                ("ctx_info_count", paging.info),
+            ] {
+                paging_properties.set(key, Value::from(value));
+            }
+            paging_properties.set("spill_bytes_bucket", Value::from(paging.bytes_bucket()));
+            self.client.track("agent context paging", paging_properties);
         }
         // A session that recorded no classified call sends no billing event.
         let mut billing = pa_types::billing::BillingSplit::default();

@@ -1,0 +1,1 @@
+- Context thinning no longer trims old tool results to a head and tail you cannot get back: in a saved session each thinned result pages out whole behind an `[out:<id> …]` handle that `ctx.page`/`ctx.grep` read, and a cell's output cap now tightens as the context fills (64k characters early, down to 8k near the end) since the cut text is kept anyway.
