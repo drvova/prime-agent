@@ -77,7 +77,6 @@ pub mod prompt_admission;
 pub mod protocol;
 mod provider_admission;
 pub(crate) mod queue_commands;
-pub(crate) mod recovery_pacing;
 pub mod registration;
 pub(crate) mod registry;
 mod revival_gate;

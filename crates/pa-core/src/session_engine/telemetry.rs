@@ -1519,6 +1519,21 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A process whose session boots never waited and never met host pressure sends no
+        // boot admission event (counts only).
+        let boots = crate::kernel::boot_admission::take_stats();
+        if boots != crate::kernel::boot_admission::BootAdmissionStats::default() {
+            let mut boot_properties = self.session_properties();
+            for (key, value) in [
+                ("boot_admission_waited_count", boots.waited_count),
+                ("boot_admission_wait_ms", boots.wait_ms),
+                ("boot_pressure_count", boots.pressure_count),
+            ] {
+                boot_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent session boot admission", boot_properties);
+        }
         // A process whose turns never re-opened an idle provider connection sends no re-warm
         // event (counts only: never an origin).
         let rewarm = pa_ai::utils::prewarm::take_rewarm_stats();

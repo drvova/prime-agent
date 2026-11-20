@@ -282,7 +282,11 @@ supervisor link (`provider_admission_acquire` / `provider_admission_release`, wo
 authenticated); a supervisor that does not answer within the bounded poll falls back to the
 worker's local pool. The learned pacing persists to `<agent-dir>/provider-pacing.json`
 (credential hashes only) off the request path and shows read-only on the `/usage` page
-(`QuotaReport::pacing`). A subagent worker's requests run at the `Subagent` class.
+(`QuotaReport::pacing`). A subagent worker's requests run at the `Subagent` class. The same pool
+holds the session-boot budget (`AdmissionKey::session_boot`): `rlm.spawn` / `rlm.create_session`
+child worker spawns (subagent class), every worker's kernel starts, and the supervisor's
+crash-recovery adoption (background class) take a boot permit from it, so a fan-out paces with
+the host's load; the spawn handle and `rlm.collect` results carry the boot's `queued_ms`.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
