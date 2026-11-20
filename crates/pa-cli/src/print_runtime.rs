@@ -708,6 +708,7 @@ pub(crate) async fn build_headless_engine_with(
             model: model.clone(),
             service_tier: None,
             headers: resolved.headers.clone(),
+            admission_credential: resolved.admission_credential.clone(),
         })));
     let agent_model: AgentModel = json_round_trip(&model).ok_or("model conversion failed")?;
 
@@ -915,15 +916,7 @@ fn route_authoritative_stream_fn(
                         .clone()
                 })
                 .expect("provider target set before the first stream");
-            let ProviderTarget {
-                api_key,
-                model,
-                service_tier,
-                headers,
-            } = target;
-            Box::pin(async move {
-                stream_once(&model, api_key, service_tier, headers, context, options)
-            })
+            Box::pin(async move { stream_once(target, context, options) })
         },
     )
 }
@@ -1033,6 +1026,7 @@ fn headless_image_model_router(
                     headers: resolved_auth.headers,
                     model: resolved.model.clone(),
                     service_tier: resolved.service_tier,
+                    admission_credential: resolved_auth.admission_credential,
                 };
                 *armed_to.lock().expect("armed-to lock") = Some(target.clone());
                 *provider_target.write().expect("provider target lock") = Some(target);
@@ -1983,6 +1977,7 @@ mod tests {
                 headers: None,
                 model,
                 service_tier: None,
+                admission_credential: None,
             }
         }
         let home = tempfile::TempDir::new().unwrap();

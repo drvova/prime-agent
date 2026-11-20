@@ -2130,6 +2130,53 @@ async fn context_paging_rides_its_own_event() {
     );
 }
 
+/// Kernel `worktree` operations ride their own `agent worktrees` event at session end (counts by
+/// outcome, never a name or a path).
+#[tokio::test]
+async fn worktree_operations_ride_their_own_event() {
+    use crate::worktree_host::WorktreeFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        WorktreeFact::Created,
+        WorktreeFact::Created,
+        WorktreeFact::Conflicted,
+        WorktreeFact::Merged,
+        WorktreeFact::Removed,
+    ] {
+        counters.note_worktree(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent worktrees"]
+    );
+    let worktrees = &event_properties(&fixture.mock, "agent worktrees").await[0];
+    let counts: serde_json::Map<String, serde_json::Value> = worktrees
+        .iter()
+        .filter(|(key, _)| key.starts_with("worktree_"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(counts),
+        serde_json::json!({
+            "worktree_created_count": 2,
+            "worktree_diff_count": 0,
+            "worktree_merged_count": 1,
+            "worktree_branched_count": 0,
+            "worktree_conflict_count": 1,
+            "worktree_removed_count": 1,
+            "worktree_failed_count": 0,
+        })
+    );
+}
+
 /// Rate-limited `agent_message.send` deliveries ride their own `agent messages` event at session
 /// end (a count, never a target or a body), and a session never throttled sends none.
 #[tokio::test]

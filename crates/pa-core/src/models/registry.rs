@@ -48,6 +48,10 @@ pub struct ResolvedRequestAuth {
     /// subscription's openai-responses shape or the configured API-key
     /// shape. `None` keeps the caller's model.
     pub request_model: Option<Model>,
+    /// The stable identity request admission keys on: a pinned named credential's
+    /// [`pa_ai::admission::credential_identity`], so an OAuth refresh never resets its learned
+    /// limits. `None` admits under the api key's own hash.
+    pub admission_credential: Option<String>,
 }
 
 /// Why a `set_model` selection failed to resolve: the provider is not
@@ -857,14 +861,6 @@ impl ModelRegistry {
             }
         };
         let api_key = resolved_auth.api_key;
-        // A pinned credential admits under its stable identity: an OAuth refresh rotates the
-        // token, never the learned limits' key.
-        if let (Some((pin, _)), Some(api_key)) = (&pin, &api_key) {
-            pa_ai::admission::alias_credential(
-                api_key,
-                &pa_ai::admission::credential_identity(&pin.provider, &pin.id),
-            );
-        }
         // A failed default-slot OAuth refresh with nothing else to serve: fail with the re-login
         // sentence.
         if let (None, None, Some(failure)) = (&pin, &api_key, &stored.refresh_failure) {
@@ -992,6 +988,8 @@ impl ModelRegistry {
             headers: (!headers.is_empty()).then_some(headers),
             error: None,
             request_model,
+            admission_credential: pin
+                .map(|(pin, _)| pa_ai::admission::credential_identity(&pin.provider, &pin.id)),
         }
     }
 }

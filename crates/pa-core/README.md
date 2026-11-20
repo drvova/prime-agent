@@ -135,6 +135,13 @@ daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
 
+Session worktrees (`worktree_host`): the kernel `worktree` capability runs its git work in
+the kernel (`rlm.worktree`) and reports each operation through `worktree.record`; the host
+keeps the session's `WorktreeLedger` (exposed as `SessionEngine.worktrees`) of the worktrees
+made and not removed, which `dispose_kernel` names in the session-end notice. Adoption counts
+ride the `agent worktrees` event. Non-goals: git operations on the host, and any name, path,
+or diff in telemetry.
+
 Background cells (`kernel::manager`, `kernel::cell_window`, `tools::ipython`,
 `session_engine::bash_notices`): a `python_repl` cell runs for at most its yield window inside
 the call (the model's `timeout`, else a `pythonCellTimeoutMs` the user set, else a window learned

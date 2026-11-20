@@ -69,4 +69,5 @@ pub mod update;
 pub mod usage_host;
 pub(crate) mod web_read;
 pub mod web_search;
+pub mod worktree_host;
 pub use kernel::ReplKernelManager;
