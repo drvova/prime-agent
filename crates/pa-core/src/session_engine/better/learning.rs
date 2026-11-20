@@ -74,7 +74,7 @@ impl Estimate {
         acceptance: ACCEPTED,
     };
 
-    fn is_valid(&self) -> bool {
+    fn is_valid(self) -> bool {
         self.acceptance <= ACCEPTED
     }
 
@@ -93,7 +93,7 @@ impl Estimate {
     }
 
     /// The reads the next run's first pass gets.
-    pub(crate) fn first_pass_budget(&self) -> u32 {
+    pub(crate) fn first_pass_budget(self) -> u32 {
         if self.samples < MIN_SAMPLES {
             return COLD_BUDGET;
         }
