@@ -47,6 +47,8 @@ pub(crate) struct ProviderCall<'a> {
     pub(crate) timeout: Duration,
     /// The API key (keyed providers) or the instance URL (`SearXNG`).
     pub(crate) access: Option<&'a str>,
+    /// The scraped engines' limits (the engine instance's own).
+    pub(crate) limits: &'a super::engine_limits::EngineLimits,
 }
 
 impl ProviderCall<'_> {

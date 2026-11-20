@@ -1725,6 +1725,20 @@ impl SessionTelemetry {
             self.client
                 .track("agent provider admission", admission_properties);
         }
+        // A process whose scraped search engines were never skipped or blocked sends no engine
+        // event (counts only: never a query).
+        let engines = crate::web_search::engine_limits::take_stats();
+        if engines != crate::web_search::engine_limits::EngineLimitStats::default() {
+            let mut engine_properties = self.session_properties();
+            for (key, value) in [
+                ("web_search_engine_skipped_count", engines.skipped_count),
+                ("web_search_engine_blocked_count", engines.blocked_count),
+            ] {
+                engine_properties.set(key, Value::from(value));
+            }
+            self.client
+                .track("agent web search engines", engine_properties);
+        }
         // A process whose session boots never waited and never met host pressure sends no
         // boot admission event (counts only).
         let boots = crate::kernel::boot_admission::take_stats();

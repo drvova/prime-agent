@@ -1580,6 +1580,20 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Scraped web search engine limits for one session's process (v2), emitted at session close
+/// beside `agent session ended` (which sits at the 128-key cap) when an engine call was skipped
+/// (over its learned budget or cooling down after a block) or an engine answered with a block.
+/// Counts only: never a query, engine response, or URL.
+const AGENT_WEB_SEARCH_ENGINES: EventRule = EventRule {
+    name: "agent web search engines",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_search_engine_skipped_count", required(count())),
+        ("web_search_engine_blocked_count", required(count())),
+    ],
+};
+
 /// Session-boot admission for one session's process (v2), emitted at session close beside
 /// `agent session ended` (which sits at the 128-key cap) when a session boot (a subagent's
 /// worker spawn or a kernel start) waited for the daemon-wide boot budget or finished under
@@ -2210,6 +2224,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_WEB_SEARCH_ENGINES,
         &AGENT_SESSION_BOOT_ADMISSION,
         &AGENT_CONNECTION_REWARM,
         &AGENT_QUOTA_FALLBACK,
