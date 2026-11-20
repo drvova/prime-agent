@@ -1,0 +1,12 @@
+main.c: In function 'add':
+main.c:4:17: error: expected ';' before '}' token
+    4 |     return a + b
+      |                 ^
+      |                 ;
+    5 | }
+      | ~                
+main.c: In function 'main':
+main.c:8:27: error: 'undefined_value' undeclared (first use in this function)
+    8 |     printf("%d\n", add(1, undefined_value));
+      |                           ^~~~~~~~~~~~~~~
+main.c:8:27: note: each undeclared identifier is reported only once for each function it appears in

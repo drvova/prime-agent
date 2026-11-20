@@ -73,6 +73,8 @@ pub struct RuntimeConfig {
     pub provider: Option<String>,
     pub model: Option<String>,
     pub api_key: Option<String>,
+    /// `--credential <label|id>`.
+    pub credential: Option<String>,
     pub system_prompt: Option<String>,
     pub append_system_prompt: Vec<String>,
     pub thinking: Option<pa_types::ai::ModelThinkingLevel>,
@@ -256,6 +258,7 @@ pub fn runtime_config_from_args(
         provider: parsed.provider.clone(),
         model: parsed.model.clone(),
         api_key: parsed.api_key.clone(),
+        credential: parsed.credential.clone(),
         system_prompt: parsed.system_prompt.clone(),
         append_system_prompt: parsed.append_system_prompt.clone(),
         thinking: parsed.thinking,

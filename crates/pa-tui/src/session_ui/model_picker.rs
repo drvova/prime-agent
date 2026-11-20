@@ -27,6 +27,11 @@ pub(crate) struct ModelCatalogUpdate {
     pub models: Vec<pa_types::ai::Model>,
     pub configured_providers: std::collections::HashSet<String>,
     pub billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
+    /// The session's account per multi-credential provider (`accounts`).
+    pub accounts: std::collections::BTreeMap<String, String>,
+    /// Each multi-credential provider's named credentials (`accountChoices`).
+    pub account_choices:
+        std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
 }
 
 impl SessionUi {
@@ -77,6 +82,8 @@ impl SessionUi {
             models: self.model_catalog.clone(),
             current,
             configured_providers: self.model_configured_providers.clone(),
+            accounts: self.model_accounts.clone(),
+            account_choices: self.model_account_choices.clone(),
             recent_models: self.model_recent_models.clone(),
             thinking_level,
             scoped_models,
@@ -163,6 +170,16 @@ impl SessionUi {
                     }
                     Err(error) => self.error_row(&format!("{error:#}"), view),
                 }
+            }
+            Some(ModelPickerAction::SetAccount { provider, account }) => {
+                // `/new` creates with this pin (the create's `credential`); the running session
+                // keeps the credential it was created with.
+                let label = account
+                    .as_ref()
+                    .map_or("default", |choice| choice.label.as_str())
+                    .to_string();
+                self.model_selection.credential = account.map(|choice| choice.id);
+                self.note(&format!("New sessions: {provider} account {label}"), view);
             }
             Some(ModelPickerAction::SetEffort(level)) => {
                 self.apply_thinking_level(&level, view).await;
@@ -310,10 +327,41 @@ impl SessionUi {
                         .collect()
                 })
                 .unwrap_or_default();
+            let accounts = value
+                .get("accounts")
+                .cloned()
+                .and_then(|accounts| serde_json::from_value(accounts).ok())
+                .unwrap_or_default();
+            // Ids and labels only; an entry missing either is skipped.
+            let account_choices = value
+                .get("accountChoices")
+                .and_then(Value::as_object)
+                .map(|providers| {
+                    providers
+                        .iter()
+                        .map(|(provider, choices)| {
+                            let listed = choices
+                                .as_array()
+                                .into_iter()
+                                .flatten()
+                                .filter_map(|choice| {
+                                    Some(crate::model_picker::AccountChoice {
+                                        id: choice.get("id")?.as_str()?.to_string(),
+                                        label: choice.get("label")?.as_str()?.to_string(),
+                                    })
+                                })
+                                .collect();
+                            (provider.clone(), listed)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             let _ = updates.send(ModelCatalogUpdate {
                 models,
                 configured_providers,
                 billing,
+                accounts,
+                account_choices,
             });
         });
     }
@@ -344,6 +392,8 @@ impl SessionUi {
         self.sync_model_host(view);
         self.model_configured_providers = update.configured_providers;
         self.model_billing = update.billing;
+        self.model_accounts = update.accounts;
+        self.model_account_choices = update.account_choices;
         self.models_fetched_at = Some(std::time::Instant::now());
         let current = self.current_model(view);
         if let Some(picker) = view.model_picker.as_mut() {
@@ -351,6 +401,8 @@ impl SessionUi {
                 current,
                 self.model_catalog.clone(),
                 self.model_configured_providers.clone(),
+                self.model_accounts.clone(),
+                self.model_account_choices.clone(),
                 self.model_billing.clone(),
             );
         }

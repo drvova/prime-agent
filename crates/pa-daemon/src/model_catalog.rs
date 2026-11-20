@@ -52,7 +52,14 @@ impl Worker {
             pa_core::models::RefreshTrigger::PickerOpen
         };
         self.spawn_catalog_refresh(trigger, served.clone());
-        response_success(None, "get_model_catalog", Some(served))
+        let mut answer = served;
+        answer["accounts"] = session_accounts(
+            &registry.auth.get_all(),
+            &agent_dir,
+            self.engine.credential_pin().as_ref(),
+        );
+        answer["accountChoices"] = account_choices(&registry.auth.get_all(), &agent_dir);
+        response_success(None, "get_model_catalog", Some(answer))
     }
 
     /// The background catalog refresh: the same awaited chain the TS
@@ -102,6 +109,58 @@ impl Worker {
             }
         });
     }
+}
+
+/// The account this session serves each multi-credential provider with: the pinned credential's
+/// label for the pinned provider, else `default`. A provider holding one credential is absent. An
+/// unreadable `auth-accounts.json` lists nothing here (`/logout` reports it).
+fn session_accounts(
+    stored: &pa_core::auth::AuthStorageData,
+    agent_dir: &std::path::Path,
+    pin: Option<&pa_types::session::CredentialPin>,
+) -> Value {
+    let named = pa_core::auth::AuthAccounts::create(agent_dir)
+        .all()
+        .unwrap_or_default();
+    let accounts: serde_json::Map<String, Value> = named
+        .into_iter()
+        .filter_map(|(provider, accounts)| {
+            let pinned = pin
+                .filter(|pin| pin.provider == provider)
+                .and_then(|pin| accounts.iter().find(|account| account.id == pin.id));
+            let count = accounts.len() + usize::from(stored.credential(&provider).is_some());
+            match pinned {
+                Some(account) => Some((provider, json!(account.label))),
+                None if count > 1 => Some((provider, json!("default"))),
+                None => None,
+            }
+        })
+        .collect();
+    Value::Object(accounts)
+}
+
+/// The named credentials a new session can pin for each multi-credential provider (the `/model`
+/// action menu's account row): each one's id and label, in store order, never the secret. A
+/// provider holding one credential is absent; without a pin a session serves the provider's
+/// `default` credential.
+fn account_choices(stored: &pa_core::auth::AuthStorageData, agent_dir: &std::path::Path) -> Value {
+    let named = pa_core::auth::AuthAccounts::create(agent_dir)
+        .all()
+        .unwrap_or_default();
+    let choices: serde_json::Map<String, Value> = named
+        .into_iter()
+        .filter(|(provider, accounts)| {
+            accounts.len() + usize::from(stored.credential(provider).is_some()) > 1
+        })
+        .map(|(provider, accounts)| {
+            let listed: Vec<Value> = accounts
+                .iter()
+                .map(|account| json!({ "id": account.id, "label": account.label }))
+                .collect();
+            (provider, Value::Array(listed))
+        })
+        .collect();
+    Value::Object(choices)
 }
 
 /// The wire payload of one catalog snapshot: the full catalog minus
@@ -158,6 +217,33 @@ fn catalog_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The account row's choices: a provider with two named credentials lists both (id and
+    /// label), a provider whose one named credential sits beside its `default` lists it, and a
+    /// provider holding a single credential is absent.
+    #[test]
+    fn account_choices_list_each_multi_credential_providers_named_credentials() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = pa_core::auth::AuthAccounts::create(dir.path());
+        let key = |key: &str| pa_core::auth::AuthCredential::ApiKey {
+            key: key.to_string(),
+            prime_team: None,
+        };
+        let work = accounts.add("anthropic", "work", key("a"), 0).unwrap();
+        let home = accounts.add("anthropic", "home", key("b"), 1).unwrap();
+        let side = accounts.add("openai", "side", key("c"), 2).unwrap();
+        accounts.add("xai", "only", key("d"), 3).unwrap();
+        let stored: pa_core::auth::AuthStorageData =
+            serde_json::from_value(json!({ "openai": { "type": "api_key", "key": "main" } }))
+                .unwrap();
+        assert_eq!(
+            account_choices(&stored, dir.path()),
+            json!({
+                "anthropic": [{ "id": work, "label": "work" }, { "id": home, "label": "home" }],
+                "openai": [{ "id": side, "label": "side" }],
+            })
+        );
+    }
     use crate::worker::WorkerConfig;
     use serde_json::json;
     use std::collections::VecDeque;

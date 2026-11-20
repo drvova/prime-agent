@@ -15,8 +15,8 @@ use crate::width::str_width;
 /// One display row of the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ListRow {
-    /// A group header: the recent models, or one provider (its label, and whether it needs a
-    /// sign-in).
+    /// A group header: the recent models, or one provider (its label — with the session's
+    /// account when the provider holds several credentials — and whether it needs a sign-in).
     Header { label: String, sign_in: SignIn },
     /// The model at this filtered position.
     Model(usize),
@@ -136,9 +136,27 @@ impl ModelPicker {
             push_group(RECENT_HEADER.to_string(), SignIn::Ready, pinned);
         }
         for (label, sign_in, members) in groups {
-            push_group(label, sign_in, members);
+            let account = members
+                .first()
+                .and_then(|index| self.accounts.get(&self.all_models[*index].provider));
+            let header = match account {
+                Some(account) => format!("{label} \u{b7} account: {account}"),
+                None => label,
+            };
+            push_group(header, sign_in, members);
         }
         (filtered, rows)
+    }
+}
+
+impl ModelPicker {
+    /// A flat view's provider column: the provider label, with the session's account when the
+    /// provider holds several credentials.
+    fn provider_cell(&self, model: &Model) -> String {
+        match self.accounts.get(&model.provider) {
+            Some(account) => format!("{} \u{b7} {account}", provider_label(model)),
+            None => provider_label(model).to_string(),
+        }
     }
 }
 
@@ -172,7 +190,7 @@ impl RowColumns {
             widest(&|model| price_cell(picker.class_of(model), model)),
             widest(&|model| context_cell(model.context_window)),
             if flat {
-                widest(&|model| provider_label(model).to_string())
+                widest(&|model| picker.provider_cell(model))
             } else {
                 0
             },
@@ -236,7 +254,7 @@ impl RowColumns {
             ));
         }
         if self.provider_width > 0 {
-            cells.push(left(provider_label(model), self.provider_width));
+            cells.push(left(&picker.provider_cell(model), self.provider_width));
         }
         if self.sign_in_width > 0 {
             let text = if picker.is_configured(model) {

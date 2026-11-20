@@ -915,6 +915,14 @@ async fn run_interactive_surface(
     let mut enhanced_keys_pending = renderer.is_terminal();
     // The hyperlink capability is env-based, settles at run start; terminal runs report it once.
     let mut hyperlinks_pending = renderer.is_terminal();
+    // A `--credential` pin reports one adoption event, spawned: its flush never holds the run.
+    if options.model_selection.credential.is_some() {
+        if let Some(telemetry) = session.telemetry.clone() {
+            tokio::spawn(async move {
+                telemetry.credential_pinned("flag").await;
+            });
+        }
+    }
     // State changes coalesce into at most one frame per MIN_RENDER_INTERVAL_MS; `render_deadline`
     // is armed while a dirty frame waits out the interval.
     let mut last_render_at: Option<Instant> = None;

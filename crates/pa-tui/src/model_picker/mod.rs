@@ -54,6 +54,12 @@ pub enum ModelPickerAction {
     SetEffort(String),
     /// The action menu toggled a favorite: persist the whole list (`provider/id` keys).
     FavoritesChanged(Vec<String>),
+    /// The action menu's account row: new sessions pin this named credential for `provider`
+    /// (`None`: its `default` credential). The running session keeps its own pin.
+    SetAccount {
+        provider: String,
+        account: Option<AccountChoice>,
+    },
 }
 
 /// The outcome of dispatching `/model [search]`.
@@ -72,6 +78,12 @@ pub struct ModelPickerOptions {
     pub current: Option<CurrentModel>,
     /// Providers with configured auth (`configuredProviders`).
     pub configured_providers: HashSet<String>,
+    /// The account each multi-credential provider serves this session with (`accounts`: the
+    /// pinned credential's label, else `default`); providers with one credential are absent.
+    pub accounts: std::collections::BTreeMap<String, String>,
+    /// The named credentials of each multi-credential provider (`accountChoices`): the action
+    /// menu's account row steps through them.
+    pub account_choices: std::collections::BTreeMap<String, Vec<AccountChoice>>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     pub recent_models: Vec<String>,
     /// The session's scoped models as `provider/id` keys: the picker opens on them when non-empty,
@@ -102,8 +114,8 @@ mod scope;
 mod search;
 mod sort;
 
-pub use actions::PickerUsage;
 use actions::PickerView;
+pub use actions::{AccountChoice, PickerUsage};
 use facts::{billing_class, BillingClass};
 use filters::{Chip, PickerFilters, SortKey};
 use rows::ListRow;
@@ -153,6 +165,8 @@ pub struct ModelPickerSummary {
     pub effort_set_count: u64,
     /// Details view opens.
     pub details_count: u64,
+    /// Account choices kept for new sessions.
+    pub account_set_count: u64,
 }
 
 #[cfg(test)]
@@ -175,6 +189,10 @@ pub struct ModelPicker {
     all_models: Vec<Model>,
     current: Option<CurrentModel>,
     configured_providers: HashSet<String>,
+    accounts: std::collections::BTreeMap<String, String>,
+    account_choices: std::collections::BTreeMap<String, Vec<AccountChoice>>,
+    /// The account row's position per provider once the user stepped it.
+    account_picks: HashMap<String, usize>,
     recent_rank: HashMap<String, usize>,
     /// The effort a fresh selection starts from; `None` resolves to "off" per model.
     initial_thinking_level: Option<ModelThinkingLevel>,
@@ -230,6 +248,7 @@ pub struct ModelPicker {
     default_sets: u64,
     effort_sets: u64,
     details_opens: u64,
+    account_sets: u64,
 }
 
 impl ModelPicker {
@@ -239,6 +258,9 @@ impl ModelPicker {
             all_models: Vec::new(),
             current: options.current,
             configured_providers: options.configured_providers,
+            accounts: options.accounts,
+            account_choices: options.account_choices,
+            account_picks: HashMap::new(),
             recent_rank: options
                 .recent_models
                 .iter()
@@ -276,6 +298,7 @@ impl ModelPicker {
             default_sets: 0,
             effort_sets: 0,
             details_opens: 0,
+            account_sets: 0,
         };
         picker.load_models(options.models);
         picker.resolve_scope_positions();
@@ -300,10 +323,14 @@ impl ModelPicker {
         current: Option<CurrentModel>,
         models: Vec<Model>,
         configured_providers: HashSet<String>,
+        accounts: std::collections::BTreeMap<String, String>,
+        account_choices: std::collections::BTreeMap<String, Vec<AccountChoice>>,
         billing: HashMap<String, BillingMode>,
     ) {
         self.current = current;
         self.configured_providers = configured_providers;
+        self.accounts = accounts;
+        self.account_choices = account_choices;
         self.billing = billing;
         let selected_key = self.selected_key();
         self.load_models(models);
@@ -348,6 +375,7 @@ impl ModelPicker {
             default_set_count: self.default_sets,
             effort_set_count: self.effort_sets,
             details_count: self.details_opens,
+            account_set_count: self.account_sets,
         }
     }
 

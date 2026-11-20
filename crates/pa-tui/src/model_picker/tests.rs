@@ -118,6 +118,8 @@ fn picker_options(catalog: Vec<Model>) -> ModelPickerOptions {
         models: catalog,
         current: Some(current()),
         configured_providers: configured(),
+        accounts: std::collections::BTreeMap::new(),
+        account_choices: std::collections::BTreeMap::new(),
         recent_models: Vec::new(),
         scoped_models: Vec::new(),
         thinking_level: Some(ModelThinkingLevel::Medium),
@@ -236,7 +238,14 @@ fn a_scope_the_catalog_cannot_resolve_still_scopes() {
     );
     let mut refreshed = battery_catalog();
     refreshed.push(model("prime-inference", "mock-9", "Mock 9", false, None));
-    picker.update_state(None, refreshed, configured(), HashMap::new());
+    picker.update_state(
+        None,
+        refreshed,
+        configured(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        HashMap::new(),
+    );
     assert_eq!(
         picker.filtered_len(),
         1,
@@ -367,6 +376,8 @@ pub(super) fn rich_options() -> ModelPickerOptions {
             provider: "anthropic".to_string(),
             model_id: "claude-fable-5".to_string(),
         }),
+        accounts: std::collections::BTreeMap::new(),
+        account_choices: std::collections::BTreeMap::new(),
         configured_providers: ["anthropic", "openrouter", "local-llm"]
             .into_iter()
             .map(str::to_string)
@@ -562,6 +573,7 @@ fn the_chips_compose_with_the_context_sort() {
             default_set_count: 0,
             effort_set_count: 0,
             details_count: 0,
+            account_set_count: 0,
         }
     );
 }
@@ -598,6 +610,35 @@ fn the_provider_and_context_chips_cycle() {
             "qwen/qwen3-coder"
         ],
         "at least 200k: the recent group, then the provider groups"
+    );
+}
+
+/// A provider holding several credentials names the session's account in its group header and,
+/// in a flat sort, in its provider column.
+#[test]
+fn a_multi_credential_provider_names_its_account() {
+    let mut options = rich_options();
+    options.accounts = [("anthropic".to_string(), "work".to_string())]
+        .into_iter()
+        .collect();
+    let mut picker = ModelPicker::new(options);
+    let grouped = frame_at(&mut picker, 120);
+    picker.handle_key("alt+o", &kb());
+    let flat = frame_at(&mut picker, 120);
+    let haiku = flat
+        .iter()
+        .find(|row| row.contains("Claude Haiku 5"))
+        .cloned()
+        .unwrap_or_default();
+    assert_eq!(
+        (
+            grouped
+                .iter()
+                .any(|row| row == "  anthropic \u{b7} account: work"),
+            haiku.ends_with("anthropic \u{b7} work"),
+        ),
+        (true, true),
+        "{grouped:#?}\n{haiku}"
     );
 }
 
@@ -839,7 +880,14 @@ fn update_state_keeps_the_selection_on_the_surviving_model() {
         false,
         None,
     ));
-    picker.update_state(Some(current()), catalog, configured(), HashMap::new());
+    picker.update_state(
+        Some(current()),
+        catalog,
+        configured(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeMap::new(),
+        HashMap::new(),
+    );
     let selected = picker.selected_model().expect("selection").clone();
     assert_eq!(selected.id, "anthropic/claude-fable-5");
 }

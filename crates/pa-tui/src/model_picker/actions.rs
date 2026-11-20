@@ -18,9 +18,8 @@ use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 
 /// One row of the action menu. The rows a model offers come from [`ModelPicker::action_rows`]
-/// in menu order. A new per-model choice (the session credential pin's `account:` row) joins
-/// as its own variant there, with its label in [`ModelPicker::action_label`] and its Enter arm
-/// in [`ModelPicker::activate_action`]; nothing else in the picker changes.
+/// in menu order; a new per-model choice joins as its own variant there, with its label in
+/// [`ModelPicker::action_label`] and its Enter arm in [`ModelPicker::activate_action`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ModelAction {
     /// Switch this session to the model: the same explicit `set_model` path as Enter on the list.
@@ -30,6 +29,11 @@ pub(crate) enum ModelAction {
     /// The model's effort: ←/→ step it; Enter applies it to the session's current model, or
     /// switches to a non-current model at that effort (the row says which).
     Effort,
+    /// The stored credential new sessions pin for the model's provider (only for a provider
+    /// holding several credentials): ←/→ step through `default` and each named credential, Enter
+    /// keeps the choice for `/new`. The running session keeps its own pin: a credential is never
+    /// switched under a live session.
+    Account,
     /// Add or remove the model from the favorites.
     Favorite,
     /// The model's full metadata, cached spend, and quota.
@@ -47,6 +51,14 @@ pub(crate) enum PickerView {
     Details { model: usize },
 }
 
+/// One named credential a provider holds (the `get_model_catalog` answer's `accountChoices`):
+/// the id a new session pins and the user's own label. Never the secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountChoice {
+    pub id: String,
+    pub label: String,
+}
+
 /// The picker's cached usage: the spend history's per-model rows and the quota cards from the
 /// last `/usage` load, and the clock the open read them at. Empty until `/usage` loads.
 #[derive(Debug, Clone, Default)]
@@ -58,11 +70,14 @@ pub struct PickerUsage {
 
 impl ModelPicker {
     /// The action rows `model` offers, in menu order: effort only for a model with a thinking
-    /// surface.
-    pub(crate) fn action_rows(model: &Model) -> Vec<ModelAction> {
+    /// surface, the account only for a provider holding several credentials.
+    pub(crate) fn action_rows(&self, model: &Model) -> Vec<ModelAction> {
         let mut rows = vec![ModelAction::Switch, ModelAction::SetDefault];
         if !Self::selectable_levels(model).is_empty() {
             rows.push(ModelAction::Effort);
+        }
+        if self.account_choices.contains_key(&model.provider) {
+            rows.push(ModelAction::Account);
         }
         rows.extend([ModelAction::Favorite, ModelAction::Details]);
         rows
@@ -105,7 +120,7 @@ impl ModelPicker {
                     self.view = PickerView::List;
                     return ModelPickerAction::None;
                 };
-                let rows = Self::action_rows(&entry);
+                let rows = self.action_rows(&entry);
                 if kb.matches(key, "tui.select.cancel") || kb.matches(key, "app.model.actions") {
                     self.view = PickerView::List;
                     return ModelPickerAction::None;
@@ -124,10 +139,29 @@ impl ModelPicker {
                 for (binding, direction) in
                     [("tui.editor.cursorLeft", -1), ("tui.editor.cursorRight", 1)]
                 {
-                    if kb.matches(key, binding) && row == ModelAction::Effort {
-                        self.adjust_effort(&entry, direction);
-                        return ModelPickerAction::None;
+                    if !kb.matches(key, binding) {
+                        continue;
                     }
+                    match row {
+                        ModelAction::Effort => {
+                            self.adjust_effort(&entry, direction);
+                        }
+                        ModelAction::Account => {
+                            let count = self
+                                .account_choices
+                                .get(&entry.provider)
+                                .map_or(0, Vec::len)
+                                + 1;
+                            let current = self.account_position(&entry.provider);
+                            let next = (current + count).wrapping_add_signed(direction) % count;
+                            self.account_picks.insert(entry.provider.clone(), next);
+                        }
+                        ModelAction::Switch
+                        | ModelAction::SetDefault
+                        | ModelAction::Favorite
+                        | ModelAction::Details => {}
+                    }
+                    return ModelPickerAction::None;
                 }
                 if kb.matches(key, "tui.select.confirm") {
                     return self.activate_action(model, &entry, row);
@@ -168,6 +202,13 @@ impl ModelPicker {
                     effort: Some(level.wire_name().to_string()),
                 }))
             }
+            ModelAction::Account => {
+                self.account_sets += 1;
+                ModelPickerAction::SetAccount {
+                    provider: entry.provider.clone(),
+                    account: self.account_choice(&entry.provider).cloned(),
+                }
+            }
             ModelAction::Favorite => {
                 match self.favorites.iter().position(|favorite| *favorite == key) {
                     Some(position) => {
@@ -205,10 +246,38 @@ impl ModelPicker {
                     format!("Switch at effort \u{2190} {level} \u{2192}")
                 }
             }
+            ModelAction::Account => format!(
+                "Account for new sessions \u{2190} {} \u{2192}",
+                self.account_choice(&entry.provider)
+                    .map_or("default", |choice| choice.label.as_str())
+            ),
             ModelAction::Favorite if self.is_favorite(entry) => "Remove from favorites".to_string(),
             ModelAction::Favorite => "Add to favorites".to_string(),
             ModelAction::Details => "Details".to_string(),
         }
+    }
+
+    /// The account row's position for `provider`: 0 is `default`, `n` the `n`th named credential.
+    /// It starts on the account this session serves the provider with.
+    fn account_position(&self, provider: &str) -> usize {
+        if let Some(position) = self.account_picks.get(provider) {
+            return *position;
+        }
+        let session = self.accounts.get(provider);
+        self.account_choices
+            .get(provider)
+            .and_then(|choices| {
+                choices
+                    .iter()
+                    .position(|choice| Some(&choice.label) == session)
+            })
+            .map_or(0, |position| position + 1)
+    }
+
+    /// The named credential the account row stands on for `provider` (`None`: `default`).
+    fn account_choice(&self, provider: &str) -> Option<&AccountChoice> {
+        let position = self.account_position(provider).checked_sub(1)?;
+        self.account_choices.get(provider)?.get(position)
     }
 
     /// The spend row for `entry` from the cached history, or why there is none.
@@ -304,7 +373,7 @@ impl ModelPicker {
         lines.push(Vec::new());
         match selected {
             Some(selected) => {
-                for (index, row) in Self::action_rows(entry).into_iter().enumerate() {
+                for (index, row) in self.action_rows(entry).into_iter().enumerate() {
                     let is_selected = index == selected;
                     let marker = if is_selected { "\u{203a} " } else { "  " };
                     let line: Line = vec![

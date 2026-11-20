@@ -205,7 +205,7 @@ fn a_model_without_effort_skips_the_row_and_esc_steps_back() {
     assert_eq!(
         (
             entry.id.as_str(),
-            ModelPicker::action_rows(&entry),
+            picker.action_rows(&entry),
             press(&mut picker, &["up", "enter"]),
             picker.view(),
         ),
@@ -283,7 +283,51 @@ fn favoriting_moves_a_model_to_the_top_group() {
                 default_set_count: 0,
                 effort_set_count: 0,
                 details_count: 0,
+                account_set_count: 0,
             }
+        )
+    );
+}
+
+/// The account row starts on the account this session serves the provider with, steps through
+/// the named credentials and `default` (wrapping), and keeps the choice for new sessions only.
+#[test]
+fn the_account_row_steps_from_the_sessions_account_and_keeps_the_choice() {
+    let choice = |id: &str, label: &str| AccountChoice {
+        id: id.to_string(),
+        label: label.to_string(),
+    };
+    let mut options = rich_options();
+    options.accounts = [("anthropic".to_string(), "work".to_string())]
+        .into_iter()
+        .collect();
+    options.account_choices = [(
+        "anthropic".to_string(),
+        vec![choice("c_1", "work"), choice("c_2", "home")],
+    )]
+    .into_iter()
+    .collect();
+    let mut picker = ModelPicker::new(options);
+    // Fable's rows: switch, default, effort, account.
+    press(&mut picker, &["tab", "down", "down", "down"]);
+    let start = frame_at(&mut picker, 100)
+        .into_iter()
+        .find(|row| row.contains("Account for new sessions"))
+        .unwrap_or_default();
+    let stepped = press(&mut picker, &["right", "enter"]);
+    let wrapped = press(&mut picker, &["right", "right", "enter"]);
+    assert_eq!(
+        (start, stepped, wrapped),
+        (
+            "\u{203a} Account for new sessions \u{2190} work \u{2192}".to_string(),
+            ModelPickerAction::SetAccount {
+                provider: "anthropic".to_string(),
+                account: Some(choice("c_2", "home")),
+            },
+            ModelPickerAction::SetAccount {
+                provider: "anthropic".to_string(),
+                account: Some(choice("c_1", "work")),
+            },
         )
     );
 }

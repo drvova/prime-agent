@@ -6,6 +6,7 @@
 mod apply;
 mod auth;
 mod bash;
+mod better;
 mod commands;
 mod context;
 mod factory;
@@ -194,6 +195,11 @@ pub(crate) struct SessionUi {
     /// Each catalog model's billing mode (`provider/id` keys) from the last `get_model_catalog`
     /// response; empty until the first refresh lands.
     model_billing: std::collections::HashMap<String, pa_types::billing::BillingMode>,
+    /// The session's account per multi-credential provider, from the daemon's catalog answer.
+    model_accounts: std::collections::BTreeMap<String, String>,
+    /// Each multi-credential provider's named credentials, from the daemon's catalog answer.
+    model_account_choices:
+        std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
     /// The settings favorite-model list (`provider/id` keys, in the order they were added), read
@@ -236,6 +242,10 @@ pub(crate) struct SessionUi {
     /// at most one run per client, exactly like the daemon enforces.
     active_side_question_id: Option<String>,
     side_question_counter: u64,
+    /// The `/better` run in flight (its side-run id): one at a time, Esc cancels it.
+    better_run: Option<String>,
+    /// The last `/better` rewrite the composer received, until the user sends something.
+    better_inserted: Option<better::InsertedRewrite>,
     /// A `/share` gist upload in flight: aborting kills `gh` (kill-on-drop).
     share: Option<ShareRun>,
     share_notes: mpsc::UnboundedSender<ShareNote>,

@@ -71,6 +71,9 @@ pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.prime-agent.agent-
 pub const BASH_ACTIVITY_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-activity+json";
 /// One `bash()` call's command text (capped) and non-blank line count.
 pub const BASH_COMMAND_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-command+json";
+/// One awaited `bash()` command that exited non-zero, as its cell's awaits
+/// returned it: `{command, exitCode, output}` (the error enrichment's input).
+pub const COMMAND_FAILURE_DISPLAY_MIME: &str = "application/vnd.prime-agent.command-failure+json";
 /// One bounded `bash()` await's outcome: `{outcome: "completed" | "yielded"}`.
 pub const BASH_WAIT_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-wait+json";
 /// One `rlm.session.messages` read: `{returned, first, total, roles}`.
@@ -231,6 +234,28 @@ pub struct KernelBashWaits {
     pub yielded: u64,
 }
 
+/// One failed `bash()` command a cell awaited, captured from a
+/// [`COMMAND_FAILURE_DISPLAY_MIME`] display payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KernelCommandFailure {
+    pub command: String,
+    pub exit_code: i64,
+    /// The command's whole output, as its result held it.
+    pub output: String,
+}
+
+impl KernelCommandFailure {
+    /// Parse one [`COMMAND_FAILURE_DISPLAY_MIME`] payload (`None` when malformed).
+    #[must_use]
+    pub fn from_display(payload: &Value) -> Option<Self> {
+        Some(Self {
+            command: payload.get("command")?.as_str()?.to_string(),
+            exit_code: payload.get("exitCode")?.as_i64()?,
+            output: payload.get("output")?.as_str()?.to_string(),
+        })
+    }
+}
+
 /// A kernel error reported by a failed cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelError {
@@ -256,6 +281,8 @@ pub struct ExecuteResult {
     pub bash_commands: Option<KernelBashCommands>,
     /// The cell's bounded `bash()` await outcomes.
     pub bash_waits: KernelBashWaits,
+    /// The failed `bash()` commands the cell awaited, in order.
+    pub command_failures: Vec<KernelCommandFailure>,
     /// The cell's `rlm.session.messages` reads, one display record each.
     pub transcript_reads: Option<Vec<Value>>,
     /// The todo list the cell's last `todo.set`/`todo.update` left.

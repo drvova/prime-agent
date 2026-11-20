@@ -77,6 +77,8 @@ impl SessionUi {
             model_catalog: options.model_catalog.clone(),
             model_configured_providers: options.model_configured_providers.clone(),
             model_billing: std::collections::HashMap::new(),
+            model_accounts: std::collections::BTreeMap::new(),
+            model_account_choices: std::collections::BTreeMap::new(),
             model_recent_models: options.model_recent_models.clone(),
             model_favorite_models: options
                 .client_settings
@@ -103,6 +105,8 @@ impl SessionUi {
             anthropic_warning_mark_pending: std::sync::Arc::default(),
             active_side_question_id: None,
             side_question_counter: 0,
+            better_run: None,
+            better_inserted: None,
             share: None,
             reload: None,
             reload_notes,

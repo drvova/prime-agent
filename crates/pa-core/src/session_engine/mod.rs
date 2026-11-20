@@ -7,6 +7,7 @@ pub mod auto_refine_trigger;
 pub mod auto_retry;
 pub mod auxiliary_model;
 pub mod bash_notices;
+pub mod better;
 pub mod billing;
 pub mod branch_summarization;
 mod cache_warming;

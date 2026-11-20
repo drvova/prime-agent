@@ -183,11 +183,19 @@ impl AgentsViewMode {
         // The highlighted session's preview takes one fixed row above the hints, so moving
         // between sessions with and without a first prompt never shifts the list.
         let preview = self.render_preview(width);
-        let list_rows = height
+        let mut list_rows = height
             .saturating_sub(lines.len() + 2 + notice_height + usize::from(unloaded.is_some()));
+        // The open Traffic pane takes up to half the list's rows (at most 9) below it.
+        let traffic_rows = if self.scope_active && self.traffic.shown {
+            (list_rows / 2).min(9)
+        } else {
+            0
+        };
+        list_rows -= traffic_rows;
         let list_frame_row = lines.len();
         lines.extend(self.render_list(width, list_rows, list_frame_row));
         lines.extend(unloaded);
+        lines.extend(self.traffic.render(&self.theme, width, traffic_rows));
         if let Some(panel) = notice_panel {
             lines.extend(panel);
         }
@@ -739,16 +747,31 @@ impl AgentsViewMode {
         // fixed prefix plus it: a too-narrow column would push the model
         // and cost/age cells right, so the row renders exactly as a
         // badge-less one instead.
-        let badge = (!jobs.is_empty())
-            .then(|| format!("\u{25f7} {}", jobs.len()))
-            .filter(|badge| layout.name_width > 2 + indent_width + str_width(badge));
-        let badge_width = badge.as_deref().map_or(0, |badge| str_width(badge) + 1);
-        if let Some(badge) = badge {
+        let heartbeat = (!jobs.is_empty()).then(|| {
             let color = if jobs.iter().any(|job| job.is_active()) {
                 ThemeColor::Success
             } else {
                 ThemeColor::Warning
             };
+            (format!("\u{25f7} {}", jobs.len()), color)
+        });
+        // The unread agent messages addressed to this session while the Traffic pane is closed.
+        let unread = active_session_id.map_or(0, |id| self.traffic.unread_for(id));
+        let mail = (unread > 0).then(|| (format!("\u{2709}{unread}"), ThemeColor::Accent));
+        let badges: Vec<(String, ThemeColor)> = heartbeat.into_iter().chain(mail).collect();
+        let total_badge_cells: usize = badges.iter().map(|(badge, _)| str_width(badge) + 1).sum();
+        let badges =
+            if !badges.is_empty() && layout.name_width > 1 + indent_width + total_badge_cells {
+                badges
+            } else {
+                Vec::new()
+            };
+        let badge_width = if badges.is_empty() {
+            0
+        } else {
+            total_badge_cells
+        };
+        for (badge, color) in badges {
             line.push(crate::Span::styled(badge, theme.fg_style(color)));
             line.push(crate::Span::styled(
                 " ".to_string(),
@@ -803,6 +826,16 @@ impl AgentsViewMode {
             .cloned()
             .unwrap_or_default();
         line.push(theme.fg(ThemeColor::Dim, details));
+        // A parked `agent_message.wait` names whom the session waits on (the roster's
+        // `waitingOn`, resolved to that member's name), after the row's fixed columns.
+        // The label renders only whole, inside the row's width.
+        if let Some(name) = self.waiting_on_name(&row.summary) {
+            let label = format!("  \u{29d7} waiting on {name}");
+            let used: usize = line.iter().map(|span| str_width(&span.content)).sum();
+            if used + str_width(&label) <= width {
+                line.push(theme.fg(ThemeColor::Warning, label));
+            }
+        }
         finish_session_row(theme, line, selected, hovered, width)
     }
 
@@ -1055,7 +1088,34 @@ impl AgentsViewMode {
             }
             if self.scope_active {
                 footer = footer.bound(kb, &["app.agents.back"], "parent", HintRank::Useful);
+                // The Traffic pane's slot doubles as the dock counter: the unread deliveries
+                // while the pane is closed.
+                let unread = self.traffic.unread_total();
+                let label = match (self.traffic.shown, unread) {
+                    (true, _) => "hide traffic".to_string(),
+                    (false, 0) => "traffic".to_string(),
+                    (false, unread) => format!("traffic \u{2709}{unread}"),
+                };
+                footer = footer.keys(kb.get_keys("app.agents.traffic"), &label, HintRank::Useful);
             }
+        }
+        // The ingest pause over the selected live session (with or without a query).
+        if let Some(active_session_id) = self
+            .rows
+            .get(self.selected)
+            .and_then(|row| row.summary.get("activeSessionId"))
+            .and_then(Value::as_str)
+        {
+            let label = if self.traffic.is_paused(active_session_id) {
+                "resume msgs"
+            } else {
+                "pause msgs"
+            };
+            footer = footer.keys(
+                kb.get_keys("app.agents.pauseMessages"),
+                label,
+                HintRank::Extra,
+            );
         }
         // The resume picker's folder toggle, with or without a query (search runs within the
         // active scope).
