@@ -18,6 +18,7 @@ use crate::types::{
     AssistantMessage, AssistantMessageEvent, Context, ErrorStopReason, Model, ProviderResponse,
     SimpleStreamOptions, StopReason, StreamOptions,
 };
+use crate::utils_inner::prewarm::OriginActivity;
 
 /// A server-requested wait longer than this is a quota reset, not pacing: the turn fails with
 /// the provider's error, so the admission controller does not block the key for it.
@@ -98,12 +99,15 @@ pub(crate) fn admitted_stream(
     }
     let (writer, outer) = AssistantMessageEventStream::new();
     let source = current_source();
+    // The origin's pooled connection is in use until the request settles; its idle clock (the
+    // turn-start re-warm's input) restarts then.
+    let activity = OriginActivity::start(&model.api, &model.base_url);
     // The common case waits for nothing: the provider starts here, as it would unpaced, and
     // only the forwarding (which reads the outcome back) runs on a task.
     if let Some(grant) = source.try_acquire(&request) {
         let started = std::time::Instant::now();
         let inner = options.start(provider.as_ref(), model, context);
-        tokio::spawn(forward(inner, writer, grant, response, started));
+        tokio::spawn(forward(inner, writer, grant, response, started, activity));
         return outer;
     }
     let model = model.clone();
@@ -131,7 +135,7 @@ pub(crate) fn admitted_stream(
         note_wait(grant.waited_ms);
         let started = std::time::Instant::now();
         let inner = options.start(provider.as_ref(), &model, &context);
-        forward(inner, writer, grant, response, started).await;
+        forward(inner, writer, grant, response, started, activity).await;
     });
     outer
 }
@@ -144,6 +148,7 @@ async fn forward(
     grant: Grant,
     response: Arc<Mutex<Option<ProviderResponse>>>,
     started: std::time::Instant,
+    activity: OriginActivity,
 ) {
     let mut first_output_ms = None;
     while let Some(event) = inner.next_event().await {
@@ -167,6 +172,7 @@ async fn forward(
     if grant.finish(observation) {
         super::note_decrease();
     }
+    drop(activity);
 }
 
 /// What one finished request tells the controller.
