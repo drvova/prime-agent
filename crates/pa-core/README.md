@@ -160,6 +160,15 @@ counts (including each window's source) ride the `agent repl background cells` e
 Non-goals: a hard time limit (Nodecode keeps none), stopping a cell from the host for time, and
 a user setting for the learner.
 
+Project card (`project_card`): a compact card (build/test/check commands from Cargo, npm, Python,
+and Go manifests, the Makefile, and CI `run:` steps; the largest top-level directories; the
+build/test commands this project's cells ran, counted) joins the system prompt's dynamic tail as
+the `project-card` segment, after the project context and never in the cached static prefix. Its
+full detail pages out to the spill store behind a handle; it stays under 1,500 characters. A
+session reads the card the previous refresh stored under `<agent dir>/project-cards/` within a
+50 ms budget, then re-derives it on a background thread for the next session; a reload keeps the
+session's card. Non-goals: running the commands, and deriving on the session-start path.
+
 Symbol index (`symbol_index`): the kernel's `fs.symbol` host request answers one name's
 definitions, references, and a spill handle to each definition's source, from a per-project index
 kept under `<agent dir>/symbol-index/<project hash>.json`. Definitions come from per-language line

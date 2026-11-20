@@ -299,6 +299,12 @@ impl IpythonKernelProvisioner {
             .map(crate::kernel::spill::SpillStore::for_session_dir)
     }
 
+    /// The session's working directory (the project the kernel runs in).
+    #[must_use]
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        &self.inner.cwd
+    }
+
     /// The error enrichment the kernel executor applies to user cell results.
     #[must_use]
     pub(crate) fn error_context(&self) -> &crate::kernel::error_context::ErrorContext {
