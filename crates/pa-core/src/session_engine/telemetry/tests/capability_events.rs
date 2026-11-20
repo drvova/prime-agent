@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-/// Drive every capability seam with distinct counts.
+/// Drive every capability seam with distinct counts, and the session-end events emitted among
+/// them.
 fn drive(counters: &SessionCounters) {
     use crate::fs_edit::{EditFact, FsEditOperation};
     use crate::fs_search::{FsOperation, SearchFact};
@@ -185,6 +186,42 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_cell_window(source);
     }
+    // The non-capability events that main emitted between the capability events: they keep
+    // their own counter structs, and the move must leave their bytes alone too.
+    use pa_types::billing::{BillingMode, CostSource};
+    for mode in [
+        BillingMode::PayAsYouGo {
+            source: CostSource::Catalog,
+        },
+        BillingMode::Plan {
+            provider_quota: true,
+        },
+        BillingMode::Plan {
+            provider_quota: false,
+        },
+        BillingMode::FlatRate,
+        BillingMode::Free,
+        BillingMode::Free,
+        BillingMode::Free,
+        BillingMode::Unknown,
+    ] {
+        counters.note_billing_mode(mode);
+    }
+    counters.note_agent_message_refusals(
+        crate::session_engine::agent_messaging::AgentMessageRefusals {
+            throttled: 3,
+            wake_refused: 1,
+        },
+    );
+    counters.note_agent_message_refusals(
+        crate::session_engine::agent_messaging::AgentMessageRefusals {
+            throttled: 0,
+            wake_refused: 4,
+        },
+    );
+    for outcome in ["message", "message", "timeout", "cycle", "no_sender", "no_sender"] {
+        counters.note_agent_message_wait(outcome);
+    }
 }
 
 /// Each capability event's own properties, serialized in emission order: the properties every
@@ -247,8 +284,13 @@ async fn capability_events_stay_byte_identical() {
     assert_eq!(actual, expected);
 }
 
-/// Captured from the per-feature counter structs (the pre-refactor emission).
+/// Captured from the per-feature counter structs (the pre-refactor emission: this test run
+/// against origin/main's counters).
 const EXPECTED: &[(&str, &str)] = &[
+    (
+        "agent billing modes",
+        r#"{"billing_pay_as_you_go_count":1,"billing_plan_count":2,"billing_flat_rate_count":1,"billing_free_count":3,"billing_unknown_count":1}"#,
+    ),
     (
         "agent fs edit",
         r#"{"fs_read_count":2,"fs_read_line_count":123,"fs_read_failed_count":1,"fs_edit_count":1,"fs_edit_op_count":4,"fs_edit_rejected_count":1,"fs_edit_stale_anchor_count":2,"fs_edit_failed_count":2}"#,
@@ -260,6 +302,14 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent kernel login and recall",
         r#"{"kernel_mcp_login_count":1,"kernel_mcp_login_failed_count":2,"kernel_mcp_login_unavailable_count":1,"session_search_count":2,"session_search_hit_count":5,"session_search_read_count":1,"session_search_failed_count":1}"#,
+    ),
+    (
+        "agent message waits",
+        r#"{"agent_message_wait_message_count":2,"agent_message_wait_timeout_count":1,"agent_message_wait_cycle_count":1,"agent_message_wait_no_sender_count":2}"#,
+    ),
+    (
+        "agent messages",
+        r#"{"agent_message_throttled_count":3,"agent_message_wake_refused_count":5}"#,
     ),
     (
         "agent repl background cells",
