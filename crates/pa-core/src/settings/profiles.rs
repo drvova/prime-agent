@@ -42,6 +42,34 @@ pub struct Profile {
     pub settings: serde_json::Map<String, serde_json::Value>,
 }
 
+impl Profile {
+    /// The named credential id this profile pins a new session to: its mapping for `provider`
+    /// (the session's `--provider`, else the profile's own `defaultProvider`), else its one named
+    /// credential when no provider is known. `default` mappings pin nothing.
+    #[must_use]
+    pub fn credential_for(&self, provider: Option<&str>) -> Option<&str> {
+        let provider = provider.or_else(|| {
+            self.settings
+                .get("defaultProvider")
+                .and_then(serde_json::Value::as_str)
+        });
+        let mut named = self
+            .credentials
+            .iter()
+            .filter(|(_, id)| id.as_str() != DEFAULT_CREDENTIAL);
+        if let Some(provider) = provider {
+            named
+                .find(|(mapped, _)| mapped.as_str() == provider)
+                .map(|(_, id)| id.as_str())
+        } else {
+            match (named.next(), named.next()) {
+                (Some((_, id)), None) => Some(id.as_str()),
+                (Some(_), Some(_)) | (None, _) => None,
+            }
+        }
+    }
+}
+
 static ACTIVE_PROFILE: RwLock<Option<String>> = RwLock::new(None);
 
 /// Make `name` this process's active profile (`None`: no profile). Every settings read after this

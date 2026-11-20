@@ -10,6 +10,9 @@
 //! A second check starts the product with `--profile work`, whose profile maps the provider to
 //! that named credential: the new session sends only `key-work`, and the top bar tags the profile.
 //!
+//! A third check runs print mode (`-p`) with `--credential work`: the in-process run sends
+//! only `key-work` too.
+//!
 //! Every wait polls the captured pane (or the recorded requests) for observable state under a
 //! deadline; nothing sleeps for a fixed time.
 
@@ -170,8 +173,9 @@ fn completions_fixture() -> (String, Arc<Mutex<Vec<String>>>) {
     (origin, bearers)
 }
 
-/// Start the product with `args` against an agent dir holding both faux keys.
-fn start(dir: &Path, origin: &str, args: &str) -> Pane {
+/// Seed an isolated HOME whose agent dir holds both faux keys, and write the launcher that runs
+/// the product inside it; the launcher's path.
+fn seed(dir: &Path, origin: &str) -> PathBuf {
     let home = dir.join("home");
     let agent = home.join(".prime/agent");
     let project = dir.join("pin-chat");
@@ -233,10 +237,16 @@ fn start(dir: &Path, origin: &str, args: &str) -> Pane {
         ),
     )
     .expect("launcher");
+    launcher
+}
+
+/// Start the product with `args` in a private tmux pane against the seeded agent dir.
+fn start(dir: &Path, origin: &str, args: &str) -> Pane {
     let pane = Pane {
         socket: dir.join("tmux.sock"),
-        launcher,
+        launcher: seed(dir, origin),
     };
+    let quote = |path: &Path| format!("'{}'", path.display());
     let command = format!("sh {} {args}", quote(&pane.launcher));
     let started = pane.tmux(&[
         "-f",
@@ -299,5 +309,42 @@ fn a_new_session_under_a_profile_uses_the_profiles_credential() {
     assert!(
         sent.iter().all(|bearer| bearer == "Bearer key-work"),
         "every request carries the profile's credential: {sent:?}"
+    );
+}
+
+/// Print mode (`-p`, the in-process headless run) honours the same pin: `--credential work` sends
+/// only the named credential's key, never the default slot's.
+#[test]
+fn print_mode_with_a_credential_sends_only_that_key() {
+    let dir = tempfile::TempDir::new_in(std::env::temp_dir().canonicalize().expect("temp root"))
+        .expect("temp dir");
+    let (origin, bearers) = completions_fixture();
+    let launcher = seed(dir.path(), &origin);
+    let mut child = Command::new("sh")
+        .arg(&launcher)
+        .args(["-p", "hello", "--credential", "work"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("the product runs");
+    let deadline = Instant::now() + WAIT;
+    while child.try_wait().expect("wait").is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("print mode did not finish within {WAIT:?}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().expect("output");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("pinned answer"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sent = bearers.lock().unwrap().clone();
+    assert!(
+        !sent.is_empty() && sent.iter().all(|bearer| bearer == "Bearer key-work"),
+        "every request carries the pinned key: {sent:?}"
     );
 }
