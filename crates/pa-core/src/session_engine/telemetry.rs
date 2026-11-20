@@ -519,11 +519,6 @@ impl SessionCounters {
         self.with(|values| values.capabilities.add(property, count));
     }
 
-    /// Raise one capability's slowest-call property to `value` when it is larger.
-    pub(crate) fn note_capability_max(&self, property: &'static str, value: u64) {
-        self.with(|values| values.capabilities.raise(property, value));
-    }
-
     /// One goal verification or budget fact (counts only: never a command or judge text).
     pub fn note_goal(&self, fact: GoalTelemetryFact) {
         self.with(|values| {

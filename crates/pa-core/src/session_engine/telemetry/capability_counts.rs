@@ -2,7 +2,7 @@
 //! the catalog property they report as. The capability rule files in pa-telemetry
 //! (`catalog/capabilities/`) name each event and its properties; session end emits every rule
 //! with a non-zero count, all its properties in rule order. A new capability counts through
-//! [`super::SessionCounters::note_capability`] (or `note_capability_max`) under the property names
+//! [`super::SessionCounters::note_capability`] under the property names
 //! its rule file declares, and touches no counter struct here.
 
 use std::collections::BTreeMap;
