@@ -32,6 +32,7 @@ fn usage_options() -> super::super::ModelPickerOptions {
         }],
         quotas: vec![ProviderQuota {
             provider: "anthropic".to_string(),
+            account: None,
             plan: Some("max".to_string()),
             source: QuotaSource::Provider,
             fetched_at_ms: NOW_MS,
@@ -198,7 +199,7 @@ fn a_model_without_effort_skips_the_row_and_esc_steps_back() {
     let mut picker = ModelPicker::new(rich_options());
     // The grouped list: Fable, GLM (recent), Haiku, Llama.
     press(&mut picker, &["down", "down", "down", "tab"]);
-    let PickerView::Actions { model, .. } = picker.view() else {
+    let PickerView::Actions { model, .. } = picker.view else {
         panic!("the action menu is up");
     };
     let entry = picker.model_at(model).cloned().expect("the menu's model");
@@ -207,7 +208,7 @@ fn a_model_without_effort_skips_the_row_and_esc_steps_back() {
             entry.id.as_str(),
             picker.action_rows(&entry),
             press(&mut picker, &["up", "enter"]),
-            picker.view(),
+            picker.view,
         ),
         (
             "llama-4",
@@ -222,9 +223,9 @@ fn a_model_without_effort_skips_the_row_and_esc_steps_back() {
         )
     );
     press(&mut picker, &["escape"]);
-    assert_eq!(picker.view(), PickerView::Actions { model, selected: 0 });
+    assert_eq!(picker.view, PickerView::Actions { model, selected: 0 });
     press(&mut picker, &["escape"]);
-    assert_eq!(picker.view(), PickerView::List);
+    assert_eq!(picker.view, PickerView::List);
 }
 
 /// Favoriting a model reports the whole list, moves the model into the favorites group at the

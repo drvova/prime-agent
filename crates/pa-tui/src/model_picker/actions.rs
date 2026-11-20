@@ -83,10 +83,6 @@ impl ModelPicker {
         rows
     }
 
-    pub(crate) fn view(&self) -> PickerView {
-        self.view
-    }
-
     /// Whether `model` is a favorite.
     pub(crate) fn is_favorite(&self, model: &Model) -> bool {
         self.favorites
@@ -302,12 +298,10 @@ impl ModelPicker {
 
     /// The quota rows for `entry`'s provider from the cached cards: each window with its reset.
     fn quota_text(&self, entry: &Model) -> String {
-        let Some(card) = self
-            .usage
-            .quotas
-            .iter()
-            .find(|card| card.provider == entry.provider)
-        else {
+        let Some(card) = self.usage.quotas.iter().find(|card| {
+            card.provider == entry.provider
+                && card.account.as_ref() == self.accounts.get(&entry.provider)
+        }) else {
             return "not loaded (open /usage)".to_string();
         };
         let now_ms = self.usage.now_ms;
@@ -371,43 +365,40 @@ impl ModelPicker {
             "\u{2026}",
         ));
         lines.push(Vec::new());
-        match selected {
-            Some(selected) => {
-                for (index, row) in self.action_rows(entry).into_iter().enumerate() {
-                    let is_selected = index == selected;
-                    let marker = if is_selected { "\u{203a} " } else { "  " };
-                    let line: Line = vec![
-                        theme.fg_span(ThemeColor::Accent, marker),
-                        Span::raw(self.action_label(entry, row)),
-                    ];
-                    lines.push(finish_menu_row(theme, &line, width, is_selected));
-                }
-                lines.push(Vec::new());
-                lines.extend(
-                    Footer::new()
-                        .bound(
-                            kb,
-                            &["tui.select.up", "tui.select.down"],
-                            "action",
-                            HintRank::Useful,
-                        )
-                        .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-                        .esc(kb, EscVerb::Back)
-                        .rows(theme, width),
-                );
+        if let Some(selected) = selected {
+            for (index, row) in self.action_rows(entry).into_iter().enumerate() {
+                let is_selected = index == selected;
+                let marker = if is_selected { "\u{203a} " } else { "  " };
+                let line: Line = vec![
+                    theme.fg_span(ThemeColor::Accent, marker),
+                    Span::raw(self.action_label(entry, row)),
+                ];
+                lines.push(finish_menu_row(theme, &line, width, is_selected));
             }
-            None => {
-                for (label, value) in self.detail_fields(entry) {
-                    let line: Line = vec![
-                        Span::raw(CHROME_INDENT),
-                        muted(format!("{label:<10}")),
-                        Span::raw(value),
-                    ];
-                    lines.push(crate::width::truncate_line(&line, width, "\u{2026}"));
-                }
-                lines.push(Vec::new());
-                lines.extend(Footer::new().esc(kb, EscVerb::Back).rows(theme, width));
+            lines.push(Vec::new());
+            lines.extend(
+                Footer::new()
+                    .bound(
+                        kb,
+                        &["tui.select.up", "tui.select.down"],
+                        "action",
+                        HintRank::Useful,
+                    )
+                    .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                    .esc(kb, EscVerb::Back)
+                    .rows(theme, width),
+            );
+        } else {
+            for (label, value) in self.detail_fields(entry) {
+                let line: Line = vec![
+                    Span::raw(CHROME_INDENT),
+                    muted(format!("{label:<10}")),
+                    Span::raw(value),
+                ];
+                lines.push(crate::width::truncate_line(&line, width, "\u{2026}"));
             }
+            lines.push(Vec::new());
+            lines.extend(Footer::new().esc(kb, EscVerb::Back).rows(theme, width));
         }
         lines.push(Vec::new());
         Some(lines)
