@@ -21,10 +21,102 @@ use crate::engine::AssistantSnapshot;
 use crate::protocol::{create_daemon_event_meta, DaemonOutbound};
 use crate::worker::OutboundFrame;
 
-/// The minimum gap between two broadcast updates: the leading edge goes out at once, the
-/// trailing edge one interval after the previous broadcast, so this bounds both the broadcast
-/// rate (20 Hz) and the staleness of a parked update.
+/// The starting gap between two broadcast updates: the leading edge goes out at once, the
+/// trailing edge one interval after the previous broadcast, so the interval bounds both the
+/// broadcast rate and the staleness of a parked update. [`FlushPacer`] moves it between
+/// [`MIN_FLUSH_INTERVAL`] and [`MAX_FLUSH_INTERVAL`].
 pub(crate) const UPDATE_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+/// The shortest interval (about 60 Hz): subscribers keeping up get smooth streaming.
+const MIN_FLUSH_INTERVAL: Duration = Duration::from_millis(16);
+/// The longest interval (10 Hz): a lagging subscriber gets fewer, larger updates.
+const MAX_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+/// A subscriber this many frames behind is lagging.
+const LAGGING_BACKLOG: usize = 64;
+
+/// The flush pacing's tuning on `pa_types::control`'s controller: the controlled rate is
+/// flushes a minute (60 000 / interval). Clean flushes add 120 a minute each, a lagging
+/// subscriber halves the rate, a dropped frame halves it too, and a cut ages out after 30 s.
+const FLUSH_CONTROLLER_CONFIG: pa_types::control::ControllerConfig =
+    pa_types::control::ControllerConfig {
+        initial_concurrency: 1,
+        min_concurrency: 1,
+        max_concurrency: 1,
+        initial_rate_per_min: 1_200,
+        min_rate_per_min: 600,
+        max_rate_per_min: 3_750,
+        rate_step_per_min: 120,
+        decrease_keep_pct: 50,
+        latency_keep_pct: 100,
+        latency_rise_pct: 300,
+        latency_rise_samples: 3,
+        headroom_pct: 0,
+        decrease_spacing_ms: 500,
+        ceiling_ttl_ms: 30_000,
+    };
+
+/// The worker's adaptive `message_update` flush interval: after every broadcast it reads how
+/// far behind the slowest subscriber is and whether a subscriber dropped frames, and moves the
+/// interval between 16 and 100 ms. Only the trailing edge follows it; the leading edge
+/// (the first token, the first after a pause) always goes out at once.
+pub(crate) struct FlushPacer {
+    state: Mutex<PacerState>,
+}
+
+struct PacerState {
+    controller: pa_types::control::Controller,
+    /// The drop count at the last observation.
+    seen_drops: u64,
+    started: Instant,
+}
+
+impl FlushPacer {
+    pub(crate) fn new() -> Self {
+        let started = Instant::now();
+        let config = pa_types::control::ControllerConfig {
+            initial_rate_per_min: u32::try_from(60_000 / UPDATE_FLUSH_INTERVAL.as_millis())
+                .unwrap_or(FLUSH_CONTROLLER_CONFIG.initial_rate_per_min),
+            ..FLUSH_CONTROLLER_CONFIG
+        };
+        FlushPacer {
+            state: Mutex::new(PacerState {
+                controller: pa_types::control::Controller::new(config, 0),
+                seen_drops: 0,
+                started,
+            }),
+        }
+    }
+
+    /// The interval to apply now.
+    pub(crate) fn interval(&self) -> Duration {
+        let rate = self.state.lock().unwrap().controller.target().rate_per_min;
+        Duration::from_millis(60_000 / u64::from(rate.max(1)))
+            .clamp(MIN_FLUSH_INTERVAL, MAX_FLUSH_INTERVAL)
+    }
+
+    /// Fold in one broadcast's view of the subscribers: their backlog and the total frames
+    /// dropped so far.
+    pub(crate) fn observe(&self, backlog: usize, dropped: u64) {
+        use pa_types::control::{LimitReport, Observation, Outcome};
+        let mut state = self.state.lock().unwrap();
+        let outcome = if dropped > state.seen_drops {
+            Outcome::Throttled
+        } else if backlog >= LAGGING_BACKLOG {
+            Outcome::Overloaded
+        } else {
+            Outcome::Success
+        };
+        state.seen_drops = dropped;
+        let now_ms = u64::try_from(state.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let _target = state.controller.observe(
+            &Observation {
+                outcome,
+                latency_ms: None,
+                limits: LimitReport::default(),
+            },
+            now_ms,
+        );
+    }
+}
 
 /// The session identity a flushed frame is stamped with (the frame is
 /// built at flush time, not at park time).
@@ -121,7 +213,7 @@ impl TurnStreamCoalescer {
         }
         if inner
             .last_flush
-            .is_none_or(|at| at.elapsed() >= UPDATE_FLUSH_INTERVAL)
+            .is_none_or(|at| at.elapsed() >= events.flush.interval())
         {
             self.flush_locked(&mut inner, events);
         }
@@ -149,7 +241,7 @@ impl TurnStreamCoalescer {
         }
         if inner
             .last_flush
-            .is_none_or(|at| at.elapsed() >= UPDATE_FLUSH_INTERVAL)
+            .is_none_or(|at| at.elapsed() >= events.flush.interval())
         {
             self.flush_locked(&mut inner, events);
         }
@@ -160,18 +252,19 @@ impl TurnStreamCoalescer {
     /// (the earliest the trailing edge may go out), or one interval from now when that moment
     /// already passed or nothing was broadcast yet (a fresh park then takes the leading edge
     /// itself). `None` once the turn closed.
-    pub(crate) fn next_flush_at(&self) -> Option<Instant> {
+    pub(crate) fn next_flush_at(&self, events: &crate::worker::EventPump) -> Option<Instant> {
         let inner = self.inner.lock().unwrap();
         if inner.closed {
             return None;
         }
         let now = Instant::now();
+        let interval = events.flush.interval();
         Some(
             inner
                 .last_flush
-                .map(|at| at + UPDATE_FLUSH_INTERVAL)
+                .map(|at| at + interval)
                 .filter(|due| *due > now)
-                .unwrap_or(now + UPDATE_FLUSH_INTERVAL),
+                .unwrap_or(now + interval),
         )
     }
 
@@ -230,6 +323,7 @@ impl TurnStreamCoalescer {
         };
         let payload = serde_json::to_vec(&outbound).unwrap_or_default();
         events.send(OutboundFrame::session_event(payload));
+        events.flush.observe(events.backlog(), events.dropped());
     }
 }
 
@@ -297,6 +391,56 @@ mod tests {
             trailing["event"]["assistantMessageEvent"]["delta"],
             " second"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_flush_interval_shortens_while_subscribers_keep_up_and_backs_off_on_lag_or_drops() {
+        let pacer = FlushPacer::new();
+        let mut intervals = vec![pacer.interval()];
+        for (backlog, dropped) in [(0, 0), (0, 0), (80, 0), (0, 0), (0, 5), (0, 5)] {
+            tokio::time::advance(Duration::from_secs(1)).await;
+            pacer.observe(backlog, dropped);
+            intervals.push(pacer.interval());
+        }
+        assert_eq!(
+            intervals,
+            [50, 45, 41, 83, 71, 100, 83].map(Duration::from_millis)
+        );
+    }
+
+    /// A subscriber a ring-segment behind stretches the trailing edge past the starting 50 ms;
+    /// the leading edge still goes out at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_lagging_subscriber_stretches_the_trailing_edge() {
+        let (pump, mut rx) = subscribe();
+        // The slow subscriber: frames it has not read yet.
+        for _ in 0..LAGGING_BACKLOG {
+            pump.send(OutboundFrame::session_event(Vec::new()));
+        }
+        let coalescer = TurnStreamCoalescer::new("s1".to_string(), "g1".to_string());
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "lead" })),
+            "text_delta",
+            "lead",
+            1,
+            &pump,
+        ));
+        assert!(coalescer.park_update(
+            AssistantSnapshot::Wire(json!({ "text": "lead more" })),
+            "text_delta",
+            " more",
+            2,
+            &pump,
+        ));
+        let mut trailing_at = Vec::new();
+        for _ in 0..2 {
+            tokio::time::advance(UPDATE_FLUSH_INTERVAL).await;
+            assert!(coalescer.flush_pending(&pump));
+            trailing_at.push(pump.backlog());
+        }
+        // The leading edge joined the backlog at once; the trailing edge only after 100 ms.
+        assert_eq!(trailing_at, [LAGGING_BACKLOG + 1, LAGGING_BACKLOG + 2]);
+        drop(rx.try_recv());
     }
 
     #[test]
@@ -444,7 +588,7 @@ mod tests {
         ));
         assert!(!coalescer.flush_pending(&pump), "the flusher stops");
         assert!(
-            coalescer.next_flush_at().is_none(),
+            coalescer.next_flush_at(&pump).is_none(),
             "a closed turn arms no tick"
         );
         let leading = session_event_of(&rx.try_recv().unwrap());
