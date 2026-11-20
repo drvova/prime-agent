@@ -2387,6 +2387,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// `fs.symbol` queries ride their own `agent symbol index` event at session end (counts only: never a name or a path).
 #[tokio::test]
 async fn symbol_index_ride_their_own_event() {
+    use crate::symbol_index::SymbolFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2395,7 +2396,6 @@ async fn symbol_index_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::symbol_index::SymbolFact;
     for fact in [
         SymbolFact {
             definitions: 1,
@@ -2435,6 +2435,7 @@ async fn symbol_index_ride_their_own_event() {
 /// Neighbour prefetches ride their own `agent prefetch` event at session end (counts only: never a path).
 #[tokio::test]
 async fn prefetch_ride_their_own_event() {
+    use crate::prefetch::PrefetchFact;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2443,7 +2444,6 @@ async fn prefetch_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::prefetch::PrefetchFact;
     for fact in [
         PrefetchFact {
             issued: 3,
