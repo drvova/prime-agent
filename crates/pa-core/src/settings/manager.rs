@@ -792,9 +792,9 @@ impl SettingsManager {
                         return IdleEviction::Minutes(minutes);
                     }
                 }
-                IdleEviction::Minutes(DEFAULT_IDLE_EVICTION_MINUTES)
+                IdleEviction::Adaptive
             }
-            _ => IdleEviction::Minutes(DEFAULT_IDLE_EVICTION_MINUTES),
+            _ => IdleEviction::Adaptive,
         }
     }
 
@@ -977,9 +977,14 @@ fn settings_document(current: Option<&str>) -> Result<serde_json::Map<String, se
     Ok(map)
 }
 
+/// The idle-eviction window `idleEvictionMinutes` resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleEviction {
+    /// The user set this many minutes: it always wins.
     Minutes(u64),
+    /// Unset (or not a positive number): the host picks the window, at most
+    /// [`DEFAULT_IDLE_EVICTION_MINUTES`] and shorter under memory pressure.
+    Adaptive,
     Off,
 }
 
@@ -1343,17 +1348,14 @@ mod tests {
     #[test]
     fn idle_eviction_semantics() {
         let mut manager = SettingsManager::in_memory(&Settings::default());
-        assert_eq!(
-            manager.get_idle_eviction(),
-            IdleEviction::Minutes(DEFAULT_IDLE_EVICTION_MINUTES)
-        );
+        assert_eq!(manager.get_idle_eviction(), IdleEviction::Adaptive);
         manager.global.idle_eviction_minutes = Some(serde_json::json!("off"));
         assert_eq!(manager.get_idle_eviction(), IdleEviction::Off);
         manager.global.idle_eviction_minutes = Some(serde_json::json!(0));
-        assert_eq!(
-            manager.get_idle_eviction(),
-            IdleEviction::Minutes(DEFAULT_IDLE_EVICTION_MINUTES)
-        );
+        assert_eq!(manager.get_idle_eviction(), IdleEviction::Adaptive);
+        // An explicit value, the default's 90 included, wins over the adaptive window.
+        manager.global.idle_eviction_minutes = Some(serde_json::json!(90));
+        assert_eq!(manager.get_idle_eviction(), IdleEviction::Minutes(90));
         manager.global.idle_eviction_minutes = Some(serde_json::json!(45));
         assert_eq!(manager.get_idle_eviction(), IdleEviction::Minutes(45));
     }

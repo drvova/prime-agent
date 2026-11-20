@@ -1,0 +1,1 @@
+- The `/usage` details view now renders the overview's own quota cards, gauges, and aligned spend columns, wraps long errors instead of cutting them off, and Esc returns to the overview where you left it.

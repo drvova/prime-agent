@@ -1,0 +1,22 @@
+module = "rlm.worktree"
+closure_seed = true
+bound_module = "worktree"
+prompt_builtins = ["worktree.*"]
+documented = ["worktree.create", "worktree.list", "worktree.diff", "worktree.merge", "worktree.remove"]
+internal_host_requests = ["worktree.record"]
+probe = [
+  "import rlm.worktree as _worktree",
+  "assert all(callable(getattr(_worktree, _m, None)) for _m in ('create', 'list', 'diff', 'merge', 'remove'))",
+]
+
+[[telemetry]]
+event = "agent worktrees"
+properties = [
+  "worktree_created_count",
+  "worktree_diff_count",
+  "worktree_merged_count",
+  "worktree_branched_count",
+  "worktree_conflict_count",
+  "worktree_removed_count",
+  "worktree_failed_count",
+]

@@ -1,0 +1,1 @@
+- New sessions now start with a compact project card in the system prompt (build/test/check commands from the manifests, Makefile, and CI, the key directories, and the commands earlier sessions ran here), with a handle to the full detail; it is refreshed in the background and never delays startup.

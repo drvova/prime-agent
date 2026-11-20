@@ -473,6 +473,7 @@ impl SessionEngine for AgentSessionEngine {
                 api_key: None,
                 model: model.clone(),
                 headers: None,
+                admission_credential: None,
             });
         }
         let session = self.session.blocking_lock();

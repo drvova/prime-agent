@@ -832,23 +832,32 @@ fn a_deleted_pinned_credential_fails_with_its_label_and_never_serves_the_default
     );
 }
 
+/// The admission key a request resolved by `registry` for `model` runs under.
+fn admission_key(registry: &mut ModelRegistry, model: &Model) -> pa_ai::admission::AdmissionKey {
+    let resolved = registry.get_api_key_and_headers(model, None);
+    pa_ai::admission::AdmissionKey::for_request(
+        model,
+        Some(&pa_ai::types::StreamOptions {
+            api_key: resolved.api_key,
+            admission_credential: resolved.admission_credential,
+            ..Default::default()
+        }),
+    )
+}
+
 #[test]
 fn a_pinned_credential_admits_under_one_key_across_a_token_refresh() {
     let dir = tempfile::tempdir().unwrap();
     let (mut registry, pin) = pinned_registry(dir.path());
     let anthropic = model("m", "anthropic");
-    let admission_key = |registry: &mut ModelRegistry| {
-        let resolved = registry.get_api_key_and_headers(&anthropic, None);
-        pa_ai::admission::AdmissionKey::for_request(&anthropic, resolved.api_key.as_deref())
-    };
-    let before = admission_key(&mut registry);
+    let before = admission_key(&mut registry, &anthropic);
     // The refresh rotates the stored token in place: the credential id stays.
     let path = dir.path().join(crate::auth::AUTH_ACCOUNTS_FILE);
     let document = std::fs::read_to_string(&path)
         .unwrap()
         .replace("key-A", "key-A-rotated");
     std::fs::write(&path, document).unwrap();
-    let after = admission_key(&mut registry);
+    let after = admission_key(&mut registry, &anthropic);
     assert_eq!(after, before);
     assert_eq!(
         before,
@@ -916,4 +925,33 @@ fn a_declared_quota_fallback_still_serves_a_pinned_session() {
         QuotaFallback::Armed { provider, .. } if provider == "opencode-go"
     ));
     assert_eq!(key(&mut registry).as_deref(), Some("go-key"));
+}
+
+/// Two sessions pinned to different credentials that hold the same key string admit under
+/// their own credentials' keys: the identity comes from each pin, never from the key.
+#[test]
+fn two_pins_sharing_one_key_string_admit_under_distinct_keys() {
+    let (first_dir, second_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let (mut first, first_pin) = pinned_registry(first_dir.path());
+    let (mut second, second_pin) = pinned_registry(second_dir.path());
+    let anthropic = model("m", "anthropic");
+    let expected = |pin: &CredentialPin| pa_ai::admission::AdmissionKey {
+        provider: "anthropic".to_string(),
+        credential: pa_ai::admission::credential_identity(&pin.provider, &pin.id),
+        scope: "m".to_string(),
+    };
+    // Interleaved resolutions: neither registry's pin leaks into the other's key.
+    let keys = [
+        admission_key(&mut first, &anthropic),
+        admission_key(&mut second, &anthropic),
+        admission_key(&mut first, &anthropic),
+    ];
+    assert_eq!(
+        keys,
+        [
+            expected(&first_pin),
+            expected(&second_pin),
+            expected(&first_pin)
+        ]
+    );
 }

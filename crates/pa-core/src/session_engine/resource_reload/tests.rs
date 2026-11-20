@@ -125,6 +125,7 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
                 daemonless: true,
                 can_spawn: false,
                 generic_mcp_servers: Vec::new(),
+                project_card: None,
             },
         },
         Vec::new(),

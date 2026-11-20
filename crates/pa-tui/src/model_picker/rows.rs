@@ -15,8 +15,8 @@ use crate::width::str_width;
 /// One display row of the list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ListRow {
-    /// A group header: the recent models, or one provider (its label — with the session's
-    /// account when the provider holds several credentials — and whether it needs a sign-in).
+    /// A group header: the recent models, or one provider (its label, and whether it needs a
+    /// sign-in).
     Header { label: String, sign_in: SignIn },
     /// The model at this filtered position.
     Model(usize),
@@ -136,27 +136,20 @@ impl ModelPicker {
             push_group(RECENT_HEADER.to_string(), SignIn::Ready, pinned);
         }
         for (label, sign_in, members) in groups {
-            let account = members
-                .first()
-                .and_then(|index| self.accounts.get(&self.all_models[*index].provider));
-            let header = match account {
-                Some(account) => format!("{label} \u{b7} account: {account}"),
-                None => label,
-            };
-            push_group(header, sign_in, members);
+            push_group(label, sign_in, members);
         }
         (filtered, rows)
     }
 }
 
 impl ModelPicker {
-    /// A flat view's provider column: the provider label, with the session's account when the
-    /// provider holds several credentials.
-    fn provider_cell(&self, model: &Model) -> String {
-        match self.accounts.get(&model.provider) {
-            Some(account) => format!("{} \u{b7} {account}", provider_label(model)),
-            None => provider_label(model).to_string(),
-        }
+    /// The account column's cell: the account this session serves the model's provider with,
+    /// for a provider holding several credentials (`account: work`).
+    fn account_cell(&self, model: &Model) -> String {
+        self.accounts
+            .get(&model.provider)
+            .map(|account| format!("account: {account}"))
+            .unwrap_or_default()
     }
 }
 
@@ -169,14 +162,17 @@ pub(crate) struct RowColumns {
     quota_width: usize,
     provider_width: usize,
     sign_in_width: usize,
+    account_width: usize,
 }
 
-const SIGN_IN_TEXT: &str = "sign in";
+/// The sign-in column's text (and the unconfigured group header's suffix).
+pub(crate) const SIGN_IN_TEXT: &str = "require sign in";
 
 impl RowColumns {
     /// Size the columns for `models` at `row_width`. Columns join while they fit beside the
     /// narrowest name cell, in priority order: price, context, provider (flat views only: the
-    /// grouped view names the provider in its header), sign-in, capabilities, quota.
+    /// grouped view names the provider in its header), sign-in, the session's account (a
+    /// provider holding several credentials), capabilities, quota.
     pub(crate) fn fit(picker: &ModelPicker, models: &[&Model], row_width: usize) -> Self {
         let widest = |cell: &dyn Fn(&Model) -> String| {
             models
@@ -190,7 +186,7 @@ impl RowColumns {
             widest(&|model| price_cell(picker.class_of(model), model)),
             widest(&|model| context_cell(model.context_window)),
             if flat {
-                widest(&|model| picker.provider_cell(model))
+                widest(&|model| provider_label(model).to_string())
             } else {
                 0
             },
@@ -199,11 +195,12 @@ impl RowColumns {
             } else {
                 0
             },
+            widest(&|model| picker.account_cell(model)),
             3,
             widest(&|model| picker.quota_label(model).unwrap_or_default().to_string()),
         ];
         let budget = row_width.saturating_sub(2 + 2 + NAME_MIN_WIDTH);
-        let mut kept = [0usize; 6];
+        let mut kept = [0usize; 7];
         let mut used = 0usize;
         for (slot, width) in wanted.iter().enumerate() {
             if *width == 0 {
@@ -216,7 +213,7 @@ impl RowColumns {
             used += cost;
             kept[slot] = *width;
         }
-        let [price_width, context_width, provider_width, sign_in_width, capabilities, quota_width] =
+        let [price_width, context_width, provider_width, sign_in_width, account_width, capabilities, quota_width] =
             kept;
         Self {
             capabilities: capabilities > 0,
@@ -225,11 +222,12 @@ impl RowColumns {
             quota_width,
             provider_width,
             sign_in_width,
+            account_width,
         }
     }
 
     /// One model's columns as one padded cell: capabilities, context (right-aligned), price,
-    /// quota, provider, sign-in — every row of the window the same width.
+    /// quota, provider, sign-in, account — every row of the window the same width.
     pub(crate) fn cell(&self, picker: &ModelPicker, model: &Model) -> String {
         let mut cells: Vec<String> = Vec::new();
         if self.capabilities {
@@ -254,7 +252,7 @@ impl RowColumns {
             ));
         }
         if self.provider_width > 0 {
-            cells.push(left(&picker.provider_cell(model), self.provider_width));
+            cells.push(left(provider_label(model), self.provider_width));
         }
         if self.sign_in_width > 0 {
             let text = if picker.is_configured(model) {
@@ -263,6 +261,9 @@ impl RowColumns {
                 SIGN_IN_TEXT
             };
             cells.push(left(text, self.sign_in_width));
+        }
+        if self.account_width > 0 {
+            cells.push(left(&picker.account_cell(model), self.account_width));
         }
         cells.join(COLUMN_GAP)
     }
@@ -276,6 +277,7 @@ impl RowColumns {
             self.quota_width,
             self.provider_width,
             self.sign_in_width,
+            self.account_width,
         ];
         let shown: Vec<usize> = widths.into_iter().filter(|width| *width > 0).collect();
         shown.iter().sum::<usize>() + COLUMN_GAP.len() * shown.len().saturating_sub(1)

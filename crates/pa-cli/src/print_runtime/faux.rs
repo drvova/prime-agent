@@ -123,6 +123,7 @@ pub(crate) async fn build_faux_engine_with(
             model: model.clone(),
             service_tier: None,
             headers: None,
+            admission_credential: None,
         })));
     let stream_fn = switchable_stream_fn(std::sync::Arc::clone(&provider_target));
     // The faux path shares the session-manager wiring with the real provider

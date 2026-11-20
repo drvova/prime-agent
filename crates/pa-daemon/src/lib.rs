@@ -55,6 +55,7 @@ pub(crate) mod goal_state_persist;
 pub(crate) mod herdr;
 pub(crate) mod history_import;
 pub mod hold_refusal;
+mod idle_eviction;
 pub(crate) mod image_route;
 pub mod input_pause_lease;
 pub mod journal;

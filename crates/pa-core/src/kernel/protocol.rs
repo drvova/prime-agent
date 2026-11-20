@@ -115,6 +115,17 @@ impl Request {
     }
 }
 
+/// Who sent a host request: the cell the user's turn is executing (its own awaits), or
+/// background work (detached tasks, backgrounded cells, a cell's gathered fan-out). The host
+/// dispatches the cell's requests first; background requests share a soft bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRequestOrigin {
+    /// The awaits of the cell the turn is executing.
+    Cell,
+    /// Detached tasks, backgrounded cells, and a cell's gathered fan-out.
+    Background,
+}
+
 /// One parsed event frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
@@ -140,6 +151,7 @@ pub enum Event {
     HostRequest {
         id: String,
         data: Value,
+        origin: HostRequestOrigin,
     },
     Error {
         id: Option<String>,
@@ -241,7 +253,16 @@ pub fn parse_event(line: &str) -> Result<Event, String> {
         "host_request" => {
             let rid =
                 id("id").ok_or_else(|| format!("host_request frame without id: {}", clip(line)))?;
-            Ok(Event::HostRequest { id: rid, data })
+            // A runtime that predates the field tags nothing: every request is the cell's.
+            let origin = match obj.get("origin").and_then(Value::as_str) {
+                Some("background") => HostRequestOrigin::Background,
+                Some(_) | None => HostRequestOrigin::Cell,
+            };
+            Ok(Event::HostRequest {
+                id: rid,
+                data,
+                origin,
+            })
         }
         "error" => Ok(Event::Error {
             id: id("id"),
@@ -486,7 +507,8 @@ mod tests {
             parse_event(r#"{"event":"host_request","id":"hr1"}"#).unwrap(),
             Event::HostRequest {
                 id: "hr1".into(),
-                data: Value::Null
+                data: Value::Null,
+                origin: HostRequestOrigin::Cell,
             }
         );
         assert_eq!(
@@ -497,6 +519,16 @@ mod tests {
             Event::HostRequest {
                 id: "hr1".into(),
                 data: json!({"reason": "agent_message.send"}),
+                origin: HostRequestOrigin::Cell,
+            }
+        );
+        assert_eq!(
+            parse_event(r#"{"event":"host_request","id":"hr2","data":{},"origin":"background"}"#)
+                .unwrap(),
+            Event::HostRequest {
+                id: "hr2".into(),
+                data: json!({}),
+                origin: HostRequestOrigin::Background,
             }
         );
     }
