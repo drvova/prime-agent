@@ -189,6 +189,7 @@ fn row_is_sibling(row: &Value, identity: &FamilyIdentity) -> bool {
 
 mod message;
 mod observe;
+mod wait;
 
 pub use message::LinkAgentMessageController;
 pub use observe::LinkAgentObserveController;

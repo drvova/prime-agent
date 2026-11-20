@@ -4,7 +4,6 @@
 //! steps and before the credential write.
 
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 
 use pa_ai::oauth::{
@@ -13,10 +12,12 @@ use pa_ai::oauth::{
     XAI_LOGIN_CANCELLED,
 };
 use pa_core::auth::{
-    AuthCredential, AuthStorage, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID, XAI_PROVIDER_ID,
+    AuthCredential, ANTHROPIC_PROVIDER_ID, GITHUB_COPILOT_PROVIDER_ID, XAI_PROVIDER_ID,
 };
 use pa_tui::auth_panel::{AuthPanelHandle, PastePromptTone, PasteStyle};
 use pa_tui::provider_auth::ProviderAuthOutcome;
+
+use crate::provider_login::store::LoginStore;
 
 /// The manual-input prompt (the callback-server providers' paste line).
 const MANUAL_INPUT_PROMPT: &str = "Paste redirect URL below, or complete login in browser:";
@@ -107,7 +108,7 @@ impl OAuthLoginUi for PanelSubscriptionLoginUi {
 /// Run the Anthropic flow, store the credential, and report the status. A
 /// cancelled surface stays silent; a failed flow reports the error row.
 pub(crate) async fn run_anthropic_login(
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     provider_name: &str,
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
@@ -127,18 +128,17 @@ pub(crate) async fn run_anthropic_login(
     if ui.is_cancelled() {
         return ProviderAuthOutcome::Cancelled;
     }
-    store_anthropic_login(agent_dir, provider_name, credentials)
+    store_anthropic_login(store, provider_name, credentials)
 }
 
 /// TS `completeProviderAuthentication` for Anthropic: store the
 /// credential under the provider id and report the TS status.
 fn store_anthropic_login(
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     provider_name: &str,
     credentials: AnthropicCredentials,
 ) -> ProviderAuthOutcome {
-    let mut auth = AuthStorage::create(agent_dir);
-    auth.set(
+    if let Err(error) = store.save(
         ANTHROPIC_PROVIDER_ID,
         AuthCredential::Oauth {
             access: credentials.access,
@@ -153,19 +153,18 @@ fn store_anthropic_login(
             issuer: None,
             audience_mode: None,
         },
-    );
-    if let Some(error) = auth.drain_errors().pop() {
+    ) {
         return ProviderAuthOutcome::Error(format!(
             "Failed to login to {provider_name}: could not save the login: {error}"
         ));
     }
-    login_status(agent_dir, provider_name)
+    login_status(store, provider_name)
 }
 
 /// The GitHub Copilot flow: the Copilot token stores as the access, the GitHub
 /// token as the refresh, the enterprise domain riding the credential.
 pub(crate) async fn run_github_copilot_login(
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     provider_name: &str,
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
@@ -184,8 +183,7 @@ pub(crate) async fn run_github_copilot_login(
     if ui.is_cancelled() {
         return ProviderAuthOutcome::Cancelled;
     }
-    let mut auth = AuthStorage::create(agent_dir);
-    auth.set(
+    if let Err(error) = store.save(
         GITHUB_COPILOT_PROVIDER_ID,
         AuthCredential::Oauth {
             access: credentials.access,
@@ -200,17 +198,16 @@ pub(crate) async fn run_github_copilot_login(
             issuer: None,
             audience_mode: None,
         },
-    );
-    if let Some(error) = auth.drain_errors().pop() {
+    ) {
         return ProviderAuthOutcome::Error(format!(
             "Failed to login to {provider_name}: could not save the login: {error}"
         ));
     }
-    login_status(agent_dir, provider_name)
+    login_status(store, provider_name)
 }
 
 pub(crate) async fn run_xai_login(
-    agent_dir: &Path,
+    store: &LoginStore<'_>,
     provider_name: &str,
     http: &dyn ProviderHttp,
     ui: &dyn OAuthLoginUi,
@@ -229,8 +226,7 @@ pub(crate) async fn run_xai_login(
     if ui.is_cancelled() {
         return ProviderAuthOutcome::Cancelled;
     }
-    let mut auth = AuthStorage::create(agent_dir);
-    auth.set(
+    if let Err(error) = store.save(
         XAI_PROVIDER_ID,
         AuthCredential::Oauth {
             access: credentials.access,
@@ -245,26 +241,26 @@ pub(crate) async fn run_xai_login(
             issuer: None,
             audience_mode: None,
         },
-    );
-    if let Some(error) = auth.drain_errors().pop() {
+    ) {
         return ProviderAuthOutcome::Error(format!(
             "Failed to login to {provider_name}: could not save the login: {error}"
         ));
     }
-    login_status(agent_dir, provider_name)
+    login_status(store, provider_name)
 }
 
 /// The oauth status row.
-fn login_status(agent_dir: &Path, provider_name: &str) -> ProviderAuthOutcome {
+fn login_status(store: &LoginStore<'_>, provider_name: &str) -> ProviderAuthOutcome {
     ProviderAuthOutcome::Status(format!(
-        "Logged in to {provider_name}. Credentials saved to {}",
-        agent_dir.join("auth.json").display()
+        "Logged in to {provider_name}. {}",
+        store.saved_note()
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pa_core::auth::AuthStorage;
     use std::collections::{HashMap, VecDeque};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -420,7 +416,14 @@ mod tests {
         let agent = agent_dir(&dir);
         let http = copilot_http();
         let ui = ScriptedUi::new().prompt("");
-        match run_github_copilot_login(&agent, "GitHub Copilot", &http, &ui).await {
+        match run_github_copilot_login(
+            &LoginStore::Default { agent_dir: &agent },
+            "GitHub Copilot",
+            &http,
+            &ui,
+        )
+        .await
+        {
             ProviderAuthOutcome::Status(message) => {
                 assert_eq!(
                     message,
@@ -459,7 +462,14 @@ mod tests {
         let before_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(i64::MAX, |elapsed| elapsed.as_millis() as i64);
-        match run_xai_login(&agent, "xAI (Grok)", &http, &ui).await {
+        match run_xai_login(
+            &LoginStore::Default { agent_dir: &agent },
+            "xAI (Grok)",
+            &http,
+            &ui,
+        )
+        .await
+        {
             ProviderAuthOutcome::Status(message) => {
                 assert_eq!(
                     message,
@@ -503,7 +513,11 @@ mod tests {
             refresh: "anthropic-refresh".to_string(),
             expires: 4_000_000_000_000,
         };
-        match store_anthropic_login(&agent, "Anthropic (Claude Pro/Max)", credentials) {
+        match store_anthropic_login(
+            &LoginStore::Default { agent_dir: &agent },
+            "Anthropic (Claude Pro/Max)",
+            credentials,
+        ) {
             ProviderAuthOutcome::Status(message) => {
                 assert_eq!(
                     message,
@@ -539,7 +553,13 @@ mod tests {
         let ui = ScriptedUi::new().prompt("");
         ui.flag().store(true, Ordering::Relaxed);
         assert_eq!(
-            run_github_copilot_login(&agent, "GitHub Copilot", &http, &ui).await,
+            run_github_copilot_login(
+                &LoginStore::Default { agent_dir: &agent },
+                "GitHub Copilot",
+                &http,
+                &ui
+            )
+            .await,
             ProviderAuthOutcome::Cancelled
         );
         assert!(
@@ -555,7 +575,13 @@ mod tests {
         let http = ScriptedHttp::new();
         let ui = ScriptedUi::new().prompt("");
         assert_eq!(
-            run_github_copilot_login(&agent, "GitHub Copilot", &http, &ui).await,
+            run_github_copilot_login(
+                &LoginStore::Default { agent_dir: &agent },
+                "GitHub Copilot",
+                &http,
+                &ui
+            )
+            .await,
             ProviderAuthOutcome::Error(
                 "Failed to login to GitHub Copilot: \
                  https://github.com/login/device/code was not scripted"
@@ -565,7 +591,7 @@ mod tests {
         let http = ScriptedHttp::new();
         let ui = ScriptedUi::new();
         assert_eq!(
-            run_xai_login(&agent, "xAI (Grok)", &http, &ui).await,
+            run_xai_login(&LoginStore::Default { agent_dir: &agent }, "xAI (Grok)", &http, &ui).await,
             ProviderAuthOutcome::Error(
                 "Failed to login to xAI (Grok): xAI OAuth request failed. Check your connection and try again."
                     .to_string()
@@ -579,7 +605,13 @@ mod tests {
         let agent = agent_dir(&dir);
         let http = xai_http();
         let ui = ScriptedUi::new();
-        run_xai_login(&agent, "xAI (Grok)", &http, &ui).await;
+        run_xai_login(
+            &LoginStore::Default { agent_dir: &agent },
+            "xAI (Grok)",
+            &http,
+            &ui,
+        )
+        .await;
         // Reload through the default integration (the daemon's path): an unexpired credential
         // resolves its access token.
         let mut auth = AuthStorage::create(&agent);

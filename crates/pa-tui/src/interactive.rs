@@ -227,6 +227,17 @@ pub trait InteractionTelemetry: Send + Sync {
         outcome: &'static str,
         format: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// One login settled with a credential save attempt (event `agent credential added`): `kind`
+    /// is `api_key` / `oauth`, `slot` `default` / `named`, `surface` `login` / `model_picker` /
+    /// `onboarding`, `outcome` `saved` / `failed` / `cancelled`. Never a provider, a label, or a
+    /// credential. Implementations return at once: the login path spawns it and never waits.
+    fn credential_added(
+        &self,
+        kind: &'static str,
+        slot: &'static str,
+        surface: &'static str,
+        outcome: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A submission parked in the follow-up queue behind a running turn: `lane` is `steering`
     /// (Enter) / `follow_up` (the follow-up key); `steering_mode` is the session's queue delivery
     /// mode (TS `steeringMode`: `all` = batched at the boundary, `one-at-a-time` = one steer per

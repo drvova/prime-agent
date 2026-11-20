@@ -40,6 +40,9 @@ pub struct RlmSpawnHandle {
     pub name: String,
     pub session_dir: String,
     pub model: String,
+    /// How long the spawn waited for a session-boot permit before the child's worker
+    /// started (0: one was free): a spawn under a fan-out says it queued.
+    pub queued_ms: u64,
 }
 
 /// `rlm.create_session` handle: one resident depth-0 daemon session.
@@ -146,6 +149,11 @@ pub struct RlmChildResult {
     pub tool_use_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replied_since_task: Option<bool>,
+    /// The time the child's boot queued for a session-boot permit, when it queued: not part
+    /// of `duration_ms` (which starts once the child booted), reported so a collect timeout
+    /// reads against the whole wait.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queued_ms: Option<u64>,
 }
 
 // Requests into the host
@@ -1038,6 +1046,7 @@ mod tests {
                     name: "worker".into(),
                     session_dir: "/tmp/sub-1".into(),
                     model: "p/m".into(),
+                    queued_ms: 0,
                 })
             })
         }
@@ -1153,6 +1162,7 @@ mod tests {
                     duration_ms: Some(2_000),
                     tool_use_count: Some(3),
                     replied_since_task: Some(true),
+                    queued_ms: None,
                 }])
             })
         }
@@ -1469,6 +1479,7 @@ mod tests {
                 "name": "worker",
                 "session_dir": "/tmp/sub-1",
                 "model": "p/m",
+                "queued_ms": 0,
             })
         );
         let requests = spawn_requests.lock().await;

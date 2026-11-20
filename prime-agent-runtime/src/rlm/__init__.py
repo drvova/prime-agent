@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ class RLMSpawnHandle:
     name: str
     session_dir: Path
     model: str
+    # How long the spawn waited for a free session-boot slot (0: none was needed); hosts
+    # that predate the field report none.
+    queued_ms: int = 0
 
 
 @dataclass(frozen=True)
@@ -141,6 +145,9 @@ class RLMChildResult:
     duration_ms: int | None = None
     tool_use_count: int | None = None
     replied_since_task: bool | None = None
+    # The time the child's boot queued for a session-boot slot, when it queued (not part of
+    # ``duration_ms``, which starts once the child booted).
+    queued_ms: int | None = None
 
 
 def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
@@ -152,11 +159,15 @@ def _spawn_handle_from_payload(payload: Any) -> RLMSpawnHandle:
     model = payload.get("model")
     if not all(isinstance(value, str) and value for value in (child_id, name, session_dir, model)):
         raise RuntimeError("rlm.spawn returned an invalid spawn handle")
+    queued_ms = payload.get("queued_ms", 0)
+    if not isinstance(queued_ms, int) or isinstance(queued_ms, bool) or queued_ms < 0:
+        raise RuntimeError("rlm.spawn returned an invalid spawn handle")
     return RLMSpawnHandle(
         rlm_child_id=child_id,
         name=name,
         session_dir=Path(session_dir),
         model=model,
+        queued_ms=queued_ms,
     )
 
 
@@ -481,6 +492,7 @@ def _child_result_from_payload(payload: Any) -> RLMChildResult:
         duration_ms=_optional_int("duration_ms"),
         tool_use_count=_optional_int("tool_use_count"),
         replied_since_task=replied,
+        queued_ms=_optional_int("queued_ms"),
     )
 
 
@@ -972,6 +984,13 @@ class _RLMNamespace:
         return await _reload()
 
     factory = _RLMFactoryNamespace()
+
+    @property
+    def cells(self) -> types.ModuleType:
+        """Background-cell handles (``rlm.cells.get``/``handles``), bound on first use."""
+        # import_module, not `from . import cells`: the package-level __getattr__ forwards
+        # unknown names to this namespace, so a from-import would recurse into this property.
+        return importlib.import_module(f"{__name__}.cells")
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         raise TypeError(_NOT_CALLABLE_MESSAGE)

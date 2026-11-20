@@ -1,0 +1,1 @@
+- `/login` on a provider that already has a credential offers "Replace default" or "Add another" (with a label), storing extra credentials in `auth-accounts.json` beside an unchanged `auth.json`; `/logout` lists and removes each credential. Requests still use the default credential.
