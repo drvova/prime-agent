@@ -1,0 +1,8 @@
+main.c:4:17: error: expected ';' after return statement
+    4 |     return a + b
+      |                 ^
+      |                 ;
+main.c:8:27: error: use of undeclared identifier 'undefined_value'
+    8 |     printf("%d\n", add(1, undefined_value));
+      |                           ^
+2 errors generated.

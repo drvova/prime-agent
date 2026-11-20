@@ -9,6 +9,9 @@ pub mod bootstrap;
 pub mod cancellation;
 pub(crate) mod capabilities;
 pub mod cell_window;
+pub(crate) mod command_cache;
+pub(crate) mod edit_checks;
+pub mod error_context;
 pub mod live_kernels;
 pub mod manager;
 pub mod orphan_journal;
@@ -19,6 +22,7 @@ pub mod rlm_runtime;
 pub mod shared;
 pub mod spill;
 pub mod state_snapshot;
+pub(crate) mod test_runs;
 
 pub use bootstrap::{
     build_rlm_bootstrap_code, ensure_kernel_python, kernel_venv_dir, EnsureKernelPythonOptions,

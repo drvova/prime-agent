@@ -47,6 +47,12 @@ pub use track::{
 mod classify;
 pub use classify::provider_category;
 
+mod edit_checks;
+mod error_enrichment;
+mod frida;
+mod readonly_cache;
+mod test_summaries;
+
 mod status;
 use classify::{error_category, model_category, opt_value, run_outcome};
 pub use status::{
@@ -396,6 +402,8 @@ struct CounterValues {
     interaction: InteractionCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
+    /// The `/better` counters, reported by `agent better prompt`.
+    better: BetterCounts,
     /// The kernel `web.read` counters, reported by `agent web reads`.
     web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
@@ -435,25 +443,16 @@ struct CounterValues {
     /// window came from, reported by `agent repl background cells`.
     background_cells: BackgroundCellCounts,
     /// Kernel `frida.*` calls by kind, reported by `agent repl frida`.
-    frida: FridaCounts,
-}
-
-/// `agent repl frida`: kernel `frida.*` calls by kind, and calls refused while frida was
-/// unavailable or still installing.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct FridaCounts {
-    devices: u64,
-    ps: u64,
-    kill: u64,
-    attach: u64,
-    spawn: u64,
-    script_load: u64,
-    trace: u64,
-    discover: u64,
-    tool: u64,
-    graft: u64,
-    unavailable: u64,
-    installing: u64,
+    frida: frida::FridaCounts,
+    /// Failed cells and commands given their error locations' source lines,
+    /// reported by `agent error enrichment`.
+    error_enrichment: error_enrichment::ErrorEnrichmentCounts,
+    /// Read-only command cache lookups, reported by `agent readonly cache`.
+    readonly_cache: readonly_cache::ReadonlyCacheCounts,
+    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
+    edit_checks: edit_checks::EditCheckCounts,
+    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
+    test_summaries: test_summaries::TestSummaryCounts,
 }
 
 /// `agent repl reload`: reloads, the skills they added, and settings reads.
@@ -627,6 +626,42 @@ pub enum GoalTelemetryFact {
     CostBudgetStop,
 }
 
+/// One `/better` fact, counted into `agent better prompt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BetterTelemetryFact {
+    /// A run started.
+    Run,
+    Completed,
+    Cancelled,
+    Failed,
+    /// The user sent an inserted rewrite as is.
+    SentAsIs,
+    /// The user sent an inserted rewrite after editing it.
+    Edited,
+    /// The user never sent an inserted rewrite (or replaced most of it).
+    Discarded,
+    /// A brief-mode run started (`better(mode="brief")`, `rlm.spawn(better=True)`).
+    BriefRun,
+    /// A brief-mode run found nothing to fix.
+    BriefUnchanged,
+    /// A verification found unresolved references and ran a refine pass.
+    VerificationPass,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BetterCounts {
+    runs: u64,
+    completed: u64,
+    cancelled: u64,
+    failed: u64,
+    sent_as_is: u64,
+    edited: u64,
+    discarded: u64,
+    brief_runs: u64,
+    brief_unchanged: u64,
+    verification_passes: u64,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct GoalVerificationCounts {
     check_runs: u64,
@@ -729,6 +764,26 @@ impl SessionCounters {
                 GoalTelemetryFact::JudgeNotMet => &mut counts.judge_not_met,
                 GoalTelemetryFact::TokenBudgetStop => &mut counts.token_budget_stops,
                 GoalTelemetryFact::CostBudgetStop => &mut counts.cost_budget_stops,
+            };
+            *counter += 1;
+        });
+    }
+
+    /// One `/better` fact (counts only: never a prompt, a rewrite, or a path).
+    pub fn note_better(&self, fact: BetterTelemetryFact) {
+        self.with(|values| {
+            let counts = &mut values.better;
+            let counter = match fact {
+                BetterTelemetryFact::Run => &mut counts.runs,
+                BetterTelemetryFact::Completed => &mut counts.completed,
+                BetterTelemetryFact::Cancelled => &mut counts.cancelled,
+                BetterTelemetryFact::Failed => &mut counts.failed,
+                BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
+                BetterTelemetryFact::Edited => &mut counts.edited,
+                BetterTelemetryFact::Discarded => &mut counts.discarded,
+                BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
+                BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
+                BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
             };
             *counter += 1;
         });
@@ -882,28 +937,6 @@ impl SessionCounters {
                 CellWindowSource::ModelTimeout => &mut counts.window_timeout,
                 CellWindowSource::Setting => &mut counts.window_setting,
                 CellWindowSource::ColdDefault => &mut counts.window_default,
-            } += 1;
-        });
-    }
-
-    /// One kernel `frida.*` call (a count: never a target, a pid, a script, or a path).
-    pub(crate) fn note_frida(&self, fact: super::frida_usage::FridaFact) {
-        use super::frida_usage::FridaFact;
-        self.with(|values| {
-            let counts = &mut values.frida;
-            *match fact {
-                FridaFact::Devices => &mut counts.devices,
-                FridaFact::Ps => &mut counts.ps,
-                FridaFact::Kill => &mut counts.kill,
-                FridaFact::Attach => &mut counts.attach,
-                FridaFact::Spawn => &mut counts.spawn,
-                FridaFact::ScriptLoad => &mut counts.script_load,
-                FridaFact::Trace => &mut counts.trace,
-                FridaFact::Discover => &mut counts.discover,
-                FridaFact::Tool => &mut counts.tool,
-                FridaFact::Graft => &mut counts.graft,
-                FridaFact::Unavailable => &mut counts.unavailable,
-                FridaFact::Installing => &mut counts.installing,
             } += 1;
         });
     }
@@ -1547,6 +1580,27 @@ impl SessionTelemetry {
             self.client
                 .track("agent goal verification", goal_properties);
         }
+        // A session that never ran `/better` sends no better event.
+        let mut better = BetterCounts::default();
+        self.counters.with(|values| better = values.better);
+        if better != BetterCounts::default() {
+            let mut better_properties = self.session_properties();
+            for (key, value) in [
+                ("better_run_count", better.runs),
+                ("better_completed_count", better.completed),
+                ("better_cancelled_count", better.cancelled),
+                ("better_failed_count", better.failed),
+                ("better_sent_as_is_count", better.sent_as_is),
+                ("better_edited_count", better.edited),
+                ("better_discarded_count", better.discarded),
+                ("better_brief_run_count", better.brief_runs),
+                ("better_brief_unchanged_count", better.brief_unchanged),
+                ("better_verification_pass_count", better.verification_passes),
+            ] {
+                better_properties.set(key, Value::from(value));
+            }
+            self.client.track("agent better prompt", better_properties);
+        }
         // A session whose requests never chose a Responses transport sends no transport event.
         if let Some(counts) = self
             .agent_session_id
@@ -1959,29 +2013,11 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
-        // A session that never called `frida.*` sends no frida event.
-        let mut frida = FridaCounts::default();
-        self.counters.with(|values| frida = values.frida);
-        if frida != FridaCounts::default() {
-            let mut frida_properties = self.session_properties();
-            for (key, value) in [
-                ("frida_devices_count", frida.devices),
-                ("frida_ps_count", frida.ps),
-                ("frida_kill_count", frida.kill),
-                ("frida_attach_count", frida.attach),
-                ("frida_spawn_count", frida.spawn),
-                ("frida_script_load_count", frida.script_load),
-                ("frida_trace_count", frida.trace),
-                ("frida_discover_count", frida.discover),
-                ("frida_tool_count", frida.tool),
-                ("frida_graft_count", frida.graft),
-                ("frida_unavailable_count", frida.unavailable),
-                ("frida_installing_count", frida.installing),
-            ] {
-                frida_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent repl frida", frida_properties);
-        }
+        self.track_error_enrichment();
+        self.track_readonly_cache();
+        self.track_edit_checks();
+        self.track_test_summaries();
+        self.track_frida();
         self.client.flush().await
     }
 

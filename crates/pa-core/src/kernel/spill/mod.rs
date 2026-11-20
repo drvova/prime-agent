@@ -32,7 +32,7 @@
 mod budget;
 pub(crate) mod host;
 mod index;
-mod marker;
+pub(crate) mod marker;
 #[cfg(test)]
 mod tests;
 
@@ -355,6 +355,11 @@ impl SpillStore {
         lock(&state.refused).insert(id, refusal.to_string());
         handle.outcome = SpillOutcome::NotStored(refusal.to_string());
         handle
+    }
+
+    /// The file a stored spill's text lives in (the user can open it while no reader exists).
+    pub(crate) fn stored_path(&self, id: &str) -> PathBuf {
+        self.inner.state.spill_path(id)
     }
 
     /// Report this store's spills, refusals, and evictions to `observer`

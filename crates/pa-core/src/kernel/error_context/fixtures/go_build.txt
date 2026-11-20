@@ -1,0 +1,3 @@
+# example.com/sample
+./calc.go:8:14: cannot use "x" (untyped string constant) as int value in variable declaration
+./calc.go:9:9: cannot use n (variable of type int) as string value in return statement
