@@ -29,6 +29,7 @@
 //! stay under the store's cap ([`SPILL_STORE_CAP_BYTES`]) by evicting the
 //! oldest stored spills first; an evicted handle answers "evicted".
 
+pub(crate) mod host;
 mod index;
 mod marker;
 #[cfg(test)]
@@ -59,13 +60,6 @@ const WRITE_QUEUE_DEPTH: usize = 16;
 /// Waits before each retry of a failed write (so `len() + 1` attempts).
 const WRITE_RETRY_BACKOFF: [Duration; 2] = [Duration::from_millis(25), Duration::from_millis(100)];
 /// How long a read waits for this process's in-flight write of its handle.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the ctx.* host requests of the next change read the store"
-    )
-)]
 const PENDING_READ_WAIT: Duration = Duration::from_secs(5);
 /// The directory under a session's artifact dir that holds the store.
 const SPILL_DIR: &str = "spill";
@@ -202,13 +196,6 @@ pub(crate) enum SpillOutcome {
 }
 
 /// What a handle answers when read.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the ctx.* host requests of the next change read the store"
-    )
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SpillLookup {
     Stored(StoredSpill),
@@ -223,13 +210,6 @@ pub(crate) enum SpillLookup {
 }
 
 /// One stored spill's text and the counts of the output it came from.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the ctx.* host requests of the next change read the store"
-    )
-)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StoredSpill {
     pub(crate) text: String,
@@ -339,13 +319,6 @@ impl SpillStore {
         })
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the ctx.* host requests of the next change read the store"
-        )
-    )]
     /// Answer one handle: its stored text, or why there is none. Waits (up
     /// to [`PENDING_READ_WAIT`]) for this process's in-flight write of it.
     pub(crate) async fn lookup(&self, id: &str) -> SpillLookup {
@@ -377,13 +350,6 @@ impl StoreState {
         self.settled.notify_waiters();
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the ctx.* host requests of the next change read the store"
-        )
-    )]
     /// Whether `id` has no write in flight here, waiting a bounded time for
     /// one to resolve.
     async fn wait_settled(&self, id: &str) -> bool {
@@ -408,13 +374,6 @@ impl StoreState {
         f(index)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the ctx.* host requests of the next change read the store"
-        )
-    )]
     fn lookup_on_disk(&self, id: &str) -> SpillLookup {
         let entry = self.with_index(|index| index.entries.get(id).cloned());
         let path = self.spill_path(id);

@@ -1,0 +1,1 @@
+- The Python REPL can page a truncated output back in by its handle instead of re-running the command: `await ctx.page(handle, start=...)`, `ctx.grep(handle, pattern)`, `ctx.tail(handle)` and `ctx.info(handle)` read the paged-out text in bounded slices and say clearly when a handle was evicted or never stored.
