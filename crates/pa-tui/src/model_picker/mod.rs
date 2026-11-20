@@ -948,7 +948,6 @@ impl ModelPicker {
     /// The effort cluster's layout over the window's `models` in a `width`-wide row, beside a
     /// `trailing_width`-wide column cell.
     pub(crate) fn effort_layout(
-        &self,
         models: &[&Model],
         width: usize,
         trailing_width: usize,

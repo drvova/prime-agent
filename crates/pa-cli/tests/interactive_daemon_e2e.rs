@@ -1587,7 +1587,8 @@ async fn tui_dispatches_slash_commands_menu_and_suggestions() {
         "the /model command opened the inline menu-panel:\n{rendered}"
     );
     assert!(
-        rendered.contains("Enter select \u{b7} Esc close"),
+        // The sort (and, with the action menu, the actions) hints sit between the two by rank.
+        rendered.contains("Enter select \u{b7} ") && rendered.contains("\u{b7} Esc close"),
         "the menu-panel hint rendered:\n{rendered}"
     );
     assert!(
