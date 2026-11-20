@@ -47,6 +47,15 @@ struct Inner {
 }
 
 impl Inner {
+    /// The tuning of `key`'s slot: the session-boot budget runs its own.
+    fn config_for(&self, key: &AdmissionKey) -> ControllerConfig {
+        if key.is_session_boot() {
+            super::session_boot_controller_config()
+        } else {
+            self.config
+        }
+    }
+
     fn with_slot<T>(&self, key: &AdmissionKey, apply: impl FnOnce(&mut Slot, u64) -> T) -> T {
         let now = now_ms();
         let mut slots = self
@@ -55,7 +64,7 @@ impl Inner {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let slot = slots
             .entry(key.clone())
-            .or_insert_with(|| Slot::new(Controller::new(self.config, now), now));
+            .or_insert_with(|| Slot::new(Controller::new(self.config_for(key), now), now));
         apply(slot, now)
     }
 
@@ -136,9 +145,10 @@ impl LocalAdmission {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for (key, state) in learned {
-            slots.entry(key).or_insert_with(|| {
-                Slot::new(Controller::restore(self.inner.config, state, now), now)
-            });
+            let config = self.inner.config_for(&key);
+            slots
+                .entry(key)
+                .or_insert_with(|| Slot::new(Controller::restore(config, state, now), now));
         }
     }
 
@@ -158,7 +168,8 @@ impl LocalAdmission {
         learned
     }
 
-    /// The read-only controller view per key (the `/usage` page's pacing rows).
+    /// The read-only controller view per provider key (the `/usage` page's pacing rows; the
+    /// session-boot budget is not a provider and has no row).
     #[must_use]
     pub fn pacing(&self) -> Vec<ProviderPacing> {
         let slots = self
@@ -168,6 +179,7 @@ impl LocalAdmission {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut rows: Vec<ProviderPacing> = slots
             .iter()
+            .filter(|(key, _)| !key.is_session_boot())
             .map(|(key, slot)| {
                 let learned = slot.controller.learned();
                 ProviderPacing {

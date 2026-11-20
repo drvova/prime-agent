@@ -4,6 +4,7 @@
 //! events on stdout, stderr kept as a diagnostics tail. The protocol is documented in
 //! `prime-agent-runtime/src/rlm/repl.md` (protocol version 3).
 
+pub mod boot_admission;
 pub mod bootstrap;
 pub mod cancellation;
 pub(crate) mod capabilities;
@@ -16,6 +17,7 @@ pub mod provisioner;
 pub(crate) mod python_env;
 pub mod rlm_runtime;
 pub mod shared;
+pub mod spill;
 pub mod state_snapshot;
 
 pub use bootstrap::{

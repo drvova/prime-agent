@@ -30,6 +30,8 @@ pub(super) struct CreatedChild {
     pub(super) session_name: Option<String>,
     pub(super) session_dir: String,
     pub(super) summary_rlm_depth: Option<u64>,
+    /// How long the create waited for a session-boot permit (0: one was free).
+    pub(super) queued_ms: u64,
 }
 
 impl CreatedChild {
@@ -42,6 +44,7 @@ impl CreatedChild {
             session_name: ids.session_name,
             session_dir: session_dir.to_string_lossy().to_string(),
             summary_rlm_depth: summary.get("rlmDepth").and_then(Value::as_u64),
+            queued_ms: 0,
         })
     }
 }
@@ -149,11 +152,20 @@ impl SupervisorChildSessionsInner {
             launch_env,
             rest: Map::default(),
         };
-        let summary = self
-            .command(&create, CREATE_TIMEOUT_MS)
-            .await
+        // The worker spawn is a session boot: it waits for a permit of the daemon-wide boot
+        // budget (subagent class, behind the foreground session's boots), held only until the
+        // child's worker answers the create — never while the child runs or boots its kernel.
+        let boot = pa_core::kernel::boot_admission::admitted_boot(
+            pa_ai::admission::current_source(),
+            pa_ai::admission::Priority::Subagent,
+            self.command(&create, CREATE_TIMEOUT_MS),
+        )
+        .await;
+        let summary = boot
+            .result
             .with_context(|| format!("spawn RLM child session {child_id}"))?;
-        let created = CreatedChild::from_summary(&summary, session_dir)?;
+        let mut created = CreatedChild::from_summary(&summary, session_dir)?;
+        created.queued_ms = boot.queued_ms;
         Ok(created)
     }
 
