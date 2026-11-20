@@ -628,8 +628,8 @@ mod tests {
         assert_eq!(
             [
                 check_status_from_session_file(&dir.path().join("missing.jsonl")),
-                status_after(&[plain.clone()]),
-                status_after(&[prompt.clone()]),
+                status_after(std::slice::from_ref(&plain)),
+                status_after(std::slice::from_ref(&prompt)),
                 status_after(&[prompt.clone(), failed.clone()]),
                 status_after(&[prompt.clone(), failed, passed.clone(), plain]),
                 status_after(&[passed, prompt]),

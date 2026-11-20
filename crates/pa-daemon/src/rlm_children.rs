@@ -614,6 +614,10 @@ impl SupervisorChildSessions {
     }
 
     /// Let the bound adapt (no setting fixed it) or keep it fixed, after [`Self::set_identity`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the identity mutex is poisoned.
     pub fn set_depth_bound(&self, bound: pa_core::session_engine::rlm_depth::DepthBound) {
         let depth = self.inner.identity.lock().expect("identity lock").rlm_depth;
         self.inner.depth.configure(depth, bound);
