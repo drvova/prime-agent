@@ -57,6 +57,7 @@ pub mod models;
 pub mod packages;
 pub mod platform;
 pub(crate) mod prefetch;
+pub(crate) mod project_card;
 pub mod prompts;
 pub mod refinement;
 pub mod resources;

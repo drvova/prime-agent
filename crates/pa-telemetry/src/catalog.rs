@@ -1580,6 +1580,20 @@ const AGENT_QUOTA_FALLBACK: EventRule = EventRule {
     ],
 };
 
+/// Scraped web search engine limits for one session's process (v2), emitted at session close
+/// beside `agent session ended` (which sits at the 128-key cap) when an engine call was skipped
+/// (over its learned budget or cooling down after a block) or an engine answered with a block.
+/// Counts only: never a query, engine response, or URL.
+const AGENT_WEB_SEARCH_ENGINES: EventRule = EventRule {
+    name: "agent web search engines",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("web_search_engine_skipped_count", required(count())),
+        ("web_search_engine_blocked_count", required(count())),
+    ],
+};
+
 /// Session-boot admission for one session's process (v2), emitted at session close beside
 /// `agent session ended` (which sits at the 128-key cap) when a session boot (a subagent's
 /// worker spawn or a kernel start) waited for the daemon-wide boot budget or finished under
@@ -2118,6 +2132,21 @@ const AGENT_REPL_NOTIFY: EventRule = EventRule {
     ],
 };
 
+/// Kernel `rlm.decide(...)` adoption for one session (v2), emitted at session end beside `agent
+/// session ended` only when the session asked for a decision: decisions made, decisions refused
+/// at the per-cell bound, and failed decision calls. Counts only: never a question, an option,
+/// or a choice.
+const AGENT_REPL_DECIDE: EventRule = EventRule {
+    name: "agent repl decide",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("decide_count", required(count())),
+        ("decide_limited_count", required(count())),
+        ("decide_failed_count", required(count())),
+    ],
+};
+
 /// Kernel `rlm.reload()` and `settings.get()` adoption for one session (v2), emitted at session
 /// end beside `agent session ended` (which sits near the backend's 128-key cap) only when the
 /// session reloaded or read its settings: reloads, the skills they added, and settings reads.
@@ -2209,10 +2238,12 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &AGENT_TEST_SUMMARIES,
         &AGENT_PROVIDER_OAUTH_LOGIN,
         &AGENT_REPL_NOTIFY,
+        &AGENT_REPL_DECIDE,
         &AGENT_REPL_RELOAD,
         &AGENT_KERNEL_LOGIN_AND_RECALL,
         &AGENT_RESPONSES_TRANSPORT,
         &AGENT_PROVIDER_ADMISSION,
+        &AGENT_WEB_SEARCH_ENGINES,
         &AGENT_SESSION_BOOT_ADMISSION,
         &AGENT_CONNECTION_REWARM,
         &AGENT_QUOTA_FALLBACK,

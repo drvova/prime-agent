@@ -378,6 +378,7 @@ impl IpythonKernelProvisioner for KernelProvisioner {
                 cell_window: this.cell_window().clone(),
                 error_context: this.error_context().clone(),
                 spill: this.spill_store(),
+                project_card: crate::project_card::ProjectCard::registered(this.cwd()),
                 output_budget: this.output_budget().clone(),
             }) as Box<dyn KernelExecutor>)
         })
@@ -398,6 +399,8 @@ struct KernelManagerExecutor {
     cell_window: crate::kernel::cell_window::CellWindow,
     /// Where a user cell's cut output pages out (persistent sessions).
     spill: Option<crate::kernel::spill::SpillStore>,
+    /// The project card, which learns the build/test commands cells run.
+    project_card: Option<crate::project_card::ProjectCard>,
     /// The source lines a failed cell or awaited command gets.
     error_context: crate::kernel::error_context::ErrorContext,
     /// The session's output cap policy, read when each cell starts.
@@ -421,6 +424,7 @@ impl KernelExecutor for KernelManagerExecutor {
         let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
         let cell_window = self.cell_window.clone();
         let spill = self.spill.clone();
+        let project_card = self.project_card.clone();
         let error_context = self.error_context.clone();
         // Only a session that keeps cut text tightens the cap: without a
         // store a tighter cap would destroy more.
@@ -452,6 +456,9 @@ impl KernelExecutor for KernelManagerExecutor {
                     }
                     crate::kernel::shared::ExecuteStatus::Aborted => {}
                 }
+            }
+            if let (Some(card), Some(commands)) = (&project_card, &result.bash_commands) {
+                card.observe_command(&commands.first);
             }
             // A failed cell or awaited command carries its error locations'
             // source lines; the reads wait at most a short budget.

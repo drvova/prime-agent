@@ -23,6 +23,23 @@ use crate::kernel::shared::{
 use crate::kernel::state_snapshot::RestoreResult;
 use crate::kernel::state_snapshot::{manifest_path_in, snapshot_path_in};
 
+/// The concurrency ceilings the kernel's runtime reads from its env, sized for a host with
+/// `cores` cores: running `bash()` commands (`PRIME_AGENT_BASH_MAX_JOBS`; over it a command is
+/// held at its start gate and its handle says `queued`) and the in-flight calls one HTTP MCP
+/// server may widen to (`PRIME_AGENT_MCP_MAX_CONCURRENCY`; stdio servers stay at one).
+fn kernel_concurrency_env(cores: usize) -> [(&'static str, String); 2] {
+    [
+        (
+            "PRIME_AGENT_BASH_MAX_JOBS",
+            (cores.saturating_mul(2)).clamp(4, 32).to_string(),
+        ),
+        (
+            "PRIME_AGENT_MCP_MAX_CONCURRENCY",
+            cores.clamp(2, 8).to_string(),
+        ),
+    ]
+}
+
 /// Run a kernel's interpreter start under a session-boot permit: the daemon-wide adaptive
 /// boot budget inside a worker (`PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS` pins its width), at
 /// the process's own class (the foreground session's kernels ahead of subagents').
@@ -280,6 +297,12 @@ impl IpythonKernelProvisioner {
             .snapshot_dir
             .as_deref()
             .map(crate::kernel::spill::SpillStore::for_session_dir)
+    }
+
+    /// The session's working directory (the project the kernel runs in).
+    #[must_use]
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        &self.inner.cwd
     }
 
     /// The error enrichment the kernel executor applies to user cell results.
@@ -1125,6 +1148,11 @@ async fn start_kernel_impl(
             .is_some(),
     );
     let mut env = options.env.clone();
+    // An embedding (or the user's shell) that already set a ceiling keeps it.
+    let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    for (key, value) in kernel_concurrency_env(cores) {
+        env.entry(key.to_string()).or_insert(value);
+    }
     if let Some(shell_path) = &options.shell_path {
         env.insert(
             "PRIME_AGENT_BASH_SHELL".into(),
@@ -1784,6 +1812,27 @@ mod tests {
             "the stale gate is replaced"
         );
         drop(gate);
+    }
+
+    #[test]
+    fn the_kernel_concurrency_ceilings_scale_with_the_cores() {
+        assert_eq!(
+            [1, 4, 32].map(kernel_concurrency_env),
+            [
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "4".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "2".to_string()),
+                ],
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "8".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "4".to_string()),
+                ],
+                [
+                    ("PRIME_AGENT_BASH_MAX_JOBS", "32".to_string()),
+                    ("PRIME_AGENT_MCP_MAX_CONCURRENCY", "8".to_string()),
+                ],
+            ]
+        );
     }
 
     #[tokio::test]

@@ -583,6 +583,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if compaction_settings.agent_callable.unwrap_or(true) {
         turn_boundary.register_compact_handlers(&mut handlers, keep_recent_tokens);
     }
+    // `rlm.decide`: one bounded decision by the session's model mid-cell; the decider binds
+    // once the agent exists. Telemetry counts decisions, refusals at the bound, and failures.
+    let decision_host = std::sync::Arc::new(super::decision::DecisionHost::new(
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_decision(fact))
+                as super::decision::DecideObserver
+        }),
+    ));
+    super::decision::register_decide_handler(&mut handlers, &decision_host);
     // `rlm.session.tool_result`: the recall path a thinned result's pointer names.
     super::context_thinning::register_tool_result_recall(&mut handlers, &wiring.session);
     // The daemon worker owns persistence outside the session manager, so
@@ -713,6 +723,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::test_runs::TestRunObserver
         }),
     );
+    // The project card's detail pages out to the same store.
+    let card_spill = session_artifact_dir
+        .as_deref()
+        .map(crate::kernel::spill::SpillStore::for_session_dir);
     // `edit_check.fact`: how each check after an edit went (telemetry counts).
     crate::kernel::edit_checks::register_edit_check_handler(
         &mut handlers,
@@ -934,6 +948,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 &model_prompts.errors,
             ));
     }
+    // The project card the previous session stored (a short bounded read,
+    // never the derivation); a background refresh stores the next one.
+    let project_card = crate::project_card::ProjectCard::for_project(&cwd, &config.agent_dir);
+    project_card.load(crate::project_card::LOAD_BUDGET).await;
+    project_card.refresh();
+    let project_card_text = project_card.render(card_spill.as_ref());
     let system_prompt_breakdown = crate::prompts::system_prompt::system_prompt_breakdown(
         &crate::prompts::system_prompt::BuildSystemPromptOptions {
             custom_prompt: resources.system_prompt.clone(),
@@ -961,6 +981,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             daemonless: config.daemonless,
             can_spawn: config.rlm_subagent_host.is_some(),
             generic_mcp_servers: generic_mcp_servers.clone(),
+            project_card: project_card_text.clone(),
             append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
             ..Default::default()
         },
@@ -985,6 +1006,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 daemonless: config.daemonless,
                 can_spawn: config.rlm_subagent_host.is_some(),
                 generic_mcp_servers,
+                project_card: project_card_text,
             },
         },
         resources.skills.clone(),
@@ -1283,6 +1305,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             super::refinement_gate::convert_to_llm(refinement_settings.reopen()),
             wiring.rlm_usage.store(),
         ));
+    decision_host.bind(super::decision::Decider::new(
+        Arc::downgrade(&agent),
+        std::sync::Arc::clone(&side_question_stream_fn),
+        wiring.rlm_usage.store(),
+    ));
     let telemetry_agent = std::sync::Arc::clone(&agent);
     let mut session = AgentSession::from_session_arc(
         agent.clone(),

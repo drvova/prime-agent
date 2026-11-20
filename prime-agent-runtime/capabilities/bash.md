@@ -3,6 +3,7 @@
   - `BashHandle`:
     - `.pid: int`
     - `.running: bool`
+    - `.queued: bool`: the command is waiting for a free job slot (too many commands are running); it starts on its own as one finishes, and awaiting it directly from the cell that created it starts it at once
     - `.command: str`
     - `.tail(n: int = 50) -> str`
     - `.output() -> str`
