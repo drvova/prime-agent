@@ -31,9 +31,9 @@ use pa_tui::interactive::{
     run_interactive, InteractiveOptions, ModelSelection, SessionSelection, UiMode,
 };
 use pa_tui::provider_auth::{
-    AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthType, ProviderAuthCommands,
+    AuthFlow, AuthStatusIndicator, AuthStatusStyle, AuthType, LoginTarget, ProviderAuthCommands,
     ProviderAuthCommandsHandle, ProviderAuthOutcome, ProviderRow, ProviderRowsFuture,
-    ProviderWarningFuture, PRIME_INFERENCE_PROVIDER_ID,
+    ProviderWarningFuture, RowCredential, PRIME_INFERENCE_PROVIDER_ID,
 };
 use std::pin::Pin;
 use std::sync::Arc;
@@ -86,6 +86,143 @@ fn model_sign_in_child_mode() {
     let _ = runtime.block_on(run_interactive(options, UiMode::Terminal));
 }
 
+/// The named-credential child: the real loop with a provider-auth hook over the real
+/// `auth-accounts.json` store in the harness's temp dir (beside the socket).
+#[test]
+fn accounts_child_mode() {
+    let Ok(socket) = std::env::var(CHILD_SOCKET_ENV) else {
+        return;
+    };
+    let socket = PathBuf::from(socket);
+    let agent_dir = socket.parent().expect("the socket's dir").join("agent");
+    let options = InteractiveOptions {
+        provider_auth: Some(ProviderAuthCommandsHandle(Arc::new(AccountsProviderAuth {
+            agent_dir,
+        }))),
+        ..child_options(socket)
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _ = runtime.block_on(run_interactive(options, UiMode::Terminal));
+}
+
+/// An `OpenAI` row whose default slot is stored, with "Add another" and per-credential logout
+/// writing the real named-credential store.
+struct AccountsProviderAuth {
+    agent_dir: PathBuf,
+}
+
+impl AccountsProviderAuth {
+    fn row(credential: RowCredential) -> ProviderRow {
+        let name = match &credential {
+            RowCredential::Named { label, .. } => format!("OpenAI \u{b7} {label}"),
+            RowCredential::Default | RowCredential::DefaultWithAddAnother => "OpenAI".to_string(),
+        };
+        ProviderRow {
+            id: "openai".to_string(),
+            name,
+            auth_type: AuthType::ApiKey,
+            status: Some(AuthStatusIndicator {
+                style: AuthStatusStyle::Success,
+                label: "configured".to_string(),
+            }),
+            flow: AuthFlow::ApiKeyPrompt,
+            configured: true,
+            available: true,
+            credential,
+        }
+    }
+}
+
+impl ProviderAuthCommands for AccountsProviderAuth {
+    fn login_options(&self) -> ProviderRowsFuture {
+        let row = AccountsProviderAuth::row(RowCredential::DefaultWithAddAnother);
+        Box::pin(async move { vec![row] })
+    }
+
+    fn logout_options(&self) -> ProviderRowsFuture {
+        let accounts = pa_core::auth::AuthAccounts::create(&self.agent_dir)
+            .list("openai")
+            .expect("the named credentials read");
+        Box::pin(async move {
+            std::iter::once(AccountsProviderAuth::row(RowCredential::Default))
+                .chain(accounts.into_iter().map(|account| {
+                    AccountsProviderAuth::row(RowCredential::Named {
+                        id: account.id,
+                        label: account.label,
+                    })
+                }))
+                .collect()
+        })
+    }
+
+    fn login(
+        &self,
+        _provider: &ProviderRow,
+        api_key: Option<&str>,
+        target: &LoginTarget,
+    ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
+        let outcome = match target {
+            LoginTarget::AddNamed { label } => {
+                match pa_core::auth::AuthAccounts::create(&self.agent_dir).add(
+                    "openai",
+                    label,
+                    pa_core::auth::AuthCredential::ApiKey {
+                        key: api_key.unwrap_or_default().to_string(),
+                        prime_team: None,
+                    },
+                    0,
+                ) {
+                    Ok(_) => ProviderAuthOutcome::Status(format!(
+                        "Saved API key for OpenAI. Added as \"{label}\"."
+                    )),
+                    Err(error) => ProviderAuthOutcome::Error(format!("{error:#}")),
+                }
+            }
+            LoginTarget::ReplaceDefault => {
+                ProviderAuthOutcome::Error("this child only adds credentials".to_string())
+            }
+        };
+        Box::pin(async move { outcome })
+    }
+
+    fn login_on_panel(
+        &self,
+        _provider: &ProviderRow,
+        _panel: AuthPanelHandle,
+        _target: &LoginTarget,
+    ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
+        Box::pin(async move { ProviderAuthOutcome::Cancelled })
+    }
+
+    fn logout(
+        &self,
+        provider: &ProviderRow,
+    ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
+        let outcome = match &provider.credential {
+            RowCredential::Named { id, label } => {
+                match pa_core::auth::AuthAccounts::create(&self.agent_dir).remove("openai", id) {
+                    Ok(true) => ProviderAuthOutcome::Status(format!(
+                        "Removed credential \"{label}\" for OpenAI."
+                    )),
+                    Ok(false) => ProviderAuthOutcome::Error("not stored".to_string()),
+                    Err(error) => ProviderAuthOutcome::Error(format!("{error:#}")),
+                }
+            }
+            RowCredential::Default | RowCredential::DefaultWithAddAnother => {
+                ProviderAuthOutcome::Error("this child keeps the default slot".to_string())
+            }
+        };
+        Box::pin(async move { outcome })
+    }
+
+    fn anthropic_subscription_warning(&self) -> ProviderWarningFuture {
+        Box::pin(async move { None })
+    }
+}
+
 /// The scripted provider-auth hook: the Prime Inference row and the panel-driven login.
 struct ScriptedProviderAuth;
 
@@ -102,6 +239,7 @@ impl ProviderAuthCommands for ScriptedProviderAuth {
             flow: AuthFlow::TerminalFlow,
             configured: true,
             available: true,
+            credential: pa_tui::provider_auth::RowCredential::Default,
         };
         Box::pin(async move { vec![row] })
     }
@@ -114,6 +252,7 @@ impl ProviderAuthCommands for ScriptedProviderAuth {
         &self,
         provider: &ProviderRow,
         _api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
         let name = provider.name.clone();
         Box::pin(async move {
@@ -125,6 +264,7 @@ impl ProviderAuthCommands for ScriptedProviderAuth {
         &self,
         provider: &ProviderRow,
         panel: AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
         let name = provider.name.clone();
         Box::pin(async move {
@@ -290,6 +430,7 @@ impl ProviderAuthCommands for ScriptedModelPickerAuth {
             // A working API-key login row is available (an unavailable one
             // renders dimmed and inert).
             available: true,
+            credential: pa_tui::provider_auth::RowCredential::Default,
         };
         Box::pin(async move { vec![row] })
     }
@@ -302,6 +443,7 @@ impl ProviderAuthCommands for ScriptedModelPickerAuth {
         &self,
         provider: &ProviderRow,
         api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
         let name = provider.name.clone();
         // Own the borrowed key before the boxed future (no lifetime).
@@ -321,6 +463,7 @@ impl ProviderAuthCommands for ScriptedModelPickerAuth {
         &self,
         provider: &ProviderRow,
         _panel: AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> Pin<Box<dyn std::future::Future<Output = ProviderAuthOutcome> + Send>> {
         let name = provider.name.clone();
         Box::pin(async move {
@@ -499,6 +642,63 @@ fn model_picker_routes_the_sign_in_flow_and_applies_after_login() {
     harness.finish();
 }
 
+/// `/login` on a provider that already holds a credential offers "Add another": the labelled
+/// key lands in the named-credential store, and `/logout` lists it beside the default slot and
+/// removes exactly it.
+#[test]
+fn login_adds_a_named_credential_and_logout_removes_it() {
+    let mut harness = LoginPanelHarness::start_for("accounts_child_mode");
+    let accounts = pa_core::auth::AuthAccounts::create(harness.socket_dir.path().join("agent"));
+
+    harness.wait_from_start("\x1b[?1049h", "the startup alternate-screen enter");
+    harness.write(b"/login\r");
+    harness.wait_from_start("Search providers", "the provider selector panel");
+
+    let mark = harness.mark();
+    harness.write(b"\r");
+    // The highlighted first row paints in one run (the diff can split the plain second row).
+    harness.wait_from(mark, "Replace default", "the slot choice");
+    harness.write(b"\x1b[B");
+    harness.write(b"\r");
+    // The prompt's words can paint in separate runs; the placeholder is one.
+    harness.wait_from(mark, "e.g. work", "the label prompt");
+    harness.write(b"work\r");
+    // The key prompt repaints over the label prompt's words; its placeholder paints whole.
+    harness.wait_from(mark, "Paste value", "the key prompt");
+    harness.write(b"sk-work\r");
+    harness.wait_from(mark, "Added as \"work\".", "the saved status");
+    let stored: Vec<(String, pa_core::auth::AuthCredential)> = accounts
+        .list("openai")
+        .unwrap()
+        .into_iter()
+        .map(|account| (account.label, account.credential))
+        .collect();
+    assert_eq!(
+        stored,
+        vec![(
+            "work".to_string(),
+            pa_core::auth::AuthCredential::ApiKey {
+                key: "sk-work".to_string(),
+                prime_team: None,
+            }
+        )]
+    );
+
+    let mark = harness.mark();
+    harness.write(b"/logout\r");
+    harness.wait_from(mark, "remove.", "the logout selector");
+    harness.write(b"\x1b[B");
+    harness.write(b"\r");
+    harness.wait_from(
+        mark,
+        "Removed credential \"work\" for OpenAI.",
+        "the removal status",
+    );
+    assert_eq!(accounts.list("openai").unwrap(), Vec::new());
+
+    harness.finish();
+}
+
 /// One pty-backed product child plus the mock supervisor it attaches to.
 struct LoginPanelHarness {
     child: Child,
@@ -507,7 +707,7 @@ struct LoginPanelHarness {
     master: PtyReader,
     /// The socket's temp dir, removed whenever the harness drops (after
     /// `finish` reaps the child); declared last so it outlives the pty.
-    _socket_dir: tempfile::TempDir,
+    socket_dir: tempfile::TempDir,
 }
 
 impl LoginPanelHarness {
@@ -548,7 +748,7 @@ impl LoginPanelHarness {
             child,
             _server: server,
             master: PtyReader::new(pty.master),
-            _socket_dir: dir,
+            socket_dir: dir,
         }
     }
 

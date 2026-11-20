@@ -621,6 +621,7 @@ fn ledger_child_records(
             emit_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             last_emitted_status: None,
             rename_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            queued_ms: 0,
         });
     }
     records

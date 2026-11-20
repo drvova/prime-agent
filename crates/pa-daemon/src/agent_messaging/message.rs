@@ -1,6 +1,8 @@
 //! The `agent_message.send` controller: the family roster + message
 //! delivery through the supervisor, the direct peer transport with the
 //! supervisor-routed fallback, and the wire receipt mapping.
+use pa_core::session_engine::agent_messaging::{AgentMessageWaitOutcome, AgentMessageWaitRequest};
+
 use super::{
     json, row_is_child, row_is_parent, row_is_sibling, row_str, AgentFamilyMember,
     AgentFamilyRelationship, AgentMessageController, AgentMessageDeliveryStatus,
@@ -19,6 +21,8 @@ pub struct LinkAgentMessageController {
     pub(super) own_summary: Arc<std::sync::Mutex<Option<Value>>>,
     /// This session's resident RLM children; `None` for standalone workers.
     pub(super) children: Option<Arc<crate::rlm_children::SupervisorChildSessions>>,
+    /// This session's receiving side for `agent_message.wait`.
+    pub(super) waits: Arc<crate::agent_message_wait::AgentMessageWaits>,
 }
 
 impl LinkAgentMessageController {
@@ -28,6 +32,7 @@ impl LinkAgentMessageController {
         worker_token: String,
         own_summary: Arc<std::sync::Mutex<Option<Value>>>,
         children: Option<Arc<crate::rlm_children::SupervisorChildSessions>>,
+        waits: Arc<crate::agent_message_wait::AgentMessageWaits>,
     ) -> Self {
         LinkAgentMessageController {
             link,
@@ -35,6 +40,7 @@ impl LinkAgentMessageController {
             worker_token,
             own_summary,
             children,
+            waits,
         }
     }
 }
@@ -44,7 +50,7 @@ impl LinkAgentMessageController {
 const PEER_TICKET_TIMEOUT_MS: u64 = 5_000;
 
 /// The supervisor roster read behind `family()` and `agent_observe.list`.
-async fn roster_summaries(
+pub(super) async fn roster_summaries(
     link: &Arc<crate::supervisor_link::SupervisorLink>,
     worker_token: &str,
 ) -> anyhow::Result<Vec<Value>> {
@@ -220,6 +226,13 @@ impl AgentMessageController for LinkAgentMessageController {
         };
         Ok(receipt)
     }
+
+    async fn wait_for_agent_message(
+        &self,
+        request: AgentMessageWaitRequest,
+    ) -> anyhow::Result<AgentMessageWaitOutcome> {
+        self.wait_for_message(request).await
+    }
 }
 
 /// The outcome of the direct-delivery attempt.
@@ -265,6 +278,7 @@ impl LinkAgentMessageController {
             &input.message,
             &self.sender_block(),
             None,
+            input.kind,
         )
         .await
         {
@@ -309,6 +323,7 @@ impl LinkAgentMessageController {
                     "message": input.message,
                     "fromActiveSessionId": self.active_session_id,
                     "agentOrigin": true,
+                    "messageKind": input.kind.to_wire(),
                 }),
                 std::time::Duration::from_secs(30),
             )
@@ -320,7 +335,7 @@ impl LinkAgentMessageController {
     /// This session's durable family identity from its own pushed summary.
     /// `None` fields degrade; the active session id always comes from the
     /// worker's own link config (the summary may lag a rename).
-    fn family_identity(&self) -> FamilyIdentity {
+    pub(super) fn family_identity(&self) -> FamilyIdentity {
         let summary = self
             .own_summary
             .lock()

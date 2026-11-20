@@ -61,6 +61,9 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
         )
+        // The session-boot budget's width adapts to the host; the hard override pins it so
+        // the adoption below runs in observable waves on any core count.
+        .env("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS", "4")
         .spawn()
         .expect("spawn pa-daemon supervisor");
     Daemon { child }
@@ -222,8 +225,8 @@ impl Client {
     }
 }
 
-/// One adoption wave relaunches at most `ADOPTION_CONCURRENCY` workers, so twelve
-/// dead descriptors is three capped waves — a recovery observably long enough to
+/// One adoption wave relaunches at most the pinned session-boot width (4) of workers, so
+/// twelve dead descriptors is three capped waves — a recovery observably long enough to
 /// race the control plane.
 const SESSIONS: usize = 12;
 

@@ -285,13 +285,17 @@ supervisor link (`provider_admission_acquire` / `provider_admission_release`, wo
 authenticated); a supervisor that does not answer within the bounded poll falls back to the
 worker's local pool. The learned pacing persists to `<agent-dir>/provider-pacing.json`
 (credential hashes only) off the request path and shows read-only on the `/usage` page
-(`QuotaReport::pacing`). A subagent worker's requests run at the `Subagent` class.
+(`QuotaReport::pacing`). A subagent worker's requests run at the `Subagent` class. The same pool
+holds the session-boot budget (`AdmissionKey::session_boot`): `rlm.spawn` / `rlm.create_session`
+child worker spawns (subagent class), every worker's kernel starts, and the supervisor's
+crash-recovery adoption (background class) take a boot permit from it, so a fan-out paces with
+the host's load; the spawn handle and `rlm.collect` results carry the boot's `queued_ms`.
 
 ## Non-goals
 No agent behavior inside workers beyond hosting a pa-core engine; no UI.
 
 ## Public API
-Supervisor entrypoint, worker entrypoint, `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode acp` through it), `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves — Rust-native session-plane extension; the TS daemon has no counterpart). Supervision internals `pub(crate)`.
+Supervisor entrypoint, worker entrypoint, `mcp_login::{WorkerMcpLoginUi, wire_worker_mcp_login}` (the worker's browser+callback login behind `mcp.begin_login`; wired by the agent engine before sessions register host handlers), client connection API for pa-tui/pa-cli, `acp::daemon::{run_daemon_attached_acp_mode, DaemonAcpOptions}` (pa-cli dispatches `--mode acp` through it), `agent_messaging::LinkAgentMessageController` + `rlm_children::{SupervisorChildSessions, ParentIdentity, RlmChildIdentity}` (e2e verifiers construct the worker-side family controller and the children registry; the engine wires the same types), `agent_engine::AgentSessionEngine::dispose_kernel` (the session-end kernel teardown the worker invokes at kill/shutdown/orphan exit — the engine outlives the session, so the pa-core engine-drop teardown cannot run there), the worker's `get_mcp_connections` command (`mcp_connections.rs`: the `/mcp` view's roster from the session's MCP manager overlaid with the session kernel's per-server tool listing, plus the api-key credential rows the same response serves — Rust-native session-plane extension; the TS daemon has no counterpart). `agent_message_wait::{AgentMessageWaits, AgentMessageArrival}` (the session's `agent_message.wait` receiving side the `SessionEngine` trait hands the worker). Supervision internals `pub(crate)`.
 
 
 ## Depends on

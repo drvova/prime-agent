@@ -443,6 +443,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         parent_token,
         Arc::new(Mutex::new(Some(own_summary))),
         Some(Arc::clone(&children)),
+        Arc::default(),
     ));
     let mut handlers = HostRequestHandlers::default();
     register_agent_message_host_handlers(Arc::clone(&controller) as Arc<_>, &mut handlers);

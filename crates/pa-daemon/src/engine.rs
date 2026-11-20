@@ -407,6 +407,15 @@ pub trait SessionEngine: Send + Sync {
     /// session: the child's terminal no-reply notice can be withheld.
     fn mark_child_reply(&self, _child_active_session_id: &str) {}
 
+    /// The session's `agent_message.wait` side: the delivery path reports
+    /// accepted messages to it and the summary reads its `waitingOn`.
+    /// Engines without a kernel report `None`.
+    fn agent_message_waits(
+        &self,
+    ) -> Option<std::sync::Arc<crate::agent_message_wait::AgentMessageWaits>> {
+        None
+    }
+
     /// The session's RLM children as wire snapshots (the `get_rlm_children`
     /// response and the context-tree children).
     fn rlm_child_snapshots(

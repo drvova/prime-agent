@@ -239,8 +239,12 @@ async fn login_stores_an_api_key_and_logout_removes_it() {
         flow: AuthFlow::ApiKeyPrompt,
         configured: false,
         available: true,
+        credential: RowCredential::Default,
     };
-    match auth.login(&row, Some("sk-test")).await {
+    match auth
+        .login(&row, Some("sk-test"), &LoginTarget::ReplaceDefault)
+        .await
+    {
         ProviderAuthOutcome::Status(message) => {
             assert!(
                 message.starts_with("Saved API key for OpenAI. Credentials saved to "),
@@ -251,7 +255,8 @@ async fn login_stores_an_api_key_and_logout_removes_it() {
     }
     // An empty key answers the TS error.
     assert_eq!(
-        auth.login(&row, Some("")).await,
+        auth.login(&row, Some(""), &LoginTarget::ReplaceDefault)
+            .await,
         ProviderAuthOutcome::Error(
             "Failed to save API key for OpenAI: API key cannot be empty.".to_string()
         )
@@ -286,8 +291,12 @@ async fn a_stored_web_search_key_pairs_with_the_logout_row() {
         flow: AuthFlow::ApiKeyPrompt,
         configured: false,
         available: true,
+        credential: RowCredential::Default,
     };
-    match auth.login(&row, Some("the-key")).await {
+    match auth
+        .login(&row, Some("the-key"), &LoginTarget::ReplaceDefault)
+        .await
+    {
         ProviderAuthOutcome::Status(message) => {
             assert!(
                 message.starts_with("Saved API key for Serper (web search)."),
@@ -352,6 +361,96 @@ async fn an_oauth_descriptor_provider_lists_as_a_sign_in_row() {
             flow: AuthFlow::TerminalFlow,
             configured: false,
             available: true,
+            credential: RowCredential::Default,
         }]
+    );
+}
+
+/// "Add another" stores a named credential beside the default slot and leaves `auth.json`
+/// byte-identical; `/logout` lists both and removes exactly the one picked.
+#[tokio::test]
+async fn add_another_keeps_the_default_slot_and_logout_removes_each_credential() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let agent = dir.path().join("agent");
+    std::fs::create_dir_all(&agent).expect("agent dir");
+    let auth_json = r#"{"openai":{"type":"api_key","key":"sk-default"}}"#;
+    std::fs::write(agent.join("auth.json"), auth_json).unwrap();
+    let auth = ProviderAuth::new(dir.path(), agent.clone());
+    // The stored default slot makes the login row offer "Add another".
+    assert_eq!(
+        auth.login_options()
+            .await
+            .into_iter()
+            .find(|row| row.id == "openai")
+            .map(|row| row.credential),
+        Some(RowCredential::DefaultWithAddAnother)
+    );
+    let row = ProviderRow {
+        id: "openai".to_string(),
+        name: "OpenAI".to_string(),
+        auth_type: AuthType::ApiKey,
+        status: None,
+        flow: AuthFlow::ApiKeyPrompt,
+        configured: true,
+        available: true,
+        credential: RowCredential::DefaultWithAddAnother,
+    };
+    assert_eq!(
+        auth.login(
+            &row,
+            Some("sk-work"),
+            &LoginTarget::AddNamed {
+                label: "work".to_string()
+            }
+        )
+        .await,
+        ProviderAuthOutcome::Status(format!(
+            "Saved API key for OpenAI. Added as \"work\". Credentials saved to {}",
+            agent.join("auth-accounts.json").display()
+        ))
+    );
+    assert_eq!(
+        std::fs::read_to_string(agent.join("auth.json")).unwrap(),
+        auth_json
+    );
+    let accounts = pa_core::auth::AuthAccounts::create(&agent)
+        .list("openai")
+        .unwrap();
+    assert_eq!(accounts.len(), 1);
+    let work_id = accounts[0].id.clone();
+    let configured = Some(AuthStatusIndicator {
+        style: AuthStatusStyle::Success,
+        label: "configured".to_string(),
+    });
+    let default_row = ProviderRow {
+        id: "openai".to_string(),
+        name: "OpenAI".to_string(),
+        auth_type: AuthType::ApiKey,
+        status: configured.clone(),
+        flow: AuthFlow::TerminalFlow,
+        configured: true,
+        available: true,
+        credential: RowCredential::Default,
+    };
+    let work_row = ProviderRow {
+        name: "OpenAI \u{b7} work".to_string(),
+        credential: RowCredential::Named {
+            id: work_id,
+            label: "work".to_string(),
+        },
+        ..default_row.clone()
+    };
+    assert_eq!(
+        auth.logout_options().await,
+        vec![default_row.clone(), work_row.clone()]
+    );
+    assert_eq!(
+        auth.logout(&work_row).await,
+        ProviderAuthOutcome::Status("Removed credential \"work\" for OpenAI.".to_string())
+    );
+    assert_eq!(auth.logout_options().await, vec![default_row]);
+    assert_eq!(
+        std::fs::read_to_string(agent.join("auth.json")).unwrap(),
+        auth_json
     );
 }

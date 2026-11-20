@@ -935,6 +935,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
                 flow: pa_tui::provider_auth::AuthFlow::TerminalFlow,
                 configured: self.stored(pa_tui::provider_auth::PRIME_INFERENCE_PROVIDER_ID),
                 available: true,
+                credential: pa_tui::provider_auth::RowCredential::Default,
             },
             pa_tui::provider_auth::ProviderRow {
                 id: "faux-key".to_string(),
@@ -944,6 +945,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
                 flow: pa_tui::provider_auth::AuthFlow::ApiKeyPrompt,
                 configured: self.stored("faux-key"),
                 available: true,
+                credential: pa_tui::provider_auth::RowCredential::Default,
             },
             pa_tui::provider_auth::ProviderRow {
                 id: "mcp:faux".to_string(),
@@ -953,6 +955,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
                 flow: pa_tui::provider_auth::AuthFlow::TerminalFlow,
                 configured: false,
                 available: true,
+                credential: pa_tui::provider_auth::RowCredential::Default,
             },
         ];
         Box::pin(async move { rows })
@@ -966,6 +969,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
         &self,
         provider: &pa_tui::provider_auth::ProviderRow,
         api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         let agent_dir = self.agent_dir.clone();
         let provider_id = provider.id.clone();
@@ -995,6 +999,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for FullFlowProviderAuth {
         &self,
         provider: &pa_tui::provider_auth::ProviderRow,
         panel: pa_tui::auth_panel::AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         let agent_dir = self.agent_dir.clone();
         let provider_id = provider.id.clone();
@@ -4856,6 +4861,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for E2ESubscriptionAuth {
         &self,
         _provider: &pa_tui::provider_auth::ProviderRow,
         _api_key: Option<&str>,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
     }
@@ -4864,6 +4870,7 @@ impl pa_tui::provider_auth::ProviderAuthCommands for E2ESubscriptionAuth {
         &self,
         _provider: &pa_tui::provider_auth::ProviderRow,
         _panel: pa_tui::auth_panel::AuthPanelHandle,
+        _target: &pa_tui::provider_auth::LoginTarget,
     ) -> pa_tui::provider_auth::ProviderAuthFuture {
         Box::pin(async move { pa_tui::provider_auth::ProviderAuthOutcome::Cancelled })
     }
