@@ -2387,6 +2387,7 @@ async fn kernel_login_and_recall_ride_their_own_event() {
 /// Read-only cache lookups ride their own `agent readonly cache` event at session end (counts only: never a command or a path).
 #[tokio::test]
 async fn readonly_cache_ride_their_own_event() {
+    use crate::kernel::command_cache::CacheLookup;
     let fixture = fixture();
     let counters = Arc::new(SessionCounters::default());
     let mut telemetry = SessionTelemetry::detached(
@@ -2395,7 +2396,6 @@ async fn readonly_cache_ride_their_own_event() {
         "interactive".to_string(),
     );
     telemetry.counters = Arc::clone(&counters);
-    use crate::kernel::command_cache::CacheLookup;
     for (file_read, hit) in [(false, true), (false, true), (false, false), (true, true)] {
         counters.note_cache_lookup(CacheLookup { file_read, hit });
     }
