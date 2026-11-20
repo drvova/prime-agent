@@ -636,6 +636,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             })
             .as_ref(),
     );
+    // `fs.symbol`: the project's symbol index, built in the background from
+    // its first query on; a definition's source pages out to the spill store.
+    crate::symbol_index::register_symbol_handler(
+        &mut handlers,
+        crate::symbol_index::SymbolIndex::for_project(&cwd, Some(&config.agent_dir)),
+        spill_store.clone(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_symbol_query(fact))
+                as crate::symbol_index::SymbolObserver
+        }),
+    );
     // `/better`: its helper binds to the agent once it exists.
     let better = std::sync::Arc::new(super::better::BetterHost::new(
         cwd.clone(),
