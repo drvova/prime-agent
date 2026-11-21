@@ -9,7 +9,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::library::{
-    import_machine, resolve_machine, scan_library, write_export, Overwrite, ResolutionError,
+    cli_dispatch, import_machine, resolve_machine, scan_library, write_export, Overwrite,
+    ResolutionError,
 };
 use super::report::{cap_frame, Detail, FACTORY_FRAME_CAP};
 use super::store::FactoryEnvironment;
@@ -1049,6 +1050,210 @@ async fn killing_the_kernel_ends_its_control_loops_and_leaves_the_children_to_th
             json!(1),
             "the Scheme kernel is not running: it has no factory runs".to_string(),
             Vec::<String>::new(),
+        )
+    );
+}
+
+/// `FactoryOptInGateTest`: `test_create_factory_refuses_while_disabled`,
+/// `test_factory_entry_updates_refuse_while_disabled`,
+/// `test_delete_stays_available_while_disabled`; and the write-time dry run
+/// of every factory write.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_factory_entry_is_stored_only_validated_and_only_while_the_factory_is_enabled() {
+    let fixture = Fixture::new();
+    let provisioner = fixture.provisioner();
+    let kernel = provisioner.ensure(None, None).await.unwrap();
+    let kernel = kernel.as_ref();
+    let dag = r#"(hash 'nodes (list (hash 'id "a" 'subagent "worker")))"#;
+    let create = |id: &str, spec: &str| {
+        format!(
+            r#"(hash-ref (harness-create-factory "Factory" "Factory content" #:id "{id}" {spec}) 'id)"#
+        )
+    };
+    let stored = displayed(kernel, &create("sw", &format!("#:dag {dag}"))).await;
+    let started = displayed(kernel, r#"(hash-ref (factory-run "sw") 'started)"#).await;
+    let invalid = displayed(kernel, &create("bad", "#:dag (hash 'nodes (list))")).await;
+    let both = displayed(
+        kernel,
+        &create("both", &format!("#:dag {dag} #:machine {dag}")),
+    )
+    .await;
+    let neither = displayed(kernel, &create("none", "")).await;
+    let updated = displayed(
+        kernel,
+        r#"(hash-ref (harness-update-factory "sw" "Factory" "Factory content" #:machine (hash 'states (list (hash 'id "b" 'entry #t 'subagent "worker")))) 'version)"#,
+    )
+    .await;
+    fixture.settings(&json!({"factory": {"enabled": false}}));
+    let while_disabled = [
+        displayed(kernel, &create("off", &format!("#:dag {dag}"))).await,
+        // The refusal comes before the spec is looked at.
+        displayed(kernel, &create("off-bad", "#:dag (hash 'nodes (list))")).await,
+        displayed(
+            kernel,
+            r#"(harness-update-factory "sw" "Factory" "content updated")"#,
+        )
+        .await,
+    ];
+    let kept = displayed(
+        kernel,
+        "(hash-ref (hash-ref (hash-ref (hash-ref (harness-state) (quote entries)) (quote factory)) (quote sw)) (quote content))",
+    )
+    .await;
+    let deleted = displayed(kernel, r#"(harness-delete-factory "sw")"#).await;
+    let refused = |outcome: &Result<Value, String>| {
+        outcome
+            .as_ref()
+            .map_err(|error| error.contains(DISABLED))
+            .cloned()
+    };
+    assert_eq!(
+        (
+            stored,
+            started,
+            invalid.map_err(|error| error.contains("factory entry 'bad' rejected: factory dag must declare between 1 and 1024 nodes, got 0")),
+            both.map_err(|error| error.contains("pass either #:dag or #:machine, not both")),
+            neither.map_err(|error| error.contains("factory entry 'none' rejected: factory entries require a dag or machine object in arguments")),
+            updated,
+            while_disabled.iter().map(refused).collect::<Vec<_>>(),
+            kept,
+            deleted,
+        ),
+        (
+            Ok(json!("sw")),
+            Ok(json!(["a"])),
+            Err(true),
+            Err(true),
+            Err(true),
+            Ok(json!(2)),
+            vec![Err(true), Err(true), Err(true)],
+            Ok(json!("Factory content")),
+            Ok(json!(true)),
+        )
+    );
+}
+
+/// `MachineCliDispatchTest`, all eight:
+/// `test_import_dispatch_persists_into_the_user_library`,
+/// `test_import_dispatch_surfaces_gate_errors_as_data`,
+/// `test_export_dispatch_resolves_library_machines`,
+/// `test_export_dispatch_refuses_to_overwrite_the_target`,
+/// `test_export_dispatch_resolves_the_library_only`,
+/// `test_export_dispatch_reports_unknown_machines`,
+/// `test_list_dispatch_lists_the_library_with_warnings`,
+/// `test_dispatch_rejects_bad_payloads`.
+#[test]
+fn the_command_line_facade_lists_imports_and_exports_with_every_failure_as_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, agent) = (temp.path().join("repo"), temp.path().join("agent"));
+    let environment = FactoryEnvironment {
+        agent_dir: Some(agent.clone()),
+        // A stored entry of the same name never intercepts an export.
+        local_harness_dir: Some(temp.path().join("harness")),
+        machines_dir: Some(repo.clone()),
+    };
+    let write = |path: std::path::PathBuf, text: &str| {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    let text = machine_text("sweep", &json!({"nodes": [worker("a")]}));
+    let source = write(temp.path().join("sources/machine.MACHINE.md"), &text);
+    let bad = write(
+        temp.path().join("sources/bad.MACHINE.md"),
+        &machine_text(
+            "bad",
+            &json!({"run": {"max_parallel": null}, "states": [{"id": "a", "entry": true, "subagent": {"prompt": "P."}}]}),
+        ),
+    );
+    let dispatch = |payload: Value| cli_dispatch(&payload, &environment);
+    let out = |name: &str| {
+        temp.path()
+            .join("out")
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    };
+    let before_any_machine =
+        dispatch(json!({"op": "export", "name": "sweep", "out": out("early.md")}));
+    let gate_error = dispatch(json!({"op": "import", "path": bad}));
+    let nothing_stored = !agent.join("machines").exists();
+    let imported = dispatch(json!({"op": "import", "path": source}));
+    let stored = agent.join("machines/sweep/MACHINE.md");
+    write(
+        repo.join("shared/MACHINE.md"),
+        &machine_text("shared", &json!({"nodes": [worker("a")]})),
+    );
+    write(agent.join("machines/broken/MACHINE.md"), "no frontmatter");
+    let listed = dispatch(json!({"op": "list"}));
+    let exported = dispatch(json!({"op": "export", "name": "sweep", "out": out("sweep.md")}));
+    let kept = write(temp.path().join("out/kept.md"), "keep me");
+    let refused = dispatch(json!({"op": "export", "name": "sweep", "out": kept}));
+    let names: Vec<(Value, Value)> = listed["machines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["name"].clone(), row["source"].clone()))
+        .collect();
+    let first_error = |result: &Value| result["errors"][0].as_str().unwrap_or_default().to_string();
+    assert_eq!(
+        (
+            first_error(&before_any_machine),
+            (
+                gate_error["ok"].clone(),
+                first_error(&gate_error),
+                nothing_stored
+            ),
+            imported,
+            std::fs::read_to_string(&stored).unwrap() == text,
+            (
+                listed["ok"].clone(),
+                names,
+                listed["warnings"].as_array().map(Vec::len)
+            ),
+            exported,
+            std::fs::read_to_string(out("sweep.md")).unwrap() == text,
+            (
+                refused["ok"].clone(),
+                first_error(&refused).contains("already exists"),
+                std::fs::read_to_string(&kept).unwrap()
+            ),
+            vec![
+                cli_dispatch(&json!("nope"), &environment),
+                dispatch(json!({"op": "import"})),
+                dispatch(json!({"op": "export", "out": "x"})),
+                dispatch(json!({"op": "export", "name": "sweep"})),
+                dispatch(json!({"op": "wat"})),
+            ],
+        ),
+        (
+            "unknown machine 'sweep': no MACHINE.md for it in the machine library (machines: none)"
+                .to_string(),
+            (
+                json!(false),
+                "run max_parallel must be an integer between 1 and 64".to_string(),
+                true
+            ),
+            json!({"ok": true, "name": "sweep", "path": stored.to_string_lossy(), "created": true}),
+            true,
+            (
+                json!(true),
+                vec![
+                    (json!("shared"), json!("repo")),
+                    (json!("sweep"), json!("user"))
+                ],
+                Some(1)
+            ),
+            json!({"ok": true, "name": "sweep", "path": out("sweep.md"), "source": "library"}),
+            true,
+            (json!(false), true, "keep me".to_string()),
+            vec![
+                json!({"ok": false, "errors": ["factory cli payload must be a JSON object"]}),
+                json!({"ok": false, "errors": ["factory import requires a `path` string"]}),
+                json!({"ok": false, "errors": ["factory export requires a `name` string"]}),
+                json!({"ok": false, "errors": ["factory export requires an `out` string"]}),
+                json!({"ok": false, "errors": ["unknown factory cli op 'wat' (expected 'list', 'import' or 'export')"]}),
+            ],
         )
     );
 }

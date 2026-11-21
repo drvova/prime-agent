@@ -1,17 +1,13 @@
 //! `prime-agent factory`: the machine library commands.
 //!
-//! Every subcommand — list included — is one `rlm.factory.cli_dispatch`
-//! payload through the kernel Python. The kernel owns the whole library
-//! contract: the bundled seeds ship as wheel package data inside the
-//! runtime, the personal library lives under the agent dir, the strict
-//! MACHINE.md parser gates what lists, and the write-time validator gates
-//! what persists (an invalid spec never persists; the exact error
-//! sentences reach this command's output verbatim). The CLI never
+//! Every subcommand, list included, is one payload to pa-core's machine
+//! library (`pa_core::kernel::scheme::factory_cli_dispatch`), answered in
+//! this process. The library owns the whole contract: the machines shipped
+//! with the product, the personal library under the agent dir, the strict
+//! MACHINE.md parser that gates what lists, and the write-time validator
+//! that gates what persists (an invalid spec never persists; the exact
+//! error sentences reach this command's output verbatim). The CLI never
 //! re-implements resolution or parsing, so the two sides cannot drift.
-
-use std::io::Write as _;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use serde_json::{json, Value};
 
@@ -28,15 +24,6 @@ struct MachineListing {
     source: String,
     path: String,
 }
-
-/// The thin runner executed by the kernel Python: one JSON payload in on
-/// stdin, one JSON result out on stdout (`rlm.factory.cli_dispatch`).
-const CLI_DISPATCH_RUNNER: &str = concat!(
-    "import json, sys\n",
-    "from rlm.factory import cli_dispatch\n",
-    "payload = json.loads(sys.stdin.read() or \"{}\")\n",
-    "print(json.dumps(cli_dispatch(payload)))\n",
-);
 
 /// The parsed `prime-agent factory` invocation.
 #[derive(Debug, PartialEq, Eq)]
@@ -175,13 +162,7 @@ fn export_payload(name: &str, out: &std::path::Path) -> Value {
 /// `factory list`: library contents with descriptions.
 fn run_list(json: bool) -> i32 {
     let payload = list_payload();
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
-        Ok(result) => render_list(&result, json),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            1
-        }
-    }
+    render_list(&dispatch(&payload), json)
 }
 
 /// Render one `list` dispatch result: errors verbatim, warnings as
@@ -251,58 +232,10 @@ fn listing_row(machine: &MachineListing, name_width: usize) -> String {
     )
 }
 
-/// Resolve the kernel Python (bootstrapping the venv on first use), the
-/// same interpreter the factory gate lives in.
-fn resolve_kernel_python() -> Result<PathBuf, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("failed to start the CLI runtime: {error}"))?;
-    runtime
-        .block_on(pa_core::kernel::ensure_kernel_python(
-            pa_core::kernel::EnsureKernelPythonOptions::default(),
-        ))
-        .map_err(|error| format!("kernel python unavailable: {error:#}"))
-}
-
-/// Drive one `rlm.factory.cli_dispatch` payload through the kernel Python.
-fn dispatch_via_kernel(python: &std::path::Path, payload: &Value) -> Result<Value, String> {
-    let mut child = Command::new(python);
-    child
-        .args(["-P", "-s", "-c", CLI_DISPATCH_RUNNER])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear()
-        .envs(pa_core::kernel::python_process_environment());
-    // Hidden window on Windows, matching the kernel probes.
-    pa_core::platform::process::set_no_window(&mut child);
-    let mut child = child
-        .spawn()
-        .map_err(|error| format!("failed to run the kernel python: {error}"))?;
-    {
-        let stdin = child.stdin.as_mut().expect("stdin was piped on this child");
-        stdin
-            .write_all(payload.to_string().as_bytes())
-            .map_err(|error| format!("failed to send the payload: {error}"))?;
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("failed to wait for the kernel python: {error}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let tail: Vec<&str> = stderr.lines().rev().take(3).collect::<Vec<_>>();
-        let mut lines = tail;
-        lines.reverse();
-        return Err(format!(
-            "the kernel python failed (exit {}): {}",
-            output.status,
-            lines.join(" | ")
-        ));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(stdout.trim_end_matches(['\n', '\r']))
-        .map_err(|error| format!("unreadable kernel result: {error}"))
+/// Answer one machine-library payload against the agent directory's
+/// library. Its failures come back as data in the result.
+fn dispatch(payload: &Value) -> Value {
+    pa_core::kernel::scheme::factory_cli_dispatch(payload, &crate::config::get_agent_dir())
 }
 
 /// `factory import <path>`: validate through the kernel gate and persist.
@@ -313,25 +246,13 @@ fn run_import(path: &str, json: bool) -> i32 {
         return 1;
     }
     let payload = import_payload(&source);
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
-        Ok(result) => print_dispatch_result(&result, json, "imported"),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            1
-        }
-    }
+    print_dispatch_result(&dispatch(&payload), json, "imported")
 }
 
 /// `factory export <name> --out <path>`: serialize a machine to MACHINE.md.
 fn run_export(name: &str, out: &str, json: bool) -> i32 {
     let payload = export_payload(name, &crate::config::expand_tilde_path(out));
-    match resolve_kernel_python().and_then(|python| dispatch_via_kernel(&python, &payload)) {
-        Ok(result) => print_dispatch_result(&result, json, "exported"),
-        Err(error) => {
-            eprintln!("Error: {error}");
-            1
-        }
-    }
+    print_dispatch_result(&dispatch(&payload), json, "exported")
 }
 
 /// The failed dispatch's error sentences (the validator's exact text,
@@ -469,12 +390,6 @@ mod tests {
             dispatch_error_sentences(&failure),
             ["run max_parallel must be an integer between 1 and 64"]
         );
-    }
-
-    #[test]
-    fn dispatch_runner_contract_is_the_json_facade() {
-        assert!(CLI_DISPATCH_RUNNER.contains("from rlm.factory import cli_dispatch"));
-        assert!(CLI_DISPATCH_RUNNER.contains("print(json.dumps(cli_dispatch(payload)))"));
     }
 
     #[test]

@@ -24,10 +24,12 @@ while disabled, so a machine can be authored before opting in.
 A spec is JSON data: in Scheme, hashes with symbol keys, lists, strings,
 numbers and booleans. `(factory-run id)` looks for it in two places:
 
-- A stored factory entry: a continual-harness entry of kind `factory` whose
-  arguments carry the spec under `machine` (the native form) or `dag` (sugar
-  that compiles to machine form), exactly one of them. Harness writes
-  validate first; an invalid spec is never stored.
+- A stored factory entry: a continual-harness entry of kind `factory`,
+  written with `(harness-create-factory title content #:id "<spec_id>"
+  #:machine spec)` (the native form) or `#:dag spec` (sugar that compiles to
+  machine form), exactly one of them. `harness-update-factory` replaces it
+  and `harness-delete-factory` removes it. The write validates first; an
+  invalid spec is never stored.
 - The machine library: a `MACHINE.md` file (see Discovering machines).
   `(factory-import-machine "path/to/MACHINE.md")` validates and stores one,
   and `(factory-run "<its name>")` runs it without creating a harness entry.
@@ -97,6 +99,10 @@ This review/fix loop is the shipped pr-manager shape:
       (hash 'from "fixing" 'to "reviewing"))))
 
 (factory-validate pr-manager)   ; => '()
+(harness-create-factory
+  "pr-manager"
+  "Drive a PR through review/fix cycles, then keep a resident watcher on it."
+  #:id "pr-manager" #:machine pr-manager)
 ```
 
 The example exercises the core forms: `entry` is an entry state; the two

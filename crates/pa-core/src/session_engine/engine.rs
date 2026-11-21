@@ -166,6 +166,10 @@ pub struct SessionEngine {
     /// loops the graph and keeps a dropped session's kernel process alive
     /// until the process exits.
     pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
+    /// The session's Scheme kernel, when it has the Scheme tool: its factory
+    /// runs live there, so the `/factory` lane asks it first.
+    pub(crate) scheme_provisioner:
+        Option<std::sync::Arc<crate::kernel::scheme::SchemeKernelProvisioner>>,
     /// The session's current resources and the `rlm.reload`/`/reload` re-read.
     pub resource_reload: std::sync::Arc<super::resource_reload::ResourceReload>,
     /// The `/better` runner the TUI command, the session command, and the kernel share.
@@ -961,6 +965,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
         ));
     }
+    let mut scheme_provisioner = None;
     if !tools
         .iter()
         .any(|tool| tool.name() == pa_types::ai::SCHEME_TOOL_NAME)
@@ -972,9 +977,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         crate::kernel::scheme::prewarm_scheme_kernel();
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
-                crate::tools::scheme::create_scheme_tool_definition(Arc::new(
-                    crate::kernel::scheme::SchemeKernelProvisioner::with_options(scheme_options),
-                )),
+                crate::tools::scheme::create_scheme_tool_definition(Arc::clone(
+                    scheme_provisioner.insert(Arc::new(
+                        crate::kernel::scheme::SchemeKernelProvisioner::with_options(
+                            scheme_options,
+                        ),
+                    )),
+                )
+                    as Arc<dyn crate::tools::ipython::IpythonKernelProvisioner>),
             ),
         ));
     }
@@ -1638,6 +1648,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         worktrees,
         rlm_usage: wiring.rlm_usage,
         factory_host,
+        scheme_provisioner,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         resource_reload,
@@ -1817,6 +1828,31 @@ impl SessionEngine {
                 .await
                 .map_err(|join| anyhow::anyhow!("factory run preflight join failed: {join}"))?;
             preflight?;
+        }
+        // A session with a running Scheme kernel has its runs there. One
+        // whose Scheme kernel has not started has no Scheme runs, and the
+        // Python kernel (if any) answers as before.
+        if let Some(scheme) = &self.scheme_provisioner {
+            let frame = scheme
+                .factory_activity(&serde_json::json!({
+                    "id": "factory-activity",
+                    "action": request.action,
+                    "runId": request.run_id,
+                    "specId": request.spec_id,
+                    "timeoutMs": request.timeout_ms,
+                }))
+                .await;
+            if let Ok(mut frame) = frame {
+                return match frame["status"].as_str() {
+                    Some("ok") => Ok(frame["result"].take()),
+                    Some(_) | None => Err(anyhow::anyhow!(
+                        "{}",
+                        frame["reason"]
+                            .as_str()
+                            .unwrap_or("Kernel factory activity failed")
+                    )),
+                };
+            }
         }
         let manager = self
             .provisioner
