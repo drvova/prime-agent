@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use super::executor::Executor;
 use super::report::Detail;
 use super::store::FactoryEnvironment;
-use crate::kernel::scheme::SchemeKernelProvisioner;
+use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
 use crate::refinement::{update_harness_state, HarnessEntry, HarnessScope, RefinementKind};
 
@@ -488,8 +488,14 @@ impl Fixture {
 
     /// A Scheme kernel provisioner over this fixture's host and stores.
     pub(super) fn provisioner(&self) -> SchemeKernelProvisioner {
-        SchemeKernelProvisioner::new(self.host.handlers(), self.work_dir())
-            .with_factory_environment(self.executor.environment().clone())
+        SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+            host_handlers: self.host.handlers(),
+            cwd: self.work_dir(),
+            agent_dir: Some(self.agent_dir()),
+            // Its `harness` directory is the session's local store.
+            artifact_dir: Some(self.temp.path().to_path_buf()),
+            ..SchemeKernelOptions::default()
+        })
     }
 
     /// Write the agent directory's settings document.

@@ -1015,7 +1015,7 @@ pub(super) fn compile_factory_dag(dag: &Value) -> Result<Value, Vec<String>> {
 /// Dry-run validation of a spec in either form. A spec carrying `states`
 /// or `transitions` is machine form; anything else is dag form and compiles
 /// to machine form first. A spec carrying both forms is rejected outright.
-pub(super) fn validate_factory_spec(spec: &Value) -> Vec<String> {
+pub(in crate::kernel::scheme) fn validate_factory_spec(spec: &Value) -> Vec<String> {
     let Some(object) = spec.as_object() else {
         return vec!["factory dag must be a JSON object".to_string()];
     };

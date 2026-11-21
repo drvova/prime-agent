@@ -880,6 +880,25 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 }
             }) as crate::kernel::shared::BackgroundCellObserver
         }),
+        // The skills' Scheme source loads at kernel start and after each
+        // reload; a skill that fails to load is named on the next turn.
+        skill_sources: Some({
+            let reload = Arc::clone(&resource_reload);
+            Arc::new(move || {
+                crate::kernel::scheme::skills::SkillSource::from_skills(&reload.skills())
+            })
+        }),
+        on_unavailable_skills: Some({
+            let boot_notice_rows = Arc::clone(&boot_notice_rows);
+            Arc::new(
+                move |errors: &crate::kernel::scheme::skills::UnavailableSchemeSkills| {
+                    boot_notice_rows
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(crate::kernel::scheme::skills::notice_message(errors));
+                },
+            )
+        }),
     };
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),

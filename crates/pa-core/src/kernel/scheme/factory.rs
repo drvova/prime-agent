@@ -59,6 +59,7 @@ mod surface_tests;
 mod test_host;
 
 pub(super) use executor::Executor;
+pub(super) use spec::validate_factory_spec;
 pub use store::FactoryEnvironment;
 
 /// The Scheme side of the factory API, defined in every session engine
@@ -179,4 +180,16 @@ pub(super) fn register(
         .run(API)
         .map_err(|error| anyhow!("the Scheme factory API failed to load: {error}"))?;
     Ok(())
+}
+
+/// The `prime-agent factory` subcommands' JSON facade: answer one payload
+/// (`{op: "list"}`, `{op: "import", path}`, `{op: "export", name, out}`)
+/// against the machine library of `agent_dir` with `{ok: true, ...}` or
+/// `{ok: false, errors: [...]}`. Paths in the payload are used as given.
+#[must_use]
+pub fn factory_cli_dispatch(payload: &Value, agent_dir: &std::path::Path) -> Value {
+    library::cli_dispatch(
+        payload,
+        &FactoryEnvironment::for_session(agent_dir.to_path_buf(), None),
+    )
 }

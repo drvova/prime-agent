@@ -765,3 +765,74 @@ pub(super) fn export_spec(
     write_export(destination, &render_machine_file(&machine), overwrite)?;
     Ok(json!({"name": name, "path": destination.to_string_lossy(), "source": "spec"}))
 }
+
+/// Copy one library machine verbatim to `destination`, so its documentation
+/// travels with the spec. Returns `{name, path, source}`.
+///
+/// # Errors
+///
+/// The name resolves to no usable machine, or the write's refusal.
+pub(super) fn export_library_machine(
+    environment: &FactoryEnvironment,
+    name: &str,
+    destination: &Path,
+    overwrite: Overwrite,
+) -> Result<Value, String> {
+    let found = resolve_machine(environment, name).map_err(|error| match error {
+        ResolutionError::InvalidName(error)
+        | ResolutionError::Broken(error)
+        | ResolutionError::Unknown(error) => error,
+    })?;
+    write_export(destination, &found.text, overwrite)?;
+    Ok(json!({
+        "name": found.machine.name,
+        "path": destination.to_string_lossy(),
+        "source": "library",
+    }))
+}
+
+/// The JSON facade of the `prime-agent factory` subcommands: one payload
+/// (`{op: "list"}`, `{op: "import", path}`, `{op: "export", name, out}`) in,
+/// one result out: `{ok: true, ...}` or `{ok: false, errors: [...]}`. Every
+/// failure is data, so the validator's sentences reach the command's output
+/// as written. A command line has no session, so `export` resolves library
+/// machines only.
+pub(super) fn cli_dispatch(payload: &Value, environment: &FactoryEnvironment) -> Value {
+    let failed = |error: String| json!({"ok": false, "errors": [error]});
+    let done = |result: Result<Value, String>| match result {
+        Ok(Value::Object(mut fields)) => {
+            fields.insert("ok".to_string(), json!(true));
+            Value::Object(fields)
+        }
+        Ok(other) => json!({"ok": true, "result": other}),
+        Err(error) => failed(error),
+    };
+    let Some(fields) = payload.as_object() else {
+        return failed("factory cli payload must be a JSON object".to_string());
+    };
+    let text = |key: &str| field(fields, key).as_str().filter(|text| !text.is_empty());
+    match field(fields, "op").as_str() {
+        Some("list") => {
+            let (machines, warnings) = scan_library(environment);
+            json!({"ok": true, "machines": machines, "warnings": warnings})
+        }
+        Some("import") => match text("path") {
+            None => failed("factory import requires a `path` string".to_string()),
+            Some(path) => done(import_machine(environment, Path::new(path))),
+        },
+        Some("export") => match (text("name"), text("out")) {
+            (None, _) => failed("factory export requires a `name` string".to_string()),
+            (Some(_), None) => failed("factory export requires an `out` string".to_string()),
+            (Some(name), Some(out)) => done(export_library_machine(
+                environment,
+                name,
+                Path::new(out),
+                Overwrite::Refuse,
+            )),
+        },
+        Some(_) | None => failed(format!(
+            "unknown factory cli op {} (expected 'list', 'import' or 'export')",
+            super::python_text::repr(field(fields, "op"))
+        )),
+    }
+}

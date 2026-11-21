@@ -8,8 +8,10 @@
 //! written here through [`crate::refinement`]'s own loader and locked
 //! writer, so every writer agrees on its format and its lock.
 //!
-//! Factory entries are read (overview, search, state) but not written here:
-//! a factory spec must pass the factory validator before it is stored.
+//! A factory entry is written only while the `factory.enabled` setting is
+//! on, and only with a spec (`arguments.dag` or `arguments.machine`) that
+//! passes the factory's write-time validator; deleting one stays possible
+//! while the factory is off.
 
 use std::path::{Path, PathBuf};
 
@@ -202,14 +204,22 @@ impl Harness {
             Some("memory") => (RefinementKind::Memory, "memory"),
             Some("skill") => (RefinementKind::Skill, "skill"),
             Some("subagent") => (RefinementKind::Subagent, "subagent"),
-            Some("factory") => bail!(
-                "factory entries are not written here: a factory spec must pass the factory validator first"
-            ),
+            Some("factory") => (RefinementKind::Factory, "factory"),
             Some(_) | None => bail!(
-                "unknown harness kind {}; expected one of prompt, memory, skill, subagent",
+                "unknown harness kind {}; expected one of prompt, memory, skill, subagent, factory",
                 options["kind"]
             ),
         };
+        // The opt-in gate comes before any spec work: while the factory is
+        // off every factory write refuses with the one message.
+        if kind == RefinementKind::Factory
+            && !self
+                .agent_dir
+                .as_deref()
+                .is_some_and(crate::refinement::factory_enabled)
+        {
+            bail!(crate::refinement::FACTORY_DISABLED_MESSAGE);
+        }
         let shown = given_id
             .filter(|id| !id.is_empty())
             .or_else(|| options["title"].as_str().filter(|title| !title.is_empty()))
@@ -262,6 +272,36 @@ impl Harness {
             };
             if let Some(problem) = problem {
                 bail!("skill entry '{id}' rejected: {problem}");
+            }
+        }
+        if kind == RefinementKind::Factory {
+            // An invalid spec never reaches the store through any writer. A
+            // new factory needs its spec; an update that omits the
+            // arguments keeps the stored one.
+            let spec = arguments.as_ref().map(|arguments| {
+                let given = |key: &str| arguments.get(key).filter(|spec| !spec.is_null());
+                (given("dag"), given("machine"))
+            });
+            let problem = match spec {
+                None if creating => {
+                    Some("factory entries require a dag or machine object in arguments".to_string())
+                }
+                None => None,
+                Some((Some(_), Some(_))) => {
+                    Some("pass either dag or machine, not both".to_string())
+                }
+                Some((dag, machine)) => match machine.or(dag).filter(|spec| spec.is_object()) {
+                    None => Some(
+                        "factory entries require a dag or machine object in arguments".to_string(),
+                    ),
+                    Some(spec) => {
+                        Some(crate::kernel::scheme::validate_factory_spec(spec).join("; "))
+                            .filter(|errors| !errors.is_empty())
+                    }
+                },
+            };
+            if let Some(problem) = problem {
+                bail!("factory entry '{id}' rejected: {problem}");
             }
         }
         let (entry, _) = try_update_harness_state(&dir, scope, |state| {

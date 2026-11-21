@@ -23,6 +23,7 @@
 
 mod attach;
 mod cell;
+mod factory;
 mod host_api;
 
 use std::future::Future;
@@ -48,6 +49,10 @@ use crate::tools::tool_definition::AbortSignal;
 
 mod mcp;
 mod native;
+pub mod skills;
+
+pub(in crate::kernel::scheme) use factory::validate_factory_spec;
+pub use factory::{factory_cli_dispatch, FactoryEnvironment};
 
 /// The Scheme side of the host bridge, defined in every session engine after
 /// its `%host-request-json` primitive is registered.
@@ -130,6 +135,11 @@ pub struct SchemeKernelOptions {
     /// The source lines a failed command a cell waited for gets on the
     /// cell's result. The default attaches none.
     pub error_context: crate::kernel::error_context::ErrorContext,
+    /// Names the session's skills, whose Scheme source the kernel loads at
+    /// its start and after each reload (see [`skills`]).
+    pub skill_sources: Option<skills::SkillSourcesProvider>,
+    /// Told which skills' Scheme source failed to load.
+    pub on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
 }
 
 /// A session's settings as its cells and host functions read them.
@@ -159,6 +169,10 @@ struct SessionEngine {
     /// The session's shell commands: told of each cell on the engine, and
     /// killed with the kernel.
     jobs: native::BashJobs,
+    /// The session's factory runs, which progress between cells.
+    factory: factory::Executor,
+    /// The session's skill sources, loaded again after a reload.
+    skills: skills::SkillLoader,
 }
 
 /// A session's running Scheme kernel.
@@ -186,6 +200,8 @@ struct ProvisionerState {
     /// The session's MCP client: its connections outlive a cell and end
     /// with `kill`.
     mcp: Arc<mcp::Registry>,
+    skill_sources: Option<skills::SkillSourcesProvider>,
+    on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
     /// The session's engine once started; the async lock holds concurrent
     /// `ensure` calls to one startup.
     session: tokio::sync::Mutex<Option<Arc<SessionEngine>>>,
@@ -246,6 +262,8 @@ impl SchemeKernelProvisioner {
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 mcp,
+                skill_sources: options.skill_sources,
+                on_unavailable_skills: options.on_unavailable_skills,
                 handlers: options.host_handlers,
                 environment: Arc::new(SessionEnvironment {
                     cwd: options.cwd,
@@ -292,6 +310,23 @@ impl SchemeKernelProvisioner {
             .tool_listing(servers, per_server_timeout_ms)
             .await
     }
+
+    /// Answer one factory request of the daemon and TUI lane (`{id, action,
+    /// runId, specId, timeoutMs}`) from the running kernel's factory with
+    /// its reply frame (`{event, id, status, result | reason}`).
+    ///
+    /// # Errors
+    ///
+    /// The session's kernel is not running: it holds the runs.
+    pub async fn factory_activity(&self, request: &Value) -> anyhow::Result<Value> {
+        let session = self.state.session.lock().await.clone();
+        match session {
+            Some(session) => Ok(session.factory.activity_reply(request).await),
+            None => Err(anyhow!(
+                "the Scheme kernel is not running: it has no factory runs"
+            )),
+        }
+    }
 }
 
 impl IpythonKernelProvisioner for SchemeKernelProvisioner {
@@ -313,7 +348,27 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             }
             // The learned window's stored state loads while the engine starts.
             state.environment.cell_window.prime();
-            let handlers = state.handlers.clone();
+            let mut handlers = state.handlers.clone();
+            let skills = skills::SkillLoader::new(
+                state.skill_sources.clone(),
+                state.on_unavailable_skills.clone(),
+                &mut handlers,
+            );
+            let factory = factory::Executor::new(
+                state.handlers.clone(),
+                state.environment.agent_dir.clone().map_or_else(
+                    FactoryEnvironment::default,
+                    |agent_dir| {
+                        FactoryEnvironment::for_session(
+                            agent_dir,
+                            crate::refinement::get_local_harness_state_dir(
+                                state.environment.artifact_dir.as_deref(),
+                            ),
+                        )
+                    },
+                ),
+                state.environment.cwd.clone(),
+            );
             let native_handlers = state.handlers.clone();
             let mcp_client = Arc::clone(&state.mcp);
             let environment = Arc::clone(&state.environment);
@@ -429,12 +484,16 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     &environment,
                 )?;
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
+                factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
+                skills.start(&mut engine)?;
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
                     cell,
                     turn: Arc::new(tokio::sync::Mutex::new(())),
                     cells,
                     jobs,
+                    factory,
+                    skills,
                 }))
             })
             .await
@@ -454,6 +513,8 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             if let Some(session) = state.session.lock().await.take() {
                 session.cells.kill();
                 session.jobs.kill_all();
+                // The runs lived in this kernel: their loops end with it.
+                session.factory.shutdown();
             }
             state.mcp.shutdown().await;
         })

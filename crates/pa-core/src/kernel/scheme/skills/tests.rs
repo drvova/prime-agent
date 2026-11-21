@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 
 use super::{notice_content, notice_message, SkillSource, UnavailableSchemeSkills};
-use crate::kernel::scheme::SchemeKernelProvisioner;
+use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
 use crate::skills::{create_synthetic_source_info, Skill, SkillKind, SourceScope};
 use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor};
@@ -52,16 +52,18 @@ impl Skills {
             host_handler(|_payload: HostRequestPayload| async { Ok(json!({"skills": 0})) }),
         );
         let (listed, reports) = (Arc::clone(&self.listed), Arc::clone(&self.reports));
-        SchemeKernelProvisioner::new(handlers, "/")
-            .with_skills(
-                Arc::new(move || listed.lock().unwrap().clone()),
-                Some(Arc::new(move |unavailable: &UnavailableSchemeSkills| {
-                    reports.lock().unwrap().push(unavailable.clone());
-                })),
-            )
-            .ensure(None, None)
-            .await
-            .unwrap()
+        SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+            host_handlers: handlers,
+            cwd: PathBuf::from("/"),
+            skill_sources: Some(Arc::new(move || listed.lock().unwrap().clone())),
+            on_unavailable_skills: Some(Arc::new(move |unavailable: &UnavailableSchemeSkills| {
+                reports.lock().unwrap().push(unavailable.clone());
+            })),
+            ..SchemeKernelOptions::default()
+        })
+        .ensure(None, None)
+        .await
+        .unwrap()
     }
 
     fn reports(&self) -> Vec<UnavailableSchemeSkills> {
@@ -199,7 +201,7 @@ async fn a_reload_loads_new_and_changed_sources_after_its_cell_and_reports_what_
         "(define (added-here) \"new\")\n(vector-ref (vector) 3)",
     );
     let unloaded_until_reload = value(kernel, "(greet-word)").await;
-    let reloaded = value(kernel, "(rlm-reload)").await;
+    let reloaded = value(kernel, "(hash-ref (rlm-reload) (quote skills))").await;
     let after = value(kernel, "(list (greet-word) (torn-open) (added-here))").await;
     let still_failing = value(
         kernel,
@@ -223,7 +225,7 @@ async fn a_reload_loads_new_and_changed_sources_after_its_cell_and_reports_what_
         (
             Ok(json!("hello")),
             Ok(json!("hello")),
-            Ok(json!({"skills": 0})),
+            Ok(json!(0)),
             Ok(json!(["good day", "mended", "new"])),
             Ok(json!(["added"])),
             vec![vec!["torn".to_string()], vec!["added".to_string()]],

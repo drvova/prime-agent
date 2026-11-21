@@ -713,20 +713,8 @@ impl Executor {
             return library::export_spec(&machine, &destination, &spec_id, &description, overwrite)
                 .map_err(|error| anyhow!(error));
         }
-        let found = library::resolve_machine(&self.shared.environment, target).map_err(
-            |error| match error {
-                ResolutionError::InvalidName(error)
-                | ResolutionError::Broken(error)
-                | ResolutionError::Unknown(error) => anyhow!(error),
-            },
-        )?;
-        library::write_export(&destination, &found.text, overwrite)
-            .map_err(|error| anyhow!(error))?;
-        Ok(json!({
-            "name": found.machine.name,
-            "path": destination.to_string_lossy(),
-            "source": "library",
-        }))
+        library::export_library_machine(&self.shared.environment, target, &destination, overwrite)
+            .map_err(|error| anyhow!(error))
     }
 
     /// Answer one request of the daemon and TUI lane: `{action, runId,

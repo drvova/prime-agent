@@ -884,6 +884,10 @@ pub(super) async fn execute(
         let mut on_engine = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
         *on_engine = None;
         cells.controller.resume();
+        drop(on_engine);
+        // A cell that reloaded the session's resources gets its skills'
+        // changed sources evaluated before the next cell.
+        running.skills.load_if_reloaded(&mut engine);
         outcome
     });
 

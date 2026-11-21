@@ -95,6 +95,45 @@
 (define (harness-delete-subagent id #:global [global #f])
   (%harness-delete "harness-delete-subagent" "subagent" id global))
 
+;; The `arguments` of a factory entry: its spec under 'dag or 'machine,
+;; exactly one of them, or #f when neither was given.
+(define (%harness-factory-arguments who dag machine)
+  (cond
+    [(and dag machine) (error (string-append who ": pass either #:dag or #:machine, not both"))]
+    [machine (hash 'machine machine)]
+    [dag (hash 'dag dag)]
+    [else #f]))
+
+;; Create a factory entry (a state machine of subagent states that
+;; `factory-run` runs by its id); the entry. The spec is #:machine (states
+;; and transitions) or #:dag (nodes; sugar that compiles to a machine),
+;; exactly one, and it is validated first: an invalid spec is never stored
+;; (`factory-validate` lists its problems). Refused while the factory is
+;; disabled.
+(define (harness-create-factory title content
+                                #:id [id #f] #:path [path "general"]
+                                #:dag [dag #f] #:machine [machine #f]
+                                #:metadata [metadata #f] #:global [global #f])
+  (%harness-write "harness-create-factory" "create" "factory" id title content path #f
+                  (%harness-factory-arguments "harness-create-factory" dag machine)
+                  metadata global))
+
+;; Replace a factory entry's title and content, and its spec when #:dag or
+;; #:machine is given (validated like a new one); the entry. Refused while
+;; the factory is disabled.
+(define (harness-update-factory id title content
+                                #:path [path #f]
+                                #:dag [dag #f] #:machine [machine #f]
+                                #:metadata [metadata #f] #:global [global #f])
+  (%harness-write "harness-update-factory" "update" "factory" id title content path #f
+                  (%harness-factory-arguments "harness-update-factory" dag machine)
+                  metadata global))
+
+;; Delete a factory entry; whether it existed. Allowed while the factory is
+;; disabled: clearing a stale entry is not authoring.
+(define (harness-delete-factory id #:global [global #f])
+  (%harness-delete "harness-delete-factory" "factory" id global))
+
 ;; Record one refinement pass: {id, trigger, changes, evidence, outcome,
 ;; created_at}. `trigger` says what caused it; `changes` is one string or a
 ;; list of them.
