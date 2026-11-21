@@ -11,16 +11,14 @@
 )]
 
 //! End-to-end inline (daemonless) RLM subagents in print mode: the real
-//! binary, a scripted faux provider, and a real Python kernel drive the
+//! binary, a scripted faux provider, and the real kernel drive the
 //! full in-process tree — spawn, child reply turns, the #2270 quiescence
 //! wait, the depth gate, and the exit disposal.
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// One isolated print run: a hermetic HOME + agent dir, the faux script
-/// as the environment seam, and the kernel Python for the ipython lanes.
+/// as the environment seam.
 struct PrintLane {
     home: tempfile::TempDir,
     agent_dir: PathBuf,
@@ -34,84 +32,19 @@ fn lane() -> PrintLane {
 }
 
 impl PrintLane {
-    /// The kernel Python with prime-agent-runtime installed; set
-    /// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter. A
-    /// missing kernel FAILS the lane loudly (these e2es are the
-    /// subagent surface's proof — a skip would read green while
-    /// proving nothing).
-    fn kernel_python() -> PathBuf {
-        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-            let explicit = PathBuf::from(explicit);
-            assert!(
-                explicit.exists(),
-                "PA_E2E_KERNEL_PYTHON {} not found",
-                explicit.display()
-            );
-            return explicit;
-        }
-        let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-            |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-            |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-        ));
-        assert!(
-            candidate.exists(),
-            "kernel python {} not found: set PA_E2E_KERNEL_PYTHON (the kernel-venv layout the \
-             product's own bootstrap creates) — the inline-subagent e2es cannot run without one",
-            candidate.display()
-        );
-        candidate
-    }
-
     fn run(
         &self,
         args: &[&str],
         script: &serde_json::Value,
-        kernel_python: &Path,
         env_extra: &[(&str, &str)],
     ) -> (String, String, i32) {
         let bin = env!("CARGO_BIN_EXE_prime-agent");
-        // This test explicitly selects its interpreter, which supplies the
-        // checkout's skills without relying on the product's inherited env.
-        let skills = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
-        let python_paths = [skills.join("agent-message/src"), skills.join("goal/src")];
-        let python_path = std::env::join_paths(python_paths).expect("skill import paths");
-        #[cfg(unix)]
-        let wrapper = {
-            let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
-            let wrapper = self.home.path().join("kernel-python-with-skills");
-            std::fs::write(
-                &wrapper,
-                format!(
-                    "#!/bin/sh\nexport PYTHONPATH={}\nexec {} \"$@\"\n",
-                    quote(&python_path.to_string_lossy()),
-                    quote(&kernel_python.to_string_lossy())
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700)).unwrap();
-            wrapper
-        };
-        #[cfg(windows)]
-        let wrapper = {
-            let wrapper = self.home.path().join("kernel-python-with-skills.cmd");
-            std::fs::write(
-                &wrapper,
-                format!(
-                    "@echo off\r\nset \"PYTHONPATH={}\"\r\n\"{}\" %*\r\n",
-                    python_path.to_string_lossy().replace('%', "%%"),
-                    kernel_python.to_string_lossy().replace('%', "%%")
-                ),
-            )
-            .unwrap();
-            wrapper
-        };
         let mut command = std::process::Command::new(bin);
         command
             .args(args)
             .env("HOME", self.home.path())
             .env("PRIME_AGENT_CODING_AGENT_DIR", &self.agent_dir)
             .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
-            .env("PRIME_AGENT_KERNEL_PYTHON", &wrapper)
             .env_remove("RLM_DEPTH")
             .env_remove("RLM_MAX_DEPTH")
             .env_remove("PRIME_AGENT_SESSION_DIR")
@@ -195,17 +128,17 @@ impl PrintLane {
 /// The parent's spawn cell (turn 1): two named children, then the turn
 /// ends while both still run — the #2270 scenario.
 fn spawn_cell() -> String {
-    "a = await rlm.spawn(\"run the alpha task\", name=\"alpha\")\n\
-     b = await rlm.spawn(\"run the beta task\", name=\"beta\")\n\
-     print(\"SPAWNED\", a.rlm_child_id, b.rlm_child_id)"
+    r#"(define a (rlm-spawn "run the alpha task" #:name "alpha"))
+(define b (rlm-spawn "run the beta task" #:name "beta"))
+(displayln "SPAWNED" (hash-ref a 'rlm_child_id) (hash-ref b 'rlm_child_id))"#
         .to_string()
 }
 
-/// One child's reply cell: the ipython lane sends the parent a message
+/// One child's reply cell: the kernel sends the parent a message
 /// (the reply that must survive the print run staying open).
 fn reply_cell(child: &str) -> String {
     format!(
-        "await agent_message.send(\"{child}-RESULT\", receiver_role=\"parent\")\nprint(\"{child} REPLIED\")"
+        "(agent-message-send \"{child}-RESULT\" #:receiver-role \"parent\")\n(displayln \"{child} REPLIED\")"
     )
 }
 
@@ -220,7 +153,7 @@ fn combined_parent_script() -> serde_json::Value {
         // so the printed answer proves the parent turned AFTER them.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": spawn_cell() } },
             ] },
             "WAITING",
@@ -230,14 +163,14 @@ fn combined_parent_script() -> serde_json::Value {
         "children": {
             "alpha": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("ALPHA") } },
                 ] },
                 "alpha finished",
             ] },
             "beta": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("BETA") } },
                 ] },
                 "beta finished",
@@ -247,17 +180,14 @@ fn combined_parent_script() -> serde_json::Value {
 }
 
 /// The #2270 scenario: the parent spawns two children and ends its turn;
-/// both reply from their kernels; the print run waits for the replies,
-/// answers with the combined text, and disposes the child kernels (the
-/// final namespace snapshots land in the children's artifact dirs).
+/// both reply from their kernels; the print run waits for the replies
+/// and answers with the combined text.
 #[test]
 fn print_inline_subagents_wait_for_replies_and_combine_them() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
     let (stdout, stderr, code) = lane.run(
         &["-p", "delegate the work"],
         &combined_parent_script(),
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -300,8 +230,8 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
     }
 
     // Both child sessions live under the parent's artifacts tree, with
-    // the parent edge in their headers, their terminal assistant rows
-    // (never cancelled), and the disposed kernel's final snapshot.
+    // the parent edge in their headers and their terminal assistant rows
+    // (never cancelled).
     let parent_id = Path::new(&parent_file)
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -369,26 +299,6 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
             text.contains("finished"),
             "the child finished its task: {text}"
         );
-        // The exit disposal proof: the child's kernel was disposed with
-        // its final namespace snapshot BEFORE the process exited. The
-        // child's artifact dir follows the shared
-        // `dirname(sessionDir)/session-artifacts/<session id>` layout, so
-        // it lands beside the child's session dir (under the parent's
-        // artifacts tree), not inside it.
-        let child_id = child_files[0]
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .expect("the child session id")
-            .to_string();
-        let snapshot = artifacts
-            .join("session-artifacts")
-            .join(&child_id)
-            .join("kernel-state.dill");
-        assert!(
-            snapshot.exists(),
-            "the disposed kernel's final snapshot landed at {}",
-            snapshot.display()
-        );
     }
 }
 
@@ -398,13 +308,17 @@ fn print_inline_subagents_wait_for_replies_and_combine_them() {
 #[test]
 fn print_inline_subagents_enforce_the_depth_limit() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let spawn_attempt = "try:\n    g = await rlm.spawn(\"run the grandkid task\", name=\"grandkid\")\n    print(\"SPAWN_OK\", g.rlm_child_id)\nexcept Exception as error:\n    print(\"SPAWN_FAILED:\", error)".to_string();
+    let spawn_attempt = r#"(displayln
+  (with-handler
+    (lambda (e) (string-append "SPAWN_FAILED: " (to-string e)))
+    (string-append "SPAWN_OK "
+                   (hash-ref (rlm-spawn "run the grandkid task" #:name "grandkid") 'rlm_child_id))))"#
+        .to_string();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"kid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "PARENT DONE",
         ],
@@ -412,7 +326,7 @@ fn print_inline_subagents_enforce_the_depth_limit() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": spawn_attempt } },
                 ] },
                 "kid finished",
@@ -422,7 +336,6 @@ fn print_inline_subagents_enforce_the_depth_limit() {
     let (stdout, stderr, code) = lane.run(
         &["-p", "delegate once"],
         &script,
-        &kernel,
         &[("RLM_MAX_DEPTH", "1")],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -477,16 +390,20 @@ fn print_inline_subagents_enforce_the_depth_limit() {
 #[test]
 fn print_inline_subagents_wait_for_a_retasked_child() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let follow_up_cell = "collected = await rlm.collect([\"kid\"], timeout_ms=60000)\nprint(\"FIRST-TASK\", collected[0].status, collected[0].settled, collected[0].answer_text)\nawait agent_message.send(\"SECOND-RESULT\", receiver_role=\"child\", receiver_name=\"kid\")\nretasked = await rlm.collect([\"kid\"], timeout_ms=60000)\nprint(\"SECOND-TASK\", retasked[0].status, retasked[0].settled, retasked[0].answer_text)".to_string();
+    let follow_up_cell = r#"(define (report label row)
+  (displayln label (hash-ref row 'status) (hash-ref row 'settled) (hash-ref row 'answer_text)))
+(report "FIRST-TASK" (car (rlm-collect (list "kid") #:timeout-ms 60000)))
+(agent-message-send "SECOND-RESULT" #:receiver-role "child" #:receiver-name "kid")
+(report "SECOND-TASK" (car (rlm-collect (list "kid") #:timeout-ms 60000)))"#
+        .to_string();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"kid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": follow_up_cell } },
             ] },
             "WAITING",
@@ -496,19 +413,19 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("FIRST") } },
                 ] },
                 "kid finished the first task",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("SECOND") } },
                 ] },
                 "kid finished the second task",
             ] },
         },
     });
-    let (stdout, stderr, code) = lane.run(&["-p", "delegate twice"], &script, &kernel, &[]);
+    let (stdout, stderr, code) = lane.run(&["-p", "delegate twice"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(
         stdout.trim_end(),
@@ -538,11 +455,11 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
     // settled child's stale first answer.
     let parent_text = serde_json::to_string(&parent_entries).unwrap();
     assert!(
-        parent_text.contains("FIRST-TASK done True kid finished the first task"),
+        parent_text.contains("FIRST-TASK done #true kid finished the first task"),
         "the collect before the follow-up read the first task's settled answer: {parent_text}"
     );
     assert!(
-        parent_text.contains("SECOND-TASK done True kid finished the second task"),
+        parent_text.contains("SECOND-TASK done #true kid finished the second task"),
         "the collect after the follow-up returned the second task's answer: {parent_text}"
     );
 }
@@ -556,30 +473,34 @@ fn print_inline_subagents_wait_for_a_retasked_child() {
 #[test]
 fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
     // The turn over the failure row: read the failed verdict, then
     // re-task the child from the parent.
-    let retask_cell = "collected = await rlm.collect([\"flaky\"], timeout_ms=60000)\nprint(\"FIRST-COLLECT\", collected[0].status, collected[0].error)\nawait agent_message.send(\"retry the task\", receiver_role=\"child\", receiver_name=\"flaky\")".to_string();
+    let retask_cell = r#"(define (report label row)
+  (displayln label (hash-ref row 'status) (or (hash-try-get row 'error) "no-error")))
+(report "FIRST-COLLECT" (car (rlm-collect (list "flaky") #:timeout-ms 60000)))
+(agent-message-send "retry the task" #:receiver-role "child" #:receiver-name "flaky")"#
+        .to_string();
     // The turn over the second reply: collect the clean retry.
     let second_collect_cell =
-        "collected = await rlm.collect([\"flaky\"], timeout_ms=60000)\nprint(\"SECOND-COLLECT\", collected[0].status, collected[0].error)".to_string();
+        r#"(report "SECOND-COLLECT" (car (rlm-collect (list "flaky") #:timeout-ms 60000)))"#
+            .to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the failed task's failure
         // row drains as turn 2 (the re-task), the second reply drains as
         // turn 3, and its collect reads the clean retry.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"flaky\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"flaky\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "WAITING",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": retask_cell } },
             ] },
             "RETASKED",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": second_collect_cell } },
             ] },
             "RETRY CLEAN",
@@ -593,7 +514,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
                 { "text": "the provider exploded mid-task", "stopReason": "error",
                   "errorMessage": "faux provider exploded", "delayMs": 3000 },
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("SECOND") } },
                 ] },
                 "kid finished the retry",
@@ -601,7 +522,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
         },
     });
     let (stdout, stderr, code) =
-        lane.run(&["-p", "delegate the flaky task"], &script, &kernel, &[]);
+        lane.run(&["-p", "delegate the flaky task"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(stdout.trim_end(), "RETRY CLEAN");
 
@@ -642,7 +563,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
         "the failure row (row {failure_at}) landed before the second reply (row {reply_at})"
     );
     assert!(
-        parent_text.contains("SECOND-COLLECT done None"),
+        parent_text.contains("SECOND-COLLECT done no-error"),
         "the retry collected done with no stale error: {parent_text}"
     );
 }
@@ -701,25 +622,24 @@ fn autonomous_continuation_row_at(entries: &[serde_json::Value]) -> Option<usize
 /// `goal_context` row after the seeded one — lands only AFTER the
 /// child's reply row, and its turn completes the goal, so the printed
 /// answer is the post-reply turn. No backoff sleeps: the continuation
-/// turn produces output and calls `goal.complete()`.
+/// turn produces output and calls `(goal-complete)`.
 #[test]
 fn print_inline_goal_continuation_waits_for_the_child_reply() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let complete_cell = "done = await goal.complete()\nprint(\"GOAL COMPLETED\")".to_string();
+    let complete_cell = "(goal-complete)\n(displayln \"GOAL COMPLETED\")".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the reply drains as turn 2;
         // the owed goal continuation runs as the post-reply turn, calls
-        // `goal.complete()`, and ends deterministically.
+        // `(goal-complete)`, and ends deterministically.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"kid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": complete_cell } },
             ] },
             "GOAL DONE AFTER REPLY",
@@ -730,7 +650,7 @@ fn print_inline_goal_continuation_waits_for_the_child_reply() {
                 // The delayed reply holds the child open: the parent's
                 // goal gate sees it unsettled at the spawn turn's end.
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -745,7 +665,6 @@ fn print_inline_goal_continuation_waits_for_the_child_reply() {
             "delegate then finish",
         ],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -784,21 +703,20 @@ fn print_inline_goal_continuation_waits_for_the_child_reply() {
 #[test]
 fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let marker_cell = "open(\"gate-marker\", \"w\").write(\"done\")\nprint(\"MARKED\")".to_string();
+    let marker_cell = "(bash \"printf done > gate-marker\")\n(displayln \"MARKED\")".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends ("WAITING"); the reply drains as turn 2;
         // the held continuation runs as the post-reply turn, writes the
         // gate marker, and the now-passing gate stops the run.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"kid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": marker_cell } },
             ] },
             "AUTONOMOUS CONTINUES",
@@ -807,7 +725,7 @@ fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -823,7 +741,6 @@ fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
             "delegate then keep going",
         ],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -859,21 +776,20 @@ fn print_inline_autonomous_continuation_waits_for_the_child_reply() {
 #[test]
 fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
     let warm_lane = lane();
-    let kernel = PrintLane::kernel_python();
-    let complete_cell = "done = await goal.complete()\nprint(\"GOAL COMPLETED\")".to_string();
+    let complete_cell = "(goal-complete)\n(displayln \"GOAL COMPLETED\")".to_string();
     let script = serde_json::json!({
         // Turn 1 spawns and ends; the reply drains as turn 2 (crossing
         // the budget); the wrap-up steer runs as turn 3 and completes the
         // goal, so the run ends deterministically.
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the kid task\", name=\"kid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the kid task\" #:name \"kid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "WAITING",
             "READ THE REPLY",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
+                { "type": "toolCall", "name": "eval",
                   "arguments": { "code": complete_cell } },
             ] },
             "GOAL WRAPPED UP",
@@ -882,7 +798,7 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
         "children": {
             "kid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
+                    { "type": "toolCall", "name": "eval",
                       "arguments": { "code": reply_cell("KID") } },
                 ], "delayMs": 3000 },
                 "kid done",
@@ -903,7 +819,6 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
             "delegate then finish",
         ],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(warm, 0);
@@ -958,7 +873,6 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
             "delegate then finish",
         ],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -993,40 +907,44 @@ fn print_inline_budget_steer_from_a_drained_reply_runs_after_it() {
 #[test]
 fn print_inline_rename_rejects_sibling_collisions_and_preserves_routing() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
     let parent_cell = r#"
-alpha = await rlm.spawn("answer alpha", name="alpha")
-beta = await rlm.spawn("check self rename", name="beta")
-first = await rlm.collect([beta], timeout_ms=60000)
-assert first[0].settled and first[0].answer_text == "beta checked"
-try:
-    await rlm.rename("alpha", session_id=beta)
-except Exception as error:
-    assert "unavailable" in str(error), str(error)
-else:
-    raise AssertionError("parent rename accepted a duplicate sibling name")
-rows = await rlm.list_subagents()
-assert {row.rlm_child_id: row.session_name for row in rows} == {alpha.rlm_child_id: "alpha", beta.rlm_child_id: "beta"}
-results = await rlm.collect(["alpha", "beta"], timeout_ms=60000)
-assert [(result.session_name, result.answer_text) for result in results] == [("alpha", "alpha answered"), ("beta", "beta checked")]
-assert await rlm.rename("beta", session_id=beta) == "beta"
-assert await rlm.rename("gamma", session_id=beta) == "gamma"
-renamed = await rlm.collect(["gamma"], timeout_ms=60000)
-assert renamed[0].rlm_child_id == beta.rlm_child_id
-print("RENAME ROUTING VERIFIED")
+(define (check ok why) (unless ok (error why)))
+(define alpha (rlm-spawn "answer alpha" #:name "alpha"))
+(define beta (rlm-spawn "check self rename" #:name "beta"))
+(define settled (car (rlm-collect (list beta) #:timeout-ms 60000)))
+(check (and (hash-ref settled 'settled) (equal? (hash-ref settled 'answer_text) "beta checked"))
+       "beta did not settle with its answer")
+(define refusal
+  (with-handler (lambda (e) (to-string e))
+                (begin (rlm-rename "alpha" #:session-id beta) "accepted a duplicate sibling name")))
+(check (string-contains? refusal "unavailable") refusal)
+(define (named row) (string-append (hash-ref row 'rlm_child_id) "=" (hash-ref row 'session_name)))
+(check (equal? (sort (map named (rlm-list-subagents)) string<?)
+               (sort (list (string-append (hash-ref alpha 'rlm_child_id) "=alpha")
+                           (string-append (hash-ref beta 'rlm_child_id) "=beta"))
+                     string<?))
+       "the refused rename changed the roster")
+(check (equal? (map (lambda (row) (list (hash-ref row 'session_name) (hash-ref row 'answer_text)))
+                    (rlm-collect (list "alpha" "beta") #:timeout-ms 60000))
+               (list (list "alpha" "alpha answered") (list "beta" "beta checked")))
+       "collecting by name lost an answer")
+(check (equal? (rlm-rename "beta" #:session-id beta) "beta") "renaming to the same name")
+(check (equal? (rlm-rename "gamma" #:session-id beta) "gamma") "renaming to a free name")
+(check (equal? (hash-ref (car (rlm-collect (list "gamma") #:timeout-ms 60000)) 'rlm_child_id)
+               (hash-ref beta 'rlm_child_id))
+       "the new name routes to another child")
+(displayln "RENAME ROUTING VERIFIED")
 "#;
     let child_cell = r#"
-try:
-    await rlm.rename("alpha")
-except Exception as error:
-    assert "unavailable" in str(error), str(error)
-else:
-    raise AssertionError("self rename accepted a duplicate sibling name")
-print("SELF RENAME REJECTED")
+(define refusal
+  (with-handler (lambda (e) (to-string e))
+                (begin (rlm-rename "alpha") "accepted a duplicate sibling name")))
+(unless (string-contains? refusal "unavailable") (error refusal))
+(displayln "SELF RENAME REJECTED")
 "#;
     let script = serde_json::json!({
         "responses": [
-            { "content": [{ "type": "toolCall", "name": "ipython",
+            { "content": [{ "type": "toolCall", "name": "eval",
                 "arguments": { "code": parent_cell } }] },
             "RENAMES CHECKED",
         ],
@@ -1034,13 +952,13 @@ print("SELF RENAME REJECTED")
         "children": {
             "alpha": { "responses": ["alpha answered"] },
             "beta": { "responses": [
-                { "content": [{ "type": "toolCall", "name": "ipython",
+                { "content": [{ "type": "toolCall", "name": "eval",
                     "arguments": { "code": child_cell } }] },
                 "beta checked",
             ] },
         },
     });
-    let (stdout, stderr, code) = lane.run(&["-p", "check rename routing"], &script, &kernel, &[]);
+    let (stdout, stderr, code) = lane.run(&["-p", "check rename routing"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     let entries = PrintLane::entries(&lane.parent_session_file());
     let tool_output: String = entries
@@ -1062,65 +980,44 @@ print("SELF RENAME REJECTED")
 #[test]
 fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
+    // The child's cell waits on a command; the parent deletes the child once
+    // that command runs, then checks the child is gone from every surface.
     let parent_cell = r#"
-import asyncio
-from pathlib import Path
-ready = asyncio.get_running_loop().create_future()
-async def accept_ready(reader, writer):
-    try:
-        assert await reader.readline() == b"ready\n"
-        ready.set_result(None)
-    finally:
-        writer.close()
-        await writer.wait_closed()
-server = await asyncio.start_server(accept_ready, "127.0.0.1", 0)
-try:
-    Path("cancel-port").write_text(str(server.sockets[0].getsockname()[1]))
-    child = await rlm.spawn("wait until cancelled", name="waiting")
-    await asyncio.wait_for(ready, timeout=30)
-    deleted = await rlm.delete_subagent(child)
-    assert deleted.status == "cancelled", deleted
-    assert await rlm.list_subagents() == []
-    try:
-        await rlm.collect([child], timeout_ms=0)
-    except Exception as error:
-        assert "No direct RLM child matches" in str(error), str(error)
-    else:
-        raise AssertionError("deleted child remained collectable")
-    Path("cancel-verified").write_text("done")
-finally:
-    server.close()
-    await server.wait_closed()
+(define child (rlm-spawn "wait until cancelled" #:name "waiting"))
+(let loop ([tries 600])
+  (cond
+    [(path-exists? (string-append (session-cwd) "/cancel-child-ready")) void]
+    [(> tries 0) (bash "sleep 0.05") (loop (- tries 1))]
+    [else (error "the child never started its command")]))
+(define deleted (rlm-delete-subagent child))
+(unless (equal? (hash-ref deleted 'status) "cancelled") (error (to-string deleted)))
+(unless (null? (rlm-list-subagents)) (error "the deleted child is still listed"))
+(define refusal
+  (with-handler (lambda (e) (to-string e))
+                (begin (rlm-collect (list child) #:timeout-ms 0) "the deleted child remained collectable")))
+(unless (string-contains? refusal "No direct RLM child matches") (error refusal))
+(bash "touch cancel-verified")
 "#;
     let child_cell = r#"
-import asyncio, os
-from pathlib import Path
-Path("cancel-child-pid").write_text(str(os.getpid()))
-reader, writer = await asyncio.open_connection("127.0.0.1", int(Path("cancel-port").read_text()))
-writer.write(b"ready\n")
-await writer.drain()
-writer.close()
-await writer.wait_closed()
-await asyncio.Event().wait()
-Path("cancel-child-finished").write_text("unexpected")
+(bash "printf %s $$ > cancel-child-pid; touch cancel-child-ready; sleep 600" (hash 'wait-ms #f))
+(bash "touch cancel-child-finished")
 "#;
     let script = serde_json::json!({
         "responses": [
-            { "content": [{ "type": "toolCall", "name": "ipython",
+            { "content": [{ "type": "toolCall", "name": "eval",
                 "arguments": { "code": parent_cell } }] },
             "CHILD CANCELLED",
         ],
         "repeatLastResponse": true,
         "children": {
             "waiting": { "responses": [
-                { "content": [{ "type": "toolCall", "name": "ipython",
+                { "content": [{ "type": "toolCall", "name": "eval",
                     "arguments": { "code": child_cell } }] },
                 "unexpected completion",
             ] },
         },
     });
-    let (stdout, stderr, code) = lane.run(&["-p", "cancel the child"], &script, &kernel, &[]);
+    let (stdout, stderr, code) = lane.run(&["-p", "cancel the child"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert!(
         lane.home.path().join("cancel-verified").exists(),
@@ -1133,7 +1030,7 @@ Path("cancel-child-finished").write_text("unexpected")
         .unwrap();
     assert!(
         !pa_core::platform::pid_exists(child_pid),
-        "cancelled child's Python process {child_pid} outlived the print run"
+        "the cancelled child's command {child_pid} outlived the print run"
     );
 }
 
@@ -1158,17 +1055,16 @@ fn bash_done_row(entries: &[serde_json::Value]) -> serde_json::Value {
 #[test]
 fn print_root_wakes_on_a_background_bash_completion() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "h = bash(\"sleep 3; echo BG_DONE\")\nprint(\"STARTED\", h.pid)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define job (bash \"sleep 3; echo BG_DONE\" (hash 'background #t)))\n(displayln \"STARTED\" (hash-ref job 'pid))" } },
             ] },
             "WAITING",
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "print(\"WOKEN\", \"BG_DONE\" in h.output())" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(displayln \"WOKEN\" (bash-output job))" } },
             ] },
             "COMPLETED WOKEN",
         ],
@@ -1177,7 +1073,6 @@ fn print_root_wakes_on_a_background_bash_completion() {
     let (stdout, stderr, code) = lane.run(
         &["-p", "run the long command in the background"],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -1205,12 +1100,11 @@ fn print_root_wakes_on_a_background_bash_completion() {
 #[test]
 fn print_inline_child_wakes_on_a_background_bash_completion() {
     let lane = lane();
-    let kernel = PrintLane::kernel_python();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "kid = await rlm.spawn(\"run the background task\", name=\"bgkid\")\nprint(\"KID\", kid.rlm_child_id)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define kid (rlm-spawn \"run the background task\" #:name \"bgkid\"))\n(displayln \"KID\" (hash-ref kid 'rlm_child_id))" } },
             ] },
             "WAITING",
             "COMBINED KID-BG-RESULT",
@@ -1219,13 +1113,13 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
         "children": {
             "bgkid": { "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "h = bash(\"sleep 3; echo KID_BG\")\nprint(\"KID STARTED\")" } },
+                    { "type": "toolCall", "name": "eval",
+                      "arguments": { "code": "(define job (bash \"sleep 3; echo KID_BG\" (hash 'background #t)))\n(displayln \"KID STARTED\")" } },
                 ] },
                 "kid waiting",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "await agent_message.send(\"KID-BG-RESULT\", receiver_role=\"parent\")\nprint(\"KID WOKEN\", \"KID_BG\" in h.output())" } },
+                    { "type": "toolCall", "name": "eval",
+                      "arguments": { "code": "(agent-message-send \"KID-BG-RESULT\" #:receiver-role \"parent\")\n(displayln \"KID WOKEN\" (bash-output job))" } },
                 ] },
                 "kid finished",
             ] },
@@ -1234,7 +1128,6 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
     let (stdout, stderr, code) = lane.run(
         &["-p", "delegate the background work"],
         &script,
-        &kernel,
         &[],
     );
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
@@ -1293,12 +1186,11 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
 /// `[bash-done]` wake costs a third call.
 #[test]
 fn print_three_second_command_completes_in_one_cell_under_the_default_wait() {
-    let kernel = PrintLane::kernel_python();
     let script = serde_json::json!({
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "ipython",
-                  "arguments": { "code": "r = await bash(\"sleep 3; echo BUILT\")\nprint(\"SNAPSHOT\" if r.running else r.output)" } },
+                { "type": "toolCall", "name": "eval",
+                  "arguments": { "code": "(define r (bash \"sleep 3; echo BUILT\"))\n(displayln (if (hash-ref r 'running) \"SNAPSHOT\" (hash-ref r 'output)))" } },
             ] },
             "ANSWERED",
             "ANSWERED AFTER WAKE",
@@ -1312,7 +1204,7 @@ fn print_three_second_command_completes_in_one_cell_under_the_default_wait() {
             .map(|ms| ("PRIME_AGENT_BASH_WAIT_MS", ms))
             .into_iter()
             .collect();
-        let (stdout, stderr, code) = lane.run(&["-p", "build it"], &script, &kernel, &env_extra);
+        let (stdout, stderr, code) = lane.run(&["-p", "build it"], &script, &env_extra);
         assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
         assert_eq!(stdout.trim_end(), expected_answer, "window {window:?}");
         let assistant_messages = PrintLane::entries(&lane.parent_session_file())
