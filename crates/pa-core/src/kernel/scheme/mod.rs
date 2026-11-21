@@ -127,6 +127,9 @@ pub struct SchemeKernelOptions {
     pub cell_window: CellWindow,
     /// Hears each cell that moves to the background, and how it ends.
     pub on_background_cell: Option<BackgroundCellObserver>,
+    /// The source lines a failed command a cell waited for gets on the
+    /// cell's result. The default attaches none.
+    pub error_context: crate::kernel::error_context::ErrorContext,
 }
 
 /// A session's settings as its cells and host functions read them.
@@ -141,6 +144,7 @@ pub(crate) struct SessionEnvironment {
     pub(crate) cell_window: CellWindow,
     pub(crate) on_background_cell: Option<BackgroundCellObserver>,
     pub(crate) agent_dir: Option<PathBuf>,
+    pub(crate) error_context: crate::kernel::error_context::ErrorContext,
 }
 
 /// One session's engine and the cells it runs.
@@ -152,6 +156,9 @@ struct SessionEngine {
     /// runs one cell at a time.
     turn: Arc<tokio::sync::Mutex<()>>,
     cells: Arc<cell::Cells>,
+    /// The session's shell commands: told of each cell on the engine, and
+    /// killed with the kernel.
+    jobs: native::BashJobs,
 }
 
 /// A session's running Scheme kernel.
@@ -250,6 +257,7 @@ impl SchemeKernelProvisioner {
                     cell_window: options.cell_window,
                     on_background_cell: options.on_background_cell,
                     agent_dir: options.agent_dir,
+                    error_context: options.error_context,
                 }),
                 session: tokio::sync::Mutex::new(None),
             }),
@@ -412,12 +420,13 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 native::register_session_tools(&mut engine, &native_handlers, &environment);
                 host_api::load(&mut engine)?;
                 let cell = native::CellSignal::default();
-                native::register(
+                let jobs = native::register(
                     &mut engine,
                     native_cwd,
                     Arc::clone(&cell),
                     native_handlers,
                     environment.agent_dir.clone(),
+                    &environment,
                 )?;
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
                 anyhow::Ok(Arc::new(SessionEngine {
@@ -425,6 +434,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     cell,
                     turn: Arc::new(tokio::sync::Mutex::new(())),
                     cells,
+                    jobs,
                 }))
             })
             .await
@@ -443,6 +453,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             // the dropped engine stops instead of running on unobserved.
             if let Some(session) = state.session.lock().await.take() {
                 session.cells.kill();
+                session.jobs.kill_all();
             }
             state.mcp.shutdown().await;
         })

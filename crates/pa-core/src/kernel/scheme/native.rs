@@ -4,8 +4,9 @@
 //! - `(bash command [options])` runs a shell command in the session's working
 //!   directory and returns a hash: `'exit-code`, `'output` (stdout and stderr
 //!   together, in the order written), `'truncated`, `'timed-out`,
-//!   `'duration-ms`. A failing command is a result, not an error. Option:
-//!   `'timeout-ms` (default 120000; `#f` for none).
+//!   `'duration-ms`, and more. A failing command is a result, not an error.
+//!   Background jobs, wait windows, and the `bash-*` job functions are
+//!   described in `native/bash.rs`.
 //! - `(fs-read path [options])` returns a file's lines under edit anchors:
 //!   `'path`, `'start`, `'end`, `'total-lines`, `'lines` (each a hash of
 //!   `'line`, `'anchor`, `'text`), `'truncated`, `'line-ends`, `'encoding`,
@@ -56,6 +57,8 @@ mod hypothesis;
 mod tests;
 mod worktree;
 
+pub(super) use bash::BashJobs;
+
 /// The stop signal of the cell a session's engine is running: the kernel
 /// installs each cell's signal as it starts and cancels it when the cell is
 /// aborted or times out, so a host function that blocks can end on its own.
@@ -97,7 +100,6 @@ const TOOLS: &str = r#"
 
 (define (%options rest) (if (null? rest) (hash) (car rest)))
 
-(define (bash command . rest) (%native "bash" (hash-insert (%options rest) 'command command)))
 (define (fs-read path . rest) (%native "fs-read" (hash-insert (%options rest) 'path path)))
 (define (fs-grep pattern . rest) (%native "fs-grep" (hash-insert (%options rest) 'pattern pattern)))
 (define (fs-glob pattern . rest) (%native "fs-glob" (hash-insert (%options rest) 'pattern pattern)))
@@ -140,8 +142,10 @@ pub(super) fn scheme_value(value: Value) -> SteelVal {
 }
 
 /// Define the native tools in a session's engine. They work in `cwd` and
-/// watch `cell` to end with the cell that called them. Must be called from
-/// within a tokio runtime: commands are spawned and awaited on it.
+/// watch `cell` to end with the cell that called them; commands run as
+/// `session` says. Returns the kernel's hold on the session's commands. Must
+/// be called from within a tokio runtime: commands are spawned and awaited
+/// on it.
 ///
 /// # Errors
 ///
@@ -152,22 +156,29 @@ pub(super) fn register(
     cell: CellSignal,
     handlers: crate::kernel::shared::HostRequestHandlers,
     agent_dir: Option<PathBuf>,
-) -> anyhow::Result<()> {
+    session: &super::SessionEnvironment,
+) -> anyhow::Result<BashJobs> {
     let runtime = tokio::runtime::Handle::current();
-    let files = files::Files::new(cwd.clone(), handlers, runtime.clone(), agent_dir);
+    let (commands, jobs) = bash::open(runtime.clone(), handlers.clone(), session);
+    let files = files::Files::new(cwd, handlers, runtime, agent_dir);
     engine.register_fn(
         "%native-call",
         move |operation: String, options: SteelVal| -> SteelVal {
             let outcome = Value::try_from(options)
                 .map_err(|error| anyhow!("the options are not plain data: {error}"))
                 .and_then(|options| match operation.as_str() {
-                    "bash" => {
-                        let signal = cell.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                        bash::run(&runtime, &cwd, &signal, &options)
+                    command if command.starts_with("bash") => {
+                        bash::call(&commands, command, &options)
                     }
                     file_tool => {
                         let signal = cell.lock().unwrap_or_else(PoisonError::into_inner).clone();
-                        files.run(file_tool, &signal, &options)
+                        let done = files.run(file_tool, &signal, &options);
+                        // A file the kernel wrote itself: no cached command
+                        // result outlives it.
+                        if done.is_ok() && matches!(file_tool, "fs-edit" | "edit") {
+                            commands.wrote();
+                        }
+                        done
                     }
                 });
             scheme_value(match outcome {
@@ -196,5 +207,8 @@ pub(super) fn register(
     engine
         .run(files::TOOLS)
         .map_err(|error| anyhow!("the Scheme file tools failed to load: {error}"))?;
-    Ok(())
+    engine
+        .run(bash::SCHEME)
+        .map_err(|error| anyhow!("the Scheme bash tools failed to load: {error}"))?;
+    Ok(jobs)
 }

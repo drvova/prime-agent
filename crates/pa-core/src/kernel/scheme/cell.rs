@@ -54,8 +54,8 @@ use steel::steel_vm::ThreadStateController;
 use super::{native, SessionEngine, SessionEnvironment};
 use crate::kernel::shared::{
     parse_sent_agent_message, BackgroundCellFact, HostRequestHandlers, HostRequestPayload,
-    KernelBashCommands, KernelDiffDisplay, KernelSentAgentMessage, LateSentAgentMessageCallback,
-    DEFAULT_MAX_OUTPUT_CHARS, MAX_ATTACHMENT_DATA_CHARS,
+    KernelBashCommands, KernelCommandFailure, KernelDiffDisplay, KernelSentAgentMessage,
+    LateSentAgentMessageCallback, DEFAULT_MAX_OUTPUT_CHARS, MAX_ATTACHMENT_DATA_CHARS,
 };
 use crate::tools::ipython::{
     ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo, KernelExecuteOptions,
@@ -160,6 +160,9 @@ pub(crate) enum CellRecord {
     /// record): `completed` when the command finished inside the wait, not
     /// when the wait ended first and the command runs on.
     BashWait { completed: bool },
+    /// One command the cell waited for that failed: its output is where the
+    /// cell's error context looks for source locations.
+    CommandFailure(KernelCommandFailure),
 }
 
 /// A running cell, shared by the kernel and the host functions it calls.
@@ -199,6 +202,8 @@ struct CellState {
     shown: ExecuteResult,
     output: Printed,
     errors: Printed,
+    /// The failed commands the cell waited for; taken when its call returns.
+    command_failures: Vec<KernelCommandFailure>,
     /// The call has returned: nothing more reaches its result.
     settled: bool,
     late: Option<LateSentAgentMessageCallback>,
@@ -243,12 +248,14 @@ impl CellHandle {
                     | CellRecord::Attachment(_)
                     | CellRecord::Diff(_)
                     | CellRecord::BashCommand { .. }
-                    | CellRecord::BashWait { .. },
+                    | CellRecord::BashWait { .. }
+                    | CellRecord::CommandFailure(_),
                     _,
                 ) => {}
             }
             return;
         }
+        let state = &mut *state;
         let shown = &mut state.shown;
         match record {
             CellRecord::TodoList(list) => shown.todo_list = Some(list),
@@ -296,6 +303,7 @@ impl CellHandle {
             }
             CellRecord::BashWait { completed: true } => shown.bash_waits.completed += 1,
             CellRecord::BashWait { completed: false } => shown.bash_waits.yielded += 1,
+            CellRecord::CommandFailure(failure) => state.command_failures.push(failure),
         }
     }
 
@@ -847,6 +855,13 @@ pub(super) async fn execute(
         *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = run.signal();
         *cells.running.lock().unwrap_or_else(PoisonError::into_inner) = Some(run.clone());
         CURRENT.with(|current| *current.borrow_mut() = Some(run.clone()));
+        // Only a cell without a window is stopped at its limit: a command it
+        // waits for hands over before that.
+        running.jobs.cell_started(
+            limit
+                .filter(|_| window.is_none())
+                .map(|limit| started + limit),
+        );
         let outcome = if run.0.signal.is_cancelled() {
             Err("the cell was stopped before it started".to_string())
         } else {
@@ -863,6 +878,7 @@ pub(super) async fn execute(
                 .map_err(|error| error.to_string())
         };
         CURRENT.with(|current| current.borrow_mut().take());
+        running.jobs.cell_finished();
         // Under the lock an interrupt takes: one that came for this cell is
         // cleared here, and none can arrive for it afterwards.
         let mut on_engine = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1105,6 +1121,37 @@ pub(super) async fn execute(
             error: error("SchemeError", message),
             ..shown
         },
+    };
+    // A failed command the cell waited for carries the source lines its
+    // output names, as the Python kernel's cells did.
+    let failures = std::mem::take(
+        &mut cell
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .command_failures,
+    );
+    let error_context = cells
+        .session
+        .error_context
+        .enrich(
+            crate::kernel::error_context::CellFailure {
+                traceback: None,
+                streams: ["", ""],
+                commands: &failures,
+            },
+            cells
+                .session
+                .artifact_dir
+                .as_deref()
+                .map(crate::kernel::spill::SpillStore::for_session_dir)
+                .as_ref(),
+        )
+        .await;
+    let result = ExecuteResult {
+        error_context,
+        ..result
     };
     // A cell that ended on its own teaches the learned window its time.
     match (&result.status, &result.error) {

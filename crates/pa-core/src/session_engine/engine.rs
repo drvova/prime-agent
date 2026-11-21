@@ -834,7 +834,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // same host handlers (its file tools count through them), shell settings,
     // directories and cell yield window, and the same telemetry counters
     // behind its background cells (counts only).
+    // A failed cell or awaited command gets its error locations' source
+    // lines from this workspace; telemetry counts each enrichment.
+    let error_context = crate::kernel::error_context::ErrorContext::for_workspace(
+        cwd.clone(),
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_error_enrichment(fact))
+                as crate::kernel::error_context::ErrorContextObserver
+        }),
+    );
     let scheme_options = crate::kernel::scheme::SchemeKernelOptions {
+        error_context: error_context.clone(),
         host_handlers: handlers.clone(),
         cwd: cwd.clone(),
         shell_path: kernel_shell_path.clone(),
@@ -881,16 +892,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         websearch_env,
         session_artifact_dir,
         cell_window.clone(),
-        // A failed cell or awaited command gets its error locations' source
-        // lines from this workspace; telemetry counts each enrichment.
-        crate::kernel::error_context::ErrorContext::for_workspace(
-            cwd.clone(),
-            config.telemetry.is_some().then(|| {
-                let counters = std::sync::Arc::clone(&session_counters);
-                std::sync::Arc::new(move |fact| counters.note_error_enrichment(fact))
-                    as crate::kernel::error_context::ErrorContextObserver
-            }),
-        ),
+        error_context,
         output_budget.clone(),
         on_restore,
         config.on_background_work_settled.clone(),

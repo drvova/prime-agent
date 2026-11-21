@@ -74,7 +74,10 @@ pub fn record_orphan_process_state(pid: i32, active: bool) {
     let Ok(mut file) = options.open(&path) else {
         return;
     };
-    let _ = writeln!(file, "{record}");
+    // One write per record: the in-process kernel journals from several
+    // threads at once, and a record written in pieces interleaves with
+    // another into lines the reader has to drop.
+    let _ = file.write_all(format!("{record}\n").as_bytes());
     let _ = file.sync_all();
 }
 
