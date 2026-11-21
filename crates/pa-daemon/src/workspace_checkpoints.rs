@@ -238,10 +238,42 @@ impl Store {
             // A torn last line (a crash mid-append) is skipped, not fatal.
             .filter_map(|line| serde_json::from_str(line).ok())
             .collect();
+        let index = sessions.join(format!("{session}.index"));
+        // A session's first capture into an empty index hashes every file of
+        // the workspace, and the turn waits on it. Start from the workspace's
+        // newest index instead: `git add --all` then re-reads only the paths
+        // whose stat moved. The copy keeps the source's mtime, read before the
+        // bytes, so git's racy-entry check is at least as strict as it is for
+        // the session that wrote the index. A failed seed leaves no index, the
+        // behavior without one.
+        if !index.exists() {
+            let newest = std::fs::read_dir(&sessions)?
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "index")
+                })
+                .filter_map(|path| {
+                    let modified = std::fs::metadata(&path).and_then(|meta| meta.modified());
+                    modified.ok().map(|modified| (modified, path))
+                })
+                .max();
+            if let Some((modified, source)) = newest {
+                let temp = sessions.join(format!("{session}.index-seed.tmp"));
+                let seeded = std::fs::copy(&source, &temp)
+                    .and_then(|_| std::fs::File::options().write(true).open(&temp))
+                    .and_then(|file| file.set_modified(modified))
+                    .and_then(|()| std::fs::rename(&temp, &index));
+                if seeded.is_err() {
+                    let _ = std::fs::remove_file(&temp);
+                }
+            }
+        }
         let store = Store {
             git_dir: root.join("git"),
             workspace,
-            index: sessions.join(format!("{session}.index")),
+            index,
             empty_config: root.join("empty.gitconfig"),
             repl_path: sessions.join(format!("{session}.repl.jsonl")),
             map_path,
@@ -424,6 +456,36 @@ impl Store {
 mod tests {
     use super::*;
     use crate::session_store::SessionFile;
+
+    /// A new session's first capture starts from the workspace's last index
+    /// (so it re-reads only what changed) and still records the workspace as
+    /// it is: the tree equals the one an unseeded store captures.
+    #[test]
+    fn a_new_session_seeds_its_index_from_the_workspace_and_captures_the_same_tree() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("project");
+        std::fs::create_dir_all(workspace.join("src")).unwrap();
+        std::fs::write(workspace.join("src/kept.rs"), "kept\n").unwrap();
+        std::fs::write(workspace.join("src/edited.rs"), "v1\n").unwrap();
+        std::fs::write(workspace.join("deleted.txt"), "gone\n").unwrap();
+        let agent = root.path().join("agent");
+        let first = Store::open(&agent, &workspace, "first").unwrap();
+        first.capture().unwrap();
+        std::fs::write(workspace.join("src/edited.rs"), "v2 is longer\n").unwrap();
+        std::fs::remove_file(workspace.join("deleted.txt")).unwrap();
+        std::fs::write(workspace.join("added.txt"), "new\n").unwrap();
+
+        let second = Store::open(&agent, &workspace, "second").unwrap();
+        let seeded = std::fs::read(&second.index).ok();
+        let unseeded = Store::open(&root.path().join("other-agent"), &workspace, "only").unwrap();
+        assert_eq!(
+            (seeded, second.capture().unwrap()),
+            (
+                std::fs::read(&first.index).ok(),
+                unseeded.capture().unwrap()
+            )
+        );
+    }
 
     /// A file-backed session over a fresh project (itself a git repository)
     /// and one turn that edits, deletes, and adds files; answers the

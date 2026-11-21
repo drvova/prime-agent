@@ -21,11 +21,11 @@ mod kernel;
 /// empirically against the real binary.
 const FIRST_PAINT_NEEDLE: &[u8] = "▗▄▄█▀".as_bytes();
 
-/// The ready needle: the tray's session-usage pill ("model · tokens
-/// (percent)") — the first content the chat surface can only paint once
-/// the daemon session is attached. A fresh session's usage is always
-/// "0 (0%)".
-const READY_NEEDLE: &str = "0 (0%)";
+/// The ready needle: the tray's context pill ("tokens/window") — the first
+/// content the chat surface can only paint once the daemon session is
+/// attached (the window arrives in the attach snapshot). A fresh session has
+/// no measured tokens yet, so its pill always starts "?/".
+const READY_NEEDLE: &str = "?/";
 
 const PAGE_UP: &[u8] = b"\x1b[5~";
 /// Few enough pages to stay inside the attach tail (TUI-local scrolling).
@@ -598,7 +598,7 @@ impl Launch {
         Ok(launch)
     }
 
-    /// The ready metric: exec -> the tray's session-usage pill, the first
+    /// The ready metric: exec -> the tray's context pill, the first
     /// attach-only content on the chat surface.
     fn wait_ready(&mut self) -> anyhow::Result<()> {
         self.child.wait_screen_contains(
@@ -1041,7 +1041,7 @@ fn needle_of(scenario: Scenario, ctx: &RunCtx) -> String {
             "first paint (the brand splash over the empty new session)".to_string()
         }
         Scenario::ColdReady | Scenario::WarmReady => {
-            "the attach pill (the tray's session-usage row)".to_string()
+            "the attach pill (the tray's context row)".to_string()
         }
         Scenario::AgentsView | Scenario::AgentsViewWarm => format!(
             "the settled roster (Inactive + not-yet-loaded = {})",

@@ -1,0 +1,1 @@
+- A new session in a project you have used before starts its first turn sooner: the workspace checkpoint re-reads only the files that changed instead of every file.

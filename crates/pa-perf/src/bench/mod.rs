@@ -15,7 +15,7 @@ pub enum Scenario {
     /// No daemon, cold corpus: exec -> the chat surface's first paint.
     ColdStart,
     /// The same launch as cold-start, timed to the attach: exec -> the
-    /// tray's session-usage pill (the first content the surface can only
+    /// tray's context pill (the first content the surface can only
     /// paint once the daemon session is attached).
     ColdReady,
     /// Daemon pre-started, warm corpus: exec -> the first paint.
