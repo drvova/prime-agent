@@ -27,6 +27,8 @@
 //!   `(hash 'insert-after anchor 'text new)`, `(hash 'insert-before ...)`,
 //!   `(hash 'append text)`. Returns `'applied`, `'path`, `'edits`, `'removed`,
 //!   `'added`, `'total-lines`, `'hunks`, `'text`.
+//! - `fs-symbol`, `fs-anchor`, `edit`, and the rest of `fs-edit` are listed
+//!   in `native/files.rs`.
 //!
 //! Every failure raises a Scheme error naming the tool and the reason. Paths
 //! resolve against the session's working directory and print relative to it.
@@ -45,6 +47,8 @@ use steel::steel_vm::register_fn::RegisterFn;
 use crate::tools::tool_definition::AbortSignal;
 
 mod bash;
+mod edit_check;
+mod edit_replace;
 mod files;
 #[cfg(test)]
 mod tests;
@@ -70,7 +74,6 @@ const TOOLS: &str = r#"
 (define (fs-grep pattern . rest) (%native "fs-grep" (hash-insert (%options rest) 'pattern pattern)))
 (define (fs-glob pattern . rest) (%native "fs-glob" (hash-insert (%options rest) 'pattern pattern)))
 (define (fs-find . rest) (%native "fs-find" (%options rest)))
-(define (fs-edit path edits) (%native "fs-edit" (hash 'path path 'edits edits)))
 "#;
 
 /// A tool's JSON reply as a Scheme value: objects become hashes keyed by
@@ -115,8 +118,14 @@ fn scheme_value(value: Value) -> SteelVal {
 /// # Errors
 ///
 /// The Scheme definitions failed to load.
-pub(super) fn register(engine: &mut Engine, cwd: PathBuf, cell: CellSignal) -> anyhow::Result<()> {
+pub(super) fn register(
+    engine: &mut Engine,
+    cwd: PathBuf,
+    cell: CellSignal,
+    handlers: crate::kernel::shared::HostRequestHandlers,
+) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
+    let files = files::Files::new(cwd.clone(), handlers, runtime.clone());
     engine.register_fn(
         "%native-call",
         move |operation: String, options: SteelVal| -> SteelVal {
@@ -127,12 +136,10 @@ pub(super) fn register(engine: &mut Engine, cwd: PathBuf, cell: CellSignal) -> a
                         let signal = cell.lock().unwrap_or_else(PoisonError::into_inner).clone();
                         bash::run(&runtime, &cwd, &signal, &options)
                     }
-                    "fs-read" => files::read(&cwd, &options),
-                    "fs-grep" => files::grep(&cwd, &options),
-                    "fs-glob" => files::glob(&cwd, &options),
-                    "fs-find" => files::find(&cwd, &options),
-                    "fs-edit" => files::edit(&cwd, &options),
-                    unknown => Err(anyhow!("unknown native tool: {unknown}")),
+                    file_tool => {
+                        let signal = cell.lock().unwrap_or_else(PoisonError::into_inner).clone();
+                        files.run(file_tool, &signal, &options)
+                    }
                 });
             scheme_value(match outcome {
                 Ok(value) => serde_json::json!({ "value": value }),
@@ -157,5 +164,8 @@ pub(super) fn register(engine: &mut Engine, cwd: PathBuf, cell: CellSignal) -> a
     engine
         .run(TOOLS)
         .map_err(|error| anyhow!("the Scheme native tools failed to load: {error}"))?;
+    engine
+        .run(files::TOOLS)
+        .map_err(|error| anyhow!("the Scheme file tools failed to load: {error}"))?;
     Ok(())
 }

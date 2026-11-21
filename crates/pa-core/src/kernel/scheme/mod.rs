@@ -269,6 +269,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 }) as Box<dyn KernelExecutor>);
             }
             let handlers = state.handlers.clone();
+            let native_handlers = state.handlers.clone();
             let cwd = state.cwd.to_string_lossy().into_owned();
             let native_cwd = state.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
@@ -304,7 +305,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
                 host_api::load(&mut engine)?;
                 let cell = native::CellSignal::default();
-                native::register(&mut engine, native_cwd, Arc::clone(&cell))?;
+                native::register(&mut engine, native_cwd, Arc::clone(&cell), native_handlers)?;
                 let controller = engine.get_thread_state_controller();
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
