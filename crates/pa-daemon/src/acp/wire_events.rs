@@ -589,6 +589,26 @@ mod tests {
     }
 
     #[test]
+    fn an_eval_call_is_a_scheme_cell_and_a_saved_python_call_a_python_cell() {
+        let titles: Vec<Value> = ["eval", "python_repl"]
+            .into_iter()
+            .map(|tool_name| {
+                let updates = wire_updates(
+                    &json!({
+                        "type": "tool_execution_start",
+                        "toolCallId": "call-1",
+                        "toolName": tool_name,
+                        "args": { "code": "(+ 1 2)" },
+                    }),
+                    &mut WireMappingState::default(),
+                );
+                serde_json::to_value(&updates[0]).unwrap()["title"].clone()
+            })
+            .collect();
+        assert_eq!(titles, [json!("Scheme cell"), json!("Python cell")]);
+    }
+
+    #[test]
     fn tool_calls_and_completions_map_like_the_ts_adapter() {
         let mut state = WireMappingState::default();
         let updates = wire_updates(

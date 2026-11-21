@@ -1072,7 +1072,7 @@ impl AgentSessionEngine {
             model: Some(agent_model),
             thinking_level: Some(map_thinking_level(self.effective_thinking())),
             stream_fn: Some(stream_fn),
-            // Model tools: `python_repl` only; the engine adds the kernel-backed `python_repl` tool itself.
+            // Model tools: `eval` only; the engine adds the kernel-backed `eval` tool itself.
             tools: vec![],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,

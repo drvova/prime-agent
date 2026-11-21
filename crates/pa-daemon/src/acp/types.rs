@@ -443,6 +443,8 @@ mod tests {
 
     #[test]
     fn tool_kind_map_matches_the_ts_map() {
+        assert_eq!(AcpToolKind::of_tool("eval"), AcpToolKind::Execute);
+        // The retired Python kernel's tool, as saved transcripts name it.
         assert_eq!(AcpToolKind::of_tool("python_repl"), AcpToolKind::Execute);
         assert_eq!(AcpToolKind::of_tool("bash"), AcpToolKind::Execute);
         assert_eq!(AcpToolKind::of_tool("read"), AcpToolKind::Read);
