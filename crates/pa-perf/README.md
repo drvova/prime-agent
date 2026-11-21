@@ -111,7 +111,7 @@ the liveness deadline only fails broken runs):
 | scenario | corpus | trigger -> needle |
 |---|---|---|
 | `cold-start` | cold | exec -> the chat first paint (the splash paints before any daemon work — the product's own paint contract) |
-| `cold-ready` | cold | the same launch, exec -> the tray's session-usage pill, the first attach-only content (daemon spawn + session create + attach included) |
+| `cold-ready` | cold | the same launch, exec -> the tray's context pill, the first attach-only content (daemon spawn + session create + attach included) |
 | `warm-start` | warm | exec -> first paint, daemon pre-started |
 | `warm-ready` | warm | the same launch, exec -> the attach pill |
 | `agents-view` | cold | left-arrow -> the settled first catalog page (`Inactive (N)` plus the `M older sessions not loaded` footer account for every session) in the screen model |
