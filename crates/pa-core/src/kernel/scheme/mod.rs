@@ -40,6 +40,7 @@ use crate::tools::ipython::{
 };
 use crate::tools::tool_definition::AbortSignal;
 
+mod mcp;
 mod native;
 
 /// The Scheme side of the host bridge, defined in every session engine after
@@ -224,6 +225,9 @@ struct ProvisionerState {
     /// The session's working directory: where relative paths in host
     /// functions resolve and commands run.
     cwd: std::path::PathBuf,
+    /// The session's MCP client: its connections outlive a cell and end
+    /// with `kill`.
+    mcp: Arc<mcp::Registry>,
     /// The session's engine once started; the async lock holds concurrent
     /// `ensure` calls to one startup.
     session: tokio::sync::Mutex<Option<Arc<SessionEngine>>>,
@@ -243,11 +247,40 @@ impl SchemeKernelProvisioner {
     pub fn new(handlers: HostRequestHandlers, cwd: impl Into<std::path::PathBuf>) -> Self {
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
+                mcp: Arc::new(mcp::Registry::new(handlers.clone())),
                 handlers,
                 cwd: cwd.into(),
                 session: tokio::sync::Mutex::new(None),
             }),
         }
+    }
+}
+
+impl SchemeKernelProvisioner {
+    /// Read stored MCP credentials from `agent_dir`'s `auth.json`. Without
+    /// it, an MCP server that needs a stored credential reports it as
+    /// unavailable.
+    #[must_use]
+    pub fn with_agent_dir(self, agent_dir: impl Into<std::path::PathBuf>) -> Self {
+        self.state.mcp.set_agent_dir(agent_dir.into());
+        self
+    }
+
+    /// Open each of `servers` and list its tools, each bounded by
+    /// `per_server_timeout_ms`: one `{server, tools, error}` per server, as
+    /// the Python kernel manager's `mcp_tool_listing` answered. It needs no
+    /// started kernel, and a cell that calls a server meanwhile joins the
+    /// open in flight: this is what settles a session's MCP servers in the
+    /// background.
+    pub async fn mcp_tool_listing(
+        &self,
+        servers: &[String],
+        per_server_timeout_ms: u64,
+    ) -> Vec<Value> {
+        self.state
+            .mcp
+            .tool_listing(servers, per_server_timeout_ms)
+            .await
     }
 }
 
@@ -272,6 +305,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             let native_handlers = state.handlers.clone();
             let cwd = state.cwd.to_string_lossy().into_owned();
             let native_cwd = state.cwd.clone();
+            let mcp_client = Arc::clone(&state.mcp);
             let runtime = tokio::runtime::Handle::current();
             let session = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -306,6 +340,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 host_api::load(&mut engine)?;
                 let cell = native::CellSignal::default();
                 native::register(&mut engine, native_cwd, Arc::clone(&cell), native_handlers)?;
+                mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
                 let controller = engine.get_thread_state_controller();
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
@@ -335,6 +370,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     .cancel();
                 session.controller.interrupt();
             }
+            state.mcp.shutdown().await;
         })
     }
 }

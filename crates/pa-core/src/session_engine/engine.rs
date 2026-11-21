@@ -916,7 +916,8 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     crate::kernel::scheme::SchemeKernelProvisioner::new(
                         scheme_handlers,
                         cwd.clone(),
-                    ),
+                    )
+                    .with_agent_dir(&config.agent_dir),
                 )),
             ),
         ));
