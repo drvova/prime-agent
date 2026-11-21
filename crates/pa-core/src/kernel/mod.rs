@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod provisioner;
 pub(crate) mod python_env;
 pub mod rlm_runtime;
+pub mod scheme;
 pub mod shared;
 pub mod spill;
 pub mod state_snapshot;
@@ -39,6 +40,7 @@ pub use rlm_runtime::{
     normalize_requested_rlm_subagent_model, normalize_requested_rlm_subagent_session_name,
     normalize_requested_rlm_subagent_thinking_level, RlmModelInfo, RlmModelMatch, THINKING_LEVELS,
 };
+pub use scheme::{prewarm_scheme_kernel, SchemeKernel, SchemeKernelProvisioner};
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,
     KernelManagerOptions, KernelSentAgentMessage, KernelShutdownOptions, KernelSnapshotConfig,
