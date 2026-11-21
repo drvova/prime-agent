@@ -830,7 +830,46 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .collect();
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
-    let scheme_handlers = handlers.clone();
+    // The in-process Scheme kernel is wired as the Python one below: the
+    // same host handlers (its file tools count through them), shell settings,
+    // directories and cell yield window, and the same telemetry counters
+    // behind its background cells (counts only).
+    let scheme_options = crate::kernel::scheme::SchemeKernelOptions {
+        host_handlers: handlers.clone(),
+        cwd: cwd.clone(),
+        shell_path: kernel_shell_path.clone(),
+        command_prefix: kernel_command_prefix.clone(),
+        agent_dir: Some(config.agent_dir.clone()),
+        env: websearch_env.clone(),
+        session_id: Some(session_id.clone()),
+        artifact_dir: session_artifact_dir.clone(),
+        cell_window: cell_window.clone(),
+        on_background_cell: Some({
+            let counters = config
+                .telemetry
+                .is_some()
+                .then(|| std::sync::Arc::clone(&session_counters));
+            let cell_window = cell_window.clone();
+            std::sync::Arc::new(move |fact| {
+                use crate::kernel::shared::BackgroundCellFact;
+                if let Some(counters) = &counters {
+                    counters.note_background_cell(fact);
+                }
+                match fact {
+                    BackgroundCellFact::EndedOk {
+                        ran_for: Some(ran_for),
+                    }
+                    | BackgroundCellFact::EndedWithError {
+                        ran_for: Some(ran_for),
+                    } => cell_window.observe(ran_for),
+                    BackgroundCellFact::Backgrounded
+                    | BackgroundCellFact::EndedOk { ran_for: None }
+                    | BackgroundCellFact::EndedWithError { ran_for: None }
+                    | BackgroundCellFact::Interrupted => {}
+                }
+            }) as crate::kernel::shared::BackgroundCellObserver
+        }),
+    };
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),
         handlers,
@@ -913,11 +952,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
                 crate::tools::scheme::create_scheme_tool_definition(Arc::new(
-                    crate::kernel::scheme::SchemeKernelProvisioner::new(
-                        scheme_handlers,
-                        cwd.clone(),
-                    )
-                    .with_agent_dir(&config.agent_dir),
+                    crate::kernel::scheme::SchemeKernelProvisioner::with_options(scheme_options),
                 )),
             ),
         ));

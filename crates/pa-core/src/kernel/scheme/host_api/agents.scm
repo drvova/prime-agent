@@ -5,14 +5,20 @@
 ;; #:receiver-role is "parent", "sibling", or "child"; #:receiver-name names
 ;; the sibling or child (omit it for the parent).
 (define (agent-message-send message #:receiver-role [receiver-role #f] #:receiver-name [receiver-name #f])
-  (%host-call "agent_message.send"
-              (%options (hash 'message message)
-                        'receiver_role receiver-role
-                        'receiver_name receiver-name)))
+  (let ([receipt (%host-call "agent_message.send"
+                             (%options (hash 'message message)
+                                       'receiver_role receiver-role
+                                       'receiver_name receiver-name))])
+    ;; The receipt shows on the cell's card, under the role it was sent to.
+    (%cell "agent-message" (%options receipt 'receiverRole receiver-role))
+    receipt))
 
 ;; Send `message` to every family member: {receipts}, one per member.
 (define (agent-message-broadcast message)
-  (%host-call "agent_message.send" (hash 'target "all" 'message message)))
+  (let ([reply (%host-call "agent_message.send" (hash 'target "all" 'message message))])
+    (when (list? (hash-try-get reply 'receipts))
+      (for-each (lambda (receipt) (%cell "agent-message" receipt)) (hash-ref reply 'receipts)))
+    reply))
 
 ;; Wait up to #:timeout-ms (1 to 600000) for a family member's direct
 ;; message: {outcome, messageId, senderName, senderRole, preview,

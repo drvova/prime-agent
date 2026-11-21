@@ -40,7 +40,9 @@ pub use rlm_runtime::{
     normalize_requested_rlm_subagent_model, normalize_requested_rlm_subagent_session_name,
     normalize_requested_rlm_subagent_thinking_level, RlmModelInfo, RlmModelMatch, THINKING_LEVELS,
 };
-pub use scheme::{prewarm_scheme_kernel, SchemeKernel, SchemeKernelProvisioner};
+pub use scheme::{
+    prewarm_scheme_kernel, SchemeKernel, SchemeKernelOptions, SchemeKernelProvisioner,
+};
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,
     KernelManagerOptions, KernelSentAgentMessage, KernelShutdownOptions, KernelSnapshotConfig,

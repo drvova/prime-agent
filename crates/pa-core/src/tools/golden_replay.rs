@@ -39,12 +39,13 @@ struct MockKernel {
 struct ClonableKernel(Arc<MockKernel>);
 
 impl KernelExecutor for ClonableKernel {
-    fn execute(
+    fn execute<'a>(
         &self,
         code: &str,
-        options: KernelExecuteOptions<'_>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<ExecuteResult>> + Send>>
-    {
+        options: KernelExecuteOptions<'a>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<ExecuteResult>> + Send + 'a>,
+    > {
         self.0.execute(code, options)
     }
 }

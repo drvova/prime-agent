@@ -8,35 +8,41 @@
 //! used: they share Steel's parameters and compiler state, so two sessions
 //! running at once read each other's output and lose their definitions.
 //!
-//! A cell runs on a blocking thread, never on the async runtime. Its
-//! `display` output is collected through a string port and returned with the
-//! value of its last form. An abort or the per-call timeout interrupts the
-//! engine at its next safepoint; a host function that is blocking at that
-//! moment finishes first, since the engine cannot unwind native code.
+//! A cell runs on a blocking thread, never on the async runtime ([`cell`]
+//! has its whole life). What it prints goes through the session's output
+//! and error ports to the call's stream and result, with the value of its
+//! last form.
+//! Stopping a cell interrupts the engine at its next safepoint; the engine
+//! cannot unwind native code, so a host function that blocks watches the
+//! cell's signal and returns on its own.
 //!
 //! Scheme reaches the host through one primitive, `(host-request type
 //! payload)`: the payload crosses as JSON to the session's
 //! [`HostRequestHandlers`], the same handlers the Python kernel's host
 //! requests reach, and the reply comes back as a Scheme value or raises.
 
+mod attach;
+mod cell;
 mod host_api;
 
 use std::future::Future;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use serde_json::{json, Value};
 use steel::rvals::SteelVal;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
-use steel::steel_vm::ThreadStateController;
 
-use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload};
+use crate::kernel::cell_window::CellWindow;
+use crate::kernel::shared::{
+    BackgroundCellObserver, HostRequestHandlers, HostRequestPayload, END_TURN_REQUEST_TYPE,
+};
 use crate::tools::ipython::{
-    BootstrapProgressHandler, ExecuteResult, ExecuteStatus, IpythonKernelProvisioner,
-    KernelErrorInfo, KernelExecuteOptions, KernelExecutor,
+    BootstrapProgressHandler, ExecuteResult, IpythonKernelProvisioner, KernelExecuteOptions,
+    KernelExecutor,
 };
 use crate::tools::tool_definition::AbortSignal;
 
@@ -54,14 +60,13 @@ const HOST_BRIDGE: &str = r"
 
 ;; The session's working directory.
 (define (session-cwd) %session-cwd)
-";
 
-/// Why a running cell was interrupted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Stop {
-    Aborted,
-    TimedOut,
-}
+;; The session's id, or #f when the host gave none.
+(define (session-id) %session-id)
+
+;; The saved session's artifact directory, or #f.
+(define (session-artifact-dir) %session-artifact-dir)
+";
 
 /// The process's spare engine, taken by the next session to start.
 static SPARE: Mutex<Option<Engine>> = Mutex::new(None);
@@ -87,12 +92,66 @@ pub fn prewarm_scheme_kernel() {
     });
 }
 
-/// One session's engine and the handle that interrupts it.
+/// What a session gives its Scheme kernel: the same wiring its Python
+/// kernel's provisioner got. The default is a kernel with no host requests,
+/// no shell settings, and cells that run to their end.
+#[derive(Default)]
+pub struct SchemeKernelOptions {
+    /// Answers `(host-request type payload)`.
+    pub host_handlers: HostRequestHandlers,
+    /// The session's working directory: where relative paths in host
+    /// functions resolve and commands run.
+    pub cwd: PathBuf,
+    /// The session's resolved shell for `(bash ...)`; `None` uses the
+    /// platform's default one.
+    pub shell_path: Option<PathBuf>,
+    /// Shell text run before every `(bash ...)` command (the
+    /// `shellCommandPrefix` setting).
+    pub command_prefix: Option<String>,
+    /// The session's agent directory: exported to commands as
+    /// `PRIME_AGENT_CODING_AGENT_DIR`, where MCP servers' stored credentials
+    /// are read (`auth.json`), and where the post-edit checks keep what they
+    /// learn. Without it those credentials are unavailable and the checks
+    /// keep nothing.
+    pub agent_dir: Option<PathBuf>,
+    /// More environment for commands, on top of the session's own.
+    pub env: Vec<(String, String)>,
+    /// The session's id, as `(session-id)` returns it.
+    pub session_id: Option<String>,
+    /// A saved session's artifact directory: its name is the durable session
+    /// id commands see as `RLM_SESSION_ID`, and the directory itself is
+    /// `RLM_SESSION_DIR`. `None` for a session that is not saved.
+    pub artifact_dir: Option<PathBuf>,
+    /// When a long cell moves to the background instead of holding its call
+    /// (see [`cell`]). The default runs every cell to its end.
+    pub cell_window: CellWindow,
+    /// Hears each cell that moves to the background, and how it ends.
+    pub on_background_cell: Option<BackgroundCellObserver>,
+}
+
+/// A session's settings as its cells and host functions read them.
+pub(crate) struct SessionEnvironment {
+    pub(crate) cwd: PathBuf,
+    pub(crate) shell_path: Option<PathBuf>,
+    pub(crate) command_prefix: Option<String>,
+    /// What every command gets on top of the process's own environment.
+    pub(crate) env: Vec<(String, String)>,
+    pub(crate) session_id: Option<String>,
+    pub(crate) artifact_dir: Option<PathBuf>,
+    pub(crate) cell_window: CellWindow,
+    pub(crate) on_background_cell: Option<BackgroundCellObserver>,
+    pub(crate) agent_dir: Option<PathBuf>,
+}
+
+/// One session's engine and the cells it runs.
 struct SessionEngine {
     engine: Mutex<Engine>,
-    controller: ThreadStateController,
     /// The running cell's stop signal, for host functions that block.
     cell: native::CellSignal,
+    /// Held by the cell on the engine, from its start to its end: the engine
+    /// runs one cell at a time.
+    turn: Arc<tokio::sync::Mutex<()>>,
+    cells: Arc<cell::Cells>,
 }
 
 /// A session's running Scheme kernel.
@@ -101,130 +160,22 @@ pub struct SchemeKernel {
 }
 
 impl KernelExecutor for SchemeKernel {
-    fn execute(
+    fn execute<'a>(
         &self,
         code: &str,
-        options: KernelExecuteOptions<'_>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ExecuteResult>> + Send>> {
-        let session = Arc::clone(&self.session);
-        let code = code.to_string();
-        let signal = options.signal;
-        let timeout = options.timeout_ms.map(Duration::from_millis);
-        Box::pin(async move {
-            let started = Instant::now();
-            if signal.as_ref().is_some_and(AbortSignal::is_cancelled) {
-                return Ok(ExecuteResult {
-                    status: ExecuteStatus::Aborted,
-                    ..ExecuteResult::default()
-                });
-            }
-            let running = Arc::clone(&session);
-            // The engine cannot interrupt a blocking host function: those
-            // watch this signal, cancelled with the interrupt below.
-            let cell = AbortSignal::new();
-            let installed = cell.clone();
-            let mut run = tokio::task::spawn_blocking(move || {
-                let mut engine = running
-                    .engine
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = installed;
-                let prepared = engine.run(
-                    "(define %cell-output (open-output-string)) (current-output-port %cell-output)",
-                );
-                let outcome = prepared.and_then(|_| engine.run(code));
-                // An interrupt that stopped the cell must not also stop the
-                // read of what it printed.
-                running.controller.resume();
-                let stdout = engine
-                    .run("(current-output-port (#%default-output-port)) (get-output-string %cell-output)")
-                    .ok()
-                    .and_then(|values| match values.into_iter().next_back() {
-                        Some(SteelVal::StringV(text)) => Some(text.as_str().to_string()),
-                        Some(_) | None => None,
-                    })
-                    .unwrap_or_default();
-                (outcome, stdout)
-            });
-            let stop = async {
-                match (&signal, timeout) {
-                    (Some(signal), Some(limit)) => tokio::select! {
-                        () = signal.cancelled() => Stop::Aborted,
-                        () = tokio::time::sleep(limit) => Stop::TimedOut,
-                    },
-                    (Some(signal), None) => {
-                        signal.cancelled().await;
-                        Stop::Aborted
-                    }
-                    (None, Some(limit)) => {
-                        tokio::time::sleep(limit).await;
-                        Stop::TimedOut
-                    }
-                    (None, None) => std::future::pending().await,
-                }
-            };
-            let (joined, stopped) = tokio::select! {
-                joined = &mut run => (joined, None),
-                reason = stop => {
-                    cell.cancel();
-                    session.controller.interrupt();
-                    (run.await, Some(reason))
-                }
-            };
-            // The next cell starts uninterrupted whichever side won.
-            session.controller.resume();
-            let (outcome, stdout) =
-                joined.map_err(|error| anyhow!("the Scheme cell's thread failed: {error}"))?;
-            let settled = ExecuteResult {
-                stdout,
-                duration_ms: Some(started.elapsed().as_millis() as u64),
-                ..ExecuteResult::default()
-            };
-            Ok(match (outcome, stopped) {
-                (Ok(values), _) => ExecuteResult {
-                    status: ExecuteStatus::Ok,
-                    result: values
-                        .into_iter()
-                        .rev()
-                        .find(|value| !matches!(value, SteelVal::Void))
-                        .map(|value| value.to_string()),
-                    ..settled
-                },
-                (Err(_), Some(Stop::Aborted)) => ExecuteResult {
-                    status: ExecuteStatus::Aborted,
-                    ..settled
-                },
-                (Err(_), Some(Stop::TimedOut)) => ExecuteResult {
-                    status: ExecuteStatus::Error,
-                    error: Some(KernelErrorInfo {
-                        ename: "Timeout".to_string(),
-                        evalue: format!(
-                            "the cell was interrupted after {} ms",
-                            timeout.unwrap_or_default().as_millis()
-                        ),
-                        traceback: Vec::new(),
-                    }),
-                    ..settled
-                },
-                (Err(error), None) => ExecuteResult {
-                    status: ExecuteStatus::Error,
-                    error: Some(KernelErrorInfo {
-                        ename: "SchemeError".to_string(),
-                        evalue: error.to_string(),
-                        traceback: Vec::new(),
-                    }),
-                    ..settled
-                },
-            })
-        })
+        options: KernelExecuteOptions<'a>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<ExecuteResult>> + Send + 'a>> {
+        Box::pin(cell::execute(
+            Arc::clone(&self.session),
+            code.to_string(),
+            options,
+        ))
     }
 }
 
 struct ProvisionerState {
     handlers: HostRequestHandlers,
-    /// The session's working directory: where relative paths in host
-    /// functions resolve and commands run.
-    cwd: std::path::PathBuf,
+    environment: Arc<SessionEnvironment>,
     /// The session's MCP client: its connections outlive a cell and end
     /// with `kill`.
     mcp: Arc<mcp::Registry>,
@@ -242,14 +193,64 @@ pub struct SchemeKernelProvisioner {
 
 impl SchemeKernelProvisioner {
     /// A provisioner whose kernel answers `(host-request ...)` from `handlers`
-    /// and works in `cwd`.
+    /// and works in `cwd`, with every other option at its default.
     #[must_use]
-    pub fn new(handlers: HostRequestHandlers, cwd: impl Into<std::path::PathBuf>) -> Self {
+    pub fn new(handlers: HostRequestHandlers, cwd: impl Into<PathBuf>) -> Self {
+        Self::with_options(SchemeKernelOptions {
+            host_handlers: handlers,
+            cwd: cwd.into(),
+            ..SchemeKernelOptions::default()
+        })
+    }
+
+    /// A provisioner for a session's kernel, wired as `options` say.
+    #[must_use]
+    pub fn with_options(options: SchemeKernelOptions) -> Self {
+        // As the Python kernel's environment: the agent directory, and the
+        // saved session's id and directories. The id is always set, so a
+        // session that is not saved never inherits the one of a session it
+        // was started from.
+        let mut env = vec![(
+            "RLM_SESSION_ID".to_string(),
+            options
+                .artifact_dir
+                .as_deref()
+                .and_then(std::path::Path::file_name)
+                .map(|id| id.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        )];
+        for (name, path) in [
+            ("PRIME_AGENT_CODING_AGENT_DIR", options.agent_dir.clone()),
+            ("RLM_SESSION_DIR", options.artifact_dir.clone()),
+            (
+                "RLM_HARNESS_STATE_DIR",
+                crate::refinement::get_local_harness_state_dir(options.artifact_dir.as_deref()),
+            ),
+        ] {
+            if let Some(path) = path {
+                env.push((name.to_string(), path.to_string_lossy().into_owned()));
+            }
+        }
+        env.extend(options.env);
+        let mcp = Arc::new(mcp::Registry::new(options.host_handlers.clone()));
+        if let Some(agent_dir) = &options.agent_dir {
+            mcp.set_agent_dir(agent_dir.clone());
+        }
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
-                mcp: Arc::new(mcp::Registry::new(handlers.clone())),
-                handlers,
-                cwd: cwd.into(),
+                mcp,
+                handlers: options.host_handlers,
+                environment: Arc::new(SessionEnvironment {
+                    cwd: options.cwd,
+                    shell_path: options.shell_path,
+                    command_prefix: options.command_prefix,
+                    env,
+                    session_id: options.session_id,
+                    artifact_dir: options.artifact_dir,
+                    cell_window: options.cell_window,
+                    on_background_cell: options.on_background_cell,
+                    agent_dir: options.agent_dir,
+                }),
                 session: tokio::sync::Mutex::new(None),
             }),
         }
@@ -257,11 +258,12 @@ impl SchemeKernelProvisioner {
 }
 
 impl SchemeKernelProvisioner {
-    /// Read stored MCP credentials from `agent_dir`'s `auth.json`. Without
-    /// it, an MCP server that needs a stored credential reports it as
+    /// Read stored MCP credentials from `agent_dir`'s `auth.json`, for a
+    /// provisioner made without [`SchemeKernelOptions::agent_dir`]. Without
+    /// either, an MCP server that needs a stored credential reports it as
     /// unavailable.
     #[must_use]
-    pub fn with_agent_dir(self, agent_dir: impl Into<std::path::PathBuf>) -> Self {
+    pub fn with_agent_dir(self, agent_dir: impl Into<PathBuf>) -> Self {
         self.state.mcp.set_agent_dir(agent_dir.into());
         self
     }
@@ -301,32 +303,86 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     session: Arc::clone(session),
                 }) as Box<dyn KernelExecutor>);
             }
+            // The learned window's stored state loads while the engine starts.
+            state.environment.cell_window.prime();
             let handlers = state.handlers.clone();
             let native_handlers = state.handlers.clone();
-            let cwd = state.cwd.to_string_lossy().into_owned();
-            let native_cwd = state.cwd.clone();
             let mcp_client = Arc::clone(&state.mcp);
+            let environment = Arc::clone(&state.environment);
+            let cwd = state.environment.cwd.to_string_lossy().into_owned();
+            let native_cwd = state.environment.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
             let session = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
                 let mut engine = spare.unwrap_or_default();
+                let cells = cell::Cells::new(
+                    Arc::clone(&environment),
+                    handlers.clone(),
+                    engine.get_thread_state_controller(),
+                );
                 engine.register_fn(
                     "%host-request-json",
                     move |request_type: String, payload: String| -> String {
+                        let running = cell::current();
                         let reply = match (
+                            request_type == END_TURN_REQUEST_TYPE,
                             handlers.get(&request_type),
                             serde_json::from_str::<Value>(&payload),
                         ) {
-                            (None, _) => {
+                            // The kernel's own answer, as the Python kernel's
+                            // manager gave it: the running cell is marked,
+                            // and its result ends the turn.
+                            (true, _, _) => match running
+                                .ok_or_else(|| {
+                                    anyhow!("rlm.end_turn has no running cell to end the turn for")
+                                })
+                                .and_then(|cell| cell.end_turn())
+                            {
+                                Ok(value) => json!({ "value": value }),
+                                Err(error) => json!({ "error": format!("{error:#}") }),
+                            },
+                            (false, None, _) => {
                                 json!({ "error": format!("unknown host request: {request_type}") })
                             }
-                            (Some(_), Err(error)) => {
+                            (false, Some(_), Err(error)) => {
                                 json!({ "error": format!("{request_type}: payload is not JSON: {error}") })
                             }
-                            (Some(handler), Ok(data)) => {
-                                match runtime.block_on(handler(HostRequestPayload { data })) {
-                                    Ok(value) => json!({ "value": value }),
-                                    Err(error) => json!({ "error": format!("{error:#}") }),
+                            (false, Some(handler), Ok(data)) => {
+                                // The engine cannot interrupt this wait: it
+                                // ends with the cell's signal instead, and
+                                // dropping the request withdraws it.
+                                let stopped = running.map(|cell| cell.signal());
+                                let question = (request_type == "question.ask")
+                                    .then(|| data.get("id").cloned())
+                                    .flatten();
+                                let answered = runtime.block_on(async {
+                                    let request = handler(HostRequestPayload { data });
+                                    match &stopped {
+                                        Some(stopped) => tokio::select! {
+                                            answer = request => Some(answer),
+                                            () = stopped.cancelled() => None,
+                                        },
+                                        None => Some(request.await),
+                                    }
+                                });
+                                match answered {
+                                    Some(Ok(value)) => json!({ "value": value }),
+                                    Some(Err(error)) => json!({ "error": format!("{error:#}") }),
+                                    None => {
+                                        // An open question must leave the
+                                        // user's terminal with its cell.
+                                        if let (Some(id), Some(cancel)) =
+                                            (question, handlers.get("question.cancel"))
+                                        {
+                                            let withdrawn = runtime.block_on(cancel(HostRequestPayload {
+                                                data: json!({ "type": "question.cancel", "id": id }),
+                                            }));
+                                            if let Err(error) = withdrawn {
+                                                tracing::warn!("the host refused question.cancel: {error:#}");
+                                            }
+                                        }
+                                        json!({ "error": format!("{request_type}: the cell was stopped while it waited") })
+                                    }
                                 }
                             }
                         };
@@ -334,18 +390,40 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     },
                 );
                 engine.register_value("%session-cwd", SteelVal::StringV(cwd.into()));
+                for (name, value) in [
+                    ("%session-id", environment.session_id.clone()),
+                    (
+                        "%session-artifact-dir",
+                        environment
+                            .artifact_dir
+                            .as_deref()
+                            .map(|dir| dir.to_string_lossy().into_owned()),
+                    ),
+                ] {
+                    engine.register_value(
+                        name,
+                        value.map_or(SteelVal::BoolV(false), |text| SteelVal::StringV(text.into())),
+                    );
+                }
                 engine
                     .run(HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
+                cell::register(&mut engine, &cells)?;
                 host_api::load(&mut engine)?;
                 let cell = native::CellSignal::default();
-                native::register(&mut engine, native_cwd, Arc::clone(&cell), native_handlers)?;
+                native::register(
+                    &mut engine,
+                    native_cwd,
+                    Arc::clone(&cell),
+                    native_handlers,
+                    environment.agent_dir.clone(),
+                )?;
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
-                let controller = engine.get_thread_state_controller();
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
-                    controller,
                     cell,
+                    turn: Arc::new(tokio::sync::Mutex::new(())),
+                    cells,
                 }))
             })
             .await
@@ -363,12 +441,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             // A cell still running holds its own reference: interrupt it so
             // the dropped engine stops instead of running on unobserved.
             if let Some(session) = state.session.lock().await.take() {
-                session
-                    .cell
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .cancel();
-                session.controller.interrupt();
+                session.cells.kill();
             }
             state.mcp.shutdown().await;
         })
@@ -377,8 +450,11 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::kernel::shared::host_handler;
+    use crate::tools::ipython::ExecuteStatus;
 
     fn options(
         signal: Option<AbortSignal>,

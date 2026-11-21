@@ -41,7 +41,7 @@ use super::edit_check::EditChecks;
 use super::edit_replace;
 use crate::fs_edit::FsEditHost;
 use crate::fs_search::FsSearchHost;
-use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload};
+use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload, KernelDiffDisplay};
 use crate::symbol_index::{register_symbol_handler, SymbolIndex};
 use crate::tools::path_utils::resolve_to_cwd;
 use crate::tools::tool_definition::AbortSignal;
@@ -164,11 +164,13 @@ pub(super) struct Files {
 
 impl Files {
     /// The file tools of a kernel working in `cwd`, answered by `session`'s
-    /// handlers on `runtime`.
+    /// handlers on `runtime`. What the post-edit checks learn is kept under
+    /// the session's `agent_dir`, and nowhere without one.
     pub(super) fn new(
         cwd: PathBuf,
         session: HostRequestHandlers,
         runtime: tokio::runtime::Handle,
+        agent_dir: Option<PathBuf>,
     ) -> Self {
         let mut handlers = HostRequestHandlers::new();
         FsSearchHost { observer: None }.register(&mut handlers);
@@ -188,12 +190,7 @@ impl Files {
             );
         }
         handlers.merge(session.clone());
-        // Tests keep what checks learn out of the user's agent dir.
-        let state_dir = if cfg!(test) {
-            None
-        } else {
-            pa_types::platform::agent_dir().map(|directory| directory.join("edit-checks"))
-        };
+        let state_dir = agent_dir.map(|directory| directory.join("edit-checks"));
         Self {
             cwd,
             checks: EditChecks::new(runtime.clone(), session, state_dir),
@@ -271,6 +268,19 @@ impl Files {
             "fs-edit" => self.edit(cell, options),
             "edit" => {
                 let (file, mut reply) = edit_replace::replace(&self.cwd, options)?;
+                // The edit shows on the running cell's card, as the Python
+                // kernel's `edit` skill displayed it.
+                if let Some(kernel) = crate::kernel::scheme::cell::current() {
+                    let text = |name: &str| options[name].as_str().unwrap_or_default().to_string();
+                    kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
+                        KernelDiffDisplay {
+                            path: file.to_string_lossy().into_owned(),
+                            old_str: text("old-str"),
+                            new_str: text("new-str"),
+                            start_line: reply["startLine"].as_u64(),
+                        },
+                    ));
+                }
                 self.attach_check(&mut reply, &file, cell);
                 Ok(reply)
             }

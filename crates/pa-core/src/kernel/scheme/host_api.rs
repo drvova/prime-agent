@@ -10,9 +10,9 @@
 //! omitted. Whole numbers in a reply come back as exact integers, and an
 //! integer argument given as `8.0` is sent as `8`.
 //!
-//! Nothing here reaches the cell's display channel: a todo list, a settled
-//! question, or a sent agent message is returned to the cell, not attached
-//! to its result card.
+//! A changed todo list, a settled question, a sent agent message, and a
+//! transcript read also show on the running cell's result card, recorded
+//! through `(%cell ...)` as the Python kernel's display events were.
 
 use anyhow::anyhow;
 use steel::steel_vm::engine::Engine;
@@ -31,8 +31,7 @@ const SOURCES: [(&str, &str); 5] = [
 /// Define the host API in a session's `engine`, whose `host-request` bridge
 /// is already loaded.
 pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
-    // Names an open question (so an interrupt can withdraw exactly it) and
-    // the cell a decision is counted under.
+    // Names an open question, so an interrupt can withdraw exactly it.
     engine.register_fn("%fresh-id", || uuid::Uuid::new_v4().simple().to_string());
     for (name, source) in SOURCES {
         engine
@@ -155,7 +154,6 @@ mod tests {
             ("rlm.abort", aborted.clone()),
             ("rlm.rename", json!({"name": "renamed"})),
             ("rlm.progress.note", throttled.clone()),
-            ("rlm.end_turn", json!({"endedTurn": true})),
             ("rlm.reload", reloaded.clone()),
         ]);
         let kernel = kernel_over(handlers).await;
@@ -210,7 +208,6 @@ mod tests {
                     json!({"type": "rlm.abort", "target": "c1"}),
                     json!({"type": "rlm.rename", "name": "renamed", "session_id": "s1"}),
                     json!({"type": "rlm.progress.note", "message": "half done"}),
-                    json!({"type": "rlm.end_turn"}),
                     json!({"type": "rlm.reload"}),
                 ]
             )

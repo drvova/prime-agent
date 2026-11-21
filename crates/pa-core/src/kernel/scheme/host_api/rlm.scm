@@ -97,20 +97,13 @@
 (define (rlm-reload)
   (%host-call "rlm.reload" (hash)))
 
-;; The cell `rlm-decide` last ran in: its output port (each cell prints into
-;; its own) and the id the host counts that cell's decisions under.
-(define %decide-port #f)
-(define %decide-cell "")
-
 ;; One bounded judgment call by the session's model: it sees `question`,
 ;; `options` (2 to 16 distinct strings) and #:context, and the chosen option
-;; comes back verbatim. The host prints one [decide] line per decision.
+;; comes back verbatim. The host prints one [decide] line per decision, and
+;; counts a cell's decisions under its id.
 (define (rlm-decide question options #:context [context #f])
-  (unless (eq? %decide-port (current-output-port))
-    (set! %decide-port (current-output-port))
-    (set! %decide-cell (%fresh-id)))
   (let ([reply (%host-call "rlm.decide"
-                           (%options (hash 'question question 'options options 'cell %decide-cell)
+                           (%options (hash 'question question 'options options 'cell (cell-id))
                                      'context context))])
     (when (string? (hash-try-get reply 'row))
       (displayln (hash-ref reply 'row)))
@@ -142,7 +135,16 @@
                               #:role [role "*"]
                               #:agent [agent #f]
                               #:session [session #f])
-  (hash-ref (%transcript "rlm-session-messages" start limit role agent session) 'messages))
+  (let* ([reply (%transcript "rlm-session-messages" start limit role agent session)]
+         [messages (hash-ref reply 'messages)])
+    ;; The read shows on the cell's card: how many rows, from where, of how many.
+    (%cell "transcript-read"
+           (%options (hash 'returned (length messages)
+                           'first (if (null? messages) (void) (hash-ref (car messages) 'index))
+                           'total (hash-ref reply 'total)
+                           'roles (if (string? role) (list role) role))
+                     'agent (and (or agent session) (hash-try-get reply 'agent))))
+    messages))
 
 ;; How many transcript messages match #:role.
 (define (rlm-session-count #:role [role "*"] #:agent [agent #f] #:session [session #f])

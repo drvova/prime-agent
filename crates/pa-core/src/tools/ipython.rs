@@ -144,12 +144,15 @@ pub struct KernelExecuteOptions<'a> {
     pub on_late_sent_agent_message: Option<crate::kernel::shared::LateSentAgentMessageCallback>,
 }
 
-type ExecuteCellFuture = Pin<Box<dyn Future<Output = anyhow::Result<ExecuteResult>> + Send>>;
+/// A cell's run. It may borrow the call's options, so a kernel can call
+/// [`KernelExecuteOptions::on_stream`] while the cell runs.
+type ExecuteCellFuture<'a> =
+    Pin<Box<dyn Future<Output = anyhow::Result<ExecuteResult>> + Send + 'a>>;
 
 /// A running kernel able to execute code cells.
 pub trait KernelExecutor: Send + Sync {
     /// Execute one cell in the persistent kernel.
-    fn execute(&self, code: &str, options: KernelExecuteOptions<'_>) -> ExecuteCellFuture;
+    fn execute<'a>(&self, code: &str, options: KernelExecuteOptions<'a>) -> ExecuteCellFuture<'a>;
 }
 
 /// Startup progress handler (TS: `KernelBootstrapProgressHandler`).

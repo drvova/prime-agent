@@ -78,7 +78,7 @@ const TOOLS: &str = r#"
 
 /// A tool's JSON reply as a Scheme value: objects become hashes keyed by
 /// kebab-case symbols, arrays lists, whole numbers integers, and null `#f`.
-fn scheme_value(value: Value) -> SteelVal {
+pub(super) fn scheme_value(value: Value) -> SteelVal {
     match value {
         Value::Null => SteelVal::BoolV(false),
         Value::Bool(flag) => SteelVal::BoolV(flag),
@@ -123,9 +123,10 @@ pub(super) fn register(
     cwd: PathBuf,
     cell: CellSignal,
     handlers: crate::kernel::shared::HostRequestHandlers,
+    agent_dir: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
-    let files = files::Files::new(cwd.clone(), handlers, runtime.clone());
+    let files = files::Files::new(cwd.clone(), handlers, runtime.clone(), agent_dir);
     engine.register_fn(
         "%native-call",
         move |operation: String, options: SteelVal| -> SteelVal {

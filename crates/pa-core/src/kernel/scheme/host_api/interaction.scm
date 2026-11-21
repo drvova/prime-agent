@@ -19,25 +19,34 @@
                                       'timeoutSeconds (and timeout (max 1 (exact (round timeout))))))]
          [status (hash-ref reply 'status)]
          [answer (hash-ref reply 'answer)])
+    ;; The settled question shows on the cell's card.
+    (%cell "question" (hash 'text question 'status status 'answer answer))
     (hash 'status status
           'answer (cond
                     [(null? answer) (and multi (equal? status "answered") answer)]
                     [multi answer]
                     [else (car answer)]))))
 
+;; A changed todo list shows on the cell's card; the list.
+(define (%todo-changed todos)
+  (%cell "todo" todos)
+  todos)
+
 ;; Create or replace the session todo list; the whole list, {items}. Each
 ;; item is its text, or a hash with 'text and optional 'id, 'status
 ;; ("pending", "in_progress", "done") and 'note. An empty list clears it.
 (define (todo-set items)
-  (%host-call "todo.set"
-              (hash 'items (map (lambda (item) (if (string? item) (hash 'text item) item)) items))))
+  (%todo-changed
+   (%host-call "todo.set"
+               (hash 'items (map (lambda (item) (if (string? item) (hash 'text item) item)) items)))))
 
 ;; Change one item by id: its #:status, #:text, or #:note ("" clears the
 ;; note); the whole list.
 (define (todo-update id #:status [status #f] #:text [text #f] #:note [note #f])
   (unless (or status text note)
     (error "todo-update: pass at least one of #:status, #:text, #:note"))
-  (%host-call "todo.update" (%options (hash 'id id) 'status status 'text text 'note note)))
+  (%todo-changed
+   (%host-call "todo.update" (%options (hash 'id id) 'status status 'text text 'note note))))
 
 ;; The current session todo list, {items} (empty when none was set).
 (define (todo-get)

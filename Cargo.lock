@@ -2163,6 +2163,7 @@ dependencies = [
  "grep-regex",
  "grep-searcher",
  "ignore",
+ "image",
  "libc",
  "nix",
  "pa-agent",

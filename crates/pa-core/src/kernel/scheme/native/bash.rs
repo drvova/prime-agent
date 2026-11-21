@@ -1,8 +1,9 @@
 //! `(bash command [options])`: one shell command run to its end in the
 //! session's working directory, in the foreground of its cell.
 //!
-//! The command runs under the kernel's shell with no stdin and the
-//! non-interactive environment the Python kernel's `bash()` used. It leads its
+//! The command runs under the session's shell (after its command prefix)
+//! with no stdin, the session's environment, and the non-interactive
+//! environment the Python kernel's `bash()` used. It leads its
 //! own process group (its own session on Unix), so stopping it reaches every
 //! process it started. It is stopped when its own timeout passes or when its
 //! cell is aborted or timed out: the engine cannot interrupt a blocking host
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
 
+use crate::kernel::scheme::cell;
 use crate::platform;
 use crate::tools::tool_definition::AbortSignal;
 
@@ -133,16 +135,39 @@ pub(super) fn run(
     if !cwd.is_dir() {
         bail!("the working directory does not exist: {}", cwd.display());
     }
-    let shell = platform::resolve_kernel_bash_shell(None)?.ok_or_else(|| {
-        anyhow!("no POSIX shell was found (on Windows, install Git Bash in its default location)")
-    })?;
+    // Called from a cell, the command gets the session's shell, command
+    // prefix and environment, and shows on the cell's card.
+    let kernel = cell::current();
+    let session = kernel.as_ref().map(cell::CellHandle::session);
+    let shell = match session.and_then(|session| session.shell_path.as_deref()) {
+        Some(shell) => shell.to_string_lossy().into_owned(),
+        None => platform::resolve_kernel_bash_shell(None)?.ok_or_else(|| {
+            anyhow!(
+                "no POSIX shell was found (on Windows, install Git Bash in its default location)"
+            )
+        })?,
+    };
+    let prefixed = match session.and_then(|session| session.command_prefix.as_deref()) {
+        Some(prefix) => format!("{prefix}\n{script}"),
+        None => script.to_string(),
+    };
+    if let Some(kernel) = &kernel {
+        kernel.record(cell::CellRecord::BashCommand {
+            command: script.to_string(),
+        });
+    }
     // One pipe carries stdout and stderr, so their order is the command's own.
     let (mut output, output_end) = std::io::pipe().context("could not open the output pipe")?;
     let mut command = tokio::process::Command::new(&shell);
     command
         .arg("-c")
-        .arg(script)
+        .arg(prefixed)
         .current_dir(cwd)
+        .envs(
+            session
+                .map(|session| session.env.clone())
+                .unwrap_or_default(),
+        )
         .envs(CHILD_ENV)
         .stdin(Stdio::null())
         .stdout(
@@ -208,7 +233,12 @@ pub(super) fn run(
             status = child.wait() => End::Exited(status),
         };
         let (status, timed_out) = match end {
-            End::Exited(status) => (status, false),
+            End::Exited(status) => {
+                if let Some(kernel) = &kernel {
+                    kernel.record(cell::CellRecord::BashWait { completed: true });
+                }
+                (status, false)
+            }
             End::TimedOut | End::CellStopped => {
                 // Only an unreaped child still pins its pid and its group.
                 if let Some(pid) = pid {
