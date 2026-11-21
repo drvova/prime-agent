@@ -19,6 +19,8 @@
 //! [`HostRequestHandlers`], the same handlers the Python kernel's host
 //! requests reach, and the reply comes back as a Scheme value or raises.
 
+mod host_api;
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -289,6 +291,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 engine
                     .run(HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
+                host_api::load(&mut engine)?;
                 let controller = engine.get_thread_state_controller();
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
