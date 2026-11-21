@@ -1513,7 +1513,7 @@ pub(crate) fn render_selector_error(error: &SessionSelectorError) -> String {
     )
 }
 
-/// Model tools for the print runtime: `python_repl` only — the engine adds the kernel-backed tool
+/// Model tools for the print runtime: `eval` only — the engine adds the kernel-backed tool
 /// itself.
 fn builtin_tools(_cwd: &std::path::Path) -> Vec<Arc<dyn pa_agent::types::AgentTool>> {
     Vec::new()

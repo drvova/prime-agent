@@ -94,33 +94,13 @@ impl AcpChild {
         Self::wrap(child, Some(home), socket)
     }
 
-    /// The daemon-attached lane whose worker's kernel runs the given
-    /// interpreter (the env flows ACP -> supervisor -> worker).
-    fn spawn_with_kernel(
-        args: &[&str],
-        script: &serde_json::Value,
-        kernel_python: &std::path::Path,
-    ) -> AcpChild {
-        let home = tempfile::TempDir::new().unwrap();
-        let socket = home.path().join("daemon.sock");
-        std::fs::write(home.path().join("worker-script.json"), script.to_string()).unwrap();
-        let child = daemon_attached_command(home.path(), &socket, args)
-            .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
-            .spawn()
-            .expect("binary present");
-        Self::wrap(child, Some(home), socket)
-    }
-
-    /// The daemon-attached lane whose `rlm.spawn` children are scripted:
+    /// The daemon-attached lane whose `rlm-spawn` children are scripted:
     /// `<home>/child-script.json` rides the `PRIME_AGENT_FAUX_CHILD_SCRIPT`
-    /// create-config seam (the worker already consumes the key), and the
-    /// parent worker's kernel runs the given interpreter (the env flows
-    /// ACP -> supervisor -> worker).
+    /// create-config seam (the worker already consumes the key).
     fn spawn_with_child_script(
         args: &[&str],
         script: &serde_json::Value,
         child_script: &serde_json::Value,
-        kernel_python: &std::path::Path,
     ) -> AcpChild {
         let home = tempfile::TempDir::new().unwrap();
         let socket = home.path().join("daemon.sock");
@@ -129,7 +109,6 @@ impl AcpChild {
         std::fs::write(&child_script_path, child_script.to_string()).unwrap();
         let child = daemon_attached_command(home.path(), &socket, args)
             .env("PRIME_AGENT_FAUX_CHILD_SCRIPT", &child_script_path)
-            .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
             .spawn()
             .expect("binary present");
         Self::wrap(child, Some(home), socket)
@@ -2566,33 +2545,6 @@ fn acp_overflow_recovery_recovers_from_the_live_413_body() {
     assert_eq!(metas[0]["summary"], "the summary");
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-/// Without one, the live RLM quiescence lanes below skip (with a note).
-fn kernel_python() -> Option<std::path::PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = std::path::PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live RLM quiescence e2e",
-        candidate.display()
-    );
-    None
-}
-
 /// The namespaced prime-agent payload of one session/update frame.
 fn update_meta(frame: &Value) -> &Value {
     &frame["params"]["update"]["_meta"]["ai.primeintellect.prime-agent"]
@@ -2600,9 +2552,9 @@ fn update_meta(frame: &Value) -> &Value {
 
 /// The kernel cell of the spawn turn (the worker's
 /// `rlm_quiescence_barrier_e2e` lane): spawn one RLM child through the
-/// product `rlm.spawn` surface and record its child id.
+/// product `rlm-spawn` surface and print its child id.
 fn spawn_cell() -> &'static str {
-    "handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\nprint(handle.rlm_child_id)"
+    "(define handle (rlm-spawn \"run the lane task\" #:name \"kid\"))\n(displayln (hash-ref handle 'rlm_child_id))"
 }
 
 /// The parent faux script whose turns run the spawn cell; the third
@@ -2613,7 +2565,7 @@ fn spawn_parent_script(spawn_cell: &str) -> Value {
         "engine": "faux",
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "python_repl", "arguments": { "code": spawn_cell } },
+                { "type": "toolCall", "name": "eval", "arguments": { "code": spawn_cell } },
             ] },
             { "text": "spawn turn done" },
             { "text": "notice seen" },
@@ -2626,14 +2578,10 @@ fn spawn_parent_script(spawn_cell: &str) -> Value {
 /// ledger needs the parent's session file — a `--no-session` parent cannot
 /// spawn children). The parent's active session id is read at setup, before
 /// the spawn: once a child runs, `live_sessions` lists both workers.
-fn spawn_lane(
-    args: &[&str],
-    child_hold_ms: u64,
-    kernel_python: &std::path::Path,
-) -> (AcpChild, String, String) {
+fn spawn_lane(args: &[&str], child_hold_ms: u64) -> (AcpChild, String, String) {
     let parent = spawn_parent_script(spawn_cell());
     let child_script = json!({ "responses": [ { "text": "kid done", "delayMs": child_hold_ms } ] });
-    let mut client = AcpChild::spawn_with_child_script(args, &parent, &child_script, kernel_python);
+    let mut client = AcpChild::spawn_with_child_script(args, &parent, &child_script);
     let init = client.request("initialize", &initialize_params());
     let _ = client.wait_response(init, TIMEOUT);
     let session_id = new_session(&mut client);
@@ -2651,10 +2599,7 @@ fn spawn_lane(
 /// seen") drains inside the barrier, between the two.
 #[test]
 fn acp_prompt_settles_after_rlm_quiescence() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    let (mut client, session_id, _) = spawn_lane(&["--mode", "acp"], 5_000, &kernel_python);
+    let (mut client, session_id, _) = spawn_lane(&["--mode", "acp"], 5_000);
     let prompt = client.request(
         "session/prompt",
         &json!({ "sessionId": session_id, "prompt": [{ "type": "text", "text": "spawn the kid" }] }),
@@ -2704,29 +2649,26 @@ fn acp_prompt_settles_after_rlm_quiescence() {
 }
 
 /// The bash quiescence observation (the eval harness's `terminalQuiescence`
-/// meta): a turn that launches a detached `bash()` job settles clean while
+/// meta): a turn that launches a background `bash` job settles clean while
 /// the job still runs, and the completion and terminal quiescence frames
 /// report the outstanding background job — never the subagent count — so a
 /// host that closes on quiescence holds the episode. After the job's
 /// `[bash-done]` wake is consumed, a quiet turn reports zero.
 #[test]
 fn acp_prompt_reports_outstanding_background_bash_jobs() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let script = json!({
         "engine": "faux",
         "responses": [
             { "content": [
-                { "type": "toolCall", "name": "python_repl", "arguments": { "code":
-                    "from rlm import bash\nhandle = bash('sleep 5; echo QUIESCENT_JOB_DONE')\nprint('job launched', handle.running)" } },
+                { "type": "toolCall", "name": "eval", "arguments": { "code":
+                    "(define job (bash \"sleep 5; echo QUIESCENT_JOB_DONE\" (hash 'background #t)))\n(displayln \"job launched\" (hash-ref job 'running))" } },
             ] },
             { "text": "bash lane turn done" },
             { "text": "notice seen" },
             { "text": "quiet turn" },
         ],
     });
-    let mut client = AcpChild::spawn_with_kernel(&["--mode", "acp"], &script, &kernel_python);
+    let mut client = AcpChild::spawn(&["--mode", "acp"], &script);
     let init = client.request("initialize", &initialize_params());
     let _ = client.wait_response(init, TIMEOUT);
     let session_id = new_session(&mut client);
@@ -2818,11 +2760,8 @@ fn acp_prompt_reports_outstanding_background_bash_jobs() {
 /// stop sequence, so it is not retested here.
 #[test]
 fn acp_cancel_during_settle_cancels_the_subagents() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
+        spawn_lane(&["--mode", "acp"], 120_000);
     let socket = client.socket.clone();
     let prompt = client.request(
         "session/prompt",
@@ -2864,11 +2803,8 @@ fn acp_cancel_during_settle_cancels_the_subagents() {
 /// cancel a resident session's children.
 #[test]
 fn acp_eof_during_settle_exits_and_leaves_resident_subagents() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000, &kernel_python);
+        spawn_lane(&["--mode", "acp"], 120_000);
     let socket = client.socket.clone();
     client.request(
         "session/prompt",

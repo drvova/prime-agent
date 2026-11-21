@@ -574,7 +574,7 @@ pub fn format_top_level_help() -> String {
         })
         .collect();
     format!(
-        "{COMMAND_NAME} - AI coding assistant with a Python REPL tool\n\
+        "{COMMAND_NAME} - AI coding assistant with a Scheme kernel tool\n\
          \n\
          Usage:\n\
          \x20 {COMMAND_NAME} [options] [@files...] [message...]\n\

@@ -149,11 +149,13 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
         }
     }
 
-    // Install-time kernel preparation: the installer invokes `--prime-agent-bootstrap`
-    // after extracting a release, so the venv is ready before the first session.
+    // Installers released before the kernel was built in invoke
+    // `--prime-agent-bootstrap` after extracting a release, to prepare a kernel
+    // runtime. Nothing is left to prepare: the flag stays accepted so those
+    // installers still finish cleanly.
     if args.len() == 1 && args[0] == "--prime-agent-bootstrap" {
-        crate::config::require_agent_dir()?;
-        return run_runtime_bootstrap();
+        println!("kernel: built in, nothing to prepare");
+        return Ok(0);
     }
 
     // Public command routing: help requests, removed commands, management
@@ -395,30 +397,6 @@ fn main_impl(args: &[String], runtime: &dyn mode::Runtime) -> Result<i32, String
     match runtime.run(&options) {
         Ok(exit_code) => Ok(exit_code),
         Err(missing) => Err(missing.error_message()),
-    }
-}
-
-/// Prepare the kernel runtime at install time: resolve or bootstrap the kernel
-/// Python and print its path. Failures print the error and exit 1.
-fn run_runtime_bootstrap() -> Result<i32, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| error.to_string())?;
-    // The user is already waiting on the installer: compile the venv's
-    // bytecode before returning, so the first session neither pays lazy
-    // compiles nor competes with a background one.
-    match runtime.block_on(pa_core::kernel::ensure_kernel_python(
-        pa_core::kernel::EnsureKernelPythonOptions {
-            bytecode: pa_core::kernel::KernelBytecode::CompileBeforeReturn,
-            ..Default::default()
-        },
-    )) {
-        Ok(python) => {
-            println!("kernel python: {}", python.display());
-            Ok(0)
-        }
-        Err(error) => Err(format!("{error:#}")),
     }
 }
 
