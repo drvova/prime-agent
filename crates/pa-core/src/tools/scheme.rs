@@ -150,7 +150,7 @@ mod tests {
         let waiting = Arc::clone(&shown);
         let mut handlers = HostRequestHandlers::new();
         handlers.register(
-            "update.shown",
+            "update-shown",
             host_handler(move |_payload: HostRequestPayload| {
                 let waiting = Arc::clone(&waiting);
                 async move {
@@ -171,7 +171,7 @@ mod tests {
         });
         (tool.execute)(
             "call-1",
-            json!({"code": "(display \"one \") (host-request \"update.shown\" (hash)) (display \"two\")"}),
+            json!({"code": "(display \"one \") (host-request \"update-shown\" (hash)) (display \"two\")"}),
             None,
             Some(on_update),
         )
@@ -192,7 +192,7 @@ mod tests {
         let held = Arc::clone(&release);
         let mut handlers = HostRequestHandlers::new();
         handlers.register(
-            "gate.wait",
+            "gate-wait",
             host_handler(move |_payload: HostRequestPayload| {
                 let held = Arc::clone(&held);
                 async move {
@@ -217,7 +217,7 @@ mod tests {
         )));
         let result = (tool.execute)(
             "call-1",
-            json!({"code": "(display \"started\") (host-request \"gate.wait\" (hash))"}),
+            json!({"code": "(display \"started\") (host-request \"gate-wait\" (hash))"}),
             None,
             None,
         )

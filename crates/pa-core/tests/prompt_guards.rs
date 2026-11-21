@@ -260,6 +260,14 @@ fn registered_host_requests() -> BTreeSet<String> {
             if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
                 continue;
             }
+            // A test module's registrations are test doubles (a handler that
+            // never answers, a gate a test holds), not the product's surface.
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"))
+            {
+                continue;
+            }
             let source = std::fs::read_to_string(&path).expect("read source");
             // Direct registrations: the request type is the FIRST
             // argument of each `.register(` — a literal right at the

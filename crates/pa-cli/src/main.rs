@@ -12,6 +12,9 @@ fn main() {
     if args.first().map(String::as_str) != Some("worker") {
         pa_daemon::worker::strip_inherited_worker_env();
     }
+    // Still single-threaded: the Scheme interpreter's own directory moves
+    // under the agent directory before anything can build an engine.
+    pa_core::kernel::pin_scheme_home();
     let code = pa_cli::main_with_runtime(&args, &pa_cli::PrintRuntime);
     // Restore the Windows VT bit before process exit.
     pa_types::platform::console_restore();

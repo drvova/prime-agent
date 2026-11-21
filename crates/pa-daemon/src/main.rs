@@ -4,12 +4,20 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Same allocator cap as the prime-agent binary: large transient phases
     // (session loads, attach snapshots) must not leave per-arena high-water
     // pages resident.
     pa_types::memory_release::cap_thread_arenas();
+    // Before the runtime's threads exist: see `pin_scheme_home`.
+    pa_core::kernel::pin_scheme_home();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+async fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let command = args.next().unwrap_or_else(|| {
         eprintln!("usage: pa-daemon <supervisor|worker> [options]");

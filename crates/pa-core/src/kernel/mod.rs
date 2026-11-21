@@ -41,7 +41,8 @@ pub use rlm_runtime::{
     normalize_requested_rlm_subagent_thinking_level, RlmModelInfo, RlmModelMatch, THINKING_LEVELS,
 };
 pub use scheme::{
-    prewarm_scheme_kernel, SchemeKernel, SchemeKernelOptions, SchemeKernelProvisioner,
+    pin_scheme_home, prewarm_scheme_kernel, SchemeKernel, SchemeKernelOptions,
+    SchemeKernelProvisioner,
 };
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,

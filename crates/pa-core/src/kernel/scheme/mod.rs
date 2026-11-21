@@ -73,6 +73,25 @@ const HOST_BRIDGE: &str = r"
 (define (session-artifact-dir) %session-artifact-dir)
 ";
 
+/// Keep Steel's own state inside the agent directory. Unless `STEEL_HOME` is
+/// set, the first engine built in a process creates a `steel` directory in
+/// the user's data home and prints to stderr when it cannot, which breaks
+/// every mode whose stderr is part of its output. Sets `STEEL_HOME` to
+/// `<agent dir>/steel`, so it must run while the process is still
+/// single-threaded: at the top of `main`, before a runtime exists. An
+/// explicit `STEEL_HOME` or an unresolvable agent directory is left alone.
+pub fn pin_scheme_home() {
+    if std::env::var_os("STEEL_HOME").is_some() {
+        return;
+    }
+    if let Some(home) = pa_types::platform::agent_dir().map(|dir| dir.join("steel")) {
+        // Steel only reads the variable; a directory it later needs and
+        // cannot create is its own reported error.
+        let _ = std::fs::create_dir_all(&home);
+        std::env::set_var("STEEL_HOME", home);
+    }
+}
+
 /// The process's spare engine, taken by the next session to start.
 static SPARE: Mutex<Option<Engine>> = Mutex::new(None);
 
@@ -596,14 +615,14 @@ mod tests {
     async fn host_requests_reach_the_session_handlers_and_their_errors_raise() {
         let mut handlers = HostRequestHandlers::new();
         handlers.register(
-            "echo.upper",
+            "echo-upper",
             host_handler(|payload: HostRequestPayload| async move {
                 let text = payload.data["text"].as_str().unwrap_or_default();
                 Ok(json!({ "text": text.to_uppercase() }))
             }),
         );
         handlers.register(
-            "always.fails",
+            "always-fails",
             host_handler(
                 |_payload: HostRequestPayload| async move { Err(anyhow!("the host refused")) },
             ),
@@ -614,14 +633,14 @@ mod tests {
             .unwrap();
         let echoed = kernel
             .execute(
-                "(hash-ref (host-request \"echo.upper\" (hash 'text \"quiet\")) 'text)",
+                "(hash-ref (host-request \"echo-upper\" (hash 'text \"quiet\")) 'text)",
                 options(None, None),
             )
             .await
             .unwrap();
         let refused = kernel
             .execute(
-                "(host-request \"always.fails\" (hash))",
+                "(host-request \"always-fails\" (hash))",
                 options(None, None),
             )
             .await
