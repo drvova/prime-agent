@@ -46,6 +46,9 @@ const HOST_BRIDGE: &str = r"
     (if (hash-contains? reply 'error)
         (error (hash-ref reply 'error))
         (hash-ref reply 'value))))
+
+;; The session's working directory.
+(define (session-cwd) %session-cwd)
 ";
 
 /// Why a running cell was interrupted.
@@ -206,6 +209,9 @@ impl KernelExecutor for SchemeKernel {
 
 struct ProvisionerState {
     handlers: HostRequestHandlers,
+    /// The session's working directory: where relative paths in host
+    /// functions resolve and commands run.
+    cwd: std::path::PathBuf,
     /// The session's engine once started; the async lock holds concurrent
     /// `ensure` calls to one startup.
     session: tokio::sync::Mutex<Option<Arc<SessionEngine>>>,
@@ -219,12 +225,14 @@ pub struct SchemeKernelProvisioner {
 }
 
 impl SchemeKernelProvisioner {
-    /// A provisioner whose kernel answers `(host-request ...)` from `handlers`.
+    /// A provisioner whose kernel answers `(host-request ...)` from `handlers`
+    /// and works in `cwd`.
     #[must_use]
-    pub fn new(handlers: HostRequestHandlers) -> Self {
+    pub fn new(handlers: HostRequestHandlers, cwd: impl Into<std::path::PathBuf>) -> Self {
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 handlers,
+                cwd: cwd.into(),
                 session: tokio::sync::Mutex::new(None),
             }),
         }
@@ -249,6 +257,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 }) as Box<dyn KernelExecutor>);
             }
             let handlers = state.handlers.clone();
+            let cwd = state.cwd.to_string_lossy().into_owned();
             let runtime = tokio::runtime::Handle::current();
             let session = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -276,6 +285,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                         reply.to_string()
                     },
                 );
+                engine.register_value("%session-cwd", SteelVal::StringV(cwd.into()));
                 engine
                     .run(HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
@@ -335,8 +345,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn definitions_persist_in_their_session_and_output_is_captured() {
-        let first = SchemeKernelProvisioner::new(HostRequestHandlers::new());
-        let other = SchemeKernelProvisioner::new(HostRequestHandlers::new());
+        let first = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/");
+        let other = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/");
         let kernel = first.ensure(None, None).await.unwrap();
         kernel
             .execute(
@@ -390,7 +400,7 @@ mod tests {
                 |_payload: HostRequestPayload| async move { Err(anyhow!("the host refused")) },
             ),
         );
-        let kernel = SchemeKernelProvisioner::new(handlers)
+        let kernel = SchemeKernelProvisioner::new(handlers, "/")
             .ensure(None, None)
             .await
             .unwrap();
@@ -431,7 +441,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn an_abort_or_timeout_stops_a_runaway_cell_and_the_kernel_stays_usable() {
-        let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new())
+        let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
             .ensure(None, None)
             .await
             .unwrap();
@@ -481,7 +491,7 @@ mod tests {
     async fn concurrent_sessions_never_see_each_others_output_or_definitions() {
         let sessions = ["alpha", "beta", "gamma", "delta"].map(|name| {
             tokio::spawn(async move {
-                let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new())
+                let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
                     .ensure(None, None)
                     .await
                     .unwrap();

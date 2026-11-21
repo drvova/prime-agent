@@ -913,7 +913,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
                 crate::tools::scheme::create_scheme_tool_definition(Arc::new(
-                    crate::kernel::scheme::SchemeKernelProvisioner::new(scheme_handlers),
+                    crate::kernel::scheme::SchemeKernelProvisioner::new(
+                        scheme_handlers,
+                        cwd.clone(),
+                    ),
                 )),
             ),
         ));
