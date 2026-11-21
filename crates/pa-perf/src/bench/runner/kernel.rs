@@ -126,14 +126,19 @@ impl Client {
     }
 }
 
-/// A `python_repl` tool call record for a faux script.
-fn cell(code: &str) -> Value {
+/// A kernel tool call record (`python_repl` or `eval`) for a faux script.
+fn tool_cell(tool: &str, code: &str) -> Value {
     json!({ "content": [
-        { "type": "toolCall", "name": "python_repl", "arguments": { "code": code } },
+        { "type": "toolCall", "name": tool, "arguments": { "code": code } },
     ] })
 }
 
-/// One `python_repl` call as the client saw it: the start and end events'
+/// A `python_repl` tool call record for a faux script.
+fn cell(code: &str) -> Value {
+    tool_cell("python_repl", code)
+}
+
+/// One kernel tool call as the client saw it: the start and end events'
 /// read instants (the wire's end event carries only the call id, so the
 /// start's id pairs them).
 #[derive(Debug)]
@@ -143,11 +148,16 @@ struct CellEvents {
 }
 
 impl Client {
-    /// The next `python_repl` call, start -> end. A failed cell fails the
-    /// run: a measured error path is not the metric.
+    /// The next `python_repl` call, start -> end.
     fn python_cell(&mut self, what: &str) -> anyhow::Result<CellEvents> {
+        self.kernel_cell("python_repl", what)
+    }
+
+    /// The next call of the kernel tool `tool`, start -> end. A failed cell
+    /// fails the run: a measured error path is not the metric.
+    fn kernel_cell(&mut self, tool: &str, what: &str) -> anyhow::Result<CellEvents> {
         let (start, started) = self.event(&format!("{what} start"), |event| {
-            event["type"] == "tool_execution_start" && event["toolName"] == "python_repl"
+            event["type"] == "tool_execution_start" && event["toolName"] == tool
         })?;
         let id = start["toolCallId"].clone();
         let (end, ended) = self.event(&format!("{what} result"), |event| {
@@ -186,6 +196,26 @@ pub(super) fn measure(
     let mut client = Client::connect(socket, Instant::now() + ctx.liveness)?;
     match scenario {
         Scenario::FirstCell => first_cell(ctx, &mut client, run_dir),
+        Scenario::FirstEval => {
+            // The create command -> the first `eval` result: what a new
+            // session's first Scheme cell waits on (worker spawn, session
+            // create, the scripted call, and the engine taken from the spare).
+            let script = write_script(
+                run_dir,
+                "first-eval.json",
+                &[
+                    tool_cell("eval", "(displayln \"first eval\") (+ 1 2)"),
+                    json!({ "text": "done" }),
+                ],
+            )?;
+            let started = Instant::now();
+            start_session(ctx, &mut client, &script, None)?;
+            let cell = client.kernel_cell("eval", "the first eval")?;
+            Ok(Measured {
+                settled: vec![millis(cell.ended - started)],
+                ..Measured::default()
+            })
+        }
         Scenario::SubagentFirstCell => subagent_first_cell(ctx, &mut client, run_dir, run),
         Scenario::PandasImport => pandas_import(ctx, &mut client, run_dir),
         Scenario::ColdStart

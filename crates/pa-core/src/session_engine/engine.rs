@@ -830,6 +830,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .collect();
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
+    let scheme_handlers = handlers.clone();
     let provisioner = super::runtime_wiring::kernel_provisioner(
         session_id.clone(),
         handlers,
@@ -898,6 +899,23 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         );
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
+        ));
+    }
+    if !tools
+        .iter()
+        .any(|tool| tool.name() == pa_types::ai::SCHEME_TOOL_NAME)
+    {
+        // The in-process Scheme kernel answers host requests from the same
+        // handlers as the Python kernel. Its engine comes from the process's
+        // spare, built here in the background so the first `eval` does not
+        // pay for it.
+        crate::kernel::scheme::prewarm_scheme_kernel();
+        tools.push(Arc::new(
+            crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
+                crate::tools::scheme::create_scheme_tool_definition(Arc::new(
+                    crate::kernel::scheme::SchemeKernelProvisioner::new(scheme_handlers),
+                )),
+            ),
         ));
     }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();

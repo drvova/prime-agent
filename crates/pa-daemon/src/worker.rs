@@ -1222,6 +1222,10 @@ pub async fn run_worker() -> Result<()> {
     // Structured logs land in the worker's captured stderr log.
     pa_ai::utils::log::install_stderr_log_sink();
     let config = WorkerConfig::from_env()?;
+    // The Scheme kernel's engine takes about 200 ms to build: start it at the
+    // process's first moment so it overlaps session setup instead of
+    // following it.
+    pa_core::kernel::prewarm_scheme_kernel();
     // Provider requests share the daemon-wide budget through the supervisor (with this
     // worker's own pool as the bounded-wait fallback).
     if !config.supervisor_socket_path.as_os_str().is_empty() {

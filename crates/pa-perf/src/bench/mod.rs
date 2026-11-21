@@ -46,6 +46,9 @@ pub enum Scenario {
     /// Daemon wire, no TUI: the create command -> a new session's first
     /// `python_repl` result (worker spawn + kernel boot + the cell).
     FirstCell,
+    /// Daemon wire, no TUI: the create command -> a new session's first
+    /// `eval` result (worker spawn + the in-process Scheme kernel + the cell).
+    FirstEval,
     /// Daemon wire: a parent cell's `rlm.spawn` -> the child's first cell
     /// finishing (child create + its kernel boot + the cell).
     SubagentFirstCell,

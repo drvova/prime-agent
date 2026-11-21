@@ -123,6 +123,7 @@ the liveness deadline only fails broken runs):
 | `transcript-top` | cold | `--resume <huge session>`, then the `tui.viewport.top` key -> the first frame showing the session's first block (ordinal 0); the head is never in the attach tail, so this is a daemon page fetch |
 | `idle-cost` | cold | owned daemon + TUI, ready, then a 30 s idle window: CPU ms (utime+stime) of the daemon, its descendants, and the TUI, plus their context switches (medium only, Linux only) |
 | `first-cell` | cold | daemon wire, no TUI: the `create` command -> the first `python_repl` result event of the new session (worker spawn + kernel boot + the cell) |
+| `first-eval` | cold | daemon wire, no TUI: the `create` command -> the first `eval` result event of the new session (worker spawn + the in-process Scheme engine + the cell) |
 | `subagent-first-cell` | cold | daemon wire: a parent cell's `rlm.spawn` -> the child's first cell end (both stamps are the kernels' own wall clocks; the child's task is delivered when the spawning cell returns) |
 | `pandas-import` | cold | daemon wire: after a warm-up cell, the session's first `import pandas` cell, start event -> result event |
 

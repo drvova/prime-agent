@@ -278,7 +278,7 @@ pub const PYTHON_REPL_TIMEOUT_MAX_S: u64 = 600;
 
 /// The model's `timeout` argument as a yield window in milliseconds, clamped to
 /// 1..=[`PYTHON_REPL_TIMEOUT_MAX_S`] seconds.
-fn timeout_arg_ms(params: &serde_json::Value) -> Option<u64> {
+pub(crate) fn timeout_arg_ms(params: &serde_json::Value) -> Option<u64> {
     let seconds = params.get("timeout")?.as_f64()?;
     Some((seconds as u64).clamp(1, PYTHON_REPL_TIMEOUT_MAX_S) * 1000)
 }

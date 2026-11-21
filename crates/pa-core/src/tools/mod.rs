@@ -6,4 +6,5 @@ pub(crate) mod ipython;
 #[allow(dead_code)] // util module; every fn exercised by unit tests
 pub(crate) mod path_utils;
 pub(crate) mod render_utils;
+pub(crate) mod scheme;
 pub(crate) mod tool_definition;

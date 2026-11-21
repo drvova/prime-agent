@@ -266,6 +266,9 @@ pub struct ImageContent {
 
 pub const PYTHON_TOOL_NAME: &str = "python_repl";
 
+/// The in-process Scheme kernel's tool: the model evaluates Scheme in the session's engine.
+pub const SCHEME_TOOL_NAME: &str = "eval";
+
 #[must_use]
 pub fn is_python_tool_name(name: &str) -> bool {
     matches!(name, PYTHON_TOOL_NAME | "python" | "ipython")

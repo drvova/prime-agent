@@ -206,7 +206,8 @@ pub const ERROR_SUBTYPES: &[&str] = &[
 
 /// The #2117 tool categories.
 pub const TOOL_CATEGORIES: &[&str] = &[
-    "read", "write", "edit", "bash", "grep", "find", "ls", "ipython", "mcp", "custom", "unknown",
+    "read", "write", "edit", "bash", "grep", "find", "ls", "ipython", "scheme", "mcp", "custom",
+    "unknown",
 ];
 
 /// How a provider auth descriptor resolved the session's request

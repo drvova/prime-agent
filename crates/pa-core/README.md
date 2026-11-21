@@ -335,7 +335,8 @@ process, taken from a spare built ahead of time (never a copy of another engine:
 share interpreter state across sessions). Cells run on a blocking thread with their output
 captured, an abort or the per-call timeout interrupts them, and `(host-request type payload)`
 reaches the same `HostRequestHandlers` the Python kernel's host requests do. It implements the
-tool seam's executor and provisioner traits; no session is wired to it yet.
+tool seam's executor and provisioner traits, and every session exposes it as the `eval` tool
+(`tools::scheme`) beside `python_repl`.
 
 ## Non-goals
 No provider HTTP (pa-ai), no loop policy (pa-agent), no daemon supervision (pa-daemon), no TUI (pa-tui). No update coordination (the pa-cli coordinator owns the FSM; the update-flow seam here is the daemon-free support layer: `update::version` (semver/channel policy), `update::install` (the managed install-root layout), `update::release` (the channel manifest fetch), `update::download` (sha256-verified archive download + staging), `update::installer` (the installer-takeover funnel plus `BUILD_DISTRIBUTION`, the compile-time `PRIME_AGENT_DIST_*` stamp that points a distribution build's updates at its own releases and prefix and names its own command; unstamped builds are `Distribution::Official`)). The package manager installs sources and resolves resource paths only.

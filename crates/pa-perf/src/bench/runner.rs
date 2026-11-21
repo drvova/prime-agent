@@ -149,9 +149,10 @@ pub(super) fn run(options: &BenchOptions) -> anyhow::Result<BenchResult> {
         Duration::from_secs(options.liveness_secs),
     )?;
     let runs = sample_runs(&ctx, options.runs, |index| match options.scenario {
-        Scenario::FirstCell | Scenario::SubagentFirstCell | Scenario::PandasImport => {
-            launch_kernel(&ctx, options.scenario, index)
-        }
+        Scenario::FirstCell
+        | Scenario::FirstEval
+        | Scenario::SubagentFirstCell
+        | Scenario::PandasImport => launch_kernel(&ctx, options.scenario, index),
         Scenario::ColdStart
         | Scenario::ColdReady
         | Scenario::WarmStart
@@ -324,6 +325,7 @@ pub(super) fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>
         // corpus only supplies the isolated agent dir and project cwd.
         for scenario in [
             Scenario::FirstCell,
+            Scenario::FirstEval,
             Scenario::SubagentFirstCell,
             Scenario::PandasImport,
         ] {
@@ -418,6 +420,7 @@ fn corpus_for<'a>(scenario: Scenario, cold: &'a RunCtx, warm: &'a RunCtx) -> &'a
         | Scenario::TranscriptTop
         | Scenario::IdleCost
         | Scenario::FirstCell
+        | Scenario::FirstEval
         | Scenario::SubagentFirstCell
         | Scenario::PandasImport => cold,
     }
@@ -521,7 +524,10 @@ fn post_launch(
         Scenario::ColdReady | Scenario::WarmReady => {
             Ok(Measured::single(launch.ready.unwrap_or(launch.first)))
         }
-        Scenario::FirstCell | Scenario::SubagentFirstCell | Scenario::PandasImport => {
+        Scenario::FirstCell
+        | Scenario::FirstEval
+        | Scenario::SubagentFirstCell
+        | Scenario::PandasImport => {
             anyhow::bail!("{scenario:?} runs over the daemon wire (launch_kernel), not the TUI")
         }
     }
@@ -1071,6 +1077,10 @@ fn needle_of(scenario: Scenario, ctx: &RunCtx) -> String {
         ),
         Scenario::FirstCell => {
             "the create command -> the first python_repl result event (faux-scripted cell)"
+                .to_string()
+        }
+        Scenario::FirstEval => {
+            "the create command -> the first eval result event (faux-scripted Scheme cell)"
                 .to_string()
         }
         Scenario::SubagentFirstCell => {
