@@ -2,7 +2,7 @@
 
 //! tmux user-level verifier for `/better`: the real `prime-agent` binary runs in a private tmux
 //! server against its own daemon, an isolated HOME, and the scripted faux provider. `/better fix
-//! the parser` sends the read-only helper off (it reads `src/parser.rs` through its `python_repl`,
+//! the parser` sends the read-only helper off (it reads `src/parser.rs` through its `eval` tool,
 //! then answers with a rewrite). Its first rewrite cites `cargo test`, which the pane's `PATH`
 //! does not have, so verification sends it back for one refine pass; the refined rewrite fills
 //! the composer with the ready notice, and nothing is sent: the session records no user message
@@ -109,8 +109,8 @@ fn start(dir: &Path) -> Pane {
     std::fs::write(
         &script,
         json!({ "engine": "faux", "responses": [
-            { "content": [{ "type": "toolCall", "id": "read-1", "name": "python_repl",
-                            "arguments": { "code": "print(await fs.read('src/parser.rs'))" } }] },
+            { "content": [{ "type": "toolCall", "id": "read-1", "name": "eval",
+                            "arguments": { "code": "(displayln (hash-ref (fs-read \"src/parser.rs\") 'text))" } }] },
             { "text": format!("<depth>(1) a failing case first (2) the parser source (3) cargo \
                                test (4) the test</depth>\n<unresolved>\n</unresolved>\n\
                                <rewrite>\n{FIRST_REWRITE}\n</rewrite>") },
