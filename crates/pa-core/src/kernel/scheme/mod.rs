@@ -40,6 +40,8 @@ use crate::tools::ipython::{
 };
 use crate::tools::tool_definition::AbortSignal;
 
+mod native;
+
 /// The Scheme side of the host bridge, defined in every session engine after
 /// its `%host-request-json` primitive is registered.
 const HOST_BRIDGE: &str = r"
@@ -88,6 +90,8 @@ pub fn prewarm_scheme_kernel() {
 struct SessionEngine {
     engine: Mutex<Engine>,
     controller: ThreadStateController,
+    /// The running cell's stop signal, for host functions that block.
+    cell: native::CellSignal,
 }
 
 /// A session's running Scheme kernel.
@@ -114,11 +118,16 @@ impl KernelExecutor for SchemeKernel {
                 });
             }
             let running = Arc::clone(&session);
+            // The engine cannot interrupt a blocking host function: those
+            // watch this signal, cancelled with the interrupt below.
+            let cell = AbortSignal::new();
+            let installed = cell.clone();
             let mut run = tokio::task::spawn_blocking(move || {
                 let mut engine = running
                     .engine
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
+                *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = installed;
                 let prepared = engine.run(
                     "(define %cell-output (open-output-string)) (current-output-port %cell-output)",
                 );
@@ -156,6 +165,7 @@ impl KernelExecutor for SchemeKernel {
             let (joined, stopped) = tokio::select! {
                 joined = &mut run => (joined, None),
                 reason = stop => {
+                    cell.cancel();
                     session.controller.interrupt();
                     (run.await, Some(reason))
                 }
@@ -260,6 +270,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             }
             let handlers = state.handlers.clone();
             let cwd = state.cwd.to_string_lossy().into_owned();
+            let native_cwd = state.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
             let session = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -292,10 +303,13 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     .run(HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
                 host_api::load(&mut engine)?;
+                let cell = native::CellSignal::default();
+                native::register(&mut engine, native_cwd, Arc::clone(&cell))?;
                 let controller = engine.get_thread_state_controller();
                 anyhow::Ok(Arc::new(SessionEngine {
                     engine: Mutex::new(engine),
                     controller,
+                    cell,
                 }))
             })
             .await
@@ -313,6 +327,11 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             // A cell still running holds its own reference: interrupt it so
             // the dropped engine stops instead of running on unobserved.
             if let Some(session) = state.session.lock().await.take() {
+                session
+                    .cell
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .cancel();
                 session.controller.interrupt();
             }
         })
