@@ -61,7 +61,7 @@ allow = [
   # notify (the `@` file index watcher) — CC0 public domain dedication.
   "CC0-1.0",
   # steel-core (the in-process Scheme kernel) depends on im, im-rc, bitmaps and sized-chunks,
-  # all MPL-2.0-or-later: file-level copyleft, linked unmodified. Needs the owner's sign-off.
+  # all MPL-2.0-or-later: file-level copyleft, linked unmodified. Accepted by the owner 2026-11-21.
   "MPL-2.0",
 ]
 # Development-only tools are not shipped; we keep the graph tight instead of
