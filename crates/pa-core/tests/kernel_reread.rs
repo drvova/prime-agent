@@ -183,7 +183,6 @@ async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,

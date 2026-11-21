@@ -139,15 +139,13 @@ pub fn wire_updates(event: &Value, state: &mut WireMappingState) -> Vec<AcpSessi
                 .unwrap_or_default()
                 .to_string();
             let args = event.get("args").cloned().unwrap_or(Value::Null);
-            let cell = if pa_types::ai::is_python_tool_name(&tool_name) {
-                args.get("code").and_then(Value::as_str).map(str::to_string)
-            } else {
-                None
-            };
-            let title = if pa_types::ai::is_python_tool_name(&tool_name) {
-                "Python cell".to_string()
-            } else {
-                tool_name.clone()
+            let language = pa_types::ai::kernel_tool_language(&tool_name);
+            let cell =
+                language.and_then(|_| args.get("code").and_then(Value::as_str).map(str::to_string));
+            let title = match language {
+                Some(pa_types::ai::KernelLanguage::Scheme) => "Scheme cell".to_string(),
+                Some(pa_types::ai::KernelLanguage::Python) => "Python cell".to_string(),
+                None => tool_name.clone(),
             };
             vec![AcpSessionUpdate::ToolCall {
                 tool_call_id,

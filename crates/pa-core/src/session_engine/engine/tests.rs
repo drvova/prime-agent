@@ -139,7 +139,6 @@ async fn engine_runs_tool_loop_and_persists() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
     })
@@ -251,7 +250,6 @@ async fn spawned_child_prompt_stamps_its_depth() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
     })
@@ -326,7 +324,6 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             model_info: None,
             on_background_work_settled: None,
             bash_notice_wake: None,
-            kernel_ready_gate: None,
             prewarm_ipython_kernel: None,
             queued_goal_context_purge: None,
         }
@@ -442,10 +439,7 @@ async fn create_session_registers_the_kernel_backed_tools_without_cron_wiring() 
         .iter()
         .map(|tool| tool.name().to_string())
         .collect();
-    assert!(
-        names.iter().any(|name| name == "python_repl"),
-        "tools: {names:?}"
-    );
+    assert!(names.iter().any(|name| name == "eval"), "tools: {names:?}");
 }
 
 /// A daemon-shaped resume: an in-memory session manager (the daemon's
@@ -518,7 +512,6 @@ async fn create_session_appends_missing_resume_settings_rows() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
     })
@@ -616,28 +609,14 @@ fn prompt_lists_skill(engine: &SessionEngine, name: &str) -> bool {
         .contains(&format!("<name>{name}</name>"))
 }
 
-fn kernel_skill_imports(engine: &SessionEngine) -> Vec<String> {
-    engine
-        .provisioner
-        .python_skills()
-        .iter()
-        .map(|skill| skill.import_name.clone())
-        .collect()
-}
-
 /// One model-visible surface per embedding, keyed on the wired host
-/// handlers (#8): the prompt and the kernel pre-import list only the
-/// skills whose host requests registered. Print wires the messaging
+/// handlers (#8): the prompt lists only the skills whose host requests
+/// registered. Print wires the messaging
 /// handlers, RPC none, the daemon shape all three (its cron wiring also
 /// serves the heartbeat requests).
 #[tokio::test]
 async fn model_visible_skills_follow_the_embedding_wiring() {
     let all = ["agent-message", "agent-observe", "rlm-heartbeat"];
-    let imports_of = [
-        ("agent-message", "agent_message"),
-        ("agent-observe", "agent_observe"),
-        ("rlm-heartbeat", "rlm_heartbeat"),
-    ];
     let cron_dir = tempfile::tempdir().unwrap();
     let daemon_cron = Some(cron_wiring(cron_dir.path()));
     let cases = [
@@ -670,14 +649,6 @@ async fn model_visible_skills_follow_the_embedding_wiring() {
                 prompt_lists_skill(&engine, skill),
                 visible.contains(&skill),
                 "{label}: {skill}"
-            );
-        }
-        let imports = kernel_skill_imports(&engine);
-        for (skill, import) in imports_of {
-            assert_eq!(
-                imports.iter().any(|name| name == import),
-                visible.contains(&skill),
-                "{label}: {import}"
             );
         }
     }
@@ -818,7 +789,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
     let provider = Arc::new(ScriptedProvider::new(model.clone()));
     provider.push_tool_call_turn(
         None,
-        vec![("call-1", PYTHON_TOOL_NAME, serde_json::json!({}))],
+        vec![("call-1", KERNEL_TOOL_NAME, serde_json::json!({}))],
     );
     provider.push_text_turn("all done");
     let tmp = tempfile::tempdir().unwrap();
@@ -841,7 +812,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         },
     };
     let recording_tool = ToolDefinition {
-        name: PYTHON_TOOL_NAME.to_string(),
+        name: KERNEL_TOOL_NAME.to_string(),
         label: "Python".to_string(),
         description: "Runs a python cell.".to_string(),
         prompt_snippet: String::new(),
@@ -903,7 +874,6 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
     })

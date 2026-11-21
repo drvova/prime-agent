@@ -8,7 +8,7 @@ use std::sync::Arc;
 use pa_agent::agent::{Agent, AgentInitialState, AgentOptions};
 use pa_agent::stream::StreamFn;
 use pa_agent::types::{Model, ThinkingLevel};
-use pa_types::ai::PYTHON_TOOL_NAME;
+use pa_types::ai::KERNEL_TOOL_NAME;
 
 use crate::resources::{load_resources, ResourceLoaderOptions};
 use crate::session::manager::SessionManager;
@@ -84,15 +84,13 @@ pub struct SessionEngineConfig {
     /// `None` keeps the TS default ("one-at-a-time").
     pub steering_mode: Option<pa_agent::agent::QueueMode>,
     pub follow_up_mode: Option<pa_agent::agent::QueueMode>,
-    /// Boot the kernel in the background at creation, at every RLM depth (a
-    /// subagent's kernel boots while its first model call is in flight); boot
-    /// failures surface on the next `ensure()`.
+    /// Start the kernel in the background at creation, at every RLM depth (a
+    /// subagent's kernel starts while its first model call is in flight); a
+    /// failed start surfaces on the next cell.
     pub prewarm_ipython_kernel: Option<bool>,
-    /// The kernel restores its snapshot only after this resolves: a replaced engine
-    /// sharing the session's artifact dir flushes its final snapshot first.
-    pub kernel_ready_gate: Option<crate::kernel::provisioner::KernelReadyGate>,
-    /// Fires when the kernel's last live background `bash()` handle
-    /// settles; `None` installs nothing.
+    /// Fires each time the kernel's last live background job (a shell
+    /// command or a cell that outlived its call) settles; `None` installs
+    /// nothing.
     pub on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
     /// The daemonless kernel-notice wake (TS `resumeIfIdle`): with it
     /// the engine registers the `bash.completed`/`bash.consumed`/
@@ -158,18 +156,14 @@ pub struct SessionEngine {
     /// The progress-note store the `rlm.progress.note` handler throttles
     /// into; the embedding mirrors the Arc for sync reads.
     pub rlm_progress_notes: std::sync::Arc<super::rlm_host::RlmProgressNotes>,
-    /// The session's kernel provisioner. The engine is the STRONG owner on
-    /// purpose: the `ipython` tool on the agent and the compaction
-    /// kernel-state probe on the session hold weak references, because the
-    /// kernel's host handlers reach back into the session (goal state,
-    /// turn-boundary requests) — a strong edge anywhere on that return path
-    /// loops the graph and keeps a dropped session's kernel process alive
-    /// until the process exits.
-    pub(crate) provisioner: std::sync::Arc<crate::kernel::provisioner::IpythonKernelProvisioner>,
-    /// The session's Scheme kernel, when it has the Scheme tool: its factory
-    /// runs live there, so the `/factory` lane asks it first.
-    pub(crate) scheme_provisioner:
-        Option<std::sync::Arc<crate::kernel::scheme::SchemeKernelProvisioner>>,
+    /// The session's kernel: the in-process Scheme engine with its shell
+    /// commands, MCP connections, factory runs and background cells. The
+    /// engine and the kernel tool on the agent own it; the compaction probe,
+    /// the cache seam's pending-work probe and the MCP settle hold it
+    /// weakly. Its host handlers reach back into the session, so a session
+    /// that ends must call [`SessionEngine::dispose_kernel`]: that kills
+    /// everything the kernel started.
+    pub(crate) provisioner: std::sync::Arc<crate::kernel::scheme::SchemeKernelProvisioner>,
     /// The session's current resources and the `rlm.reload`/`/reload` re-read.
     pub resource_reload: std::sync::Arc<super::resource_reload::ResourceReload>,
     /// The `/better` runner the TUI command, the session command, and the kernel share.
@@ -745,62 +739,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     if auto_refine_allowed {
         turn_boundary.register_refine_handlers(&mut handlers);
     }
-    // Kernel boots (duration, cold/revived, outcome) count into the
-    // session counters.
-    let on_bootstrap_result = config.telemetry.as_ref().map(|_| {
-        let counters = std::sync::Arc::clone(&session_counters);
-        std::sync::Arc::new(
-            move |stats: crate::kernel::provisioner::KernelBootstrapStats| {
-                counters.note_kernel_bootstrap(
-                    stats.cold,
-                    matches!(
-                        stats.outcome,
-                        crate::kernel::provisioner::KernelBootstrapOutcome::Ready
-                    ),
-                    stats.duration_ms,
-                );
-            },
-        ) as crate::kernel::provisioner::KernelBootstrapResultHandler
-    });
-    // A snapshot in the artifact dir revives the namespace on the next boot
-    // of the same session; `has_snapshot` drives the resume prewarm below.
-    let has_snapshot = session_artifact_dir
-        .as_ref()
-        .is_some_and(|dir| crate::kernel::state_snapshot::snapshot_path_in(dir).exists());
-    // A boot's `onRestore`/`onUnavailableSkills` can settle before the AgentSession
-    // exists, so the rows park in a mailbox it adopts once constructed.
+    // A kernel start can settle before the AgentSession exists, so the rows it
+    // has for the next turn park in a mailbox the session adopts once constructed.
     let boot_notice_rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::<
         pa_types::session::CustomMessage,
     >::new()));
-    let on_restore = {
-        let boot_notice_rows = std::sync::Arc::clone(&boot_notice_rows);
-        Some(std::sync::Arc::new(
-            move |result: &crate::kernel::state_snapshot::RestoreResult| {
-                // Only a genuine revive fires the notice (the provisioner
-                // suppresses the callback when no snapshot existed).
-                let row = super::state_restore_notice::notice_message(result);
-                boot_notice_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(row);
-            },
-        ) as crate::kernel::provisioner::RestoreCallback)
-    };
-    let on_unavailable_skills = {
-        let boot_notice_rows = std::sync::Arc::clone(&boot_notice_rows);
-        Some(std::sync::Arc::new(
-            move |errors: &crate::kernel::bootstrap::UnavailablePythonSkills| {
-                // The broken skills and their import errors ride the next
-                // admitted turn, so the model learns before its first call.
-                let row = super::skills_unavailable_notice::notice_message(errors);
-                boot_notice_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(row);
-            },
-        )
-            as crate::kernel::provisioner::UnavailableSkillsCallback)
-    };
     // The daemonless bash-completion lane (TS registers the handlers in
     // every mode): the in-process sinks steer the notice row onto this
     // session's agent and fire the embedding's wake once the agent
@@ -834,10 +777,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         .collect();
     let websearch_env =
         super::runtime_wiring::websearch_env(&resources.skills, web_search_provider);
-    // The in-process Scheme kernel is wired as the Python one below: the
-    // same host handlers (its file tools count through them), shell settings,
-    // directories and cell yield window, and the same telemetry counters
-    // behind its background cells (counts only).
+    // The session's kernel gets the host handlers (its file tools count
+    // through them), shell settings, directories and cell yield window, and
+    // the telemetry counters behind its background cells (counts only).
     // A failed cell or awaited command gets its error locations' source
     // lines from this workspace; telemetry counts each enrichment.
     let error_context = crate::kernel::error_context::ErrorContext::for_workspace(
@@ -849,15 +791,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
     );
     let scheme_options = crate::kernel::scheme::SchemeKernelOptions {
-        error_context: error_context.clone(),
+        error_context,
         host_handlers: handlers.clone(),
         cwd: cwd.clone(),
-        shell_path: kernel_shell_path.clone(),
-        command_prefix: kernel_command_prefix.clone(),
+        shell_path: kernel_shell_path,
+        command_prefix: kernel_command_prefix,
         agent_dir: Some(config.agent_dir.clone()),
-        env: websearch_env.clone(),
+        env: websearch_env,
         session_id: Some(session_id.clone()),
-        artifact_dir: session_artifact_dir.clone(),
+        artifact_dir: session_artifact_dir,
         cell_window: cell_window.clone(),
         on_background_cell: Some({
             let counters = config
@@ -886,10 +828,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         }),
         // The skills' Scheme source loads at kernel start and after each
         // reload; a skill that fails to load is named on the next turn.
+        // Only the skills the model sees: one whose host request never
+        // registered in this embedding defines nothing in the kernel.
         skill_sources: Some({
             let reload = Arc::clone(&resource_reload);
+            let wired = handlers;
             Arc::new(move || {
-                crate::kernel::scheme::skills::SkillSource::from_skills(&reload.skills())
+                crate::kernel::scheme::skills::SkillSource::from_skills(
+                    &super::runtime_wiring::model_visible_skills(reload.skills(), &wired),
+                )
             })
         }),
         on_unavailable_skills: Some({
@@ -903,124 +850,92 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 },
             )
         }),
-    };
-    let provisioner = super::runtime_wiring::kernel_provisioner(
-        session_id.clone(),
-        handlers,
-        python_skills.clone(),
-        cwd.clone(),
-        &config.agent_dir,
-        kernel_shell_path,
-        kernel_command_prefix,
-        websearch_env,
-        session_artifact_dir,
-        cell_window.clone(),
-        error_context,
-        output_budget.clone(),
-        on_restore,
-        config.on_background_work_settled.clone(),
-        // Telemetry counts each cell that continues in the background and how it
-        // ends; the learned window learns its time when it ends.
-        Some({
-            let counters = config
-                .telemetry
-                .is_some()
-                .then(|| std::sync::Arc::clone(&session_counters));
-            std::sync::Arc::new(move |fact| {
-                use crate::kernel::shared::BackgroundCellFact;
-                if let Some(counters) = &counters {
-                    counters.note_background_cell(fact);
-                }
-                match fact {
-                    BackgroundCellFact::EndedOk {
-                        ran_for: Some(ran_for),
-                    }
-                    | BackgroundCellFact::EndedWithError {
-                        ran_for: Some(ran_for),
-                    } => {
-                        cell_window.observe(ran_for);
-                    }
-                    BackgroundCellFact::Backgrounded
-                    | BackgroundCellFact::EndedOk { ran_for: None }
-                    | BackgroundCellFact::EndedWithError { ran_for: None }
-                    | BackgroundCellFact::Interrupted => {}
-                }
-            }) as crate::kernel::shared::BackgroundCellObserver
+        on_background_work_settled: config.on_background_work_settled.clone(),
+        // A kernel released while the session goes on took its definitions
+        // with it: the model is told ahead of its next turn.
+        on_state_lost: Some({
+            let boot_notice_rows = Arc::clone(&boot_notice_rows);
+            Arc::new(move || {
+                boot_notice_rows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(super::state_restore_notice::notice_message());
+            })
         }),
-        on_unavailable_skills,
-        on_bootstrap_result,
-        config.kernel_ready_gate.clone(),
-    );
-    resource_reload.bind_provisioner(&provisioner);
+        output_budget: output_budget.clone(),
+        // Kernel starts (count, failures, the slowest) count into the session
+        // counters. Every start is a cold one: an engine never revives state.
+        on_started: config.telemetry.as_ref().map(|_| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            Arc::new(move |start: crate::kernel::scheme::KernelStart| {
+                counters.note_kernel_bootstrap(
+                    /*cold*/ true,
+                    start.succeeded,
+                    start.took.as_millis() as u64,
+                );
+            }) as crate::kernel::scheme::KernelStartObserver
+        }),
+    };
+    // The session's one kernel: the in-process Scheme engine. Its spare is
+    // built here in the background, so the first cell does not pay for it.
+    crate::kernel::scheme::prewarm_scheme_kernel();
+    let provisioner =
+        Arc::new(crate::kernel::scheme::SchemeKernelProvisioner::with_options(scheme_options));
     let mut tools = config.tools.clone();
-    if !tools.iter().any(|tool| tool.name() == PYTHON_TOOL_NAME) {
-        let definition = crate::tools::ipython::create_ipython_tool_definition(
-            &cwd.to_string_lossy(),
-            super::runtime_wiring::ipython_tool_options(
-                provisioner.clone(),
-                config.on_late_sent_agent_message.clone(),
-            ),
-        );
-        tools.push(Arc::new(
-            crate::session_engine::tool_bridge::ToolDefinitionBridge::new(definition),
-        ));
-    }
-    let mut scheme_provisioner = None;
-    if !tools
-        .iter()
-        .any(|tool| tool.name() == pa_types::ai::SCHEME_TOOL_NAME)
-    {
-        // The in-process Scheme kernel answers host requests from the same
-        // handlers as the Python kernel. Its engine comes from the process's
-        // spare, built here in the background so the first `eval` does not
-        // pay for it.
-        crate::kernel::scheme::prewarm_scheme_kernel();
+    if !tools.iter().any(|tool| tool.name() == KERNEL_TOOL_NAME) {
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
-                crate::tools::scheme::create_scheme_tool_definition(Arc::clone(
-                    scheme_provisioner.insert(Arc::new(
-                        crate::kernel::scheme::SchemeKernelProvisioner::with_options(
-                            scheme_options,
-                        ),
-                    )),
-                )
-                    as Arc<dyn crate::tools::ipython::IpythonKernelProvisioner>),
+                crate::tools::scheme::create_scheme_tool_definition(
+                    crate::tools::ipython::IpythonToolOptions {
+                        provisioner: Arc::clone(&provisioner)
+                            as Arc<dyn crate::tools::ipython::IpythonKernelProvisioner>,
+                        on_late_sent_agent_message: config.on_late_sent_agent_message.clone(),
+                    },
+                ),
             ),
         ));
     }
     let active_tool_names: Vec<String> = tools.iter().map(|tool| tool.name().to_string()).collect();
+    let has_kernel_tool = active_tool_names
+        .iter()
+        .any(|name| name == KERNEL_TOOL_NAME);
 
-    // A subagent prewarms like a top-level session: its first model call
-    // almost always ends in a `python_repl` cell, so the boot overlaps that
-    // call instead of following it. A resumed session prewarms even when the
-    // config flag is off, so its namespace revives before the first turn.
-    let prewarm_configured = config.prewarm_ipython_kernel.unwrap_or(false);
-    if (prewarm_configured || has_snapshot)
-        && active_tool_names
-            .iter()
-            .any(|name| name == PYTHON_TOOL_NAME)
-    {
+    // A resumed session starts on a new engine: what its earlier cells
+    // defined is gone, and the model is told once, ahead of its next turn.
+    if has_kernel_tool {
+        let earlier = wiring.session.lock().await.active_context().messages;
+        if let Some(row) = super::state_restore_notice::notice_for_resumed(&earlier) {
+            boot_notice_rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(row);
+        }
+    }
+
+    // A subagent starts its kernel early like a top-level session: its first
+    // model call almost always ends in a cell, so the start overlaps that
+    // call instead of following it.
+    if config.prewarm_ipython_kernel.unwrap_or(false) && has_kernel_tool {
         provisioner.prewarm();
         // The MCP settle rides the same background posture (the
         // parallel-startup rule: nothing user-visible waits on the MCP
-        // spawn/settle; the join point is first use): once the kernel is
-        // up, the configured generic servers open in the background via
-        // the bounded `mcp_status` listing the connections view uses, so
-        // tool discovery is warm by the first turn. A tool call or
-        // listing that arrives first is never raced to an error — the
-        // runtime's registry serializes per-server opens on its lock and
-        // then reuses the open connection, so the earliest user of a
-        // server joins the settle's in-flight open and succeeds.
+        // spawn/settle; the join point is first use): the configured generic
+        // servers open in the background through the bounded listing the
+        // connections view uses, so tool discovery is warm by the first
+        // turn. A tool call or listing that arrives first is never raced to
+        // an error: the kernel's registry serializes per-server opens and
+        // then reuses the open connection, so the earliest user of a server
+        // joins the settle's in-flight open and succeeds. The settle holds
+        // the kernel weakly: a session dropped meanwhile is not kept alive.
         let settle_servers = generic_mcp_servers.clone();
-        let settle_provisioner = provisioner.clone();
+        let settle_provisioner = Arc::downgrade(&provisioner);
         tokio::spawn(async move {
-            if settle_provisioner.ensure(None, None).await.is_ok() {
-                if let Some(manager) = settle_provisioner.manager() {
-                    let _ = manager
-                        .mcp_tool_listing(&settle_servers, MCP_SETTLE_PER_SERVER_TIMEOUT_MS)
-                        .await;
-                }
-            }
+            let Some(provisioner) = settle_provisioner.upgrade() else {
+                return;
+            };
+            provisioner
+                .mcp_tool_listing(&settle_servers, MCP_SETTLE_PER_SERVER_TIMEOUT_MS)
+                .await;
         });
     }
 
@@ -1123,9 +1038,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let digest_context = super::harness_digest::HarnessDigestContext {
         global_dir: crate::refinement::get_global_harness_state_dir(&config.agent_dir),
         local_dir: local_harness_dir,
-        include_ipython: active_tool_names
-            .iter()
-            .any(|name| name == PYTHON_TOOL_NAME),
+        include_ipython: has_kernel_tool,
         include_shell_examples: active_tool_names.iter().any(|name| name == "bash"),
         include_refine: model_visible_skills.iter().any(|skill| {
             !skill.disable_model_invocation
@@ -1281,8 +1194,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                     Box::pin(async move {
                         let background_bash = provisioner
                             .upgrade()
-                            .and_then(|provisioner| provisioner.manager())
-                            .is_some_and(|manager| manager.has_background_work());
+                            .is_some_and(|provisioner| provisioner.has_background_work());
                         if background_bash {
                             return true;
                         }
@@ -1504,12 +1416,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     );
     // The probe holds a WEAK reference: the engine owns the provisioner,
     // and a strong edge here would loop the graph.
-    let kernel_state_probe: std::sync::Arc<
-        dyn crate::session_engine::ipython_state::CompactionKernelProbe,
-    > = std::sync::Arc::new(crate::session_engine::ipython_state::EngineOwnedProbe::new(
-        std::sync::Arc::downgrade(&provisioner),
-    ));
-    session.set_kernel_state_probe(Some(kernel_state_probe));
+    session.set_kernel_state_probe(Some(std::sync::Arc::new(std::sync::Arc::downgrade(
+        &provisioner,
+    ))));
     // The admission path's `/skill:` expansion reads the FULL loader
     // inventory (TS `_expandSkillCommand` expands from the loader); the
     // model-visible list only shapes the prompt, pre-import, and counts.
@@ -1648,7 +1557,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         worktrees,
         rlm_usage: wiring.rlm_usage,
         factory_host,
-        scheme_provisioner,
         rlm_progress_notes: Arc::clone(&wiring.rlm.notes),
         provisioner,
         resource_reload,
@@ -1681,23 +1589,20 @@ impl SessionEngine {
             .await;
     }
 
-    /// A weak reference for lock-free kernel liveness probes without
-    /// joining the strong ownership graph.
+    /// A weak reference for kernel liveness probes without joining the
+    /// strong ownership graph.
     pub fn kernel_provisioner_weak(
         &self,
-    ) -> std::sync::Weak<crate::kernel::provisioner::IpythonKernelProvisioner> {
+    ) -> std::sync::Weak<crate::kernel::scheme::SchemeKernelProvisioner> {
         std::sync::Arc::downgrade(&self.provisioner)
     }
 
-    /// Whether the session's kernel has live background `bash()` work
-    /// (TS `isSessionActive`'s `hasBackgroundWork`; the same read the
-    /// daemon's liveness probe uses).
+    /// Whether the session's kernel has live background work: a shell
+    /// command whose completion notice may still be owed, or a cell that
+    /// outlived its call (the same read the daemon's liveness probe uses).
     #[must_use]
     pub fn has_background_bash(&self) -> bool {
-        self.kernel_provisioner_weak()
-            .upgrade()
-            .and_then(|provisioner| provisioner.manager())
-            .is_some_and(|manager| manager.has_background_work())
+        self.provisioner.has_background_work()
     }
 
     /// Expand a `/skill:<name>` submission into its `<skill>` block for
@@ -1754,8 +1659,9 @@ impl SessionEngine {
         self.session.prompt(text, options).await
     }
 
-    /// Tear the kernel down now with a final namespace snapshot, for a host that
-    /// ends the session but keeps the engine alive; dropping the engine tears the kernel down too.
+    /// Tear the kernel down now, for a host that ends the session but keeps the engine
+    /// alive: its running cell is interrupted, and its shell commands (all but the persistent
+    /// shells), MCP servers and factory runs end with it. What its cells defined is lost.
     /// The session's cached Responses sockets close with it (TS `cleanupSessionResources` on
     /// dispose), so a worker that replaces its session does not hold the old socket until the
     /// idle expiry.
@@ -1764,6 +1670,7 @@ impl SessionEngine {
     ///
     /// Panics if the refinement-cancellation mutex is poisoned.
     pub async fn dispose_kernel(&self) {
+        use crate::tools::ipython::IpythonKernelProvisioner as _;
         self.session
             .refinement_cancel
             .lock()
@@ -1772,22 +1679,11 @@ impl SessionEngine {
         if let Some(session_id) = self.session.agent().session_id() {
             pa_ai::responses_transport::close_session_websockets(session_id);
         }
-        self.provisioner.dispose(None).await;
+        self.provisioner.kill().await;
         // The session ends: name the worktrees it made and never removed (they stay on disk).
         if let Some(notice) = self.worktrees.unremoved_notice() {
             eprintln!("prime-agent: {notice}");
         }
-    }
-
-    /// Release the kernel with a final namespace snapshot, revivable: the next
-    /// kernel use boots a fresh kernel and revives the flushed snapshot.
-    pub async fn stop_kernel_snapshot(&self) {
-        self.provisioner
-            .stop_kernel(Some(crate::kernel::shared::KernelShutdownOptions {
-                snapshot: true,
-                drain_host_requests: true,
-            }))
-            .await;
     }
 
     /// One factory activity over this session's live kernel: the `/factory`
@@ -1829,43 +1725,25 @@ impl SessionEngine {
                 .map_err(|join| anyhow::anyhow!("factory run preflight join failed: {join}"))?;
             preflight?;
         }
-        // A session with a running Scheme kernel has its runs there. One
-        // whose Scheme kernel has not started has no Scheme runs, and the
-        // Python kernel (if any) answers as before.
-        if let Some(scheme) = &self.scheme_provisioner {
-            let frame = scheme
-                .factory_activity(&serde_json::json!({
-                    "id": "factory-activity",
-                    "action": request.action,
-                    "runId": request.run_id,
-                    "specId": request.spec_id,
-                    "timeoutMs": request.timeout_ms,
-                }))
-                .await;
-            if let Ok(mut frame) = frame {
-                return match frame["status"].as_str() {
-                    Some("ok") => Ok(frame["result"].take()),
-                    Some(_) | None => Err(anyhow::anyhow!(
-                        "{}",
-                        frame["reason"]
-                            .as_str()
-                            .unwrap_or("Kernel factory activity failed")
-                    )),
-                };
-            }
-        }
-        let manager = self
+        let mut frame = self
             .provisioner
-            .manager()
-            .ok_or_else(|| anyhow::anyhow!("Kernel is not running"))?;
-        manager
-            .factory_activity(
-                request.action,
-                request.run_id.as_deref(),
-                request.spec_id.as_deref(),
-                request.timeout_ms,
-            )
-            .await
+            .factory_activity(&serde_json::json!({
+                "id": "factory-activity",
+                "action": request.action,
+                "runId": request.run_id,
+                "specId": request.spec_id,
+                "timeoutMs": request.timeout_ms,
+            }))
+            .await?;
+        match frame["status"].as_str() {
+            Some("ok") => Ok(frame["result"].take()),
+            Some(_) | None => Err(anyhow::anyhow!(
+                "{}",
+                frame["reason"]
+                    .as_str()
+                    .unwrap_or("Kernel factory activity failed")
+            )),
+        }
     }
 
     /// Out-of-band kernel bash activity, scoped to this session's live kernel.
@@ -1880,16 +1758,17 @@ impl SessionEngine {
         activity_id: Option<&str>,
         lines: usize,
     ) -> anyhow::Result<serde_json::Value> {
-        let manager = self
-            .provisioner
-            .manager()
-            .ok_or_else(|| anyhow::anyhow!("Kernel is not running"))?;
-        manager.bash_activity(action, activity_id, lines).await
+        self.provisioner
+            .bash_activity(action, activity_id, lines)
+            .await
     }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod kernel_tests;
 
 #[cfg(test)]
 mod append_system_tests;

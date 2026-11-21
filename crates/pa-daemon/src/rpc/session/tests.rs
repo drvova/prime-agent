@@ -1,27 +1,19 @@
-//! A same-path reopen builds the replacement engine before the replaced kernel's
-//! dispose flushes its final snapshot into the shared artifact dir: the reopened
-//! session must still revive that final namespace. An in-memory fork rebuilds in
+//! A same-path reopen replaces the engine: the replaced session's kernel ends with
+//! everything it started, and the reopened one starts clean. An in-memory fork rebuilds in
 //! place: a refinement planned on the abandoned branch must not commit onto it.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use pa_core::kernel::provisioner::{IpythonKernelProvisioner, KernelReadyGate};
-use pa_core::kernel::shared::ExecuteOptions;
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
+use pa_core::session_engine::PromptOptions;
 
 use super::{RpcEngineFactory, RpcEngineHandle, RpcEngineRequest, RpcSession};
 use crate::rpc::LineWriter;
-use crate::test_support::{live_kernel_python, KernelEnvOverride};
 
-async fn engine_handle(
-    cwd: &Path,
-    agent_dir: &Path,
-    manager: SessionManager,
-    kernel_ready_gate: Option<KernelReadyGate>,
-) -> RpcEngineHandle {
-    let model = pa_agent::types::Model {
+fn model() -> pa_agent::types::Model {
+    pa_agent::types::Model {
         id: "reopen-test".into(),
         name: "Reopen test".into(),
         api: "test".into(),
@@ -29,18 +21,27 @@ async fn engine_handle(
         base_url: "http://localhost".into(),
         reasoning: false,
         cost: pa_agent::types::UsageCost::default(),
-        context_window: 1_000,
-        max_tokens: 100,
+        context_window: 100_000,
+        max_tokens: 1_000,
         max_tokens_explicit: false,
-    };
-    let provider = Arc::new(pa_agent::scripted::ScriptedProvider::new(model.clone()));
+    }
+}
+
+/// An engine over `manager` whose model is `provider`.
+async fn engine_handle(
+    cwd: &Path,
+    agent_dir: &Path,
+    manager: SessionManager,
+    provider: &Arc<pa_agent::scripted::ScriptedProvider>,
+) -> RpcEngineHandle {
+    let model = model();
     let engine = create_session(SessionEngineConfig {
         cwd: cwd.to_path_buf(),
         agent_dir: agent_dir.to_path_buf(),
         model: Some(model.clone()),
         stream_fn: Some(provider.stream_fn()),
         session_manager: Some(manager),
-        kernel_ready_gate,
+        daemonless: true,
         ..Default::default()
     })
     .await
@@ -62,8 +63,8 @@ async fn engine_handle(
                 cache_read: pa_types::JsNumber::from(0.0),
                 cache_write: pa_types::JsNumber::from(0.0),
             },
-            context_window: 1_000,
-            max_tokens: 100,
+            context_window: 100_000,
+            max_tokens: 1_000,
             max_tokens_explicit: false,
             featured: None,
             serving: None,
@@ -77,37 +78,49 @@ async fn engine_handle(
     }
 }
 
-fn provisioner(handle: &RpcEngineHandle) -> Arc<IpythonKernelProvisioner> {
+/// Run one turn in which the model evaluates `code`; the text of the cell's result.
+async fn run_cell(
+    handle: &RpcEngineHandle,
+    provider: &pa_agent::scripted::ScriptedProvider,
+    code: &str,
+) -> String {
+    provider.push_tool_call_turn(
+        None,
+        vec![("cell", "eval", serde_json::json!({ "code": code }))],
+    );
+    provider.push_text_turn("done");
     handle
         .engine
-        .kernel_provisioner_weak()
-        .upgrade()
-        .expect("the engine owns its provisioner")
+        .prompt("go", PromptOptions::default())
+        .await
+        .expect("the turn is admitted");
+    handle.engine.session.agent().wait_for_idle().await;
+    provider
+        .calls()
+        .last()
+        .and_then(|call| call.messages.last().cloned())
+        .and_then(|message| match message {
+            pa_agent::types::Message::ToolResult(result) => Some(
+                result
+                    .content
+                    .iter()
+                    .map(|block| match block {
+                        pa_agent::types::ToolResultContent::Text(text) => text.text.as_str(),
+                        pa_agent::types::ToolResultContent::Image(_) => "",
+                    })
+                    .collect(),
+            ),
+            pa_agent::types::Message::User(_) | pa_agent::types::Message::Assistant(_) => None,
+        })
+        .expect("the model's last request ends with the cell's result")
 }
 
-fn mkfifo(path: &Path) {
-    let status = std::process::Command::new("mkfifo")
-        .arg(path)
-        .status()
-        .expect("mkfifo runs");
-    assert!(status.success());
-}
-
-#[allow(clippy::await_holding_lock)] // the env override is process-global: the guard must span the async flow
+/// Reopening the session file an RPC process already serves replaces the
+/// engine: the replaced session's kernel ends with the command its cell left
+/// running, and the reopened session starts on a clean kernel.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
-async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
-    let Some(python) = live_kernel_python() else {
-        return;
-    };
-    // The lock guards the env override: acquired first, dropped last, so the
-    // restore never races another test's kernel boot inside the critical section.
-    let _faux = crate::agent_engine::tests::FAUX_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _env = KernelEnvOverride::apply(&[(
-        "PRIME_AGENT_KERNEL_PYTHON",
-        Some(python.display().to_string()),
-    )]);
+async fn a_same_path_reopen_ends_the_replaced_kernel_and_starts_a_clean_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let cwd = dir.path().join("project");
     let agent_dir = dir.path().join("agent");
@@ -121,80 +134,36 @@ async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
         .get_session_file()
         .expect("a persisted session has a file")
         .to_path_buf();
-    let mut old = engine_handle(&cwd, &agent_dir, manager, None).await;
+    let old_model = Arc::new(pa_agent::scripted::ScriptedProvider::new(model()));
+    let mut old = engine_handle(&cwd, &agent_dir, manager, &old_model).await;
     old.session_lease = Some(
         crate::lease::acquire_runtime_session_lease(&session_path, &agent_dir)
             .expect("the session lease"),
     );
+    let pid: u32 = run_cell(
+        &old,
+        &old_model,
+        "(define kept 7) (display (hash-ref (bash \"exec sleep 600\" (hash 'background #t)) 'pid))",
+    )
+    .await
+    .trim()
+    .parse()
+    .expect("the cell printed its command's pid");
 
-    // x = 1 reaches the on-disk snapshot; x = 2 lives only in the old kernel: its cell
-    // holds until released, so no debounced snapshot carries it before the final flush.
-    let kernel = provisioner(&old).ensure(None, None).await.expect("kernel");
-    let first = kernel.execute("x = 1", ExecuteOptions::default()).await;
-    assert!(first.is_ok());
-    assert!(
-        kernel.snapshot_state().await.is_some(),
-        "x = 1 is snapshotted"
-    );
-    let entered = dir.path().join("entered");
-    let release = dir.path().join("release");
-    mkfifo(&entered);
-    mkfifo(&release);
-    let cell = format!(
-        "x = 2\nopen({entered:?}, 'w').close()\nimport asyncio\nawait asyncio.to_thread(lambda: open({release:?}).read())"
-    );
-    let held = tokio::spawn({
-        let kernel = kernel.clone();
-        async move { kernel.execute(&cell, ExecuteOptions::default()).await }
-    });
-    tokio::task::spawn_blocking(move || std::fs::read(entered).expect("the cell entered"))
-        .await
-        .unwrap();
-
+    let new_model = Arc::new(pa_agent::scripted::ScriptedProvider::new(model()));
     let factory: RpcEngineFactory = Arc::new({
-        let cwd = cwd.clone();
-        let agent_dir = agent_dir.clone();
-        let session_dir = session_dir.clone();
+        let (cwd, agent_dir, session_dir) = (cwd.clone(), agent_dir.clone(), session_dir.clone());
+        let new_model = Arc::clone(&new_model);
         move |request| {
-            let cwd = cwd.clone();
-            let agent_dir = agent_dir.clone();
-            let session_dir = session_dir.clone();
-            let release = release.clone();
+            let (cwd, agent_dir, session_dir) =
+                (cwd.clone(), agent_dir.clone(), session_dir.clone());
+            let new_model = Arc::clone(&new_model);
             Box::pin(async move {
-                let RpcEngineRequest::Open {
-                    session_path,
-                    ready_gate,
-                    ..
-                } = request
-                else {
+                let RpcEngineRequest::Open { session_path, .. } = request else {
                     return Err("only the reopen is expected".to_string());
                 };
-                let gate = ready_gate
-                    .ok_or_else(|| "a same-path reopen carries a ready gate".to_string())?;
-                let (entered_tx, entered) = tokio::sync::oneshot::channel();
-                let entered_tx = Arc::new(std::sync::Mutex::new(Some(entered_tx)));
-                let observed: KernelReadyGate = Arc::new(move || {
-                    if let Some(tx) = entered_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
-                    }
-                    gate()
-                });
                 let manager = SessionManager::open(&cwd, &session_dir, &session_path);
-                let handle = engine_handle(&cwd, &agent_dir, manager, Some(observed)).await;
-                // The replacement's resume prewarm either restores or waits on the gate
-                // before the factory returns.
-                let replacement = provisioner(&handle);
-                tokio::select! {
-                    restored = replacement.ensure(None, None) => {
-                        restored.map_err(|error| format!("{error:#}"))?;
-                    }
-                    _ = entered => {}
-                }
-                tokio::task::spawn_blocking(move || std::fs::write(release, "go"))
-                    .await
-                    .unwrap()
-                    .map_err(|error| error.to_string())?;
-                Ok(handle)
+                Ok(engine_handle(&cwd, &agent_dir, manager, &new_model).await)
             })
         }
     });
@@ -203,25 +172,23 @@ async fn a_same_path_reopen_revives_the_replaced_kernels_final_namespace() {
         .replace_locked(RpcEngineRequest::Open {
             session_path,
             reuse_lease: false,
-            ready_gate: None,
         })
         .await
         .expect("the same-path reopen succeeds");
-    let _ = held.await;
-
-    let revived = provisioner(&*session.handle().await)
-        .ensure(None, None)
-        .await
-        .expect("the reopened kernel");
-    let x = revived
-        .execute("x", ExecuteOptions::default())
-        .await
-        .expect("x evaluates");
+    let ended = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        pa_core::platform::process::wait_for_exit(pid),
+    )
+    .await
+    .is_ok_and(|waited| waited.is_ok());
+    let reopened = session.handle().await;
+    let kept = run_cell(&reopened, &new_model, "(+ kept 1)").await;
     assert_eq!(
-        x.result.as_deref(),
-        Some("2"),
-        "the reopened session revived a namespace older than the replaced kernel's final flush"
+        (ended, kept.contains("kept"), kept.trim() == "8"),
+        (true, true, false),
+        "{kept}"
     );
+    reopened.engine.dispose_kernel().await;
 }
 
 const HELD_PLANNER_API: &str = "test-held-rpc-fork-planner";
@@ -297,7 +264,13 @@ async fn an_in_memory_fork_cancels_a_refinement_planned_on_the_abandoned_branch(
             },
         ))
         .unwrap();
-    let mut handle = engine_handle(&cwd, &agent_dir, manager, None).await;
+    let mut handle = engine_handle(
+        &cwd,
+        &agent_dir,
+        manager,
+        &Arc::new(pa_agent::scripted::ScriptedProvider::new(model())),
+    )
+    .await;
     handle.model.api = HELD_PLANNER_API.to_string();
     handle.model.context_window = 128_000;
     let engine = Arc::clone(&handle.engine);

@@ -13,3 +13,13 @@ mod python;
 
 pub use bash::{preview_bash_command, CodePreview, CodePreviewLanguage};
 pub use python::{preview_ipython_code, python_statement_lines};
+
+/// The preview of a Scheme kernel cell: its first line that is not blank.
+#[must_use]
+pub fn preview_scheme_code(code: &str) -> String {
+    code.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_string()
+}

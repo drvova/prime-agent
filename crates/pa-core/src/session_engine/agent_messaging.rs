@@ -314,8 +314,8 @@ pub(crate) fn sanitize_message_header_value(value: &str) -> String {
 /// The heads of the bracket notices the harness renders into a model context (`[agent-message
 /// from ...]`, `[child-exited: ...]`, `[cell-done ...]`, `[task from parent]`, `[loop guard]`,
 /// ...), lowercase. A delivered body line that opens with one is fenced, so a body can never
-/// impersonate the harness or another sender. Prefix matches: `python-state` also covers
-/// `[python-state-restored]`.
+/// impersonate the harness or another sender. Prefix matches: `kernel-state` also covers
+/// `[kernel-state-reset]`, and `python-state` the Python kernel's notices in saved sessions.
 const HARNESS_NOTICE_HEADS: &[&str] = &[
     "agent-message",
     "autonomous-continuation",
@@ -331,6 +331,7 @@ const HARNESS_NOTICE_HEADS: &[&str] = &[
     "goal",
     "harness-digest",
     "heartbeat",
+    "kernel-state",
     "loop guard",
     "model-prompt-error",
     "python-skills-unavailable",

@@ -1,66 +1,69 @@
-//! The resumed-session kernel-state notice (`ipython_state_restored`): a resumed session
-//! spawns a fresh kernel and the namespace snapshot revives the variables; the
-//! provisioner's `on_restore` seam reports the outcome so the model is told BEFORE
-//! the first turn. The fresh kernel owns nothing, so this notice never prunes.
+//! The kernel-reset notice (`ipython_state_restored`): a session's Scheme
+//! kernel is an engine inside the process that runs it, so a resumed session
+//! (and one whose idle kernel was released) starts on a new engine and
+//! nothing its earlier cells defined comes back (Steel cannot serialize
+//! closures, and replaying cells would repeat their side effects). The model
+//! is told so once, ahead of its next turn: on a resume when the transcript
+//! shows it used the kernel since it was last told, on a release when its
+//! cells had defined anything.
 
-use pa_types::session::CustomMessage;
+use pa_types::session::{AgentMessage, CustomMessage};
 
-use crate::kernel::state_snapshot::RestoreResult;
-
+/// The row's custom type: a wire identifier clients and saved sessions
+/// already know, kept from the Python kernel's restore notice.
 pub const IPYTHON_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
+/// The notice text.
+pub const NOTICE_CONTENT: &str = "[kernel-state-reset]\n\nThis session's Scheme kernel was restarted and is a new engine: everything your earlier `eval` cells defined (functions, variables, loaded data) is gone, and so are the cells and shell commands that were running in the background. Define again what you still need before you use it. Files on disk, the session's todo list and persistent shells are unchanged.";
+
+/// The notice for a session resumed with the context `earlier`, or `None`
+/// when the model has nothing to lose: it ran no kernel cell (in either
+/// kernel language) and saw no kernel-state notice since the last time it
+/// was told, or ever.
+#[must_use]
+pub fn notice_for_resumed(earlier: &[AgentMessage]) -> Option<CustomMessage> {
+    let used_since_told = earlier
+        .iter()
+        .rev()
+        .find_map(|message| match message {
+            AgentMessage::ToolResult(result)
+                if pa_types::ai::is_kernel_tool_name(&result.tool_name) =>
+            {
+                Some(true)
+            }
+            AgentMessage::Custom(row)
+                if row.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE =>
+            {
+                Some(true)
+            }
+            AgentMessage::Custom(row) if row.custom_type == IPYTHON_STATE_RESTORED_CUSTOM_TYPE => {
+                Some(false)
+            }
+            AgentMessage::User(_)
+            | AgentMessage::Assistant(_)
+            | AgentMessage::ToolResult(_)
+            | AgentMessage::BashExecution(_)
+            | AgentMessage::Custom(_)
+            | AgentMessage::BranchSummary(_)
+            | AgentMessage::CompactionSummary(_) => None,
+        })
+        .unwrap_or(false);
+    used_since_told.then(notice_message)
 }
 
-/// The notice text: the `[python-state-restored]` header, the
-/// revived-or-fresh line, the failed-names disclosure, and the env/cwd
-/// reset line (a fresh kernel revives neither).
+/// The next-turn notice row. `details.restored` is always false (nothing
+/// is ever revived), which clients show as a fresh kernel.
 #[must_use]
-pub fn notice_content(result: &RestoreResult) -> String {
-    let mut lines = vec!["[python-state-restored]".to_string(), String::new()];
-    if result.restored.is_empty() {
-        lines.push(
-            "Your previous Python kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.".to_string(),
-        );
-    } else {
-        lines.push(format!(
-            "Your Python kernel state was revived from your previous session. These names are available again: {}.",
-            result.restored.join(", ")
-        ));
-    }
-    if !result.failed.is_empty() {
-        lines.push(format!(
-            "These could not be restored and must be recreated if needed: {}.",
-            result
-                .failed
-                .iter()
-                .map(|skip| skip.name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    lines.push(
-        "The working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need.".to_string(),
-    );
-    lines.join("\n")
-}
-
-/// The next-turn notice row: display true, `details.restored` flagging whether anything
-/// revived; the row rides the next admitted turn ahead of its prompt.
-#[must_use]
-pub fn notice_message(result: &RestoreResult) -> CustomMessage {
+pub fn notice_message() -> CustomMessage {
     CustomMessage {
         custom_type: IPYTHON_STATE_RESTORED_CUSTOM_TYPE.to_string(),
-        content: pa_types::ai::UserContent::Text(notice_content(result)),
+        content: pa_types::ai::UserContent::Text(NOTICE_CONTENT.to_string()),
         display: true,
-        details: Some(serde_json::json!({
-            "restored": !result.restored.is_empty(),
-        })),
-        timestamp: now_millis(),
+        details: Some(serde_json::json!({ "restored": false })),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or_default(),
         rest: serde_json::Map::default(),
     }
 }
@@ -68,64 +71,61 @@ pub fn notice_message(result: &RestoreResult) -> CustomMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::state_snapshot::SnapshotSkip;
 
-    fn restore(restored: Vec<&str>, failed: Vec<(&str, &str)>) -> RestoreResult {
-        RestoreResult {
-            restored: restored.into_iter().map(str::to_string).collect(),
-            failed: failed
-                .into_iter()
-                .map(|(name, reason)| SnapshotSkip {
-                    name: name.to_string(),
-                    reason: reason.to_string(),
-                })
-                .collect(),
-            path: std::path::PathBuf::from("/tmp/art/kernel-state.dill"),
-        }
+    fn cell_result(tool_name: &str) -> AgentMessage {
+        serde_json::from_value(serde_json::json!({
+            "role": "toolResult",
+            "toolCallId": "call-1",
+            "toolName": tool_name,
+            "content": [{ "type": "text", "text": "12" }],
+            "isError": false,
+            "timestamp": 1,
+        }))
+        .unwrap()
     }
 
-    #[test]
-    fn revived_notice_lists_names() {
-        let message = notice_message(&restore(vec!["data", "helper"], vec![]));
-        assert_eq!(message.custom_type, "ipython_state_restored");
-        assert!(message.display);
-        assert_eq!(
-            message.details,
-            Some(serde_json::json!({ "restored": true }))
-        );
-        let pa_types::ai::UserContent::Text(content) = &message.content else {
-            panic!("text content");
-        };
-        assert_eq!(
-            content,
-            "[python-state-restored]\n\nYour Python kernel state was revived from your previous session. These names are available again: data, helper.\nThe working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need."
-        );
+    fn row(custom_type: &str) -> AgentMessage {
+        AgentMessage::Custom(CustomMessage {
+            custom_type: custom_type.to_string(),
+            content: pa_types::ai::UserContent::Text(String::new()),
+            display: true,
+            details: None,
+            timestamp: 1,
+            rest: serde_json::Map::default(),
+        })
     }
 
+    /// The notice is owed exactly when a kernel cell (of either kernel), or
+    /// a compaction's kernel-state row, is newer than the last notice.
     #[test]
-    fn empty_restore_notifies_fresh_kernel() {
-        let message = notice_message(&restore(vec![], vec![]));
-        assert_eq!(
-            message.details,
-            Some(serde_json::json!({ "restored": false }))
-        );
-        let pa_types::ai::UserContent::Text(content) = &message.content else {
-            panic!("text content");
+    fn a_resumed_session_is_told_once_per_restart_that_lost_kernel_state() {
+        let told = row(IPYTHON_STATE_RESTORED_CUSTOM_TYPE);
+        let owed = |earlier: &[AgentMessage]| {
+            notice_for_resumed(earlier).map(|notice| (notice.content, notice.details))
         };
+        let notice = Some((
+            pa_types::ai::UserContent::Text(NOTICE_CONTENT.to_string()),
+            Some(serde_json::json!({ "restored": false })),
+        ));
         assert_eq!(
-            content,
-            "[python-state-restored]\n\nYour previous Python kernel state could not be revived; the kernel is starting fresh, so re-create any variables, imports, or loaded data you need.\nThe working directory and environment variables were reset to the session defaults; re-apply any os.chdir(...) or os.environ[...] changes you still need."
-        );
-    }
-
-    #[test]
-    fn failed_names_get_the_recreate_line() {
-        let message = notice_message(&restore(vec!["data"], vec![("sock", "cannot pickle")]));
-        let pa_types::ai::UserContent::Text(content) = &message.content else {
-            panic!("text content");
-        };
-        assert!(
-            content.contains("These could not be restored and must be recreated if needed: sock.")
+            [
+                owed(&[]),
+                owed(&[cell_result("bash")]),
+                owed(&[cell_result("eval")]),
+                owed(&[cell_result("python_repl")]),
+                owed(&[row("ipython_state")]),
+                owed(&[cell_result("eval"), told.clone()]),
+                owed(&[cell_result("eval"), told, cell_result("eval")]),
+            ],
+            [
+                None,
+                None,
+                notice.clone(),
+                notice.clone(),
+                notice.clone(),
+                None,
+                notice,
+            ]
         );
     }
 }

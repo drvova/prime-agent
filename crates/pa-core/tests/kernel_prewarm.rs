@@ -262,9 +262,7 @@ async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
 
     // No prompt and no cell: the boot comes from the creation prewarm alone.
     wait_for_kernel_boot(&engine).await;
-    if let Some(provisioner) = engine.kernel_provisioner_weak().upgrade() {
-        provisioner.dispose(None).await;
-    }
+    engine.dispose_kernel().await;
 }
 
 /// The live opt-out env is process-wide: the counters' switch test scrubs

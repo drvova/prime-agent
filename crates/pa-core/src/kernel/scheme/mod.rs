@@ -50,6 +50,7 @@ use crate::tools::tool_definition::AbortSignal;
 
 mod mcp;
 mod native;
+mod session;
 pub mod skills;
 
 pub(in crate::kernel::scheme) use factory::validate_factory_spec;
@@ -160,7 +161,32 @@ pub struct SchemeKernelOptions {
     pub skill_sources: Option<skills::SkillSourcesProvider>,
     /// Told which skills' Scheme source failed to load.
     pub on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
+    /// Fires each time the kernel's last live background job settles (a
+    /// shell command or a cell that outlived its call), so the session can
+    /// run what was waiting for it.
+    pub on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
+    /// The session's cap on a cell's output, which follows the context the
+    /// session has left. It applies only where cut output is kept (a saved
+    /// session's spill store); the default never tightens the cap.
+    pub output_budget: crate::kernel::spill::OutputBudget,
+    /// Hears how each start of the kernel went.
+    pub on_started: Option<KernelStartObserver>,
+    /// Called when a kernel that stays in use is released and its cells'
+    /// definitions go with it (see [`SchemeKernelProvisioner::release`]), so
+    /// the session can tell the model.
+    pub on_state_lost: Option<Arc<dyn Fn() + Send + Sync>>,
 }
+
+/// How one start of a session's kernel went.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KernelStart {
+    pub succeeded: bool,
+    /// From the first `ensure` that found no kernel to the engine being ready.
+    pub took: std::time::Duration,
+}
+
+/// Hears each start of a session's kernel (the session's start counters).
+pub type KernelStartObserver = Arc<dyn Fn(KernelStart) + Send + Sync>;
 
 /// A session's settings as its cells and host functions read them.
 pub(crate) struct SessionEnvironment {
@@ -175,11 +201,16 @@ pub(crate) struct SessionEnvironment {
     pub(crate) on_background_cell: Option<BackgroundCellObserver>,
     pub(crate) agent_dir: Option<PathBuf>,
     pub(crate) error_context: crate::kernel::error_context::ErrorContext,
+    pub(crate) background: session::BackgroundWork,
+    pub(crate) output_budget: crate::kernel::spill::OutputBudget,
 }
 
 /// One session's engine and the cells it runs.
 struct SessionEngine {
     engine: Mutex<Engine>,
+    /// How many global names the engine had when the kernel was ready: the
+    /// ones after them are what the session's cells defined.
+    own_globals: usize,
     /// The running cell's stop signal, for host functions that block.
     cell: native::CellSignal,
     /// Held by the cell on the engine, from its start to its end: the engine
@@ -222,6 +253,8 @@ struct ProvisionerState {
     mcp: Arc<mcp::Registry>,
     skill_sources: Option<skills::SkillSourcesProvider>,
     on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
+    on_started: Option<KernelStartObserver>,
+    on_state_lost: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The session's engine once started; the async lock holds concurrent
     /// `ensure` calls to one startup.
     session: tokio::sync::Mutex<Option<Arc<SessionEngine>>>,
@@ -284,6 +317,8 @@ impl SchemeKernelProvisioner {
                 mcp,
                 skill_sources: options.skill_sources,
                 on_unavailable_skills: options.on_unavailable_skills,
+                on_started: options.on_started,
+                on_state_lost: options.on_state_lost,
                 handlers: options.host_handlers,
                 environment: Arc::new(SessionEnvironment {
                     cwd: options.cwd,
@@ -296,6 +331,8 @@ impl SchemeKernelProvisioner {
                     on_background_cell: options.on_background_cell,
                     agent_dir: options.agent_dir,
                     error_context: options.error_context,
+                    background: session::BackgroundWork::new(options.on_background_work_settled),
+                    output_budget: options.output_budget,
                 }),
                 session: tokio::sync::Mutex::new(None),
             }),
@@ -395,7 +432,8 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
             let cwd = state.environment.cwd.to_string_lossy().into_owned();
             let native_cwd = state.environment.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
-            let session = tokio::task::spawn_blocking(move || {
+            let starting = std::time::Instant::now();
+            let started = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
                 let mut engine = spare.unwrap_or_default();
                 let cells = cell::Cells::new(
@@ -507,7 +545,9 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
                 skills.start(&mut engine)?;
+                let own_globals = engine.globals().len();
                 anyhow::Ok(Arc::new(SessionEngine {
+                    own_globals,
                     engine: Mutex::new(engine),
                     cell,
                     turn: Arc::new(tokio::sync::Mutex::new(())),
@@ -518,7 +558,15 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 }))
             })
             .await
-            .map_err(|error| anyhow!("the Scheme kernel's start thread failed: {error}"))??;
+            .map_err(|error| anyhow!("the Scheme kernel's start thread failed: {error}"))
+            .and_then(std::convert::identity);
+            if let Some(on_started) = &state.on_started {
+                on_started(KernelStart {
+                    succeeded: started.is_ok(),
+                    took: starting.elapsed(),
+                });
+            }
+            let session = started?;
             *slot = Some(Arc::clone(&session));
             // The spare is spent: build the next session's.
             prewarm_scheme_kernel();

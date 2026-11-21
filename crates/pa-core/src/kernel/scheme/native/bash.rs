@@ -77,6 +77,7 @@ use tokio::sync::watch;
 use self::job::{lock, FinishHook, Finished, Job, Notice, Table};
 use crate::kernel::orphan_journal::record_orphan_process_state;
 use crate::kernel::scheme::cell::{self, CellRecord};
+use crate::kernel::scheme::session::{BackgroundWork, LiveWork};
 use crate::kernel::scheme::SessionEnvironment;
 use crate::kernel::shared::{
     HostRequestHandlers, HostRequestPayload, KernelCommandFailure, BASH_COMPLETED_REQUEST_TYPE,
@@ -130,6 +131,11 @@ const TAIL_LINES: usize = 20;
 const TAIL_CHARS: usize = 2000;
 /// How much of a command a notice or a display record carries.
 const COMMAND_CAP: usize = 1000;
+/// The most bytes one reply to the user's look at the commands may take on
+/// the wire, and how long a command the user stops has to end before it is
+/// killed.
+const ACTIVITY_REPLY_BYTES: usize = 16_384;
+const ACTIVITY_KILL_GRACE: Duration = Duration::from_secs(5);
 /// How long a wait gives the host to store a test run's outputs before it
 /// returns the summary without handles.
 const HANDLE_WAIT: Duration = Duration::from_secs(2);
@@ -183,6 +189,11 @@ pub(super) struct Session {
     /// The number of the last cell that ended.
     cell_ended: watch::Sender<u64>,
     cache: Arc<Mutex<cache::CommandCache>>,
+    /// The session's count of live background work: a command is in it from
+    /// its start until its completion notice is handed over or not due.
+    background: BackgroundWork,
+    /// Cancelled when the kernel is killed.
+    killed: AbortSignal,
 }
 
 /// The kernel's hold on its session's commands. Dropping it kills them, as
@@ -212,11 +223,94 @@ impl BashJobs {
             table.closed = true;
             table.jobs.values().cloned().collect()
         };
+        self.0.killed.cancel();
         for job in jobs {
             if job.lasting.is_none() && !lock(&job.state).reaped && job.destroy() {
                 record_orphan_process_state(job.pid as i32, false);
             }
         }
+    }
+}
+
+impl BashJobs {
+    /// Answer the user's look at the session's commands, off the engine: the
+    /// reply of [`crate::kernel::scheme::SchemeKernelProvisioner::bash_activity`],
+    /// whose arguments it has checked. A reply stays under
+    /// [`ACTIVITY_REPLY_BYTES`]: a list drops finished commands first, then
+    /// the oldest; a tail drops its oldest text.
+    ///
+    /// # Errors
+    ///
+    /// `tail` or `kill` names a command the kernel does not have, or a
+    /// persistent shell's output could not be read.
+    pub(in crate::kernel::scheme) fn activity(
+        &self,
+        action: &str,
+        activity_id: Option<&str>,
+        lines: usize,
+    ) -> anyhow::Result<Value> {
+        let fits = |reply: &Value| reply.to_string().len() <= ACTIVITY_REPLY_BYTES;
+        let Some(id) = activity_id else {
+            let mut rows: Vec<Value> = {
+                let table = lock(&self.0.table);
+                table
+                    .order
+                    .iter()
+                    .filter_map(|id| table.jobs.get(id))
+                    .map(|job| {
+                        let state = lock(&job.state);
+                        let duration = state
+                            .finished
+                            .as_ref()
+                            .map_or_else(|| job.started.elapsed(), |finished| finished.duration);
+                        json!({
+                            "id": job.id,
+                            "command": job.command.chars().take(512).collect::<String>(),
+                            "pid": job.pid,
+                            "startedAt": job.started_at,
+                            "durationMs": duration.as_millis() as u64,
+                            "status": if state.reaped { "finished" } else { "running" },
+                            "exitCode": state.finished.as_ref().map(|finished| finished.exit_code),
+                            "persistent": job.lasting.is_some(),
+                        })
+                    })
+                    .collect()
+            };
+            while rows.len() > 1 && !fits(&json!({ "activities": rows })) {
+                let dropped = rows
+                    .iter()
+                    .position(|row| row["status"] != json!("running"))
+                    .unwrap_or(0);
+                rows.remove(dropped);
+            }
+            return Ok(json!({ "activities": rows }));
+        };
+        let job = lock(&self.0.table)
+            .jobs
+            .get(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Unknown kernel bash activity"))?;
+        if action == "kill" {
+            let running = !lock(&job.state).reaped;
+            if running {
+                job.kill(&self.0.runtime, Signal::Term, ACTIVITY_KILL_GRACE);
+            }
+            return Ok(json!({ "activityId": id, "killed": running }));
+        }
+        let text = job.text()?;
+        let all: Vec<&str> = text.lines().collect();
+        let mut tail = all[all.len().saturating_sub(lines)..].join("\n");
+        loop {
+            let size = json!({ "activityId": id, "tail": tail }).to_string().len();
+            if size <= ACTIVITY_REPLY_BYTES {
+                break;
+            }
+            // Escaping can make one character six bytes: drop the oldest
+            // sixth of what is over, at least one character, and look again.
+            let dropped = ((size - ACTIVITY_REPLY_BYTES) / 6 + 1).min(tail.chars().count());
+            tail = tail.chars().skip(dropped).collect();
+        }
+        Ok(json!({ "activityId": id, "tail": tail }))
     }
 }
 
@@ -456,22 +550,31 @@ pub(super) fn open(
         cells: Mutex::new(Cells::default()),
         cell_ended: watch::Sender::new(0),
         cache: Arc::new(Mutex::new(cache::CommandCache::default())),
+        background: environment.background.clone(),
+        killed: AbortSignal::new(),
     });
     for job in persistent::rehydrate(&session) {
-        session.runtime.spawn(announce(Arc::clone(&session), job));
+        let live = session.background.enter();
+        session
+            .runtime
+            .spawn(announce(Arc::clone(&session), job, live));
     }
     let jobs = BashJobs(Arc::clone(&session));
     (session, jobs)
 }
 
 /// Tell the session about a job that ended after its cell, unread: the
-/// `[bash-done]` notice.
-async fn announce(session: Arc<Session>, job: Arc<Job>) {
-    job.until(|job| {
-        let state = lock(&job.state);
-        state.finished.is_some() && state.reaped
-    })
-    .await;
+/// `[bash-done]` notice. The job is live background work (`_live`) until
+/// this returns.
+async fn announce(session: Arc<Session>, job: Arc<Job>, _live: LiveWork) {
+    tokio::select! {
+        () = job.until(|job| {
+            let state = lock(&job.state);
+            state.finished.is_some() && state.reaped
+        }) => {}
+        // A persistent shell runs on without its kernel, which hears no more of it.
+        () = session.killed.cancelled() => return,
+    }
     // The cell may do other work before it waits for this job: it is not
     // left behind until that whole cell has ended.
     let mut ended = session.cell_ended.subscribe();
@@ -823,9 +926,11 @@ pub(super) fn call(
             show(CellRecord::BashCommand {
                 command: script.to_string(),
             });
+            // Counted before the call returns: the cell can end right after it.
+            let live = session.background.enter();
             session
                 .runtime
-                .spawn(announce(Arc::clone(session), Arc::clone(&job)));
+                .spawn(announce(Arc::clone(session), Arc::clone(&job), live));
             if background {
                 return Ok(handle(&job));
             }

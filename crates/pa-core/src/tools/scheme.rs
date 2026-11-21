@@ -1,14 +1,14 @@
-//! The `eval` tool: the model evaluates Scheme in the session's in-process
-//! kernel ([`crate::kernel::scheme`]). Results render through the same path
-//! as the Python kernel's cells, so the transcript shows both alike.
+//! The `eval` tool, a session's kernel tool: the model evaluates Scheme in
+//! the session's in-process kernel ([`crate::kernel::scheme`]). Results take
+//! the shape the Python kernel's cells had, so a transcript that holds both
+//! shows them alike.
 
 use std::sync::Arc;
 
 use serde_json::json;
 
 use crate::tools::ipython::{
-    execute_ipython, timeout_arg_ms, IpythonKernelProvisioner, IpythonToolOptions,
-    PYTHON_REPL_TIMEOUT_MAX_S,
+    execute_ipython, timeout_arg_ms, IpythonToolOptions, PYTHON_REPL_TIMEOUT_MAX_S,
 };
 use crate::tools::tool_definition::{
     ExecuteFn, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolUpdate,
@@ -23,17 +23,21 @@ const LIVE_OUTPUT_CHARS: usize = 8_000;
 const PYTHON_BACKGROUND_NOTE_END: &str =
     "A cell that must end inside this call can pass a larger `timeout`.";
 
-/// The `eval` tool definition over a session's Scheme kernel.
+/// The `eval` tool definition over a session's Scheme kernel. An agent
+/// message a cell sends after its call returned (a cell in the background)
+/// reaches `options.on_late_sent_agent_message` with the call's id.
 #[must_use]
-pub fn create_scheme_tool_definition(
-    provisioner: Arc<dyn IpythonKernelProvisioner>,
-) -> ToolDefinition {
-    let options = Arc::new(IpythonToolOptions {
-        provisioner,
-        on_late_sent_agent_message: None,
-    });
-    let execute: ExecuteFn = Arc::new(move |_tool_call_id, params, signal, on_update| {
+pub fn create_scheme_tool_definition(options: IpythonToolOptions) -> ToolDefinition {
+    let options = Arc::new(options);
+    let execute: ExecuteFn = Arc::new(move |tool_call_id, params, signal, on_update| {
         let options = Arc::clone(&options);
+        let on_late_sent_agent_message =
+            options.on_late_sent_agent_message.as_ref().map(|handler| {
+                let handler = Arc::clone(handler);
+                let tool_call_id = tool_call_id.to_string();
+                Arc::new(move |message| handler(&tool_call_id, message))
+                    as crate::kernel::shared::LateSentAgentMessageCallback
+            });
         // The kernel streams a cell's output piece by piece and a card shows
         // only its latest update, so each update carries the output so far.
         let on_update = on_update.map(|show| {
@@ -74,7 +78,7 @@ pub fn create_scheme_tool_definition(
                 timeout_arg_ms(&params),
                 signal,
                 on_update,
-                None,
+                on_late_sent_agent_message,
             )
             .await?;
             let background = result
@@ -159,8 +163,10 @@ mod tests {
                 }
             }),
         );
-        let tool =
-            create_scheme_tool_definition(Arc::new(SchemeKernelProvisioner::new(handlers, "/")));
+        let tool = create_scheme_tool_definition(IpythonToolOptions {
+            provisioner: Arc::new(SchemeKernelProvisioner::new(handlers, "/")),
+            on_late_sent_agent_message: None,
+        });
         let updates = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = Arc::clone(&updates);
         let on_update: OnUpdate = Arc::new(move |update: ToolUpdate| {
@@ -201,8 +207,8 @@ mod tests {
                 }
             }),
         );
-        let tool = create_scheme_tool_definition(Arc::new(SchemeKernelProvisioner::with_options(
-            SchemeKernelOptions {
+        let tool = create_scheme_tool_definition(IpythonToolOptions {
+            provisioner: Arc::new(SchemeKernelProvisioner::with_options(SchemeKernelOptions {
                 host_handlers: handlers,
                 cwd: dir.path().to_path_buf(),
                 cell_window: CellWindow::for_session(CellWindowConfig {
@@ -213,8 +219,9 @@ mod tests {
                     on_armed: None,
                 }),
                 ..SchemeKernelOptions::default()
-            },
-        )));
+            })),
+            on_late_sent_agent_message: None,
+        });
         let result = (tool.execute)(
             "call-1",
             json!({"code": "(display \"started\") (host-request \"gate-wait\" (hash))"}),

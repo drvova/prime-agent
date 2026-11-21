@@ -81,7 +81,7 @@ pub(crate) fn append_to_tool_result(
     // The python tool's aliases all count (an `ipython`/`python`-named
     // call, and TS-era files, store the name the model called): the
     // receipt patches the row whatever the alias was.
-    if result.tool_call_id != tool_call_id || !pa_types::ai::is_python_tool_name(&result.tool_name)
+    if result.tool_call_id != tool_call_id || !pa_types::ai::is_kernel_tool_name(&result.tool_name)
     {
         return false;
     }
@@ -183,7 +183,7 @@ pub(crate) fn landing_transform(
             if !matches!(
                 &message,
                 AgentMessage::Standard(Message::ToolResult(result))
-                    if pa_types::ai::is_python_tool_name(&result.tool_name)
+                    if pa_types::ai::is_kernel_tool_name(&result.tool_name)
             ) {
                 return message;
             }

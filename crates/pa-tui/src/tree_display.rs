@@ -141,8 +141,8 @@ fn format_tool_call(theme: &Theme, name: &str, arguments: &Value) -> Line {
     let text = match name {
         "edit" => format!("[edit: {}]", shorten_path(&arg("path"))),
         "bash" => format!("[bash: {}]", shorten(&arg("command"))),
-        python_name if pa_types::ai::is_python_tool_name(python_name) => {
-            format!("[{python_name}: {}]", shorten(&arg("code")))
+        kernel_name if pa_types::ai::is_kernel_tool_name(kernel_name) => {
+            format!("[{kernel_name}: {}]", shorten(&arg("code")))
         }
         _ => {
             let serialized = serde_json::to_string(arguments).unwrap_or_default();

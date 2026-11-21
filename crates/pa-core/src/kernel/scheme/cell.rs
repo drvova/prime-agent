@@ -207,6 +207,8 @@ struct CellState {
     /// The call has returned: nothing more reaches its result.
     settled: bool,
     late: Option<LateSentAgentMessageCallback>,
+    /// The files the cell edited after its call returned, in order.
+    late_edits: Vec<String>,
     /// The newest [`BACKGROUND_OUTPUT_BYTES`] printed to either port after
     /// the call returned.
     background_output: VecDeque<u8>,
@@ -230,23 +232,40 @@ impl CellHandle {
         &self.0.session
     }
 
-    /// Put `record` on the cell's result card. A record made after the
-    /// cell's call returned is dropped, as the Python kernel dropped a
-    /// settled cell's display events, except a sent agent message.
+    /// Put `record` on the cell's result card. After the cell's call
+    /// returned there is no card: a sent agent message goes to the session's
+    /// late-message handler, an edited file is named by the cell's
+    /// completion notice, and any other record is dropped. A command teaches
+    /// the project card either way.
     pub(crate) fn record(&self, record: CellRecord) {
+        // The project card learns the build and test commands cells run,
+        // whether or not the cell's call is still waiting.
+        if let CellRecord::BashCommand { command } = &record {
+            if let Some(card) = crate::project_card::ProjectCard::registered(&self.0.session.cwd) {
+                card.observe_command(command);
+            }
+        }
         let mut state = self.0.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.settled {
             let late = state.late.clone();
-            drop(state);
             match (record, late) {
-                (CellRecord::SentAgentMessage(message), Some(late)) => late(message),
+                (CellRecord::SentAgentMessage(message), Some(late)) => {
+                    drop(state);
+                    late(message);
+                }
+                // The card is gone, so the cell's completion notice names
+                // the files it edited since.
+                (CellRecord::Diff(diff), _) => {
+                    if !state.late_edits.contains(&diff.path) {
+                        state.late_edits.push(diff.path);
+                    }
+                }
                 (
                     CellRecord::SentAgentMessage(_)
                     | CellRecord::TodoList(_)
                     | CellRecord::Question(_)
                     | CellRecord::TranscriptRead(_)
                     | CellRecord::Attachment(_)
-                    | CellRecord::Diff(_)
                     | CellRecord::BashCommand { .. }
                     | CellRecord::BashWait { .. }
                     | CellRecord::CommandFailure(_),
@@ -938,14 +957,35 @@ pub(super) async fn execute(
         state.settled = true;
         state.late = late;
         let mut shown = std::mem::take(&mut state.shown);
+        // A saved session keeps what is cut in its spill store, so its cap
+        // may follow the context the session has left; without a store a
+        // tighter cap would only destroy more.
+        let store = cells
+            .session
+            .artifact_dir
+            .as_deref()
+            .map(crate::kernel::spill::SpillStore::for_session_dir);
+        let cap = match &store {
+            Some(_) => cells.session.output_budget.max_output_chars(),
+            None => DEFAULT_MAX_OUTPUT_CHARS,
+        };
         let capped = |printed: &mut Printed| {
             let text = String::from_utf8_lossy(&std::mem::take(&mut printed.kept)).into_owned();
-            match text.char_indices().nth(DEFAULT_MAX_OUTPUT_CHARS) {
-                Some((end, _)) => format!(
-                    "{}\n[... output truncated at {DEFAULT_MAX_OUTPUT_CHARS} chars ...]",
-                    &text[..end]
+            match (text.char_indices().nth(cap), &store) {
+                (Some((end, _)), Some(store)) => format!(
+                    "{}\n{}",
+                    &text[..end],
+                    store
+                        .spill(crate::kernel::spill::SpillCopy::of_text(&text))
+                        .marker(text[end..].chars().count())
                 ),
-                None => text,
+                (Some((end, _)), None) => {
+                    format!(
+                        "{}\n[... output truncated at {cap} chars ...]",
+                        &text[..end]
+                    )
+                }
+                (None, _) => text,
             }
         };
         shown.stdout = capped(&mut state.output);
@@ -988,8 +1028,11 @@ pub(super) async fn execute(
             if let Some(observer) = &cells.session.on_background_cell {
                 observer(BackgroundCellFact::Backgrounded);
             }
+            // Live background work from here until its notice is handed over.
+            let live = cells.session.background.enter();
             let cells = Arc::clone(cells);
             tokio::spawn(async move {
+                let _live = live;
                 let ending = match thread.await {
                     Ok(Ok(value)) => ("ok", value.unwrap_or_default()),
                     Ok(Err(_)) if background.cell.0.signal.is_cancelled() => {
@@ -1020,7 +1063,7 @@ pub(super) async fn execute(
                 if let (true, false, Some(handler)) =
                     (unread, cells.killed.load(Ordering::SeqCst), handler)
                 {
-                    let output = {
+                    let (output, edited) = {
                         let state = background
                             .cell
                             .0
@@ -1028,7 +1071,10 @@ pub(super) async fn execute(
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner);
                         let bytes: Vec<u8> = state.background_output.iter().copied().collect();
-                        String::from_utf8_lossy(&bytes).into_owned()
+                        (
+                            String::from_utf8_lossy(&bytes).into_owned(),
+                            state.late_edits.clone(),
+                        )
                     };
                     let lines: Vec<&str> = output.lines().collect();
                     let tail = lines[lines.len().saturating_sub(NOTICE_TAIL_LINES)..].join("\n");
@@ -1045,6 +1091,16 @@ pub(super) async fn execute(
                         .skip(text_chars.saturating_sub(NOTICE_TAIL_CHARS))
                         .collect();
                     let id = background.cell.id().to_string();
+                    // No card showed the edits the cell made in the
+                    // background: the notice names their files.
+                    let shown = if edited.is_empty() {
+                        shown
+                    } else {
+                        format!(
+                            "[files edited after the call returned: {}]\n{shown}",
+                            edited.join(", ")
+                        )
+                    };
                     // The notice's own wording for cut output names a Python
                     // call; this one says where the rest is in Scheme.
                     let data = json!({

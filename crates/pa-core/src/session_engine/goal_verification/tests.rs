@@ -347,7 +347,6 @@ async fn measured_goal_run(check: Option<&str>) -> MeasuredRun {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
         prewarm_ipython_kernel: None,
         queued_goal_context_purge: None,
     })

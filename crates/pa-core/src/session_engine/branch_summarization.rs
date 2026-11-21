@@ -586,10 +586,9 @@ mod tests {
         session
             .append_custom_message(
                 super::super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE,
-                pa_types::ai::UserContent::Text(super::super::ipython_state::notice_content(
-                    None,
-                    Some(&["stacked_kernel_var".to_string()]),
-                )),
+                pa_types::ai::UserContent::Text(super::super::ipython_state::notice_content(Some(
+                    &["stacked_kernel_var".to_string()],
+                ))),
                 /*display*/ false,
                 None,
             )
@@ -601,7 +600,7 @@ mod tests {
             _ => panic!("expected a user message"),
         };
         assert!(text.contains("explore the widget"));
-        assert!(!text.contains("[python-state]"));
+        assert!(!text.contains("[kernel-state]"));
         assert!(!text.contains("stacked_kernel_var"));
     }
 

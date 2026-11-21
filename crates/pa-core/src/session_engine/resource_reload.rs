@@ -19,7 +19,6 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use serde_json::{json, Value};
 
 use crate::kernel::bootstrap::KernelPythonSkill;
-use crate::kernel::provisioner::IpythonKernelProvisioner;
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::resources::{load_resources, ResourceLoaderOptions};
 use crate::skills::{PromptTemplate, Skill};
@@ -110,7 +109,6 @@ pub struct ResourceReload {
     current: Mutex<Current>,
     /// Serializes reloads: two concurrent ones must not diff against the same state.
     running: tokio::sync::Mutex<()>,
-    provisioner: OnceLock<Weak<IpythonKernelProvisioner>>,
     turn_boundary: Weak<super::turn_boundary::TurnBoundaryRequests>,
     observer: Option<ReloadObserver>,
 }
@@ -129,7 +127,6 @@ impl ResourceReload {
                 python_skills: Vec::new(),
             }),
             running: tokio::sync::Mutex::new(()),
-            provisioner: OnceLock::new(),
             turn_boundary: Arc::downgrade(turn_boundary),
             observer,
         })
@@ -158,12 +155,6 @@ impl ResourceReload {
         self.current
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// Bind the session's kernel (first bind wins): new Python skills install
-    /// into its venv and join its restart bootstrap.
-    pub(crate) fn bind_provisioner(&self, provisioner: &Arc<IpythonKernelProvisioner>) {
-        let _ = self.provisioner.set(Arc::downgrade(provisioner));
     }
 
     /// The session's current skills (every discovered one, as `/skill:` and the catalog list them).
@@ -229,7 +220,7 @@ impl ResourceReload {
         let resources = tokio::task::spawn_blocking(move || load_resources(inputs))
             .await
             .map_err(|error| anyhow::anyhow!("resource discovery failed: {error}"))??;
-        let mut diagnostics: Vec<String> = resources
+        let diagnostics: Vec<String> = resources
             .skill_diagnostics
             .iter()
             .map(|diagnostic| match diagnostic {
@@ -292,18 +283,6 @@ impl ResourceReload {
             })
             .cloned()
             .collect();
-        if !new_python.is_empty() {
-            if let Some(provisioner) = self.provisioner.get().and_then(Weak::upgrade) {
-                if let Err(error) = provisioner
-                    .add_python_skills(&python_skills, &new_python)
-                    .await
-                {
-                    diagnostics.push(format!(
-                        "installing the new Python skills failed: {error:#}"
-                    ));
-                }
-            }
-        }
         let names = |skills: &[Skill]| {
             skills
                 .iter()

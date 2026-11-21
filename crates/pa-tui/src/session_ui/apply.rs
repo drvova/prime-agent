@@ -537,18 +537,22 @@ impl SessionUi {
                 // reticks the settled id on this run's paints, so it lands
                 // on nothing too.
                 if !self.aborted_tools.contains(&tool_call_id) && self.turn_active {
-                    // The live label is the call's title: a python cell's preview (a `%%bash`
-                    // cell previews its command), else the tool's name.
-                    let title = if pa_types::ai::is_python_tool_name(&tool_name) {
-                        let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
-                        let preview = crate::code_preview::preview_ipython_code(code);
-                        if preview.text.is_empty() {
-                            tool_name.clone()
-                        } else {
-                            preview.text
+                    // The live label is the call's title: a kernel cell's preview (a Python
+                    // `%%bash` cell previews its command), else the tool's name.
+                    let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+                    let preview = match pa_types::ai::kernel_tool_language(&tool_name) {
+                        Some(pa_types::ai::KernelLanguage::Scheme) => {
+                            crate::code_preview::preview_scheme_code(code)
                         }
-                    } else {
+                        Some(pa_types::ai::KernelLanguage::Python) => {
+                            crate::code_preview::preview_ipython_code(code).text
+                        }
+                        None => String::new(),
+                    };
+                    let title = if preview.is_empty() {
                         tool_name.clone()
+                    } else {
+                        preview
                     };
                     let title =
                         crate::width::truncate_to_width(&title, TOOL_LABEL_MAX_WIDTH, "\u{2026}");
@@ -1267,10 +1271,10 @@ impl SessionUi {
         });
     }
 
-    /// `tui ipython bash rendered`: the settled ipython card that renders
+    /// `tui ipython bash rendered`: the settled kernel cell card that renders
     /// as bash reports its bash share, primitives only.
     fn track_ipython_bash_rendered(&self, card: &crate::tool_card::ToolCallCard) {
-        if !pa_types::ai::is_python_tool_name(&card.name) {
+        if !pa_types::ai::is_kernel_tool_name(&card.name) {
             return;
         }
         let Some(stats) = crate::tool_card::ipython::bash_dominated_stats(card) else {

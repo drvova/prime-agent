@@ -118,7 +118,7 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
             prompt: PromptInputs {
                 model_prompt_extras: None,
                 messages_path: None,
-                selected_tools: vec!["python_repl".to_string()],
+                selected_tools: vec!["eval".to_string()],
                 allow_recursion: None,
                 rlm_depth: Some(0),
                 factory_child: false,

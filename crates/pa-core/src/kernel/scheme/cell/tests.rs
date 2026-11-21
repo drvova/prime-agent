@@ -532,3 +532,45 @@ async fn commands_run_under_the_sessions_shell_prefix_and_environment() {
         )
     );
 }
+
+/// A cell's edits after its call returned have no card to show on: the
+/// cell's completion notice names their files.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_background_cells_later_edits_are_named_by_its_completion_notice() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("words.txt"), "alpha\nbeta\n").unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (completed, mut completions) = reporting();
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register("gate.wait", held(&release));
+    handlers.register("cell.completed", completed);
+    let (kernel, _facts) = windowed_kernel(handlers, dir.path()).await;
+    let long = run(
+        kernel.as_ref(),
+        r#"(host-request "gate.wait" (hash)) (edit "words.txt" "beta" "BETA") (displayln "edited")"#,
+    )
+    .await;
+    release.notify_one();
+    let notice = tokio::time::timeout(PATIENCE, completions.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (
+            long.diffs,
+            notice["status"].clone(),
+            notice["output"].clone(),
+            std::fs::read_to_string(dir.path().join("words.txt")).unwrap(),
+        ),
+        (
+            Vec::new(),
+            json!("ok"),
+            json!(format!(
+                "[files edited after the call returned: {}]\nedited",
+                dir.path().join("words.txt").display()
+            )),
+            "alpha\nBETA\n".to_string(),
+        )
+    );
+}

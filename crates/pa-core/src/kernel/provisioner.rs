@@ -323,51 +323,6 @@ impl IpythonKernelProvisioner {
         &self.inner.options.cell_window
     }
 
-    /// The host handlers the kernel reaches (tests call them as a kernel cell would).
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn host_handlers(&self) -> &crate::kernel::shared::HostRequestHandlers {
-        &self.inner.options.host_handlers
-    }
-
-    /// The Python skills pre-imported at kernel bootstrap.
-    #[cfg(test)]
-    #[must_use]
-    pub(crate) fn python_skills(&self) -> &[KernelPythonSkill] {
-        &self.inner.options.python_skills
-    }
-
-    /// A resource reload's new Python skills: installed into the kernel venv
-    /// now (with `all`, the session's whole set, so the venv record keeps
-    /// them; an explicit interpreter installs nothing) and bound by every
-    /// later boot.
-    ///
-    /// # Errors
-    ///
-    /// The venv install failing; the skills still join later boots.
-    pub(crate) async fn add_python_skills(
-        &self,
-        all: &[KernelPythonSkill],
-        new: &[KernelPythonSkill],
-    ) -> anyhow::Result<()> {
-        self.lock_state()
-            .reloaded_python_skills
-            .extend(new.iter().cloned());
-        if self.inner.options.python.is_some() {
-            return Ok(());
-        }
-        crate::kernel::bootstrap::ensure_kernel_python_for_project(
-            crate::kernel::bootstrap::EnsureKernelPythonOptions {
-                python_skills: all.to_vec(),
-                on_progress: None,
-                bytecode: crate::kernel::bootstrap::KernelBytecode::CompileInBackground,
-            },
-            Some(self.inner.cwd.clone()),
-        )
-        .await
-        .map(|_| ())
-    }
-
     /// Result of reviving a prior session's namespace on the last kernel start.
     #[must_use]
     pub fn last_restore(&self) -> Option<RestoreResult> {
@@ -1475,7 +1430,7 @@ mod tests {
         )
         .unwrap();
         let engine = shell_test_session(cwd, agent_dir).await.unwrap();
-        assert_eq!(engine.provisioner.inner.options.shell_path, Some(global));
+        assert_eq!(engine.provisioner.environment().shell_path, Some(global));
     }
 
     #[tokio::test]
@@ -1497,7 +1452,7 @@ mod tests {
         .unwrap();
         let engine = shell_test_session(cwd, agent_dir).await.unwrap();
         assert_eq!(
-            engine.provisioner.inner.options.command_prefix.as_deref(),
+            engine.provisioner.environment().command_prefix.as_deref(),
             Some("shopt -s expand_aliases")
         );
     }
@@ -1524,8 +1479,7 @@ mod tests {
         let engine = shell_test_session(cwd, agent_dir).await.unwrap();
         let websearch_env: std::collections::BTreeMap<&str, &str> = engine
             .provisioner
-            .inner
-            .options
+            .environment()
             .env
             .iter()
             .filter(|(key, _)| key.contains("WEBSEARCH") || key.ends_with("_API_KEY"))
@@ -1537,10 +1491,9 @@ mod tests {
         );
     }
 
-    /// The kernel learns the session's agent dir and, in a distribution build, the build's
-    /// variant: the runtime's fallback resolves the same layout the host does.
+    /// The kernel's commands learn the session's agent dir.
     #[tokio::test]
-    async fn the_kernel_env_names_the_agent_dir_and_the_builds_layout() {
+    async fn the_kernel_env_names_the_agent_dir() {
         let dir = tempfile::tempdir().unwrap();
         let agent_dir = dir.path().join("agent");
         let cwd = dir.path().join("project");
@@ -1549,27 +1502,20 @@ mod tests {
         let engine = shell_test_session(cwd, agent_dir.clone()).await.unwrap();
         let layout_env: std::collections::BTreeMap<&str, &str> = engine
             .provisioner
-            .inner
-            .options
+            .environment()
             .env
             .iter()
-            .filter(|(key, _)| {
-                key.starts_with("PRIME_AGENT_CODING") || key.starts_with("PRIME_AGENT_DIST")
-            })
+            .filter(|(key, _)| key.starts_with("PRIME_AGENT_CODING"))
             .map(|(key, value)| (key.as_str(), value.as_str()))
             .collect();
         let agent_dir = agent_dir.to_string_lossy().to_string();
-        let mut expected = std::collections::BTreeMap::from([(
-            "PRIME_AGENT_CODING_AGENT_DIR",
-            agent_dir.as_str(),
-        )]);
-        match pa_types::platform::StateLayout::BUILD {
-            pa_types::platform::StateLayout::Official => {}
-            pa_types::platform::StateLayout::Distribution { variant } => {
-                expected.insert("PRIME_AGENT_DIST_VARIANT", variant);
-            }
-        }
-        assert_eq!(layout_env, expected);
+        assert_eq!(
+            layout_env,
+            std::collections::BTreeMap::from([(
+                "PRIME_AGENT_CODING_AGENT_DIR",
+                agent_dir.as_str(),
+            )])
+        );
     }
 
     #[tokio::test]
@@ -1583,11 +1529,11 @@ mod tests {
         assert_eq!(
             engine
                 .provisioner
-                .inner
-                .options
+                .environment()
                 .env
-                .get("RLM_SESSION_ID")
-                .map(String::as_str),
+                .iter()
+                .find(|(name, _)| name == "RLM_SESSION_ID")
+                .map(|(_, value)| value.as_str()),
             Some(""),
             "an inherited RLM_SESSION_ID must not reach an unsaved session's kernel"
         );
