@@ -135,6 +135,13 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# The Scheme kernel builds one interpreter per worker process. Unoptimized,
+# that build costs about 2.8 s of CPU against 0.2 s optimized, which is
+# enough to push multi-session e2e tests past their deadlines on a loaded box.
+[profile.dev.package.steel-core]
+opt-level = 3
+debug = false
+
 # Shipping posture, pinned (Kevin, Option C): thin LTO plus 4 codegen
 # units for cross-crate inlining in the hot render path. Builds emit line
 # tables and do NOT strip at link: the release pipeline's split_debug step
