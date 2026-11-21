@@ -46,7 +46,7 @@ impl Drop for Daemon {
     }
 }
 
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -59,7 +59,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err))
         .env(
@@ -130,32 +129,6 @@ impl Client {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live passivation e2e",
-        candidate.display()
-    );
-    None
-}
-
 /// The worker's token from its persisted descriptor (the same lookup the family e2e uses).
 fn worker_token(agent_dir: &Path, active_session_id: &str) -> Option<String> {
     let instances = std::fs::read_dir(agent_dir.join("daemon-workers")).ok()?;
@@ -214,9 +187,6 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -244,7 +214,7 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         &json!([{ "text": "child done" }, { "text": "revived: the child answered again" }]),
     );
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -541,9 +511,6 @@ fn root_worker_ids(agent_dir: &Path) -> Vec<String> {
 /// worker over the child's session file and the rename lands there.
 #[tokio::test]
 async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_child() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -565,7 +532,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
         &json!([{ "text": "child done" }]),
     );
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -798,9 +765,6 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcript() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -813,7 +777,7 @@ async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcri
     .expect("write settings");
     let root_script = write_faux_script(dir.path(), "root", &json!([{ "text": "root turn done" }]));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

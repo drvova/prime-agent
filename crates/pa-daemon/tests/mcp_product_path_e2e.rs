@@ -43,34 +43,8 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime (and its `mcp` package) installed; skipped (with a
-/// note) without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live MCP product-path e2e",
-        candidate.display()
-    );
-    None
-}
-
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -81,7 +55,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: the ambient environment exports this var globally; point
         // it at the test agent dir so every fallback (supervisor, worker, kernel)
         // resolves inside the sandbox.
@@ -185,7 +158,18 @@ impl Client {
 /// disk (and print it so the tool result carries the same proof).
 fn mcp_cell(receipt_path: &Path) -> String {
     format!(
-        "from rlm import mcp\nimport json, traceback\ntry:\n    tools = await mcp.list_tools(\"fixture-echo\")\n    result = await mcp.call_tool(\"fixture-echo\", \"echo\", {{\"message\": \"hello from the daemon e2e\"}})\n    payload = {{\"tools\": tools, \"result\": result}}\n    open({receipt_path:?}, \"w\").write(json.dumps(payload))\n    print(json.dumps(payload))\nexcept Exception:\n    open({error_path:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (let ([port (open-output-file path)])
+                  (write-string text port)
+                  (close-output-port port)))])
+  (with-handler
+    (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
+    (let* ([tools (mcp-list-tools "fixture-echo")]
+           [result (mcp-call-tool "fixture-echo" "echo" (hash 'message "hello from the daemon e2e"))]
+           [payload (value->jsexpr-string (hash 'tools tools 'result result))])
+      (record {receipt_path:?} payload)
+      (displayln payload))))
+"#,
         receipt_path = receipt_path.display().to_string(),
         error_path = receipt_path.with_extension("error").display().to_string(),
     )
@@ -233,9 +217,6 @@ fn tool_result_texts(session_messages: &[Value]) -> Vec<String> {
 
 #[test]
 fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -264,7 +245,7 @@ fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
     )
     .expect("write settings.json");
 
-    // The turn script: one ipython cell that runs the MCP round trip, then a closing
+    // The turn script: one kernel cell that runs the MCP round trip, then a closing
     // text turn.
     let receipts_dir = dir.path().join("receipts");
     std::fs::create_dir_all(&receipts_dir).expect("receipts dir");
@@ -276,7 +257,7 @@ fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": mcp_cell(&receipt),
                     } },
                 ] },
@@ -288,7 +269,7 @@ fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
     .expect("write faux script");
 
     let socket = dir.path().join("mcp.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -325,7 +306,7 @@ fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
     let idle = client.read_response("w1");
     assert_eq!(idle["success"], true, "wait_for_idle failed: {idle}");
 
-    // The kernel cell recorded the round trip (or its failure, with the traceback).
+    // The kernel cell recorded the round trip (or its failure).
     let error_path = receipt.with_extension("error");
     let deadline = Instant::now() + Duration::from_secs(5);
     let payload = loop {
@@ -354,25 +335,22 @@ fn settings_declared_stdio_server_round_trips_through_the_kernel_mcp_client() {
         "echo result: {payload}"
     );
 
-    // The same proof reached the session: the ipython tool result carries the
+    // The same proof reached the session: the cell's tool result carries the
     // tool name and the echoed argument.
     let session_messages = messages(&mut client, "m1", &session_id);
     let tool_results = tool_result_texts(&session_messages);
-    let ipython_result = tool_results
+    let cell_result = tool_results
         .iter()
         .find(|text| text.contains("hello from the daemon e2e"))
-        .expect("ipython tool result with the echo payload: {tool_results:?}");
+        .expect("the cell's tool result with the echo payload");
     assert!(
-        ipython_result.contains("\"name\": \"echo\""),
-        "tool name in the cell output: {ipython_result}"
+        cell_result.contains(r#""name":"echo""#),
+        "tool name in the cell output: {cell_result}"
     );
 }
 
 #[test]
 fn begin_login_host_request_is_live_in_the_worker() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -382,29 +360,25 @@ fn begin_login_host_request_is_live_in_the_worker() {
     std::fs::create_dir_all(&receipts_dir).expect("receipts dir");
     let receipt = receipts_dir.join("begin-login.json");
     let error_receipt = receipt.with_extension("error");
-    let cell = [
-        "from rlm import host_request",
-        "import json, traceback",
-        "try:",
-        "    outcomes = []",
-        "    for payload in ({\"server\": \"unknown-e2e\"}, {}):",
-        "        try:",
-        "            await host_request(\"mcp.begin_login\", payload)",
-        "            outcomes.append({\"ok\": True})",
-        "        except Exception as exc:",
-        "            outcomes.append({\"error\": str(exc)})",
-        "    open(RECEIPT, \"w\").write(json.dumps(outcomes))",
-        "    print(json.dumps(outcomes))",
-        "except Exception:",
-        "    open(ERROR_RECEIPT, \"w\").write(traceback.format_exc())",
-        "    raise",
-    ]
-    .join("\n")
-    .replace(
-        "ERROR_RECEIPT",
-        &format!("{:?}", error_receipt.display().to_string()),
-    )
-    .replace("RECEIPT", &format!("{:?}", receipt.display().to_string()));
+    // Each probe keeps the host's own error message; the cell's result is both outcomes.
+    let cell = format!(
+        r#"(let* ([record (lambda (path text)
+                 (let ([port (open-output-file path)])
+                   (write-string text port)
+                   (close-output-port port)))]
+       [probe (lambda (payload)
+                (with-handler
+                  (lambda (e) (hash 'error (trim (error-object-message e))))
+                  (begin (host-request "mcp.begin_login" payload) (hash 'ok #t))))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([outcomes (value->jsexpr-string (list (probe (hash 'server "unknown-e2e")) (probe (hash))))])
+      (record {receipt:?} outcomes)
+      (displayln outcomes))))
+"#,
+        error_receipt = error_receipt.display().to_string(),
+        receipt = receipt.display().to_string(),
+    );
     let script = dir.path().join("faux.json");
     std::fs::write(
         &script,
@@ -412,7 +386,7 @@ fn begin_login_host_request_is_live_in_the_worker() {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -424,7 +398,7 @@ fn begin_login_host_request_is_live_in_the_worker() {
     .expect("write faux script");
 
     let socket = dir.path().join("mcp.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

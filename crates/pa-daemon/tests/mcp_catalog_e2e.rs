@@ -43,38 +43,12 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; skipped (with a note) without a live
-/// install.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live MCP catalog e2e",
-        candidate.display()
-    );
-    None
-}
-
 /// The tests each supervise a daemon + a session worker; serializing them keeps the harness out of
 /// parallel-spawn races.
 static DAEMON_E2E: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -85,7 +59,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         // The fetch lane is live in the supervisor (hourly refreshes of this very cache
         // file): PI_OFFLINE keeps those off the network so a live fetch can never race
@@ -245,9 +218,6 @@ fn snapshot_envelope(payload: &Value) -> String {
 
 #[test]
 fn catalog_surfaces_and_paste_installs_through_the_daemon() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let _serial = DAEMON_E2E.lock().unwrap();
     let dir = tempfile::tempdir().expect("tempdir");
     let agent_dir = dir.path().join("agent");
@@ -263,7 +233,7 @@ fn catalog_surfaces_and_paste_installs_through_the_daemon() {
     .expect("write disk cache");
 
     let socket = dir.path().join("mcp.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -480,9 +450,6 @@ fn catalog_surfaces_and_paste_installs_through_the_daemon() {
 /// service left the catalog shows the hint ONLY when a validated snapshot proves it.
 #[test]
 fn pinned_hint_needs_a_snapshot_to_claim_the_source_unavailable() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let _serial = DAEMON_E2E.lock().unwrap();
     let dir = tempfile::tempdir().expect("tempdir");
     let agent_dir = dir.path().join("agent");
@@ -527,7 +494,7 @@ fn pinned_hint_needs_a_snapshot_to_claim_the_source_unavailable() {
     // Cache present: the snapshot proves the service is gone — the hint shows.
     {
         let socket = dir.path().join("cache-present.sock");
-        let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+        let _daemon = spawn_supervisor(&socket, &agent_dir);
         wait_socket_ready(&socket);
         let (mut client, _hello) = Client::connect(&socket);
         let view = pinned_service_view(&mut client, dir.path(), "present");
@@ -550,7 +517,7 @@ fn pinned_hint_needs_a_snapshot_to_claim_the_source_unavailable() {
     // Cache absent (and no packaged bundle): the row stays, the claim does not.
     std::fs::remove_file(&cache_path).expect("remove the cache");
     let socket = dir.path().join("cache-absent.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, _hello) = Client::connect(&socket);
     let view = pinned_service_view(&mut client, dir.path(), "absent");

@@ -46,33 +46,8 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live re-adoption wake e2e",
-        candidate.display()
-    );
-    None
-}
-
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -92,9 +67,6 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
         );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
-    }
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -163,7 +135,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the ipython tool call that starts the
+    // The scripted sequence: request 1 answers the eval tool call that starts the
     // detached watcher, request 2 ends the turn, every later request the woken reply.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
@@ -178,8 +150,11 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "id": "call-wake-1",
                         "type": "function",
                         "function": {
-                            "name": "python_repl",
-                            "arguments": "{\"code\": \"bash(\\\"sleep 12; echo RW_WAKE_DONE\\\")\\nprint('watcher armed')\"}"
+                            "name": "eval",
+                            "arguments": json!({
+                                "code": "(bash \"sleep 12; echo RW_WAKE_DONE\" (hash 'background #t))\n(displayln \"watcher armed\")",
+                            })
+                            .to_string(),
                         }
                     }]
                 }),
@@ -349,9 +324,6 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
 #[test]
 fn a_detached_bash_completion_wakes_the_idle_session_across_a_supervisor_restart() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let root = tempfile::TempDir::new().expect("temp dir");
     let dir = root.path().to_path_buf();
     let agent_dir = dir.join("agent");
@@ -384,7 +356,7 @@ fn a_detached_bash_completion_wakes_the_idle_session_across_a_supervisor_restart
 
     // First generation: the session starts the detached watcher and goes idle
     // (the turn settles while `sleep 12` keeps running).
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let (active_id, session_id) = create_session(&mut client, "c1", &dir, &agent_dir);
     let started = client.request(
@@ -419,7 +391,7 @@ fn a_detached_bash_completion_wakes_the_idle_session_across_a_supervisor_restart
     let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     wait_until(Duration::from_secs(30), || {
         client
@@ -480,7 +452,7 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     )
     .expect("write faux script");
 
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -549,7 +521,7 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     wait_until(Duration::from_secs(30), || {
         client
@@ -604,7 +576,7 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     )
     .expect("write faux script");
 
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -678,7 +650,7 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     wait_until(Duration::from_secs(30), || {
         client
