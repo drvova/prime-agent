@@ -6,7 +6,7 @@
 
 use serde_json::{json, Value};
 
-use super::{binding, naming, spec};
+use super::{binding, library, naming, report, spec};
 
 const CALLS: &str = include_str!("corpus/python_factory_calls.jsonl");
 
@@ -22,16 +22,26 @@ fn text<'a>(row: &'a Value, position: usize, keyword: &str) -> &'a str {
     argument(row, position, keyword).as_str().unwrap()
 }
 
+/// A parsed machine file in the shape the recording gave Python's.
+fn machine_json(machine: &library::MachineFile) -> Value {
+    json!({"__machine_file__": {
+        "name": machine.name,
+        "description": machine.description,
+        "version": machine.version,
+        "author": machine.author,
+        "spec": machine.spec,
+    }})
+}
+
 /// What this port answers for one recorded call, in the recorded shape:
-/// `{"ok": value}` or `{"error": message}`. `None` for a function a later
-/// part of the port replays.
-fn replay(row: &Value) -> Option<Value> {
+/// `{"ok": value}` or `{"error": message}`.
+fn replay(row: &Value) -> Value {
     let first = argument(row, 0, "");
     let outcome = |result: Result<Value, String>| match result {
         Ok(value) => json!({ "ok": value }),
         Err(error) => json!({ "error": error }),
     };
-    Some(match row["fn"].as_str().unwrap() {
+    match row["fn"].as_str().unwrap() {
         "validate_factory_spec" => json!({"ok": spec::validate_factory_spec(first)}),
         "validate_factory_machine" => json!({"ok": spec::validate_factory_machine(first)}),
         "compile_factory_dag" => match spec::compile_factory_dag(first) {
@@ -86,14 +96,57 @@ fn replay(row: &Value) -> Option<Value> {
                 .collect();
             json!({"ok": binding::render_prompt(first.as_str().unwrap(), &values)})
         }
-        "parse_machine_file"
-        | "render_machine_file"
-        | "machine_name_errors"
-        | "machine_description_errors"
-        | "_wire_payload"
-        | "_machine_structure" => return None,
+        "parse_machine_file" => {
+            let source = row["kwargs"]["source"].as_str().unwrap_or("machine file");
+            match library::parse_machine_file(first.as_str().unwrap(), source) {
+                Ok(machine) => json!({"ok": [machine_json(&machine), []]}),
+                Err(errors) => json!({"ok": [null, errors]}),
+            }
+        }
+        "render_machine_file" => {
+            let fields = &first["__machine_file__"];
+            let field = |key: &str| fields[key].as_str().unwrap().to_string();
+            json!({"ok": library::render_machine_file(&library::MachineFile {
+                name: field("name"),
+                description: field("description"),
+                version: field("version"),
+                author: field("author"),
+                spec: fields["spec"].clone(),
+            })})
+        }
+        "machine_name_errors" => json!({"ok": library::machine_name_errors(first)}),
+        "machine_description_errors" => {
+            json!({"ok": library::machine_description_errors(first)})
+        }
+        "_wire_payload" => json!({"ok": report::wire_payload(first)}),
+        "_machine_structure" => {
+            let resolved = row["args"].get(1).cloned().unwrap_or_default();
+            json!({"ok": report::machine_structure(first, &|state_id| {
+                let setting = |index: usize| resolved[state_id][index].as_str().map(str::to_string);
+                (setting(0), setting(1))
+            })})
+        }
         unknown => panic!("the corpus names a function this replay does not know: {unknown}"),
-    })
+    }
+}
+
+/// A recorded or replayed answer with the one intended difference taken
+/// out: where a sentence quotes the JSON parser's own complaint, Python's
+/// parser and this one word it differently.
+fn without_parser_wording(answer: &Value) -> Value {
+    let marker = "block must contain a JSON object (";
+    match answer {
+        Value::String(text) => match text.find(marker) {
+            Some(at) => json!(text[..at + marker.len()]),
+            None => answer.clone(),
+        },
+        Value::Array(items) => items.iter().map(without_parser_wording).collect(),
+        Value::Object(fields) => fields
+            .iter()
+            .map(|(key, item)| (key.clone(), without_parser_wording(item)))
+            .collect(),
+        Value::Null | Value::Bool(_) | Value::Number(_) => answer.clone(),
+    }
 }
 
 #[test]
@@ -105,7 +158,8 @@ fn every_recorded_python_call_gets_the_python_answer() {
             Some(error) => json!({ "error": error }),
             None => json!({"ok": row["ok"]}),
         };
-        if let Some(answered) = replay(&row).filter(|answered| *answered != recorded) {
+        let answered = replay(&row);
+        if without_parser_wording(&answered) != without_parser_wording(&recorded) {
             differences.push(json!({
                 "test": row["test"],
                 "fn": row["fn"],

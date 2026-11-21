@@ -3,6 +3,8 @@
 //! prompt template, and evaluating a transition guard over the captured
 //! outputs.
 
+use std::fmt::Write as _;
+
 use serde_json::{Map, Value};
 
 use super::python_text::repr_str;
@@ -124,10 +126,11 @@ pub(super) fn parse_json_output(
         repr_str(output_name)
     );
     if let Some(truncated_at) = truncated_at {
-        error.push_str(&format!(
+        let _ = write!(
+            error,
             "; the captured answer is truncated at {truncated_at} characters \
              - keep the fenced JSON block compact"
-        ));
+        );
     }
     Err(error)
 }
@@ -155,23 +158,20 @@ pub(super) fn render_prompt(template: &str, values: &[(String, String)]) -> Stri
                     .and_then(|after| after.strip_prefix('}'))
                     .map(|after| (index, value, after))
             });
-        match placed {
-            Some((index, value, after)) => {
-                used[index] = true;
-                rendered.push_str(value);
-                rest = after;
-            }
-            None => {
-                rendered.push('{');
-                rest = &rest[1..];
-            }
+        if let Some((index, value, after)) = placed {
+            used[index] = true;
+            rendered.push_str(value);
+            rest = after;
+        } else {
+            rendered.push('{');
+            rest = &rest[1..];
         }
     }
     rendered.push_str(rest);
     if used.iter().any(|placed| !placed) {
         rendered.push_str("\n\n## Inputs\n");
         for ((name, value), _) in values.iter().zip(&used).filter(|(_, placed)| !**placed) {
-            rendered.push_str(&format!("- {name}: {value}\n"));
+            let _ = writeln!(rendered, "- {name}: {value}");
         }
     }
     rendered

@@ -236,9 +236,9 @@ fn validate_state_fields(
     } else if let Some(subagent) = subagent.as_object() {
         // Run-time resolution strips these fields, so whitespace-only
         // values are rejected here too: a storable factory is spawnable.
-        if !field(subagent, "prompt")
+        if field(subagent, "prompt")
             .as_str()
-            .is_some_and(|prompt| !prompt.trim().is_empty())
+            .is_none_or(|prompt| prompt.trim().is_empty())
         {
             errors.push(format!(
                 "{noun} {id} inline subagent requires a non-empty prompt"
@@ -246,7 +246,7 @@ fn validate_state_fields(
         }
         for key in ["name", "model", "thinking"] {
             let value = field(subagent, key);
-            if !value.is_null() && !value.as_str().is_some_and(|text| !text.trim().is_empty()) {
+            if !value.is_null() && value.as_str().is_none_or(|text| text.trim().is_empty()) {
                 errors.push(format!(
                     "{noun} {id} inline subagent {key} must be a non-empty string when provided"
                 ));
@@ -564,7 +564,7 @@ fn validate_guard(
             }
         }
         "contains" => {
-            if !value.as_array().is_some_and(|items| !items.is_empty()) {
+            if value.as_array().is_none_or(Vec::is_empty) {
                 errors.push(format!(
                     "transitions[{index}] when.op 'contains' requires a non-empty list value"
                 ));
@@ -708,7 +708,7 @@ pub(super) fn validate_factory_machine(machine: &Value) -> Vec<String> {
         }
         if state
             .get("max_entries")
-            .is_some_and(|max| !integer(max).is_some_and(|max| max >= 1))
+            .is_some_and(|max| integer(max).is_none_or(|max| max < 1))
         {
             errors.push(format!(
                 "state {state_id} max_entries must be an integer >= 1"
@@ -1033,10 +1033,11 @@ pub(super) fn validate_factory_spec(spec: &Value) -> Vec<String> {
 }
 
 /// Validate a spec in either form and return the canonical machine form
-/// with every default applied: run failure_policy `escalate`, max_parallel
-/// 8, max_transitions 10 per state capped at 10000, max_children 10000;
-/// state entry false, max_entries 1, lifecycle `task`, retries 0,
-/// failure_policy copied from the run; transition `on` `settled`.
+/// with every default applied: run `failure_policy` `escalate`,
+/// `max_parallel` 8, `max_transitions` 10 per state capped at 10000,
+/// `max_children` 10000; state `entry` false, `max_entries` 1, `lifecycle`
+/// `task`, `retries` 0, `failure_policy` copied from the run; transition
+/// `on` `settled`.
 ///
 /// # Errors
 ///

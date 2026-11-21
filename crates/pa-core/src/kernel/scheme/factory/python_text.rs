@@ -65,6 +65,15 @@ pub(super) fn repr_str(text: &str) -> String {
     out
 }
 
+/// `str(value)` for a JSON value: a string as it is, anything else as
+/// `repr` prints it.
+pub(super) fn str_of(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => repr(other),
+    }
+}
+
 /// A list of fixed words as Python prints a list of strings.
 pub(super) fn repr_words(words: &[&str]) -> String {
     let inner: Vec<String> = words.iter().map(|word| repr_str(word)).collect();
