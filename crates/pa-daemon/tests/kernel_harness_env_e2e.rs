@@ -1,7 +1,6 @@
-//! Kernel harness-env e2e: a persisted session's kernel must carry the session's RLM
-//! session + local-harness dirs in its env (TS `_rlmKernelEnv`), so kernel-side
-//! `rlm.harness` writes land in the session-local store. Skips (with a note)
-//! without a live kernel install.
+//! Kernel harness e2e: a persisted session's kernel writes the session-local
+//! harness store (`harness-create-memory` without `#:global`), and the global
+//! store only when asked, whatever harness dirs the daemon's own env names.
 #![cfg(unix)]
 
 mod common;
@@ -14,32 +13,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel-harness-env e2e",
-        candidate.display()
-    );
-    None
-}
-
 struct Daemon {
     child: Child,
 }
@@ -51,7 +24,7 @@ impl Drop for Daemon {
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
@@ -62,7 +35,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: point every fallback at the test sandbox.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         // Hermetic harness resolution: ambient session/harness dirs would
@@ -161,10 +133,21 @@ impl Client {
 }
 
 /// The one scripted cell: create + read back a session-local memory and a global
-/// one, recording success or the failure traceback in a receipt.
+/// one, recording success or the failure in a receipt.
 fn harness_cell(receipt: &Path) -> String {
     format!(
-        "import json, traceback\nreceipt = {{\"ok\": False, \"error\": \"\"}}\ntry:\n    rlm.harness.create_memory(title=\"kernel session-local memory\", content=\"persisted from the session kernel\", id=\"kernel-local-memory\")\n    rlm.get_harness_state().entries[\"memory\"][\"kernel-local-memory\"]\n    rlm.harness.create_memory(title=\"kernel global memory\", content=\"persisted from the session kernel\", id=\"kernel-global-memory\", global_=True)\n    receipt = {{\"ok\": True, \"error\": \"\"}}\nexcept Exception:\n    receipt = {{\"ok\": False, \"error\": traceback.format_exc()}}\nopen({receipt_path:?}, \"w\").write(json.dumps(receipt))\n",
+        r#"(define receipt
+  (with-handler
+    (lambda (e) (hash 'ok #f 'error (to-string e)))
+    (begin
+      (harness-create-memory "kernel session-local memory" "persisted from the session kernel" #:id "kernel-local-memory")
+      (hash-ref (hash-ref (hash-ref (harness-state) 'entries) 'memory) 'kernel-local-memory)
+      (harness-create-memory "kernel global memory" "persisted from the session kernel" #:id "kernel-global-memory" #:global #t)
+      (hash 'ok #t 'error ""))))
+(let ([port (open-output-file {receipt_path:?})])
+  (write-string (value->jsexpr-string receipt) port)
+  (close-output-port port))
+"#,
         receipt_path = receipt.to_string_lossy(),
     )
 }
@@ -177,7 +160,7 @@ fn write_faux_script(dir: &Path, cell: &str) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -224,9 +207,6 @@ fn read_state(path: &Path) -> Value {
 
 #[test]
 fn persistent_session_kernel_writes_the_session_local_harness_store() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
@@ -235,7 +215,7 @@ fn persistent_session_kernel_writes_the_session_local_harness_store() {
     let receipt = receipts_dir.join("harness.json");
     let script = write_faux_script(dir.path(), &harness_cell(&receipt));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -273,7 +253,7 @@ fn persistent_session_kernel_writes_the_session_local_harness_store() {
     assert_eq!(idle["success"], true, "wait_for_idle failed: {idle}");
 
     // The turn ended, so the cell's receipt is written: a `false` ok carries the
-    // kernel-side failure (the instructive error when the env vars are missing).
+    // kernel-side failure.
     let cell_receipt = std::fs::read_to_string(&receipt)
         .unwrap_or_else(|error| panic!("kernel cell receipt missing: {error}"));
     let cell_receipt: Value =

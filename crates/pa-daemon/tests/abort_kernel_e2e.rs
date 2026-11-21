@@ -14,23 +14,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed. Skipped (with a
-/// note) on machines without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
 /// The faux provider script: turn one calls the kernel with a cell that
 /// writes its start marker, sleeps far past the abort budget, and would
 /// write its finish marker afterwards. Turn two answers the (never
@@ -49,9 +32,9 @@ fn faux_script(dir: &Path) -> PathBuf {
             "responses": [
                 {"content": [
                     {"type": "text", "text": "Running the wedge cell."},
-                    {"type": "toolCall", "name": "python_repl", "id": "toolu_wedge01",
+                    {"type": "toolCall", "name": "eval", "id": "toolu_wedge01",
                      "arguments": {"code":
-                        "import time\nopen('wedge-started', 'w').write('1')\ntime.sleep(300)\nopen('wedge-finished', 'w').write('1')\nprint('cell completed')"}}
+                        "(bash \"touch wedge-started; sleep 300; touch wedge-finished\" (hash 'wait-ms #f))\n(displayln \"cell completed\")"}}
                 ]},
                 {"content": [{"type": "text", "text": "The cell completed."}]}
             ]
@@ -92,10 +75,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, script: &Path) -> Superviso
         .env_remove("PRIME_API_KEY")
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         .env(pa_daemon::worker::WORKER_SCRIPT_ENV, script)
-        .env(
-            "PRIME_AGENT_KERNEL_PYTHON",
-            kernel_python().expect("kernel python"),
-        )
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
@@ -226,9 +205,6 @@ impl Client {
 /// The turn unwinds within the budget and the cell dies (its finish marker never appears).
 #[test]
 fn abort_during_a_kernel_cell_settles_the_daemon_turn_immediately() {
-    let Some(_) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");

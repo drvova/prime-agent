@@ -46,38 +46,11 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python (the same resolution the other kernel e2es use):
-/// an explicit `PA_E2E_KERNEL_PYTHON`, else the machine's live install.
-/// Skipped (with a note) on machines without one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping the launch-env kernel e2e",
-        candidate.display()
-    );
-    None
-}
-
 /// Boot the real supervisor in the HOSTILE boot env (audit #9): the
 /// daemon itself "runs inside an agent" (`RLM_DEPTH=1`) and has NEVER
 /// seen the client's marker. `PA_MARKER` is scrubbed so the only path it
 /// can ever take into a worker is the create's launch env.
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -104,9 +77,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         .env("PA_DAEMON_BASE_SENTINEL", "daemon-boot")
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err));
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
-    }
     // A supervisor killed at teardown must not leak its session workers
     // into later test binaries: the worker's supervisor-lost exit runs
     // on this short window instead of the 5-minute default.
@@ -337,7 +307,7 @@ fn the_client_launch_env_reaches_only_its_own_worker() {
     let agent_dir = dir.path().join("agent");
     let script = write_plain_script(dir.path());
     let marker = format!("a-{}", uuid::Uuid::new_v4());
-    let _daemon = spawn_supervisor(&socket, &agent_dir, None);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -412,24 +382,22 @@ fn the_client_launch_env_reaches_only_its_own_worker() {
     );
 }
 
-/// The kernel under the worker runs in the client's env too (the audit
-/// #1 repro: `bash()`/kernel subprocesses see the terminal's PATH, not
-/// the daemon's). One scripted cell writes its `os.environ` to a receipt.
+/// The kernel's commands run in the client's env too (the audit #1
+/// repro: `bash` subprocesses see the terminal's PATH, not the daemon's).
+/// One scripted cell has a command write the two vars to a receipt.
 #[test]
 fn the_kernel_runs_in_the_client_launch_env() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     let marker = format!("a-{}", uuid::Uuid::new_v4());
     let receipt = dir.path().join("kernel-receipt.txt");
-    // The cell records exactly the two vars the contract cares about.
-    let cell = format!(
-        "import os\nopen({receipt:?}, \"w\").write((os.environ.get(\"PA_MARKER\") or \"ABSENT\") + \"\\n\" + (os.environ.get(\"RLM_DEPTH\") or \"ABSENT\"))\nprint(\"cell done\")",
+    // The command records exactly the two vars the contract cares about.
+    let command = format!(
+        "printf '%s\\n%s' \"${{PA_MARKER:-ABSENT}}\" \"${{RLM_DEPTH:-ABSENT}}\" > '{receipt}'",
         receipt = receipt.to_string_lossy(),
     );
+    let cell = format!("(bash {command:?})\n(displayln \"cell done\")");
     let script = dir.path().join("kernel-script.json");
     std::fs::write(
         &script,
@@ -437,7 +405,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -447,7 +415,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
         .to_string(),
     )
     .expect("write faux script");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -461,8 +429,7 @@ fn the_kernel_runs_in_the_client_launch_env() {
     );
     run_one_turn(&mut client, &session_a, "a");
 
-    // The receipt proves the kernel executed the cell (a skipped kernel
-    // never writes it).
+    // The receipt proves the kernel executed the cell.
     let deadline = Instant::now() + Duration::from_secs(30);
     let content = loop {
         if let Ok(content) = std::fs::read_to_string(&receipt) {
@@ -479,13 +446,6 @@ fn the_kernel_runs_in_the_client_launch_env() {
         content,
         format!("{marker}\nABSENT"),
         "the kernel env must carry the client's marker and no RLM_DEPTH"
-    );
-    // The ran-proof (the skip gate must not be a hollow pass): the
-    // receipt exists only because the live kernel executed the cell.
-    eprintln!(
-        "launch-env kernel e2e ran: kernel {} executed the cell, receipt={:?}",
-        kernel_python.display(),
-        content
     );
 }
 
@@ -511,7 +471,7 @@ async fn an_rlm_spawn_child_inherits_the_parent_worker_env() {
     )
     .expect("write script");
     let marker = format!("parent-worker-{}", uuid::Uuid::new_v4());
-    let _daemon = spawn_supervisor(&socket, &agent_dir, None);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
 
     // The test process stands in for the parent worker: its env is what
@@ -607,7 +567,7 @@ fn the_update_roster_never_carries_the_client_env() {
     let agent_dir = dir.path().join("agent");
     let script = write_plain_script(dir.path());
     let marker = format!("roster-{}", uuid::Uuid::new_v4());
-    let _daemon = spawn_supervisor(&socket, &agent_dir, None);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

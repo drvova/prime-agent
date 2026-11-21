@@ -10,7 +10,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -24,31 +24,7 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with the runtime installed (the cells run in it). Skipped (with a note)
-/// without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".prime/agent/kernel-venv/bin/python");
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping the wait e2e",
-        candidate.display()
-    );
-    None
-}
-
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let log = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
@@ -58,7 +34,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .arg(agent_dir)
         // Worker sockets stay in the test's own dir.
         .env("TMPDIR", socket.parent().expect("socket dir"))
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
@@ -138,19 +113,33 @@ impl Client {
 fn cell_turn(code: &str) -> [Value; 2] {
     [
         json!({ "content": [
-            { "type": "toolCall", "name": "python_repl", "arguments": { "code": code } },
+            { "type": "toolCall", "name": "eval", "arguments": { "code": code } },
         ] }),
         json!({ "text": "cell turn done" }),
     ]
 }
 
-/// A cell that awaits `request` and writes its result (or traceback) to `<name>.json`
+/// A form that evaluates `call` and writes its result (or error) to `<name>.json`
 /// (`.error`), with the call's wall time in ms beside the result.
-fn record(request: &str, name: &str, dir: &Path) -> String {
+fn record(call: &str, name: &str, dir: &Path) -> String {
     let path = dir.join(format!("{name}.json")).display().to_string();
+    let pending = format!("{path}.tmp");
     let error = dir.join(format!("{name}.error")).display().to_string();
+    let publish = format!("mv '{pending}' '{path}'");
     format!(
-        "import json, time, traceback\nfrom rlm import host_request\ntry:\n    started = time.monotonic()\n    result = await host_request({request})\n    result[\"elapsedMs\"] = int((time.monotonic() - started) * 1000)\n    open({path:?} + \".tmp\", \"w\").write(json.dumps(result))\n    import os; os.replace({path:?} + \".tmp\", {path:?})\nexcept Exception:\n    open({error:?}, \"w\").write(traceback.format_exc())\n    raise\n"
+        r"(with-handler
+  (lambda (e)
+    (let ([port (open-output-file {error:?})])
+      (write-string (to-string e) port)
+      (close-output-port port))
+    (error (to-string e)))
+  (let* ([started (current-milliseconds)]
+         [result (hash-insert {call} 'elapsedMs (- (current-milliseconds) started))]
+         [port (open-output-file {pending:?})])
+    (write-string (value->jsexpr-string result) port)
+    (close-output-port port)
+    (bash {publish:?})))
+"
     )
 }
 
@@ -194,9 +183,6 @@ fn create(client: &mut Client, dir: &Path, name: &str, responses: &[Value]) -> S
 
 #[test]
 fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let root = dir.path();
     let records = root.join("records");
@@ -205,25 +191,25 @@ fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     let body = format!("the contract is ready: {}", "x".repeat(300));
 
     let alpha_wait = record(
-        r#""agent_message.wait", {"sender": "beta", "timeout_ms": 60000}"#,
+        r#"(agent-message-wait #:sender "beta" #:timeout-ms 60000)"#,
         "alpha-wait",
         &records,
     );
     let beta_code = [
         record(
-            r#""agent_message.wait", {"sender": "alpha", "timeout_ms": 60000}"#,
+            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 60000)"#,
             "beta-cycle",
             &records,
         ),
         record(
             &format!(
-                r#""agent_message.send", {{"message": {body:?}, "receiver_role": "sibling", "receiver_name": "alpha"}}"#
+                r#"(agent-message-send {body:?} #:receiver-role "sibling" #:receiver-name "alpha")"#
             ),
             "beta-send",
             &records,
         ),
         record(
-            r#""agent_message.wait", {"sender": "alpha", "timeout_ms": 300}"#,
+            r#"(agent-message-wait #:sender "alpha" #:timeout-ms 300)"#,
             "beta-timeout",
             &records,
         ),
@@ -234,7 +220,7 @@ fn waits_end_on_a_message_answer_a_cycle_at_once_and_time_out() {
     let [beta_call, beta_done] = cell_turn(&beta_code);
 
     let socket = root.join("daemon.sock");
-    let _daemon = spawn_supervisor(&socket, &root.join("agent"), &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &root.join("agent"));
     let mut client = Client::connect(&socket);
     let alpha = create(
         &mut client,
