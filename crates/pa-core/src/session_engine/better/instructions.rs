@@ -12,12 +12,10 @@ use super::{BetterMode, BriefDepth};
 
 /// What the helper may do, shared by both modes.
 const READ_ONLY_RULES: &str = "\
-This helper is read-only, and the host enforces it. `python_repl` here accepts only file \
-reads and searches with literal arguments, one call per line: \
-`print(await fs.read(\"path\", start=1, end=80))`, `print(await fs.grep(\"pattern\", \"dir\", \
-glob=\"*.rs\"))`, `print(await fs.glob(\"**/*.toml\"))`, `print(await fs.find(\"Makefile\"))`. \
-`bash` runs only one read-only git command (`git log`, `show`, `diff`, `status`, `ls-files`, \
-`grep`, `rev-parse`). `edit` and every write are refused. Do not carry out the task.";
+This helper is read-only, and the host enforces it. `bash` runs only one read-only git \
+command (`git log`, `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`): read a file with \
+`git show HEAD:path`, search with `git grep -n pattern -- dir`, list files with `git ls-files`. \
+`eval`, `edit` and every write are refused. Do not carry out the task.";
 
 /// The acceptance-check block every rewrite and brief ends with (see [`super::checks`]).
 const ACCEPTANCE_RULES: &str = "\

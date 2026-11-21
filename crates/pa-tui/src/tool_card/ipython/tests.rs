@@ -808,3 +808,42 @@ fn the_summary_title_carries_the_cell_state_by_colour() {
         ]
     );
 }
+
+/// A Scheme kernel cell (`eval`) gets the kernel card with its own label and
+/// its first line as the preview, and its code renders as written: the
+/// Python reader would take `#t` for the start of a comment.
+#[test]
+fn a_scheme_cell_renders_on_the_kernel_card_as_scheme() {
+    let card = ToolCallCard {
+        name: "eval".into(),
+        ..cell_card(
+            "(define ok #t)\n(displayln ok)",
+            json!({ "status": "ok", "durationMs": 2, "stdout": "#t\n" }),
+            false,
+            false,
+        )
+    };
+    let rows =
+        super::super::render_tool_card(&card, 0, Detail::All, Detail::All, &theme(), 100, true);
+    let flat: Vec<String> = rows.iter().map(text_of).collect();
+    // Each line of code is one span: nothing split it into tokens.
+    let code_spans: Vec<Option<&str>> = rows[1..3]
+        .iter()
+        .map(|row| row.last().map(|span| span.content.as_str()))
+        .collect();
+    assert_eq!(
+        (
+            flat[0].contains("\u{2713} scheme \u{00b7} (define ok #t) \u{00b7}"),
+            flat[1].trim_end(),
+            flat[2].trim_end(),
+            code_spans,
+        ),
+        (
+            true,
+            " \u{2570}\u{2500} (define ok #t)",
+            "    (displayln ok)",
+            vec![Some("(define ok #t)"), Some("(displayln ok)")]
+        ),
+        "{flat:?}"
+    );
+}

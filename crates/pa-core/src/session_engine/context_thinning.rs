@@ -271,7 +271,7 @@ pub fn thin_context(
                     ThinnedRecall::ToolResult => {
                         let _ = write!(
                             thinned,
-                            "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: await rlm.session.tool_result({:?}) ...]\n",
+                            "\n[... {omitted} of {total} chars of this older result thinned from the request; full text: (rlm-session-tool-result {:?}) ...]\n",
                             result.tool_call_id
                         );
                     }

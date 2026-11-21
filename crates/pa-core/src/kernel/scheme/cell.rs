@@ -1042,11 +1042,8 @@ pub(super) async fn execute(
                     Err(error) => ("error", format!("the cell's thread failed: {error}")),
                 };
                 let ran_for = Some(background.started.elapsed());
-                background.ended.send_replace(Some(CellEnding {
-                    status: ending.0,
-                    text: ending.1.clone(),
-                    duration_ms: background.started.elapsed().as_millis() as u64,
-                }));
+                // Reported before the end is published: whoever reads the
+                // cell's end finds its fact already counted.
                 if let Some(observer) = &cells.session.on_background_cell {
                     observer(match ending.0 {
                         "ok" => BackgroundCellFact::EndedOk { ran_for },
@@ -1054,6 +1051,11 @@ pub(super) async fn execute(
                         _ => BackgroundCellFact::Interrupted,
                     });
                 }
+                background.ended.send_replace(Some(CellEnding {
+                    status: ending.0,
+                    text: ending.1.clone(),
+                    duration_ms: background.started.elapsed().as_millis() as u64,
+                }));
                 let unread = !background
                     .notice
                     .lock()

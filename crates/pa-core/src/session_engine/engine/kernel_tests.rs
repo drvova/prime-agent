@@ -304,16 +304,13 @@ async fn a_resumed_session_starts_clean_and_is_told_once() {
             config.session_manager = Some(manager);
         })
         .await;
-        match cell {
-            Some(code) => {
-                run_cell(&engine, &provider, code).await;
-                kept.push(cell_results(&provider).last().map(String::as_str) == Some("7"));
-            }
-            None => {
-                provider.push_text_turn("nothing to run");
-                engine.prompt("go", PromptOptions::default()).await.unwrap();
-                engine.session.agent().wait_for_idle().await;
-            }
+        if let Some(code) = cell {
+            run_cell(&engine, &provider, code).await;
+            kept.push(cell_results(&provider).last().map(String::as_str) == Some("7"));
+        } else {
+            provider.push_text_turn("nothing to run");
+            engine.prompt("go", PromptOptions::default()).await.unwrap();
+            engine.session.agent().wait_for_idle().await;
         }
         told.push(reset_notices(&provider));
         engine.dispose_kernel().await;

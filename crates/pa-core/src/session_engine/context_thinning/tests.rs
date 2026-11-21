@@ -84,7 +84,7 @@ fn thinned_text(text: &str, call: &str) -> String {
     let head: String = chars[..240].iter().collect();
     let tail: String = chars[chars.len() - 120..].iter().collect();
     format!(
-        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: await rlm.session.tool_result(\"{call}\") ...]\n{tail}",
+        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: (rlm-session-tool-result \"{call}\") ...]\n{tail}",
         chars.len() - 360,
         chars.len(),
     )
@@ -254,7 +254,7 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     );
     let pointer = result_text(&view.messages[2]);
     let call = pointer
-        .split("rlm.session.tool_result(\"")
+        .split("(rlm-session-tool-result \"")
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .expect("pointer names a tool call id");

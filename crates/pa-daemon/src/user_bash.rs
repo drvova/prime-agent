@@ -126,8 +126,8 @@ impl UserBash {
 }
 
 impl Worker {
-    /// Rust-native kernel bash activity commands. These inspect the Python
-    /// handle registry, not the user-bash slot or a client-supplied PID.
+    /// Rust-native kernel bash activity commands. These inspect the kernel's
+    /// own shell commands, not the user-bash slot or a client-supplied PID.
     pub(crate) async fn handle_kernel_bash_activity(
         &self,
         command_type: &str,

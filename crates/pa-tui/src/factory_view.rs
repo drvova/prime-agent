@@ -760,7 +760,7 @@ impl FactoryView {
                 Span::raw("  "),
                 theme.fg_span(
                     ThemeColor::Muted,
-                    "Start one from the conversation: await rlm.factory.run('<spec_id>')",
+                    "Start one from the conversation: (factory-run \"<spec_id>\")",
                 ),
             ]);
         }

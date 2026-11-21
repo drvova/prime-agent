@@ -850,18 +850,29 @@ fn dropping_the_engine_kills_the_command_its_kernel_left_running() {
     );
     let mut events: Vec<EngineEvent> = Vec::new();
     admit(&engine, "start the command".to_string(), &mut events);
-    // Reading the pipe ends when its last writer is gone.
-    let (ended, command_ended) = std::sync::mpsc::channel();
+    // Opening the pipe waits for the command to hold its other end, and
+    // reading it ends when that last writer is gone.
+    let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        use std::io::Read as _;
+        let opened = std::fs::File::open(held);
         // The test may have given up waiting.
-        let _ = ended.send(std::fs::read(held).map(|written| written.len()));
+        let _ = said.send("the command runs");
+        let ended = opened.and_then(|mut pipe| pipe.read_to_end(&mut Vec::new()));
+        let _ = said.send(if ended.is_ok() {
+            "the command ended"
+        } else {
+            "the pipe could not be read"
+        });
     });
-    let before_the_drop = command_ended.try_recv().is_ok();
+    let patience = std::time::Duration::from_secs(30);
+    let before_the_drop = heard.recv_timeout(patience);
     drop(engine);
-    let after_the_drop = command_ended
-        .recv_timeout(std::time::Duration::from_secs(30))
-        .map(|read| read.ok());
-    assert_eq!((before_the_drop, after_the_drop), (false, Ok(Some(0))));
+    assert_eq!(
+        (before_the_drop, heard.recv_timeout(patience)),
+        (Ok("the command runs"), Ok("the command ended")),
+        "{events:?}"
+    );
 }
 
 /// `/better` on the worker: the helper's rewrite comes back as the side run's answer, and the

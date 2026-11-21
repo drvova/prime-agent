@@ -181,13 +181,11 @@ async fn compact_with_paused_goal_never_continues() {
 /// continuation (the engine consults at every settled boundary, the
 /// admission sink queues the follow-up, the runner wakes), the
 /// budget-free loop keeps prompting until the kernel's
-/// `goal.complete()` (the scripted ipython tool call, the f18
+/// `(goal-complete)` (the scripted `eval` tool call, the f18
 /// completion surface) settles the goal, and the completion's
-/// boundary mints nothing more. The completing cell needs a
-/// bootable kernel: a gate run needs the kernel venv, bootstrapped
-/// or built with uv on PATH (the guard inside names the
-/// recipe when the cell fails instead of letting the loop drain
-/// the faux script into a misleading count mismatch).
+/// boundary mints nothing more. A failed completing cell is named by
+/// the guard inside instead of letting the loop drain the faux script
+/// into a misleading count mismatch.
 #[tokio::test]
 async fn goal_turn_end_loop_runs_to_completion() {
     let tmp = tempfile::tempdir().unwrap();
@@ -207,8 +205,8 @@ async fn goal_turn_end_loop_runs_to_completion() {
                 "first pursuit turn",
                 "second pursuit turn",
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl",
-                      "arguments": { "code": "import goal; await goal.complete()" } },
+                    { "type": "toolCall", "name": "eval",
+                      "arguments": { "code": "(goal-complete)" } },
                 ] },
                 "wrap-up after the completion",
                 "after the loop settled",
@@ -239,23 +237,17 @@ async fn goal_turn_end_loop_runs_to_completion() {
     let idle = worker.dispatch("wait_for_idle", &json!({})).await;
     assert!(idle.success, "the goal loop never settled: {idle:?}");
     let events = session_events_since(&mut subscription);
-    // A gate run without the kernel environment (the kernel venv, or
-    // uv on PATH to build it) fails the
-    // completing ipython cell: the goal stays active and the loop
-    // keeps minting (TS parity: goal continuations are unbounded while
-    // the goal is active) until the faux script runs dry. Fail with
-    // the diagnosis instead of the misleading continuation-count
-    // mismatch.
+    // A failed completing cell leaves the goal active and the loop
+    // minting (TS parity: goal continuations are unbounded while the
+    // goal is active) until the faux script runs dry. Fail with the
+    // diagnosis instead of the misleading continuation-count mismatch.
     let kernel_failure = events.iter().find(|event| {
         event.get("type").and_then(Value::as_str) == Some("message_end")
             && event["message"]["role"] == "toolResult"
             && event["message"]["isError"] == json!(true)
     });
     if let Some(failure) = kernel_failure {
-        panic!(
-            "the completing ipython cell failed — this test needs the kernel \
-                 environment (the bootstrapped kernel venv, or uv on PATH to build it): {failure:?}"
-        );
+        panic!("the completing cell failed: {failure:?}");
     }
     let goal_rows: Vec<&Value> = events
         .iter()

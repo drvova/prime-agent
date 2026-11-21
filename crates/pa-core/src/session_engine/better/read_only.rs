@@ -20,7 +20,9 @@
 //!   index write, no lazy fetch, no text conversion or external diff). The one residual those
 //!   overrides document stays: a `.gitattributes` clean filter can run on a modified tracked
 //!   file for `diff`/`status`.
-//! - Every other tool (`edit`, and the internal helpers) is refused: this helper never writes.
+//! - Every other tool (`edit`, the session's Scheme kernel tool `eval`, and the internal
+//!   helpers) is refused: this helper never writes, and nothing parses Scheme cells into reads
+//!   yet. The `python_repl` reader above serves only a session that still registers that tool.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -65,7 +67,8 @@ const GIT_REFUSED_FLAGS: [&str; 6] = [
 ];
 
 pub(crate) const EDIT_REFUSED: &str = "Refused: the /better helper is read-only. It cannot edit, \
-     write, or delete files. Read what you need, then reply with your <rewrite> block.";
+     write, or delete files, or evaluate code. Read what you need with bash's read-only git \
+     commands, then reply with your <rewrite> block.";
 
 const REPL_ACCEPTS: &str = "python_repl in this read-only helper accepts only fs reads with \
      literal arguments, one call per line, e.g. `print(await fs.read(\"src/lib.rs\", start=1, \
@@ -74,7 +77,7 @@ const REPL_ACCEPTS: &str = "python_repl in this read-only helper accepts only fs
 
 const BASH_ACCEPTS: &str = "bash in this read-only helper runs only one read-only git command \
      (`git log`, `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) without pipes, \
-     redirects, or substitutions. Read and search files with python_repl's fs calls.";
+     redirects, or substitutions. Read a file with `git show HEAD:path` and search with `git grep`.";
 
 /// The helper's read allowance, shared by its tools: each pass grants more on top.
 #[derive(Debug, Default)]

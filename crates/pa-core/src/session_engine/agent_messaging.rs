@@ -537,7 +537,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
         host_handler(|_payload| {
             Box::pin(async {
                 Err(anyhow::anyhow!(
-                    "agent_message.list_agents was removed; the family roster now lives in agent_observe.list_agents(). Restart the Python kernel to load the current skills, then call await agent_observe.list_agents()."
+                    "agent_message.list_agents was removed; the family roster is `(agent-observe-list)`."
                 ))
             })
         }),

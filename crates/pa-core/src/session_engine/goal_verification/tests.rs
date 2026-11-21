@@ -273,7 +273,7 @@ async fn measured_goal_run(check: Option<&str>) -> MeasuredRun {
     let claim_done = ToolDefinition {
         name: "claim_done".to_string(),
         label: "Claim done".to_string(),
-        description: "Runs `await goal.complete()`".to_string(),
+        description: "Runs `(goal-complete)`".to_string(),
         prompt_snippet: String::new(),
         parameters: json!({ "type": "object", "properties": {} }),
         execution_mode: Some(ExecutionMode::Sequential),

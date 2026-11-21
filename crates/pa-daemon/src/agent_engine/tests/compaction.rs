@@ -9,10 +9,10 @@ const FAUX_REQUEST_BUDGET: u64 = 16_384;
 
 /// The in-run threshold fixtures' trigger (`128_000 - FAUX_REQUEST_BUDGET -
 /// reserve`): above the seed turn's reading (input + cache write over the
-/// system prompt, 25,233 tokens with the current prompt) and below the
+/// system prompt, 15,100 tokens with the current prompt) and below the
 /// reading after the 80,000-char tool turn (about 10k more), so only that
 /// tool round crosses it, with room for the prompt to grow.
-const IN_RUN_THRESHOLD: u64 = 30_000;
+const IN_RUN_THRESHOLD: u64 = 20_000;
 
 /// The automatic threshold compaction at the turn boundary. The faux
 /// provider estimates usage from the serialized context, so the headroom

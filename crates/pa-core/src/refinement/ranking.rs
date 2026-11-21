@@ -217,17 +217,17 @@ pub fn format_harness_state_for_prompt(
         "Use these continual harness prompt notes, memories, skills, and subagent specs when they are relevant. The base system prompt is immutable; prompt entries below are supplemental notes only.".to_string(),
         String::new(),
         if include_refine {
-            "When to call `await refine.run()`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `await refine.run()` continual harness edits small and evidence-backed.".to_string()
+            "When to call `(refine-run)`: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep `(refine-run)` continual harness edits small and evidence-backed.".to_string()
         } else {
             "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.".to_string()
         },
         String::new(),
         if include_ipython {
-            "Call contract: read each installed Python skill's SKILL.md and call its documented module function in the Python REPL; do not assume a `.run` entrypoint. Use `<skill_import> ...` in shell when a CLI exists. Continual harness skill entries are Python REPL skills with an explicit Python `reference` and `arguments` contract. Spawn a continual harness subagent spec by composing a concise task prompt and calling `handle = await rlm.spawn('sub-task', name='worker')`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit `agent_message` replies or files; children reply with `await agent_message.send(message, receiver_role='parent')`. Use `await rlm.list_subagents()` to recover direct child handles and `await agent_message.send(..., receiver_role='child', receiver_name=handle.name)` for follow-ups. Do not invent wrappers such as `call_skill(...)`, `run_subagent(...)`, or named subagent registries.".to_string()
+            "Call contract: read each installed skill's SKILL.md and call the Scheme functions it documents in an `eval` cell; a skill that documents none is instructions to follow. Use `<skill_import> ...` in `(bash ...)` when a CLI exists. A continual harness skill entry whose `reference` names a Python import cannot be called from the Scheme kernel: use its description as guidance. Spawn a continual harness subagent spec by composing a concise task prompt and calling `(define handle (rlm-spawn \"sub-task\" #:name \"worker\"))`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit agent-message replies or files; children reply with `(agent-message-send message #:receiver-role \"parent\")`. Use `(rlm-list-subagents)` to recover direct child handles and `(agent-message-send message #:receiver-role \"child\" #:receiver-name name)` for follow-ups. Do not invent wrappers such as `call-skill`, `run-subagent`, or named subagent registries.".to_string()
         } else if options.include_shell_examples {
-            "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without the Python REPL; do not use Python `await`, `asyncio`, or `rlm` examples unless the prompt also documents a Python kernel.".to_string()
+            "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without the `eval` tool; do not use kernel function examples unless the prompt also documents the kernel.".to_string()
         } else {
-            "Call contract: continual harness entries are routing/context hints only in sessions without the Python REPL or shell access; do not use Python `await`, `asyncio`, `rlm`, or shell skill commands unless the prompt also documents those interfaces.".to_string()
+            "Call contract: continual harness entries are routing/context hints only in sessions without the `eval` tool or shell access; do not use kernel functions or shell skill commands unless the prompt also documents those interfaces.".to_string()
         },
         String::new(),
     ];
@@ -263,10 +263,10 @@ pub fn format_harness_state_for_prompt(
         total_entries += entries.len();
         let kind_name = kind;
         if kind_name == "subagent" && !entries.is_empty() && include_ipython {
-            lines.push(format!("{kind_name}: {} (invoke a spec by turning it into a concise task prompt and spawning with `await rlm.spawn('<task>', name='<worker>')`; admission returns a child handle, never the answer)", entries.len()));
+            lines.push(format!("{kind_name}: {} (invoke a spec by turning it into a concise task prompt and spawning with `(rlm-spawn \"<task>\" #:name \"<worker>\")`; admission returns a child handle, never the answer)", entries.len()));
         } else if kind_name == "factory" && !entries.is_empty() && include_ipython {
             lines.push(format!(
-                "{kind_name}: {} (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, resume a paused run with `await rlm.factory.resume(run_id)`)",
+                "{kind_name}: {} (state-machine workflow specs; run one with `(factory-run \"<id>\")`; watch with `(factory-status run-id)`, stop with `(factory-stop run-id)`, resume a paused run with `(factory-resume run-id)`)",
                 entries.len()
             ));
         } else {
@@ -664,7 +664,7 @@ mod tests {
             },
         );
         assert!(rendered.contains(
-            "factory: 1 (state-machine workflow specs; run one with `await rlm.factory.run('<id>')`; watch with `await rlm.factory.status(run_id)`, stop with `await rlm.factory.stop(run_id)`, resume a paused run with `await rlm.factory.resume(run_id)`)"
+            "factory: 1 (state-machine workflow specs; run one with `(factory-run \"<id>\")`; watch with `(factory-status run-id)`, stop with `(factory-stop run-id)`, resume a paused run with `(factory-resume run-id)`)"
         ));
         assert!(rendered.contains("- [global:sweep] PR review sweep (review, v1): Sweep review."));
         // Without IPython examples the hint line stays a plain count.
@@ -690,7 +690,7 @@ mod tests {
             },
         );
         assert!(rendered_empty.contains("\nfactory: 0\n"));
-        assert!(!rendered_empty.contains("rlm.factory.run"));
+        assert!(!rendered_empty.contains("factory-run"));
         // Fingerprint stability: a factory entry participates like any
         // other kind; its content change re-fingerprints (arguments render
         // only for skills, so an arguments-only change stays inert, exactly
@@ -905,7 +905,7 @@ mod tests {
         assert!(text.contains("- [local:m1] Fact (/m/m1, v2): the build is green"));
         assert!(text.contains("recent refinements: 1"));
         assert!(text.contains("routing improved"));
-        assert!(text.contains("When to call `await refine.run()`"));
+        assert!(text.contains("When to call `(refine-run)`"));
         let empty_text = format_harness_state_for_prompt(
             &empty_harness_state(),
             &HarnessStatePromptOptions::default(),

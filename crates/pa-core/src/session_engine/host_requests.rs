@@ -139,7 +139,7 @@ fn create_goal_from_host(
 ) -> anyhow::Result<GoalState> {
     match driver.state().status {
         GoalStatus::Active => anyhow::bail!(
-            "cannot create a new goal because this thread already has an active goal; run `await goal.complete()` when it is achieved, or ask the user to clear it with /goal clear"
+            "cannot create a new goal because this thread already has an active goal; run `(goal-complete)` when it is achieved, or ask the user to clear it with /goal clear"
         ),
         GoalStatus::Paused => anyhow::bail!(
             "cannot create a new goal because a paused goal exists; ask the user to resume it with /goal resume or clear it with /goal clear"
