@@ -9,14 +9,17 @@
 )]
 
 //! Prompt guard tests: cache safety (static layers never contain dynamic content; the cached prefix
-//! is byte-identical across sessions) and tool surface (the core layer's documented tools match the
-//! real registered surface; a tool change without a prompt update fails here).
+//! is byte-identical across sessions) and tool surface (the API reference the prompt is spliced
+//! from documents exactly the functions the Scheme kernel's sources define, with their call forms;
+//! a kernel change without a reference update fails here).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::LazyLock;
 
-use pa_core::prompts::layers::{CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER};
+use pa_core::prompts::layers::{
+    documented_calls, API_DOCS, CORE_LAYER, OPINIONATED_LAYER, USAGE_LAYER,
+};
 use pa_core::prompts::model_prompts::MODEL_PROMPTS_TOML;
 use pa_core::prompts::system_prompt::{
     system_prompt_breakdown, BuildSystemPromptOptions, SegmentKind,
@@ -54,7 +57,6 @@ const DYNAMIC_ONLY_MARKERS: &[&str] = &[
     "<available_skills>",
     "Enabled generic MCP servers:",
     "# Project Context",
-    "Pre-installed Python packages:",
     "You are a child agent spawned by",
 ];
 
@@ -83,7 +85,7 @@ fn cached_prefix_is_stable_across_sessions() {
         messages_path: Some("/first/session.jsonl".to_string()),
         model_prompt_extras: Some("model guidance."),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec![pa_types::ai::SCHEME_TOOL_NAME]),
         ..Default::default()
     };
     let first = system_prompt_breakdown(&options);
@@ -118,7 +120,6 @@ fn cached_prefix_is_stable_across_sessions() {
     assert!(first_tail.contains("Working directory: /first/cwd"));
     assert!(first_tail.contains("Recursive agent depth: 0 (root)"));
     assert!(first_tail.contains("<available_skills>"));
-    assert!(first_tail.contains("Pre-installed Python packages:"));
     let second_tail = &second.assembled[second.cached_prefix_len..];
     assert!(second_tail.contains("/completely/different"));
     assert!(second_tail.contains("# Project card\n\n- Test: `cargo test`"));
@@ -144,35 +145,149 @@ fn cached_prefix_is_stable_across_sessions() {
 
 // Tool surface
 
-/// What the kernel capability manifests (`prime-agent-runtime/capabilities/`) declare about the
-/// host requests their modules issue and the core prompt tokens they own.
-struct ManifestSurface {
-    /// Each host request a capability issues, mapped to the prompt token it surfaces as.
-    host_requests: BTreeMap<String, String>,
-    /// Host requests a capability issues as host plumbing, never documented.
-    internal_host_requests: BTreeSet<String>,
-    /// The core prompt's bullet tokens the capabilities own.
-    documented: BTreeSet<String>,
+/// The Scheme kernel's product sources (`src/kernel/scheme`): every `.scm` file, and every `.rs`
+/// file up to its inline test module. Test files hold doubles, not the product's surface.
+static KERNEL_SOURCES: LazyLock<Vec<String>> = LazyLock::new(|| {
+    let mut sources = Vec::new();
+    let mut stack = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src/kernel/scheme")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
+        {
+            let path = entry.expect("directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let extension = path.extension().and_then(|extension| extension.to_str());
+            let scheme = extension == Some("scm");
+            let test_file = path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with("tests.rs"));
+            if !scheme && (extension != Some("rs") || test_file) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("read source");
+            sources.push(match text.split_once("#[cfg(test)]\nmod tests {") {
+                Some((product, _)) if !scheme => product.to_string(),
+                Some(_) | None => text,
+            });
+        }
+    }
+    sources
+});
+
+/// Every model-facing function the kernel's sources define (`(define (name ...) ...)` at the
+/// start of a line, names starting with `%` being internal), mapped to its call form as the
+/// reference writes it: required arguments, `[optional]` ones, then each `#:keyword`. `None` for a
+/// function that takes a rest argument, whose call form the definition does not spell out (the
+/// tools taking an options hash).
+fn kernel_functions() -> BTreeMap<String, Option<String>> {
+    let mut functions = BTreeMap::new();
+    for source in KERNEL_SOURCES.iter() {
+        for (at, opening) in source.match_indices("(define (") {
+            let line_start = source[..at].rfind('\n').map_or(0, |newline| newline + 1);
+            if !source[line_start..at].trim().trim_matches('"').is_empty() {
+                continue;
+            }
+            // The parameter list's top-level tokens: a bracketed default is one token.
+            let mut tokens: Vec<String> = vec![String::new()];
+            let mut depth = 1_u32;
+            for letter in source[at + opening.len()..].chars() {
+                match letter {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 {
+                    break;
+                }
+                if depth == 1 && letter.is_whitespace() {
+                    tokens.push(String::new());
+                } else if let Some(token) = tokens.last_mut() {
+                    token.push(letter);
+                }
+            }
+            tokens.retain(|token| !token.is_empty());
+            let Some((name, parameters)) = tokens.split_first() else {
+                continue;
+            };
+            if name.starts_with('%') {
+                continue;
+            }
+            let mut form = Some(vec![name.clone()]);
+            let mut parameters = parameters.iter();
+            while let (Some(parameter), Some(written)) = (parameters.next(), form.as_mut()) {
+                if parameter == "." {
+                    form = None;
+                } else if parameter.starts_with("#:") {
+                    // The keyword's binding and default follow it.
+                    parameters.next();
+                    written.push(parameter.clone());
+                } else if let Some(optional) = parameter.strip_prefix('[') {
+                    let name = optional.split_whitespace().next().unwrap_or(optional);
+                    written.push(format!("[{name}]"));
+                } else {
+                    written.push(parameter.clone());
+                }
+            }
+            functions.insert(name.clone(), form.map(|written| written.join(" ")));
+        }
+    }
+    functions
 }
 
-/// The manifest keys this file reads (the schema is in the manifests' README).
-#[derive(serde::Deserialize)]
-struct ManifestHostSurface {
-    #[serde(default)]
-    host_requests: BTreeMap<String, String>,
-    #[serde(default)]
-    internal_host_requests: Vec<String>,
-    #[serde(default)]
-    documented: Vec<String>,
+/// The API reference (`prompts/capabilities/`, spliced into the core layer and served by
+/// `(api-help)`) documents exactly the functions the kernel defines, each once and with the call
+/// form its definition has: a function added, removed, or given another argument without a
+/// reference update fails here. No topic is named like a function, so `(api-help name)` is
+/// unambiguous.
+#[test]
+fn the_reference_documents_exactly_the_kernels_functions() {
+    let calls: Vec<&str> = API_DOCS
+        .iter()
+        .flat_map(|(_, doc)| documented_calls(doc))
+        .collect();
+    let documented: BTreeMap<String, String> = calls
+        .iter()
+        .map(|call| {
+            (
+                call.split(' ').next().unwrap_or(call).to_string(),
+                (*call).to_string(),
+            )
+        })
+        .collect();
+    let defined: BTreeMap<String, String> = kernel_functions()
+        .into_iter()
+        .map(|(name, form)| {
+            let form = form
+                .or_else(|| documented.get(&name).cloned())
+                .unwrap_or_else(|| format!("{name} (not documented)"));
+            (name, form)
+        })
+        .collect();
+    let topics_named_like_functions: Vec<&str> = API_DOCS
+        .iter()
+        .map(|(topic, _)| *topic)
+        .filter(|topic| defined.contains_key(*topic))
+        .collect();
+    assert_eq!(
+        (documented.len(), &documented, topics_named_like_functions),
+        (calls.len(), &defined, Vec::new())
+    );
 }
 
-static MANIFEST_SURFACE: LazyLock<ManifestSurface> = LazyLock::new(|| {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/capabilities");
-    let mut surface = ManifestSurface {
-        host_requests: BTreeMap::new(),
-        internal_host_requests: BTreeSet::new(),
-        documented: BTreeSet::new(),
-    };
+/// The capability manifests' `internal_host_requests`: requests the kernel issues as host
+/// plumbing, never as a model-facing function.
+static MANIFEST_INTERNAL_HOST_REQUESTS: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
+    /// The manifest key this file reads (the schema is in the manifests' README).
+    #[derive(serde::Deserialize)]
+    struct ManifestHostSurface {
+        #[serde(default)]
+        internal_host_requests: Vec<String>,
+    }
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/kernel/capabilities");
+    let mut internal = BTreeSet::new();
     for entry in
         std::fs::read_dir(&dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()))
     {
@@ -183,17 +298,13 @@ static MANIFEST_SURFACE: LazyLock<ManifestSurface> = LazyLock::new(|| {
         let text = std::fs::read_to_string(&path).expect("manifest text");
         let manifest: ManifestHostSurface = toml::from_str(&text)
             .unwrap_or_else(|error| panic!("unparseable manifest {}: {error}", path.display()));
-        surface.host_requests.extend(manifest.host_requests);
-        surface
-            .internal_host_requests
-            .extend(manifest.internal_host_requests);
-        surface.documented.extend(manifest.documented);
+        internal.extend(manifest.internal_host_requests);
     }
-    surface
+    internal
 });
 
 /// Registered host-request types no capability manifest declares that are host-internal plumbing,
-/// not model-facing programmatic tools (the prompt must not document them).
+/// not model-facing programmatic tools.
 const NON_MANIFEST_INTERNAL_HOST_REQUESTS: &[&str] = &[
     // The factory module reports run milestones; the model never calls it.
     "factory.progress",
@@ -201,30 +312,14 @@ const NON_MANIFEST_INTERNAL_HOST_REQUESTS: &[&str] = &[
     "model.apply_effort",
 ];
 
-/// Map one registered host-request type to the prompt token that documents it: the capability
-/// manifests' `[host_requests]` mapping, else the explicit cases below for requests no manifest
-/// declares, else the request's own name. `None` when the request is host-internal.
-fn prompt_token_for_host_request(request: &str) -> Option<String> {
-    let surface = &*MANIFEST_SURFACE;
-    if surface.internal_host_requests.contains(request)
-        || NON_MANIFEST_INTERNAL_HOST_REQUESTS.contains(&request)
-    {
-        return None;
-    }
-    if let Some(token) = surface.host_requests.get(request) {
-        return Some(token.clone());
-    }
-    Some(
-        match request {
-            // The bundled `agent_observe` skill's API: a skill, not a kernel capability.
-            "agent_observe.list" | "agent_message.list_agents" => "agent_observe.list_agents",
-            "agent_observe.get" => "agent_observe.get_agent",
-            "agent_observe.recent" => "agent_observe.recent_messages",
-            other => other,
-        }
-        .to_string(),
-    )
-}
+/// Registered model-facing host requests the Scheme kernel does not issue, each with the reason
+/// the model loses nothing by it. Anything else the kernel does not issue is a capability the
+/// model cannot reach, and fails the guard.
+const HOST_REQUESTS_THE_SCHEME_KERNEL_DOES_NOT_ISSUE: &[&str] = &[
+    // A tombstone: its handler only answers that the request was removed in favour of
+    // `agent_observe.list`, which `agent-observe-list` issues.
+    "agent_message.list_agents",
+];
 
 /// A host-request type literal: lowercase dotted name (`rlm.collect`).
 fn is_request_type_literal(literal: &str) -> bool {
@@ -333,233 +428,45 @@ fn all_string_literals(text: &str) -> Vec<String> {
     literals
 }
 
-/// Kernel-bound REPL names from the real bootstrap code (`rlm`, `bash`,
-/// `mcp`), derived from `build_rlm_bootstrap_code`.
-fn kernel_bound_names() -> BTreeSet<String> {
-    let code = pa_core::kernel::bootstrap::build_rlm_bootstrap_code(&[], false);
-    let mut names = BTreeSet::new();
-    for line in code.lines() {
-        let line = line.trim_start();
-        if line.starts_with("rlm = ") {
-            names.insert("rlm".to_string());
-        }
-        if line.starts_with("bash = ") {
-            names.insert("bash".to_string());
-        }
-        if let Some(rest) = line.strip_prefix("import rlm.mcp as ") {
-            names.insert(rest.trim().to_string());
-        }
-    }
-    names
-}
-
-/// One bundled Python skill's public module-level functions (column-zero
-/// `def`/`async def` only, so nested helpers stay out).
-fn python_skill_functions(package_path: &Path) -> Vec<String> {
-    let mut functions = Vec::new();
-    let mut stack = vec![package_path.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("py") {
-                continue;
-            }
-            let Ok(source) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in source.lines() {
-                let after = line
-                    .strip_prefix("async def ")
-                    .or_else(|| line.strip_prefix("def "));
-                if let Some(signature) = after {
-                    if let Some(name) = signature.split(['(', ':']).next() {
-                        functions.push(name.trim().to_string());
-                    }
-                }
-            }
-        }
-    }
-    functions
-}
-
-/// Bundled skills that are auth-gated builtin MCP integrations: they are disabled in sessions whose
-/// user is not logged into the integration, so the prompt documents them only through the dynamic
-/// skills inventory (and its generic "additional skills may exist" note), not as API surface.
-fn auth_gated_bundled_skills() -> BTreeSet<String> {
-    pa_core::mcp::BUILTIN_MCP_CATALOG
-        .iter()
-        .map(|(server, _, _)| server.to_string())
-        .collect()
-}
-
-/// Conditionally-available bundled skills: the websearch skill rides with its
-/// credential (an unset `bundledSkills.websearch` resolves with the selected
-/// provider's stored or ambient key), so keyless installs exclude it — it must never be
-/// documented as static core-tool surface; the dynamic skills inventory
-/// renders it only on installs where it resolves enabled.
-fn settings_gated_bundled_skills() -> BTreeSet<String> {
-    ["websearch".to_string()].into_iter().collect()
-}
-
-/// (import name, public functions) for every bundled Python skill that is
-/// always available (auth-gated integrations and the conditionally-available
-/// websearch skill excluded).
-fn bundled_python_skills() -> Vec<(String, Vec<String>)> {
-    let gated = auth_gated_bundled_skills();
-    let settings_gated = settings_gated_bundled_skills();
-    sorted_bundled_skills()
-        .into_iter()
-        .filter(|skill| {
-            skill
-                .python
-                .as_ref()
-                .is_none_or(|python| !gated.contains(&python.import_name))
-        })
-        .filter(|skill| !settings_gated.contains(&skill.name))
-        .filter_map(|skill| {
-            let python = skill.python?;
-            let mut functions = python_skill_functions(&python.package_path)
-                .into_iter()
-                .filter(|name| !name.starts_with('_'))
-                .collect::<Vec<_>>();
-            functions.sort();
-            Some((python.import_name, functions))
-        })
-        .collect()
-}
-
-/// The surface tokens the prompt is allowed to document: kernel-bound names, registered host
-/// requests, bundled Python skills, and the tokens the kernel capability manifests document.
-fn allowed_surface_tokens() -> BTreeSet<String> {
-    let mut allowed = BTreeSet::new();
-    allowed.extend(kernel_bound_names());
-    for request in registered_host_requests() {
-        if let Some(token) = prompt_token_for_host_request(&request) {
-            allowed.insert(token);
-        }
-    }
-    for (import, functions) in bundled_python_skills() {
-        allowed.insert(import.clone());
-        for function in functions {
-            allowed.insert(format!("{import}.{function}"));
-        }
-    }
-    allowed.extend(MANIFEST_SURFACE.documented.iter().cloned());
-    allowed
-}
-
-/// The surface tokens the prompt MUST document. Stricter than the allowed set: skill entry points
-/// (`run`/`status`) are callable through the module itself, so the module bullet suffices for them.
-fn required_surface_tokens() -> BTreeSet<String> {
-    let mut required = BTreeSet::new();
-    for request in registered_host_requests() {
-        if let Some(token) = prompt_token_for_host_request(&request) {
-            required.insert(token);
-        }
-    }
-    for (import, functions) in bundled_python_skills() {
-        required.insert(import.clone());
-        for function in functions {
-            if function == "run" || function == "status" {
-                continue;
-            }
-            required.insert(format!("{import}.{function}"));
-        }
-    }
-    required.extend(MANIFEST_SURFACE.documented.iter().cloned());
-    required
-}
-
-/// Surface tokens documented in the core layer: bullet entries whose first
-/// backtick token is a lowercase module path.
-fn documented_surface_tokens() -> BTreeSet<String> {
-    let mut documented = BTreeSet::new();
-    for line in CORE_LAYER.lines() {
-        let Some(rest) = line.trim_start().strip_prefix("- `") else {
-            continue;
-        };
-        let Some(end) = rest.find('`') else {
-            continue;
-        };
-        let token = rest[..end].split('(').next().unwrap_or_default().trim();
-        let valid = token
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_lowercase())
-            && token
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '.')
-            && !token.is_empty();
-        if valid {
-            documented.insert(token.to_string());
-        }
-    }
-    documented
-}
-
+/// Every host request the session registers for the model is one the Scheme kernel issues (its
+/// type is a literal in the kernel's sources, behind a function the reference documents), is
+/// declared host plumbing, or is listed above with its reason; and that list names nothing the
+/// kernel does issue.
 #[test]
-fn core_layer_documents_the_real_tool_surface() {
-    let documented = documented_surface_tokens();
-    let allowed = allowed_surface_tokens();
-    let required = required_surface_tokens();
-
-    assert!(
-        !required.is_empty() && !documented.is_empty(),
-        "surface extraction produced nothing; the guard would be vacuous"
-    );
-
-    for token in &documented {
-        let root = token.split('.').next().expect("non-empty token");
-        let known = allowed.contains(token)
-            || allowed.contains(root)
-            || allowed
-                .iter()
-                .any(|candidate| candidate.starts_with(&format!("{root}.")));
-        assert!(
-            known,
-            "prompt documents unknown tool {token:?}: a tool-surface change must \
-             update prompts/layers/core.md or the capability doc file (and this test's token mapping)"
-        );
-    }
-
-    for token in &required {
-        let documented_form = documented.contains(token)
-            || documented
-                .iter()
-                .any(|entry| entry.starts_with(&format!("{token}.")))
-            || documented
-                .iter()
-                .any(|entry| entry.starts_with(token.as_str()) && entry.contains('.'));
-        assert!(
-            documented_form,
-            "tool {token:?} is on the registered surface but the prompt does not \
-             document it: update prompts/layers/core.md or the capability doc file"
-        );
-    }
+fn every_model_facing_host_request_is_issued_by_the_scheme_kernel() {
+    let issued = |request: &str| {
+        let literal = format!("\"{request}\"");
+        KERNEL_SOURCES
+            .iter()
+            .any(|source| source.contains(&literal))
+    };
+    let unreachable: Vec<String> = registered_host_requests()
+        .into_iter()
+        .filter(|request| {
+            !MANIFEST_INTERNAL_HOST_REQUESTS.contains(request)
+                && !NON_MANIFEST_INTERNAL_HOST_REQUESTS.contains(&request.as_str())
+                && !HOST_REQUESTS_THE_SCHEME_KERNEL_DOES_NOT_ISSUE.contains(&request.as_str())
+                && !issued(request)
+        })
+        .collect();
+    let stale: Vec<&str> = HOST_REQUESTS_THE_SCHEME_KERNEL_DOES_NOT_ISSUE
+        .iter()
+        .copied()
+        .filter(|request| issued(request))
+        .collect();
+    assert_eq!((unreachable, stale), (Vec::new(), Vec::new()));
 }
 
-/// Every host request a capability manifest declares, documented or internal, is one pa-core
-/// registers a handler for.
+/// Every host request a capability manifest declares as plumbing is one pa-core registers a
+/// handler for.
 #[test]
 fn capability_manifests_declare_registered_host_requests() {
     let registered = registered_host_requests();
-    let unregistered: Vec<&String> = MANIFEST_SURFACE
-        .host_requests
-        .keys()
-        .chain(&MANIFEST_SURFACE.internal_host_requests)
+    let unregistered: Vec<&String> = MANIFEST_INTERNAL_HOST_REQUESTS
+        .iter()
         .filter(|request| !registered.contains(*request))
         .collect();
-    assert!(
-        unregistered.is_empty(),
-        "capability manifests declare unregistered host requests {unregistered:?}"
-    );
+    assert_eq!(unregistered, Vec::<&String>::new());
 }
 
 // Packaged-set parity (TS packages/coding-agent/skills)
@@ -604,33 +511,33 @@ fn bundled_skills_match_the_ts_packaged_set() {
         .expect("the generic mcp skill is packaged");
     assert!(
         mcp_skill.python.is_none(),
-        "the mcp skill is documentation for the pre-imported runtime module, not a Python package"
+        "the mcp skill is documentation for the kernel's mcp functions, not a Python package"
     );
     assert_eq!(
         mcp_skill.description,
-        "Use external MCP services generically from Python - search the supported-service catalog, inspect the user's connections, discover live tool schemas, and call tools on any connection (Notion, Linear, Slack, and the rest of the catalog) without per-service packages."
+        "Use external MCP services generically from the Scheme kernel - search the supported-service catalog, inspect the user's connections, discover live tool schemas, and call tools on any connection (Notion, Linear, Slack, and the rest of the catalog) without per-service packages."
     );
 }
 
-/// The bounded-await contract renders wherever the Python REPL does: every session kind, daemon
-/// or daemonless, registers the bash completion notice the degrade relies on.
+/// The bounded-wait contract renders wherever the kernel does: every session kind, daemon
+/// or daemonless, registers the bash completion notice the snapshot relies on.
 #[test]
-fn bounded_await_contract_renders_in_daemon_and_daemonless_sessions() {
+fn bounded_wait_contract_renders_in_daemon_and_daemonless_sessions() {
     let mut options = BuildSystemPromptOptions {
         cwd: "/w".to_string(),
         messages_path: Some("/log.jsonl".to_string()),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec![pa_types::ai::SCHEME_TOOL_NAME]),
         ..Default::default()
     };
     for daemonless in [false, true] {
         options.daemonless = daemonless;
         let prompt = system_prompt_breakdown(&options).assembled;
         assert!(
-            prompt.contains("`r.running` is True")
-                && prompt.contains("`r.exit_code` is None")
-                && prompt.contains("`await bash(cmd).wait(seconds)`"),
-            "daemonless={daemonless}: the prompt must carry the bounded-await result contract: {prompt}"
+            prompt.contains("`running` is `#t`")
+                && prompt.contains("`exit-code` is `#f`")
+                && prompt.contains("`(bash cmd (hash 'wait-ms 120000))`"),
+            "daemonless={daemonless}: the prompt must carry the bounded-wait result contract: {prompt}"
         );
     }
 }
@@ -644,7 +551,7 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
         cwd: "/w".to_string(),
         messages_path: Some("/log.jsonl".to_string()),
         skills: sorted_bundled_skills(),
-        selected_tools: Some(vec!["python_repl"]),
+        selected_tools: Some(vec![pa_types::ai::SCHEME_TOOL_NAME]),
         ..Default::default()
     };
     let breakdown = system_prompt_breakdown(&options);
@@ -672,12 +579,10 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
     );
     options.generic_mcp_servers = vec!["notion".into()];
     let second = system_prompt_breakdown(&options);
-    assert!(second
-        .assembled
-        .contains("await mcp.list_tools(\"notion\")"));
+    assert!(second.assembled.contains("(mcp-list-tools \"notion\")"));
 }
 
-// Async turn discipline
+// Turn discipline
 
 /// Since #3580 every session kind wakes on bash completion: daemonless runs
 /// get a queued `[bash-done]` turn, so the static usage layer must not carry

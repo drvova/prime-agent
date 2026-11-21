@@ -1,0 +1,11 @@
+module = "rlm.todo"
+closure_seed = true
+bound_module = "todo"
+probe = [
+  "import rlm.todo as _todo",
+  "assert all(callable(getattr(_todo, _m, None)) for _m in ('get', 'set', 'update'))",
+]
+
+[[telemetry]]
+event = "agent todos and questions"
+properties = ["todo_list_set_count", "todo_item_done_count"]

@@ -971,8 +971,8 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
 
 /// A model switch rewrites the prompt's image-input line: a session that
 /// starts on a text-only model and switches to a vision model must be told
-/// it can now see images, or it never calls `attach_image` (the stale line
-/// says it errors).
+/// it can now see images, or it never calls `attach-image` (the stale line
+/// says it raises).
 #[tokio::test]
 async fn a_model_switch_rewrites_the_image_input_line() {
     let model = pa_agent::types::Model {
@@ -1033,8 +1033,8 @@ async fn a_model_switch_rewrites_the_image_input_line() {
         .into_iter()
         .map(|context| context.system_prompt.unwrap_or_default())
         .collect();
-    let text_only = "Image input: this model cannot see images; `attach_image` errors for it.";
-    let vision = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `attach_image(path)`: reading its bytes with `open()` or `bash` does not show it to you.";
+    let text_only = "Image input: this model cannot see images; `attach-image` raises for it.";
+    let vision = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `(attach-image path)`: reading its bytes with `fs-read` or `bash` does not show it to you.";
     assert!(
         prompts[0].contains(text_only),
         "the text-only session states it: {}",

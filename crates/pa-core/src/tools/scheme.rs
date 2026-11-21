@@ -110,7 +110,7 @@ a short wait, `(cell-cancel \"{cell}\")` to stop it. {PYTHON_BACKGROUND_NOTE_END
     ToolDefinition {
         name: pa_types::ai::SCHEME_TOOL_NAME.to_string(),
         label: pa_types::ai::SCHEME_TOOL_NAME.to_string(),
-        description: "Evaluate Scheme (Steel, mostly R5RS) inside the running agent. Definitions persist across calls for the session. The value of the last form is returned, and `display`/`displayln` output is captured. `(host-request type payload)` sends a hash to the host and returns its reply as a hash, or raises its error. Starts instantly and each call costs well under a millisecond; there are no Python packages here.".to_string(),
+        description: "Evaluate Scheme (Steel, mostly R5RS) in the session's persistent kernel. The forms run in order and definitions persist across calls; the result is the value of the last form, after whatever `display`/`displayln` printed. Every other tool (`bash`, `edit`, the `fs-*` file tools, subagents, memory) is a Scheme function called from here: the system prompt lists them, and `(api-help)` prints their reference.".to_string(),
         prompt_snippet: "eval - evaluate Scheme inside the running agent; definitions persist".to_string(),
         // One engine per session: its cells run one at a time.
         execution_mode: Some(ExecutionMode::Sequential),
@@ -120,7 +120,7 @@ a short wait, `(cell-cancel \"{cell}\")` to stop it. {PYTHON_BACKGROUND_NOTE_END
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Scheme forms to evaluate in the session's engine, in order."
+                    "description": "The cell: Scheme forms to evaluate, in order."
                 },
                 "timeout": {
                     "type": "integer",

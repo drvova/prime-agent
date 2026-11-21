@@ -1,25 +1,25 @@
 ---
 name: skill-creator
-description: Create, validate, and install Prime Agent skills - both markdown skills and Python-backed skills callable from the Python kernel. Use when the user asks to create a skill, turn a workflow, script, or prompt into a reusable skill, add a Python skill the agent can call, or asks how to write a SKILL.md and where skills live.
+description: Create, validate, and install Prime Agent skills - both markdown skills and skills that add Scheme functions callable from the kernel. Use when the user asks to create a skill, turn a workflow, script, or prompt into a reusable skill, add a function the agent can call, or asks how to write a SKILL.md and where skills live.
 ---
 
 # Skill Creator
 
-A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instructions). At startup Prime Agent reads only each skill's name and description into the system prompt; the full file loads on demand when a task matches. Prime Agent follows the [Agent Skills standard](https://agentskills.io/specification) and extends it with Python-backed skills.
+A skill is a directory with a `SKILL.md` file (YAML frontmatter + markdown instructions). At startup Prime Agent reads only each skill's name and description into the system prompt; the full file loads on demand when a task matches. Prime Agent follows the [Agent Skills standard](https://agentskills.io/specification) and extends it with skills that carry Scheme source.
 
 | Kind | What it is | When to use |
 |---|---|---|
 | markdown | `SKILL.md` plus optional scripts, references, and assets | Workflows, CLI recipes, domain knowledge, multi-step instructions |
-| python | A markdown skill that also ships a Python package installed into the agent's persistent Python kernel | Capabilities that are naturally one Python call: API wrappers, fetchers, converters, computations |
+| scheme | A markdown skill that also carries Scheme source (`skill.scm`, `scheme/*.scm`) the agent's kernel loads | Capabilities that are naturally one call from a cell: wrappers around `bash`, `web-read`, or `mcp-call-tool`, parsers, small computations |
 
-Before writing a Python-backed skill, read [references/python-skills.md](references/python-skills.md) for the package contract.
+Before writing Scheme source for a skill, read [references/scheme-skills.md](references/scheme-skills.md) for the contract.
 
 ## Creating a Skill
 
-1. **Pick the kind.** Default to markdown. Go Python only when the agent should *call* the capability (`await my_skill(...)`) instead of following instructions.
+1. **Pick the kind.** Default to markdown. Add Scheme source only when the agent should *call* the capability (`(my-skill-run ...)`) instead of following instructions.
 2. **Pick the location.** Ask the user when it is not obvious from context:
-   - Project skill, shared via the repo: `.prime/agent/skills/<name>/` under the project root
-   - Personal global skill: `<agent dir>/skills/<name>/`, where the agent dir is this build's own state directory: read it from `os.environ["PRIME_AGENT_CODING_AGENT_DIR"]` in the Python REPL (or `$PRIME_AGENT_CODING_AGENT_DIR` in `bash()`); never assume `~/.prime/agent`, which a distribution build does not use
+   - Project skill, shared via the repo: `.prime/agent/skills/<name>/` under the project root (a project skill's Scheme source is never loaded: code a repository ships must not run by being checked out)
+   - Personal global skill: `<agent dir>/skills/<name>/`, where the agent dir is this build's own state directory: read it with `(bash "echo $PRIME_AGENT_CODING_AGENT_DIR")`; never assume `~/.prime/agent`, which a distribution build does not use
    - Shipped with an npm package: a `skills/` directory in the package, or `pi.skills` paths in its `package.json`
 3. **Scaffold and write** the directory using the layout and frontmatter rules below.
 4. **Verify** the skill loads (see Verification).
@@ -31,6 +31,8 @@ On a name collision the first skill found wins. Precedence: explicit `--skill` p
 ```
 my-skill/
 ├── SKILL.md              # Required: frontmatter + instructions
+├── skill.scm             # Optional Scheme source the kernel loads
+├── scheme/               # Optional *.scm files, loaded in name order before skill.scm
 ├── scripts/              # Optional helper scripts the instructions reference
 ├── references/           # Optional detailed docs, loaded only when needed
 └── assets/               # Optional templates and data files
@@ -75,7 +77,7 @@ Keep `SKILL.md` short: the decision flow, the common commands, the contract. Pus
 After writing the skill:
 
 1. Re-read the frontmatter and check every rule in the table above, especially that `name` matches the directory name and the description is non-empty.
-2. Run `await rlm.reload()` in the Python REPL: the new skill joins this session's skill list from the next model call, and a Python skill is callable at once (check `result.python_skills_bound`). The user's `/reload` does the same; other sessions pick skills up on start. Loading problems (bad name, missing description, name collisions) surface as warnings — ask the user to check, or check diagnostics yourself if you can.
+2. Run `(rlm-reload)` in the kernel: the new skill joins this session's skill list from the next model call, and its Scheme source is loaded after that cell, so its functions are callable from the next cell. The user's `/reload` does the same; other sessions pick skills up on start. Loading problems (bad name, missing description, name collisions) are in the reply's `diagnostics`; `(skills-unavailable)` lists skills whose Scheme source failed to load, with the error.
 3. A loaded skill is also invocable as `/skill:<name>`, which the user can try directly.
 
-For Python-backed skills, also run the checks in [references/python-skills.md](references/python-skills.md).
+For skills with Scheme source, also run the checks in [references/scheme-skills.md](references/scheme-skills.md).

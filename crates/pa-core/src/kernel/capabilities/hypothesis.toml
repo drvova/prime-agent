@@ -1,0 +1,17 @@
+module = "rlm.hypothesis"
+closure_seed = true
+internal_host_requests = ["hypotheses.record"]
+probe = [
+  "import rlm.hypothesis as _hypothesis",
+  "assert callable(_hypothesis.hypotheses)",
+  "assert callable(rlm.rlm.hypotheses)",
+]
+
+[[telemetry]]
+event = "agent repl hypotheses"
+properties = [
+  "hypotheses_run_count",
+  "hypotheses_approach_count",
+  "hypotheses_passed_count",
+  "hypotheses_no_winner_count",
+]

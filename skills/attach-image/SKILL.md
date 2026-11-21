@@ -18,32 +18,31 @@ actually look at it.
 ## When NOT to use this
 
 For *programmatic* work on an image — measuring pixels, cropping, resizing,
-computing a hash, comparing files byte-by-byte — open it in the kernel with a
-library instead:
+computing a hash, comparing files byte-by-byte — run a tool on it with `bash`
+instead (the kernel has no image library):
 
-```python
-from PIL import Image
-img = Image.open("diagram.png")
-print(img.size)
+```scheme
+(displayln (hash-ref (bash "file diagram.png && sha256sum diagram.png") 'output))
 ```
 
 That path does not put the image in the model's context; it only lets you
-compute over it. Use `attach_image` when you need to *see* the image.
+compute over it. Use `attach-image` when you need to *see* the image.
 
 ## Usage
 
-Call the prepared `attach_image` import directly in the Python kernel:
-
-```python
-print(await attach_image("diagram.png"))
-print(await attach_image("a.png", "b.jpg"))
+```scheme
+(attach-image "diagram.png")
+(attach-image "a.png" "b.jpg")
 ```
 
-The skill automatically resizes and compresses large images before loading them
-into context. Animated images that need compression are flattened to their first
-frame. Transparent images that need compression are composited onto a neutral
-gray background. Extremely large images are rejected by pixel count before full
-processing. The original file is left untouched.
+It returns a line saying what was loaded. Large images are resized and
+compressed before they are loaded into context. Animated images that need
+compression are flattened to their first frame. Transparent images that need
+compression are composited onto a neutral gray background. Extremely large
+images are rejected by size and pixel count before full processing. The
+original file is left untouched.
 
-Supported formats: PNG, JPEG, GIF, WebP. The skill errors if a file is not a
-supported image, or if the current model is not vision-capable.
+Supported formats: PNG, JPEG, GIF, WebP. It raises if a file is not a
+supported image, or if the current model is not vision-capable; in that case
+spawn a child on a model whose `(rlm-find-models)` row has `image_input` `#t`
+and ask it to attach the file and describe it.

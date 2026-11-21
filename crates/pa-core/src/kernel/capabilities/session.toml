@@ -1,0 +1,12 @@
+module = "rlm"
+closure_seed = false
+probe = ["assert callable(rlm.rlm.session.search)"]
+
+[[telemetry]]
+event = "agent kernel login and recall"
+properties = [
+  "session_search_count",
+  "session_search_hit_count",
+  "session_search_read_count",
+  "session_search_failed_count",
+]

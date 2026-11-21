@@ -253,13 +253,19 @@ executor through atomics. Adoption counts ride `agent context paging`. Public su
 transit cap and `bash()`'s 2 MiB head/tail buffer bound memory before the host sees the text)
 and any cross-session sharing.
 
-Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per kernel
-capability under `prime-agent-runtime/capabilities/`, embedded with `include_str!`, recording each
-capability's runtime-ready probe statements, closure seed, bootstrap binding, prompt names, host
-requests, and standalone telemetry event. The runtime-ready probe (built once, on the first kernel
-start that probes) and the closure freeze's seed derive from them; its tests hold the bootstrap,
-the core prompt, and the telemetry catalog equal to them. Non-goals: capability behavior and any
+Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per Python
+kernel capability beside the module, embedded with `include_str!`, recording each capability's
+runtime-ready probe statements, closure seed, bootstrap binding, plumbing host requests, and
+standalone telemetry event. The runtime-ready probe (built once, on the first kernel start that
+probes) and the closure freeze's seed derive from them; its tests hold the bootstrap and the
+telemetry catalog equal to them. Non-goals: capability behavior, what the model is told, and any
 public API.
+
+Kernel API reference (`prompts::layers`): one doc file per topic under `src/prompts/capabilities/`
+documents every model-facing function of the Scheme kernel. The core prompt layer splices each
+function's call form from them, and the kernel serves a function's full entry on demand through
+`(api-help ...)`. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
+sources define. Public surface: `API_DOCS`, `documented_calls`, `CORE_LAYER`.
 
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs

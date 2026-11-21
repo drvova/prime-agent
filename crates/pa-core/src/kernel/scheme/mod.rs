@@ -21,6 +21,7 @@
 //! [`HostRequestHandlers`], the same handlers the Python kernel's host
 //! requests reach, and the reply comes back as a Scheme value or raises.
 
+mod api_help;
 mod attach;
 mod cell;
 mod factory;
@@ -493,6 +494,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                 cell::register(&mut engine, &cells)?;
                 native::register_session_tools(&mut engine, &native_handlers, &environment);
                 host_api::load(&mut engine)?;
+                api_help::register(&mut engine)?;
                 let cell = native::CellSignal::default();
                 let jobs = native::register(
                     &mut engine,
