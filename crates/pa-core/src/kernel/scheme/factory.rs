@@ -39,6 +39,8 @@ mod binding;
 mod corpus_tests;
 mod executor;
 #[cfg(test)]
+mod executor_edge_tests;
+#[cfg(test)]
 mod executor_tests;
 mod library;
 mod naming;

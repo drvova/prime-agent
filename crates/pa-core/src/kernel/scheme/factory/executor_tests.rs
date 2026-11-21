@@ -10,12 +10,12 @@ use serde_json::{json, Value};
 use super::test_host::{events, instance_column, node, Fixture, Outcome};
 use crate::refinement::RefinementKind;
 
-fn worker(id: &str) -> Value {
+pub(super) fn worker(id: &str) -> Value {
     json!({"id": id, "subagent": "worker"})
 }
 
 /// A source whose JSON list fans out into one `fan` child per item.
-fn fan_dag(policy: &str, max_parallel: u64) -> Value {
+pub(super) fn fan_dag(policy: &str, max_parallel: u64) -> Value {
     json!({
         "run": {"failure_policy": policy, "max_parallel": max_parallel},
         "nodes": [
@@ -537,7 +537,9 @@ async fn a_failed_foreach_instance_fails_its_entry_under_each_failure_policy() {
     );
 }
 
-/// `test_foreach_failure_never_admits_queued_siblings_and_waits_for_running_ones`.
+/// `test_foreach_failure_never_admits_queued_siblings_and_waits_for_running_ones`,
+/// `test_graph_keeps_a_failed_foreach_entrys_stage_active_while_siblings_run`,
+/// `test_graph_nodes_carry_per_stage_agent_counts`.
 #[tokio::test(start_paused = true)]
 async fn a_failed_foreach_entry_never_admits_its_queue_and_the_run_waits_for_running_siblings() {
     let fixture = Fixture::new();
@@ -552,7 +554,13 @@ async fn a_failed_foreach_entry_never_admits_its_queue_and_the_run_waits_for_run
     let failed = fixture
         .until(&started, |graph| node(graph, "fan")["status"] == "error")
         .await;
-    let while_sibling_runs = (failed["state"].clone(), fixture.host.spawns("fan").len());
+    let while_sibling_runs = (
+        failed["state"].clone(),
+        fixture.host.spawns("fan").len(),
+        failed["active_nodes"].clone(),
+        node(&failed, "fan")["running"].clone(),
+        node(&failed, "fan")["queued"].clone(),
+    );
     fixture.host.set_child("child-3", Outcome::done("ok"));
     let status = fixture.settle(&started).await;
     let cancelled: Vec<Value> = events(&status, "cancelled")
@@ -570,7 +578,7 @@ async fn a_failed_foreach_entry_never_admits_its_queue_and_the_run_waits_for_run
             cancelled,
         ),
         (
-            (json!("running"), 2),
+            (json!("running"), 2, json!(["fan"]), json!(1), json!(0)),
             json!("failed"),
             vec![
                 json!("error"),
