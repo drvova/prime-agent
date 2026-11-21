@@ -20,12 +20,16 @@ use steel::steel_vm::register_fn::RegisterFn;
 
 /// The API's Scheme sources in load order: a later file calls the earlier
 /// ones, and Steel resolves names when a file is loaded.
-const SOURCES: [(&str, &str); 5] = [
+const SOURCES: [(&str, &str); 9] = [
     ("bridge", include_str!("host_api/bridge.scm")),
     ("rlm", include_str!("host_api/rlm.scm")),
     ("agents", include_str!("host_api/agents.scm")),
     ("session", include_str!("host_api/session.scm")),
     ("interaction", include_str!("host_api/interaction.scm")),
+    ("web", include_str!("host_api/web.scm")),
+    ("worktree", include_str!("host_api/worktree.scm")),
+    ("harness", include_str!("host_api/harness.scm")),
+    ("hypothesis", include_str!("host_api/hypothesis.scm")),
 ];
 
 /// Define the host API in a session's `engine`, whose `host-request` bridge
@@ -33,6 +37,13 @@ const SOURCES: [(&str, &str); 5] = [
 pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
     // Names an open question, so an interrupt can withdraw exactly it.
     engine.register_fn("%fresh-id", || uuid::Uuid::new_v4().simple().to_string());
+    // The UTC time `seconds` from now, as `schedule-add` sends a delay.
+    engine.register_fn("%utc-after", |seconds: f64| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        crate::session::manager::format_iso(now.as_millis() as i64 + (seconds * 1000.0) as i64)
+    });
     for (name, source) in SOURCES {
         engine
             .run(source)
@@ -139,7 +150,14 @@ mod tests {
             json!({"rlm_child_id": "c1", "status": "done", "settled": true, "duration_ms": 1200});
         let aborted = json!({"subagent": row, "outcome": "idle"});
         let throttled = json!({"accepted": false, "retry_after_ms": 4000});
-        let reloaded = json!({"skillsAdded": ["lint"], "skills": 4});
+        let reloaded = json!({
+            "skillsAdded": ["lint"],
+            "skills": 4,
+            "pythonSkills": [{"importName": "lint_skill", "packagePath": "/skills/lint"}],
+        });
+        // A new Python skill is reported as one this kernel cannot call.
+        let mut reload_report = reloaded.clone();
+        reload_report["unbound"] = json!(["lint_skill"]);
         let (handlers, received) = answering(&[
             (
                 "better.run",
@@ -190,7 +208,7 @@ mod tests {
                     Ok(json!("renamed")),
                     Ok(throttled),
                     Ok(json!({"endedTurn": true})),
-                    Ok(reloaded),
+                    Ok(reload_report),
                 ],
                 vec![
                     json!({"type": "better.run", "task": "fix the parser", "mode": "brief", "cwd": "sub"}),
@@ -747,5 +765,180 @@ mod tests {
             .filter(|name| engine.run((*name).to_string()).is_ok())
             .collect();
         assert_eq!(taken, Vec::<&str>::new());
+    }
+
+    /// A row the host has not loaded (compacted away in a windowed session)
+    /// is found by paging the transcript's tool results, newest first.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tool_result_the_host_has_not_loaded_is_found_by_paging_the_transcript() {
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let mut handlers = HostRequestHandlers::new();
+        handlers.register(
+            "rlm.session.tool_result",
+            host_handler(|_payload: HostRequestPayload| async { Ok(json!({"found": false})) }),
+        );
+        let paged = Arc::clone(&received);
+        handlers.register(
+            "rlm.session.messages",
+            host_handler(move |payload: HostRequestPayload| {
+                let (start, limit) = (
+                    payload.data["start"].as_u64().unwrap(),
+                    payload.data["limit"].as_u64().unwrap(),
+                );
+                paged.lock().unwrap().push(json!([start, limit]));
+                let rows: Vec<Value> = (start..start + limit)
+                    .map(|index| {
+                        json!({
+                            "index": index,
+                            "id": format!("e{index}"),
+                            "message": {
+                                "role": "toolResult",
+                                "toolCallId": format!("call_{index}"),
+                                "content": [
+                                    {"type": "text", "text": format!("output {index}")},
+                                    {"type": "image", "data": "..."},
+                                    {"type": "text", "text": "its last line"},
+                                ],
+                            },
+                        })
+                    })
+                    .collect();
+                async move { Ok(json!({"messages": rows, "total": 120})) }
+            }),
+        );
+        let kernel = kernel_over(handlers).await;
+        let returned = values(
+            kernel.as_ref(),
+            &[
+                r#"(rlm-session-tool-result "call_30")"#,
+                r#"(rlm-session-tool-result "call_500")"#,
+            ],
+        )
+        .await;
+        assert_eq!(
+            (returned, received.lock().unwrap().clone()),
+            (
+                vec![
+                    Ok(json!("output 30\nits last line")),
+                    Err("Error: Generic:  rlm-session-tool-result: no tool result in this session has the id call_500".to_string()),
+                ],
+                vec![
+                    json!([0, 0]),
+                    json!([70, 50]),
+                    json!([20, 50]),
+                    json!([0, 0]),
+                    json!([70, 50]),
+                    json!([20, 50]),
+                    json!([0, 20]),
+                ],
+            )
+        );
+    }
+
+    /// A numeric `#:at` is a delay: the host is sent the UTC time that many
+    /// seconds from now.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_numeric_schedule_time_is_sent_as_the_utc_time_that_delay_from_now() {
+        let (handlers, received) = answering(&[("schedule.add", json!({"job": {"id": "job-1"}}))]);
+        let kernel = kernel_over(handlers).await;
+        let now = || crate::session::manager::format_iso_now();
+        let before = crate::cron::parse_iso_millis(&now()).unwrap();
+        let returned = values(
+            kernel.as_ref(),
+            &[
+                r#"(schedule-add "check CI" #:at 90)"#,
+                r#"(schedule-add "check CI" #:at "in 30m")"#,
+                r#"(schedule-add "check CI" #:at -5)"#,
+            ],
+        )
+        .await;
+        let after = crate::cron::parse_iso_millis(&now()).unwrap();
+        let mut received = received.lock().unwrap().clone();
+        let at = received[0]["at"].take();
+        let fires = crate::cron::parse_iso_millis(at.as_str().unwrap()).unwrap();
+        assert_eq!(
+            (
+                returned,
+                received,
+                (before + 90_000..=after + 90_000).contains(&fires),
+            ),
+            (
+                vec![
+                    Ok(json!({"id": "job-1"})),
+                    Ok(json!({"id": "job-1"})),
+                    Err("Error: Generic:  schedule-add: a numeric #:at is a delay in seconds and must be positive".to_string()),
+                ],
+                vec![
+                    json!({"type": "schedule.add", "prompt": "check CI", "at": null}),
+                    json!({"type": "schedule.add", "prompt": "check CI", "at": "in 30m"}),
+                ],
+                true,
+            )
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn searches_and_reads_reach_the_hosts_engine_and_return_its_replies() {
+        let found = json!({
+            "provider": "duckduckgo",
+            "label": "DuckDuckGo",
+            "answer": null,
+            "sources": [{"title": "Steel", "url": "https://example.org/steel", "snippet": "a Scheme"}],
+            "notes": [],
+            "text": "1. Steel",
+        });
+        let page = json!({
+            "url": "https://example.org/steel",
+            "finalUrl": "https://example.org/steel/",
+            "markdown": "# Steel",
+            "outline": [{"level": 1, "text": "Steel", "anchor": "steel"}],
+            "truncated": false,
+            "totalChars": 7,
+        });
+        let (handlers, received) =
+            answering(&[("web.search", found.clone()), ("web.read", page.clone())]);
+        let kernel = kernel_over(handlers).await;
+        let returned = values(
+            kernel.as_ref(),
+            &[
+                r#"(web-search "steel scheme site:example.org" #:provider "duckduckgo" #:num-results 5.0 #:recency "month" #:timeout 12.5)"#,
+                r#"(web-read (car (hash-ref (web-search "steel") 'sources)) #:max-chars 4000 #:section "steel")"#,
+                r#"(web-read " https://example.org/steel ")"#,
+                "(web-read 42)",
+            ],
+        )
+        .await;
+        assert_eq!(
+            (returned, received.lock().unwrap().clone()),
+            (
+                vec![
+                    Ok(found),
+                    Ok(page.clone()),
+                    Ok(page),
+                    Err(
+                        "Error: Generic:  web-read: the source must be a URL or carry one under 'url"
+                            .to_string()
+                    ),
+                ],
+                vec![
+                    json!({
+                        "type": "web.search",
+                        "query": "steel scheme site:example.org",
+                        "provider": "duckduckgo",
+                        "numResults": 5,
+                        "recency": "month",
+                        "timeoutSeconds": 12.5,
+                    }),
+                    json!({"type": "web.search", "query": "steel"}),
+                    json!({
+                        "type": "web.read",
+                        "url": "https://example.org/steel",
+                        "maxChars": 4000,
+                        "section": "steel",
+                    }),
+                    json!({"type": "web.read", "url": "https://example.org/steel"}),
+                ],
+            )
+        );
     }
 }

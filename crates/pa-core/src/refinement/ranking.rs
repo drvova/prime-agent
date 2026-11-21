@@ -14,7 +14,7 @@ use super::{
 /// Term -> weight, built from task signal (goal, recent messages).
 pub type HarnessQueryTerms = HashMap<String, f64>;
 
-fn is_cjk(char: char) -> bool {
+pub(crate) fn is_cjk(char: char) -> bool {
     matches!(char as u32,
         0x3040..=0x30ff
         | 0x3400..=0x4dbf

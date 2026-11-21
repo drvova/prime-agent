@@ -409,6 +409,7 @@ impl IpythonKernelProvisioner for SchemeKernelProvisioner {
                     .run(HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
                 cell::register(&mut engine, &cells)?;
+                native::register_session_tools(&mut engine, &native_handlers, &environment);
                 host_api::load(&mut engine)?;
                 let cell = native::CellSignal::default();
                 native::register(

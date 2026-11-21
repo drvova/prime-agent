@@ -92,10 +92,20 @@
 (define (rlm-end-turn)
   (%host-call "rlm.end_turn" (hash)))
 
-;; Re-read the skills, prompt templates, and context files like /reload; the
-;; host's report of what changed.
+;; Re-read the skills, prompt templates, and `AGENTS.md` context files like
+;; the user's /reload; call it after writing or changing a skill. The reply
+;; is the host's report {skillsAdded, skillsRemoved, skills, promptTemplates,
+;; contextFiles, systemPromptChanged, diagnostics, pythonSkills} plus
+;; `unbound`: the name of each new Python skill, which the host installed for
+;; the Python kernel but which this kernel cannot call (there is no Python
+;; here). The system prompt's skill list follows from the next model call.
 (define (rlm-reload)
-  (%host-call "rlm.reload" (hash)))
+  (let ([reply (%host-call "rlm.reload" (hash))])
+    (hash-insert reply
+                 'unbound
+                 (map (lambda (skill) (hash-try-get skill 'importName))
+                      (let ([skills (hash-try-get reply 'pythonSkills)])
+                        (if (list? skills) skills '()))))))
 
 ;; One bounded judgment call by the session's model: it sees `question`,
 ;; `options` (2 to 16 distinct strings) and #:context, and the chosen option
@@ -158,12 +168,27 @@
                         (hash 'query query 'limit (%integer "rlm-session-search" "#:limit" limit)))
             'hits))
 
-;; One tool result's full text by its tool call id, from the rows the host
-;; has loaded.
+;; One tool result's full text by its tool call id. A row the host has not
+;; loaded (compacted away in a windowed session) is found by paging the
+;; transcript's tool results, newest first, 50 at a time.
 (define (rlm-session-tool-result tool-call-id)
   (let ([reply (%host-call "rlm.session.tool_result" (hash 'toolCallId tool-call-id))])
     (if (hash-ref reply 'found)
         (hash-ref reply 'text)
-        (error (string-append "rlm-session-tool-result: no loaded tool result has the id "
-                              tool-call-id
-                              "; page older rows with (rlm-session-messages #:role \"toolResult\")")))))
+        (let older ([end (rlm-session-count #:role "toolResult")])
+          (when (<= end 0)
+            (error (string-append "rlm-session-tool-result: no tool result in this session has the id "
+                                  tool-call-id)))
+          (let* ([start (max 0 (- end 50))]
+                 [found (filter (lambda (row)
+                                  (equal? (hash-try-get (hash-ref row 'message) 'toolCallId) tool-call-id))
+                                (rlm-session-messages #:start start #:limit (- end start) #:role "toolResult"))])
+            (if (null? found)
+                (older start)
+                (let ([content (hash-ref (hash-ref (car (reverse found)) 'message) 'content)])
+                  (if (string? content)
+                      content
+                      (string-join (map (lambda (block) (hash-ref block 'text))
+                                        (filter (lambda (block) (equal? (hash-try-get block 'type) "text"))
+                                                content))
+                                   "\n")))))))))

@@ -50,13 +50,41 @@ mod bash;
 mod edit_check;
 mod edit_replace;
 mod files;
+mod harness;
+mod hypothesis;
 #[cfg(test)]
 mod tests;
+mod worktree;
 
 /// The stop signal of the cell a session's engine is running: the kernel
 /// installs each cell's signal as it starts and cancels it when the cell is
 /// aborted or times out, so a host function that blocks can end on its own.
 pub(super) type CellSignal = Arc<Mutex<AbortSignal>>;
+
+/// A session tool's outcome as the JSON reply its Scheme wrapper decodes:
+/// `{"value": ...}`, or `{"error": "<operation>: <reason>"}`.
+fn reply_json(operation: &str, outcome: anyhow::Result<Value>) -> String {
+    match outcome {
+        Ok(value) => serde_json::json!({ "value": value }),
+        Err(error) => serde_json::json!({ "error": format!("{operation}: {error:#}") }),
+    }
+    .to_string()
+}
+
+/// Define the primitives behind the worktree, harness, and hypotheses
+/// functions of the host API, which is loaded after them. They answer from
+/// `handlers`, work and store where `session` says, and end with the cell
+/// that called them. Must be called from within a tokio runtime.
+pub(super) fn register_session_tools(
+    engine: &mut Engine,
+    handlers: &crate::kernel::shared::HostRequestHandlers,
+    session: &super::SessionEnvironment,
+) {
+    harness::register(engine, session);
+    let worktrees = Arc::new(worktree::Worktrees::new(handlers.clone(), session));
+    worktree::register(engine, Arc::clone(&worktrees));
+    hypothesis::register(engine, handlers.clone(), worktrees);
+}
 
 /// The Scheme side of the native tools, defined in every session engine
 /// after its `%native-call` primitive is registered.

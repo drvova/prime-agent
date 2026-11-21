@@ -123,12 +123,16 @@
         reply)))
 
 ;; Schedule `prompt` to run in this session later; the job. Pass exactly one
-;; of #:at (an ISO-8601 time or "in 30m"), #:every ("30m", "2h", or seconds),
-;; or #:cron (five fields, UTC). #:label names it in the list.
+;; of #:at (an ISO-8601 time, "in 30m", or a delay in seconds), #:every
+;; ("30m", "2h", or seconds), or #:cron (five fields, UTC). #:label names it
+;; in the list.
 (define (schedule-add prompt #:at [at #f] #:every [every #f] #:cron [cron #f] #:label [label #f])
   (hash-ref (%host-call "schedule.add"
                         (%options (hash 'prompt prompt)
-                                  'at at
+                                  'at (cond
+                                        [(not (number? at)) at]
+                                        [(> at 0) (%utc-after (exact->inexact at))]
+                                        [else (error "schedule-add: a numeric #:at is a delay in seconds and must be positive")])
                                   'every (if (number? every)
                                              (string-append (number->string (exact (round every))) "s")
                                              every)
