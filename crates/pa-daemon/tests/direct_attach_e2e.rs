@@ -533,22 +533,51 @@ fn direct_attach_ends_with_a_killed_daemon_and_reattaches_to_the_revived_session
         }),
     );
     assert_eq!(attach2["success"], true, "reattach failed: {attach2}");
-    let transcript: Vec<(Value, Value)> = attach2["data"]["snapshot"]["messages"]
+    // How far the interrupted turn had been saved when the daemon died decides
+    // the death's wording ("started again" or "continues from what was saved")
+    // and whether a turn-interrupted row follows, so the conversation and the
+    // records are compared apart: each prompt once, the death and the recovery
+    // each recorded once.
+    let rows = attach2["data"]["snapshot"]["messages"]
         .as_array()
-        .expect("snapshot messages")
+        .expect("snapshot messages");
+    let conversation: Vec<(Value, Value)> = rows
         .iter()
+        .filter(|message| message["role"] != "custom")
         .map(|message| (message["role"].clone(), message["content"].clone()))
         .collect();
+    let recorded = |opening: &str| {
+        rows.iter()
+            .filter(|message| {
+                message["role"] == "custom"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with(opening))
+            })
+            .count()
+    };
     assert_eq!(
-        transcript,
-        vec![
-            (json!("user"), json!("first turn")),
-            (json!("assistant"), json!("turn-1")),
-            (json!("user"), json!("second turn")),
-            (json!("assistant"), json!("turn-2")),
-        ],
-        "the snapshot carries the turn the dead daemon finished and the one it was running, \
-         started again by the revival and run to its end"
+        (
+            conversation,
+            recorded(
+                "Session crashed (daemon_restart): the daemon stopped while this session's turn \
+                 was running; the session was rebuilt from its transcript and the turn "
+            ),
+            recorded("Session recovered: it was rebuilt from its transcript."),
+        ),
+        (
+            vec![
+                (json!("user"), json!("first turn")),
+                (json!("assistant"), json!("turn-1")),
+                (json!("user"), json!("second turn")),
+                (json!("assistant"), json!("turn-2")),
+            ],
+            1,
+            1,
+        ),
+        "the snapshot carries the turn the dead daemon finished, the turn it was running \
+         brought to its end with its prompt saved once, and one record each of the daemon's \
+         death and the recovery: {rows:?}"
     );
 
     let prompt2 = worker2.request(
