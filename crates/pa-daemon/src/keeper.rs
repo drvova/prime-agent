@@ -45,6 +45,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+#[cfg(any(unix, test))]
 use std::time::Duration;
 
 use pa_types::daemon::DaemonDeathRecord;
@@ -69,6 +70,7 @@ const STOP_INTENT_FILE: &str = "daemon-stop-intent";
 
 /// Names the keeper that owns the socket's daemon. Not `.json`: the
 /// worker-records directory's `.json` files are session descriptors.
+#[cfg(unix)]
 const OWNER_FILE: &str = "daemon-keeper.owner";
 
 /// What this daemon process knows about its keeper.
@@ -84,6 +86,7 @@ struct HostEnv {
 static HOST_ENV: OnceLock<HostEnv> = OnceLock::new();
 
 /// The daemon process the keeper split off at its own start (see [`enter`]).
+#[cfg(unix)]
 static SPLIT_DAEMON: OnceLock<u32> = OnceLock::new();
 
 /// The death this daemon reports in its hello, resolved once.
@@ -101,7 +104,10 @@ static BOOT_DEATH: OnceLock<Option<DaemonDeathRecord>> = OnceLock::new();
 /// Every other process takes the keeper's hand-off out of its environment:
 /// the values are kept for [`keeper_pid`] and [`boot_death`], and nothing
 /// this process starts (a session's commands, a nested daemon) inherits them.
-pub fn enter(daemon_launch: bool) {
+pub fn enter(
+    // Only unix has a keeper to split into.
+    #[cfg_attr(not(unix), allow(unused_variables))] daemon_launch: bool,
+) {
     #[cfg(unix)]
     if daemon_launch && std::env::var_os(KEEPER_ENV).is_some() {
         use pa_core::platform::process::{parent_pid, split_process, Split};
@@ -194,6 +200,7 @@ pub fn record_stop_intent(agent_dir: &Path, socket_path: &Path) -> anyhow::Resul
 }
 
 /// How the keeper paces restarts and when it stops.
+#[cfg(any(unix, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RestartPolicy {
     initial_backoff: Duration,
@@ -205,6 +212,7 @@ struct RestartPolicy {
 }
 
 /// The same pacing a hosted session's restart loop uses.
+#[cfg(any(unix, test))]
 const POLICY: RestartPolicy = RestartPolicy {
     initial_backoff: Duration::from_millis(250),
     max_backoff: Duration::from_secs(30),
@@ -213,12 +221,14 @@ const POLICY: RestartPolicy = RestartPolicy {
 };
 
 /// What the keeper does about one abnormal death.
+#[cfg(any(unix, test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Verdict {
     Restart { consecutive: u32, backoff: Duration },
     GiveUp { consecutive: u32 },
 }
 
+#[cfg(any(unix, test))]
 impl RestartPolicy {
     /// Judge a death that followed `prior` deaths in a row and a lifetime of
     /// `uptime`.

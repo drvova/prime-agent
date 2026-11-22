@@ -11,9 +11,10 @@ use tokio::net::TcpListener;
 
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
-use crate::tools::kernel_cell::{
-    ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
-};
+#[cfg(unix)]
+use crate::tools::kernel_cell::ExecuteStatus;
+use crate::tools::kernel_cell::{KernelExecuteOptions, KernelExecutor, KernelProvisioner};
+#[cfg(unix)]
 use crate::tools::tool_definition::AbortSignal;
 
 const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {

@@ -9,8 +9,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::library::{
-    cli_dispatch, import_machine, resolve_machine, scan_library, write_export, Overwrite,
-    ResolutionError,
+    cli_dispatch, import_machine, resolve_machine, scan_library, Overwrite, ResolutionError,
 };
 use super::report::{cap_frame, Detail, FACTORY_FRAME_CAP};
 use super::store::FactoryEnvironment;
@@ -692,7 +691,7 @@ fn an_export_onto_a_symlink_refuses_instead_of_writing_through_it() {
     let (real, link) = (temp.path().join("real.md"), temp.path().join("link.md"));
     std::fs::write(&real, "untouched").unwrap();
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    let refused = write_export(&link, "replaced", Overwrite::Refuse);
+    let refused = super::library::write_export(&link, "replaced", Overwrite::Refuse);
     assert_eq!(
         (
             refused.map_err(|error| error.contains("already exists")),

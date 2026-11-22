@@ -6,14 +6,17 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+#[cfg(unix)]
 use crate::interaction::InteractionHub;
 use crate::kernel::cell_window::{CellWindow, CellWindowConfig};
 use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
 use crate::kernel::shared::{
-    host_handler, BackgroundCellFact, HostRequestHandlers, HostRequestPayload, KernelBashCommands,
-    KernelBashWaits, KernelDiffDisplay, KernelSentAgentMessage, ReceiverRole,
-    SentAgentMessageTarget, SentDeliveryStatus,
+    host_handler, BackgroundCellFact, HostRequestHandlers, HostRequestPayload,
+    KernelSentAgentMessage, ReceiverRole, SentAgentMessageTarget, SentDeliveryStatus,
 };
+#[cfg(unix)]
+use crate::kernel::shared::{KernelBashCommands, KernelBashWaits, KernelDiffDisplay};
+#[cfg(unix)]
 use crate::session::manager::SessionManager;
 use crate::tools::kernel_cell::{
     ExecuteResult, ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
