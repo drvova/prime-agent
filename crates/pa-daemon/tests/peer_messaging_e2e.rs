@@ -1,7 +1,8 @@
 //! Worker-to-worker peer messaging e2e: a kernel `agent_message.send` in A
 //! burns a single-use worker ticket on B's socket and delivers with the TS
 //! sender identity; the two-client shape completes without starving the
-//! route plane; a supervisor `kill -9` does not stop messaging.
+//! route plane; a daemon `kill -9` loses no delivered message, and the
+//! sessions message each other again once they are reopened.
 #![cfg(unix)]
 
 mod common;
@@ -39,13 +40,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
         .arg(agent_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // A supervisor killed at teardown must not leak its session workers: the worker's
-        // supervisor-lost exit (TS `exitIfSupervisorOrphanedForTooLong`) runs on this short
-        // window, not the 5-minute default.
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
         .spawn()
         .expect("spawn pa-daemon supervisor");
     Daemon {
@@ -497,12 +491,15 @@ fn attached_client_to_client_send_completes_without_route_starvation() {
     );
 }
 
+/// Both sessions are idle when the daemon dies, so the next boot leaves them
+/// down; a client reopens them from their files and the conversation goes on.
 #[test]
-fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
+fn daemon_death_mid_conversation_keeps_the_delivery_and_reopened_sessions_message_again() {
     let mut messaging = setup_messaging();
     let alpha_id = messaging.alpha.active_session_id.clone();
     let beta_id = messaging.beta.active_session_id.clone();
     let agent_dir = messaging.dir.path().join("agent");
+    let sessions_dir = agent_dir.join("sessions");
 
     let (mut client, _hello) = Client::connect(&messaging.socket);
     prompt(&mut client, "p1", &alpha_id, "first message");
@@ -513,10 +510,10 @@ fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
         beta_messages.matches("[agent-message from alpha]").count(),
         1
     );
+    // The first receipt goes, so the one read below is the second send's.
+    std::fs::remove_file(messaging.receipts_dir.join("0.json")).expect("the first receipt");
 
-    // The workers outlive the kill for the relaunch to re-adopt; the guard
-    // reaps them at teardown, which the new supervisor's tree no longer reaches.
-    let _orphans = common::Orphans::of(&messaging.daemon.child);
+    // Both sessions die with the daemon that hosts them.
     messaging.daemon.child.kill().expect("kill -9 supervisor");
     let _ = messaging.daemon.child.wait();
 
@@ -525,33 +522,41 @@ fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
     wait_socket_ready(&messaging.socket);
     let (mut client, _hello2) = Client::connect(&messaging.socket);
 
-    // Both workers re-register within a bounded window (the roster and the worker
-    // connections come back with them).
-    let started = Instant::now();
-    let re_registered = loop {
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "workers did not re-register after the restart"
+    // A client reopens each session over its own file (the scripts are launch
+    // configuration, not session state).
+    let mut reopened = Vec::new();
+    for (name, session) in [("alpha", &messaging.alpha), ("beta", &messaging.beta)] {
+        let id = format!("reopen-{name}");
+        client.send_command(
+            &id,
+            &json!({
+                "type": "create",
+                "name": name,
+                "sessionPath": sessions_dir.join(format!("{}.jsonl", session.session_id)).to_string_lossy(),
+                "config": {
+                    "cwd": messaging.dir.path().to_string_lossy(),
+                    "sessionDir": sessions_dir.to_string_lossy(),
+                    "script": messaging.dir.path().join(format!("{name}.json")).to_string_lossy(),
+                },
+            }),
         );
-        client.send_command("list", &json!({ "type": "list" }));
-        let response = client.read_response("list");
-        let sessions = response["data"]["sessions"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if sessions.len() == 2
-            && sessions.iter().all(|session| {
-                session
-                    .get("sessionId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|id| !id.is_empty())
-            })
-        {
-            break sessions;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    };
-    assert_eq!(re_registered.len(), 2);
+        let response = client.read_response(&id);
+        assert_eq!(
+            (
+                response["success"].clone(),
+                response["data"]["sessionId"].clone()
+            ),
+            (json!(true), json!(session.session_id)),
+            "reopen {name}: {response}"
+        );
+        reopened.push(
+            response["data"]["activeSessionId"]
+                .as_str()
+                .expect("active session id")
+                .to_string(),
+        );
+    }
+    let (alpha_id, beta_id) = (reopened[0].clone(), reopened[1].clone());
 
     prompt(&mut client, "p2", &alpha_id, "second message");
     wait_idle(&mut client, "w3", &alpha_id);
@@ -562,6 +567,8 @@ fn supervisor_death_mid_conversation_still_delivers_after_re_registration() {
         receipt["target"]["activeSessionId"], beta_id,
         "post-restart receipt observed: {receipt}"
     );
+    // The reopened beta holds the delivery from before the daemon died and
+    // the one after it.
     let beta_messages = messages(&mut client, "gm3", &beta_id);
     assert_eq!(
         beta_messages.matches("[agent-message from alpha]").count(),
