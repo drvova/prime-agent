@@ -438,7 +438,7 @@ impl SessionUi {
             .and_then(|record| crate::crash_notice::daemon_death_row(&record, recent_as_of_ms));
         if let Some(row) = row {
             view.push_entry(row);
-            self.count_crash_notice("daemon_death");
+            crate::crash_notice::report_shown(self.telemetry.as_ref(), "daemon_death");
             self.dirty = true;
         }
     }

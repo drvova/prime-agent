@@ -12,6 +12,20 @@ use crate::chat::{ChatEntry, StatusKind};
 /// lead with it (a window that lived through it always reports it).
 const RECENT_DEATH_MS: i64 = 24 * 60 * 60 * 1000;
 
+/// Report one crash notice shown to the user (event `tui crash notice`). Fire-and-forget:
+/// the report is handed to a spawned task, so the notice's paint never waits on telemetry,
+/// whatever the sink does.
+pub(crate) fn report_shown(
+    telemetry: Option<&std::sync::Arc<dyn crate::interactive::InteractionTelemetry>>,
+    kind: &'static str,
+) {
+    if let Some(telemetry) = telemetry.cloned() {
+        tokio::spawn(async move {
+            telemetry.crash_notice_shown(kind).await;
+        });
+    }
+}
+
 /// The fault's telemetry kind: a fixed word per fault, never its text.
 pub(crate) fn fault_kind(fault: &SessionFaultEvent) -> &'static str {
     match fault {

@@ -1098,6 +1098,28 @@ const TUI_IMAGE_PASTE: EventRule = EventRule {
     ],
 };
 
+/// One crash notice shown in the interactive UI (v2): which fault the user was told about (a
+/// hosted session crashing, recovering or being given up on; the daemon's own death; the fault
+/// a reconnecting window found recorded on its session). Standalone because `tui exit` sits at
+/// the backend's 128-key cap. Never the fault's message, its location, or a session id.
+const TUI_CRASH_NOTICE: EventRule = EventRule {
+    name: "tui crash notice",
+    since: 2,
+    properties: &[(
+        "kind",
+        required(enum_rule(
+            &[
+                "session_crashed",
+                "session_recovered",
+                "session_failed",
+                "daemon_death",
+                "session_last_crash",
+            ],
+            "session_crashed",
+        )),
+    )],
+};
+
 /// One `/login` settled a credential save (v2): the credential's kind, the slot it went to (the
 /// provider's default slot or a new named credential beside it), the surface that ran the login,
 /// and how it ended. Never a provider, a label, an account id, or any credential material.
@@ -1293,7 +1315,6 @@ const TUI_EXIT: EventRule = EventRule {
         ("tui_slash_accept_count", optional(count())),
         ("tui_menu_search_count", optional(count())),
         ("tui_activity_open_count", optional(count())),
-        ("tui_crash_notice_count", optional(count())),
         ("tui_subagents_open_count", optional(count())),
         ("tui_scoped_agent_count", optional(count())),
         ("tui_image_paste_count", optional(count())),
@@ -2279,6 +2300,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_RESUME_PICKER_CLOSED,
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
+        &TUI_CRASH_NOTICE,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

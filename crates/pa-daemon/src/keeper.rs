@@ -330,6 +330,8 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
                     Some(record) => command.env(DEATH_ENV, serde_json::to_string(record)?),
                     None => command.env_remove(DEATH_ENV),
                 };
+                // Every daemon lifetime owns its session, as a daemon launched unkept does.
+                pa_core::platform::process::set_new_session(command.as_std_mut());
                 // An update's roster is restored by the daemon the update started, once; a
                 // restart after a death boots from the on-disk state alone.
                 if !first_start {

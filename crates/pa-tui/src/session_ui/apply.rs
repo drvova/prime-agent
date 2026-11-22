@@ -59,16 +59,6 @@ impl SessionUi {
         effect
     }
 
-    /// Count one crash notice shown to the user (`tui_crash_notice_count` on `tui exit`): the
-    /// report is spawned, so the row's paint never waits on telemetry.
-    pub(crate) fn count_crash_notice(&self, kind: &'static str) {
-        if let Some(telemetry) = self.telemetry.clone() {
-            tokio::spawn(async move {
-                telemetry.crash_notice_shown(kind).await;
-            });
-        }
-    }
-
     /// Abort the active turn off the UI loop: with the schema-29 capability the daemon aborts the
     /// run and the queue keeps flowing behind the settled turn; otherwise the plain abort.
     fn abort_turn(&self) {
@@ -511,7 +501,10 @@ impl SessionUi {
             // happened; the count is handed off and never awaited here.
             TurnUpdate::SessionFault(fault) => {
                 view.push_entry(crate::crash_notice::fault_row(&fault));
-                self.count_crash_notice(crate::crash_notice::fault_kind(&fault));
+                crate::crash_notice::report_shown(
+                    self.telemetry.as_ref(),
+                    crate::crash_notice::fault_kind(&fault),
+                );
                 self.dirty = true;
             }
             // A recovered episode this client watched leaves the nc-style receipt with the

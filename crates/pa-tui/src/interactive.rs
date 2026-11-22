@@ -209,7 +209,7 @@ pub trait InteractionTelemetry: Send + Sync {
     /// scope root (`tui agents new scoped`): `depth` is the new session's
     /// RLM depth.
     fn scoped_agent_created(&self, depth: u32) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
-    /// A crash notice was shown (counted as `tui_crash_notice_count` on `tui exit`): `kind` is
+    /// A crash notice was shown (event `tui crash notice`): `kind` is
     /// `session_crashed` / `session_recovered` / `session_failed` / `daemon_death` /
     /// `session_last_crash`. Never the fault's message or location. Implementations return at
     /// once: the paint path spawns it and never waits.

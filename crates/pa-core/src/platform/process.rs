@@ -316,7 +316,9 @@ pub enum ChildExit {
 }
 
 /// Split this process in two (`fork`) with no `exec`: both sides continue from
-/// here, the child as an exact copy. Callers must be single-threaded: the
+/// here, the child as an exact copy in a session of its own (`setsid`), so it
+/// shares no terminal session or process group with the original. Callers
+/// must be single-threaded: the
 /// copy has only the calling thread, so a lock another thread held (the
 /// allocator's included) would stay locked in it forever. The one caller is
 /// the daemon launch, first thing in `main`.
@@ -333,7 +335,12 @@ pub fn split_process() -> std::io::Result<Split> {
         nix::unistd::ForkResult::Parent { child } => Ok(Split::Parent {
             child: child.as_raw().unsigned_abs(),
         }),
-        nix::unistd::ForkResult::Child => Ok(Split::Child),
+        nix::unistd::ForkResult::Child => {
+            // A new process is never a process-group leader, the one case in
+            // which `setsid` fails, so there is no failure to report here.
+            let _ = nix::unistd::setsid();
+            Ok(Split::Child)
+        }
     }
 }
 
