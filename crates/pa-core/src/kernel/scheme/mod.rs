@@ -52,6 +52,7 @@ use crate::tools::tool_definition::AbortSignal;
 
 mod mcp;
 mod native;
+mod rizin;
 mod session;
 pub mod skills;
 
@@ -324,6 +325,9 @@ struct ProvisionerState {
     /// The session's MCP client: its connections outlive a cell and end
     /// with `kill`.
     mcp: Arc<mcp::Registry>,
+    /// The kernel's rizin sessions: they outlive a cell and end with `kill`
+    /// and with the session's lifetime.
+    rizin: Arc<rizin::Registry>,
     skill_sources: Option<skills::SkillSourcesProvider>,
     on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
     on_started: Option<KernelStartObserver>,
@@ -385,28 +389,33 @@ impl SchemeKernelProvisioner {
         if let Some(agent_dir) = &options.agent_dir {
             mcp.set_agent_dir(agent_dir.clone());
         }
+        let environment = Arc::new(SessionEnvironment {
+            cwd: options.cwd,
+            shell_path: options.shell_path,
+            command_prefix: options.command_prefix,
+            env,
+            session_id: options.session_id,
+            artifact_dir: options.artifact_dir,
+            cell_window: options.cell_window,
+            on_background_cell: options.on_background_cell,
+            agent_dir: options.agent_dir,
+            error_context: options.error_context,
+            background: session::BackgroundWork::new(options.on_background_work_settled),
+            output_budget: options.output_budget,
+        });
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 mcp,
+                rizin: Arc::new(rizin::Registry::new(
+                    options.host_handlers.clone(),
+                    &environment,
+                )),
                 skill_sources: options.skill_sources,
                 on_unavailable_skills: options.on_unavailable_skills,
                 on_started: options.on_started,
                 on_state_lost: options.on_state_lost,
                 handlers: options.host_handlers,
-                environment: Arc::new(SessionEnvironment {
-                    cwd: options.cwd,
-                    shell_path: options.shell_path,
-                    command_prefix: options.command_prefix,
-                    env,
-                    session_id: options.session_id,
-                    artifact_dir: options.artifact_dir,
-                    cell_window: options.cell_window,
-                    on_background_cell: options.on_background_cell,
-                    agent_dir: options.agent_dir,
-                    error_context: options.error_context,
-                    background: session::BackgroundWork::new(options.on_background_work_settled),
-                    output_budget: options.output_budget,
-                }),
+                environment,
                 session: tokio::sync::Mutex::new(None),
             }),
         }
@@ -501,6 +510,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             );
             let native_handlers = state.handlers.clone();
             let mcp_client = Arc::clone(&state.mcp);
+            let rizin_sessions = Arc::clone(&state.rizin);
             let environment = Arc::clone(&state.environment);
             let cwd = state.environment.cwd.to_string_lossy().into_owned();
             let native_cwd = state.environment.cwd.clone();
@@ -648,6 +658,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                     &environment,
                 )?;
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
+                rizin::register(&mut engine, rizin_sessions, Arc::clone(&cell))?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
                 skills.start(&mut engine)?;
                 let own_globals = engine
@@ -682,10 +693,15 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             if let Some(scope) = pa_types::session_scope::current() {
                 // Weakly: a kernel released before then is not kept for it.
                 let ending = Arc::downgrade(&session);
+                let disassembling = Arc::downgrade(&state.rizin);
                 scope.at_end(Box::new(move || {
                     if let Some(ending) = ending.upgrade() {
                         ending.cells.end();
                         ending.jobs.kill_all();
+                    }
+                    // No rizin, and nothing it debugs, outlives the session.
+                    if let Some(disassembling) = disassembling.upgrade() {
+                        disassembling.shutdown();
                     }
                 }));
             }
@@ -708,6 +724,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 session.factory.shutdown();
             }
             state.mcp.shutdown().await;
+            state.rizin.shutdown();
         })
     }
 }

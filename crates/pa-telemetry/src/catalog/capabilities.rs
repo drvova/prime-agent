@@ -17,6 +17,7 @@ mod hypothesis;
 mod mcp_session;
 mod notify_model;
 mod resource_reload_settings;
+mod rizin;
 mod schedule;
 mod todo_ask;
 mod usage;
@@ -55,4 +56,5 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &hypothesis::AGENT_REPL_HYPOTHESES,
     &fs::AGENT_EDIT_CHECKS,
     &bash::AGENT_TEST_SUMMARIES,
+    &rizin::AGENT_REPL_RIZIN,
 ];

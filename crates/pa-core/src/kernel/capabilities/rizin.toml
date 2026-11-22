@@ -1,0 +1,13 @@
+internal_host_requests = ["rizin.used"]
+
+[[telemetry]]
+event = "agent repl rizin"
+properties = [
+  "rizin_open_count",
+  "rizin_debug_open_count",
+  "rizin_command_count",
+  "rizin_json_command_count",
+  "rizin_interrupted_count",
+  "rizin_died_count",
+  "rizin_not_installed_count",
+]

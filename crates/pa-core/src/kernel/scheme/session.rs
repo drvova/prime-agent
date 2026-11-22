@@ -171,6 +171,7 @@ impl SchemeKernelProvisioner {
             session.jobs.kill_all();
             session.factory.shutdown();
         }
+        self.state.rizin.shutdown();
     }
 
     /// Look at or stop one of the kernel's shell commands without waiting

@@ -91,6 +91,12 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 
 {{calls:mcp}}
 
+## Rizin
+
+Reverse engineering of binaries the user owns or is authorized to examine, through the `rizin` program installed on their machine: disassembly, analysis, RzIL, patching, debugging. A session takes rizin command strings; `(displayln (api-help "rizin"))` is the map of them.
+
+{{names:rizin}}
+
 ## Factory
 
 State-machine workflows of child agents; disabled until the user runs `/factory on`. `(displayln (factory-help))` is the guide.

@@ -198,6 +198,22 @@ tenth read; it lives under `<agent dir>/prefetch/` and is shared by every sessio
 the process. The read waits at most 150 ms for it. Adoption counts ride the `agent prefetch` event.
 Non-goals: putting neighbour text in the context.
 
+Rizin in the kernel (`kernel::scheme::rizin`, `session_engine::rizin_usage`): the `rz-*`
+functions drive the `rizin` program installed on the user's machine (0.7.4 or newer). Nothing of
+rizin is linked: each open session is a `rizin -q0` child in its own process group, started
+through the session's scope, that reads one command per line and whose replies are delimited by
+an echoed token. A reader thread per session keeps a bounded part of each reply (its first 8 MiB
+and last 256 KiB) whatever rizin writes; a text reply over 768 KiB reaches the cell cut around a
+spill handle. A command ends with its reply, its `#:timeout-ms`, or its cell: rizin is then
+interrupted (SIGINT to its group) and killed if it does not answer within 2 s, after which the
+session reports itself dead with rizin's exit status and last output. Every rizin and what it
+started (a debuggee) is killed when the kernel is killed, the lifetime ends, or the registry is
+dropped. Rizin is looked up on the session's `PATH` at each `rz-open`; without it the open raises
+an error that says how to install it. Each counted call sends one fire-and-forget `rizin.used`,
+folded into `agent repl rizin`. Non-goals: wrapping rizin's command set (the model types rizin
+commands; `prompts/capabilities/rizin.md` maps them), the `rz-*` side programs (they run through
+`bash`), installing rizin, and interrupting a command on Windows (it is killed there).
+
 Error enrichment (`kernel::error_context`): a user cell that raised, or a `bash()` command a cell
 awaited that exited non-zero (the kernel's `command-failure` display), gets an `[error context]`
 block appended to its result: the source lines (±3) around each error location the output names,

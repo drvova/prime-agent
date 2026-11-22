@@ -56,6 +56,7 @@ mod hypotheses;
 mod prefetch;
 mod previews;
 mod readonly_cache;
+mod rizin;
 mod symbol_index;
 mod test_summaries;
 

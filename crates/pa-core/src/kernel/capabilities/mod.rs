@@ -35,6 +35,7 @@ pub(crate) const MANIFESTS: &[(&str, &str)] = &[
     manifest!("model"),
     manifest!("notify"),
     manifest!("resource_reload"),
+    manifest!("rizin"),
     manifest!("schedule"),
     manifest!("session"),
     manifest!("settings"),

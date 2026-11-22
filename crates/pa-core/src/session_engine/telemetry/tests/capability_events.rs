@@ -28,6 +28,7 @@ fn drive(counters: &SessionCounters) {
     use crate::prefetch::PrefetchFact;
     use crate::session_engine::checkpoint_host::CheckpointFact;
     use crate::session_engine::decision::DecideFact;
+    use crate::session_engine::rizin_usage::RizinFact;
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
     use crate::session_engine::session_search::SessionRecallFact;
@@ -317,6 +318,22 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_worktree(fact);
     }
+    for fact in [
+        RizinFact::Open,
+        RizinFact::Open,
+        RizinFact::DebugOpen,
+        RizinFact::Command,
+        RizinFact::Command,
+        RizinFact::Command,
+        RizinFact::JsonCommand,
+        RizinFact::JsonCommand,
+        RizinFact::Interrupted,
+        RizinFact::Died,
+        RizinFact::NotInstalled,
+        RizinFact::NotInstalled,
+    ] {
+        counters.note_rizin(fact);
+    }
     for (definitions, references, partial) in [(2, 5, true), (1, 0, false), (0, 7, false)] {
         counters.note_symbol_query(SymbolFact {
             definitions,
@@ -586,6 +603,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent repl reload",
         r#"{"repl_reload_count":2,"repl_reload_skills_added_count":5,"repl_settings_get_count":1}"#,
+    ),
+    (
+        "agent repl rizin",
+        r#"{"rizin_open_count":2,"rizin_debug_open_count":1,"rizin_command_count":3,"rizin_json_command_count":2,"rizin_interrupted_count":1,"rizin_died_count":1,"rizin_not_installed_count":2}"#,
     ),
     (
         "agent repl schedule",
