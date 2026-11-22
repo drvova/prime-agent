@@ -41,14 +41,16 @@ impl Worker {
                 Ok(expanded) if expanded.is_relative() => {
                     match pa_types::session_scope::current_dir() {
                         Ok(cwd) => Some(cwd.join(expanded)),
-                        Err(error) => return response_failure(
-                            None,
-                            "create",
-                            &format!(
+                        Err(error) => {
+                            return response_failure(
+                                None,
+                                "create",
+                                &format!(
                                 "resolve the session path against the working directory: {error}"
                             ),
-                            None,
-                        ),
+                                None,
+                            )
+                        }
                     }
                 }
                 Ok(expanded) => Some(expanded),

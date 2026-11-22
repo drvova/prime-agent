@@ -1,7 +1,8 @@
-//! Daemon-boot reap e2e: the operator's exact scenario — a supervisor dies leaving a worker
-//! alive whose descriptor was deleted, a new supervisor boots on the SAME socket, and opening
-//! that session must work (before the boot-reap lane this flow refused forever). The
-//! containment rule: a daemon on a DIFFERENT socket is never touched. Linux-only (/proc).
+//! Daemon-boot reap e2e. Sessions are hosted inside the daemon now, but the product binary
+//! still has its `worker` role and a daemon from before the change ran one worker process per
+//! session: a daemon that boots on a socket must still clear a worker PROCESS left on that
+//! socket (it holds its session's lease, so the session would refuse to open forever), and
+//! must never touch another socket's daemon, sessions or leftovers. Linux-only (/proc).
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -26,8 +27,6 @@ impl Drop for Daemon {
     }
 }
 
-/// A supervisor with a LONG supervisor-lost window: the orphaned worker must survive every
-/// other exit path so only the boot reap can kill it (the 15s default lets it self-exit).
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let mut command = Command::new(binary);
@@ -35,17 +34,13 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
-        // worker never cleans: keep them in the test's own dir.
+        // Session sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in
+        // the test's own dir.
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "600000",
-        );
+        .stderr(Stdio::null());
     let child = command.spawn().expect("spawn pa-daemon supervisor");
     Daemon {
         child,
@@ -75,31 +70,6 @@ fn process_alive(pid: u32) -> bool {
     };
     let state = rest.split_whitespace().next().unwrap_or_default();
     !state.starts_with('Z') && !state.starts_with('X')
-}
-
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next();
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
 }
 
 struct Client {
@@ -168,135 +138,128 @@ impl Client {
     }
 }
 
-/// One scripted session: create + attach, returning the durable session id and worker pid.
-fn create_session(
-    client: &mut Client,
-    dir: &Path,
-    sessions_dir: &Path,
-    supervisor_pid: u32,
-    index: usize,
-) -> (String, u32) {
-    let script_path = dir.join(format!("script-{index}.json"));
-    std::fs::write(
-        &script_path,
-        json!({ "responses": [{ "text": format!("turn-1-{index}"), "delayMs": 10 }] }).to_string(),
-    )
-    .expect("write script");
-    client.send_command(
-        &format!("c{index}"),
-        &json!({
-            "type": "create",
-            "config": {
-                "cwd": dir.to_string_lossy(),
-                "sessionDir": sessions_dir.to_string_lossy(),
-                "script": script_path.to_string_lossy(),
-            },
-        }),
-    );
-    let created = client.read_response(&format!("c{index}"));
-    assert_eq!(created["success"], true, "create {index} failed: {created}");
-    let session_id = created["data"]["id"]
-        .as_str()
-        .or_else(|| created["data"]["sessionId"].as_str())
-        .expect("session id")
-        .to_string();
-    client.send_command(
-        &format!("a{index}"),
-        &json!({ "type": "attach", "activeSessionId": session_id }),
-    );
-    let attached = client.read_response(&format!("a{index}"));
-    assert_eq!(attached["success"], true, "attach {index} failed");
-    // The worker child behind the session.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let worker_pid = loop {
-        let children = child_pids_of(supervisor_pid);
-        if !children.is_empty() {
-            break children[0];
-        }
+/// A session worker PROCESS as a daemon from before sessions were hosted left it: the
+/// product binary in its `worker` role, stamped with the daemon socket it belonged to,
+/// serving its own socket while no daemon answers on that one.
+struct LeftoverWorker {
+    child: Child,
+    socket: PathBuf,
+}
+
+impl Drop for LeftoverWorker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Start a leftover worker of `daemon_socket`'s lineage and wait until it serves. Its
+/// supervisor-lost window is long: only a boot reap ends it inside the test.
+fn spawn_leftover_worker(dir: &Path, daemon_socket: &Path, name: &str) -> LeftoverWorker {
+    // The endpoint a daemon on `daemon_socket` (started with TMPDIR = `dir`) gives a worker.
+    let socket_dir = dir.join(format!(
+        "{}-{}",
+        pa_types::platform::StateLayout::BUILD.endpoint_prefix(),
+        pa_core::platform::process::current_user_id()
+    ));
+    std::fs::create_dir_all(&socket_dir).expect("socket dir");
+    let socket = socket_dir.join(format!(
+        "worker-{}-{name}.sock",
+        pa_daemon::paths::hash_key(&daemon_socket.to_string_lossy(), 12)
+    ));
+    let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
+        .arg("worker")
+        .env("TMPDIR", dir)
+        .env(pa_daemon::worker::WORKER_ROLE_ENV, "1")
+        .env(pa_daemon::worker::WORKER_SOCKET_ENV, &socket)
+        .env(pa_daemon::worker::WORKER_TOKEN_ENV, format!("token-{name}"))
+        .env(pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV, name)
+        .env(
+            pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
+            daemon_socket,
+        )
+        .env(
+            pa_daemon::worker::WORKER_RECOVERY_JOURNAL_ENV,
+            dir.join(format!("{name}.recovery.jsonl")),
+        )
+        .env(
+            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
+            "600000",
+        )
+        .env("DO_NOT_TRACK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the leftover worker");
+    let leftover = LeftoverWorker { child, socket };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while UnixStream::connect(&leftover.socket).is_err() {
         assert!(
             Instant::now() < deadline,
-            "worker for session {index} never spawned"
+            "the leftover worker never served its socket"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    leftover
+}
+
+/// Wait until the boot reap has ended `leftover`.
+fn await_reaped(leftover: &LeftoverWorker) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while process_alive(leftover.child.id()) {
+        assert!(
+            Instant::now() < deadline,
+            "the leftover worker survived the new daemon's boot reap"
         );
         std::thread::sleep(Duration::from_millis(50));
-    };
-    (session_id, worker_pid)
+    }
 }
 
-/// The worker descriptor path for one session on one socket.
-fn descriptor_path(agent_dir: &Path, socket: &Path, session_id: &str) -> PathBuf {
-    let key = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
-    key.join(format!("{session_id}.json"))
-}
-
-/// One session's durable file path, from its worker descriptor (the create response's
-/// `id` is the ACTIVE session id; the file on disk is named by the durable UUID).
-fn session_file_of(agent_dir: &Path, socket: &Path, session_id: &str) -> PathBuf {
-    let descriptor = std::fs::read_to_string(descriptor_path(agent_dir, socket, session_id))
-        .expect("descriptor");
-    let descriptor: Value = serde_json::from_str(&descriptor).expect("parse descriptor");
-    PathBuf::from(
-        descriptor
-            .get("sessionFile")
-            .and_then(Value::as_str)
-            .expect("the descriptor names its session file"),
-    )
-}
-
-/// One worker's own socket file, from its environment (the same env the reap reads).
-fn worker_socket_of(pid: u32) -> Option<PathBuf> {
-    let environ = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
-    environ
-        .split(|byte| *byte == 0)
-        .find(|entry| {
-            entry.starts_with(format!("{}=", pa_daemon::worker::WORKER_SOCKET_ENV).as_bytes())
-        })
-        .and_then(|entry| {
-            std::str::from_utf8(entry)
-                .ok()
-                .and_then(|pair| pair.split_once('='))
-                .map(|(_, socket)| PathBuf::from(socket))
-        })
-}
-
-/// Kill the supervisor, delete the worker's descriptor: the orphaned-worker precondition
-/// (a live worker nothing on any later daemon can adopt, holding its session lease).
-fn orphan_the_worker(daemon: &mut Daemon, agent_dir: &Path, socket: &Path, session_id: &str) {
-    daemon.child.kill().expect("kill -9 supervisor");
-    let _ = daemon.child.wait();
-    let descriptor = descriptor_path(agent_dir, socket, session_id);
-    std::fs::remove_file(&descriptor).expect("delete the worker descriptor");
-}
-
-/// The operator's exact report, end to end: kill -9 the daemon plus the descriptor loss,
-/// boot a new daemon on the SAME socket, open the session — the boot reaps the leftover.
+/// The operator's report, end to end: a worker process is left on the socket holding its
+/// session's lease, a daemon boots on the SAME socket, and the session opens.
 #[test]
-fn boot_reap_clears_the_leftover_and_the_session_reopens() {
+fn boot_reap_clears_a_leftover_worker_process_and_its_session_reopens() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
 
-    let mut daemon = spawn_supervisor(&socket, &agent_dir);
-    wait_socket_ready(&socket);
-    let supervisor_pid = daemon.child.id();
-    let (mut client, hello) = Client::connect(&socket);
-    assert_eq!(hello["type"], "daemon_hello");
-    let (session_id, worker_pid) =
-        create_session(&mut client, dir.path(), &sessions_dir, supervisor_pid, 0);
+    // The session the leftover holds: its file on disk, and its lease naming the leftover
+    // process (pid and start id) as the owner.
+    let mut session =
+        pa_daemon::session_store::SessionFile::create(&dir.path().to_string_lossy(), None, 0);
+    session.append_message(&json!({ "role": "user", "content": "lane work", "timestamp": 1u64 }));
+    let session_file = sessions_dir.join(format!("{}.jsonl", session.session_id()));
+    session.set_path(session_file.clone());
+    session.rewrite().expect("session file");
+    let leftover = spawn_leftover_worker(dir.path(), &socket, "leftover");
+    std::mem::forget(
+        pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
+            .expect("the lease to hand to the leftover"),
+    );
+    let owner_path = std::fs::read_dir(agent_dir.join("session-leases"))
+        .expect("leases dir")
+        .flatten()
+        .map(|entry| entry.path().join("owner.json"))
+        .find(|path| path.exists())
+        .expect("the lease's owner record");
+    let mut owner: Value =
+        serde_json::from_str(&std::fs::read_to_string(&owner_path).expect("owner record"))
+            .expect("owner json");
+    owner["pid"] = json!(leftover.child.id());
+    owner["processStartId"] = json!(pa_daemon::lease::get_process_start_id(leftover.child.id()));
+    std::fs::write(&owner_path, owner.to_string()).expect("hand the lease over");
+    assert!(
+        pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir).is_err(),
+        "the live leftover holds the session (the refusal the operator saw)"
+    );
 
-    // The worker holds its session lease, and the session's durable file sits on disk
-    // named by its UUID (the create response's `id` is the ACTIVE session id).
-    let session_file = session_file_of(&agent_dir, &socket, &session_id);
-    assert!(session_file.exists(), "the session file persists");
-
-    // The leftover's own socket file (the reap removes it with the process).
-    let worker_socket = worker_socket_of(worker_pid).expect("the leftover's socket env");
-
-    // THE ENV-PROPAGATION GUARD: a process that merely INHERITED the worker
-    // environment must survive the new daemon's boot (the readoption regression: an
-    // env-only reap killed the session's whole process tree).
-    let mut inherited_env_child = std::process::Command::new("sleep")
+    // THE ENV-PROPAGATION GUARD: a process that merely INHERITED the worker environment
+    // must survive the new daemon's boot (an env-only reap would kill a session's whole
+    // process tree).
+    let mut inherited_env_child = Command::new("sleep")
         .arg("300")
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_SOCKET_ENV,
@@ -309,34 +272,21 @@ fn boot_reap_clears_the_leftover_and_the_session_reopens() {
         .spawn()
         .expect("spawn the inherited-env child");
 
-    orphan_the_worker(&mut daemon, &agent_dir, &socket, &session_id);
-    assert!(
-        process_alive(worker_pid),
-        "the leftover worker survives its supervisor (the orphaning precondition)"
-    );
+    let daemon = spawn_supervisor(&socket, &agent_dir);
+    wait_socket_ready(&socket);
+    await_reaped(&leftover);
 
-    // The new daemon on the SAME socket: its boot reaps the leftover.
+    // The operator's open: the same session file, through the new daemon. Without the reap
+    // this create refuses; with it, the fresh lease reclaims the dead holder's.
+    let script = dir.path().join("script-reopen.json");
     std::fs::write(
-        dir.path().join("script-reopen.json"),
+        &script,
         json!({ "responses": [{ "text": "turn-reopen", "delayMs": 10 }] }).to_string(),
     )
     .expect("write the reopen script");
-    let daemon2 = spawn_supervisor(&socket, &agent_dir);
-    wait_socket_ready(&socket);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while process_alive(worker_pid) {
-        assert!(
-            Instant::now() < deadline,
-            "the leftover worker survived the new daemon's boot reap"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // The operator's open: the same session file, through the new daemon. Without the
-    // reap this create refuses; with it, the fresh lease reclaims the dead holder's.
-    let (mut client2, hello2) = Client::connect(&socket);
-    assert_eq!(hello2["type"], "daemon_hello");
-    client2.send_command(
+    let (mut client, hello) = Client::connect(&socket);
+    assert_eq!(hello["type"], "daemon_hello");
+    client.send_command(
         "reopen",
         &json!({
             "type": "create",
@@ -344,136 +294,110 @@ fn boot_reap_clears_the_leftover_and_the_session_reopens() {
             "config": {
                 "cwd": dir.path().to_string_lossy(),
                 "sessionDir": sessions_dir.to_string_lossy(),
-                "script": dir.path().join("script-reopen.json").to_string_lossy(),
+                "script": script.to_string_lossy(),
             },
         }),
     );
-    let reopened = client2.read_response("reopen");
-    assert_eq!(
-        reopened["success"], true,
-        "the session must reopen after the reap (the operator's flow): {reopened}"
-    );
-
-    // The inherited-env child SURVIVED the reap (the argv gate) - and dies now, at the
-    // test's own hand.
-    assert!(
-        process_alive(inherited_env_child.id()),
-        "an inherited-env non-worker process survives the boot reap"
-    );
+    let reopened = client.read_response("reopen");
+    let inherited_env_child_alive = process_alive(inherited_env_child.id());
     let _ = inherited_env_child.kill();
     let _ = inherited_env_child.wait();
-
-    // The reap logged its verdict, and the leftover's own socket file left with it.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
-    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-    assert!(
-        log.contains("boot reap: leftover worker"),
-        "the boot reap names what it cleared: {log}"
+    let log = std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
+        .unwrap_or_default();
+    assert_eq!(
+        (
+            reopened["success"].clone(),
+            reopened["data"]["sessionId"].clone(),
+            inherited_env_child_alive,
+            log.contains("boot reap: leftover worker"),
+            leftover.socket.exists(),
+        ),
+        (json!(true), json!(session.session_id()), true, true, false,),
+        "the session reopens, the inherited-env process survives, the reap names what it \
+         cleared and the leftover's socket file left with it: {reopened}\nlog: {log}"
     );
-    assert!(
-        !worker_socket.exists(),
-        "the reaped leftover's socket file left with it: {}",
-        worker_socket.display()
-    );
 
-    // A clean terminal stop for the reopened session: the worker dies with its supervisor.
-    client2.send_command("bye", &json!({ "type": "shutdown" }));
+    client.send_command("bye", &json!({ "type": "shutdown" }));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(daemon2.child.id()) {
+    while process_alive(daemon.child.id()) {
         assert!(Instant::now() < deadline, "the new supervisor never exited");
         std::thread::sleep(Duration::from_millis(50));
     }
 }
 
 #[test]
-fn boot_reap_never_touches_a_different_socket_daemon() {
+fn boot_reap_never_touches_another_sockets_daemon_sessions_or_leftovers() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket_a = dir.path().join("daemon-a.sock");
     let socket_b = dir.path().join("daemon-b.sock");
+    let socket_c = dir.path().join("daemon-c.sock");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
 
-    // A healthy daemon on a DIFFERENT socket with one live session.
+    // A healthy daemon on a DIFFERENT socket with one live session, and a leftover worker
+    // of a third socket's lineage.
     let daemon_b = spawn_supervisor(&socket_b, &agent_dir);
     wait_socket_ready(&socket_b);
     let (mut client_b, hello_b) = Client::connect(&socket_b);
     assert_eq!(hello_b["type"], "daemon_hello");
-    let (session_b, worker_b) = create_session(
-        &mut client_b,
-        dir.path(),
-        &sessions_dir,
-        daemon_b.child.id(),
-        0,
+    let script = dir.path().join("script-b.json");
+    std::fs::write(
+        &script,
+        json!({ "responses": [{ "text": "turn-b", "delayMs": 10 }] }).to_string(),
+    )
+    .expect("write script");
+    client_b.send_command(
+        "create-b",
+        &json!({
+            "type": "create",
+            "config": {
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": sessions_dir.to_string_lossy(),
+                "script": script.to_string_lossy(),
+            },
+        }),
     );
+    let created = client_b.read_response("create-b");
+    assert_eq!(created["success"], true, "create on B failed: {created}");
+    let session_b = created["data"]["id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let leftover_c = spawn_leftover_worker(dir.path(), &socket_c, "leftover-c");
 
-    // The same-socket lineage gets the leftover: kill daemon A after its descriptor vanished.
-    let mut daemon_a = spawn_supervisor(&socket_a, &agent_dir);
+    // Socket A's own leftover, then a daemon booting on socket A: it reaps A's only.
+    let leftover_a = spawn_leftover_worker(dir.path(), &socket_a, "leftover-a");
+    let daemon_a = spawn_supervisor(&socket_a, &agent_dir);
     wait_socket_ready(&socket_a);
-    let (mut client_a, hello_a) = Client::connect(&socket_a);
-    assert_eq!(hello_a["type"], "daemon_hello");
-    let (session_a, worker_a) = create_session(
-        &mut client_a,
-        dir.path(),
-        &sessions_dir,
-        daemon_a.child.id(),
-        1,
-    );
-    orphan_the_worker(&mut daemon_a, &agent_dir, &socket_a, &session_a);
-    assert!(
-        process_alive(worker_a),
-        "the leftover survives its supervisor"
-    );
+    await_reaped(&leftover_a);
 
-    // The new daemon on socket A: it reaps A's leftover only.
-    let daemon_a2 = spawn_supervisor(&socket_a, &agent_dir);
-    wait_socket_ready(&socket_a);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while process_alive(worker_a) {
-        assert!(Instant::now() < deadline, "A's leftover survived the reap");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // The other-socket daemon and its worker are untouched: a prompt through B completes.
-    assert!(
-        process_alive(daemon_b.child.id()),
-        "the other-socket supervisor was never a reap target"
-    );
-    assert!(
-        process_alive(worker_b),
-        "the other-socket worker was never a reap target"
-    );
     client_b.send_command(
         "p-b",
-        &json!({ "type": "prompt", "activeSessionId": session_b, "message": "go" }),
+        &json!({ "type": "prompt_and_wait", "activeSessionId": session_b, "message": "go" }),
     );
-    loop {
-        let line = client_b.read_line();
-        if line.get("id").and_then(Value::as_str) == Some("p-b") {
-            assert_eq!(
-                line["success"], true,
-                "the other-socket session still serves: {line}"
-            );
-            break;
-        }
-    }
+    let prompted = client_b.read_response("p-b");
+    assert_eq!(
+        (
+            process_alive(daemon_b.child.id()),
+            process_alive(leftover_c.child.id()),
+            prompted["success"].clone(),
+        ),
+        (true, true, json!(true)),
+        "the other socket's daemon, its session and the third socket's leftover were never \
+         reap targets: {prompted}"
+    );
 
-    // Teardown: both supervisors take the protocol stop and exit inside the window.
+    // Teardown: both daemons take the protocol stop and exit inside the window.
     client_b.send_command("bye-b", &json!({ "type": "shutdown" }));
-    client_a_send_shutdown(&socket_a);
+    let (mut client_a, _) = Client::connect(&socket_a);
+    client_a.send_command("bye-a", &json!({ "type": "shutdown" }));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(daemon_b.child.id()) || process_alive(daemon_a2.child.id()) {
+    while process_alive(daemon_b.child.id()) || process_alive(daemon_a.child.id()) {
         assert!(
             Instant::now() < deadline,
             "the shut-down supervisors never exited"
         );
         std::thread::sleep(Duration::from_millis(50));
     }
-}
-
-/// `daemon_a2`'s own shutdown (the reopened session's worker dies with it).
-fn client_a_send_shutdown(socket: &Path) -> Value {
-    let (mut client, _) = Client::connect(socket);
-    client.send_command("bye-a2", &json!({ "type": "shutdown" }));
-    client.read_response("bye-a2")
 }
