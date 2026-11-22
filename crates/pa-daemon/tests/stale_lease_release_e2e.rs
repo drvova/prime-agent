@@ -330,7 +330,7 @@ fn the_revived_session_stays_supervised_and_its_file_reopens() {
     );
 }
 
-/// A session idle in a daemon that is SIGKILLed is not revived, and its lease
+/// A session idle in a daemon that is killed outright is not revived, and its lease
 /// names a session of a dead daemon: the next boot releases it and the file
 /// opens.
 #[test]

@@ -172,15 +172,14 @@ fn a_lost_shutdown_verdict_never_archives_the_session() {
     // verdict after all: drop it, so every run boots from the same state.
     let journal_path = descriptor_dir.join(format!("{session}.recovery.jsonl"));
     let journal = std::fs::read_to_string(&journal_path).expect("recovery journal");
-    let unsettled: String = journal
+    let unsettled: Vec<&str> = journal
         .lines()
         .filter(|line| {
             serde_json::from_str::<Value>(line)
                 .is_ok_and(|record| record["operation"] != "shutdown")
         })
-        .map(|line| format!("{line}\n"))
         .collect();
-    std::fs::write(&journal_path, unsettled).expect("journal without a verdict");
+    std::fs::write(&journal_path, unsettled.join("\n") + "\n").expect("journal without a verdict");
     assert_eq!(
         tombstone().map(|descriptor| descriptor["archiveOnStop"].clone()),
         Some(json!(false)),

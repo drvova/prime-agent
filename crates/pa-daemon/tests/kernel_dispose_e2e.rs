@@ -1,6 +1,6 @@
 //! Worker session-end kernel disposal e2e (TS `closeSession` parity): every session-end path
 //! a live daemon runs (`kill`, daemon `shutdown`) must call `AgentSessionEngine::dispose_kernel`
-//! explicitly, and a daemon that was SIGKILLed disposes nothing, so the next boot reaps what
+//! explicitly, and a daemon that was killed outright disposes nothing, so the next boot reaps what
 //! its sessions journalled. The kernel is an engine inside the daemon, but the shell commands
 //! its cells start are processes of their own: a command that survives its session is
 //! orphaned forever. Each test starts one in the background from a scripted `eval` cell and
@@ -301,7 +301,7 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
     await_command_gone(command, Duration::from_secs(90));
 }
 
-/// A daemon that is SIGKILLed takes its sessions with it and disposes
+/// A daemon that is killed outright takes its sessions with it and disposes
 /// nothing, so a command a cell left running is orphaned. Each command is
 /// journalled before it starts; the next daemon on the socket reaps what the
 /// dead one's sessions journalled.

@@ -8,6 +8,8 @@
 // on other unixes they cannot observe processes, and the waits would
 // pass vacuously — skip the suite there instead of reporting a false
 // green.
+// Fn length is a style gate, not correctness: each e2e reads top to bottom as one scenario.
+#![allow(clippy::too_many_lines)]
 #![cfg(all(unix, target_os = "linux"))]
 
 mod common;
