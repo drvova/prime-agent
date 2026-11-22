@@ -1,1 +1,2 @@
+- The agent's kernel is now a Scheme interpreter built into Prime Agent: the model works through one `eval` tool, sessions run inside the daemon (a new session's first call is about three times faster on a running daemon), nothing installs Python or uv any more, and a crashed session or daemon is shown, restarted and resumed automatically. Python skills and the Python REPL are gone; saved sessions still open.
 - A new session in a project you have used before starts its first turn sooner: the workspace checkpoint re-reads only the files that changed instead of every file.

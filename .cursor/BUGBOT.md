@@ -18,7 +18,7 @@ either changes.
 ## Module organization
 
 - One concern per module, named for what it owns. Reject new `utils.rs`/`common.rs` grab-bag modules.
-- A new concern lands as a new module beside its siblings (for example `crates/pa-core/src/kernel/manager/` or `crates/pa-core/src/cron/store/`), not as more lines in an already-large orchestration file; when a PR grows such a file, suggest splitting by responsibility.
+- A new concern lands as a new module beside its siblings (for example `crates/pa-core/src/kernel/scheme/` or `crates/pa-core/src/cron/store/`), not as more lines in an already-large orchestration file; when a PR grows such a file, suggest splitting by responsibility.
 - When code moves into a new module, its related tests and docs move with it.
 - Prefer private modules with an explicitly exported crate API; internals are `pub(crate)`. New traits need doc comments explaining their role and how implementations are expected to behave.
 
@@ -33,6 +33,16 @@ either changes.
 - `pa-types` is the only shared vocabulary crate: flag domain types duplicated into or re-exported from higher crates.
 - A new dependency (workspace edge or third-party crate) is an architectural change: flag it unless the PR states why existing crates cannot host the functionality, commits the regenerated `Cargo.lock` in the same change, and keeps `make deny` clean.
 - Flag cross-crate `pub use`/re-exports that widen the public API surface. `pa-tui` renders from wire types and must not link the session engine (its only workspace dependency is `pa-types`); `pa-cli` wires crates and contains no business logic.
+
+## Sessions share one process
+
+Sessions are hosted inside the daemon process, with their Scheme kernel in the same process (AGENTS.md "Reliability model" and "Surface contract").
+
+- Flag session code that reads process state on a session's behalf: `std::env::var`/`var_os`/`vars`, `std::env::current_dir`, `Command::new`, or a `std::thread::spawn`/runtime builder that does not propagate `pa_types::session_scope`. One session's environment or working directory must never reach another.
+- Flag a new Scheme-callable host function that can block without observing the cell's cancellation, and any durable write reachable from an ended session lifetime that skips `session_scope::ensure_live`.
+- Flag `.lock().unwrap()` on a lock shared between sessions: one session's panic must not poison the others.
+- Flag a kernel function added, removed or changed without the matching edit in `crates/pa-core/src/prompts/capabilities/`, and any change to `crates/pa-core/src/kernel/scheme/confinement/open_globals.txt` that opens a Steel builtin without a stated reason.
+- Flag anything that reintroduces a Python interpreter, venv, uv, or a kernel child process, and fault-injection seams reachable in release builds.
 
 ## Change hygiene
 
