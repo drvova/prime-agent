@@ -2,10 +2,9 @@
 //! reap the supervisor's whole process tree before the test's temp dir
 //! drops.
 //!
-//! A supervisor-only kill orphans its workers (and their kernels): they ran
-//! on until the supervisor-lost exit and kept writing recovery journals,
-//! session artifacts, and auth state into the removed temp dir, which
-//! re-created it under `$TMPDIR`.
+//! Sessions run inside the supervisor, but the commands their cells start
+//! are its child processes: a supervisor-only kill would leave those
+//! writing into the removed temp dir, which re-created it under `$TMPDIR`.
 
 use std::process::Child;
 use std::time::{Duration, Instant};
@@ -26,34 +25,6 @@ pub fn reap_tree(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
     kill_and_await(&tree);
-}
-
-/// The workers a deliberate supervisor-only kill leaves alive for the next
-/// supervisor to re-adopt. They stop being that supervisor's descendants at
-/// its death, so no supervisor teardown reaches them: this guard reaps them
-/// (and anything they spawned) when it drops.
-// Only the supervisor-restart targets orphan workers on purpose; the other
-// targets link this module without it.
-#[allow(dead_code)]
-pub struct Orphans(Vec<u32>);
-
-#[allow(dead_code)]
-impl Orphans {
-    /// Every process below `child`, captured before its hard kill.
-    pub fn of(child: &Child) -> Self {
-        Self(descendants_of(child.id()))
-    }
-}
-
-impl Drop for Orphans {
-    fn drop(&mut self) {
-        for &pid in &self.0 {
-            signal(pid, Signal::SIGSTOP);
-        }
-        let mut tree = freeze_below(&self.0);
-        tree.extend_from_slice(&self.0);
-        kill_and_await(&tree);
-    }
 }
 
 /// Stop every process below `roots` until the walk settles, returning them.
