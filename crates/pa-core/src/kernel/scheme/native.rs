@@ -165,7 +165,7 @@ pub(super) fn register(
     engine.register_fn(
         "%native-call",
         move |operation: String, options: SteelVal| -> SteelVal {
-            let outcome = Value::try_from(options)
+            let outcome = crate::kernel::scheme::limits::plain_data(options)
                 .map_err(|error| anyhow!("the options are not plain data: {error}"))
                 .and_then(|options| match operation.as_str() {
                     command if command.starts_with("bash") => {

@@ -26,7 +26,7 @@
 //! `(read-line)`: closing the port accessors does not change the default
 //! input port.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use steel::compiler::modules::SourceModuleResolver;
 use steel::rerrs::{ErrorKind, SteelErr};
@@ -134,8 +134,14 @@ impl SourceModuleResolver for NoSourceFiles {
     }
 }
 
-/// A new engine for a session, closed as the module docs describe.
-pub(super) fn engine() -> Engine {
+/// A new engine for a session, closed as the module docs describe and with
+/// the builtins of [`super::limits`] guarded.
+///
+/// # Errors
+///
+/// A guarded builtin is not what the guard was written for: the engine is
+/// not handed out with a hole in it.
+pub(super) fn engine() -> anyhow::Result<Engine> {
     let mut engine = Engine::new_sandboxed();
     let mut closed: BTreeSet<String> = CLOSED_FUNCTIONS.iter().map(ToString::to_string).collect();
     for name in CLOSED_MODULES {
@@ -143,43 +149,77 @@ pub(super) fn engine() -> Engine {
             closed.extend(module.names());
         }
     }
-    let refusal = SteelVal::FuncV(|_| {
-        Err(SteelErr::new(
-            ErrorKind::Generic,
-            "this Steel builtin is closed in a session's kernel: read and write files with \
-             fs-read, fs-write and fs-edit, find them with fs-glob, fs-find and fs-grep, and run \
-             commands with bash"
-                .to_string(),
-        ))
-    });
+    let mut replaced: BTreeMap<String, SteelVal> = closed
+        .into_iter()
+        .map(|name| (name, SteelVal::FuncV(refusal)))
+        .collect();
+    replaced.extend(super::limits::guards(&mut engine)?);
+    // Each replaced name is bound to its replacement everywhere a cell could
+    // find the builtin: in every module that has it, and in every global.
     for name in STEEL_MODULES {
         let Some(module) = engine.builtin_modules().get(name) else {
             continue;
         };
-        if module.names().iter().any(|bound| closed.contains(bound)) {
+        if module
+            .names()
+            .iter()
+            .any(|bound| replaced.contains_key(bound))
+        {
             // A lookup of a name its module lacks panics inside Steel, so a
             // closed name stays bound, to the refusal.
             let mut kept = BuiltInModule::new(name);
             for (bound, value) in module.inner_map().iter() {
-                let value = if closed.contains(bound.as_ref()) {
-                    refusal.clone()
-                } else {
-                    value.clone()
-                };
+                let value = replaced.get(bound.as_ref()).unwrap_or(value).clone();
                 kept.register_value(bound, value);
             }
             engine.register_module(kept);
         }
     }
-    for name in &closed {
-        for global in [name.clone(), format!("#%prim.{name}")] {
-            if engine.global_exists(&global) {
-                engine.register_value(&global, refusal.clone());
+    let globals: Vec<String> = engine
+        .globals()
+        .iter()
+        .map(|name| name.resolve().to_string())
+        .collect();
+    for global in globals {
+        if let Some(value) = builtin_names(&global)
+            .into_iter()
+            .find_map(|name| replaced.get(name))
+        {
+            // In place: Steel's own Scheme code, compiled before this, reads
+            // the global by its slot, and a registration under the same name
+            // would give the name a new one.
+            if engine.update_value(&global, value.clone()).is_none() {
+                anyhow::bail!("the Steel global {global} could not be rebound");
             }
         }
     }
     engine.register_source_module_resolver(NoSourceFiles);
-    engine
+    Ok(engine)
+}
+
+/// What a closed builtin is bound to.
+pub(super) fn refusal(_arguments: &[SteelVal]) -> Result<SteelVal, SteelErr> {
+    Err(SteelErr::new(
+        ErrorKind::Generic,
+        "this Steel builtin is closed in a session's kernel: read and write files with \
+         fs-read, fs-write and fs-edit, find them with fs-glob, fs-find and fs-grep, and run \
+         commands with bash"
+            .to_string(),
+    ))
+}
+
+/// The builtin a global is bound to, by the global's name: the name itself,
+/// under Steel's `#%prim.` prefix, or inside one of Steel's own Scheme
+/// modules (`##mm19__%#__reader.new-reader`), which bind the builtins they
+/// require under an alias.
+pub(super) fn builtin_names(global: &str) -> Vec<&str> {
+    let unprefixed = global.strip_prefix("#%prim.").unwrap_or(global);
+    let unmangled = unprefixed
+        .split_once("__%#__")
+        .map_or(unprefixed, |(_, name)| name);
+    let mut names = vec![global, unprefixed, unmangled];
+    names.extend(unmangled.split_once('.').map(|(_, name)| name));
+    names
 }
 
 #[cfg(test)]

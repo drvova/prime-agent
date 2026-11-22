@@ -750,7 +750,7 @@ pub(super) fn register(engine: &mut Engine, cells: &Arc<Cells>) -> anyhow::Resul
             let arguments = arguments
                 .iter()
                 .cloned()
-                .map(Value::try_from)
+                .map(super::limits::plain_data)
                 .collect::<Result<Vec<Value>, SteelErr>>()?;
             answering
                 .call(&arguments)
@@ -943,48 +943,79 @@ pub(super) async fn execute(
     let mut thread = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
         // Held to the end: the next cell gets the engine when this one is done.
         let _turn = turn;
-        let cells = &running.cells;
-        let mut engine = running
-            .engine
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = run.signal();
-        *cells.running.lock().unwrap_or_else(PoisonError::into_inner) = Some(run.clone());
-        CURRENT.with(|current| *current.borrow_mut() = Some(run.clone()));
-        // Only a cell without a window is stopped at its limit: a command it
-        // waits for hands over before that.
-        running.jobs.cell_started(
-            limit
-                .filter(|_| window.is_none())
-                .map(|limit| started + limit),
-        );
-        let outcome = if run.0.signal.is_cancelled() {
-            Err("the cell was stopped before it started".to_string())
-        } else {
-            engine
-                .run("(current-output-port %cell-output) (current-error-port %cell-errors)")
-                .and_then(|_| engine.run(code))
-                .map(|values| {
-                    values
-                        .into_iter()
-                        .rev()
-                        .find(|value| !matches!(value, SteelVal::Void))
-                        .map(|value| value.to_string())
-                })
-                .map_err(|error| error.to_string())
-        };
-        CURRENT.with(|current| current.borrow_mut().take());
-        running.jobs.cell_finished();
-        // Under the lock an interrupt takes: one that came for this cell is
-        // cleared here, and none can arrive for it afterwards.
-        let mut on_engine = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
-        *on_engine = None;
-        cells.controller.resume();
-        drop(on_engine);
-        // A cell that reloaded the session's resources gets its skills'
-        // changed sources evaluated before the next cell.
-        running.skills.load_if_reloaded(&mut engine);
-        outcome
+        // The cell runs on a thread of its own, whose stack is known and far
+        // larger than a runtime thread's: the depth limits of [`limits`] are
+        // what a cell meets first, never the end of the stack (which would
+        // end the process, not the cell). The stack is address space; only
+        // the pages a cell touches are memory, and they go with the thread.
+        let on_cell_thread = pa_types::session_scope::propagate(|| {
+            let _runtime = running.cells.runtime.enter();
+            let cells = &running.cells;
+            let mut engine = running
+                .engine
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = run.signal();
+            *cells.running.lock().unwrap_or_else(PoisonError::into_inner) = Some(run.clone());
+            CURRENT.with(|current| *current.borrow_mut() = Some(run.clone()));
+            // Only a cell without a window is stopped at its limit: a command it
+            // waits for hands over before that.
+            running.jobs.cell_started(
+                limit
+                    .filter(|_| window.is_none())
+                    .map(|limit| started + limit),
+            );
+            let outcome = if run.0.signal.is_cancelled() {
+                Err("the cell was stopped before it started".to_string())
+            } else if code.len() > super::limits::SOURCE_BYTES {
+                Err(format!(
+                    "the cell is {} bytes of code and the kernel compiles at most {} in one cell: \
+                 run it as several cells, or keep its data in a file and read it",
+                    code.len(),
+                    super::limits::SOURCE_BYTES
+                ))
+            } else if let Some(refusal) = super::limits::source_refusal(&code) {
+                Err(refusal)
+            } else {
+                engine
+                    .run("(current-output-port %cell-output) (current-error-port %cell-errors)")
+                    .and_then(|_| engine.run(code))
+                    .map(|values| {
+                        values
+                            .into_iter()
+                            .rev()
+                            .find(|value| !matches!(value, SteelVal::Void))
+                            .map(|value| value.to_string())
+                    })
+                    .map_err(|error| error.to_string())
+            };
+            CURRENT.with(|current| current.borrow_mut().take());
+            running.jobs.cell_finished();
+            // Under the lock an interrupt takes: one that came for this cell is
+            // cleared here, and none can arrive for it afterwards.
+            let mut on_engine = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
+            *on_engine = None;
+            cells.controller.resume();
+            drop(on_engine);
+            // A cell that reloaded the session's resources gets its skills'
+            // changed sources evaluated before the next cell.
+            running.skills.load_if_reloaded(&mut engine);
+            outcome
+        });
+        std::thread::scope(|scope| {
+            match std::thread::Builder::new()
+                .name("scheme-cell".to_string())
+                .stack_size(super::limits::cell_stack_bytes())
+                .spawn_scoped(scope, on_cell_thread)
+            {
+                Ok(cell_thread) => cell_thread
+                    .join()
+                    // The panic was recorded where it was raised: this thread
+                    // ends as the cell's thread did.
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                Err(error) => Err(format!("the cell's thread could not start: {error}")),
+            }
+        })
     });
 
     let report = |(stream, text): (Stream, String)| {

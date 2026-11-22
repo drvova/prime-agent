@@ -27,6 +27,7 @@ mod cell;
 mod confinement;
 mod factory;
 mod host_api;
+mod limits;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -157,11 +158,20 @@ pub fn prewarm_scheme_kernel() {
             while spare_scheme_kernels() < spare_goal() {
                 // Built outside the lock: a session starting meanwhile takes
                 // what is there, or builds its own.
-                let engine = confinement::engine();
-                SPARES
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(engine);
+                match confinement::engine() {
+                    Ok(engine) => SPARES
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(engine),
+                    Err(error) => {
+                        // Each session's own start reports the same failure
+                        // to its caller; building more spares would only
+                        // repeat it.
+                        tracing::error!("a spare Scheme engine could not be built: {error:#}");
+                        REFILLING.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                }
             }
             REFILLING.store(false, Ordering::SeqCst);
             // A session that took an engine after the last check found this
@@ -495,7 +505,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let started = tokio::task::spawn_blocking(move || {
                 let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
                 FIRST_TAKEN.store(true, std::sync::atomic::Ordering::SeqCst);
-                let mut engine = spare.unwrap_or_else(confinement::engine);
+                let mut engine = spare.map_or_else(confinement::engine, Ok)?;
                 let cells = cell::Cells::new(
                     Arc::clone(&environment),
                     handlers.clone(),
