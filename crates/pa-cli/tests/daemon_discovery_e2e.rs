@@ -621,9 +621,9 @@ impl Wire {
     }
 }
 
-/// One live scripted (faux) session: the supervisor spawns a real worker
-/// whose engine answers from the script file, so a worker process exists
-/// without any model traffic.
+/// One live scripted (faux) session: the supervisor hosts a real session
+/// whose engine answers from the script file, so a session serving its own
+/// socket exists without any model traffic.
 fn create_scripted_session(socket: &Path, agent_dir: &Path) -> String {
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -654,20 +654,6 @@ fn create_scripted_session(socket: &Path, agent_dir: &Path) -> String {
         .to_string()
 }
 
-fn pid_alive(pid: u32) -> bool {
-    // Signal 0 is a pure liveness probe (the test binary runs as the same
-    // user as the daemons it spawned).
-    unsafe { libc::kill(pid as i32, 0) == 0 }
-}
-
-fn wait_for_pid_exit(pid: u32, bound: Duration) -> bool {
-    let deadline = Instant::now() + bound;
-    while pid_alive(pid) && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    !pid_alive(pid)
-}
-
 /// The worker descriptors a supervisor persists under
 /// `<agent-dir>/daemon-workers/<key>/` (`supervisor-config` has no .json and
 /// is skipped); unreadable or unparsable files are not safe targets either.
@@ -694,30 +680,67 @@ fn worker_descriptors(agent_dir: &Path) -> Vec<Value> {
     descriptors
 }
 
-/// The pid of the live worker a supervisor tracks for its own socket.
-fn tracked_worker_pid(agent_dir: &Path, supervisor_socket: &Path) -> u32 {
-    let supervisor = supervisor_socket.to_string_lossy().to_string();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    loop {
-        if let Some(pid) = worker_descriptors(agent_dir)
-            .into_iter()
-            .filter(|descriptor| {
-                descriptor["supervisorSocketPath"].as_str() == Some(supervisor.as_str())
-            })
-            .find_map(|descriptor| {
-                descriptor["pid"]
-                    .as_u64()
-                    .filter(|pid| *pid > 0 && pid_alive(*pid as u32))
-            })
-        {
-            return pid as u32;
+/// A live session a supervisor hosts: sessions run inside their daemon, so
+/// "the worker process" is the socket the session serves and the hosted
+/// lifetime serving it (a rebuilt session keeps the socket and gets a new
+/// lifetime id).
+struct HostedSession {
+    agent_dir: PathBuf,
+    supervisor_socket: String,
+    socket: PathBuf,
+    lifetime: u64,
+}
+
+impl HostedSession {
+    /// The live session `supervisor_socket`'s daemon tracks in its own descriptors.
+    fn tracked(agent_dir: &Path, supervisor_socket: &Path) -> Self {
+        let supervisor = supervisor_socket.to_string_lossy().to_string();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Some(session) = Self::served(agent_dir, &supervisor).into_iter().next() {
+                return session;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no live tracked session for {}",
+                supervisor_socket.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(
-            Instant::now() < deadline,
-            "no live tracked worker for {}",
-            supervisor_socket.display()
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    /// Every session the supervisor's descriptors name whose socket is served.
+    fn served(agent_dir: &Path, supervisor: &str) -> Vec<Self> {
+        worker_descriptors(agent_dir)
+            .into_iter()
+            .filter(|descriptor| descriptor["supervisorSocketPath"].as_str() == Some(supervisor))
+            .filter_map(|descriptor| {
+                Some(Self {
+                    agent_dir: agent_dir.to_path_buf(),
+                    supervisor_socket: supervisor.to_string(),
+                    socket: PathBuf::from(descriptor["socketPath"].as_str()?),
+                    lifetime: descriptor["pid"].as_u64().filter(|pid| *pid > 0)?,
+                })
+            })
+            .filter(|session| UnixStream::connect(&session.socket).is_ok())
+            .collect()
+    }
+
+    /// Whether the same lifetime still serves the session's socket: a session
+    /// that was stopped, or crashed and was rebuilt, is not this one.
+    fn alive(&self) -> bool {
+        Self::served(&self.agent_dir, &self.supervisor_socket)
+            .iter()
+            .any(|session| session.socket == self.socket && session.lifetime == self.lifetime)
+    }
+
+    /// Wait (bounded) until nothing serves the session's socket.
+    fn wait_gone(&self, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        while UnixStream::connect(&self.socket).is_ok() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        UnixStream::connect(&self.socket).is_err()
     }
 }
 
@@ -729,9 +752,10 @@ fn tracked_worker_pid(agent_dir: &Path, supervisor_socket: &Path) -> u32 {
 /// spawns listens in the shared product socket dir, exactly like a real
 /// machine: A owns the product-default socket, B and C are pinned to
 /// sockets inside one shared directory outside the product socket dir, with
-/// live workers of their own. A shutdown must stop only the daemons its
+/// live sessions of their own. A shutdown must stop only the daemons its
 /// root owns — the pinned socket, never the pinned directory — and never
-/// another daemon's workers.
+/// another daemon's sessions (each still serves its socket in the shared
+/// product socket dir, where the residual sweep looks).
 #[test]
 fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     let shared_tmp = fixture_dir();
@@ -747,7 +771,7 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     let agent_a = fixture_a.path().join("agent");
     let mut daemon_a = spawn_daemon(&socket_a, &agent_a, shared_tmp.path());
     let _session_a = create_scripted_session(&socket_a, &agent_a);
-    let worker_a = tracked_worker_pid(&agent_a, &socket_a);
+    let hosted_a = HostedSession::tracked(&agent_a, &socket_a);
 
     // B and C are pinned inside one shared pins directory OUTSIDE the
     // product socket dir: a pinned root must own its pinned socket, never
@@ -759,7 +783,7 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     let socket_b = pins_dir.join("b.sock"); // env-pinned, isolated
     let mut daemon_b = spawn_daemon(&socket_b, &agent_b, shared_tmp.path());
     let _session_b = create_scripted_session(&socket_b, &agent_b);
-    let worker_b = tracked_worker_pid(&agent_b, &socket_b);
+    let hosted_b = HostedSession::tracked(&agent_b, &socket_b);
 
     // Like the launcher-pinned daemon of the incident: C's supervisor socket
     // sits outside the product socket dir, but its worker still listens
@@ -768,11 +792,11 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     let socket_c = pins_dir.join("c.sock");
     let mut daemon_c = spawn_daemon(&socket_c, &agent_c, shared_tmp.path());
     let _session_c = create_scripted_session(&socket_c, &agent_c);
-    let worker_c = tracked_worker_pid(&agent_c, &socket_c);
+    let hosted_c = HostedSession::tracked(&agent_c, &socket_c);
 
     assert!(
-        pid_alive(worker_a) && pid_alive(worker_b) && pid_alive(worker_c),
-        "all three workers must be live before any shutdown"
+        hosted_a.alive() && hosted_b.alive() && hosted_c.alive(),
+        "all three sessions must be live before any shutdown"
     );
 
     // (a) B's env-pinned shutdown stops only B: A and C — supervisors and
@@ -799,8 +823,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     );
     wait_until_stopped(&socket_b, &mut daemon_b);
     assert!(
-        wait_for_pid_exit(worker_b, Duration::from_secs(10)),
-        "B's worker must stop with B (through its tracked descriptor)"
+        hosted_b.wait_gone(Duration::from_secs(10)),
+        "B's session must stop with B (through its tracked descriptor)"
     );
     assert!(
         daemon_a
@@ -815,8 +839,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
         "A must still accept connections"
     );
     assert!(
-        pid_alive(worker_a),
-        "A's worker must survive B's env-pinned shutdown"
+        hosted_a.alive(),
+        "A's session must survive B's env-pinned shutdown"
     );
     assert!(
         daemon_c
@@ -831,8 +855,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
         "C must still accept connections"
     );
     assert!(
-        pid_alive(worker_c),
-        "C's worker must survive B's env-pinned shutdown"
+        hosted_c.alive(),
+        "C's session must survive B's env-pinned shutdown"
     );
 
     // (b) The default-rooted shutdown from A stops A and its worker, and
@@ -860,8 +884,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
         "C's supervisor must survive A's default-rooted shutdown"
     );
     assert!(
-        pid_alive(worker_c),
-        "C's worker must survive A's default-rooted shutdown (the residual sweep may not stop another daemon's workers)"
+        hosted_c.alive(),
+        "C's session must survive A's default-rooted shutdown (the residual sweep may not stop another daemon's workers)"
     );
     let report: Value = serde_json::from_str(&stdout(&shutdown)).expect("shutdown report");
     assert_eq!(
@@ -872,8 +896,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     );
     wait_until_stopped(&socket_a, &mut daemon_a);
     assert!(
-        wait_for_pid_exit(worker_a, Duration::from_secs(10)),
-        "A's worker must stop with A (through its tracked descriptor)"
+        hosted_a.wait_gone(Duration::from_secs(10)),
+        "A's session must stop with A (through its tracked descriptor)"
     );
     assert!(
         UnixStream::connect(&socket_c).is_ok(),
@@ -903,8 +927,8 @@ fn force_shutdown_from_an_env_pinned_root_stops_only_that_daemon_tree() {
     );
     wait_until_stopped(&socket_c, &mut daemon_c);
     assert!(
-        wait_for_pid_exit(worker_c, Duration::from_secs(10)),
-        "C's worker must stop with C (through its tracked descriptor)"
+        hosted_c.wait_gone(Duration::from_secs(10)),
+        "C's session must stop with C (through its tracked descriptor)"
     );
 }
 
@@ -924,10 +948,10 @@ fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
     let foreign_agent = foreign_fixture.path().join("agent");
     let mut own_daemon = spawn_daemon(&own_socket, own_agent, shared_tmp.path());
     let _own_session = create_scripted_session(&own_socket, own_agent);
-    let own_worker = tracked_worker_pid(own_agent, &own_socket);
+    let own_hosted = HostedSession::tracked(own_agent, &own_socket);
     let mut foreign_daemon = spawn_daemon(&foreign_socket, &foreign_agent, shared_tmp.path());
     let _foreign_session = create_scripted_session(&foreign_socket, &foreign_agent);
-    let foreign_worker = tracked_worker_pid(&foreign_agent, &foreign_socket);
+    let foreign_hosted = HostedSession::tracked(&foreign_agent, &foreign_socket);
 
     let status = run_cli_state_env(
         shared_tmp.path(),
@@ -956,22 +980,22 @@ fn a_pinned_root_with_an_overlapping_agent_dir_never_stops_foreign_workers() {
     );
     assert!(shutdown.status.success(), "{}", stderr(&shutdown));
     wait_until_stopped(&own_socket, &mut own_daemon);
-    assert!(wait_for_pid_exit(own_worker, Duration::from_secs(10)));
+    assert!(own_hosted.wait_gone(Duration::from_secs(10)));
     assert!(
         foreign_daemon
             .child
             .try_wait()
             .expect("foreign supervisor wait")
             .is_none()
-            && pid_alive(foreign_worker),
-        "the foreign supervisor and its original worker must survive"
+            && foreign_hosted.alive(),
+        "the foreign supervisor and its original session must survive"
     );
     assert!(UnixStream::connect(&foreign_socket).is_ok());
 
     // Teardown names the exact fixture socket; no machine-wide discovery.
     run_shutdown_on_socket(&foreign_socket).expect("foreign shutdown handshake");
     wait_until_stopped(&foreign_socket, &mut foreign_daemon);
-    assert!(wait_for_pid_exit(foreign_worker, Duration::from_secs(10)));
+    assert!(foreign_hosted.wait_gone(Duration::from_secs(10)));
 }
 
 /// A fresh top-level invocation must not inherit an ancestor worker's
