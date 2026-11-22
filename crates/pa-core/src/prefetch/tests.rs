@@ -86,6 +86,35 @@ async fn a_read_names_handles_to_its_tests_imports_and_callers() {
     );
 }
 
+/// An include that climbs out of the workspace with `..` names no handle: a
+/// file outside the project is never paged into the session's store.
+#[tokio::test]
+async fn an_import_that_leaves_the_workspace_is_never_paged_out() {
+    let outer = tempfile::tempdir().expect("outer");
+    let repo = outer.path().join("repo");
+    write(outer.path(), "secret.h", "#define TOKEN 1\n");
+    write(&repo, "src/inside.h", "#define INSIDE 1\n");
+    write(
+        &repo,
+        "src/main.c",
+        "#include \"../../secret.h\"\n#include \"inside.h\"\n",
+    );
+    let session = tempfile::tempdir().expect("session dir");
+    let (prefetcher, _facts, _index) = prefetcher(&repo, session.path());
+    let (related, _line) = prefetcher
+        .prefetch(repo.join("src/main.c"))
+        .await
+        .expect("neighbours");
+    assert_eq!(
+        related,
+        json!([{
+            "path": "src/inside.h",
+            "why": "import",
+            "handle": format!("out:{}", content_id("#define INSIDE 1\n")),
+        }])
+    );
+}
+
 /// A handle read through `ctx-*`, or its file read, counts as used when the
 /// next read settles the batch.
 #[tokio::test]
