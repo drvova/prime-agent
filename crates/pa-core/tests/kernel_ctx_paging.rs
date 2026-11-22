@@ -154,7 +154,7 @@ async fn engine_for(
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,

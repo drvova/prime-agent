@@ -23,7 +23,7 @@
 //! Skills discovered in the project's own directory are never loaded: code
 //! a repository ships must not run in the session by being checked out.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -133,26 +133,6 @@ pub(super) struct SkillLoader {
     unavailable: Arc<Mutex<UnavailableSchemeSkills>>,
 }
 
-/// A skill's source files in load order: `scheme/*.scm` by file name, then
-/// `skill.scm`.
-fn source_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join("scheme"))
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension().is_some_and(|extension| extension == "scm") && path.is_file()
-        })
-        .collect();
-    files.sort();
-    let entry = dir.join("skill.scm");
-    if entry.is_file() {
-        files.push(entry);
-    }
-    files
-}
-
 impl SkillLoader {
     /// A loader for the skills `sources` names. `handlers`' `rlm.reload`
     /// request, when it has one, is wrapped so a successful reload asks for
@@ -237,7 +217,7 @@ impl SkillLoader {
         // What a source displays while loading belongs to no cell.
         let captured = engine.run("(current-output-port (open-output-string))");
         for skill in sources() {
-            for path in source_files(&skill.dir) {
+            for path in crate::skills::scheme_source_files(&skill.dir) {
                 let shown = path
                     .strip_prefix(&skill.dir)
                     .unwrap_or(&path)

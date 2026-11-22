@@ -720,7 +720,7 @@ impl SessionEngine for AgentSessionEngine {
                             .and_then(|usage| serde_json::to_value(usage).ok()),
                         entry: serde_json::to_value(&run.entry).unwrap_or(Value::Null),
                         ipython_state: run
-                            .ipython_state
+                            .kernel_state
                             .as_ref()
                             .map(crate::session_commands::custom_message_value),
                     }),

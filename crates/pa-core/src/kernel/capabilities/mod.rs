@@ -1,11 +1,8 @@
-//! The kernel capability manifests: one TOML file per capability of the Python kernel, beside this
+//! The kernel capability manifests: one TOML file per capability of the kernel API, beside this
 //! module (schema in this directory's README), embedded here. Each records what the host keeps
-//! about one capability: its readiness-probe statements, closure seed, bootstrap binding, the host
-//! requests it issues as plumbing, and its standalone telemetry event.
-//!
-//! The runtime-ready probe and the closure freeze's seed derive from the manifests; the tests hold
-//! the hand-written surfaces (the bootstrap bindings and the telemetry catalog) equal to them. What
-//! the model is told about the kernel lives with the prompt: [`crate::prompts::layers::API_DOCS`].
+//! about one capability: the host requests it issues as plumbing, and its standalone telemetry
+//! events. The tests hold the telemetry catalog equal to them. What the model is told about the
+//! kernel lives with the prompt: [`crate::prompts::layers::API_DOCS`].
 
 use std::collections::BTreeMap;
 
@@ -33,12 +30,10 @@ pub(crate) const MANIFESTS: &[(&str, &str)] = &[
     manifest!("ctx"),
     manifest!("decision"),
     manifest!("fs"),
-    manifest!("harness"),
     manifest!("hypothesis"),
     manifest!("mcp"),
     manifest!("model"),
     manifest!("notify"),
-    manifest!("repl"),
     manifest!("resource_reload"),
     manifest!("schedule"),
     manifest!("session"),
@@ -53,15 +48,8 @@ pub(crate) const MANIFESTS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CapabilityManifest {
-    pub(crate) module: String,
-    pub(crate) closure_seed: bool,
-    #[serde(default)]
-    pub(crate) closure_transitive: Vec<String>,
-    #[serde(default)]
-    pub(crate) bound_module: Option<String>,
     #[serde(default)]
     pub(crate) internal_host_requests: Vec<String>,
-    pub(crate) probe: Vec<String>,
     #[serde(default)]
     pub(crate) telemetry: Vec<TelemetryClaim>,
 }

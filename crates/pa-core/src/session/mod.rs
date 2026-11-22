@@ -378,7 +378,7 @@ pub fn build_session_context(entries: &[FileEntry], leaf_id: Option<&str>) -> Se
         path.iter().rev().find_map(|&index| match &entries[index] {
             FileEntry::CustomMessage { payload, .. }
                 if payload.custom_type
-                    == crate::session_engine::ipython_state::IPYTHON_STATE_CUSTOM_TYPE =>
+                    == crate::session_engine::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE =>
             {
                 entries[index].id()
             }
@@ -423,7 +423,7 @@ pub fn build_session_context(entries: &[FileEntry], leaf_id: Option<&str>) -> Se
                         return;
                     }
                     if payload.custom_type
-                        == crate::session_engine::ipython_state::IPYTHON_STATE_CUSTOM_TYPE
+                        == crate::session_engine::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
                         && entry.id() != newest_kernel_notice_entry_id
                     {
                         return;

@@ -546,6 +546,7 @@ const AGENT_STARTED: EventRule = EventRule {
         ("session_id", required(uuid())),
         ("skill_count", optional(count())),
         ("python_skill_count", optional(count())),
+        ("scheme_skill_count", optional(count())),
     ],
 };
 
@@ -1825,7 +1826,8 @@ const AGENT_FS_SEARCH: EventRule = EventRule {
 /// Kernel anchored (hashline) file reads and edits (`fs.read`/`fs.edit`) adoption for one session
 /// (v2), emitted at session end beside `agent session ended` (which sits near the backend's 128-key
 /// cap) only when the session used them: reads and lines shown, failed reads, patches applied and
-/// the edits in them, patches rejected for stale anchors and the stale anchors, and failed edits.
+/// the edits in them, patches rejected for stale anchors and the stale anchors, failed edits, and
+/// whole-file writes (`fs.write`: all, those that created the file, and failed ones).
 /// Counts only: never a path, an anchor, or file content.
 const AGENT_FS_EDIT: EventRule = EventRule {
     name: "agent fs edit",
@@ -1840,6 +1842,9 @@ const AGENT_FS_EDIT: EventRule = EventRule {
         ("fs_edit_rejected_count", required(count())),
         ("fs_edit_stale_anchor_count", required(count())),
         ("fs_edit_failed_count", required(count())),
+        ("fs_write_count", optional(count())),
+        ("fs_write_created_count", optional(count())),
+        ("fs_write_failed_count", optional(count())),
     ],
 };
 

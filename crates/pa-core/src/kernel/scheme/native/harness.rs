@@ -668,7 +668,7 @@ mod tests {
     use super::*;
     use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
     use crate::kernel::shared::HostRequestHandlers;
-    use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecutor};
+    use crate::tools::kernel_cell::{KernelExecutor, KernelProvisioner};
 
     /// A kernel for the saved session `s1` under `root`.
     async fn kernel_under(root: &Path) -> Box<dyn KernelExecutor> {

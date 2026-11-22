@@ -749,7 +749,7 @@ pub(super) mod tests {
     use super::*;
     use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
     use crate::kernel::shared::{host_handler, HostRequestPayload};
-    use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor};
+    use crate::tools::kernel_cell::{KernelExecuteOptions, KernelExecutor, KernelProvisioner};
 
     /// The value of `expression` in `kernel` as JSON, or the error it raised.
     pub(in crate::kernel::scheme::native) async fn evaluate(

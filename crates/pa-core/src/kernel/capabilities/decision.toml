@@ -1,11 +1,3 @@
-module = "rlm.decision"
-closure_seed = true
-probe = [
-  "import rlm.decision as _decision",
-  "assert callable(_decision.decide)",
-  "assert callable(rlm.rlm.decide)",
-]
-
 [[telemetry]]
 event = "agent repl decide"
 properties = ["decide_count", "decide_limited_count", "decide_failed_count"]

@@ -509,9 +509,10 @@ fn bundled_skills_match_the_ts_packaged_set() {
         .iter()
         .find(|skill| skill.name == "mcp")
         .expect("the generic mcp skill is packaged");
-    assert!(
-        mcp_skill.python.is_none(),
-        "the mcp skill is documentation for the kernel's mcp functions, not a Python package"
+    assert_eq!(
+        mcp_skill.kind,
+        pa_core::skills::SkillKind::Markdown,
+        "the mcp skill is documentation for the kernel's mcp functions"
     );
     assert_eq!(
         mcp_skill.description,
@@ -544,7 +545,7 @@ fn bounded_wait_contract_renders_in_daemon_and_daemonless_sessions() {
 
 /// The generic mcp skill loads through the normal markdown discovery and renders in the
 /// `<available_skills>` inventory exactly like any other markdown skill: the `[skill name
-/// location]`-style XML the TS `formatSkillsForPrompt` emits, without a `python_import` line.
+/// location]`-style XML the TS `formatSkillsForPrompt` emits.
 #[test]
 fn generic_mcp_skill_renders_in_the_prompt_inventory() {
     let mut options = BuildSystemPromptOptions {
@@ -566,17 +567,6 @@ fn generic_mcp_skill_renders_in_the_prompt_inventory() {
         .expect("the skills inventory segment renders");
     assert!(inventory.contains("<name>mcp</name>"));
     assert!(inventory.contains("<type>markdown</type>"));
-    let mcp_block_start = inventory
-        .find("<name>mcp</name>")
-        .expect("the mcp skill block");
-    let mcp_block_end = inventory[mcp_block_start..]
-        .find("</skill>")
-        .map_or(inventory.len(), |end| mcp_block_start + end);
-    let mcp_block = &inventory[mcp_block_start..mcp_block_end];
-    assert!(
-        !mcp_block.contains("python_import"),
-        "a markdown skill never carries a python_import line"
-    );
     options.generic_mcp_servers = vec!["notion".into()];
     let second = system_prompt_breakdown(&options);
     assert!(second.assembled.contains("(mcp-list-tools \"notion\")"));

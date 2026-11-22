@@ -1,6 +1,7 @@
 use super::{
-    auxiliary_model, compaction, compaction_exec, image_model_routing, ipython_state, model_usage,
-    provider_adapter, refine, rlm_usage, semantic_edges, telemetry, AgentSession, PromptBatchRow,
+    auxiliary_model, compaction, compaction_exec, image_model_routing, kernel_state_notice,
+    model_usage, provider_adapter, refine, rlm_usage, semantic_edges, telemetry, AgentSession,
+    PromptBatchRow,
 };
 
 impl AgentSession {
@@ -193,7 +194,7 @@ impl AgentSession {
     /// the pre-notice compaction flow.
     pub fn set_kernel_state_probe(
         &mut self,
-        probe: Option<std::sync::Arc<dyn ipython_state::CompactionKernelProbe>>,
+        probe: Option<std::sync::Arc<dyn kernel_state_notice::CompactionKernelProbe>>,
     ) {
         self.kernel_state = probe;
     }

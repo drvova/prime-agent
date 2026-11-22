@@ -1,6 +1,5 @@
-//! The artefacts derived from the capability manifests, and consistency between them and the
-//! hand-written surfaces they describe. What the model is told is guarded in
-//! `tests/prompt_guards.rs` and `prompts/layers.rs`.
+//! Consistency between the capability manifests and the hand-written surfaces they describe.
+//! What the model is told is guarded in `tests/prompt_guards.rs` and `prompts/layers.rs`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -71,74 +70,6 @@ fn every_manifest_is_embedded() {
             }),
     );
     assert_eq!(on_disk, sorted(MANIFESTS.iter().map(|(name, _)| *name)));
-}
-
-/// The derived runtime-ready probe passes against this checkout's runtime source, and so does the
-/// core manifest's probe followed by each other manifest's alone: a manifest's statements need only
-/// core's imports and their own, so the derived order never puts a use before its import. Skipped
-/// without a Python that takes `-P` (3.11+), as the probe's own safe-path test is.
-#[test]
-fn the_derived_probe_passes_against_the_runtime_source() {
-    let Some(python) = ["python3.11", "python3"].into_iter().find(|python| {
-        std::process::Command::new(python)
-            .args(["-P", "-c", "pass"])
-            .status()
-            .is_ok_and(|status| status.success())
-    }) else {
-        eprintln!("no Python 3.11+ found; skipping the derived-probe run");
-        return;
-    };
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime/src");
-    let passes = |program: &str| {
-        std::process::Command::new(python)
-            .args(["-P", "-s", "-c", program])
-            .env("PYTHONPATH", &source)
-            .status()
-            .is_ok_and(|status| status.success())
-    };
-    let manifests = capabilities().expect("every embedded manifest parses");
-    let core = &manifests["core"].probe;
-    let failing: Vec<&str> = manifests
-        .iter()
-        .filter(|(name, manifest)| {
-            **name != "core"
-                && !passes(
-                    &[core.as_slice(), manifest.probe.as_slice()]
-                        .concat()
-                        .join("; "),
-                )
-        })
-        .map(|(name, _)| *name)
-        .collect();
-    assert_eq!(
-        (
-            passes(&crate::kernel::bootstrap::venv::RUNTIME_READY_CHECK),
-            failing
-        ),
-        (true, Vec::new())
-    );
-}
-
-/// The bootstrap binds exactly the manifests' bound modules (`import rlm.<module> as <name>`).
-/// `ask` and `notify` are bound as functions under private module aliases, so they carry no
-/// `bound_module`.
-#[test]
-fn the_bootstrap_binds_the_manifests_modules() {
-    let code = crate::kernel::bootstrap::build_rlm_bootstrap_code(&[], false);
-    let bound = sorted(
-        code.lines()
-            .filter_map(|line| line.trim().strip_prefix("import rlm."))
-            .filter_map(|line| line.split_once(" as ").map(|(_, name)| name))
-            .filter(|name| !name.starts_with('_')),
-    );
-    assert_eq!(
-        bound,
-        sorted(
-            manifests()
-                .into_iter()
-                .filter_map(|manifest| manifest.bound_module)
-        )
-    );
 }
 
 /// Every standalone session-scoped adoption event in the telemetry catalog is claimed by the

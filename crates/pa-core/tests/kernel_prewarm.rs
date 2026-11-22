@@ -169,7 +169,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
             now: None,
             telemetry_enabled: None,
         }),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -197,7 +197,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
         CompactOutcome::Skipped(reason) => panic!("compaction must run, skipped: {reason}"),
     };
     let notice = run
-        .ipython_state
+        .kernel_state
         .expect("the prewarmed kernel must land the ipython_state notice");
     assert_eq!(notice.custom_type, "ipython_state");
     assert!(!notice.display, "the notice is never rendered");
@@ -254,7 +254,7 @@ async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
         stream_fn: Some(faux.stream_fn),
         tools: Vec::new(),
         rlm_depth: Some(1),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_kernel: Some(true),
         ..Default::default()
     })
     .await
@@ -358,7 +358,7 @@ async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
                 pa_core::session_engine::telemetry::telemetry_enabled_switch(&cwd, &agent_dir),
             ),
         }),
-        prewarm_ipython_kernel: Some(true),
+        prewarm_kernel: Some(true),
         ..Default::default()
     })
     .await

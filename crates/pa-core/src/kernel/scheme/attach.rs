@@ -24,7 +24,7 @@ use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageRead
 use serde_json::{json, Value};
 
 use super::cell::{CellHandle, CellRecord};
-use crate::tools::ipython::KernelAttachment;
+use crate::tools::kernel_cell::KernelAttachment;
 use crate::tools::path_utils::resolve_to_cwd;
 
 const MAX_SOURCE_BYTES: u64 = 20_000_000;
@@ -239,8 +239,8 @@ mod tests {
 
     use crate::kernel::scheme::SchemeKernelProvisioner;
     use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
-    use crate::tools::ipython::{
-        ExecuteResult, IpythonKernelProvisioner, KernelAttachment, KernelExecuteOptions,
+    use crate::tools::kernel_cell::{
+        ExecuteResult, KernelAttachment, KernelExecuteOptions, KernelProvisioner,
     };
 
     /// One cell in a kernel working in `dir` whose model takes `input`.

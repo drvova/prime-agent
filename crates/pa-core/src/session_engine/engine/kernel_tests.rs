@@ -376,7 +376,7 @@ async fn the_users_mcp_servers_open_at_session_start_and_end_with_the_session() 
     .unwrap();
     let provider = Arc::new(ScriptedProvider::new(model()));
     let engine = session(&provider, dir.path(), |config| {
-        config.prewarm_ipython_kernel = Some(true);
+        config.prewarm_kernel = Some(true);
     })
     .await;
     let opened = tokio::time::timeout(PATIENCE, async {

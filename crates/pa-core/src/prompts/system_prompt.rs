@@ -429,7 +429,7 @@ mod tests {
     use crate::skills::{create_synthetic_source_info, SkillKind, SourceScope};
     use std::path::PathBuf;
 
-    fn skill(name: &str, import: Option<&str>) -> Skill {
+    fn skill(name: &str, kind: SkillKind) -> Skill {
         Skill {
             name: name.to_string(),
             description: format!("Skill {name}"),
@@ -437,16 +437,7 @@ mod tests {
             base_dir: PathBuf::from("/skills"),
             source_info: create_synthetic_source_info("/skills", "user", SourceScope::User, None),
             disable_model_invocation: false,
-            kind: if import.is_some() {
-                SkillKind::Python
-            } else {
-                SkillKind::Markdown
-            },
-            python: import.map(|import_name| crate::skills::SkillPythonMetadata {
-                import_name: import_name.to_string(),
-                package_path: PathBuf::from("/skills"),
-                pyproject_path: PathBuf::from("/skills/pyproject.toml"),
-            }),
+            kind,
         }
     }
 
@@ -455,9 +446,9 @@ mod tests {
             cwd: "/w".to_string(),
             messages_path: Some("/log.jsonl".to_string()),
             skills: vec![
-                skill("web-search", Some("websearch")),
-                skill("refine", Some("refine")),
-                skill("agent-message", Some("agent_message")),
+                skill("web-search", SkillKind::Scheme),
+                skill("refine", SkillKind::Scheme),
+                skill("agent-message", SkillKind::Scheme),
             ],
             ..Default::default()
         }

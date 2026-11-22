@@ -5,7 +5,7 @@ use std::path::Path;
 
 use super::{api_help, documented_calls, splice_core_layer, API_DOCS, CORE_TEMPLATE};
 use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
-use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions};
+use crate::tools::kernel_cell::{KernelExecuteOptions, KernelProvisioner};
 
 const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
     signal: None,

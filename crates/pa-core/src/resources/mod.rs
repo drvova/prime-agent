@@ -156,12 +156,11 @@ pub fn load_resources(mut options: ResourceLoaderOptions) -> Result<LoadedResour
             {
                 skill.source_info = source_info;
             }
-            if skill.source_info.scope == SourceScope::Project && skill.is_python() {
-                // Project files can supply pyproject.toml and Python modules.
-                // Keep the skill's markdown text, but do not offer or prepare
-                // executable code from a repository on session startup.
+            if skill.source_info.scope == SourceScope::Project {
+                // A repository can ship Scheme source beside its skills. Keep the
+                // skill's markdown text, but do not offer executable code from a
+                // repository: the kernel never loads it.
                 skill.kind = SkillKind::Markdown;
-                skill.python = None;
             }
             skill
         })
@@ -446,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn project_python_skills_are_markdown_only_before_kernel_bootstrap() {
+    fn project_skills_with_scheme_source_are_markdown_only() {
         let tmp = tempfile::tempdir().unwrap();
         let cwd = tmp.path().join("project");
         let agent_dir = tmp.path().join("agent");
@@ -460,24 +459,13 @@ mod tests {
             (&ancestor_skill, "ancestor-code"),
             (&user_skill, "user-code"),
         ] {
-            fs::create_dir_all(dir.join("src").join(name.replace('-', "_"))).unwrap();
+            fs::create_dir_all(dir).unwrap();
             fs::write(
                 dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: Python skill\n---\nBody"),
+                format!("---\nname: {name}\ndescription: Scheme skill\n---\nBody"),
             )
             .unwrap();
-            fs::write(
-                dir.join("pyproject.toml"),
-                "[project]\nname = \"skill\"\nversion = \"0.1.0\"\n",
-            )
-            .unwrap();
-            fs::write(
-                dir.join("src")
-                    .join(name.replace('-', "_"))
-                    .join("__init__.py"),
-                "# would execute if imported\n",
-            )
-            .unwrap();
+            fs::write(dir.join("skill.scm"), "(define (would-run) 1)\n").unwrap();
         }
         fs::write(
             cwd.join(".prime/agent/settings.json"),
@@ -485,32 +473,27 @@ mod tests {
         )
         .unwrap();
         let resources = load_resources(ResourceLoaderOptions::new(&cwd, &agent_dir)).unwrap();
-        for name in ["project-code", "configured-code", "ancestor-code"] {
-            let project = resources
+        let kinds = |scope: SourceScope| {
+            let mut kinds: Vec<(String, SkillKind)> = resources
                 .skills
                 .iter()
-                .find(|skill| skill.name == name)
-                .unwrap();
-            assert_eq!(project.source_info.scope, SourceScope::Project);
-            assert_eq!(project.kind, SkillKind::Markdown);
-            assert!(project.python.is_none());
-        }
-        let user = resources
-            .skills
-            .iter()
-            .find(|skill| skill.name == "user-code")
-            .unwrap();
-        assert_eq!(user.source_info.scope, SourceScope::User);
-        assert_eq!(user.kind, SkillKind::Python);
-        let imports =
-            crate::session_engine::runtime_wiring::kernel_python_skills(&resources.skills)
-                .into_iter()
-                .map(|skill| skill.import_name)
-                .collect::<Vec<_>>();
-        assert!(imports.contains(&"user_code".to_string()));
-        for name in ["project_code", "configured_code", "ancestor_code"] {
-            assert!(!imports.contains(&name.to_string()));
-        }
+                .filter(|skill| skill.source_info.scope == scope && skill.name.ends_with("-code"))
+                .map(|skill| (skill.name.clone(), skill.kind))
+                .collect();
+            kinds.sort_by(|left, right| left.0.cmp(&right.0));
+            kinds
+        };
+        assert_eq!(
+            (kinds(SourceScope::Project), kinds(SourceScope::User)),
+            (
+                vec![
+                    ("ancestor-code".to_string(), SkillKind::Markdown),
+                    ("configured-code".to_string(), SkillKind::Markdown),
+                    ("project-code".to_string(), SkillKind::Markdown),
+                ],
+                vec![("user-code".to_string(), SkillKind::Scheme)],
+            )
+        );
     }
 
     #[test]

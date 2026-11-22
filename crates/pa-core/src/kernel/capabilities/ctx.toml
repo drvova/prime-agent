@@ -1,11 +1,3 @@
-module = "rlm.ctx"
-closure_seed = true
-bound_module = "ctx"
-probe = [
-  "import rlm.ctx as _ctx",
-  "assert all(callable(getattr(_ctx, _m, None)) for _m in ('page', 'grep', 'tail', 'info'))",
-]
-
 [[telemetry]]
 event = "agent context paging"
 properties = [

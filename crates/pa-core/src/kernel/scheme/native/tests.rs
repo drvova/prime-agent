@@ -5,8 +5,8 @@ use std::path::Path;
 
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::HostRequestHandlers;
-use crate::tools::ipython::{
-    ExecuteResult, ExecuteStatus, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+use crate::tools::kernel_cell::{
+    ExecuteResult, ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
 use crate::tools::tool_definition::AbortSignal;
 

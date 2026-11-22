@@ -1,7 +1,7 @@
-//! The `ipython` tool: persistent Python REPL execution through a kernel —
-//! the model-facing definition, result text composition, busy-kernel choice,
-//! and the rlm bootstrap code. Kernel process management lives behind the
-//! [`IpythonKernelProvisioner`] trait, owned by the kernel manager module.
+//! A kernel cell's result: the types a kernel hands back for one executed
+//! cell, the seam a session reaches its kernel through
+//! ([`KernelProvisioner`], [`KernelExecutor`]), and the composition of the
+//! model-facing tool result from a cell's outcome.
 
 use std::fmt::Write as _;
 use std::future::Future;
@@ -12,8 +12,7 @@ use serde_json::json;
 
 mod diff;
 use crate::tools::tool_definition::{
-    AbortSignal, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolExecutionResult,
-    ToolUpdate,
+    AbortSignal, OnUpdate, ToolContentBlock, ToolExecutionResult, ToolUpdate,
 };
 pub(crate) use diff::diff_lines;
 use diff::generate_diff_string;
@@ -160,11 +159,11 @@ pub type BootstrapProgressHandler = Arc<dyn Fn(&str) + Send + Sync>;
 
 type EnsureFuture = Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn KernelExecutor>>> + Send>>;
 
-/// Owns the lazy create+start+bootstrap of one session's Python kernel.
-/// Implementations memoize one running kernel (concurrent `ensure` calls await
-/// the same in-flight startup; a failed startup clears the memo), and `kill`
-/// terminates the kernel losing all in-memory state. Object-safe on purpose.
-pub trait IpythonKernelProvisioner: Send + Sync {
+/// Owns the lazy start of one session's kernel. Implementations memoize one
+/// running kernel (concurrent `ensure` calls await the same in-flight startup;
+/// a failed startup clears the memo), and `kill` ends the kernel losing all
+/// in-memory state. Object-safe on purpose.
+pub trait KernelProvisioner: Send + Sync {
     /// Start (or reuse) the kernel; resolves once it is ready to execute.
     fn ensure(
         &self,
@@ -223,23 +222,23 @@ fn format_execute_text(result: &ExecuteResult, background_output: Option<&str>) 
     text
 }
 
-/// The running envelope of a cell that outlived its yield window (Nodecode's
-/// `exec.lisp:1828` message): it was not stopped, the notice reads its end,
-/// and the handle is there for a look in the meantime.
+/// What a result says about a cell that outlived its yield window: it was
+/// not stopped, it holds the session's one engine, and how to look at it.
 fn cell_backgrounded_message(cell: &str) -> String {
-    let encoded = serde_json::to_string(cell).unwrap_or_default();
     format!(
-        "[cell {cell} continues in the background: it outlived its yield window and was not \
-stopped.] Do not wait for it: go on with other work or end your turn. When it ends, a [cell-done] \
-notice brings its value or error and the tail of its output. Its writes go to its handle, never \
-into another cell's output. Meanwhile `h = rlm.cells.get({encoded})` gives the handle: `h.poll()` \
-is one look, `h.tail()` its newest output, `await h.wait(seconds)` a short wait, `h.cancel()` \
-stops it. A cell that must end inside this call can pass a larger `timeout`."
+        "[cell {cell} continues in the background: it outlived its yield window \
+and was not stopped.] The session's Scheme engine runs one cell at a time and this cell holds it: \
+until it ends, every other cell waits for it and is then refused without having run. End your turn \
+or do work that needs no `eval`; when the cell ends, a [cell-done] notice brings its value or error \
+and the tail of its output. Meanwhile each of these is answered at once when it is the whole cell: \
+`(cell-status \"{cell}\")` for its state and what it has printed, `(cell-wait \"{cell}\" seconds)` for \
+a short wait, `(cell-cancel \"{cell}\")` to stop it. A cell that must end inside this call can pass \
+a larger `timeout`."
     )
 }
 
 async fn execute_cell(
-    provisioner: &dyn IpythonKernelProvisioner,
+    provisioner: &dyn KernelProvisioner,
     report_startup_progress: BootstrapProgressHandler,
     code: &str,
     execute: KernelExecuteOptions<'_>,
@@ -250,54 +249,32 @@ async fn execute_cell(
     manager.execute(code, execute).await
 }
 
-pub struct IpythonToolOptions {
+/// What the kernel tool needs from its session.
+pub struct KernelToolOptions {
     /// Shared provisioner owning the kernel lifecycle.
-    pub provisioner: Arc<dyn IpythonKernelProvisioner>,
+    pub provisioner: Arc<dyn KernelProvisioner>,
     pub on_late_sent_agent_message: Option<LateSentAgentMessageHandler>,
-}
-
-pub fn ipython_tool_schema() -> serde_json::Value {
-    json!({
-        "type": "object",
-        "required": ["code"],
-        "properties": {
-            "code": {
-                "type": "string",
-                "description": "Python code to execute in the persistent Python REPL. Use the target project's own environment for project imports, tests, scripts, CLIs, and dependency checks instead of direct kernel imports."
-            },
-            "timeout": {
-                "type": "integer",
-                "description": format!(
-                    "Seconds to wait for this cell before it continues in the background (never stopped; a [cell-done] notice reports its end). Default: a window learned from this project's recent cells unless the user configured one, max {PYTHON_REPL_TIMEOUT_MAX_S}."
-                )
-            }
-        }
-    })
 }
 
 /// The largest per-call `timeout` the model may pass, in seconds (Nodecode
 /// clamps its yield window to ten minutes).
-pub const PYTHON_REPL_TIMEOUT_MAX_S: u64 = 600;
+pub const CELL_TIMEOUT_MAX_S: u64 = 600;
 
 /// The model's `timeout` argument as a yield window in milliseconds, clamped to
-/// 1..=[`PYTHON_REPL_TIMEOUT_MAX_S`] seconds.
+/// 1..=[`CELL_TIMEOUT_MAX_S`] seconds.
 pub(crate) fn timeout_arg_ms(params: &serde_json::Value) -> Option<u64> {
     let seconds = params.get("timeout")?.as_f64()?;
-    Some((seconds as u64).clamp(1, PYTHON_REPL_TIMEOUT_MAX_S) * 1000)
-}
-
-pub fn ipython_tool_description() -> &'static str {
-    "Execute Python code in a persistent Python REPL. Top-level `await` is supported. Variables, imports, and loaded data persist across calls, and are revived on a best-effort basis when a session is resumed (objects that cannot be serialized are dropped and reported). Run shell commands with `bash('cmd')` / `await bash('cmd')`. Project imports, tests, scripts, CLIs, and dependency checks should run through the target project's own environment."
+    Some((seconds as u64).clamp(1, CELL_TIMEOUT_MAX_S) * 1000)
 }
 
 #[tracing::instrument(
     level = "debug",
-    name = "tool_ipython_execute",
+    name = "tool_kernel_cell_execute",
     skip(options, on_update, on_late_sent_agent_message)
     fields(code),
 )]
-pub async fn execute_ipython(
-    options: &IpythonToolOptions,
+pub async fn execute_kernel_cell(
+    options: &KernelToolOptions,
     code: &str,
     timeout_ms: Option<u64>,
     signal: Option<AbortSignal>,
@@ -444,53 +421,8 @@ pub async fn execute_ipython(
     })
 }
 
-/// The `python_repl` tool definition: exact name, schema, and description.
-#[must_use]
-pub fn create_ipython_tool_definition(_cwd: &str, options: IpythonToolOptions) -> ToolDefinition {
-    let options = Arc::new(options);
-    let execute: crate::tools::tool_definition::ExecuteFn = {
-        let options = options;
-        Arc::new(move |tool_call_id, params, signal, on_update| {
-            let options = options.clone();
-            let on_late_sent_agent_message =
-                options.on_late_sent_agent_message.as_ref().map(|handler| {
-                    let handler = std::sync::Arc::clone(handler);
-                    let tool_call_id = tool_call_id.to_string();
-                    std::sync::Arc::new(move |message| handler(&tool_call_id, message))
-                        as crate::kernel::shared::LateSentAgentMessageCallback
-                });
-            Box::pin(async move {
-                let code = params
-                    .get("code")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("python_repl tool requires a code string"))?
-                    .to_string();
-                execute_ipython(
-                    &options,
-                    &code,
-                    timeout_arg_ms(&params),
-                    signal,
-                    on_update,
-                    on_late_sent_agent_message,
-                )
-                .await
-            })
-        })
-    };
-    ToolDefinition {
-        name: pa_types::ai::PYTHON_TOOL_NAME.to_string(),
-        label: pa_types::ai::PYTHON_TOOL_NAME.to_string(),
-        description: ipython_tool_description().to_string(),
-        prompt_snippet:
-            "python_repl - persistent Python REPL for code, state, and bash() orchestration"
-                .to_string(),
-        // The kernel is single-threaded; calls must not run in parallel.
-        execution_mode: Some(ExecutionMode::Sequential),
-        parameters: ipython_tool_schema(),
-        prepare_arguments: None,
-        execute,
-    }
-}
+#[cfg(test)]
+mod golden_tests;
 
 #[cfg(test)]
 mod tests {
@@ -503,7 +435,7 @@ mod tests {
         assert_eq!(timeout_arg_ms(&json!({ "timeout": 0 })), Some(1_000));
         assert_eq!(
             timeout_arg_ms(&json!({ "timeout": 3600 })),
-            Some(PYTHON_REPL_TIMEOUT_MAX_S * 1000)
+            Some(CELL_TIMEOUT_MAX_S * 1000)
         );
     }
 

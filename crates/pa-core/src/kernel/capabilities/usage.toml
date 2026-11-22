@@ -1,8 +1,3 @@
-module = "rlm.usage"
-closure_seed = true
-bound_module = "usage"
-probe = ["import rlm.usage as _usage", "assert callable(_usage.get)"]
-
 [[telemetry]]
 event = "agent usage reads"
 properties = ["usage_read_count"]

@@ -1,8 +1,8 @@
 //! The session's file tools: `fs-read`, `fs-grep`, `fs-glob`, `fs-find`,
-//! `fs-symbol`, `fs-edit`, and `edit`.
+//! `fs-symbol`, `fs-edit`, `fs-write`, and `edit`.
 //!
 //! Every `fs-*` call is answered by the session's `fs.*` host request
-//! handler, the one the Python kernel's `rlm.fs` client reached: a whole-file
+//! handler: a whole-file
 //! re-read of a file the model has seen comes back as `unchanged since turn
 //! N` or a diff (with `'seen` naming the state, the turn, and a handle to the
 //! whole view), and each call is counted by the session's telemetry. A kernel
@@ -27,6 +27,9 @@
 //!   also the last lines of `'text`), or `#f`. With `(hash 'on-stale
 //!   'return)` a patch with stale anchors returns its rejection (`'applied`
 //!   `#f`, `'stale`, `'lines`, `'text`) instead of raising.
+//! - `(fs-write path text)` creates the file, or replaces all of it, with
+//!   `text` (missing directories are created): `'path`, `'created`,
+//!   `'total-lines`, `'bytes`, `'check`, `'text`.
 //! - `(fs-anchor view line)` is the anchor of a 1-based line of an `fs-read`
 //!   view.
 //! - `(edit path old-str new-str)` replaces one exact, unique occurrence of a
@@ -54,6 +57,7 @@ pub(super) const TOOLS: &str = r#"
 (define (fs-symbol name . rest) (%native "fs-symbol" (hash-insert (%fs-options rest) 'name name)))
 (define (fs-edit path edits . rest)
   (%native "fs-edit" (hash-insert (hash-insert (%fs-options rest) 'path path) 'edits edits)))
+(define (fs-write path text) (%native "fs-write" (hash 'path path 'text text)))
 (define (edit path old-str new-str)
   (%native "edit" (hash 'path path 'old-str old-str 'new-str new-str)))
 
@@ -108,6 +112,8 @@ const FIND: Accepted = &[
 const READ: Accepted = &[("start", "start"), ("end", "end")];
 
 const EDIT: Accepted = &[("edits", "edits"), ("on-stale", "onStale")];
+
+const WRITE: Accepted = &[("text", "text")];
 /// The operations one edit may name, as Scheme spells them.
 const EDIT_OPERATIONS: [&str; 5] = [
     "replace",
@@ -150,6 +156,39 @@ fn payload(
     payload.insert(path_key.to_string(), json!(resolve_to_cwd(path, &cwd)));
     payload.insert("cwd".to_string(), json!(cwd));
     Ok(payload)
+}
+
+/// The file tools that only read, for a caller outside a kernel cell (the
+/// `/better` helper's gate): no session handler answers them, so what they
+/// read never counts as the session's reads.
+pub(crate) struct FileReads(Files);
+
+impl FileReads {
+    /// The readers of the project in `cwd`, answering on `runtime`.
+    pub(crate) fn new(cwd: PathBuf, runtime: tokio::runtime::Handle) -> Self {
+        Self(Files::new(
+            cwd,
+            HostRequestHandlers::new(),
+            runtime,
+            /*agent_dir*/ None,
+        ))
+    }
+
+    /// Run the reader `operation` (`fs-read`, `fs-grep`, `fs-glob`,
+    /// `fs-find`, `fs-symbol`) with a call's `options`. Blocks until the
+    /// reply: call it off the async threads.
+    ///
+    /// # Errors
+    ///
+    /// Any other operation, bad options, or the reader's own failure.
+    pub(crate) fn run(&self, operation: &str, options: &Value) -> anyhow::Result<Value> {
+        match operation {
+            "fs-read" | "fs-grep" | "fs-glob" | "fs-find" | "fs-symbol" => {
+                self.0.run(operation, &AbortSignal::new(), options)
+            }
+            other => Err(anyhow!("{other} is not a read")),
+        }
+    }
 }
 
 /// One session kernel's file tools.
@@ -266,6 +305,13 @@ impl Files {
             ),
             "fs-symbol" => self.symbol(cell, options),
             "fs-edit" => self.edit(cell, options),
+            "fs-write" => {
+                let payload = payload(options, WRITE, "path", &self.cwd)?;
+                let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
+                let mut reply = self.request("fs.write", Value::Object(payload), cell)?;
+                self.attach_check(&mut reply, &file, cell);
+                Ok(reply)
+            }
             "edit" => {
                 let (file, mut reply) = edit_replace::replace(&self.cwd, options)?;
                 // The edit shows on the running cell's card, as the Python

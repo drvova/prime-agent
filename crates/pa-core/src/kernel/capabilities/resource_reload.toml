@@ -1,11 +1,3 @@
-module = "rlm.resource_reload"
-closure_seed = true
-probe = [
-  "import rlm.resource_reload as _reload",
-  "assert callable(_reload.reload)",
-  "assert callable(rlm.rlm.reload)",
-]
-
 [[telemetry]]
 event = "agent repl reload"
 properties = ["repl_reload_count", "repl_reload_skills_added_count"]

@@ -7,39 +7,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use crate::kernel::bootstrap::KernelPythonSkill;
-
 /// Per-cell stdout/stderr cap. `HeadTailBuffer` splits it between head and
 /// tail, so a long failing run keeps its printed verdict.
 pub const DEFAULT_MAX_OUTPUT_CHARS: usize = 65_536;
-pub const HOST_REQUEST_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-pub const KERNEL_SHUTDOWN_TIMEOUT_MS: u64 = 5_000;
-pub const DEFAULT_SNAPSHOT_DEBOUNCE_MS: u64 = 1_500;
-pub const SNAPSHOT_EXECUTION_TIMEOUT_MS: u64 = 5_000;
-/// How long the debounced auto-snapshot keeps giving way to user cells: once a debounced capture
-/// first yielded longer ago than this without a commit since, the next one runs to completion
-/// even when a cell arrives, so continuous cells cannot postpone crash durability forever.
-pub(crate) const SNAPSHOT_MAX_YIELD_MS: u64 = 30_000;
-/// Restore deserializes everything a snapshot serializes: bounded like the repair step.
-pub const RESTORE_EXECUTION_TIMEOUT_MS: u64 = 30_000;
-/// The provisioner's runtime bootstrap imports the runtime and skills in one
-/// cell: bounded like the restore step, so a lost bootstrap frame fails the
-/// boot loudly instead of parking it forever. Shrunk in test builds so the
-/// regression test does not wait out the production bound.
-#[cfg(not(test))]
-pub const BOOTSTRAP_EXECUTION_TIMEOUT_MS: u64 = 30_000;
-#[cfg(test)]
-pub const BOOTSTRAP_EXECUTION_TIMEOUT_MS: u64 = 500;
-pub const KERNEL_ABORT_GRACE_MS: u64 = 1_000;
-pub const KERNEL_BUSY_REUSE_WAIT_MS: u64 = 5_000;
-pub const KERNEL_BUSY_INTERRUPT_INTERVAL_MS: u64 = 500;
-pub const MAX_LATE_SENT_AGENT_MESSAGE_HANDLERS: usize = 256;
-pub const KERNEL_BUSY_AFTER_INTERRUPT_MESSAGE: &str = "The Python kernel is still running the previously interrupted cell. Wait and try again, or kill the kernel to start fresh.";
-
-/// Cap for unattributed background output buffered between and during cells.
-pub const MAX_BACKGROUND_OUTPUT_CHARS: usize = 64 * 1024;
-
-pub const MAX_KERNEL_STDERR_CHARS: usize = 8 * 1024;
 
 /// The `factory_activity` out-of-band frame's action vocabulary, mirroring
 /// the kernel executor's `ACTIVITY_ACTIONS` (the `/factory` view's bridge).
@@ -51,37 +21,10 @@ pub const FACTORY_ACTIVITY_ACTIONS: [&str; 6] =
 /// lower). Mirrors the kernel's `ACTIVITY_TIMEOUT_MS_CAP` for the preflight.
 pub const FACTIVITY_WATCH_TIMEOUT_MS_CAP: u64 = 60_000;
 
-/// Fixed settle bound for one `factory_activity` request (a watch adds its
-/// own declared timeout on top, plus this margin for the executor's work).
-pub const FACTIVITY_SETTLE_TIMEOUT_MS: u64 = 5_000;
-pub const MAX_KERNEL_STDERR_LOG_BYTES: u64 = 5 * 1024 * 1024;
-pub const KERNEL_STDERR_LOG_BUDGET_MARKER: &str = "[stderr log budget exhausted]\n";
-
 /// Hard ceiling on a single attachment's base64 payload, a defensive guard against a runaway direct
 /// display emit. The `attach-image` skill caps its own images well under this.
 pub const MAX_ATTACHMENT_DATA_CHARS: usize = 10_000_000;
 
-/// MIME tag the `edit` skill emits diff payloads under.
-pub const DIFF_DISPLAY_MIME: &str = "application/vnd.prime-agent.diff+json";
-/// MIME tag the `attach-image` skill emits media payloads under.
-pub const ATTACHMENT_DISPLAY_MIME: &str = "application/vnd.prime-agent.attachment+json";
-/// MIME tag the `agent-message` skill emits after sending a message.
-pub const AGENT_MESSAGE_DISPLAY_MIME: &str = "application/vnd.prime-agent.agent-message+json";
-/// Internal lifetime notices, consumed before user display rendering.
-pub const BASH_ACTIVITY_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-activity+json";
-/// One `bash()` call's command text (capped) and non-blank line count.
-pub const BASH_COMMAND_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-command+json";
-/// One awaited `bash()` command that exited non-zero, as its cell's awaits
-/// returned it: `{command, exitCode, output}` (the error enrichment's input).
-pub const COMMAND_FAILURE_DISPLAY_MIME: &str = "application/vnd.prime-agent.command-failure+json";
-/// One bounded `bash()` await's outcome: `{outcome: "completed" | "yielded"}`.
-pub const BASH_WAIT_DISPLAY_MIME: &str = "application/vnd.prime-agent.bash-wait+json";
-/// One `rlm.session.messages` read: `{returned, first, total, roles}`.
-pub const TRANSCRIPT_READ_DISPLAY_MIME: &str = "application/vnd.prime-agent.transcript-read+json";
-/// The todo list a `todo.set`/`todo.update` call left (`{items: [...]}`); the cell keeps its last.
-pub const TODO_DISPLAY_MIME: &str = "application/vnd.prime-agent.todo+json";
-/// One settled `ask(...)`: `{text, status, answer}`; the cell keeps every one, in order.
-pub const QUESTION_DISPLAY_MIME: &str = "application/vnd.prime-agent.question+json";
 /// The kernel host request that reports a background bash completion
 /// (the `[bash-done]` lane). The daemon registers the handler
 /// (`bash_notices`), and the provisioner keys the bounded-await bootstrap
@@ -92,40 +35,6 @@ pub const BASH_COMPLETED_REQUEST_TYPE: &str = "bash.completed";
 /// (`rlm.end_turn()`). The host-request dispatch answers it by marking
 /// the executing cell's result, so the turn ends once the batch settles.
 pub const END_TURN_REQUEST_TYPE: &str = "rlm.end_turn";
-
-pub const EXECUTE_STATUS_OK: &str = "ok";
-pub const EXECUTE_STATUS_ERROR: &str = "error";
-pub const EXECUTE_STATUS_ABORTED: &str = "aborted";
-
-/// Execution status of one cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ExecuteStatus {
-    #[default]
-    Ok,
-    Error,
-    Aborted,
-}
-
-impl ExecuteStatus {
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ExecuteStatus::Ok => EXECUTE_STATUS_OK,
-            ExecuteStatus::Error => EXECUTE_STATUS_ERROR,
-            ExecuteStatus::Aborted => EXECUTE_STATUS_ABORTED,
-        }
-    }
-}
-
-/// Stream a streamed chunk belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StreamName {
-    Stdout,
-    Stderr,
-}
-
-/// Callback receiving streamed output chunks as they arrive.
-pub type StreamCallback = Arc<dyn Fn(&str, StreamName) + Send + Sync>;
 
 /// Fires when the kernel's last live background `bash()` handle settles, so owed continuations can
 /// resume.
@@ -256,80 +165,6 @@ impl KernelCommandFailure {
     }
 }
 
-/// A kernel error reported by a failed cell.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KernelError {
-    pub ename: String,
-    pub evalue: String,
-    pub traceback: Vec<String>,
-}
-
-/// Result of executing one cell.
-#[derive(Debug, Clone)]
-pub struct ExecuteResult {
-    pub stdout: String,
-    pub stderr: String,
-    /// Text of the cell's trailing expression value, if the cell produced one.
-    pub result: Option<String>,
-    /// Diffs emitted via display events, in order.
-    pub diffs: Option<Vec<KernelDiffDisplay>>,
-    /// Media attachments emitted via display events, in order.
-    pub attachments: Option<Vec<KernelAttachment>>,
-    /// Agent messages sent from this cell, in order.
-    pub sent_agent_messages: Option<Vec<KernelSentAgentMessage>>,
-    /// The `bash()` commands this cell started, summarized for display.
-    pub bash_commands: Option<KernelBashCommands>,
-    /// The cell's bounded `bash()` await outcomes.
-    pub bash_waits: KernelBashWaits,
-    /// The failed `bash()` commands the cell awaited, in order.
-    pub command_failures: Vec<KernelCommandFailure>,
-    /// The cell's `rlm.session.messages` reads, one display record each.
-    pub transcript_reads: Option<Vec<Value>>,
-    /// The todo list the cell's last `todo.set`/`todo.update` left.
-    pub todo_list: Option<Value>,
-    /// The cell's settled `ask(...)` questions, one display record each.
-    pub questions: Option<Vec<Value>>,
-    /// Output that arrived without this cell's id (user threads, other cells' leftovers, raw fd writes).
-    pub background_output: Option<String>,
-    /// The cell called the sanctioned `rlm.end_turn()`: the host marked
-    /// this execution, and the turn ends once the batch settles.
-    pub ended_turn: bool,
-    pub status: ExecuteStatus,
-    pub error: Option<KernelError>,
-    pub duration_ms: u64,
-    /// The cell outlived its [`ExecuteOptions::cell_yield_ms`] window and
-    /// continues in the background under this cell id (its end arrives as a
-    /// `cell.completed` notice); `None` when it ended in the window.
-    pub backgrounded_cell: Option<String>,
-}
-
-/// Options for one `execute` call.
-#[derive(Default)]
-pub struct ExecuteOptions {
-    /// Aborting interrupts the kernel out-of-band.
-    pub signal: Option<crate::kernel::cancellation::AbortSignal>,
-    /// Streaming callback for stdout/stderr chunks.
-    pub on_stream: Option<StreamCallback>,
-    /// Receives agent messages the kernel reports after the cell settled.
-    pub on_late_sent_agent_message: Option<LateSentAgentMessageCallback>,
-    /// Cap stdout / stderr / result at this many characters. Default 65536.
-    pub max_output_chars: Option<usize>,
-    /// Where a cut stream or result pages out: with a store, the cut text is
-    /// kept whole and its marker is the spill's handle; without one the cut
-    /// text is dropped behind a plain truncation marker.
-    pub spill: Option<crate::kernel::spill::SpillStore>,
-    /// Synthetic host cell (snapshot/restore/list); excluded from lastCellCode attribution.
-    pub internal: bool,
-    /// The protocol repair's own request; exempt from waiting on the repair it belongs to.
-    pub protocol_repair: bool,
-    /// The cell's yield window in milliseconds (Nodecode's `yield_time_ms`):
-    /// a cell still running when it ends continues in the background, never
-    /// interrupted for time, and the result carries
-    /// [`ExecuteResult::backgrounded_cell`]. `None` and zero wait for the
-    /// cell's end; the runtime bootstrap and state ops never set it.
-    pub cell_yield_ms: Option<u64>,
-}
-
 /// A typed request from Python code running in the kernel to the host.
 #[derive(Debug, Clone)]
 pub struct HostRequestPayload {
@@ -410,93 +245,6 @@ impl HostRequestHandlers {
         self.handlers.len()
     }
 }
-
-/// Where and how to persist the kernel's user namespace so it survives resume.
-#[derive(Debug, Clone)]
-pub struct KernelSnapshotConfig {
-    /// Absolute path for the dill payload.
-    pub path: std::path::PathBuf,
-    /// Absolute path for the JSON manifest written alongside the payload.
-    pub manifest_path: std::path::PathBuf,
-    /// Maximum aggregate snapshot size. Default 256 MiB.
-    pub max_bytes: Option<u64>,
-    /// Maximum serialized size of one variable. Default 16 MiB.
-    pub max_variable_bytes: Option<u64>,
-    /// Debounce window for the auto-snapshot after a successful execution. Default 1500 ms.
-    pub debounce_ms: Option<u64>,
-}
-
-/// Options for constructing a [`ReplKernelManager`].
-#[derive(Clone, Default)]
-pub struct KernelManagerOptions {
-    /// Python interpreter with the kernel runtime available. Defaults to the auto-bootstrapped kernel.
-    pub python: Option<std::path::PathBuf>,
-    pub cwd: Option<std::path::PathBuf>,
-    pub env: HashMap<String, String>,
-    pub session_id: Option<String>,
-    pub host_handlers: HostRequestHandlers,
-    pub python_skills: Vec<KernelPythonSkill>,
-    /// Fires when the last live background `bash()` handle settles (its activity
-    /// track empties or the kernel tears down), so owed continuations can resume.
-    pub on_background_work_settled: Option<BackgroundWorkSettledCallback>,
-    /// Hears each cell that continues in the background, and how it ends.
-    pub on_background_cell: Option<BackgroundCellObserver>,
-    /// Persist/revive the user namespace across kernel restarts and session resume.
-    pub snapshot: Option<KernelSnapshotConfig>,
-    /// Runtime bootstrap re-run on a protocol-repaired kernel so live handles (rlm, bash, skills) exist again.
-    pub bootstrap_code: Option<String>,
-    /// File receiving the kernel process's stderr, rotated once at each spawn.
-    pub stderr_log_path: Option<std::path::PathBuf>,
-}
-
-/// Shutdown options: whether to flush a final namespace snapshot and drain
-/// in-flight host requests before tearing the kernel down.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct KernelShutdownOptions {
-    pub snapshot: bool,
-    pub drain_host_requests: bool,
-}
-
-/// Parse a [`DIFF_DISPLAY_MIME`] payload, tolerating malformed input.
-#[must_use]
-pub fn parse_diff_display(payload: &Value) -> Option<KernelDiffDisplay> {
-    let obj = payload.as_object()?;
-    let path = obj.get("path")?.as_str()?;
-    let old_str = obj.get("old_str")?.as_str()?;
-    let new_str = obj.get("new_str")?.as_str()?;
-    let start_line = match obj.get("start_line") {
-        Some(v) => v.as_u64(),
-        None => None,
-    };
-    Some(KernelDiffDisplay {
-        path: path.to_string(),
-        old_str: old_str.to_string(),
-        new_str: new_str.to_string(),
-        start_line,
-    })
-}
-
-/// Parse an [`ATTACHMENT_DISPLAY_MIME`] payload. Malformed payloads are tolerantly ignored;
-/// [`MAX_ATTACHMENT_DATA_CHARS`] is reported as [`AttachmentParse::Oversized`].
-pub fn parse_attachment_display(
-    payload: &Value,
-) -> Option<Result<KernelAttachment, AttachmentOversized>> {
-    let obj = payload.as_object()?;
-    let mime_type = obj.get("mime_type")?.as_str()?;
-    let data = obj.get("data")?.as_str()?;
-    if data.len() > MAX_ATTACHMENT_DATA_CHARS {
-        return Some(Err(AttachmentOversized));
-    }
-    Some(Ok(KernelAttachment {
-        mime_type: mime_type.to_string(),
-        data: data.to_string(),
-        path: obj.get("path").and_then(Value::as_str).map(str::to_string),
-    }))
-}
-
-/// Marker for an attachment exceeding the size ceiling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AttachmentOversized;
 
 /// Parse an [`AGENT_MESSAGE_DISPLAY_MIME`] payload, tolerating malformed input.
 pub fn parse_sent_agent_message(payload: &Value) -> Option<KernelSentAgentMessage> {

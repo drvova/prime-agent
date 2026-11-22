@@ -13,8 +13,8 @@ use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
 use crate::kernel::spill::SpillStore;
 use crate::symbol_index::{register_symbol_handler, SymbolFact, SymbolIndex};
-use crate::tools::ipython::{
-    ExecuteStatus, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+use crate::tools::kernel_cell::{
+    ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
 
 async fn kernel_over(handlers: HostRequestHandlers, cwd: &Path) -> Box<dyn KernelExecutor> {
@@ -455,6 +455,79 @@ async fn a_slow_check_lets_the_edit_return_and_reports_later_as_a_notice() {
                 "output": "app.ts(2,1): error TS1005: ';' expected.",
                 "outputTruncated": false,
             }),
+        )
+    );
+}
+
+/// `fs-write` creates a file (with its directories) and replaces one whole,
+/// through the session's `fs.write` handler: each write is counted, a file
+/// the model had read is then seen as what it wrote, and a directory is
+/// refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_write_creates_and_replaces_files_through_the_session_handler() {
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("old.txt"), "one\ntwo\n").unwrap();
+    let heard = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::new(SeenFiles::new(
+        Some(SpillStore::for_session_dir(session_dir.path())),
+        /*window_turns*/ 8,
+        /*observer*/ None,
+    ));
+    seen.bind(Arc::new(|| {
+        Box::pin(async {
+            ContextMark {
+                turn: 3,
+                compacted_at_ms: None,
+            }
+        })
+    }));
+    let mut handlers = HostRequestHandlers::new();
+    let edited = Arc::clone(&heard);
+    FsEditHost {
+        observer: Some(Arc::new(move |fact| edited.lock().unwrap().push(fact))),
+        seen: Some(seen),
+    }
+    .register(&mut handlers);
+    let kernel = kernel_over(handlers, dir.path()).await;
+    let created = value(
+        kernel.as_ref(),
+        "(let ([done (fs-write \"deep/er/new.txt\" \"alpha\\nbeta\\n\")])
+           (list (hash-ref done 'path) (hash-ref done 'created) (hash-ref done 'total-lines)))",
+    )
+    .await;
+    let replaced = value(
+        kernel.as_ref(),
+        "(begin (fs-read \"old.txt\")
+                (fs-write \"old.txt\" \"three\\n\")
+                (hash-ref (hash-ref (fs-read \"old.txt\") 'seen) 'state))",
+    )
+    .await;
+    let refused = value(kernel.as_ref(), "(fs-write \"deep\" \"x\")").await;
+    assert_eq!(
+        (
+            [created, replaced, refused],
+            std::fs::read_to_string(dir.path().join("deep/er/new.txt")).unwrap(),
+            std::fs::read_to_string(dir.path().join("old.txt")).unwrap(),
+            heard.lock().unwrap().clone(),
+        ),
+        (
+            [
+                Ok(json!(["deep/er/new.txt", true, 2])),
+                Ok(json!("unchanged")),
+                Err("Error: Generic: fs-write: deep is a directory".to_string()),
+            ],
+            "alpha\nbeta\n".to_string(),
+            "three\n".to_string(),
+            vec![
+                EditFact::Written { created: true },
+                EditFact::Read { lines: 2 },
+                EditFact::Written { created: false },
+                EditFact::Read { lines: 1 },
+                EditFact::Failed {
+                    operation: crate::fs_edit::FsEditOperation::Write
+                },
+            ],
         )
     );
 }

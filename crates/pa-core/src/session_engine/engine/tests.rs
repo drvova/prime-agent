@@ -139,7 +139,7 @@ async fn engine_runs_tool_loop_and_persists() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -250,7 +250,7 @@ async fn spawned_child_prompt_stamps_its_depth() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -324,7 +324,7 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             model_info: None,
             on_background_work_settled: None,
             bash_notice_wake: None,
-            prewarm_ipython_kernel: None,
+            prewarm_kernel: None,
             queued_goal_context_purge: None,
         }
     }
@@ -512,7 +512,7 @@ async fn create_session_appends_missing_resume_settings_rows() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -874,7 +874,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -933,7 +933,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
             entry,
             pa_types::session::FileEntry::Custom { payload, .. }
                 if payload.custom_type
-                    == crate::session_engine::late_sent_messages::IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE
+                    == crate::session_engine::late_sent_messages::KERNEL_SENT_AGENT_MESSAGE_CUSTOM_TYPE
         )),
         "the receipt persists as a custom entry"
     );
@@ -979,7 +979,7 @@ async fn a_model_switch_rewrites_the_image_input_line() {
         model_info: Some(registry_model(serde_json::json!(["text"]))),
         stream_fn: Some(provider.stream_fn()),
         daemonless: true,
-        prewarm_ipython_kernel: Some(false),
+        prewarm_kernel: Some(false),
         ..Default::default()
     })
     .await

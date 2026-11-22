@@ -10,7 +10,7 @@ use super::{notice_content, notice_message, SkillSource, UnavailableSchemeSkills
 use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
 use crate::skills::{create_synthetic_source_info, Skill, SkillKind, SourceScope};
-use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor};
+use crate::tools::kernel_cell::{KernelExecuteOptions, KernelExecutor, KernelProvisioner};
 
 /// Skill directories under a temporary root, the list of skills a kernel
 /// is told about, and every unavailable-skills report it made.
@@ -243,7 +243,6 @@ fn a_skill_the_project_ships_is_never_a_scheme_source() {
         source_info: create_synthetic_source_info("SKILL.md", "test", scope, None),
         disable_model_invocation: false,
         kind: SkillKind::Markdown,
-        python: None,
     };
     assert_eq!(
         SkillSource::from_skills(&[

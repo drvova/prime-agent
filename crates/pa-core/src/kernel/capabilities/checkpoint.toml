@@ -1,11 +1,3 @@
-module = "rlm.checkpoint"
-closure_seed = true
-bound_module = "checkpoint"
-probe = [
-  "import rlm.checkpoint as _checkpoint",
-  "assert all(callable(getattr(_checkpoint, _m, None)) for _m in ('create', 'list', 'restore'))",
-]
-
 [[telemetry]]
 event = "agent repl checkpoint"
 properties = [

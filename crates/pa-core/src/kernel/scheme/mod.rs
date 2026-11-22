@@ -42,9 +42,9 @@ use crate::kernel::cell_window::CellWindow;
 use crate::kernel::shared::{
     BackgroundCellObserver, HostRequestHandlers, HostRequestPayload, END_TURN_REQUEST_TYPE,
 };
-use crate::tools::ipython::{
-    BootstrapProgressHandler, ExecuteResult, IpythonKernelProvisioner, KernelExecuteOptions,
-    KernelExecutor,
+use crate::tools::kernel_cell::{
+    BootstrapProgressHandler, ExecuteResult, KernelExecuteOptions, KernelExecutor,
+    KernelProvisioner,
 };
 use crate::tools::tool_definition::AbortSignal;
 
@@ -55,6 +55,7 @@ pub mod skills;
 
 pub(in crate::kernel::scheme) use factory::validate_factory_spec;
 pub use factory::{factory_cli_dispatch, FactoryEnvironment};
+pub(crate) use native::FileReads;
 
 /// The Scheme side of the host bridge, defined in every session engine after
 /// its `%host-request-json` primitive is registered.
@@ -386,7 +387,7 @@ impl SchemeKernelProvisioner {
     }
 }
 
-impl IpythonKernelProvisioner for SchemeKernelProvisioner {
+impl KernelProvisioner for SchemeKernelProvisioner {
     fn ensure(
         &self,
         _on_progress: Option<BootstrapProgressHandler>,
@@ -596,7 +597,7 @@ mod tests {
 
     use super::*;
     use crate::kernel::shared::host_handler;
-    use crate::tools::ipython::ExecuteStatus;
+    use crate::tools::kernel_cell::ExecuteStatus;
 
     fn options(
         signal: Option<AbortSignal>,

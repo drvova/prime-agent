@@ -11,8 +11,8 @@ use tokio::net::TcpListener;
 
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
-use crate::tools::ipython::{
-    ExecuteStatus, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+use crate::tools::kernel_cell::{
+    ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
 use crate::tools::tool_definition::AbortSignal;
 

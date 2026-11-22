@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::SchemeKernelProvisioner;
 use crate::kernel::shared::BackgroundWorkSettledCallback;
-use crate::tools::ipython::IpythonKernelProvisioner;
+use crate::tools::kernel_cell::KernelProvisioner;
 
 /// A session's live background work: every shell command whose end the
 /// session may still have to hear of, and every cell that outlived its call.
@@ -211,5 +211,7 @@ impl SchemeKernelProvisioner {
     }
 }
 
+#[cfg(test)]
+mod environment_tests;
 #[cfg(test)]
 mod tests;

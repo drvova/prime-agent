@@ -58,6 +58,7 @@ mod tests;
 mod worktree;
 
 pub(super) use bash::BashJobs;
+pub(crate) use files::FileReads;
 
 /// The stop signal of the cell a session's engine is running: the kernel
 /// installs each cell's signal as it starts and cancels it when the cell is
@@ -175,7 +176,7 @@ pub(super) fn register(
                         let done = files.run(file_tool, &signal, &options);
                         // A file the kernel wrote itself: no cached command
                         // result outlives it.
-                        if done.is_ok() && matches!(file_tool, "fs-edit" | "edit") {
+                        if done.is_ok() && matches!(file_tool, "fs-edit" | "fs-write" | "edit") {
                             commands.wrote();
                         }
                         done

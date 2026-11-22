@@ -95,17 +95,12 @@
 ;; Re-read the skills, prompt templates, and `AGENTS.md` context files like
 ;; the user's /reload; call it after writing or changing a skill. The reply
 ;; is the host's report {skillsAdded, skillsRemoved, skills, promptTemplates,
-;; contextFiles, systemPromptChanged, diagnostics, pythonSkills} plus
-;; `unbound`: the name of each new Python skill, which the host installed for
-;; the Python kernel but which this kernel cannot call (there is no Python
-;; here). The system prompt's skill list follows from the next model call.
+;; contextFiles, systemPromptChanged, diagnostics}. The Scheme source of
+;; new or changed skills loads when this cell ends, so their functions are
+;; callable from the next cell. The system prompt's skill list follows from
+;; the next model call.
 (define (rlm-reload)
-  (let ([reply (%host-call "rlm.reload" (hash))])
-    (hash-insert reply
-                 'unbound
-                 (map (lambda (skill) (hash-try-get skill 'importName))
-                      (let ([skills (hash-try-get reply 'pythonSkills)])
-                        (if (list? skills) skills '()))))))
+  (%host-call "rlm.reload" (hash)))
 
 ;; One bounded judgment call by the session's model: it sees `question`,
 ;; `options` (2 to 16 distinct strings) and #:context, and the chosen option

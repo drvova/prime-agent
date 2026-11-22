@@ -87,7 +87,7 @@ pub struct SessionEngineConfig {
     /// Start the kernel in the background at creation, at every RLM depth (a
     /// subagent's kernel starts while its first model call is in flight); a
     /// failed start surfaces on the next cell.
-    pub prewarm_ipython_kernel: Option<bool>,
+    pub prewarm_kernel: Option<bool>,
     /// Fires each time the kernel's last live background job (a shell
     /// command or a cell that outlived its call) settles; `None` installs
     /// nothing.
@@ -113,7 +113,7 @@ pub struct SessionEngineConfig {
     /// spawn provenance. `None` keeps the session off the ledger (no
     /// request ids on the wire).
     pub semantic_edges: Option<super::semantic_edges::SemanticEdgeIdentity>,
-    pub on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
+    pub on_late_sent_agent_message: Option<crate::tools::kernel_cell::LateSentAgentMessageHandler>,
 }
 
 pub struct SessionEngine {
@@ -768,7 +768,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // `_modelVisibleSkills`).
     let model_visible_skills =
         super::runtime_wiring::model_visible_skills(resources.skills.clone(), &handlers);
-    let python_skills = super::runtime_wiring::kernel_python_skills(&model_visible_skills);
     let hidden_skills: Vec<String> = resources
         .skills
         .iter()
@@ -886,9 +885,9 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         tools.push(Arc::new(
             crate::session_engine::tool_bridge::ToolDefinitionBridge::new(
                 crate::tools::scheme::create_scheme_tool_definition(
-                    crate::tools::ipython::IpythonToolOptions {
+                    crate::tools::kernel_cell::KernelToolOptions {
                         provisioner: Arc::clone(&provisioner)
-                            as Arc<dyn crate::tools::ipython::IpythonKernelProvisioner>,
+                            as Arc<dyn crate::tools::kernel_cell::KernelProvisioner>,
                         on_late_sent_agent_message: config.on_late_sent_agent_message.clone(),
                     },
                 ),
@@ -915,7 +914,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // A subagent starts its kernel early like a top-level session: its first
     // model call almost always ends in a cell, so the start overlaps that
     // call instead of following it.
-    if config.prewarm_ipython_kernel.unwrap_or(false) && has_kernel_tool {
+    if config.prewarm_kernel.unwrap_or(false) && has_kernel_tool {
         provisioner.prewarm();
         // The MCP settle rides the same background posture (the
         // parallel-startup rule: nothing user-visible waits on the MCP
@@ -1017,7 +1016,6 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         resources.skills.clone(),
         resources.prompts.clone(),
         system_prompt_breakdown.assembled.clone(),
-        python_skills.clone(),
     );
     // The static layers' byte span is the cache-stable prefix the cache
     // seam marks as its own block (shared by every session and subagent on
@@ -1038,7 +1036,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let digest_context = super::harness_digest::HarnessDigestContext {
         global_dir: crate::refinement::get_global_harness_state_dir(&config.agent_dir),
         local_dir: local_harness_dir,
-        include_ipython: has_kernel_tool,
+        include_kernel_tool: has_kernel_tool,
         include_shell_examples: active_tool_names.iter().any(|name| name == "bash"),
         include_refine: model_visible_skills.iter().any(|skill| {
             !skill.disable_model_invocation
@@ -1485,7 +1483,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         (Some(wiring), 0) => {
             let skill_counts = super::telemetry::SkillCounts {
                 skill_count: model_visible_skills.len(),
-                python_skill_count: python_skills.len(),
+                scheme_skill_count: model_visible_skills
+                    .iter()
+                    .filter(|skill| skill.kind == crate::skills::SkillKind::Scheme)
+                    .count(),
             };
             let installed = super::telemetry::install_session_telemetry(
                 &telemetry_agent,
@@ -1670,7 +1671,7 @@ impl SessionEngine {
     ///
     /// Panics if the refinement-cancellation mutex is poisoned.
     pub async fn dispose_kernel(&self) {
-        use crate::tools::ipython::IpythonKernelProvisioner as _;
+        use crate::tools::kernel_cell::KernelProvisioner as _;
         self.session
             .refinement_cancel
             .lock()

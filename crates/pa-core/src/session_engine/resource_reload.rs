@@ -8,17 +8,16 @@
 //!   context files; the static layers are unchanged, so only the dynamic tail
 //!   (and the prompt cache's tail) moves, from the next model call;
 //! - makes `/skill:<name>`, the command catalog, and the resource snapshot
-//!   read the new skill and template lists ([`ResourceReload::skills`]);
-//! - installs Python skills that are new since the kernel booted into the
-//!   kernel venv and records them, so a kernel restart binds them too; the
-//!   reply names them so the kernel client binds them into the live REPL.
+//!   read the new skill and template lists ([`ResourceReload::skills`]).
+//!
+//! The kernel loads the Scheme source of new or changed skills itself, after
+//! the cell that asked for the reload ([`crate::kernel::scheme::skills`]).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use serde_json::{json, Value};
 
-use crate::kernel::bootstrap::KernelPythonSkill;
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 use crate::resources::{load_resources, ResourceLoaderOptions};
 use crate::skills::{PromptTemplate, Skill};
@@ -60,7 +59,6 @@ struct Current {
     prompt_templates: Vec<PromptTemplate>,
     /// The assembled prompt before the image-input line follows the model.
     base_prompt: String,
-    python_skills: Vec<KernelPythonSkill>,
 }
 
 /// What one reload changed (the `rlm.reload` reply).
@@ -72,9 +70,7 @@ pub struct ReloadReport {
     pub prompt_templates: usize,
     pub context_files: Vec<String>,
     pub system_prompt_changed: bool,
-    /// Python skills new since the kernel booted, to bind into the live REPL.
-    pub python_skills: Vec<KernelPythonSkill>,
-    /// Discovery warnings (bad names, collisions) and failed Python skill installs.
+    /// Discovery warnings (bad names, collisions).
     pub diagnostics: Vec<String>,
 }
 
@@ -87,11 +83,6 @@ impl ReloadReport {
             "promptTemplates": self.prompt_templates,
             "contextFiles": self.context_files,
             "systemPromptChanged": self.system_prompt_changed,
-            "pythonSkills": self.python_skills.iter().map(|skill| json!({
-                "name": skill.name,
-                "importName": skill.import_name,
-                "packagePath": skill.package_path,
-            })).collect::<Vec<_>>(),
             "diagnostics": self.diagnostics,
         })
     }
@@ -124,7 +115,6 @@ impl ResourceReload {
                 skills: Vec::new(),
                 prompt_templates: Vec::new(),
                 base_prompt: String::new(),
-                python_skills: Vec::new(),
             }),
             running: tokio::sync::Mutex::new(()),
             turn_boundary: Arc::downgrade(turn_boundary),
@@ -139,14 +129,12 @@ impl ResourceReload {
         skills: Vec<Skill>,
         prompt_templates: Vec<PromptTemplate>,
         base_prompt: String,
-        python_skills: Vec<KernelPythonSkill>,
     ) {
         if self.inputs.set(inputs).is_ok() {
             *self.current() = Current {
                 skills,
                 prompt_templates,
                 base_prompt,
-                python_skills,
             };
         }
     }
@@ -271,18 +259,7 @@ impl ResourceReload {
                 ..Default::default()
             },
         );
-        let python_skills = super::runtime_wiring::kernel_python_skills(&visible);
         let previous = self.current().clone();
-        let new_python: Vec<KernelPythonSkill> = python_skills
-            .iter()
-            .filter(|skill| {
-                !previous
-                    .python_skills
-                    .iter()
-                    .any(|known| known.import_name == skill.import_name)
-            })
-            .cloned()
-            .collect();
         let names = |skills: &[Skill]| {
             skills
                 .iter()
@@ -309,7 +286,6 @@ impl ResourceReload {
                 .map(|file| file.path.display().to_string())
                 .collect(),
             system_prompt_changed: base_prompt != previous.base_prompt,
-            python_skills: new_python,
             diagnostics,
         };
         if let Some(runtime) = &bound {
@@ -321,11 +297,6 @@ impl ResourceReload {
             skills: resources.skills,
             prompt_templates: resources.prompts,
             base_prompt,
-            python_skills: previous
-                .python_skills
-                .into_iter()
-                .chain(report.python_skills.iter().cloned())
-                .collect(),
         };
         if let Some(observer) = &self.observer {
             observer(report.skills_added.len());

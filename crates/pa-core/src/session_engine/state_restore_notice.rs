@@ -11,7 +11,7 @@ use pa_types::session::{AgentMessage, CustomMessage};
 
 /// The row's custom type: a wire identifier clients and saved sessions
 /// already know, kept from the Python kernel's restore notice.
-pub const IPYTHON_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
+pub const KERNEL_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
 
 /// The notice text.
 pub const NOTICE_CONTENT: &str = "[kernel-state-reset]\n\nThis session's Scheme kernel was restarted and is a new engine: everything your earlier `eval` cells defined (functions, variables, loaded data) is gone, and so are the cells and shell commands that were running in the background. Define again what you still need before you use it. Files on disk, the session's todo list and persistent shells are unchanged.";
@@ -32,11 +32,11 @@ pub fn notice_for_resumed(earlier: &[AgentMessage]) -> Option<CustomMessage> {
                 Some(true)
             }
             AgentMessage::Custom(row)
-                if row.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE =>
+                if row.custom_type == super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE =>
             {
                 Some(true)
             }
-            AgentMessage::Custom(row) if row.custom_type == IPYTHON_STATE_RESTORED_CUSTOM_TYPE => {
+            AgentMessage::Custom(row) if row.custom_type == KERNEL_STATE_RESTORED_CUSTOM_TYPE => {
                 Some(false)
             }
             AgentMessage::User(_)
@@ -56,7 +56,7 @@ pub fn notice_for_resumed(earlier: &[AgentMessage]) -> Option<CustomMessage> {
 #[must_use]
 pub fn notice_message() -> CustomMessage {
     CustomMessage {
-        custom_type: IPYTHON_STATE_RESTORED_CUSTOM_TYPE.to_string(),
+        custom_type: KERNEL_STATE_RESTORED_CUSTOM_TYPE.to_string(),
         content: pa_types::ai::UserContent::Text(NOTICE_CONTENT.to_string()),
         display: true,
         details: Some(serde_json::json!({ "restored": false })),
@@ -99,7 +99,7 @@ mod tests {
     /// a compaction's kernel-state row, is newer than the last notice.
     #[test]
     fn a_resumed_session_is_told_once_per_restart_that_lost_kernel_state() {
-        let told = row(IPYTHON_STATE_RESTORED_CUSTOM_TYPE);
+        let told = row(KERNEL_STATE_RESTORED_CUSTOM_TYPE);
         let owed = |earlier: &[AgentMessage]| {
             notice_for_resumed(earlier).map(|notice| (notice.content, notice.details))
         };

@@ -15,7 +15,7 @@ pub(super) fn test_model() -> pa_agent::types::Model {
 
 /// A parent session with one finished exchange and the three model-facing tools.
 pub(super) fn parent_agent(provider: &Arc<ScriptedProvider>) -> Arc<Agent> {
-    let tools: Vec<Arc<dyn AgentTool>> = ["bash", "edit", pa_types::ai::PYTHON_TOOL_NAME]
+    let tools: Vec<Arc<dyn AgentTool>> = ["bash", "edit", pa_types::ai::KERNEL_TOOL_NAME]
         .into_iter()
         .map(read_only::tests::named_tool)
         .collect();
@@ -97,8 +97,8 @@ async fn the_helper_reads_then_rewrites_and_the_session_is_untouched() {
         None,
         vec![(
             "c1",
-            pa_types::ai::PYTHON_TOOL_NAME,
-            json!({ "code": "print(await fs.read('parser.rs'))" }),
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": "(displayln (hash-ref (fs-read \"parser.rs\") 'text))" }),
         )],
     );
     provider.push_text_turn(REPLY);
@@ -120,7 +120,7 @@ async fn the_helper_reads_then_rewrites_and_the_session_is_untouched() {
     );
     assert_eq!(
         *labels.lock().unwrap(),
-        vec!["fs.read parser.rs".to_string()]
+        vec!["fs-read parser.rs".to_string()]
     );
     // The helper's requests carry the session's system prompt and tool definitions unchanged
     // (the cached prefix), then the cloned conversation and the helper's instructions.
@@ -132,7 +132,7 @@ async fn the_helper_reads_then_rewrites_and_the_session_is_untouched() {
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
-        vec!["bash", "edit", "python_repl"]
+        vec!["bash", "edit", "eval"]
     );
     let sent = serde_json::to_string(&first.messages).unwrap();
     assert!(sent.contains("we talked about the parser"), "{sent}");
@@ -161,7 +161,7 @@ async fn a_helper_that_tries_to_edit_is_refused_and_the_file_is_unchanged() {
             ),
             (
                 "c2",
-                pa_types::ai::PYTHON_TOOL_NAME,
+                pa_types::ai::KERNEL_TOOL_NAME,
                 json!({ "code": "open('parser.rs', 'w').write('gone')" }),
             ),
             (
@@ -365,8 +365,8 @@ async fn unresolved_references_earn_a_grounding_pass_and_resolved_ones_end_the_r
         None,
         vec![(
             "c1",
-            pa_types::ai::PYTHON_TOOL_NAME,
-            json!({ "code": "print(await fs.read('lexer.rs'))" }),
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": "(displayln (hash-ref (fs-read \"lexer.rs\") 'text))" }),
         )],
     );
     provider.push_text_turn(&reply_citing(

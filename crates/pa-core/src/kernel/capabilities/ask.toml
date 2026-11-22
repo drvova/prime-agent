@@ -1,7 +1,4 @@
-module = "rlm.ask"
-closure_seed = true
 internal_host_requests = ["question.cancel"]
-probe = ["import rlm.ask as _ask", "assert callable(_ask.ask)"]
 
 [[telemetry]]
 event = "agent todos and questions"

@@ -16,8 +16,8 @@ use crate::kernel::shared::{
     host_handler, HostRequestHandlers, HostRequestPayload, KernelBashCommands, KernelBashWaits,
 };
 use crate::kernel::spill::{SpillLookup, SpillStore, StoredSpill};
-use crate::tools::ipython::{
-    ExecuteResult, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+use crate::tools::kernel_cell::{
+    ExecuteResult, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
 
 /// How long any one step may take before its test fails instead of hanging.

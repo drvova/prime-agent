@@ -1,14 +1,13 @@
 //! The `eval` tool, a session's kernel tool: the model evaluates Scheme in
-//! the session's in-process kernel ([`crate::kernel::scheme`]). Results take
-//! the shape the Python kernel's cells had, so a transcript that holds both
-//! shows them alike.
+//! the session's in-process kernel ([`crate::kernel::scheme`]). Results are
+//! composed by [`crate::tools::kernel_cell`].
 
 use std::sync::Arc;
 
 use serde_json::json;
 
-use crate::tools::ipython::{
-    execute_ipython, timeout_arg_ms, IpythonToolOptions, PYTHON_REPL_TIMEOUT_MAX_S,
+use crate::tools::kernel_cell::{
+    execute_kernel_cell, timeout_arg_ms, KernelToolOptions, CELL_TIMEOUT_MAX_S,
 };
 use crate::tools::tool_definition::{
     ExecuteFn, ExecutionMode, OnUpdate, ToolContentBlock, ToolDefinition, ToolUpdate,
@@ -17,17 +16,11 @@ use crate::tools::tool_definition::{
 /// Characters of a running cell's newest output its card shows.
 const LIVE_OUTPUT_CHARS: usize = 8_000;
 
-/// How the shared result path ends its note about a cell that went to the
-/// background. That note is worded for the Python kernel (handles, cells
-/// running side by side); a Scheme cell's result says what holds for it.
-const PYTHON_BACKGROUND_NOTE_END: &str =
-    "A cell that must end inside this call can pass a larger `timeout`.";
-
 /// The `eval` tool definition over a session's Scheme kernel. An agent
 /// message a cell sends after its call returned (a cell in the background)
 /// reaches `options.on_late_sent_agent_message` with the call's id.
 #[must_use]
-pub fn create_scheme_tool_definition(options: IpythonToolOptions) -> ToolDefinition {
+pub fn create_scheme_tool_definition(options: KernelToolOptions) -> ToolDefinition {
     let options = Arc::new(options);
     let execute: ExecuteFn = Arc::new(move |tool_call_id, params, signal, on_update| {
         let options = Arc::clone(&options);
@@ -72,7 +65,7 @@ pub fn create_scheme_tool_definition(options: IpythonToolOptions) -> ToolDefinit
                 .and_then(serde_json::Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("eval tool requires a code string"))?
                 .to_string();
-            let mut result = execute_ipython(
+            execute_kernel_cell(
                 &options,
                 &code,
                 timeout_arg_ms(&params),
@@ -80,35 +73,7 @@ pub fn create_scheme_tool_definition(options: IpythonToolOptions) -> ToolDefinit
                 on_update,
                 on_late_sent_agent_message,
             )
-            .await?;
-            let background = result
-                .details
-                .as_ref()
-                .and_then(|details| details["backgroundCell"].as_str())
-                .map(str::to_string);
-            if let (Some(cell), Some(ToolContentBlock::Text { text })) =
-                (background, result.content.first_mut())
-            {
-                let start = text.find(&format!("[cell {cell} continues in the background"));
-                let end = text
-                    .find(PYTHON_BACKGROUND_NOTE_END)
-                    .map(|at| at + PYTHON_BACKGROUND_NOTE_END.len());
-                if let (Some(start), Some(end)) = (start, end) {
-                    text.replace_range(
-                        start..end,
-                        &format!(
-                            "[cell {cell} continues in the background: it outlived its yield window \
-and was not stopped.] The session's Scheme engine runs one cell at a time and this cell holds it: \
-until it ends, every other cell waits for it and is then refused without having run. End your turn \
-or do work that needs no `eval`; when the cell ends, a [cell-done] notice brings its value or error \
-and the tail of its output. Meanwhile each of these is answered at once when it is the whole cell: \
-`(cell-status \"{cell}\")` for its state and what it has printed, `(cell-wait \"{cell}\" seconds)` for \
-a short wait, `(cell-cancel \"{cell}\")` to stop it. {PYTHON_BACKGROUND_NOTE_END}"
-                        ),
-                    );
-                }
-            }
-            Ok(result)
+            .await
         })
     });
     ToolDefinition {
@@ -129,7 +94,7 @@ a short wait, `(cell-cancel \"{cell}\")` to stop it. {PYTHON_BACKGROUND_NOTE_END
                 "timeout": {
                     "type": "integer",
                     "description": format!(
-                        "Seconds to wait for this cell, max {PYTHON_REPL_TIMEOUT_MAX_S}. In a session that can be woken later, a cell still running then continues in the background and keeps the engine (the result names it and says how to read, wait for, or stop it), and the default is a window learned from this project's recent cells. In any other session the cell is interrupted, and the default is no limit."
+                        "Seconds to wait for this cell, max {CELL_TIMEOUT_MAX_S}. In a session that can be woken later, a cell still running then continues in the background and keeps the engine (the result names it and says how to read, wait for, or stop it), and the default is a window learned from this project's recent cells. In any other session the cell is interrupted, and the default is no limit."
                     )
                 }
             }
@@ -163,7 +128,7 @@ mod tests {
                 }
             }),
         );
-        let tool = create_scheme_tool_definition(IpythonToolOptions {
+        let tool = create_scheme_tool_definition(KernelToolOptions {
             provisioner: Arc::new(SchemeKernelProvisioner::new(handlers, "/")),
             on_late_sent_agent_message: None,
         });
@@ -207,7 +172,7 @@ mod tests {
                 }
             }),
         );
-        let tool = create_scheme_tool_definition(IpythonToolOptions {
+        let tool = create_scheme_tool_definition(KernelToolOptions {
             provisioner: Arc::new(SchemeKernelProvisioner::with_options(SchemeKernelOptions {
                 host_handlers: handlers,
                 cwd: dir.path().to_path_buf(),

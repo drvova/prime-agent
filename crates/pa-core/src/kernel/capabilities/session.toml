@@ -1,7 +1,3 @@
-module = "rlm"
-closure_seed = false
-probe = ["assert callable(rlm.rlm.session.search)"]
-
 [[telemetry]]
 event = "agent kernel login and recall"
 properties = [

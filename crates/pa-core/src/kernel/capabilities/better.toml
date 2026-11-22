@@ -1,11 +1,3 @@
-module = "rlm.better"
-closure_seed = true
-probe = [
-  "import rlm.better as _better",
-  "assert callable(_better.better)",
-  "assert callable(_better.better.checks) and callable(_better.better.evidence)",
-]
-
 [[telemetry]]
 event = "agent better prompt"
 properties = [

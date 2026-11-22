@@ -66,7 +66,7 @@ mod tests {
     use crate::kernel::spill::{SpillCopy, SpillStore};
     use crate::session::manager::SessionManager;
     use crate::session_engine::rlm_host::{RlmCreateSessionHandle, RlmSpawnHandle};
-    use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor};
+    use crate::tools::kernel_cell::{KernelExecuteOptions, KernelExecutor, KernelProvisioner};
 
     const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
         signal: None,
@@ -153,11 +153,7 @@ mod tests {
         let reloaded = json!({
             "skillsAdded": ["lint"],
             "skills": 4,
-            "pythonSkills": [{"importName": "lint_skill", "packagePath": "/skills/lint"}],
         });
-        // A new Python skill is reported as one this kernel cannot call.
-        let mut reload_report = reloaded.clone();
-        reload_report["unbound"] = json!(["lint_skill"]);
         let (handlers, received) = answering(&[
             (
                 "better.run",
@@ -208,7 +204,7 @@ mod tests {
                     Ok(json!("renamed")),
                     Ok(throttled),
                     Ok(json!({"endedTurn": true})),
-                    Ok(reload_report),
+                    Ok(reloaded),
                 ],
                 vec![
                     json!({"type": "better.run", "task": "fix the parser", "mode": "brief", "cwd": "sub"}),

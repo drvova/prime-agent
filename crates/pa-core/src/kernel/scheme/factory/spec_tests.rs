@@ -9,7 +9,7 @@ use super::spec::{
 };
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::HostRequestHandlers;
-use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions};
+use crate::tools::kernel_cell::{KernelExecuteOptions, KernelProvisioner};
 
 fn node(id: &str) -> Value {
     json!({"id": id, "subagent": "worker"})

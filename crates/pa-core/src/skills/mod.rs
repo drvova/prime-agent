@@ -6,7 +6,7 @@ pub mod frontmatter;
 pub mod loader;
 pub mod prompt_templates;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -75,15 +75,6 @@ pub fn create_synthetic_source_info(
     }
 }
 
-/// Python runtime metadata for a Python-backed skill.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SkillPythonMetadata {
-    pub import_name: String,
-    pub package_path: PathBuf,
-    pub pyproject_path: PathBuf,
-}
-
 /// A discovered skill.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -95,64 +86,50 @@ pub struct Skill {
     pub source_info: SourceInfo,
     pub disable_model_invocation: bool,
     pub kind: SkillKind,
-    pub python: Option<SkillPythonMetadata>,
 }
 
+/// What a skill is made of.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SkillKind {
+    /// Documentation only: its `SKILL.md`.
     Markdown,
-    Python,
+    /// Carries Scheme source ([`scheme_source_files`]) the session's kernel
+    /// loads, so its functions are callable from a cell.
+    Scheme,
 }
 
 impl Skill {
-    #[must_use]
-    pub fn is_python(&self) -> bool {
-        self.kind == SkillKind::Python
-    }
-
     /// The kind label the prompt inventory and telemetry share
     /// (`<type>` in `format_skills_for_prompt`, `skill_kind` in events).
     #[must_use]
     pub fn kind_label(&self) -> &'static str {
-        if self.is_python() {
-            "python"
-        } else {
-            "markdown"
+        match self.kind {
+            SkillKind::Markdown => "markdown",
+            SkillKind::Scheme => "scheme",
         }
     }
 }
 
-/// Runtime info for kernel-side Python skill preparation.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PythonSkillRuntimeInfo {
-    pub name: String,
-    pub import_name: String,
-    pub package_path: PathBuf,
-    pub pyproject_path: PathBuf,
-}
-
-/// The runtime info for every Python skill in the list.
-///
-/// # Panics
-///
-/// The `expect` cannot fire: a skill is marked `Python` only when its metadata was parsed.
+/// The Scheme source files of the skill in `dir`, in load order:
+/// `scheme/*.scm` by file name, then `skill.scm`.
 #[must_use]
-pub fn get_python_skill_runtime_info(skills: &[Skill]) -> Vec<PythonSkillRuntimeInfo> {
-    skills
-        .iter()
-        .filter(|skill| skill.is_python() && skill.source_info.scope != SourceScope::Project)
-        .map(|skill| {
-            let python = skill.python.as_ref().expect("python skill has metadata");
-            PythonSkillRuntimeInfo {
-                name: skill.name.clone(),
-                import_name: python.import_name.clone(),
-                package_path: python.package_path.clone(),
-                pyproject_path: python.pyproject_path.clone(),
-            }
+pub fn scheme_source_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir.join("scheme"))
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension().is_some_and(|extension| extension == "scm") && path.is_file()
         })
-        .collect()
+        .collect();
+    files.sort();
+    let entry = dir.join("skill.scm");
+    if entry.is_file() {
+        files.push(entry);
+    }
+    files
 }
 
 pub(crate) fn validate_name(name: &str, parent_dir_name: &str) -> Vec<String> {
@@ -217,7 +194,7 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
         "Read a skill's file when the task matches its description: `(displayln (hash-ref (fs-read \"<location>\") 'text))`.".to_string(),
-        "A skill's Scheme functions, when it has any, are described in its file. A python_import names a Python package, which the Scheme kernel cannot call.".to_string(),
+        "A skill of type scheme defines Scheme functions you can call from `eval`; its file describes them.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
         String::new(),
         "<available_skills>".to_string(),
@@ -226,12 +203,6 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
         lines.push("  <skill>".to_string());
         lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
         lines.push(format!("    <type>{}</type>", skill.kind_label()));
-        if let Some(python) = &skill.python {
-            lines.push(format!(
-                "    <python_import>{}</python_import>",
-                escape_xml(&python.import_name)
-            ));
-        }
         lines.push(format!(
             "    <description>{}</description>",
             escape_xml(&skill.description)
@@ -329,7 +300,6 @@ mod tests {
             ),
             disable_model_invocation: false,
             kind: SkillKind::Markdown,
-            python: None,
         }
     }
 
@@ -440,7 +410,6 @@ mod tests {
             source_info: create_synthetic_source_info("/s", "user", SourceScope::User, None),
             disable_model_invocation: disable,
             kind: SkillKind::Markdown,
-            python: None,
         };
         let hidden = format_skills_for_prompt(&[skill("hidden", true)]);
         assert_eq!(hidden, "");

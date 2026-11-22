@@ -13,8 +13,8 @@ use crate::kernel::cell_window::{CellWindow, CellWindowConfig};
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::scheme::{KernelStart, SchemeKernelOptions};
 use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
-use crate::tools::ipython::IpythonKernelProvisioner as _;
-use crate::tools::ipython::{ExecuteResult, ExecuteStatus, KernelExecuteOptions};
+use crate::tools::kernel_cell::KernelProvisioner as _;
+use crate::tools::kernel_cell::{ExecuteResult, ExecuteStatus, KernelExecuteOptions};
 
 /// How long a test waits for something that must happen before it fails.
 const PATIENCE: Duration = Duration::from_secs(30);

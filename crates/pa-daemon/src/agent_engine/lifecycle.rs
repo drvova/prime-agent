@@ -1098,7 +1098,7 @@ impl AgentSessionEngine {
             daemonless: false,
             model_info: Some(model.clone()),
             // Prewarm at every depth: a subagent worker's kernel boots during its first model call.
-            prewarm_ipython_kernel: Some(true),
+            prewarm_kernel: Some(true),
             on_background_work_settled,
             bash_notice_wake: None,
             // The worker-installed purge withdraws queued minted continuations.

@@ -57,7 +57,7 @@ use crate::kernel::shared::{
     KernelBashCommands, KernelCommandFailure, KernelDiffDisplay, KernelSentAgentMessage,
     LateSentAgentMessageCallback, DEFAULT_MAX_OUTPUT_CHARS, MAX_ATTACHMENT_DATA_CHARS,
 };
-use crate::tools::ipython::{
+use crate::tools::kernel_cell::{
     ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo, KernelExecuteOptions,
 };
 use crate::tools::tool_definition::AbortSignal;

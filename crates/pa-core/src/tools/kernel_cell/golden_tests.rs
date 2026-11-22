@@ -2,18 +2,16 @@
 //! TypeScript tools (frozen in `tests/golden/corpus/`) against the Rust port
 //! and assert identical model-facing output.
 //!
-//! Corpus cases cover ipython result composition and the exact tool schema.
+//! Corpus cases cover the composition of a kernel cell's tool result.
 
-#![cfg(test)]
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::tools::ipython::{
-    self, ExecuteResult, ExecuteStatus, IpythonKernelProvisioner, IpythonToolOptions,
-    KernelAttachment, KernelErrorInfo, KernelExecuteOptions, KernelExecutor,
+use super::{
+    execute_kernel_cell, ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo,
+    KernelExecuteOptions, KernelExecutor, KernelProvisioner, KernelToolOptions,
 };
-use crate::tools::tool_definition::ToolDefinition;
 
 const CORPUS_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/golden/corpus");
 
@@ -84,7 +82,7 @@ struct MockProvisioner {
     kill_calls: AtomicUsize,
 }
 
-impl IpythonKernelProvisioner for MockProvisioner {
+impl KernelProvisioner for MockProvisioner {
     fn ensure(
         &self,
         _on_progress: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
@@ -153,8 +151,8 @@ fn mock_execution(entry: &serde_json::Value) -> ExecuteResult {
 }
 
 #[tokio::test]
-async fn golden_ipython_group_matches_ts() {
-    let corpus = corpus("ipython");
+async fn golden_cell_result_group_matches_ts() {
+    let corpus = corpus("kernel-cell");
     let mut checked = 0;
     for case in corpus["cases"].as_array().expect("cases array") {
         let name = case["name"].as_str().expect("name");
@@ -174,11 +172,11 @@ async fn golden_ipython_group_matches_ts() {
             ensure_calls: AtomicUsize::new(0),
             kill_calls: AtomicUsize::new(0),
         });
-        let options = IpythonToolOptions {
+        let options = KernelToolOptions {
             provisioner: provisioner.clone(),
             on_late_sent_agent_message: None,
         };
-        let result = ipython::execute_ipython(
+        let result = execute_kernel_cell(
             &options,
             case["code"].as_str().expect("code"),
             None,
@@ -192,29 +190,29 @@ async fn golden_ipython_group_matches_ts() {
             Ok(result) => {
                 assert!(
                     recorded["ok"].as_bool().expect("ok"),
-                    "ipython/{name}: TS failed, Rust succeeded"
+                    "kernel-cell/{name}: TS failed, Rust succeeded"
                 );
                 assert_eq!(
                     result.is_error,
                     recorded["isError"].as_bool().expect("isError"),
-                    "ipython/{name} isError"
+                    "kernel-cell/{name} isError"
                 );
                 let text = result.content[0].as_text().expect("text block");
                 assert_eq!(
                     text,
                     recorded["outputText"].as_str().expect("outputText"),
-                    "ipython/{name} outputText"
+                    "kernel-cell/{name} outputText"
                 );
             }
             Err(err) => {
                 assert!(
                     !recorded["ok"].as_bool().expect("ok"),
-                    "ipython/{name}: TS succeeded, Rust failed: {err}"
+                    "kernel-cell/{name}: TS succeeded, Rust failed: {err}"
                 );
                 assert_eq!(
                     err.to_string(),
                     recorded["error"].as_str().expect("error"),
-                    "ipython/{name} error"
+                    "kernel-cell/{name} error"
                 );
             }
         }
@@ -226,7 +224,7 @@ async fn golden_ipython_group_matches_ts() {
         assert_json_eq(
             &calls,
             &case["provisionerCalls"].clone(),
-            "ipython/{name} calls",
+            "kernel-cell/{name} calls",
         );
         checked += 1;
     }
@@ -235,7 +233,7 @@ async fn golden_ipython_group_matches_ts() {
 
 /// Cell edits reach the result details as the edit tool's numbered diff text.
 #[tokio::test]
-async fn ipython_details_carry_the_cell_edit_diffs() {
+async fn cell_details_carry_the_cell_edit_diffs() {
     let diff = |start_line| crate::kernel::shared::KernelDiffDisplay {
         path: "src/app.py".to_string(),
         old_str: "x = 1".to_string(),
@@ -246,7 +244,7 @@ async fn ipython_details_carry_the_cell_edit_diffs() {
         diffs: vec![diff(Some(10)), diff(None)],
         ..ExecuteResult::default()
     };
-    let options = IpythonToolOptions {
+    let options = KernelToolOptions {
         provisioner: Arc::new(MockProvisioner {
             kernel: Arc::new(MockKernel {
                 executions: Mutex::new(vec![result]),
@@ -258,7 +256,7 @@ async fn ipython_details_carry_the_cell_edit_diffs() {
         }),
         on_late_sent_agent_message: None,
     };
-    let result = ipython::execute_ipython(&options, "edit()", None, None, None, None)
+    let result = execute_kernel_cell(&options, "edit()", None, None, None, None)
         .await
         .expect("cell executes");
     assert_eq!(
@@ -268,47 +266,4 @@ async fn ipython_details_carry_the_cell_edit_diffs() {
             { "path": "src/app.py", "diff": "-1 x = 1\n+1 x = 2" },
         ])
     );
-}
-
-#[test]
-fn golden_schema_group_matches_ts() {
-    let corpus = corpus("schema");
-    let mut checked = 0;
-    for case in corpus["cases"].as_array().expect("cases array") {
-        let tool = case["tool"].as_str().expect("tool");
-        let definition: ToolDefinition = match tool {
-            "ipython" => crate::tools::ipython::create_ipython_tool_definition(
-                "/tmp",
-                IpythonToolOptions {
-                    on_late_sent_agent_message: None,
-                    provisioner: Arc::new(MockProvisioner {
-                        kernel: Arc::new(MockKernel {
-                            executions: Mutex::new(Vec::new()),
-                            exec_calls: AtomicUsize::new(0),
-                            next_index: AtomicUsize::new(0),
-                        }),
-                        ensure_calls: AtomicUsize::new(0),
-                        kill_calls: AtomicUsize::new(0),
-                    }),
-                },
-            ),
-            other => panic!("unknown tool {other}"),
-        };
-        let mut actual = serde_json::json!({
-            "tool": tool,
-            "name": definition.name,
-            "label": definition.label,
-            "description": definition.description,
-            "promptSnippet": definition.prompt_snippet,
-        });
-        if let Some(mode) = definition.execution_mode {
-            actual["executionMode"] = serde_json::json!(match mode {
-                crate::tools::tool_definition::ExecutionMode::Sequential => "sequential",
-            });
-        }
-        actual["parameters"] = definition.parameters.clone();
-        assert_json_eq(&actual, &case.clone(), "schema/{tool}");
-        checked += 1;
-    }
-    assert_eq!(checked, corpus["caseCount"].as_u64().expect("caseCount"));
 }

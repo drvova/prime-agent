@@ -112,7 +112,7 @@ fn get_message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
         },
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
-                || payload.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE
+                || payload.custom_type == super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
             {
                 return None;
             }
@@ -585,10 +585,10 @@ mod tests {
         session.append_message(user("explore the widget")).unwrap();
         session
             .append_custom_message(
-                super::super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE,
-                pa_types::ai::UserContent::Text(super::super::ipython_state::notice_content(Some(
-                    &["stacked_kernel_var".to_string()],
-                ))),
+                super::super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE,
+                pa_types::ai::UserContent::Text(super::super::kernel_state_notice::notice_content(
+                    Some(&["stacked_kernel_var".to_string()]),
+                )),
                 /*display*/ false,
                 None,
             )

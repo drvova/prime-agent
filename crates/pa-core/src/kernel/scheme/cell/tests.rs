@@ -15,8 +15,8 @@ use crate::kernel::shared::{
     SentAgentMessageTarget, SentDeliveryStatus,
 };
 use crate::session::manager::SessionManager;
-use crate::tools::ipython::{
-    ExecuteResult, ExecuteStatus, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+use crate::tools::kernel_cell::{
+    ExecuteResult, ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
 use crate::tools::tool_definition::AbortSignal;
 

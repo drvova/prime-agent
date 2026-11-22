@@ -15,7 +15,7 @@ use super::library::{
 use super::report::{cap_frame, Detail, FACTORY_FRAME_CAP};
 use super::store::FactoryEnvironment;
 use super::test_host::{events, instance_column, node, Fixture, Outcome};
-use crate::tools::ipython::{IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor};
+use crate::tools::kernel_cell::{KernelExecuteOptions, KernelExecutor, KernelProvisioner};
 
 const DISABLED: &str = "the factory is disabled; run /factory on to enable it";
 

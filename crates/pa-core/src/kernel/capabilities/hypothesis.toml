@@ -1,11 +1,4 @@
-module = "rlm.hypothesis"
-closure_seed = true
 internal_host_requests = ["hypotheses.record"]
-probe = [
-  "import rlm.hypothesis as _hypothesis",
-  "assert callable(_hypothesis.hypotheses)",
-  "assert callable(rlm.rlm.hypotheses)",
-]
 
 [[telemetry]]
 event = "agent repl hypotheses"

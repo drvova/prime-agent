@@ -13,7 +13,7 @@ use crate::session::manager::SessionManager;
 
 /// The row's custom type: a wire identifier saved sessions and clients
 /// already know, kept from the Python kernel's notice.
-pub const IPYTHON_STATE_CUSTOM_TYPE: &str = "ipython_state";
+pub const KERNEL_STATE_CUSTOM_TYPE: &str = "ipython_state";
 
 /// The kernel-state view the notice reads. Implementations never fail and
 /// never wait: a missing kernel reports `false`/`None`. Object-safe on
@@ -103,7 +103,7 @@ Your Scheme kernel persisted through compaction; everything your `eval` cells de
 #[must_use]
 pub fn notice_message(content: String) -> CustomMessage {
     CustomMessage {
-        custom_type: IPYTHON_STATE_CUSTOM_TYPE.to_string(),
+        custom_type: KERNEL_STATE_CUSTOM_TYPE.to_string(),
         content: pa_types::ai::UserContent::Text(content),
         display: false,
         details: None,
@@ -171,7 +171,7 @@ pub async fn sync_after_compaction(
             message,
             AgentMessage::Custom(custom)
                 if custom.payload.get("customType").and_then(serde_json::Value::as_str)
-                    == Some(IPYTHON_STATE_CUSTOM_TYPE)
+                    == Some(KERNEL_STATE_CUSTOM_TYPE)
         )
     });
     let insert_before_error = matches!(
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn notice_row_is_display_false_without_details() {
         let row = notice_message(notice_content(Some(&["v".to_string()])));
-        assert_eq!(row.custom_type, IPYTHON_STATE_CUSTOM_TYPE);
+        assert_eq!(row.custom_type, KERNEL_STATE_CUSTOM_TYPE);
         assert!(!row.display);
         assert_eq!(row.details, None);
         let wire = serde_json::to_value(SessionAgentMessage::Custom(row)).unwrap();
@@ -418,8 +418,8 @@ mod tests {
         let CompactOutcome::Ran(run) = outcome else {
             panic!("expected the compaction to run");
         };
-        let row = run.ipython_state.expect("the notice row rides the run");
-        assert_eq!(row.custom_type, IPYTHON_STATE_CUSTOM_TYPE);
+        let row = run.kernel_state.expect("the notice row rides the run");
+        assert_eq!(row.custom_type, KERNEL_STATE_CUSTOM_TYPE);
         assert_eq!(
             row.content.text(),
             "[kernel-state]\n\nYour Scheme kernel persisted through compaction; everything your `eval` cells defined is still available. These names are still defined: small_value."
@@ -429,7 +429,7 @@ mod tests {
         assert!(matches!(
             last,
             FileEntry::CustomMessage { payload, .. }
-                if payload.custom_type == IPYTHON_STATE_CUSTOM_TYPE
+                if payload.custom_type == KERNEL_STATE_CUSTOM_TYPE
                     && !payload.display
                     && payload.details.is_none()
         ));
@@ -479,13 +479,13 @@ mod tests {
         assert!(requests[1].contains("NEW conversation messages to incorporate"));
         assert!(requests[1]
             .contains("<previous-summary>\nthe first compaction summary\n</previous-summary>"));
-        assert!(second.ipython_state.is_some());
+        assert!(second.kernel_state.is_some());
         let entries = engine.entries().await;
         let mut tail = entries.iter().rev();
         assert!(matches!(
             tail.next(),
             Some(FileEntry::CustomMessage { payload, .. })
-                if payload.custom_type == IPYTHON_STATE_CUSTOM_TYPE
+                if payload.custom_type == KERNEL_STATE_CUSTOM_TYPE
         ));
         assert!(matches!(tail.next(), Some(FileEntry::Compaction { .. })));
         // A third back-to-back run still runs.
@@ -499,7 +499,7 @@ mod tests {
             .iter()
             .filter_map(|message| match message {
                 SessionAgentMessage::Custom(custom)
-                    if custom.custom_type == IPYTHON_STATE_CUSTOM_TYPE =>
+                    if custom.custom_type == KERNEL_STATE_CUSTOM_TYPE =>
                 {
                     Some(custom.content.text())
                 }
@@ -518,7 +518,7 @@ mod tests {
         for content in ["first copy", "second copy", "newest copy"] {
             session
                 .append_custom_message(
-                    IPYTHON_STATE_CUSTOM_TYPE,
+                    KERNEL_STATE_CUSTOM_TYPE,
                     UserContent::Text(content.to_string()),
                     false,
                     None,
@@ -568,9 +568,7 @@ mod tests {
             let CompactOutcome::Ran(run) = outcome else {
                 panic!("expected compaction round {round} to run");
             };
-            let row = run
-                .ipython_state
-                .expect("the notice lands every compaction");
+            let row = run.kernel_state.expect("the notice lands every compaction");
             let built = engine
                 .session_handle()
                 .lock()
@@ -586,7 +584,7 @@ mod tests {
                 .filter(|message| {
                     matches!(message, AgentMessage::Custom(custom)
                     if custom.payload.get("customType").and_then(serde_json::Value::as_str)
-                        == Some(IPYTHON_STATE_CUSTOM_TYPE))
+                        == Some(KERNEL_STATE_CUSTOM_TYPE))
                 })
                 .count();
             assert_eq!(live, 1, "round {round}");
@@ -638,7 +636,7 @@ mod tests {
         let outcome = compact_once(&engine, &model).await.unwrap();
         assert!(matches!(outcome, CompactOutcome::Ran(_)));
         assert!(engine.entries().await.iter().all(|entry| {
-            !matches!(entry, FileEntry::CustomMessage { payload, .. } if payload.custom_type == IPYTHON_STATE_CUSTOM_TYPE)
+            !matches!(entry, FileEntry::CustomMessage { payload, .. } if payload.custom_type == KERNEL_STATE_CUSTOM_TYPE)
         }));
         let outcome = compact_once(&engine, &model).await.unwrap();
         assert_eq!(

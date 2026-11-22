@@ -1,11 +1,3 @@
-module = "rlm.schedule"
-closure_seed = true
-bound_module = "schedule"
-probe = [
-  "import rlm.schedule as _schedule",
-  "assert all(callable(getattr(_schedule, _m, None)) for _m in ('add', 'list', 'cancel'))",
-]
-
 [[telemetry]]
 event = "agent repl schedule"
 properties = [

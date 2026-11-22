@@ -1,8 +1,3 @@
-module = "rlm.settings"
-closure_seed = true
-bound_module = "settings"
-probe = ["import rlm.settings as _settings", "assert callable(_settings.get)"]
-
 [[telemetry]]
 event = "agent repl reload"
 properties = ["repl_settings_get_count"]

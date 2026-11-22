@@ -1,11 +1,4 @@
-module = "rlm.worktree"
-closure_seed = true
-bound_module = "worktree"
 internal_host_requests = ["worktree.record"]
-probe = [
-  "import rlm.worktree as _worktree",
-  "assert all(callable(getattr(_worktree, _m, None)) for _m in ('create', 'list', 'diff', 'merge', 'remove'))",
-]
 
 [[telemetry]]
 event = "agent worktrees"

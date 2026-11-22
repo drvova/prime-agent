@@ -65,7 +65,7 @@ async fn scripted_engine(
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await

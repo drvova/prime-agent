@@ -1,12 +1,4 @@
-module = "rlm.fs"
-closure_seed = true
-bound_module = "fs"
 internal_host_requests = ["edit_check.fact"]
-probe = [
-  "import rlm.fs as _fs",
-  "assert all(callable(getattr(_fs, _m, None)) for _m in ('grep', 'glob', 'find', 'read', 'edit', 'symbol'))",
-  "assert issubclass(_fs.StaleAnchorsError, RuntimeError)",
-]
 
 [[telemetry]]
 event = "agent fs search"
@@ -31,6 +23,9 @@ properties = [
   "fs_edit_rejected_count",
   "fs_edit_stale_anchor_count",
   "fs_edit_failed_count",
+  "fs_write_count",
+  "fs_write_created_count",
+  "fs_write_failed_count",
 ]
 
 [[telemetry]]

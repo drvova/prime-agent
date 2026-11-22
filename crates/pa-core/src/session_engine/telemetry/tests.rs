@@ -1928,6 +1928,11 @@ async fn fs_edits_ride_their_own_event() {
         EditFact::Failed {
             operation: FsEditOperation::Edit,
         },
+        EditFact::Written { created: true },
+        EditFact::Written { created: false },
+        EditFact::Failed {
+            operation: FsEditOperation::Write,
+        },
     ] {
         counters.note_fs_edit(fact);
     }
@@ -1953,6 +1958,9 @@ async fn fs_edits_ride_their_own_event() {
             "fs_edit_rejected_count": 1,
             "fs_edit_stale_anchor_count": 2,
             "fs_edit_failed_count": 1,
+            "fs_write_count": 2,
+            "fs_write_created_count": 1,
+            "fs_write_failed_count": 1,
         })
     );
 }

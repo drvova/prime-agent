@@ -80,27 +80,6 @@ impl AbortSignal {
     }
 }
 
-/// Merge an optional caller signal with an optional internal timeout signal.
-pub(crate) fn merge_signals(
-    caller: Option<&AbortSignal>,
-    timeout: Option<AbortSignal>,
-) -> Option<AbortSignal> {
-    match (caller, timeout) {
-        (None, None) => None,
-        (Some(c), None) => Some(c.clone()),
-        (None, Some(t)) => Some(t),
-        (Some(c), Some(t)) => {
-            if c.is_aborted() {
-                return Some(c.clone());
-            }
-            if t.is_aborted() {
-                return Some(t);
-            }
-            AbortSignal::any(vec![Some(c.clone()), Some(t)])
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

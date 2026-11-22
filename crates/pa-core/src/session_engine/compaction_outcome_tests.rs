@@ -1113,7 +1113,7 @@ async fn refinement_preserves_provider_prefix_and_completed_state_across_resume(
     let harness = super::harness_digest::HarnessDigestContext {
         global_dir: global_dir.clone(),
         local_dir: None,
-        include_ipython: false,
+        include_kernel_tool: false,
         include_shell_examples: false,
         include_refine: false,
     };

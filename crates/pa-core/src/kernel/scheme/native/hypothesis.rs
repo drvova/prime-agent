@@ -506,8 +506,8 @@ mod tests {
     use super::*;
     use crate::kernel::scheme::{SchemeKernelOptions, SchemeKernelProvisioner};
     use crate::kernel::shared::host_handler;
-    use crate::tools::ipython::{
-        ExecuteStatus, IpythonKernelProvisioner, KernelExecuteOptions, KernelExecutor,
+    use crate::tools::kernel_cell::{
+        ExecuteStatus, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
     };
 
     /// The approach number at the end of a lane's name (`hyp-ab12-3`) or of

@@ -888,7 +888,7 @@ pub(crate) async fn build_headless_engine_with(
             model_info: Some(model.clone()),
             // The kernel boots in the background at creation, a spawned
             // child's included (its boot overlaps its first model call).
-            prewarm_ipython_kernel: Some(true),
+            prewarm_kernel: Some(true),
             // The background-bash wake pair: the completion row's
             // admission fires it, and the kernel's background settle does
             // too, so the embedding's parked drive or pump re-checks.

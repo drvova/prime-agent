@@ -205,8 +205,10 @@ pub fn format_harness_state_for_prompt(
     let max_content_length = options
         .max_content_length
         .unwrap_or(DEFAULT_OVERVIEW_CONTENT_LIMIT);
-    let include_ipython = options.include_ipython_examples.unwrap_or(true);
-    let include_refine = options.include_refine_examples.unwrap_or(include_ipython);
+    let include_kernel_tool = options.include_ipython_examples.unwrap_or(true);
+    let include_refine = options
+        .include_refine_examples
+        .unwrap_or(include_kernel_tool);
 
     let mut lines: Vec<String> = vec![
         "# Continual Harness State".to_string(),
@@ -222,7 +224,7 @@ pub fn format_harness_state_for_prompt(
             "When to refine the continual harness: after a repeated failure, a reusable tactic emerges, a repeated delegation role should become a subagent spec, a repeated procedure should become a skill, a durable fact/preference should become a memory, a narrow behavioral policy should become a prompt addendum, a user corrects behavior that should persist locally or globally, validation shows a continual harness entry is wrong, or a skill/subagent/memory/prompt note should be created, updated, deleted, or rolled back. Keep continual harness edits small and evidence-backed.".to_string()
         },
         String::new(),
-        if include_ipython {
+        if include_kernel_tool {
             "Call contract: read each installed skill's SKILL.md and call the Scheme functions it documents in an `eval` cell; a skill that documents none is instructions to follow. Use `<skill_import> ...` in `(bash ...)` when a CLI exists. A continual harness skill entry whose `reference` names a Python import cannot be called from the Scheme kernel: use its description as guidance. Spawn a continual harness subagent spec by composing a concise task prompt and calling `(define handle (rlm-spawn \"sub-task\" #:name \"worker\"))`; admission returns immediately with `rlm_child_id`, `name`, `session_dir`, and `model`, never the child's answer. Results arrive only through explicit agent-message replies or files; children reply with `(agent-message-send message #:receiver-role \"parent\")`. Use `(rlm-list-subagents)` to recover direct child handles and `(agent-message-send message #:receiver-role \"child\" #:receiver-name name)` for follow-ups. Do not invent wrappers such as `call-skill`, `run-subagent`, or named subagent registries.".to_string()
         } else if options.include_shell_examples {
             "Call contract: use installed skills as shell commands when available (for example `<skill_import> ...`). Continual harness entries are routing/context hints only in sessions without the `eval` tool; do not use kernel function examples unless the prompt also documents the kernel.".to_string()
@@ -262,9 +264,9 @@ pub fn format_harness_state_for_prompt(
         });
         total_entries += entries.len();
         let kind_name = kind;
-        if kind_name == "subagent" && !entries.is_empty() && include_ipython {
+        if kind_name == "subagent" && !entries.is_empty() && include_kernel_tool {
             lines.push(format!("{kind_name}: {} (invoke a spec by turning it into a concise task prompt and spawning with `(rlm-spawn \"<task>\" #:name \"<worker>\")`; admission returns a child handle, never the answer)", entries.len()));
-        } else if kind_name == "factory" && !entries.is_empty() && include_ipython {
+        } else if kind_name == "factory" && !entries.is_empty() && include_kernel_tool {
             lines.push(format!(
                 "{kind_name}: {} (state-machine workflow specs; run one with `(factory-run \"<id>\")`; watch with `(factory-status run-id)`, stop with `(factory-stop run-id)`, resume a paused run with `(factory-resume run-id)`)",
                 entries.len()

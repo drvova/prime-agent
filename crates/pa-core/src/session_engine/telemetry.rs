@@ -568,6 +568,9 @@ struct FsEditCounts {
     rejected: u64,
     stale_anchors: u64,
     edit_failed: u64,
+    written: u64,
+    created: u64,
+    write_failed: u64,
 }
 
 /// `agent context paging`: spills with their bytes, refusals, evictions, and `ctx.*` reads.
@@ -950,6 +953,13 @@ impl SessionCounters {
                 EditFact::Failed {
                     operation: FsEditOperation::Edit,
                 } => counts.edit_failed += 1,
+                EditFact::Written { created } => {
+                    counts.written += 1;
+                    counts.created += u64::from(created);
+                }
+                EditFact::Failed {
+                    operation: FsEditOperation::Write,
+                } => counts.write_failed += 1,
             }
         });
     }
@@ -1367,7 +1377,7 @@ impl SessionCounters {
 /// Skills present at session start (adoption counts on `agent started`).
 pub struct SkillCounts {
     pub skill_count: usize,
-    pub python_skill_count: usize,
+    pub scheme_skill_count: usize,
 }
 
 /// Install the telemetry subscriber on an agent and emit `agent started`.
@@ -1429,8 +1439,8 @@ pub async fn install_session_telemetry(
         if let Some(counts) = skill_counts {
             properties.set("skill_count", Value::from(counts.skill_count as u64));
             properties.set(
-                "python_skill_count",
-                Value::from(counts.python_skill_count as u64),
+                "scheme_skill_count",
+                Value::from(counts.scheme_skill_count as u64),
             );
         }
     }
@@ -1930,6 +1940,9 @@ impl SessionTelemetry {
                 ("fs_edit_rejected_count", fs_edit.rejected),
                 ("fs_edit_stale_anchor_count", fs_edit.stale_anchors),
                 ("fs_edit_failed_count", fs_edit.edit_failed),
+                ("fs_write_count", fs_edit.written),
+                ("fs_write_created_count", fs_edit.created),
+                ("fs_write_failed_count", fs_edit.write_failed),
             ] {
                 edit_properties.set(key, Value::from(value));
             }

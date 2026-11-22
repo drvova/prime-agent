@@ -1,12 +1,3 @@
-module = "rlm.web"
-closure_seed = true
-bound_module = "web"
-probe = [
-  "import rlm.web as _web",
-  "assert callable(_web.search)",
-  "assert callable(_web.read)",
-]
-
 [[telemetry]]
 event = "agent web reads"
 properties = [

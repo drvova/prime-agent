@@ -1,17 +1,4 @@
-module = "rlm.mcp"
-closure_seed = true
-bound_module = "mcp"
 internal_host_requests = ["mcp.config", "mcp.refresh"]
-probe = [
-  "from rlm import McpIntegration",
-  "import rlm.mcp as mcp",
-  "_mcp_discovery_methods = ['list_plugins', 'search_plugins', 'list_connections', 'search_tools', 'describe_tool']",
-  "assert callable(mcp.list_tools)",
-  "assert callable(mcp.call_tool)",
-  "assert callable(mcp.login)",
-  'assert all(callable(getattr(mcp, _m, None)) for _m in _mcp_discovery_methods), "rlm.mcp is missing MCP discovery methods (list_plugins, search_plugins, list_connections, search_tools, describe_tool); the kernel venv needs a current prime-agent-runtime"',
-  "assert not hasattr(mcp, 'install_shutdown_hook')",
-]
 
 [[telemetry]]
 event = "agent kernel login and recall"
