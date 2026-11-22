@@ -175,11 +175,6 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 /// A session's armed heartbeat must keep firing across a daemon death with
 /// nobody reopening the session.
 #[test]
-#[ignore = "product gap, not a test assumption: a session that is idle when its daemon dies \
-            is not revived at the next boot (only a mid-turn journal revives), and nothing \
-            fires a down session's scheduled jobs, so an armed heartbeat stays silent until \
-            a client reopens the session. Enable when the boot revives (or wakes) sessions \
-            with armed jobs."]
 fn a_heartbeat_keeps_firing_across_a_daemon_restart() {
     let root = tempfile::TempDir::new().expect("temp dir");
     let dir = root.path().to_path_buf();
@@ -292,6 +287,125 @@ fn a_heartbeat_keeps_firing_across_a_daemon_restart() {
         "no heartbeat fired after the restart ({rows_before_restart} rows)"
     );
 
+    client.request(
+        "k1",
+        &json!({ "type": "kill", "activeSessionId": active_id }),
+    );
+}
+
+/// A heartbeat whose time passes while no daemon runs is fired once by the next daemon,
+/// which wakes its idle session for it, and its next run is counted from that fire (the
+/// store's rule for a late job: no fire per missed interval).
+#[test]
+fn a_heartbeat_that_came_due_while_the_daemon_was_down_fires_once_at_the_next_boot() {
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let dir = root.path().to_path_buf();
+    let agent_dir = dir.join("agent");
+    let socket = dir.join("late.sock");
+    let script = dir.join("faux.json");
+    std::fs::write(
+        &script,
+        json!({ "engine": "faux", "responses": [{ "text": "the lane works on" }], "repeatLastResponse": true })
+            .to_string(),
+    )
+    .expect("write faux script");
+
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let sessions = agent_dir.join("sessions");
+    std::fs::create_dir_all(&sessions).expect("sessions dir");
+    let created = client.request(
+        "c1",
+        &json!({
+            "type": "create",
+            "name": "late-lane",
+            "config": {
+                "cwd": dir.to_string_lossy(),
+                "sessionDir": sessions.to_string_lossy(),
+                "script": script.to_string_lossy(),
+            },
+        }),
+    );
+    assert_eq!(created["success"], true, "create failed: {created}");
+    let active_id = created["data"]["id"]
+        .as_str()
+        .expect("active id")
+        .to_string();
+    let session_id = created["data"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let session_file = sessions.join(format!("{session_id}.jsonl"));
+    let heartbeat = client.request(
+        "hb",
+        &json!({
+            "type": "heartbeat_set",
+            "activeSessionId": active_id,
+            "schedule": "every 10s",
+            "prompt": "liveness ping",
+        }),
+    );
+    assert_eq!(
+        heartbeat["success"], true,
+        "heartbeat_set failed: {heartbeat}"
+    );
+    // The session's own record of its job: when it next runs.
+    let jobs_file = agent_dir
+        .join("session-artifacts")
+        .join(&session_id)
+        .join("scheduled-jobs.json");
+    let next_run = || {
+        pa_core::cron::store::read_scheduled_jobs_artifact(&jobs_file)
+            .first()
+            .and_then(|job| job.next_run_at.as_deref())
+            .and_then(pa_daemon::util::iso_to_unix_ms)
+    };
+    // One fire has landed and the session is idle again, with its next run recorded.
+    let rows_before = wait_until(Duration::from_secs(30), || {
+        let rows = session_rows_containing(&session_file, "heartbeat_prompt");
+        (rows > 0).then_some(rows)
+    });
+    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        .join(format!("{active_id}.recovery.jsonl"));
+    let due = wait_until(Duration::from_secs(30), || {
+        (!pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal))
+            .then(next_run)
+            .flatten()
+            .filter(|due| *due > pa_daemon::util::now_ms())
+    });
+
+    drop(client);
+    let _ = supervisor.child.kill();
+    let _ = supervisor.child.wait();
+    drop(supervisor);
+    std::fs::remove_file(&socket).ok();
+    // No daemon runs while the job's time passes.
+    wait_until(Duration::from_secs(30), || {
+        (pa_daemon::util::now_ms() > due).then_some(())
+    });
+    assert_eq!(
+        (
+            session_rows_containing(&session_file, "heartbeat_prompt"),
+            next_run()
+        ),
+        (rows_before, Some(due)),
+        "nothing fired, and nothing moved the job, while the daemon was down"
+    );
+    let booted = pa_daemon::util::now_ms();
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
+    wait_until(Duration::from_secs(60), || {
+        (session_rows_containing(&session_file, "heartbeat_prompt") > rows_before).then_some(())
+    });
+    let rescheduled = wait_until(Duration::from_secs(30), || {
+        next_run().filter(|next| *next != due)
+    });
+    assert!(
+        rescheduled >= booted + 10_000,
+        "the late job's next run ({rescheduled}) is a whole interval after the boot ({booted}), \
+         not one of the runs missed since {due}"
+    );
+
+    let mut client = Client::connect(&socket);
     client.request(
         "k1",
         &json!({ "type": "kill", "activeSessionId": active_id }),

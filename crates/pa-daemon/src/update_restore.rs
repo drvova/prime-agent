@@ -772,11 +772,20 @@ async fn continuation_treatment(
 }
 
 /// The boot's dormant-scheduled-jobs report (the no-auto-resume contract): report ACTIVE, DUE jobs
-/// whose session has no live worker — never wake them.
+/// whose session has no live worker — never wake them. A session that went down with the
+/// previous daemon is not dormant: its wake is armed (`supervisor/scheduled_wake.rs`).
 async fn report_dormant_scheduled_jobs(supervisor: &std::sync::Arc<Supervisor>) {
     let jobs = crate::update_roster::scan_scheduled_jobs(&supervisor.options.agent_dir);
     let now = crate::util::now_ms();
-    let live = supervisor.live_session_files().await;
+    let mut live = supervisor.live_session_files().await;
+    live.extend(
+        supervisor
+            .scheduled_wakes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .cloned(),
+    );
     let dormant: Vec<&pa_core::cron::AgentCronJob> = jobs
         .iter()
         .filter(|job| {

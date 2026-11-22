@@ -56,6 +56,10 @@ pub(super) enum AdoptionBoot {
     },
     /// Plain startup: only journal-proven live work revives.
     PlainStartup,
+    /// Not a boot: a session the boot left down has a scheduled job due (see
+    /// `scheduled_wake.rs`). It relaunches without busy evidence, under the same
+    /// ownership vetoes, and its relaunch is no recovery from a daemon death.
+    ScheduledWake,
 }
 
 /// One descriptor's boot-adoption decision, reported as a count in the
@@ -183,6 +187,7 @@ impl Supervisor {
             let boot_label = match boot {
                 AdoptionBoot::UpdateRoster { .. } => "update",
                 AdoptionBoot::PlainStartup => "plain",
+                AdoptionBoot::ScheduledWake => "scheduled",
             };
             self.note_worker_adoption(
                 boot_label,
@@ -232,7 +237,7 @@ impl Supervisor {
     /// Adopt one persisted worker descriptor. Serialized against worker
     /// self-registration by the per-worker adoption gate: whichever path
     /// arrives first builds the roster entry; the other finds it present.
-    async fn adopt_persisted_worker(
+    pub(super) async fn adopt_persisted_worker(
         self: &Arc<Self>,
         path: PathBuf,
         descriptor: crate::descriptor::WorkerDescriptor,
@@ -338,9 +343,29 @@ impl Supervisor {
             let kept = match &boot {
                 AdoptionBoot::UpdateRoster { kept } => kept.contains(&worker_id),
                 AdoptionBoot::PlainStartup => false,
+                // A due job is this relaunch's whole reason, as the roster is a kept one's.
+                AdoptionBoot::ScheduledWake => true,
             };
             if !interrupted && !kept {
                 self.clear_host_death_count(&resident).await;
+                // Its scheduled work went down with it: the session comes back when its
+                // earliest active job is due, not before.
+                let (session_file, session_id) = {
+                    let descriptor = resident.descriptor.lock().await;
+                    (
+                        descriptor.session_file.clone(),
+                        descriptor.root_session_id.clone(),
+                    )
+                };
+                if let Some(session_file) = session_file {
+                    let session_id = session_id.unwrap_or_else(|| {
+                        Path::new(&session_file)
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+                    self.arm_scheduled_wake(worker_id.clone(), &session_file, &session_id);
+                }
                 // Dead worker with no durable busy state — and, on an update boot, not
                 // kept: leave it down (the descriptor stays on disk); the session reopens
                 // on the next client create.

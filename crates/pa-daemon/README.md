@@ -245,6 +245,12 @@ due active jobs of sessionless files are woken once, never archived), and
 reports the pass over `update_restore_status` while `hello.update_resume`
 carries the settle state; client attaches to a not-yet-restored roster row
 queue behind the pass instead of failing.
+A plain boot leaves a session that was idle when the previous daemon died
+down, and arms a wake for it instead (`supervisor/scheduled_wake.rs`): the
+session is relaunched when the earliest active job in its own
+`scheduled-jobs.json` is due, on the boot budget at background priority, and
+its scheduler then fires the job (a job whose time passed while no daemon ran
+fires once). A session stopped on purpose is never woken this way.
 For historical TypeScript update manifests, the restore pass recreates parents
 before their children, remaps active parent IDs, and restores pending context
 and action queues explicitly because those manifests predate Rust's journals.

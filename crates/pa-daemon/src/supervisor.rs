@@ -12,6 +12,7 @@ mod notes;
 mod options;
 mod root_identity;
 mod routing;
+mod scheduled_wake;
 mod sessions;
 mod signals_shutdown;
 pub(crate) mod subscribers;
@@ -243,6 +244,10 @@ pub struct Supervisor {
     /// would otherwise open the session's file in a second, fresh session while the boot is
     /// still rebuilding the interrupted one, and the two race its lease.
     pub(crate) boot_revived: tokio::sync::watch::Sender<bool>,
+    /// The session files (canonical) of the down sessions the boot armed a scheduled wake
+    /// for: each is relaunched when its earliest active job is due (see
+    /// `supervisor/scheduled_wake.rs`), so the boot's dormant-jobs report leaves them out.
+    pub(crate) scheduled_wakes: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The running history import's started frame (`None` while none runs):
     /// a client that connects mid-import hears it after its hello.
     pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
@@ -321,6 +326,7 @@ impl Supervisor {
             compaction_journal: std::sync::Mutex::new(None),
             boot_reaped: tokio::sync::watch::channel(true).0,
             boot_revived: tokio::sync::watch::channel(true).0,
+            scheduled_wakes: std::sync::Mutex::new(std::collections::HashSet::new()),
             history_import: std::sync::Mutex::new(None),
         })
     }
