@@ -12,7 +12,6 @@ mod checkpoint;
 mod core;
 mod ctx;
 mod decision;
-mod frida;
 mod fs;
 mod hypothesis;
 mod mcp_session;
@@ -56,5 +55,4 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &hypothesis::AGENT_REPL_HYPOTHESES,
     &fs::AGENT_EDIT_CHECKS,
     &bash::AGENT_TEST_SUMMARIES,
-    &frida::AGENT_REPL_FRIDA,
 ];

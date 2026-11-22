@@ -63,13 +63,6 @@ allow = [
   # steel-core (the in-process Scheme kernel) depends on im, im-rc, bitmaps and sized-chunks,
   # all MPL-2.0-or-later: file-level copyleft, linked unmodified. Accepted by the owner 2026-11-21.
   "MPL-2.0",
-  # frida-sys (bindings to frida-core, behind pa-core's off-by-default `frida` feature) declares
-  # the deprecated SPDX id `wxWindows`: the wxWindows Library Licence 3.1 (LGPL-2.0-or-later with
-  # an exception that lets binaries be distributed on the distributor's own terms). The prebuilt
-  # frida-core it links is under the same licence and bundles further third-party code (GLib,
-  # V8, QuickJS, ...) cargo-deny cannot see. NOT YET ACCEPTED: needs the owner's sign-off before
-  # a release enables the feature. Added 2026-11-22.
-  "wxWindows",
 ]
 # Development-only tools are not shipped; we keep the graph tight instead of
 # adding private/exceptions stanzas.

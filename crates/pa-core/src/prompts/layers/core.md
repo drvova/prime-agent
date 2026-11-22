@@ -91,12 +91,6 @@ prime-agent has support for programmatic tools that are defined in the MCP forma
 
 {{calls:mcp}}
 
-## Frida
-
-Dynamic instrumentation of processes and apps the user owns or is authorized to test, with Frida linked into prime-agent: attach or spawn, load JavaScript, read its messages, call its exports. `(displayln (api-help "frida"))` is the reference.
-
-{{names:frida}}
-
 ## Factory
 
 State-machine workflows of child agents; disabled until the user runs `/factory on`. `(displayln (factory-help))` is the guide.
