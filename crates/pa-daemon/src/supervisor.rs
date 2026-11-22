@@ -243,6 +243,11 @@ pub struct Supervisor {
     pub(crate) admission: Arc<crate::provider_admission::AdmissionService>,
 }
 
+/// The built engines the daemon keeps ready: enough for a parent session
+/// and a small fan-out of children starting together. Beyond that each new
+/// session builds its own, in parallel, while the pool refills.
+const HOSTED_SPARE_KERNELS: usize = 4;
+
 impl Supervisor {
     /// Build the supervisor: descriptor dir, persisted config, event channel, and log.
     ///
@@ -328,7 +333,7 @@ impl Supervisor {
         // it and contained there, and the first session to start takes an
         // engine that is already built.
         crate::session_host::install_panic_hook();
-        pa_core::kernel::prewarm_scheme_kernel();
+        pa_core::kernel::keep_spare_scheme_kernels(HOSTED_SPARE_KERNELS);
         // Before any socket or worker exists: workers and their kernels
         // inherit the raised limit.
         let open_file_limit = pa_core::platform::process::raise_open_file_limit();

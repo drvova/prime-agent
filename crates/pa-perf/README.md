@@ -122,15 +122,16 @@ the liveness deadline only fails broken runs):
 | `transcript-paging` | cold | `--resume <huge session>`, then 20 PageUps: each keystroke -> the first frame whose topmost block ordinal is above the previous frame's (one sample per page) |
 | `transcript-top` | cold | `--resume <huge session>`, then the `tui.viewport.top` key -> the first frame showing the session's first block (ordinal 0); the head is never in the attach tail, so this is a daemon page fetch |
 | `idle-cost` | cold | owned daemon + TUI, ready, then a 30 s idle window: CPU ms (utime+stime) of the daemon, its descendants, and the TUI, plus their context switches (medium only, Linux only) |
-| `first-eval` | cold | daemon wire, no TUI: the `create` command -> the first `eval` result event of the new session (worker spawn + the in-process Scheme engine + the cell) |
+| `first-eval` | cold | daemon wire, no TUI: the `create` command -> the first `eval` result event of the new session, on a daemon started just before (session build + the in-process Scheme engine + the cell; the daemon's spare engine may still be building) |
+| `warm-first-eval` | cold | the same measurement on a daemon that reports a built spare engine (`spareKernels` above zero in its `list` answer): what a session started on a running daemon waits for |
 | `subagent-first-eval` | cold | daemon wire: a parent cell's `rlm-spawn` -> the child's first `eval` cell end (both stamps are the kernels' own wall clocks; the child's task is delivered when the spawning cell returns) |
 
-The two kernel scenarios drive the daemon over its wire protocol with a
+The kernel scenarios drive the daemon over its wire protocol with a
 faux-scripted session (`{"engine": "faux"}` create scripts: the real agent
 loop and the real kernel behind the `eval` tool, with only the provider
 scripted), so they stay offline and need no setup: the kernel is built into
-the binary. Each run starts its own daemon, so `first-eval` includes the
-worker spawn. The cold corpus only supplies the isolated agent dir and the
+the binary. Each run starts its own daemon, which hosts the session in its
+own process. The cold corpus only supplies the isolated agent dir and the
 project cwd (the numbers do not depend on the corpus size).
 
 First paint: `agents-view` and `agents-view-warm` also record the first
@@ -191,7 +192,7 @@ worst-gap columns never gate; scenarios without a baseline entry print as
 `(no baseline)`. Noisy scenarios (>20% spread across 3 CI runs) are marked
 `report_only` in the baseline: their deltas always print, the gate never
 fails. `baseline.json` is committed from CI numbers, not laptop/sandbox
-ones. The kernel scenarios (`first-eval`, `subagent-first-eval`) have no
+ones. The kernel scenarios (`first-eval`, `warm-first-eval`, `subagent-first-eval`) have no
 baseline yet: they print `(no baseline)` until a CI run supplies one.
 
 ## Local run

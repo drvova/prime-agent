@@ -97,28 +97,65 @@ pub fn pin_scheme_home() {
     }
 }
 
-/// The process's spare engine, taken by the next session to start.
-static SPARE: Mutex<Option<Engine>> = Mutex::new(None);
+/// The process's spare engines, taken by the next sessions to start.
+static SPARES: Mutex<Vec<Engine>> = Mutex::new(Vec::new());
 
-/// Build the spare engine in the background when there is none, so the next
-/// session's kernel starts without paying for the build. Must be called from
-/// within a tokio runtime.
+/// How many spare engines the process keeps: one for a process that runs a
+/// single session, more for one that hosts many
+/// ([`keep_spare_scheme_kernels`]).
+static SPARE_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+
+/// Whether the refill thread is running.
+static REFILLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Keep `target` spare engines from now on, and start building them. A
+/// daemon that hosts sessions calls this once at boot: several sessions
+/// starting together (a parent's fan-out of children) each take a built
+/// engine instead of building their own.
+pub fn keep_spare_scheme_kernels(target: usize) {
+    SPARE_TARGET.store(target, std::sync::atomic::Ordering::SeqCst);
+    prewarm_scheme_kernel();
+}
+
+/// How many spare engines are built and waiting: the observable "a new
+/// session's kernel will not pay for an engine build" signal.
+#[must_use]
+pub fn spare_scheme_kernels() -> usize {
+    SPARES.lock().unwrap_or_else(PoisonError::into_inner).len()
+}
+
+/// Build spare engines in the background until the process holds its target,
+/// so the next session's kernel starts without paying for the build. The
+/// builds run on their own thread, which belongs to the process: no session
+/// waits on it, and a session that ends does not take it down.
 pub fn prewarm_scheme_kernel() {
-    tokio::task::spawn_blocking(|| {
-        if SPARE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .is_some()
-        {
-            return;
-        }
-        // Built outside the lock: a session starting meanwhile builds its own.
-        let engine = confinement::engine();
-        SPARE
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get_or_insert(engine);
-    });
+    use std::sync::atomic::Ordering;
+    if REFILLING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("scheme-spare".to_string())
+        .spawn(|| {
+            while spare_scheme_kernels() < SPARE_TARGET.load(Ordering::SeqCst) {
+                // Built outside the lock: a session starting meanwhile takes
+                // what is there, or builds its own.
+                let engine = confinement::engine();
+                SPARES
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(engine);
+            }
+            REFILLING.store(false, Ordering::SeqCst);
+            // A session that took an engine after the last check found this
+            // thread still marked as running: its refill is started here.
+            if spare_scheme_kernels() < SPARE_TARGET.load(Ordering::SeqCst) {
+                prewarm_scheme_kernel();
+            }
+        });
+    if spawned.is_err() {
+        // No thread, no spares: sessions build their own engines.
+        REFILLING.store(false, Ordering::SeqCst);
+    }
 }
 
 /// What a session gives its Scheme kernel: the same wiring its Python
@@ -438,7 +475,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let runtime = tokio::runtime::Handle::current();
             let starting = std::time::Instant::now();
             let started = tokio::task::spawn_blocking(move || {
-                let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
+                let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
                 let mut engine = spare.unwrap_or_else(confinement::engine);
                 let cells = cell::Cells::new(
                     Arc::clone(&environment),

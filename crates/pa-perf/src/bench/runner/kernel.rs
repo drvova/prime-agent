@@ -198,6 +198,37 @@ pub(super) fn measure(
             })
         }
         Scenario::SubagentFirstEval => subagent_first_eval(ctx, &mut client, run_dir, run),
+        Scenario::WarmFirstEval => {
+            // The daemon builds its spare engines off every session's path:
+            // the measurement starts once it reports one.
+            let deadline = Instant::now() + ctx.liveness;
+            while client.command(&json!({ "type": "list" }))?["spareKernels"]
+                .as_u64()
+                .unwrap_or(0)
+                == 0
+            {
+                anyhow::ensure!(
+                    Instant::now() < deadline,
+                    "the daemon never reported a spare engine"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            let script = write_script(
+                run_dir,
+                "warm-first-eval.json",
+                &[
+                    cell("(displayln \"first eval\") (+ 1 2)"),
+                    json!({ "text": "done" }),
+                ],
+            )?;
+            let started = Instant::now();
+            start_session(ctx, &mut client, &script, None)?;
+            let ended = client.kernel_cell("the first eval on a warm daemon")?;
+            Ok(Measured {
+                settled: vec![millis(ended - started)],
+                ..Measured::default()
+            })
+        }
         Scenario::ColdStart
         | Scenario::ColdReady
         | Scenario::WarmStart

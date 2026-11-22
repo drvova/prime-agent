@@ -49,6 +49,11 @@ pub enum Scenario {
     /// Daemon wire: a parent cell's `rlm-spawn` -> the child's first `eval`
     /// cell finishing (child create + its kernel + the cell).
     SubagentFirstEval,
+    /// Daemon wire, on a daemon whose spare engine is built (its `list`
+    /// answer reports `spareKernels` above zero): the create command -> the
+    /// new session's first `eval` result. What a session started on a
+    /// running daemon waits for.
+    WarmFirstEval,
 }
 
 /// Every bench knob for one scenario over one corpus.

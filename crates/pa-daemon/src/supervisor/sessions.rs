@@ -563,7 +563,13 @@ impl Supervisor {
         response_success(
             Some(&command_id),
             &type_name,
-            Some(json!({ "sessions": summaries })),
+            // `spareKernels`: how many built engines wait for the next
+            // sessions (a new session's first cell pays no engine build
+            // while it is above zero).
+            Some(json!({
+                "sessions": summaries,
+                "spareKernels": pa_core::kernel::spare_scheme_kernels(),
+            })),
         )
     }
 

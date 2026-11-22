@@ -149,7 +149,7 @@ pub(super) fn run(options: &BenchOptions) -> anyhow::Result<BenchResult> {
         Duration::from_secs(options.liveness_secs),
     )?;
     let runs = sample_runs(&ctx, options.runs, |index| match options.scenario {
-        Scenario::FirstEval | Scenario::SubagentFirstEval => {
+        Scenario::FirstEval | Scenario::SubagentFirstEval | Scenario::WarmFirstEval => {
             launch_kernel(&ctx, options.scenario, index)
         }
         Scenario::ColdStart
@@ -322,7 +322,11 @@ pub(super) fn run_suite(options: &RunOptions) -> anyhow::Result<Vec<BenchResult>
         }
         // The kernel scenarios drive the daemon wire (no TUI); the cold
         // corpus only supplies the isolated agent dir and project cwd.
-        for scenario in [Scenario::FirstEval, Scenario::SubagentFirstEval] {
+        for scenario in [
+            Scenario::FirstEval,
+            Scenario::SubagentFirstEval,
+            Scenario::WarmFirstEval,
+        ] {
             let launched = Instant::now();
             restore(&cold_ctx)?;
             let measured = launch_kernel(&cold_ctx, scenario, index)?;
@@ -414,7 +418,8 @@ fn corpus_for<'a>(scenario: Scenario, cold: &'a RunCtx, warm: &'a RunCtx) -> &'a
         | Scenario::TranscriptTop
         | Scenario::IdleCost
         | Scenario::FirstEval
-        | Scenario::SubagentFirstEval => cold,
+        | Scenario::SubagentFirstEval
+        | Scenario::WarmFirstEval => cold,
     }
 }
 
@@ -516,7 +521,7 @@ fn post_launch(
         Scenario::ColdReady | Scenario::WarmReady => {
             Ok(Measured::single(launch.ready.unwrap_or(launch.first)))
         }
-        Scenario::FirstEval | Scenario::SubagentFirstEval => {
+        Scenario::FirstEval | Scenario::SubagentFirstEval | Scenario::WarmFirstEval => {
             anyhow::bail!("{scenario:?} runs over the daemon wire (launch_kernel), not the TUI")
         }
     }
@@ -1070,6 +1075,10 @@ fn needle_of(scenario: Scenario, ctx: &RunCtx) -> String {
         }
         Scenario::SubagentFirstEval => {
             "the parent cell's rlm-spawn -> the child's first eval cell end (in-kernel wall clocks)"
+                .to_string()
+        }
+        Scenario::WarmFirstEval => {
+            "the create command -> the first eval result event, on a daemon reporting a built spare engine"
                 .to_string()
         }
     }
