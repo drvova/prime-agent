@@ -1,7 +1,7 @@
 //! Consistency between the capability manifests and the hand-written surfaces they describe.
 //! What the model is told is guarded in `tests/prompt_guards.rs` and `prompts/layers.rs`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use super::{capabilities, CapabilityManifest, MANIFESTS};
@@ -104,4 +104,23 @@ fn the_telemetry_catalog_holds_the_manifests_events() {
         properties.sort();
     }
     assert_eq!(catalogued, claimed);
+}
+
+/// The capability rule files' event lists (what session end emits through the generic counter)
+/// hold exactly the manifests' claimed events: a capability's `[[telemetry]]` block needs its
+/// rule file, and a rule file needs a manifest claiming it.
+#[test]
+fn the_capability_rule_files_hold_exactly_the_claimed_events() {
+    let emitted: BTreeSet<&str> = pa_telemetry::CAPABILITY_EVENTS_BEFORE_SESSION_END
+        .iter()
+        .chain(pa_telemetry::CAPABILITY_EVENTS_AFTER_SESSION_END)
+        .map(|rule| rule.name)
+        .collect();
+    let manifests = manifests();
+    let claimed: BTreeSet<&str> = manifests
+        .iter()
+        .flat_map(|manifest| &manifest.telemetry)
+        .map(|claim| claim.event.as_str())
+        .collect();
+    assert_eq!(emitted, claimed);
 }

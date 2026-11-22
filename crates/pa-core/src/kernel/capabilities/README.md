@@ -9,7 +9,8 @@ kernel API reference the system prompt is spliced from lives in `src/prompts/cap
 (see `src/prompts/layers.rs`).
 
 `mod.rs` embeds every file with `include_str!` for the tests, which fail when a manifest
-disagrees with the telemetry catalog, or when a file here is not embedded.
+disagrees with the telemetry catalog or with pa-telemetry's capability rule files, or when a
+file here is not embedded.
 `crates/pa-core/tests/prompt_guards.rs` reads `internal_host_requests` to tell host plumbing
 from the requests the model reaches.
 
@@ -18,6 +19,10 @@ from the requests the model reaches.
 - `<name>.toml` here (the file name is the capability name);
 - one `manifest!("<name>")` line in `MANIFESTS` (`include_str!` needs a literal path, so the
   list cannot be read from the directory without a build script).
+- for a `[[telemetry]]` block, its rule file in pa-telemetry
+  (`src/catalog/capabilities/<name>.rs`, listed in that module's emission order); its seam counts
+  through `SessionCounters::note_capability` (`src/session_engine/telemetry.rs`) under the rule's
+  property names. No shared counter struct changes.
 
 ## Schema
 

@@ -136,7 +136,7 @@ counts, the same fold `get_session_stats` reports, with the subagents' attribute
 share split out) and a no-daemon fallback for `usage.quotas`, whose real handler the
 daemon worker registers over the supervisor's `/usage` quota fetch and cache.
 `usage_host::branch_spend` is the one spend fold the RPC stats share. Adoption counts
-ride the `agent usage reads` event. Non-goals: cost math (pa-ai bills each call),
+ride the `agent usage reads` event. Every kernel capability's standalone adoption counts go through one generic counter (`session_engine::telemetry` `CapabilityCounts`, written through `SessionCounters::note_capability` under the property names of pa-telemetry's capability rule files) and are emitted from those rule lists at session end; no capability has its own counter struct. Non-goals: cost math (pa-ai bills each call),
 quota fetching (pa-daemon), and any credential in a reply.
 
 Session worktrees (`worktree_host`): the kernel `worktree` capability runs its git work in
