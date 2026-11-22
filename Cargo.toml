@@ -18,6 +18,11 @@ members = [
 # but cap the query poll to 250ms (late real-terminal replies still get a chance).
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
+# steel-core 0.8.3 embeds its Scheme prelude through backslash paths on Windows
+# targets, which only a Windows build host can read; the vendored copy uses one
+# path form everywhere so the Linux-hosted Windows cross-check compiles
+# (vendor/steel-core/PRIME_AGENT_PATCH.md).
+steel-core = { path = "vendor/steel-core" }
 
 [workspace.package]
 version = "0.10.3"
