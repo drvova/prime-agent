@@ -583,10 +583,18 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
     let scope = pa_types::session_scope::SessionScope::new(
         "stuck-cell".to_string(),
         std::env::temp_dir(),
-        std::collections::BTreeMap::from([(
-            "PRIME_AGENT_STUCK_CELL_GRACE_MS".to_string(),
-            "100".to_string(),
-        )]),
+        std::collections::BTreeMap::from([
+            (
+                "PRIME_AGENT_STUCK_CELL_GRACE_MS".to_string(),
+                "100".to_string(),
+            ),
+            // No kernel function ignores its cell's stop: the test asks for
+            // the one that does.
+            (
+                "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM".to_string(),
+                "1".to_string(),
+            ),
+        ]),
         std::collections::BTreeSet::new(),
     );
     scope.set_slot(Arc::new(super::StuckCellSink(Box::new(move |detail| {
@@ -606,11 +614,11 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
         started.notified().await;
         abort.cancel();
     });
-    // One native sleep: no interrupt reaches it, so the cell never returns
-    // within this test's patience.
+    // One native call that watches nothing: no interrupt reaches it, so the
+    // cell never returns within this test's patience.
     let on_stream = move |_text: &str, _stream: &'static str| printed.notify_one();
     let execute = kernel.execute(
-        "(displayln \"sleeping\") (time/sleep-ms 3000)",
+        "(displayln \"sleeping\") (%test-block-ms 3000)",
         KernelExecuteOptions {
             signal: Some(signal),
             timeout_ms: None,
@@ -630,5 +638,62 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
     assert_eq!(
         report.as_deref(),
         Some("a kernel cell did not stop within 100 ms of its interrupt: a host call is not observing the cell's cancellation")
+    );
+}
+
+/// After a stop a cell leaves the engine at once, whatever it was waiting
+/// in: a sleep ends with its cell, standard input is an empty port, and the
+/// builtins that wait for another thread are closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stopped_cell_leaves_the_engine_whatever_it_was_waiting_in() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let signal = AbortSignal::new();
+    let abort = signal.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let printed = Arc::clone(&started);
+    tokio::spawn(async move {
+        started.notified().await;
+        abort.cancel();
+    });
+    let on_stream = move |_text: &str, _stream: &'static str| printed.notify_one();
+    let slept = tokio::time::timeout(
+        PATIENCE,
+        kernel.execute(
+            "(displayln \"sleeping\") (time/sleep-ms 600000)",
+            KernelExecuteOptions {
+                signal: Some(signal),
+                timeout_ms: None,
+                on_stream: Some(&on_stream),
+                on_late_sent_agent_message: None,
+            },
+        ),
+    )
+    .await
+    .expect("the sleeping cell ended with its stop")
+    .unwrap();
+    let after = run(
+        kernel.as_ref(),
+        "(define (refused? thunk) (with-handler (lambda (raised) #t) (begin (thunk) #f)))
+         (list (eof-object? (read-line))
+               (time/sleep-ms 1)
+               (refused? (lambda () (channel/recv (channels-receiver (channels/new)))))
+               (refused? (lambda () (lock-acquire! (mutex))))
+               (refused? (lambda () (block-on 1))))",
+    )
+    .await;
+    assert_eq!(
+        (
+            slept.status,
+            after.result,
+            after.error.map(|error| error.evalue)
+        ),
+        (
+            ExecuteStatus::Aborted,
+            Some("(#true #<void> #true #true #true)".to_string()),
+            None
+        )
     );
 }

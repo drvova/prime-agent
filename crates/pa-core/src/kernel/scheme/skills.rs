@@ -131,7 +131,15 @@ pub(super) struct SkillLoader {
     reload_requested: Arc<AtomicBool>,
     evaluated: Mutex<Vec<Evaluated>>,
     unavailable: Arc<Mutex<UnavailableSchemeSkills>>,
+    /// How long one source may take to evaluate before it is stopped.
+    load_limit: std::time::Duration,
 }
+
+/// How long one skill source may take to evaluate before it is stopped.
+const LOAD_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Overrides [`LOAD_LIMIT`] in milliseconds.
+const LOAD_LIMIT_ENV: &str = "PRIME_AGENT_SKILL_LOAD_LIMIT_MS";
 
 impl SkillLoader {
     /// A loader for the skills `sources` names. `handlers`' `rlm.reload`
@@ -163,6 +171,11 @@ impl SkillLoader {
             reload_requested,
             evaluated: Mutex::new(Vec::new()),
             unavailable: Arc::new(Mutex::new(Vec::new())),
+            // Read here, on the session's own thread.
+            load_limit: pa_types::session_scope::var(LOAD_LIMIT_ENV)
+                .ok()
+                .and_then(|raw| raw.parse().ok())
+                .map_or(LOAD_LIMIT, std::time::Duration::from_millis),
         }
     }
 
@@ -235,10 +248,33 @@ impl SkillLoader {
                     if let Some(unchanged) = known.filter(|known| evaluated[*known].text == text) {
                         evaluated[unchanged].error.clone()
                     } else {
-                        let error = engine
-                            .run(text.clone())
-                            .err()
-                            .map(|error| error.to_string());
+                        // No cell is running, so nothing else would stop a
+                        // source that never returns: it is interrupted at
+                        // its limit, and again until it has left the engine.
+                        let controller = engine.get_thread_state_controller();
+                        let limit = self.load_limit;
+                        let error = std::thread::scope(|scope| {
+                            let (loaded, loading) = std::sync::mpsc::channel::<()>();
+                            scope.spawn(move || {
+                                let mut wait = limit;
+                                while loading.recv_timeout(wait)
+                                    == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                {
+                                    controller.interrupt();
+                                    wait = std::time::Duration::from_millis(20);
+                                }
+                            });
+                            let error = match super::limits::source_refusal(&text) {
+                                Some(refusal) => Some(refusal),
+                                None => engine
+                                    .run(text.clone())
+                                    .err()
+                                    .map(|error| error.to_string()),
+                            };
+                            drop(loaded);
+                            error
+                        });
+                        engine.get_thread_state_controller().resume();
                         let record = Evaluated {
                             path: path.clone(),
                             text,

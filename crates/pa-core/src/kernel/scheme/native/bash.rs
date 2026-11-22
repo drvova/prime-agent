@@ -454,9 +454,12 @@ impl Session {
         if let (true, Some(handler)) = (withdraw, self.host.handlers.get("bash.consumed")) {
             // The reply never matters: a withdrawal the host refuses leaves a
             // notice for a result the model has by now read.
-            let _ = self.runtime.block_on(handler(HostRequestPayload {
-                data: json!({ "pid": job.pid, "command": capped(&job.command) }),
-            }));
+            let _ = self.runtime.block_on(tokio::time::timeout(
+                HANDLE_WAIT,
+                handler(HostRequestPayload {
+                    data: json!({ "pid": job.pid, "command": capped(&job.command) }),
+                }),
+            ));
         }
     }
 

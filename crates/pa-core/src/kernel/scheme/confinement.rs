@@ -21,10 +21,13 @@
 //!   every module name Steel does not embed.
 //!
 //! What stays open: `display` and the string ports its capture uses, `eval`
-//! (it compiles in the same closed engine), threads, time, and the pure
-//! library. A cell can still block on the process's standard input through
-//! `(read-line)`: closing the port accessors does not change the default
-//! input port.
+//! (it compiles in the same closed engine), time, and the pure library. The
+//! builtins that wait where no interrupt reaches are closed too, and
+//! `time/sleep-ms` is replaced by one that ends with its cell
+//! ([`super::limits::sleep`]). Each cell reads from an empty input port, not
+//! the process's standard input. `confinement/open_globals.txt` lists every
+//! name a cell can reach, and the test beside it fails on one it does not
+//! list.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -49,7 +52,26 @@ const CLOSED_MODULES: [&str; 7] = [
 /// Functions closed inside modules that otherwise stay: engines without
 /// these limits, loading and running files, the process's environment, and
 /// its standard streams.
-const CLOSED_FUNCTIONS: [&str; 21] = [
+const CLOSED_FUNCTIONS: [&str; 34] = [
+    // Each of these waits in native code where no interrupt reaches, for
+    // something only another thread could deliver, and a cell has no other
+    // thread: a channel's next message, a lock it already holds, a will, a
+    // future. A cell that called one could only be abandoned.
+    "channel/recv",
+    "receivers-select",
+    "lock-acquire!",
+    "will-execute",
+    "thread-join!",
+    "thread-suspend",
+    "block-on",
+    "local-executor/block-on",
+    "futures-join-all",
+    "join!",
+    "poll!",
+    // The process's own standard input: a cell's input port is an empty one.
+    "#%default-input-port",
+    // Builds a native library with cargo.
+    "#%build-dylib",
     // A thread a cell starts would run outside the cell's cancellation and
     // outlive the cell; in a process that hosts several sessions it would
     // also run outside the session's scope.
@@ -154,6 +176,10 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
         .map(|name| (name, SteelVal::FuncV(refusal)))
         .collect();
     replaced.extend(super::limits::guards(&mut engine)?);
+    replaced.insert(
+        "time/sleep-ms".to_string(),
+        SteelVal::FuncV(super::limits::sleep),
+    );
     // Each replaced name is bound to its replacement everywhere a cell could
     // find the builtin: in every module that has it, and in every global.
     for name in STEEL_MODULES {

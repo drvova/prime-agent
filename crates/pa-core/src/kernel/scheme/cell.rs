@@ -978,7 +978,10 @@ pub(super) async fn execute(
                 Err(refusal)
             } else {
                 engine
-                    .run("(current-output-port %cell-output) (current-error-port %cell-errors)")
+                    .run(
+                        "(current-output-port %cell-output) (current-error-port %cell-errors) \
+                     (current-input-port (open-input-string \"\"))",
+                    )
                     .and_then(|_| engine.run(code))
                     .map(|values| {
                         values

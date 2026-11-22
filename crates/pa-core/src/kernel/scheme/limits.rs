@@ -336,6 +336,50 @@ pub(super) fn guards(engine: &mut Engine) -> anyhow::Result<Vec<(String, SteelVa
     Ok(guarded)
 }
 
+/// `(time/sleep-ms milliseconds)` for a session's cells: Steel's own sleeps
+/// in one native call no interrupt reaches, so a stopped cell would hold its
+/// engine until the sleep ran out. This one wakes every few milliseconds to
+/// look at the cell's signal and raises when the cell is stopped.
+pub(super) fn sleep(arguments: &[SteelVal]) -> Result<SteelVal, SteelErr> {
+    let milliseconds = match arguments {
+        [SteelVal::IntV(milliseconds)] if *milliseconds >= 0 => *milliseconds as u64,
+        [SteelVal::NumV(milliseconds)] if *milliseconds >= 0.0 => *milliseconds as u64,
+        _ => {
+            return Err(SteelErr::new(
+                ErrorKind::TypeMismatch,
+                "time/sleep-ms takes a count of milliseconds".to_string(),
+            ))
+        }
+    };
+    let stopped = super::cell::current().map(|cell| cell.signal());
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(milliseconds);
+    loop {
+        if stopped
+            .as_ref()
+            .is_some_and(|stopped| stopped.is_cancelled())
+        {
+            return Err(SteelErr::new(
+                ErrorKind::Generic,
+                "the cell was stopped while it slept".to_string(),
+            ));
+        }
+        let left = until.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Ok(SteelVal::Void);
+        }
+        std::thread::sleep(left.min(SLEEP_SLICE));
+    }
+}
+
+/// The longest a sleeping cell goes without looking at its signal.
+const SLEEP_SLICE: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Set to `1` in a session's environment, its kernel gets
+/// `(%test-block-ms milliseconds)`: one native sleep that nothing interrupts.
+/// It exists for the tests of the stuck-cell path, which need a host call
+/// that ignores its cell's stop; no kernel function does any more.
+pub(super) const BLOCKING_SEAM_ENV: &str = "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM";
+
 /// Steel's modules that hold builtins no global names.
 const STEEL_PRIVATE: [&str; 1] = ["#%private/steel/reader"];
 

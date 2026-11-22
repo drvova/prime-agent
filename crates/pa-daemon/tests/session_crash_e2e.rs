@@ -393,7 +393,8 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
     let agent_dir = dir.path().join("agent");
     let _daemon = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
-    // The cell sleeps inside one native call, which no interrupt reaches.
+    // The cell sits in the test seam's native call, which no interrupt
+    // reaches (no kernel function of its own ignores a stop any more).
     let session = client.create_attached(
         dir.path(),
         "stuck",
@@ -402,14 +403,17 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": "(displayln \"sleeping\") (time/sleep-ms 600000)",
+                        "code": "(displayln \"sleeping\") (%test-block-ms 600000)",
                     } },
                 ] },
                 { "text": "done" },
             ],
         }),
-        // The session's own grace, from its own environment.
-        json!({ "launchEnv": { "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300" } }),
+        // The session's own grace and the seam, from its own environment.
+        json!({ "launchEnv": {
+            "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+            "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+        } }),
     );
     let prompted = client.request(
         "prompt",
@@ -533,13 +537,13 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": "(displayln \"sleeping\") (time/sleep-ms 600000)",
+                        "code": "(displayln \"sleeping\") (%test-block-ms 600000)",
                     } },
                 ] },
                 { "text": "done" },
             ],
         }),
-        json!({}),
+        json!({ "launchEnv": { "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1" } }),
     );
     let prompted = client.request(
         "prompt",

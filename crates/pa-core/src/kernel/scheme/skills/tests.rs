@@ -184,6 +184,41 @@ async fn a_skill_whose_source_fails_is_reported_by_name_and_the_other_skills_sti
     );
 }
 
+/// A source that never returns holds no cell, so no cell's stop reaches it:
+/// it is interrupted at the loader's limit, its skill is reported, and the
+/// kernel starts with the skills after it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_source_that_never_returns_is_stopped_and_the_kernel_still_starts() {
+    let skills = Skills::new();
+    skills.write(
+        "endless",
+        "skill.scm",
+        "(define (spin n) (spin (+ n 1)))\n(spin 0)",
+    );
+    skills.write("after", "skill.scm", "(define (after-ready) \"yes\")");
+    // This test's future stays on this thread, where the loader is made.
+    let _scope = pa_types::session_scope::enter(Some(pa_types::session_scope::SessionScope::new(
+        "endless-skill".to_string(),
+        std::env::temp_dir(),
+        std::collections::BTreeMap::from([(
+            "PRIME_AGENT_SKILL_LOAD_LIMIT_MS".to_string(),
+            "100".to_string(),
+        )]),
+        std::collections::BTreeSet::new(),
+    )));
+    let kernel = skills.kernel().await;
+    let unavailable: Vec<String> = skills
+        .reports()
+        .into_iter()
+        .flatten()
+        .map(|(skill, _)| skill)
+        .collect();
+    assert_eq!(
+        (unavailable, value(kernel.as_ref(), "(after-ready)").await),
+        (vec!["endless".to_string()], Ok(json!("yes")))
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reload_loads_new_and_changed_sources_after_its_cell_and_reports_what_still_fails() {
     let skills = Skills::new();

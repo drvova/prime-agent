@@ -79,6 +79,10 @@ const HOST_BRIDGE: &str = r"
 (define (session-artifact-dir) %session-artifact-dir)
 ";
 
+/// How long a stopped cell waits for the host to take back the question it
+/// had open.
+const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Keep Steel's own state inside the agent directory. Unless `STEEL_HOME` is
 /// set, the first engine built in a process creates a `steel` directory in
 /// the user's data home and prints to stderr when it cannot, which breaks
@@ -501,6 +505,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let cwd = state.environment.cwd.to_string_lossy().into_owned();
             let native_cwd = state.environment.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
+            // Read here, on the session's own thread.
+            let blocking_seam =
+                pa_types::session_scope::var(limits::BLOCKING_SEAM_ENV).is_ok_and(|set| set == "1");
             let starting = std::time::Instant::now();
             let started = tokio::task::spawn_blocking(move || {
                 let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
@@ -565,11 +572,23 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                                         if let (Some(id), Some(cancel)) =
                                             (question, handlers.get("question.cancel"))
                                         {
-                                            let withdrawn = runtime.block_on(cancel(HostRequestPayload {
-                                                data: json!({ "type": "question.cancel", "id": id }),
-                                            }));
-                                            if let Err(error) = withdrawn {
-                                                tracing::warn!("the host refused question.cancel: {error:#}");
+                                            // Bounded: the cell is being
+                                            // stopped and must leave the
+                                            // engine whatever the host does.
+                                            let withdrawn = runtime.block_on(tokio::time::timeout(
+                                                WITHDRAW_WAIT,
+                                                cancel(HostRequestPayload {
+                                                    data: json!({ "type": "question.cancel", "id": id }),
+                                                }),
+                                            ));
+                                            match withdrawn {
+                                                Ok(Ok(_)) => {}
+                                                Ok(Err(error)) => {
+                                                    tracing::warn!("the host refused question.cancel: {error:#}");
+                                                }
+                                                Err(_) => {
+                                                    tracing::warn!("the host did not answer question.cancel in time");
+                                                }
                                             }
                                         }
                                         json!({ "error": format!("{request_type}: the cell was stopped while it waited") })
@@ -580,6 +599,11 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                         reply.to_string()
                     },
                 );
+                if blocking_seam {
+                    engine.register_fn("%test-block-ms", |milliseconds: usize| {
+                        std::thread::sleep(std::time::Duration::from_millis(milliseconds as u64));
+                    });
+                }
                 engine.register_value("%session-cwd", SteelVal::StringV(cwd.into()));
                 for (name, value) in [
                     ("%session-id", environment.session_id.clone()),
