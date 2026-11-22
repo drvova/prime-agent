@@ -31,7 +31,7 @@ const APPROACHES_MAX: usize = 6;
 const APPROACH_CHARS_MAX: usize = 2_000;
 const TASK_CHARS_MAX: usize = 20_000;
 /// How long one checkout's check may run.
-const CHECK_TIMEOUT: Duration = Duration::from_secs(900);
+const CHECK_TIMEOUT: Duration = Duration::from_mins(15);
 /// Characters of a check's output kept, from its end.
 const CHECK_TAIL_CHARS: usize = 2_000;
 

@@ -236,12 +236,12 @@ fn call(form: &Datum) -> Result<FsCall, String> {
     match rest {
         [] => {}
         [Datum::List(hash)] if hash.first() == Some(&Datum::Symbol("hash".to_string())) => {
-            let pairs = hash[1..].chunks_exact(2);
-            if !pairs.remainder().is_empty() {
+            let (pairs, unpaired) = hash[1..].as_chunks::<2>();
+            if !unpaired.is_empty() {
                 return Err(format!("{}: an option has no value", op.name()));
             }
-            for pair in pairs {
-                let name = match &pair[0] {
+            for [name, value] in pairs {
+                let name = match name {
                     Datum::Quoted(name) => match name.as_ref() {
                         Datum::Symbol(name) => name.clone(),
                         _ => {
@@ -258,7 +258,7 @@ fn call(form: &Datum) -> Result<FsCall, String> {
                         ))
                     }
                 };
-                options.insert(name, literal(&pair[1])?);
+                options.insert(name, literal(value)?);
             }
         }
         _ => {
