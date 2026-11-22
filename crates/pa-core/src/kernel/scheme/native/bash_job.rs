@@ -723,9 +723,11 @@ pub(super) fn spawn(
         queued
     };
     lock(&job.state).queued = queued;
+    // The hold exists before the task is first polled: a runtime shut down
+    // before then still kills the group.
     session.runtime.spawn(supervise(
         Arc::clone(session),
-        Arc::clone(&job),
+        GroupHold(Arc::clone(&job)),
         child,
         #[cfg(unix)]
         status,
@@ -740,11 +742,11 @@ pub(super) fn spawn(
 /// what is left of its group, and pass its slot on.
 async fn supervise(
     session: Arc<Session>,
-    job: Arc<Job>,
+    hold: GroupHold,
     mut child: tokio::process::Child,
     #[cfg(unix)] status: std::os::unix::net::UnixStream,
 ) {
-    let _hold = GroupHold(Arc::clone(&job));
+    let job = Arc::clone(&hold.0);
     let mut exited = None;
     // The status the shell reported after its command, when it got that far.
     #[cfg(unix)]

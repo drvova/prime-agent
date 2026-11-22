@@ -844,32 +844,26 @@ fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs() {
             .build()
             .unwrap();
         let (provisioner, kernel) = runtime.block_on(kernel_in(HostRequestHandlers::new(), &cwd));
-        let shell = runtime.block_on(async {
-            let shell = value(kernel.as_ref(), HELD_JOB).await;
+        runtime.block_on(async {
+            value(kernel.as_ref(), HELD_JOB).await;
             read(&started).await;
-            shell
         });
         // The kernel outlives this thread, as it does while a thread of the
         // session is stuck holding it.
-        kept.send((provisioner, kernel, shell)).unwrap();
+        kept.send((provisioner, kernel)).unwrap();
         std::panic::resume_unwind(Box::new("the session thread panicked"));
     });
-    let (_provisioner, _kernel, shell) = keep.recv_timeout(STEP).unwrap();
+    let (_provisioner, _kernel) = keep.recv_timeout(STEP).unwrap();
     assert!(session.join().is_err());
     let child = std::fs::read_to_string(dir.path().join("child.pid")).unwrap();
+    // The shell's child, which the shell's own end would have left running.
+    // (The shell itself is this process's child, dead but not reaped until
+    // some runtime next collects children, so it is not waited for here.)
     let waiting = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    assert_eq!(
-        waiting.block_on(async {
-            (
-                exited(shell.parse().unwrap()).await,
-                exited(child.trim().parse().unwrap()).await,
-            )
-        }),
-        (true, true)
-    );
+    assert!(waiting.block_on(exited(child.trim().parse().unwrap())));
 }
 
 /// A session whose thread is stuck never runs a destructor: its host ends
