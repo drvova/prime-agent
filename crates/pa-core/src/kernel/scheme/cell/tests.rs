@@ -574,3 +574,61 @@ async fn a_background_cells_later_edits_are_named_by_its_completion_notice() {
         )
     );
 }
+
+/// A host call that does not watch the cell's signal cannot be stopped: the
+/// session's host is told, with the cell still on the engine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
+    let (stuck, mut reported) = tokio::sync::mpsc::unbounded_channel();
+    let scope = pa_types::session_scope::SessionScope::new(
+        "stuck-cell".to_string(),
+        std::env::temp_dir(),
+        std::collections::BTreeMap::from([(
+            "PRIME_AGENT_STUCK_CELL_GRACE_MS".to_string(),
+            "100".to_string(),
+        )]),
+        std::collections::BTreeSet::new(),
+    );
+    scope.set_slot(Arc::new(super::StuckCellSink(Box::new(move |detail| {
+        let _ = stuck.send(detail.to_string());
+    }))));
+    // This test's future stays on this thread, where the interrupt is raised.
+    let _scope = pa_types::session_scope::enter(Some(scope));
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let signal = AbortSignal::new();
+    let abort = signal.clone();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let printed = Arc::clone(&started);
+    tokio::spawn(async move {
+        started.notified().await;
+        abort.cancel();
+    });
+    // One native sleep: no interrupt reaches it, so the cell never returns
+    // within this test's patience.
+    let on_stream = move |_text: &str, _stream: &'static str| printed.notify_one();
+    let execute = kernel.execute(
+        "(displayln \"sleeping\") (time/sleep-ms 3000)",
+        KernelExecuteOptions {
+            signal: Some(signal),
+            timeout_ms: None,
+            on_stream: Some(&on_stream),
+            on_late_sent_agent_message: None,
+        },
+    );
+    tokio::pin!(execute);
+    let report = tokio::time::timeout(PATIENCE, async {
+        tokio::select! {
+            report = reported.recv() => report,
+            result = &mut execute => panic!("the cell returned: {:?}", result.map(|result| result.status)),
+        }
+    })
+    .await
+    .expect("the stuck cell was reported");
+    assert_eq!(
+        report.as_deref(),
+        Some("a kernel cell did not stop within 100 ms of its interrupt: a host call is not observing the cell's cancellation")
+    );
+}

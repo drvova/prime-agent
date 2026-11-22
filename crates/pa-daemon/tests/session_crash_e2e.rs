@@ -375,7 +375,7 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": "(time/sleep-ms 600000)",
+                        "code": "(displayln \"sleeping\") (time/sleep-ms 600000)",
                     } },
                 ] },
                 { "text": "done" },
@@ -389,7 +389,8 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
         &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
     );
     assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
-    client.event(&session, "tool_execution_start");
+    // The cell has printed: it is on the engine, inside its native sleep.
+    client.event(&session, "tool_execution_update");
     client.send(
         "abort",
         &json!({ "type": "abort", "activeSessionId": session }),

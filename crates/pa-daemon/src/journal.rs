@@ -116,12 +116,43 @@ pub(crate) fn decode_journal_lines<'a>(bytes: &'a [u8], path: &Path) -> Result<V
     Ok(lines)
 }
 
+/// Exclusive write ownership of one journal: an advisory lock on its
+/// `.writer-lock` sidecar, held by this process.
+#[derive(Debug)]
 pub(crate) struct JournalWriteOwner {
-    file: File,
+    file: std::sync::Arc<File>,
+    ownership_path: std::path::PathBuf,
+    /// The owner's id: see [`crate::session_host::session_pid`].
+    owner: u32,
+}
+
+/// The journal locks this process holds: sidecar path -> owner and locked
+/// file. The operating system's lock excludes other processes; this table
+/// is what lets a rebuilt hosted session take over the lock of a lifetime
+/// that ended without letting go (a stuck thread still owns its handle).
+fn held_ownerships() -> &'static std::sync::Mutex<
+    std::collections::HashMap<std::path::PathBuf, (u32, std::sync::Arc<File>)>,
+> {
+    static HELD: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<std::path::PathBuf, (u32, std::sync::Arc<File>)>,
+        >,
+    > = std::sync::OnceLock::new();
+    HELD.get_or_init(Default::default)
 }
 
 impl Drop for JournalWriteOwner {
     fn drop(&mut self) {
+        let mut held = held_ownerships()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A successor that took the lock over keeps it locked.
+        if !held.get(&self.ownership_path).is_some_and(|(owner, file)| {
+            *owner == self.owner && std::sync::Arc::ptr_eq(file, &self.file)
+        }) {
+            return;
+        }
+        held.remove(&self.ownership_path);
         // Closing one descriptor can leave the lock held by an inherited copy.
         if let Err(error) = pa_core::platform::unlock_file(&self.file) {
             // Drop has no error channel; report without panicking if stderr is unavailable.
@@ -139,16 +170,50 @@ impl Drop for JournalWriteOwner {
 pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
     let mut ownership_path = path.as_os_str().to_os_string();
     ownership_path.push(".writer-lock");
+    let ownership_path = std::path::PathBuf::from(ownership_path);
+    let owner = crate::session_host::session_pid();
+    let mut held = held_ownerships()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The holder is a hosted lifetime of this process that has ended: its
+    // lock passes to the caller. Any other holder keeps it.
+    if let Some(file) = held
+        .get(&ownership_path)
+        .filter(|(holder, _)| {
+            crate::session_host::is_hosted_pid(*holder)
+                && !crate::session_host::hosted_alive(*holder)
+        })
+        .map(|(_, file)| std::sync::Arc::clone(file))
+    {
+        held.insert(
+            ownership_path.clone(),
+            (owner, std::sync::Arc::clone(&file)),
+        );
+        return Ok(JournalWriteOwner {
+            file,
+            ownership_path,
+            owner,
+        });
+    }
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(std::path::PathBuf::from(ownership_path))
+        .open(&ownership_path)
         .with_context(|| format!("open journal ownership {}", path.display()))?;
     pa_core::platform::try_lock_exclusive(&file)
         .with_context(|| format!("acquire journal ownership {}", path.display()))?;
-    Ok(JournalWriteOwner { file })
+    let file = std::sync::Arc::new(file);
+    held.insert(
+        ownership_path.clone(),
+        (owner, std::sync::Arc::clone(&file)),
+    );
+    Ok(JournalWriteOwner {
+        file,
+        ownership_path,
+        owner,
+    })
 }
 
 pub(crate) fn tail_is_torn(path: &Path) -> Result<bool> {

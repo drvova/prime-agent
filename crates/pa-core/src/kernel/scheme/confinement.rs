@@ -49,7 +49,11 @@ const CLOSED_MODULES: [&str; 7] = [
 /// Functions closed inside modules that otherwise stay: engines without
 /// these limits, loading and running files, the process's environment, and
 /// its standard streams.
-const CLOSED_FUNCTIONS: [&str; 20] = [
+const CLOSED_FUNCTIONS: [&str; 21] = [
+    // A thread a cell starts would run outside the cell's cancellation and
+    // outlive the cell; in a process that hosts several sessions it would
+    // also run outside the session's scope.
+    "spawn-native-thread",
     "Engine::new",
     "Engine::clone",
     "Engine::add-module",

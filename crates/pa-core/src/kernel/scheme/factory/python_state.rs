@@ -102,8 +102,8 @@ impl PythonCall {
             .kill_on_drop(true);
         // The call has no kernel: nothing of the session's kernel wiring
         // reaches it.
-        for (name, _) in std::env::vars_os() {
-            if name.to_string_lossy().starts_with("RLM_") {
+        for (name, _) in pa_types::session_scope::vars() {
+            if name.starts_with("RLM_") {
                 command.env_remove(name);
             }
         }
