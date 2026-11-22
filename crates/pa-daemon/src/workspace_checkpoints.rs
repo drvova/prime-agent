@@ -421,10 +421,10 @@ impl Store {
             .spawn()?;
         // Drained on its own thread so a full pipe never stalls the child.
         let mut pipe = child.stdout.take().expect("stdout is piped");
-        let stdout = std::thread::spawn(move || {
+        let stdout = std::thread::spawn(pa_types::session_scope::propagate(move || {
             let mut bytes = Vec::new();
             pipe.read_to_end(&mut bytes).map(|_| bytes)
-        });
+        }));
         let deadline = Instant::now() + GIT_TIMEOUT;
         let status = loop {
             if let Some(status) = child.try_wait()? {

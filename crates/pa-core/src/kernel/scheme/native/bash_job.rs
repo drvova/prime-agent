@@ -613,7 +613,7 @@ pub(super) fn spawn(
     let reading = Arc::clone(&job);
     let reader = std::thread::Builder::new()
         .name("scheme-bash-output".to_string())
-        .spawn(move || {
+        .spawn(pa_types::session_scope::propagate(move || {
             let mut chunk = vec![0u8; 64 * 1024];
             loop {
                 match output.read(&mut chunk) {
@@ -635,7 +635,7 @@ pub(super) fn spawn(
             capture.eof = true;
             drop(capture);
             reading.changed.send_replace(());
-        });
+        }));
     if let Err(error) = reader {
         return Err(abandon(
             &mut child,

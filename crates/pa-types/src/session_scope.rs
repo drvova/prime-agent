@@ -161,6 +161,35 @@ pub fn propagate<T>(body: impl FnOnce() -> T) -> impl FnOnce() -> T {
     }
 }
 
+thread_local! {
+    /// Whether a caller on this thread catches the panics raised under it.
+    static PANICS_CAUGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `body` and return its panic instead of unwinding past this call
+/// (`std::panic::catch_unwind`), marking the thread meanwhile so a process
+/// panic hook can tell a panic that is handled here from one that ends a
+/// session or goes unhandled ([`panics_are_caught`]).
+///
+/// # Errors
+///
+/// The payload `body` panicked with.
+pub fn catching_panics<T>(
+    body: impl FnOnce() -> T + std::panic::UnwindSafe,
+) -> std::thread::Result<T> {
+    let before = PANICS_CAUGHT.replace(true);
+    let outcome = std::panic::catch_unwind(body);
+    PANICS_CAUGHT.set(before);
+    outcome
+}
+
+/// Whether a panic raised on this thread right now is caught and handled by
+/// a [`catching_panics`] caller.
+#[must_use]
+pub fn panics_are_caught() -> bool {
+    PANICS_CAUGHT.get()
+}
+
 /// `std::env::var` for the current session.
 ///
 /// # Errors
@@ -318,6 +347,81 @@ mod tests {
                 var("PA_SCOPE_TEST_VALUE").ok(),
             ),
             (expected("first"), expected("second"), None)
+        );
+    }
+
+    /// Where a session's scope reaches from its runtime, measured: its
+    /// async tasks, its blocking pool (`spawn_blocking`), a thread it
+    /// starts through [`propagate`]. And where it does not: a thread it
+    /// starts plainly, and work it hands to a runtime another owner built
+    /// (both that runtime's tasks and its blocking pool), which see the
+    /// process environment.
+    #[test]
+    fn a_scope_follows_its_runtimes_threads_and_no_one_elses() {
+        fn read() -> Option<String> {
+            var("PA_SCOPE_TEST_VALUE").ok()
+        }
+        let foreign = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .build()
+            .expect("foreign runtime");
+        let foreign_handle = foreign.handle().clone();
+        let seen = std::thread::spawn(move || {
+            let _guard = enter(Some(scope("one", "first")));
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .on_thread_start(inherit())
+                .build()
+                .expect("session runtime");
+            runtime.block_on(async {
+                let task = tokio::spawn(async move { read() }).await.expect("task");
+                let blocking = tokio::task::spawn_blocking(read).await.expect("blocking");
+                let nested = tokio::spawn(async move {
+                    tokio::task::spawn_blocking(read).await.expect("nested")
+                })
+                .await
+                .expect("nesting task");
+                let propagated = tokio::task::spawn_blocking(|| {
+                    std::thread::spawn(propagate(read)).join().expect("thread")
+                })
+                .await
+                .expect("propagating");
+                let plain_thread = std::thread::spawn(read).join().expect("plain thread");
+                let foreign_task = foreign_handle
+                    .spawn(async move { read() })
+                    .await
+                    .expect("foreign task");
+                let foreign_blocking = foreign_handle
+                    .spawn_blocking(read)
+                    .await
+                    .expect("foreign blocking");
+                [
+                    read(),
+                    task,
+                    blocking,
+                    nested,
+                    propagated,
+                    plain_thread,
+                    foreign_task,
+                    foreign_blocking,
+                ]
+            })
+        })
+        .join()
+        .expect("session thread");
+        let first = Some("first".to_string());
+        assert_eq!(
+            seen,
+            [
+                first.clone(),
+                first.clone(),
+                first.clone(),
+                first.clone(),
+                first,
+                None,
+                None,
+                None
+            ]
         );
     }
 }

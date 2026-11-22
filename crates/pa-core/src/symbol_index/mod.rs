@@ -308,11 +308,11 @@ impl SymbolIndex {
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new()
             .name("symbol-index".to_string())
-            .spawn(move || {
+            .spawn(pa_types::session_scope::propagate(move || {
                 inner.run_refresh();
                 inner.refreshing.store(false, Ordering::Release);
                 inner.refreshed.notify_waiters();
-            });
+            }));
         if spawned.is_err() {
             self.inner.refreshing.store(false, Ordering::Release);
         }

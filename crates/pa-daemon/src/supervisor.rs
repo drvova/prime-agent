@@ -340,7 +340,10 @@ impl Supervisor {
         // Sessions run inside this process: a panic in one is attributed to
         // it and contained there, and the first session to start takes an
         // engine that is already built.
-        crate::session_host::install_panic_hook();
+        crate::session_host::install_panic_hook(
+            self.descriptor_dir
+                .join(crate::supervisor::crash::SESSION_CRASH_LOG),
+        );
         // No hosted session may block on whatever this process was given as
         // standard input.
         if let Err(error) = pa_core::platform::process::close_standard_input() {

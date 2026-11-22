@@ -569,6 +569,9 @@ impl Supervisor {
             Some(json!({
                 "sessions": summaries,
                 "spareKernels": pa_core::kernel::spare_scheme_kernels(),
+                // Panics raised outside every session since the daemon
+                // started: its own faults, which no session's restart heals.
+                "daemonCrashes": crate::session_host::daemon_crashes(),
             })),
         )
     }

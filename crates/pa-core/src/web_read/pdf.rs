@@ -43,9 +43,11 @@ pub(crate) async fn extract(bytes: Vec<u8>) -> anyhow::Result<PdfText> {
 /// scanned document).
 fn pdf_to_markdown(bytes: &[u8]) -> anyhow::Result<PdfText> {
     // pdf-extract panics on some malformed streams instead of erroring.
-    let pages = std::panic::catch_unwind(|| pdf_extract::extract_text_from_mem_by_pages(bytes))
-        .map_err(|_| anyhow!("the PDF could not be parsed"))?
-        .map_err(|error| anyhow!("the PDF could not be parsed: {error}"))?;
+    let pages = pa_types::session_scope::catching_panics(|| {
+        pdf_extract::extract_text_from_mem_by_pages(bytes)
+    })
+    .map_err(|_| anyhow!("the PDF could not be parsed"))?
+    .map_err(|error| anyhow!("the PDF could not be parsed: {error}"))?;
     let mut sections = Vec::with_capacity(pages.len());
     let mut empty_pages = 0;
     for (index, page) in pages.iter().enumerate() {

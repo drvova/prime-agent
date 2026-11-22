@@ -377,7 +377,9 @@ impl SpillStore {
             let state = Arc::clone(&self.inner.state);
             let spawned = std::thread::Builder::new()
                 .name("spill-writer".to_string())
-                .spawn(move || run_writer(&state, &receiver));
+                .spawn(pa_types::session_scope::propagate(move || {
+                    run_writer(&state, &receiver);
+                }));
             if let Err(error) = spawned {
                 tracing::warn!(%error, "spill writer thread did not start");
             }

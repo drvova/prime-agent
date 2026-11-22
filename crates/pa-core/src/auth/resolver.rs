@@ -206,6 +206,8 @@ impl ProviderAuthResolver {
                     let runtime = || {
                         tokio::runtime::Builder::new_current_thread()
                             .enable_all()
+                            // The runtime's blocking threads run in the session's scope too.
+                            .on_thread_start(pa_types::session_scope::inherit())
                             .build()
                             .map_err(|_| failed("the auth runtime could not start"))
                     };

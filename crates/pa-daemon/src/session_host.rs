@@ -217,39 +217,98 @@ pub(crate) fn is_hosted() -> bool {
     session_scope::current().is_some_and(|scope| scope.slot::<HostControl>().is_some())
 }
 
-/// Attribute panics to the hosted session whose thread raised them. A panic
-/// on a thread outside every session is left to the previous hook alone.
-pub fn install_panic_hook() {
+/// Where the daemon's own panics are recorded, and those recorded so far.
+fn daemon_crash_record() -> &'static Mutex<(Option<PathBuf>, Vec<SessionCrash>)> {
+    static RECORD: OnceLock<Mutex<(Option<PathBuf>, Vec<SessionCrash>)>> = OnceLock::new();
+    RECORD.get_or_init(|| Mutex::new((None, Vec::new())))
+}
+
+/// The panics raised in this process outside every session since it started
+/// (kind `daemon`), oldest first: the control plane's own faults, which no
+/// session's restart heals.
+#[must_use]
+pub fn daemon_crashes() -> Vec<SessionCrash> {
+    daemon_crash_record()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .1
+        .clone()
+}
+
+/// Account for every panic in this process. One raised on a hosted
+/// session's thread is attributed to that session, which ends alone. One
+/// raised anywhere else is the daemon's own: it is kept for
+/// [`daemon_crashes`] and appended to `crash_log` as kind `daemon`. A panic
+/// its caller catches and handles
+/// ([`session_scope::catching_panics`]) is neither. The previous hook runs
+/// after each, so the panic is printed as before. Installing again only
+/// moves the log.
+pub fn install_panic_hook(crash_log: PathBuf) {
+    daemon_crash_record()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .0 = Some(crash_log);
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            if let Some(control) =
-                session_scope::current().and_then(|scope| scope.slot::<HostControl>())
-            {
-                let payload = info.payload();
-                let message = payload
+            let payload = info.payload();
+            let crash = |kind: &str| SessionCrash {
+                kind: kind.to_string(),
+                message: payload
                     .downcast_ref::<&str>()
                     .map(|text| (*text).to_string())
                     .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "panic with a non-text payload".to_string());
-                control.fault(SessionCrash {
-                    kind: "panic".to_string(),
-                    message,
-                    location: info.location().map_or_else(String::new, |location| {
-                        format!(
-                            "{}:{}:{}",
-                            location.file(),
-                            location.line(),
-                            location.column()
-                        )
-                    }),
-                    thread: std::thread::current()
-                        .name()
-                        .unwrap_or("unnamed")
-                        .to_string(),
-                    at: crate::util::now_iso(),
-                });
+                    .unwrap_or_else(|| "panic with a non-text payload".to_string()),
+                location: info.location().map_or_else(String::new, |location| {
+                    format!(
+                        "{}:{}:{}",
+                        location.file(),
+                        location.line(),
+                        location.column()
+                    )
+                }),
+                thread: std::thread::current()
+                    .name()
+                    .unwrap_or("unnamed")
+                    .to_string(),
+                at: crate::util::now_iso(),
+            };
+            match session_scope::current().and_then(|scope| scope.slot::<HostControl>()) {
+                Some(control) => control.fault(crash("panic")),
+                None if session_scope::panics_are_caught() => {}
+                None => {
+                    use std::io::Write as _;
+                    let crash = crash("daemon");
+                    let mut record = daemon_crash_record()
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    let appended = record.0.as_ref().map(|path| {
+                        std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(path)
+                            .and_then(|mut log| {
+                                let line = serde_json::json!({
+                                    "kind": crash.kind,
+                                    "message": crash.message,
+                                    "location": crash.location,
+                                    "thread": crash.thread,
+                                    "at": crash.at,
+                                });
+                                log.write_all(format!("{line}\n").as_bytes())?;
+                                log.sync_data()
+                            })
+                    });
+                    if let Some(Err(error)) = appended {
+                        // A hook must not panic: a closed stderr is ignored.
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "the daemon's crash log could not be appended: {error}"
+                        );
+                    }
+                    record.1.push(crash);
+                }
             }
             previous(info);
         }));
@@ -425,3 +484,6 @@ impl HostedSession {
         self.wait().await;
     }
 }
+
+#[cfg(test)]
+mod tests;

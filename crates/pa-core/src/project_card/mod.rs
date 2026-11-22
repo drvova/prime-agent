@@ -309,11 +309,11 @@ impl ProjectCard {
         let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("project-card".to_string())
-            .spawn(move || {
+            .spawn(pa_types::session_scope::propagate(move || {
                 let derived = derive(&inner.root);
                 lock(&inner.state).derived = Some(derived);
                 inner.save();
-            });
+            }));
     }
 
     /// Learn one command a cell ran (only build/test/check shapes count).
@@ -340,7 +340,7 @@ impl ProjectCard {
         let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("project-card-save".to_string())
-            .spawn(move || inner.save());
+            .spawn(pa_types::session_scope::propagate(move || inner.save()));
     }
 
     /// The card for the prompt's dynamic tail, or `None` when nothing is known
