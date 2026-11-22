@@ -313,7 +313,7 @@ fn subagent_first_eval(
         "child.json",
         &[
             cell(&format!(
-                "(let ([port (open-output-file {receipt:?})])\n  (write-string (number->string (current-milliseconds)) port)\n  (close-output-port port))",
+                "(fs-write {receipt:?} (number->string (current-milliseconds)))",
                 receipt = receipt.display().to_string(),
             )),
             json!({ "text": "child done" }),
@@ -322,9 +322,7 @@ fn subagent_first_eval(
     let parent_cell = format!(
         "(define started (current-milliseconds))\n\
          (rlm-spawn \"run the perf cell\" #:name {CHILD_NAME:?})\n\
-         (let ([port (open-output-file {spawned:?})])\n\
-         \x20 (write-string (number->string started) port)\n\
-         \x20 (close-output-port port))",
+         (fs-write {spawned:?} (number->string started))",
         spawned = spawned.display().to_string(),
     );
     let script = write_script(

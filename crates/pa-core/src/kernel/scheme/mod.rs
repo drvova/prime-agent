@@ -105,10 +105,28 @@ static SPARES: Mutex<Vec<Engine>> = Mutex::new(Vec::new());
 /// ([`keep_spare_scheme_kernels`]).
 static SPARE_TARGET: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
 
+/// Whether a session has taken an engine yet. Until one has, the process
+/// keeps a single spare whatever its target: a session created right after
+/// the process started must not compete with a pool being built.
+static FIRST_TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// How many spares the process holds right now: its target once a session
+/// has started, one before that.
+fn spare_goal() -> usize {
+    use std::sync::atomic::Ordering;
+    let target = SPARE_TARGET.load(Ordering::SeqCst);
+    if FIRST_TAKEN.load(Ordering::SeqCst) {
+        target
+    } else {
+        target.min(1)
+    }
+}
+
 /// Whether the refill thread is running.
 static REFILLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Keep `target` spare engines from now on, and start building them. A
+/// Keep `target` spare engines once the first session has started (one
+/// until then), and start building. A
 /// daemon that hosts sessions calls this once at boot: several sessions
 /// starting together (a parent's fan-out of children) each take a built
 /// engine instead of building their own.
@@ -136,7 +154,7 @@ pub fn prewarm_scheme_kernel() {
     let spawned = std::thread::Builder::new()
         .name("scheme-spare".to_string())
         .spawn(|| {
-            while spare_scheme_kernels() < SPARE_TARGET.load(Ordering::SeqCst) {
+            while spare_scheme_kernels() < spare_goal() {
                 // Built outside the lock: a session starting meanwhile takes
                 // what is there, or builds its own.
                 let engine = confinement::engine();
@@ -148,7 +166,7 @@ pub fn prewarm_scheme_kernel() {
             REFILLING.store(false, Ordering::SeqCst);
             // A session that took an engine after the last check found this
             // thread still marked as running: its refill is started here.
-            if spare_scheme_kernels() < SPARE_TARGET.load(Ordering::SeqCst) {
+            if spare_scheme_kernels() < spare_goal() {
                 prewarm_scheme_kernel();
             }
         });
@@ -476,6 +494,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let starting = std::time::Instant::now();
             let started = tokio::task::spawn_blocking(move || {
                 let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
+                FIRST_TAKEN.store(true, std::sync::atomic::Ordering::SeqCst);
                 let mut engine = spare.unwrap_or_else(confinement::engine);
                 let cells = cell::Cells::new(
                     Arc::clone(&environment),

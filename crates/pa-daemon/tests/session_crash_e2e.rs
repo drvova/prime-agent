@@ -210,6 +210,22 @@ fn crash_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// The session leases held under `agent_dir` (one `.lock` directory each).
+fn held_leases(agent_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(agent_dir.join("session-leases"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The processes whose parent is `pid` (Linux: the kernel's own list).
 #[cfg(target_os = "linux")]
 fn child_processes(pid: u32) -> Vec<String> {
@@ -344,16 +360,27 @@ fn a_session_that_keeps_crashing_is_given_up_on_and_its_client_is_told() {
         }
         recoveries.push(next["failures"].clone());
     };
+    // The give-up leaves nothing holding the session: its lease is gone, so
+    // the session file can be opened again.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !held_leases(&agent_dir).is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the given-up session still holds its lease: {:?}",
+            held_leases(&agent_dir)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert_eq!(
         (
             recoveries,
             failed["failures"].clone(),
-            crash_log(&agent_dir, &socket).len()
+            crash_log(&agent_dir, &socket).len(),
         ),
         (
             vec![json!(1), json!(2), json!(3), json!(4), json!(5)],
             json!(6),
-            6
+            6,
         ),
         "five restarts with backoff, then the give-up"
     );
@@ -538,18 +565,7 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let listed = client.request("list", &json!({ "type": "list" }));
-    let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    path.extension()
-                        .is_some_and(|extension| extension == "lock")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let held_leases = held_leases(&agent_dir);
     assert_eq!(
         (
             killed["success"].clone(),
@@ -559,4 +575,68 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
         (json!(true), json!([]), Vec::<PathBuf>::new()),
         "kill: {killed}"
     );
+}
+
+/// Whether any process's command line names `marker` (Linux: /proc).
+#[cfg(target_os = "linux")]
+fn process_named(marker: &str) -> bool {
+    std::fs::read_dir("/proc")
+        .expect("read /proc")
+        .flatten()
+        .filter_map(|entry| std::fs::read(entry.path().join("cmdline")).ok())
+        .any(|cmdline| String::from_utf8_lossy(&cmdline).contains(marker))
+}
+
+/// Sessions run inside the daemon, so the commands their cells start are
+/// the daemon's own children: a daemon shutdown must not leave one behind.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_command_a_cell_started_does_not_survive_the_daemons_shutdown() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let mut daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // The command replaces its shell with a long sleep under a name only
+    // this test uses.
+    let marker = format!("pa-shutdown-{}", uuid::Uuid::new_v4().simple());
+    let session = client.create_attached(
+        dir.path(),
+        "runner",
+        &json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": {
+                        "code": format!("(bash \"exec -a {marker} sleep 600\")"),
+                    } },
+                ] },
+                { "text": "done" },
+            ],
+        }),
+        json!({}),
+    );
+    let prompted = client.request(
+        "prompt",
+        &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
+    );
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !process_named(&marker) {
+        assert!(Instant::now() < deadline, "the command never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let shutdown = client.request("shutdown", &json!({ "type": "shutdown" }));
+    assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while daemon.child.try_wait().expect("try wait").is_none() || process_named(&marker) {
+        assert!(
+            Instant::now() < deadline,
+            "after the shutdown: daemon exited = {}, the command survives = {}",
+            daemon.child.try_wait().expect("try wait").is_some(),
+            process_named(&marker)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
