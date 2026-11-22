@@ -1,9 +1,10 @@
 //! Worker session-end kernel disposal e2e (TS `closeSession` parity): every session-end path
-//! (`kill`, daemon `shutdown`, supervisor SIGKILL) must call `AgentSessionEngine::dispose_kernel`
-//! explicitly. The kernel is an engine inside the worker, but the shell commands its cells
-//! start are processes of their own, and a process exit runs no destructors: a command that
-//! survives its session is orphaned forever. Each test starts one in the background from a
-//! scripted `eval` cell and watches that process.
+//! a live daemon runs (`kill`, daemon `shutdown`) must call `AgentSessionEngine::dispose_kernel`
+//! explicitly, and a daemon that was SIGKILLed disposes nothing, so the next boot reaps what
+//! its sessions journalled. The kernel is an engine inside the daemon, but the shell commands
+//! its cells start are processes of their own: a command that survives its session is
+//! orphaned forever. Each test starts one in the background from a scripted `eval` cell and
+//! watches that process.
 // Process liveness is read from /proc: Linux only.
 #![cfg(target_os = "linux")]
 
@@ -300,27 +301,32 @@ fn shutdown_disposes_session_kernels_before_the_worker_exits() {
     await_command_gone(command, Duration::from_secs(90));
 }
 
+/// A daemon that is SIGKILLed takes its sessions with it and disposes
+/// nothing, so a command a cell left running is orphaned. Each command is
+/// journalled before it starts; the next daemon on the socket reaps what the
+/// dead one's sessions journalled.
 #[test]
-fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
+fn a_command_orphaned_by_the_daemons_death_is_reaped_at_the_next_boot() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
 
-    // A short supervisor-lost window: the orphan exits quickly once the supervisor is gone.
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, "5000");
+    let mut daemon = spawn_supervisor(&socket, &agent_dir, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let _session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
     let command = await_command(dir.path());
 
-    // Hard-kill the supervisor: no graceful stop runs, so the worker's
-    // supervisor-lost monitor is the only cleanup left.
     daemon.child.kill().expect("SIGKILL supervisor");
     let _ = daemon.child.wait();
+    assert!(
+        is_running(command),
+        "the command outlives the daemon that started it: only the next boot can end it"
+    );
 
-    // The orphaned worker exits on the lost window and disposes its kernel; the first check
-    // lands 1.5s after boot and the window is 5s, so 90s covers slow boxes.
-    await_command_gone(command, Duration::from_secs(90));
+    let _next = spawn_supervisor(&socket, &agent_dir, "15000");
+    wait_socket_ready(&socket);
+    await_command_gone(command, Duration::from_secs(30));
 }

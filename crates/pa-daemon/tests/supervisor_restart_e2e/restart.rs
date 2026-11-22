@@ -1,8 +1,9 @@
-//! The kill9 restart regression: the session re-registers and survives
+//! The kill -9 restart regression: sessions die with the daemon that hosts
+//! them and the next boot revives the ones that were mid-turn.
 use super::*;
 
 #[test]
-fn supervisor_kill9_restart_sessions_re_register_and_survive() {
+fn supervisor_kill9_restart_revives_the_sessions_that_were_mid_turn() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -15,8 +16,8 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
 
-    // Each session has a slow first turn (streaming while the supervisor
-    // dies) and a second turn for the post-restart attach.
+    // Each session has a slow first turn (in flight when the daemon dies)
+    // and a second turn for the post-restart prompt.
     let mut sessions = Vec::new();
     for index in 0..3 {
         let script_path = dir.path().join(format!("script-{index}.json"));
@@ -55,18 +56,13 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
         assert_eq!(attached["success"], true, "attach {index} failed");
         sessions.push(session_id);
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let worker_pids = loop {
-        let children = child_pids_of(supervisor_pid);
-        if children.len() == 3 {
-            break children;
-        }
-        assert!(Instant::now() < deadline, "three workers never spawned");
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    assert_eq!(worker_pids.len(), 3, "one worker per session");
+    // Sessions run inside the daemon: it has no child process to outlive it.
+    assert_eq!(
+        child_pids_of(supervisor_pid),
+        Vec::<u32>::new(),
+        "three live sessions and the daemon has no child process"
+    );
 
-    let mut turn_lines: std::collections::VecDeque<Value> = std::collections::VecDeque::new();
     for (index, session_id) in sessions.iter().enumerate() {
         client.send_command(
             &format!("p{index}"),
@@ -76,58 +72,26 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
                 "message": "go",
             }),
         );
-        let (ack, prompt_lines) = client.read_response_and_lines(&format!("p{index}"));
+        let ack = client.read_response(&format!("p{index}"));
         assert_eq!(ack["success"], true, "prompt {index} failed: {ack}");
-        turn_lines.extend(prompt_lines);
     }
-    let mut started_streams = 0;
-    while started_streams < 3 {
-        let line = client.next_line_of_type(&mut turn_lines, "session_event");
-        if line["event"]["type"].as_str() == Some("message_start") {
-            started_streams += 1;
-        }
+    // Every turn is durably in flight before the daemon dies.
+    for session_id in &sessions {
+        wait_for_busy_journal_evidence(&agent_dir, &socket, session_id);
     }
-    assert_eq!(started_streams, 3, "all three sessions stream");
+    let session_sockets: Vec<PathBuf> = sessions
+        .iter()
+        .map(|session_id| session_socket(&agent_dir, &socket, session_id))
+        .collect();
 
-    // kill -9 the supervisor; sessions must keep running.
+    // kill -9 the daemon: every session dies with it, mid-turn.
     daemon.child.kill().expect("kill -9 supervisor");
     let _ = daemon.child.wait();
-
-    let mut descriptors = Vec::new();
-    for session_id in &sessions {
-        descriptors.push(load_worker_descriptor(&agent_dir, &socket, session_id));
-    }
-
-    // The in-flight turns complete while no supervisor exists (direct
-    // worker connections).
-    std::thread::sleep(Duration::from_millis(1600));
-    for (descriptor, index) in descriptors.iter().zip(0..3) {
+    for session_socket in &session_sockets {
         assert!(
-            process_alive(descriptor.pid),
-            "worker {} survived the supervisor kill",
-            descriptor.worker_id
-        );
-        let (mut worker, hello) = WorkerClient::connect(&descriptor.socket_path);
-        assert_eq!(hello["type"], "daemon_hello");
-        let auth = worker.request(
-            "worker_auth",
-            &json!({
-                "token": descriptor.token,
-                "supervisorGeneration": "sup:direct",
-                "supervisorPid": 1,
-                "supervisorSocketPath": socket.to_string_lossy(),
-            }),
-        );
-        assert_eq!(auth["success"], true, "direct auth failed: {auth}");
-        let answer = worker.request(
-            "get_last_assistant_text",
-            &json!({ "activeSessionId": descriptor.worker_id }),
-        );
-        assert_eq!(answer["success"], true, "last text failed: {answer}");
-        assert_eq!(
-            answer["data"]["text"],
-            json!(format!("turn-1-{index}")),
-            "in-flight turn completed without a supervisor"
+            UnixStream::connect(session_socket).is_err(),
+            "nothing serves {} once the daemon is dead",
+            session_socket.display()
         );
     }
 
@@ -135,8 +99,9 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
     let mut daemon2 = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
 
+    // The boot revives all three from their journals, under the same ids.
     let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let registered = loop {
         let registered = distinct(workers_registered_since(&log_path, &restart_before));
         if registered.len() == 3 {
@@ -144,45 +109,64 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
         }
         assert!(
             Instant::now() < deadline,
-            "sessions did not re-register after restart ({restart_before}): {registered:?}; log: {}",
+            "sessions were not revived after restart ({restart_before}): {registered:?}; log: {}",
             std::fs::read_to_string(&log_path).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(100));
     };
-    assert_eq!(
-        registered,
-        {
-            let mut expected = sessions.clone();
-            expected.sort();
-            expected
-        },
-        "the same three identities re-registered"
-    );
+    let mut expected = sessions.clone();
+    expected.sort();
+    assert_eq!(registered, expected, "the same three identities came back");
 
     let (mut client2, _hello) = Client::connect(&socket);
+    // Each revived session starts its interrupted turn again and finishes it;
+    // the death is on its row.
+    let mut revived = Vec::new();
+    for (index, session_id) in sessions.iter().enumerate() {
+        client2.send_command(
+            &format!("idle{index}"),
+            &json!({ "type": "wait_for_idle", "activeSessionId": session_id }),
+        );
+        let idle = client2.read_response(&format!("idle{index}"));
+        assert_eq!(
+            idle["success"], true,
+            "wait_for_idle {index} failed: {idle}"
+        );
+        client2.send_command(
+            &format!("text{index}"),
+            &json!({ "type": "get_last_assistant_text", "activeSessionId": session_id }),
+        );
+        let text = client2.read_response(&format!("text{index}"));
+        revived.push(text["data"]["text"].clone());
+    }
     client2.send_command("list1", &json!({ "type": "list" }));
     let list = client2.read_response("list1");
     assert_eq!(list["success"], true, "list failed: {list}");
-    let listed = list["data"]["sessions"].as_array().expect("sessions");
-    assert_eq!(listed.len(), 3, "roster rebuilt from re-registration");
-    let listed_ids: Vec<String> = listed
+    let mut rows: Vec<(String, Value)> = list["data"]["sessions"]
+        .as_array()
+        .expect("sessions")
         .iter()
-        .map(|summary| summary["id"].as_str().expect("id").to_string())
+        .map(|row| {
+            (
+                row["id"].as_str().expect("id").to_string(),
+                row["lastCrash"]["kind"].clone(),
+            )
+        })
         .collect();
-    let mut expected = sessions.clone();
-    expected.sort();
-    assert_eq!(distinct(listed_ids), expected);
+    rows.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        (rows, revived),
+        (
+            expected
+                .iter()
+                .map(|session_id| (session_id.clone(), json!("daemon_restart")))
+                .collect::<Vec<_>>(),
+            vec![json!("turn-1-0"), json!("turn-1-1"), json!("turn-1-2")],
+        ),
+        "the roster is rebuilt from the journals and every interrupted turn ran again: {list}"
+    );
 
     let target = &sessions[1];
-    client2.send_command(
-        "a1",
-        &json!({ "type": "attach", "activeSessionId": target }),
-    );
-    let attached = client2.read_response("a1");
-    assert_eq!(
-        attached["success"], true,
-        "post-restart attach failed: {attached}"
-    );
     client2.send_command(
         "p1",
         &json!({
@@ -191,22 +175,17 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
             "message": "second turn",
         }),
     );
-    let (done, mut second_turn_lines) = client2.read_response_and_lines("p1");
+    let done = client2.read_response("p1");
     assert_eq!(done["success"], true, "post-restart prompt failed: {done}");
-    let answer = loop {
-        let line = client2.next_line_of_type(&mut second_turn_lines, "session_event");
-        // The user row arrives as its own message_end pair first; the
-        // answer is the assistant's final message_end.
-        if line["event"]["type"].as_str() == Some("message_end")
-            && line["event"]["message"]["role"] == "assistant"
-        {
-            break line["event"]["message"]["content"]
-                .as_str()
-                .expect("final text")
-                .to_string();
-        }
-    };
-    assert_eq!(answer, "turn-2-1", "scripted turn completed post-restart");
+    client2.send_command(
+        "answer",
+        &json!({ "type": "get_last_assistant_text", "activeSessionId": target }),
+    );
+    let answer = client2.read_response("answer");
+    assert_eq!(
+        answer["data"]["text"], "turn-2-1",
+        "scripted turn completed post-restart: {answer}"
+    );
 
     client2.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client2.read_response("sd");
@@ -216,15 +195,5 @@ fn supervisor_kill9_restart_sessions_re_register_and_survive() {
         assert!(Instant::now() < deadline, "restarted supervisor exited");
         std::thread::sleep(Duration::from_millis(50));
     }
-    for descriptor in &descriptors {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while process_alive(descriptor.pid) {
-            assert!(
-                Instant::now() < deadline,
-                "worker {} leaked after shutdown",
-                descriptor.worker_id
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
+    assert_sessions_gone(&agent_dir, &session_sockets);
 }

@@ -286,7 +286,7 @@ fn plain_boot_still_revives_fresh_busy_evidence() {
     }
 
     let (mut client, _hello) = Client::connect(&socket);
-    let relaunched = load_worker_descriptor(&agent_dir, &socket, &fixture.worker_id);
+    let relaunched = session_socket(&agent_dir, &socket, &fixture.worker_id);
     client.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client.read_response("sd");
     assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
@@ -295,12 +295,5 @@ fn plain_boot_still_revives_fresh_busy_evidence() {
         assert!(Instant::now() < deadline, "supervisor exited");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(relaunched.pid) {
-        assert!(
-            Instant::now() < deadline,
-            "relaunched worker leaked after shutdown"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_sessions_gone(&agent_dir, &[relaunched]);
 }

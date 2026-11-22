@@ -918,6 +918,22 @@ impl Supervisor {
         let Ok(worker_pid) = i32::try_from(pid) else {
             return;
         };
+        // A hosted session's commands were children of the daemon process
+        // that hosted it, and their journal records name that process as
+        // the owner: the generation (`hosted:<daemon pid>:<uuid>`) carries
+        // it. A worker process's records name the worker itself.
+        let journal_owner = if crate::session_host::is_hosted_pid(worker_pid as u32) {
+            start_id
+                .as_deref()
+                .and_then(|generation| generation.strip_prefix("hosted:"))
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|daemon_pid| daemon_pid.parse::<i32>().ok())
+        } else {
+            Some(worker_pid)
+        };
+        let Some(journal_owner) = journal_owner else {
+            return;
+        };
         // The reap is blocking file I/O and kill signals (and on macOS a
         // `ps` probe): keep it off the async executor, as the adoption
         // identity probes do.
@@ -933,7 +949,7 @@ impl Supervisor {
             }
             pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
                 Path::new(&orphan_path),
-                worker_pid,
+                journal_owner,
             );
         })
         .await;

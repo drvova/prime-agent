@@ -1,7 +1,9 @@
-//! Supervisor kill -9 restart e2e: sessions must survive a supervisor death.
-//! Three scripted sessions, kill -9 the supervisor, assert workers and their
-//! in-flight turns survive, restart on the same socket, and assert
-//! re-registration, the rebuilt roster, and a scripted turn.
+//! Daemon restart e2e. Sessions are hosted inside the daemon process, so
+//! they die with it; what survives is on disk. These tests kill or stop the
+//! daemon with sessions in every state and assert what the next boot does:
+//! mid-turn sessions are revived from their journals under the same ids,
+//! idle ones stay down until a client opens them, and a stop that was under
+//! way is finished.
 // Stack-resident futures by design on the daemon's hot paths.
 #![allow(clippy::large_futures)]
 // Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
@@ -26,7 +28,7 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -57,20 +59,13 @@ fn spawn_supervisor_env(socket: &Path, agent_dir: &Path, extra_env: &[(&str, Str
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
-        // worker never cleans: keep them in the test's own dir.
+        // Session sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // daemon never cleans: keep them in the test's own dir.
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        // A supervisor killed at teardown must not leak its session workers
-        // into later test binaries: the worker's supervisor-lost exit runs
-        // on this short window instead of the 5-minute default.
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        );
+        .stderr(Stdio::null());
     for (key, value) in extra_env {
         command.env(key, value);
     }
@@ -93,19 +88,6 @@ fn wait_socket_ready(socket: &Path) {
         assert!(Instant::now() < deadline, "supervisor socket never came up");
         std::thread::sleep(Duration::from_millis(20));
     }
-}
-
-/// Liveness that ignores zombies (a re-parented child nobody reaps keeps its
-/// /proc entry until the status is collected).
-fn process_alive(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    let state = rest.split_whitespace().next().unwrap_or_default();
-    !state.starts_with('Z') && !state.starts_with('X')
 }
 
 fn child_pids_of(ppid: u32) -> Vec<u32> {
@@ -198,134 +180,6 @@ impl Client {
             }
         }
     }
-
-    /// Read until the response for `id`, buffering the outbound lines seen
-    /// first: the daemon emits events before the command reply (TS order),
-    /// so a bare `read_response` would discard them.
-    fn read_response_and_lines(&mut self, id: &str) -> (Value, std::collections::VecDeque<Value>) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut lines = std::collections::VecDeque::new();
-        loop {
-            assert!(Instant::now() < deadline, "no response for id {id}");
-            let line = self.read_line();
-            if line.get("id").and_then(Value::as_str) == Some(id) {
-                return (line, lines);
-            }
-            lines.push_back(line);
-        }
-    }
-
-    fn next_line_of_type(
-        &mut self,
-        lines: &mut std::collections::VecDeque<Value>,
-        line_type: &str,
-    ) -> Value {
-        if let Some(index) = lines.iter().position(|l| l["type"] == line_type) {
-            return lines.remove(index).expect("indexed line");
-        }
-        let deadline = Instant::now() + Duration::from_secs(20);
-        loop {
-            assert!(Instant::now() < deadline, "no {line_type} line arrived");
-            let line = self.read_line();
-            if line["type"] == line_type {
-                return line;
-            }
-        }
-    }
-}
-
-/// A raw private-frame client for one session worker's own socket (the
-/// worker serves direct connections even while no supervisor exists).
-struct WorkerClient {
-    stream: UnixStream,
-}
-
-impl WorkerClient {
-    fn connect(socket: &Path) -> (Self, Value) {
-        let stream = UnixStream::connect(socket).expect("connect worker socket");
-        stream
-            .set_read_timeout(Some(Duration::from_millis(100)))
-            .expect("set timeout");
-        let mut client = WorkerClient { stream };
-        let (header, payload) = client.read_frame();
-        assert_eq!(header["outboundType"], "daemon_hello", "worker hello");
-        let hello: Value = serde_json::from_slice(&payload).expect("hello payload");
-        (client, hello)
-    }
-
-    fn send_frame(&mut self, header: &Value, payload: &Value) {
-        let frame = pa_daemon::framing::encode_private_frame(
-            header,
-            &serde_json::to_vec(payload).expect("payload"),
-            pa_daemon::framing::DEFAULT_PRIVATE_FRAME_LIMITS,
-        )
-        .expect("encode frame");
-        self.stream.write_all(&frame).expect("write frame");
-        self.stream.flush().expect("flush");
-    }
-
-    fn read_frame(&mut self) -> (Value, Vec<u8>) {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let mut prefix = [0u8; 8];
-        read_exact_timeout(&mut self.stream, &mut prefix, deadline);
-        let header_len = u32::from_be_bytes(prefix[0..4].try_into().unwrap()) as usize;
-        let payload_len = u32::from_be_bytes(prefix[4..8].try_into().unwrap()) as usize;
-        let mut header = vec![0u8; header_len];
-        read_exact_timeout(&mut self.stream, &mut header, deadline);
-        let mut payload = vec![0u8; payload_len];
-        read_exact_timeout(&mut self.stream, &mut payload, deadline);
-        let header: Value = serde_json::from_slice(&header).expect("frame header");
-        (header, payload)
-    }
-
-    fn request(&mut self, command_type: &str, payload: &Value) -> Value {
-        static NEXT_REQUEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let request_id = format!(
-            "req-{}",
-            NEXT_REQUEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        );
-        self.send_frame(
-            &json!({
-                "kind": "command",
-                "requestId": request_id,
-                "commandType": command_type,
-            }),
-            payload,
-        );
-        loop {
-            let (header, body) = self.read_frame();
-            if header["outboundType"].as_str() == Some("response")
-                && header["requestId"].as_str() == Some(request_id.as_str())
-            {
-                let mut value: Value = serde_json::from_slice(&body).expect("response body");
-                value["id"] = json!(request_id);
-                return value;
-            }
-        }
-    }
-}
-
-fn read_exact_timeout(stream: &mut UnixStream, buffer: &mut [u8], deadline: Instant) {
-    let mut read = 0usize;
-    while read < buffer.len() {
-        assert!(Instant::now() < deadline, "worker frame read timed out");
-        match stream.read(&mut buffer[read..]) {
-            Ok(0) => panic!("worker closed the connection mid-frame"),
-            Ok(n) => read += n,
-            Err(error)
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    || error.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(error) => panic!("worker read: {error}"),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct WorkerDescriptor {
-    worker_id: String,
-    pid: u32,
-    socket_path: PathBuf,
-    token: String,
 }
 
 /// Wait until the recovery journal holds the admission `busy: true` record
@@ -356,20 +210,39 @@ fn wait_for_busy_journal_evidence(agent_dir: &Path, socket: &Path, session_id: &
     }
 }
 
-fn load_worker_descriptor(agent_dir: &Path, socket: &Path, worker_id: &str) -> WorkerDescriptor {
+/// The socket a hosted session serves on, from its descriptor.
+fn session_socket(agent_dir: &Path, socket: &Path, worker_id: &str) -> PathBuf {
     let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
         .expect("descriptor file");
     let value: Value = serde_json::from_str(&content).expect("descriptor json");
-    WorkerDescriptor {
-        worker_id: worker_id.to_string(),
-        pid: value["pid"].as_u64().expect("pid") as u32,
-        socket_path: PathBuf::from(value["socketPath"].as_str().expect("socket path")),
-        token: value["authenticationToken"]
-            .as_str()
-            .expect("token")
-            .to_string(),
-    }
+    PathBuf::from(value["socketPath"].as_str().expect("socket path"))
+}
+
+/// What "no session outlives its daemon" means once the daemon has exited:
+/// nothing serves the sessions' sockets and no session lease is held.
+fn assert_sessions_gone(agent_dir: &Path, session_sockets: &[PathBuf]) {
+    let serving: Vec<&PathBuf> = session_sockets
+        .iter()
+        .filter(|session_socket| UnixStream::connect(session_socket).is_ok())
+        .collect();
+    let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        (serving, held_leases),
+        (Vec::<&PathBuf>::new(), Vec::<PathBuf>::new()),
+        "a session outlived the daemon's shutdown"
+    );
 }
 
 fn workers_registered_since(log_path: &Path, since: &str) -> Vec<String> {

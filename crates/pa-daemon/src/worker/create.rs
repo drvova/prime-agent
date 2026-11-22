@@ -36,6 +36,21 @@ impl Worker {
         }
         let session_path = match payload.get("sessionPath").and_then(Value::as_str) {
             Some(path) => match paths::expand_tilde(path) {
+                // A relative path names a file under the session's own
+                // working directory, never the daemon process's.
+                Ok(expanded) if expanded.is_relative() => {
+                    match pa_types::session_scope::current_dir() {
+                        Ok(cwd) => Some(cwd.join(expanded)),
+                        Err(error) => return response_failure(
+                            None,
+                            "create",
+                            &format!(
+                                "resolve the session path against the working directory: {error}"
+                            ),
+                            None,
+                        ),
+                    }
+                }
                 Ok(expanded) => Some(expanded),
                 Err(error) => return response_failure(None, "create", &error.to_string(), None),
             },
