@@ -324,7 +324,7 @@ def main():
     receipt = {'verified': False, 'scope': 'Raw daemon create, the env of the kernel commands and their children, '
         'env clearing/retention, internal-prefixed launchEnv re-filtering and durable launch-env secret exclusion.',
         'not_verified': ['TUI/ACP sender env collection', 'refreshed attach launchEnv recovery',
-                         'rlm.spawn and minimal depth-0 root forwarding']}
+                         'rlm-spawn and minimal depth-0 root forwarding']}
     try:
         assert sys.platform == 'linux', 'requires hosted Linux /proc ownership checks'
         with tempfile.TemporaryDirectory(prefix='launch-env-check-', dir='/tmp') as folder:

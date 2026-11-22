@@ -60,7 +60,7 @@ FILES_API_CEILING = 3000
 # Near misses stay fail-safe, not metadata: top-level *.md (pa-cli's
 # packaged-layout e2e copies README.md into its staged layout, so
 # deleting or renaming it flips that unit red), docs/, skills/, vendor/,
-# install scripts, the runtime sidecar, workspace Cargo files, scripts/,
+# install scripts, workspace Cargo files, scripts/,
 # and the workflows.
 GUARANTEED_METADATA_PREFIXES: tuple[str, ...] = (".changes/",)
 
@@ -110,7 +110,7 @@ def select_crates(rows: list[tuple[str, str]]) -> list[str] | None:
     (GUARANTEED_METADATA_PREFIXES) are skipped — no test unit reads them —
     and they never narrow on their own: a metadata-only list gets the full
     selection. Everything else — the workflows, CI tooling, vendor/, the
-    runtime sidecar, workspace-level Cargo files, install scripts, docs —
+    workspace-level Cargo files, install scripts, docs —
     affects more than any crate subset, and a rename counts both sides. An
     undecidable list (empty rows, the API ceiling or an unknown crate)
     fails safe to the full selection.

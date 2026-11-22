@@ -59,21 +59,24 @@ class ObserveClient(Client):
         self.sent = []
 
 
+PRINT = '(displayln (string-append "OBSERVE_SELECTORS_PARITY=" (value->jsexpr-string %s)))\n'
+CHILDREN = "(hash 'children (rlm-list-subagents))"
+
+
 def cell(selectors):
-    return """import json, agent_observe
-selectors = """ + repr(selectors) + """
-result = {'roster': await agent_observe.list_agents(), 'selectors': {}}
-for label, target in selectors.items():
-    row = result['selectors'][label] = {}
-    for operation in ('get', 'recent'):
-        try:
-            value = (await agent_observe.get_agent(target) if operation == 'get'
-                     else await agent_observe.recent_messages(target, limit=8, max_chars=800))
-            row[operation] = {'value': value}
-        except Exception as error:
-            row[operation] = {'error': str(error)}
-print('OBSERVE_SELECTORS_PARITY=' + json.dumps(result))
-"""
+    """One cell: the roster, then `agent-observe-get` and `agent-observe-recent` per selector."""
+    pairs = ' '.join("(list %s %s)" % (json.dumps(label), json.dumps(target))
+                     for label, target in selectors.items())
+    return """(define (observed read)
+  (with-handler (lambda (e) (hash 'error (to-string e))) (hash 'value (read))))
+(define (selector-row target)
+  (hash 'get (observed (lambda () (hash 'agent (agent-observe-get target))))
+        'recent (observed (lambda () (agent-observe-recent target #:limit 8 #:max-chars 800)))))
+(define selector-rows
+  (foldl (lambda (pair rows) (hash-insert rows (string->symbol (car pair)) (selector-row (cadr pair))))
+         (hash)
+         (list """ + pairs + """)))
+""" + PRINT % "(hash 'roster (agent-observe-list) 'selectors selector-rows)"
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -122,9 +125,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             code = self.server.code
         if code is not None and len(requests) == 1:
             offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-            name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.send_error(422, 'no actual REPL tool offered')
+                self.send_error(422, 'no kernel tool offered')
                 return
             delta = {'tool_calls': [{'index': 0, 'id': 'observe_' + phase, 'type': 'function',
                 'function': {'name': name, 'arguments': json.dumps({'code': code})}}]}
@@ -172,9 +175,7 @@ def suffix(identifier, all_ids):
     raise AssertionError('fixture did not generate a unique ID suffix')
 
 
-READ_CHILDREN = """import json, dataclasses
-print('OBSERVE_SELECTORS_PARITY=' + json.dumps({'children': [dataclasses.asdict(row) for row in await rlm.list_subagents()]}, default=str))
-"""
+READ_CHILDREN = PRINT % CHILDREN
 
 
 def ready_children(snapshot, expected_child_ids, expected_tasks=MAIN_CHILD_TASKS):
@@ -209,7 +210,7 @@ def await_child_identities(first, read_snapshot, observation, clock=time.monoton
     while rows is None:
         remaining = deadline - clock()
         assert remaining > 0, 'spawned children did not publish live IDs before deadline'
-        # Each poll executes the actual RLM host read in another REPL tool call.
+        # Each poll executes the actual RLM host read in another eval tool call.
         # The request itself yields to publication; no fixed sleep grants readiness.
         snapshot = read_snapshot(len(observation['identity_polls']) + 1, remaining)
         observation['identity_polls'].append(snapshot)
@@ -265,8 +266,7 @@ def run_case(binary, root, observation):
     for directory in ('home', 'tmp', 'work', 'agent', 'sessions'):
         (root / directory).mkdir(parents=True)
     root = root.resolve()
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ',
-        'PRIME_AGENT_KERNEL_PYTHON', 'PA_E2E_KERNEL_PYTHON') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1', PI_OFFLINE='1',
         PI_CODING_AGENT_DIR=str(root / 'agent'), PRIME_AGENT_CODING_AGENT_DIR=str(root / 'agent'),
         PI_SESSION_DIR=str(root / 'sessions'), PRIME_AGENT_SESSION_DIR=str(root / 'sessions'),
@@ -340,10 +340,8 @@ def run_case(binary, root, observation):
         # Parentless roots are siblings in both products. An actual child of
         # that sibling is outside this root's nuclear family (nephew/niece).
         provider.phase = 'foreign_spawn_setup'
-        provider.code = """import json, dataclasses
-await rlm.spawn('OBSERVE_TASK_FOREIGN', name='observe-foreign-child', model='fixture/observe-fixture')
-print('OBSERVE_SELECTORS_PARITY=' + json.dumps({'children': [dataclasses.asdict(row) for row in await rlm.list_subagents()]}, default=str))
-"""
+        provider.code = ('(rlm-spawn "OBSERVE_TASK_FOREIGN" #:name "observe-foreign-child" '
+                         '#:model "fixture/observe-fixture")\n' + PRINT % CHILDREN)
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=other_parent['active'],
                     message='Spawn an actual child in the other parent family.')
         foreign_setup = current_probe(provider.requests['foreign_spawn_setup'], 'foreign_spawn_setup')
@@ -363,20 +361,16 @@ print('OBSERVE_SELECTORS_PARITY=' + json.dumps({'children': [dataclasses.asdict(
         foreign = {'active': foreign_row['active_session_id'], 'durable': foreign_row['session_id'], 'raw': foreign_row}
         created['observe-foreign-child'] = foreign
         provider.phase = 'foreign_topology'
-        provider.code = """import json, agent_observe
-print('OBSERVE_SELECTORS_PARITY=' + json.dumps(await agent_observe.get_agent('observe-foreign-child')))
-"""
+        provider.code = PRINT % "(hash 'agent (agent-observe-get \"observe-foreign-child\"))"
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=other_parent['active'],
                     message='Observe the actual foreign child parent edges.')
         foreign_agent = current_probe(provider.requests['foreign_topology'], 'foreign_topology')['agent']
         observation['foreign_agent'] = foreign_agent
         validate_foreign_agent(foreign_agent, foreign, other_parent, parent)
         provider.phase = 'spawn_setup'
-        provider.code = """import json, dataclasses
-await rlm.spawn('OBSERVE_TASK_A', name='observe-child-a', model='fixture/observe-fixture')
-await rlm.spawn('OBSERVE_TASK_B', name='observe-child-b', model='fixture/observe-fixture')
-print('OBSERVE_SELECTORS_PARITY=' + json.dumps({'children': [dataclasses.asdict(row) for row in await rlm.list_subagents()]}, default=str))
-"""
+        provider.code = ('(rlm-spawn "OBSERVE_TASK_A" #:name "observe-child-a" #:model "fixture/observe-fixture")\n'
+                         '(rlm-spawn "OBSERVE_TASK_B" #:name "observe-child-b" #:model "fixture/observe-fixture")\n'
+                         + PRINT % CHILDREN)
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=parent['active'], message='Run actual resident selector spawn setup.')
         setup = current_probe(provider.requests['spawn_setup'], 'spawn_setup')
         observation['spawn_setup'] = setup

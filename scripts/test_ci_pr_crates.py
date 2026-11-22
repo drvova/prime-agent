@@ -161,12 +161,12 @@ class TheMappingTestCase(unittest.TestCase):
     def test_the_infrastructural_classes_still_fail_safe(self):
         # The fail-safe classes the metadata skip must never absorb: the
         # workflows, CI tooling, vendor/ (the patched crossterm), the
-        # runtime sidecar, workspace-level Cargo files, install scripts.
+        # built-in skills, workspace-level Cargo files, install scripts.
         for path in [
             ".github/workflows/ci.yml",
             "scripts/ci_test_shard.py",
             "vendor/crossterm/src/lib.rs",
-            "prime-agent-runtime/src/rlm/repl.py",
+            "skills/goal/SKILL.md",
             "Cargo.toml",
             "install-rust.sh",
         ]:
