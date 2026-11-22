@@ -669,8 +669,8 @@ fn wave_b11_saved_sessions_wire_shapes() {
     );
 }
 
-/// The heartbeat-catalog snapshot fallback (TS `worker.heartbeatSnapshot`): a worker too
-/// busy to answer a fresh `heartbeats_list` serves its last-good rows; a worker whose snapshot
+/// The heartbeat-catalog snapshot fallback (TS `worker.heartbeatSnapshot`): a session too
+/// busy to answer a fresh `heartbeats_list` serves its last-good rows; a session whose snapshot
 /// went stale fails the response instead (TS `failed`).
 #[test]
 fn wave_b10_heartbeat_snapshot_fallback() {
@@ -679,6 +679,7 @@ fn wave_b10_heartbeat_snapshot_fallback() {
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let (_daemon, mut client, session_id, _socket) = scripted_session(dir.path(), &agent_dir);
+    fill_transcript(&mut client, &session_id);
 
     // One live heartbeat, then a good catalog read: the worker's snapshot holds the row.
     client.send_command(
@@ -696,17 +697,16 @@ fn wave_b10_heartbeat_snapshot_fallback() {
     let heartbeats = response["data"]["heartbeats"].as_array().expect("rows");
     assert_eq!(heartbeats.len(), 1, "{heartbeats:?}");
 
-    // Freeze the worker: the supervisor's 5s forward cannot answer, and the last-good
+    // Freeze the session: the supervisor's 5s forward cannot answer, and the last-good
     // snapshot keeps the row in the merged catalog.
-    let pid = worker_pid(&agent_dir, &session_id);
-    stop(pid);
+    let frozen = freeze(&mut client, dir.path(), &session_id, "first");
     client.send_command("s3", &json!({ "type": "heartbeats_list" }));
     let response = client.read_response("s3");
     assert_eq!(response["success"], true, "{response}");
     let heartbeats = response["data"]["heartbeats"].as_array().expect("rows");
     assert_eq!(heartbeats.len(), 1, "{heartbeats:?}");
     assert_eq!(heartbeats[0]["job"]["prompt"], "check in");
-    cont(pid);
+    thaw(frozen);
 
     // A worker-side mutation marks the snapshot stale; a frozen worker then fails the
     // response instead of serving the stale rows (TS `failed`).
@@ -719,11 +719,11 @@ fn wave_b10_heartbeat_snapshot_fallback() {
     );
     let response = client.read_response("s4");
     assert_eq!(response["success"], true, "{response}");
-    stop(pid);
+    let frozen = freeze(&mut client, dir.path(), &session_id, "second");
     client.send_command("s5", &json!({ "type": "heartbeats_list" }));
     let response = client.read_response("s5");
     assert_eq!(response["success"], false, "{response}");
-    cont(pid);
+    thaw(frozen);
 }
 
 /// TS #2487, the single-worker catalog: the served slice is the worker's own, so the merged
@@ -735,6 +735,7 @@ fn wave_b10_single_worker_slice_is_byte_identical() {
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let (_daemon, mut client, session_id, _socket) = scripted_session(dir.path(), &agent_dir);
+    fill_transcript(&mut client, &session_id);
     client.send_command(
         "add",
         &json!({
@@ -761,10 +762,9 @@ fn wave_b10_single_worker_slice_is_byte_identical() {
     let first_cron = client.read_response("cron1");
     assert_eq!(first_cron["success"], true, "{first_cron}");
 
-    // Freeze the worker: the served slices answer both catalogs fast, byte-identical
+    // Freeze the session: the served slices answer both catalogs fast, byte-identical
     // to the fresh-forward responses.
-    let pid = worker_pid(&agent_dir, &session_id);
-    stop(pid);
+    let frozen = freeze(&mut client, dir.path(), &session_id, "slices");
     let started = Instant::now();
     client.send_command("fresh2", &json!({ "type": "heartbeats_list" }));
     let second = client.read_response("fresh2");
@@ -782,12 +782,12 @@ fn wave_b10_single_worker_slice_is_byte_identical() {
         second_cron["data"], first_cron["data"],
         "slice != fresh forward"
     );
-    cont(pid);
+    thaw(frozen);
 }
 
 /// TS #2487: the supervisor serves each worker's own catalog slice without reforwarding;
 /// a worker-side mutation bumps that worker's generation, so the next list consults it
-/// again (a frozen worker with no fresh slice fails the response, TS `failed`).
+/// again (a frozen session with no fresh slice fails the response, TS `failed`).
 #[test]
 fn wave_b10_catalog_slices_served_without_reforwarding() {
     let _serial = serial_lock();
@@ -800,6 +800,8 @@ fn wave_b10_catalog_slices_served_without_reforwarding() {
     let (mut client_b, _hello_b) = Client::connect(&socket);
     let session_a = create_scripted_session(&mut client_a, &agent_dir, dir.path(), "a");
     let session_b = create_scripted_session(&mut client_b, &agent_dir, dir.path(), "b");
+    fill_transcript(&mut client_a, &session_a);
+    fill_transcript(&mut client_b, &session_b);
     for (client, session, suffix) in [
         (&mut client_a, &session_a, "a"),
         (&mut client_b, &session_b, "b"),
@@ -830,13 +832,16 @@ fn wave_b10_catalog_slices_served_without_reforwarding() {
         "{prompts:?}"
     );
 
-    // Both slices serve without re-consulting: both workers frozen, the second list still
+    // Both slices serve without re-consulting: both sessions frozen, the second list still
     // answers fast.
-    let pid_a = worker_pid(&agent_dir, &session_a);
-    let pid_b = worker_pid(&agent_dir, &session_b);
-    assert_ne!(pid_a, pid_b, "sessions must own distinct workers");
-    stop(pid_a);
-    stop(pid_b);
+    let lifetime_a = session_lifetime(&agent_dir, &session_a);
+    let lifetime_b = session_lifetime(&agent_dir, &session_b);
+    assert_ne!(
+        lifetime_a, lifetime_b,
+        "each session is its own hosted lifetime"
+    );
+    let frozen_a = freeze(&mut client_a, dir.path(), &session_a, "a-first");
+    let frozen_b = freeze(&mut client_b, dir.path(), &session_b, "b-first");
     let started = Instant::now();
     client_a.send_command("list2", &json!({ "type": "heartbeats_list" }));
     let response = client_a.read_response("list2");
@@ -846,7 +851,7 @@ fn wave_b10_catalog_slices_served_without_reforwarding() {
     assert_eq!(prompts.len(), 2, "{prompts:?}");
     assert!(
         served < Duration::from_secs(2),
-        "a re-forward to a frozen worker would hold the 5s timeout: {served:?}"
+        "a re-forward to a frozen session would hold the 5s timeout: {served:?}"
     );
 
     // A fresh observer has no earlier heartbeat broadcasts buffered and issues no
@@ -864,9 +869,9 @@ fn wave_b10_catalog_slices_served_without_reforwarding() {
     assert_eq!(ready["success"], true, "{ready}");
 
     // A worker-side mutation bumps that worker's generation: its slice is stale, so the
-    // next list consults it again (the frozen mutated worker fails, TS `failed`).
-    cont(pid_a);
-    cont(pid_b);
+    // next list consults it again (the frozen mutated session fails, TS `failed`).
+    thaw(frozen_a);
+    thaw(frozen_b);
     client_b.send_command(
         "pause",
         &json!({
@@ -877,15 +882,21 @@ fn wave_b10_catalog_slices_served_without_reforwarding() {
     let response = client_b.read_response("pause");
     assert_eq!(response["success"], true, "{response}");
     observer.next_line_of_type(&mut std::collections::VecDeque::new(), "heartbeats_changed");
-    assert_eq!(worker_pid(&agent_dir, &session_a), pid_a);
-    assert_eq!(worker_pid(&agent_dir, &session_b), pid_b);
-    stop(pid_a);
-    stop(pid_b);
+    // Neither session was rebuilt in between: the stale slice is the mutation's doing.
+    assert_eq!(
+        (
+            session_lifetime(&agent_dir, &session_a),
+            session_lifetime(&agent_dir, &session_b)
+        ),
+        (lifetime_a, lifetime_b)
+    );
+    let frozen_a = freeze(&mut client_a, dir.path(), &session_a, "a-second");
+    let frozen_b = freeze(&mut client_b, dir.path(), &session_b, "b-second");
     client_a.send_command("list3", &json!({ "type": "heartbeats_list" }));
     let response = client_a.read_response("list3");
     assert_eq!(response["success"], false, "{response}");
-    cont(pid_a);
-    cont(pid_b);
+    thaw(frozen_a);
+    thaw(frozen_b);
 }
 
 /// The paused/active prompts in a merged `heartbeats_list` response.
@@ -932,8 +943,9 @@ fn create_scripted_session(
         .to_string()
 }
 
-/// The resident worker's pid from its persisted descriptor.
-fn worker_pid(agent_dir: &std::path::Path, active_session_id: &str) -> u32 {
+/// The id of the session's current hosted lifetime, from its persisted descriptor (a
+/// rebuilt session gets a new one).
+fn session_lifetime(agent_dir: &std::path::Path, active_session_id: &str) -> u32 {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let mut paths: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("daemon-workers"))
@@ -965,43 +977,59 @@ fn worker_pid(agent_dir: &std::path::Path, active_session_id: &str) -> u32 {
     }
 }
 
-fn stop(pid: u32) {
-    assert!(
-        Command::new("kill")
-            .args(["-STOP", &pid.to_string()])
-            .status()
-            .expect("kill -STOP")
-            .success(),
-        "SIGSTOP {pid} failed"
+/// Give the session a transcript larger than any pipe's capacity (64 KiB at most), so
+/// [`freeze`]'s export cannot finish into an undrained pipe.
+fn fill_transcript(client: &mut Client, session_id: &str) {
+    client.send_command(
+        "fill",
+        &json!({
+            "type": "prompt_and_wait",
+            "activeSessionId": session_id,
+            "message": "x".repeat(256 * 1024),
+        }),
     );
-    // kill's exit status acknowledges sending the signal, not completion of the
-    // worker's group stop. Observe the state before issuing any catalog command.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let output = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "stat="])
-            .output()
-            .expect("read worker process state");
-        assert!(output.status.success(), "cannot inspect worker {pid}");
-        let state = String::from_utf8_lossy(&output.stdout);
-        if state.trim_start().starts_with('T') {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "worker {pid} did not stop: {state}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let filled = client.read_response("fill");
+    assert_eq!(filled["success"], true, "the filling turn failed: {filled}");
 }
 
-fn cont(pid: u32) {
+/// Freeze a hosted session (what SIGSTOP was to a worker process): it exports its
+/// transcript into a named pipe nobody drains. The export writes under the session's
+/// state lock, so every command that needs that state — the catalog reads among them —
+/// waits behind it until [`thaw`]. Returns the pipe's read end.
+fn freeze(
+    client: &mut Client,
+    dir: &std::path::Path,
+    session_id: &str,
+    name: &str,
+) -> std::fs::File {
+    let pipe = dir.join(format!("freeze-{name}.pipe"));
     assert!(
-        Command::new("kill")
-            .args(["-CONT", &pid.to_string()])
+        Command::new("mkfifo")
+            .arg(&pipe)
             .status()
-            .expect("kill -CONT")
+            .expect("mkfifo")
             .success(),
-        "SIGCONT {pid} failed"
+        "mkfifo {} failed",
+        pipe.display()
     );
+    client.send_command(
+        format!("freeze-{name}").as_str(),
+        &json!({
+            "type": "export_jsonl",
+            "activeSessionId": session_id,
+            "outputPath": pipe.to_string_lossy(),
+        }),
+    );
+    // Opening the read end returns once the session holds the write end: it is inside
+    // the export, under its lock, and stays there (see `fill_transcript`).
+    let (opened, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || opened.send(std::fs::File::open(pipe)));
+    wait.recv_timeout(Duration::from_secs(30))
+        .expect("the session never began its export")
+        .expect("open the pipe's read end")
+}
+
+/// Let a frozen session go: drain the pipe so its export finishes and releases the lock.
+fn thaw(mut pipe: std::fs::File) {
+    std::io::copy(&mut pipe, &mut std::io::sink()).expect("drain the export");
 }

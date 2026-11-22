@@ -242,17 +242,17 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         .env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000")
         .spawn()
         .expect("spawn pa-daemon supervisor");
+    // Listening, not merely bound: the socket file appears before `listen`, and a
+    // restarted supervisor finds its predecessor's file already there.
     let deadline = Instant::now() + Duration::from_mins(1);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
+    while std::os::unix::net::UnixStream::connect(socket).is_err() {
+        assert!(Instant::now() < deadline, "supervisor socket never came up");
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("supervisor socket never appeared");
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
+    }
 }
 
 struct Client {
@@ -622,47 +622,6 @@ fn abort_compaction_mid_threshold_run_records_the_cancelled_outcome() {
     );
 }
 
-/// The resident worker's pid from the persisted descriptors (the supervisor's durable state under
-/// `daemon-workers/<socket hash>/`).
-fn worker_pid(agent_dir: &Path) -> u32 {
-    let workers_dir = agent_dir.join("daemon-workers");
-    let deadline = Instant::now() + Duration::from_mins(1);
-    while Instant::now() < deadline {
-        for hash_dir in std::fs::read_dir(&workers_dir)
-            .into_iter()
-            .flatten()
-            .flatten()
-        {
-            for file in std::fs::read_dir(hash_dir.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                let path = file.path();
-                if path.extension().is_none_or(|extension| extension != "json") {
-                    continue;
-                }
-                let Ok(content) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let Ok(descriptor) = serde_json::from_str::<Value>(&content) else {
-                    continue;
-                };
-                if let Some(pid) = descriptor.get("pid").and_then(Value::as_u64) {
-                    if pid > 0 {
-                        return pid as u32;
-                    }
-                }
-            }
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    panic!(
-        "no worker descriptor with a pid under {}",
-        workers_dir.display()
-    );
-}
-
 /// The supervisor's terminal-compaction journal for this socket, if written.
 fn supervision_journal(agent_dir: &Path) -> Option<PathBuf> {
     let workers_dir = agent_dir.join("daemon-workers");
@@ -679,50 +638,11 @@ fn supervision_journal(agent_dir: &Path) -> Option<PathBuf> {
     None
 }
 
-fn signal(pid: u32, signal: &str) {
-    let status = Command::new("kill")
-        .arg(signal)
-        .arg(pid.to_string())
-        .status()
-        .expect("send signal");
-    assert!(status.success(), "kill {signal} {pid} failed");
-}
-
-/// SIGSTOP the worker and wait until every one of its threads is parked:
-/// `kill` returns once the stop is queued, and a runtime thread still running
-/// serves the next command before it stops.
-fn freeze(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-STOP")
-        .arg(pid.to_string())
-        .status()
-        .expect("SIGSTOP the worker");
-    assert!(status.success(), "SIGSTOP must reach the worker");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !all_threads_stopped(pid) {
-        assert!(Instant::now() < deadline, "the worker never stopped");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Whether every `/proc/<pid>/task/<tid>/stat` reads `T` (stopped).
-fn all_threads_stopped(pid: u32) -> bool {
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-        return false;
-    };
-    let states: Vec<Option<char>> = tasks
-        .flatten()
-        .map(|task| {
-            let stat = std::fs::read_to_string(task.path().join("stat")).ok()?;
-            let (_, rest) = stat.rsplit_once(')')?;
-            rest.split_whitespace().next()?.chars().next()
-        })
-        .collect();
-    !states.is_empty() && states.iter().all(|state| *state == Some('T'))
-}
-
+/// The supervisor declares a compaction terminal when the session that runs it cannot:
+/// the abort is acknowledged from the supervisor plane, the run is declared ended after
+/// the grace and journaled, and the session's next lifetime discloses it.
 #[test]
-fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
+fn wedged_session_abort_acks_immediately_and_declares_terminal() {
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
@@ -758,7 +678,7 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
     )
     .expect("write settings.json");
     let socket = dir.path().join("daemon.sock");
-    let _supervisor = spawn_supervisor(&socket, &agent_dir);
+    let mut supervisor = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
 
     client.send_command(
@@ -790,7 +710,13 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
 
     client.send_command(
         "p1",
-        &json!({"type": "prompt_and_wait", "activeSessionId": session_id, "message": "seed turn"}),
+        // A transcript larger than any pipe's capacity (64 KiB at most): the export that
+        // wedges the session below cannot finish into an undrained pipe.
+        &json!({
+            "type": "prompt_and_wait",
+            "activeSessionId": session_id,
+            "message": format!("seed turn {}", "x".repeat(256 * 1024)),
+        }),
     );
     let seeded = client.read_response("p1");
     assert_eq!(seeded["success"], true, "seed prompt failed: {seeded}");
@@ -809,7 +735,7 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
         "the compaction summarizer request never arrived"
     );
 
-    // The forwarded `compaction_start` must reach an attached client before the freeze: the
+    // The forwarded `compaction_start` must reach an attached client before the wedge: the
     // loader is up because that frame flowed — which also arms the supervisor's token.
     client.wait_for_event(
         Duration::from_mins(1),
@@ -817,7 +743,7 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
         |event| event["type"] == "compaction_start",
     );
 
-    // The second client attaches while the worker still answers, then the worker freezes.
+    // The second client attaches while the session still answers, then the session wedges.
     let mut second = Client::connect(&socket);
     second.send_command(
         "a2",
@@ -825,8 +751,35 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
     );
     let attached2 = second.read_response("a2");
     assert_eq!(attached2["success"], true, "second attach: {attached2}");
-    let pid = worker_pid(&agent_dir);
-    freeze(pid);
+    // The wedge (what SIGSTOP was to a worker process): the session exports its transcript
+    // into a named pipe nobody drains. The export writes under the session's state lock,
+    // so the compaction run cannot settle its own abort — it needs that lock to end.
+    let pipe = dir.path().join("wedge.pipe");
+    assert!(
+        Command::new("mkfifo")
+            .arg(&pipe)
+            .status()
+            .expect("mkfifo")
+            .success(),
+        "mkfifo {} failed",
+        pipe.display()
+    );
+    client.send_command(
+        "wedge",
+        &json!({
+            "type": "export_jsonl",
+            "activeSessionId": session_id,
+            "outputPath": pipe.to_string_lossy(),
+        }),
+    );
+    // Opening the read end returns once the session holds the write end: it is inside
+    // the export, under its lock. The read end stays open and undrained to the end.
+    let (opened, wait) = std::sync::mpsc::channel();
+    std::thread::spawn(move || opened.send(std::fs::File::open(pipe)));
+    let _undrained = wait
+        .recv_timeout(Duration::from_mins(1))
+        .expect("the session never began its export")
+        .expect("open the pipe's read end");
 
     // The abort acknowledges immediately from the supervisor plane (TS daemon-mode's
     // in-process `abortCompaction` always replies instantly; never the 30s route timeout).
@@ -838,10 +791,10 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
     let aborted = second.read_response("ab1");
     let ack_elapsed = sent_at.elapsed();
     assert_eq!(aborted["success"], true, "abort failed: {aborted}");
-    // The bound proves the ack never waited on the wedged worker's 30s route.
+    // The bound proves the ack never waited on the wedged session's 30s route.
     assert!(
         ack_elapsed < Duration::from_secs(25),
-        "the acknowledgment waited on the wedged worker: {ack_elapsed:?}"
+        "the acknowledgment waited on the wedged session: {ack_elapsed:?}"
     );
 
     // The supervisor declares the run terminal after the grace: the synthetic aborted
@@ -874,9 +827,16 @@ fn wedged_worker_abort_acks_immediately_and_declares_terminal() {
     assert_eq!(record["activeSessionId"], session_id.as_str());
     assert_eq!(record["reason"], "threshold");
 
-    // Kill the frozen worker: the supervisor relaunches it, and the create replay discloses
-    // the aborted run — the same durable `compaction_outcome` row the worker's own arms persist.
-    signal(pid, "-KILL");
+    // The wedged session's lifetime ends with its daemon (kill -9: nothing in it settles
+    // anything). The next boot revives the session, which was mid-turn, and the create
+    // replay discloses the aborted run — the same durable `compaction_outcome` row the
+    // session's own arms persist. The revived turn's summarizer is no longer held.
+    supervisor.child.kill().expect("kill -9 the daemon");
+    supervisor.child.wait().expect("reap the daemon");
+    drop(second);
+    drop(client);
+    mock.hold_summarizer.store(false, Ordering::SeqCst);
+    let _revived = spawn_supervisor(&socket, &agent_dir);
     let deadline = Instant::now() + Duration::from_secs(90);
     let durable = loop {
         let row = std::fs::read_dir(&session_dir)
