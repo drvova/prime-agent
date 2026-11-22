@@ -43,8 +43,8 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (a
-        // kernel bootstrap, a bytecode compile) outlive a worker-only kill and
+        // Freeze the whole tree before any kill: a worker's grandchildren (the
+        // commands its session started) outlive a worker-only kill and
         // keep writing into the test's temp dir after its removal. A stopped
         // process cannot fork, so the walk settles once every member is stopped.
         let root = self.child.id();
