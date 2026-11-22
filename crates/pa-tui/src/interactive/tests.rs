@@ -97,6 +97,29 @@ fn a_supervisor_loss_during_a_session_reattach_starts_the_full_recovery() {
     );
 }
 
+/// A window whose daemon vanished without notice asks for one to be started when its first
+/// attempt finds none, and only once: a daemon that dies at every start must not be relaunched
+/// in a loop by its windows. An announced shutdown stays stopped.
+#[test]
+fn a_lost_daemon_is_asked_for_once_and_an_announced_shutdown_never() {
+    let mut lost = Connection::Connected;
+    lost.on(ConnectionEvent::ConnectionLost);
+    let mut shut_down = Connection::Connected;
+    shut_down.on(ConnectionEvent::ShutdownNotice);
+    assert_eq!(
+        (
+            lost.on(ConnectionEvent::ConnectFailed),
+            lost.on(ConnectionEvent::ConnectFailed),
+            shut_down.on(ConnectionEvent::ConnectFailed),
+        ),
+        (
+            ConnectionEffect::Launch,
+            ConnectionEffect::None,
+            ConnectionEffect::None
+        )
+    );
+}
+
 #[test]
 fn flush_rows_write_crlf_and_keep_zone_markers() {
     // A marked row keeps its zero-width zone sequence inline (the flushed row persists

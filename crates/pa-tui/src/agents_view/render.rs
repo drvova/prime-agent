@@ -758,7 +758,21 @@ impl AgentsViewMode {
         // The unread agent messages addressed to this session while the Traffic pane is closed.
         let unread = active_session_id.map_or(0, |id| self.traffic.unread_for(id));
         let mail = (unread > 0).then(|| (format!("\u{2709}{unread}"), ThemeColor::Accent));
-        let badges: Vec<(String, ThemeColor)> = heartbeat.into_iter().chain(mail).collect();
+        // A session that went down wears it on its row: failed or still rebuilding in the
+        // error color, recovered as a quieter mark. The reason is the selected row's detail.
+        let fault = crate::crash_notice::row_fault(&row.summary)
+            .as_ref()
+            .and_then(crate::crash_notice::fault_badge)
+            .map(|(badge, alarming)| {
+                let color = if alarming {
+                    ThemeColor::Error
+                } else {
+                    ThemeColor::Warning
+                };
+                (badge.to_string(), color)
+            });
+        let badges: Vec<(String, ThemeColor)> =
+            fault.into_iter().chain(heartbeat).chain(mail).collect();
         let total_badge_cells: usize = badges.iter().map(|(badge, _)| str_width(badge) + 1).sum();
         let badges =
             if !badges.is_empty() && layout.name_width > 1 + indent_width + total_badge_cells {
@@ -845,29 +859,39 @@ impl AgentsViewMode {
         if width == 0 || !matches!(row.kind, RowKind::Agent | RowKind::Subagent) {
             return Vec::new();
         }
-        let Some(note) = row
+        let note = row
             .summary
             .get("progressNote")
             .and_then(Value::as_str)
             .map(|text| text.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|text| !text.is_empty())
-        else {
-            return Vec::new();
-        };
+            .map(|note| (note, ThemeColor::Dim));
+        // The row's fault, when it has one, leads: why the session went down and what became
+        // of it.
+        let fault = crate::crash_notice::row_fault(&row.summary)
+            .as_ref()
+            .and_then(crate::crash_notice::fault_detail)
+            .map(|detail| (detail, ThemeColor::Error));
         // Keep room for a wide character when nesting exceeds the pane.
         let indent_width = (str_width(&depth_indent(row.depth)) + 2).min(width.saturating_sub(2));
         let indent = " ".repeat(indent_width);
-        let dim = self.theme.fg_style(ThemeColor::Dim);
         let wrap_width = width.saturating_sub(str_width(&indent)).max(1);
-        crate::width::wrap_text(&note, wrap_width)
+        fault
             .into_iter()
-            .map(|mut wrapped| {
-                let mut out: Line = vec![crate::Span::styled(indent.clone(), dim)];
-                for span in wrapped.drain(..) {
-                    out.push(crate::Span::styled(span.content, dim));
-                }
-                // A one-column pane cannot contain a wide character.
-                crate::width::slice_line_by_column_strict(&out, 0, width, true)
+            .chain(note)
+            .flat_map(|(text, color)| {
+                let style = self.theme.fg_style(color);
+                let indent = indent.clone();
+                crate::width::wrap_text(&text, wrap_width)
+                    .into_iter()
+                    .map(move |mut wrapped| {
+                        let mut out: Line = vec![crate::Span::styled(indent.clone(), style)];
+                        for span in wrapped.drain(..) {
+                            out.push(crate::Span::styled(span.content, style));
+                        }
+                        // A one-column pane cannot contain a wide character.
+                        crate::width::slice_line_by_column_strict(&out, 0, width, true)
+                    })
             })
             .collect()
     }

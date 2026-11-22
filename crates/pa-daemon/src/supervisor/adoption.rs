@@ -364,11 +364,18 @@ impl Supervisor {
                         .filter(|record| record.busy)
                         .all(|record| record.operation == "shutdown")
                 });
-            if interrupted && !kept && !shut_down {
+            let host_died = interrupted && !kept && !shut_down;
+            if host_died {
                 self.record_host_death(&resident).await;
             }
             match self.relaunch_worker(&resident).await {
-                Ok(child) => (Ok(()), Some(child)),
+                Ok(child) => {
+                    // The roster row of a session the daemon died under says it is back.
+                    if host_died {
+                        self.publish_fault_state(&resident, "recovered").await;
+                    }
+                    (Ok(()), Some(child))
+                }
                 Err(error) => (Err(error), None),
             }
         };

@@ -343,6 +343,7 @@ impl Supervisor {
                     .await
                     .root_active_session_id
                     .clone();
+                self.publish_fault_state(&resident, "failed").await;
                 self.publish_session_fault(
                     &active_session_id,
                     json!({ "type": "session_failed", "failures": failures }),
@@ -374,6 +375,7 @@ impl Supervisor {
                         .await
                         .root_active_session_id
                         .clone();
+                    self.publish_fault_state(&resident, "recovered").await;
                     self.publish_session_fault(
                         &active_session_id,
                         json!({ "type": "session_recovered", "failures": failures }),

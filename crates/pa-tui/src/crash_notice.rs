@@ -3,7 +3,7 @@
 //! was restarted. Everything renders from the wire types alone.
 
 use pa_types::daemon::{
-    DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent,
+    DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent, SessionFaultState,
 };
 
 use crate::chat::{ChatEntry, StatusKind};
@@ -60,13 +60,39 @@ pub(crate) fn fault_row(fault: &SessionFaultEvent) -> ChatEntry {
     ChatEntry::Status { text, kind }
 }
 
-/// The agents-view badge of a session whose last lifetime ended in a fault.
-pub(crate) fn crash_badge(crash: &SessionCrashInfo) -> String {
-    match crash.kind.as_str() {
-        "daemon_restart" => "\u{26a0} restarted".to_string(),
-        "stuck" => "\u{26a0} stuck".to_string(),
-        _ => "\u{26a0} crashed".to_string(),
-    }
+/// The fault a roster row carries (its summary's `lastCrash`), when the daemon tracks what
+/// became of the session since.
+pub(crate) fn row_fault(summary: &serde_json::Value) -> Option<SessionCrashInfo> {
+    summary
+        .get("lastCrash")
+        .and_then(|crash| serde_json::from_value::<SessionCrashInfo>(crash.clone()).ok())
+        .filter(|crash| crash.state.is_some())
+}
+
+/// The agents-view badge of a faulted session and whether it is still a problem (a session
+/// that recovered is marked, not alarmed about).
+pub(crate) fn fault_badge(crash: &SessionCrashInfo) -> Option<(&'static str, bool)> {
+    Some(match crash.state? {
+        SessionFaultState::Failed => ("\u{2717} failed", true),
+        SessionFaultState::Rebuilding => ("\u{26a0} crashed", true),
+        SessionFaultState::Recovered => ("\u{26a0} recovered", false),
+    })
+}
+
+/// The selected row's fault line: the reason, and what became of the session.
+pub(crate) fn fault_detail(crash: &SessionCrashInfo) -> Option<String> {
+    let after = match crash.state? {
+        SessionFaultState::Failed => {
+            "it kept going down and was not started again; open it to start it"
+        }
+        SessionFaultState::Rebuilding => "it is being rebuilt from its transcript",
+        SessionFaultState::Recovered => "it was rebuilt from its transcript and is serving",
+    };
+    Some(format!(
+        "{} ({}) \u{2014} {after}",
+        crash_reason(crash),
+        crash.at
+    ))
 }
 
 /// The transcript row for the death the connected daemon was started after.

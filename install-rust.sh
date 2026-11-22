@@ -2137,6 +2137,20 @@ def kill_supervisor():
     if not is_prime_agent_daemon(command_line(pid)):
         progress("pid %d is not a Prime Agent daemon; not signalled" % pid)
         return "not-daemon"
+    # A Rust daemon may run under a restart owner, which its hello names as
+    # keeperPid: a process with the same command line that starts the daemon
+    # again when it dies. It is told to stop first (it passes a SIGTERM on to
+    # its daemon and exits once that daemon has), so the kill below is not
+    # answered with a restart. The same command-line check guards the signal.
+    keeper = current.get("keeperPid")
+    if (isinstance(keeper, int) and keeper > 1
+            and keeper not in (os.getpid(), os.getppid())
+            and is_prime_agent_daemon(command_line(keeper))):
+        progress("stopping the daemon's restart owner (pid %d)" % keeper)
+        try:
+            os.kill(keeper, signal.SIGTERM)
+        except OSError:
+            pass
     signalled = False
     for sig, wait_s, name in ((signal.SIGTERM, FORCE_TERM_WAIT_S, "SIGTERM"),
                               (signal.SIGKILL, FORCE_KILL_WAIT_S, "SIGKILL")):

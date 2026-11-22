@@ -123,6 +123,7 @@ impl Supervisor {
                 std::path::PathBuf::from(&descriptor.recovery_journal_path),
             )
         };
+        self.publish_fault_state(resident, "rebuilding").await;
         let log_path = self.descriptor_dir.join(SESSION_CRASH_LOG);
         let line = format!("{record}\n");
         let appended = tokio::task::spawn_blocking(move || {
@@ -190,6 +191,39 @@ impl Supervisor {
             if let Some(client) = &*self.telemetry.lock().unwrap() {
                 pa_core::session_engine::telemetry::track_session_crashed(client, &crash.kind);
             }
+        }
+    }
+
+    /// Stamp what became of the session since its last crash (`rebuilding`, `recovered`,
+    /// `failed`) on the crash its record carries, and show it on the session's roster row:
+    /// the agents view of every client then tells a session that is down, or was, from the
+    /// rest, whether or not that client is attached to it.
+    pub(super) async fn publish_fault_state(&self, resident: &Arc<ResidentWorker>, state: &str) {
+        let (session_file, fault) = {
+            let mut descriptor = resident.descriptor.lock().await;
+            let Some(Value::Object(crash)) = descriptor.rest.get_mut("lastCrash") else {
+                return;
+            };
+            crash.insert("state".to_string(), json!(state));
+            let fault = Value::Object(crash.clone());
+            if let Err(error) = persist_worker(&resident.descriptor_path, &descriptor) {
+                self.log_line(&format!(
+                    "session worker {}: its fault state could not be stamped on its record: {error:#}",
+                    resident.worker_id
+                ));
+            }
+            (descriptor.session_file.clone(), fault)
+        };
+        let Some(session_file) = session_file else {
+            return;
+        };
+        let changed = self
+            .roster
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_session_fault(&session_file, fault);
+        if let Some(entry) = changed {
+            self.push_roster_update(vec![entry], Vec::new());
         }
     }
 

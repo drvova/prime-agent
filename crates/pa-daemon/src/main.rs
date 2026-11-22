@@ -9,8 +9,9 @@ fn main() -> Result<()> {
     // (session loads, attach snapshots) must not leave per-arena high-water
     // pages resident.
     pa_types::memory_release::cap_thread_arenas();
-    // Still single-threaded: the restart owner's hand-off leaves the environment.
-    pa_daemon::keeper::adopt_host_env();
+    // Still single-threaded: a kept supervisor launch splits into the supervisor and its
+    // restart owner here; any other process sheds the owner's hand-off.
+    pa_daemon::keeper::enter(std::env::args().nth(1).as_deref() == Some("supervisor"));
     // Before the runtime's threads exist: see `pin_scheme_home`.
     pa_core::kernel::pin_scheme_home();
     tokio::runtime::Builder::new_multi_thread()

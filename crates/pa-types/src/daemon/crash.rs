@@ -22,6 +22,21 @@ pub struct SessionCrashInfo {
     pub location: String,
     pub thread: String,
     pub at: String,
+    /// What became of the session since, where the daemon tracks it (the
+    /// roster's rows).
+    pub state: Option<SessionFaultState>,
+}
+
+/// What became of a session after its last fault.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionFaultState {
+    /// The daemon is rebuilding the session from its transcript.
+    Rebuilding,
+    /// The rebuilt session is serving again.
+    Recovered,
+    /// The daemon gave up rebuilding it; the session is down until reopened.
+    Failed,
 }
 
 /// The session events the daemon itself sends about a hosted session's
@@ -114,6 +129,7 @@ mod tests {
             location: "src/a.rs:1:2".to_string(),
             thread: "session-abc".to_string(),
             at: "2026-01-01T00:00:00.000Z".to_string(),
+            state: None,
         };
         let row: SessionCrashInfo = serde_json::from_value(json!({
             "workerId": "w", "sessionFile": "/s.jsonl", "kind": "panic", "message": "boom",

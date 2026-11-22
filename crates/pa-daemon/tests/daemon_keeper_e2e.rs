@@ -2,7 +2,7 @@
 //! one daemon process, so something must bring that process back when a
 //! fault no panic hook can contain ends it.
 //!
-//! - **Self-heal with a client attached**: the daemon is SIGKILLed while a
+//! - **Self-heal with a client attached**: the daemon is killed (SIGKILL) while a
 //!   turn runs; it returns on the same socket with nothing asking for it, the
 //!   new `daemon_hello` carries the recorded death, and the interrupted
 //!   session is revived, reports what happened and serves again.
@@ -305,6 +305,28 @@ fn a_killed_daemon_returns_by_itself_reports_its_death_and_the_session_serves_ag
     let row = client.row_when(&session, "the session never came back", |row| {
         row["lifecycle"] == "live" && row["lastCrash"].is_object()
     });
+    // The roster every agents view renders from says the session went down and is back.
+    let deadline = Instant::now() + WAIT;
+    let roster_fault = loop {
+        let roster = client.request("roster", &json!({ "type": "roster_subscribe" }));
+        let fault = roster["data"]["roster"]
+            .as_array()
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .map(|entry| &entry["summary"]["lastCrash"])
+                    .find(|fault| fault["state"] == "recovered")
+            })
+            .cloned();
+        if let Some(fault) = fault {
+            break json!([fault["kind"], fault["state"]]);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the roster never showed the recovered session: {roster}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
     let attached = client.request(
         "reattach",
         &json!({ "type": "attach", "activeSessionId": session }),
@@ -327,6 +349,7 @@ fn a_killed_daemon_returns_by_itself_reports_its_death_and_the_session_serves_ag
             log,
             row["lastCrash"]["kind"].clone(),
             row["lastCrash"]["message"].clone(),
+            roster_fault,
             attached["success"].clone(),
             served["success"].clone(),
         ),
@@ -342,6 +365,7 @@ fn a_killed_daemon_returns_by_itself_reports_its_death_and_the_session_serves_ag
             vec![death.clone()],
             json!("daemon_restart"),
             json!("the daemon stopped while this session's turn was running; the session was rebuilt from its transcript and the turn was started again"),
+            json!(["daemon_restart", "recovered"]),
             json!(true),
             json!(true),
         ),

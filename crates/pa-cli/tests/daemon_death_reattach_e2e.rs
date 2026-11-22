@@ -1,7 +1,7 @@
 //! An attached interactive window lives through the daemon's death.
 //!
 //! The daemon is launched the way a window launches it (under its restart
-//! owner), a turn is started, and the session-hosting process is SIGKILLed.
+//! owner), a turn is started, and the session-hosting process is killed (SIGKILL).
 //! The window does nothing but wait: the restart owner brings the daemon
 //! back, the window reattaches by itself, shows what happened (the daemon's
 //! recorded death and what it did to this session's turn), and the session
@@ -9,6 +9,8 @@
 //! so nothing on the client side can have started the daemon again.
 
 #![cfg(unix)]
+// too_many_lines: the one test spells out the window's full option set, as its siblings do.
+#![allow(clippy::too_many_lines)]
 
 mod support;
 
@@ -196,7 +198,10 @@ async fn a_window_reattaches_by_itself_after_the_daemon_is_killed_and_reports_wh
     });
     let outcome = tokio::time::timeout(
         Duration::from_secs(300),
-        pa_tui::interactive::run_interactive(options, pa_tui::interactive::UiMode::Headless(plan)),
+        Box::pin(pa_tui::interactive::run_interactive(
+            options,
+            pa_tui::interactive::UiMode::Headless(plan),
+        )),
     )
     .await
     .expect("the window's run is bounded")

@@ -110,7 +110,9 @@ pub use command::{
     DaemonCommandWire, DaemonSessionLifecycle, ForkPosition, PromptInput, StreamingBehavior,
     TranscriptPage,
 };
-pub use crash::{DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent};
+pub use crash::{
+    DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent, SessionFaultState,
+};
 pub use outbound::{
     DaemonClosingReason, DaemonErrorInfo, DaemonEventEnvelope, DaemonOutbound,
     DaemonPeerTransportTicket, DaemonResponse, DaemonRuntimeIdentity, DaemonSavedSessionInfo,
