@@ -146,7 +146,6 @@ pub fn enter(scope: Option<Arc<SessionScope>>) -> ScopeGuard {
 /// that called `inherit`. Pass it to a runtime builder's `on_thread_start`
 /// so every worker and blocking thread of a runtime built by a session runs
 /// in that session's scope.
-#[must_use]
 pub fn inherit() -> impl Fn() + Send + Sync + 'static {
     let scope = current();
     move || CURRENT.with(|current| current.borrow_mut().clone_from(&scope))

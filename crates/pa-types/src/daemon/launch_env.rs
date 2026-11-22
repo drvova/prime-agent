@@ -49,7 +49,7 @@ pub fn collect_launch_env(
 pub fn collect_process_launch_env() -> BTreeMap<String, String> {
     collect_launch_env(
         // A hosted session forwards its own environment, not its host's.
-        crate::session_scope::vars().into_iter(),
+        crate::session_scope::vars(),
     )
 }
 

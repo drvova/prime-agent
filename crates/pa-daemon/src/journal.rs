@@ -130,16 +130,13 @@ pub(crate) struct JournalWriteOwner {
 /// file. The operating system's lock excludes other processes; this table
 /// is what lets a rebuilt hosted session take over the lock of a lifetime
 /// that ended without letting go (a stuck thread still owns its handle).
-fn held_ownerships() -> &'static std::sync::Mutex<
-    std::collections::HashMap<std::path::PathBuf, (u32, std::sync::Arc<File>)>,
-> {
-    static HELD: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<std::path::PathBuf, (u32, std::sync::Arc<File>)>,
-        >,
-    > = std::sync::OnceLock::new();
+fn held_ownerships() -> &'static std::sync::Mutex<HeldOwnerships> {
+    static HELD: std::sync::OnceLock<std::sync::Mutex<HeldOwnerships>> = std::sync::OnceLock::new();
     HELD.get_or_init(Default::default)
 }
+
+/// Sidecar path -> the owner's id and the locked file.
+type HeldOwnerships = std::collections::HashMap<std::path::PathBuf, (u32, std::sync::Arc<File>)>;
 
 impl Drop for JournalWriteOwner {
     fn drop(&mut self) {

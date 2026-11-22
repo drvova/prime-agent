@@ -135,7 +135,7 @@ async fn exit_orphaned(worker: &Worker, absent_since: tokio::time::Instant) {
     // deterministic-path relaunch - while the worker's own dead file
     // still unlinks through the identity gate.
     worker.close_listener_then_cleanup_socket().await;
-    crate::session_host::end_session().await
+    crate::session_host::end_session().await;
 }
 
 #[cfg(test)]

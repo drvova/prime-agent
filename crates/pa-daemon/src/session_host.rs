@@ -52,10 +52,13 @@ const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
 
 /// The hosted lifetimes running in this process: id -> generation and the
 /// handle that ends it.
-fn live() -> &'static Mutex<HashMap<u32, (String, Arc<HostControl>)>> {
-    static LIVE: OnceLock<Mutex<HashMap<u32, (String, Arc<HostControl>)>>> = OnceLock::new();
+fn live() -> &'static Mutex<LiveSessions> {
+    static LIVE: OnceLock<Mutex<LiveSessions>> = OnceLock::new();
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+/// Hosted id -> the lifetime's generation and the handle that ends it.
+type LiveSessions = HashMap<u32, (String, Arc<HostControl>)>;
 
 /// End the hosted lifetime `pid` whatever it is doing, and wait until its
 /// host thread has let go of it. Returns whether it was running. This is
