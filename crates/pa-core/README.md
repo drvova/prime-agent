@@ -187,6 +187,17 @@ files it answers from. The first query starts the build and waits at most 300 ms
 it answers partial. Adoption counts ride the `agent symbol index` event. Non-goals: type-aware
 resolution and cross-language references.
 
+Neighbour prefetch (`prefetch`): an `fs.read` host request (the kernel's `fs-read`) pages the read
+file's likely next reads out to the spill store and names one handle each in its reply (`related`,
+and a last line of its text pointing at `(ctx-page handle)`), never their text: its test files, the
+workspace files it imports (Rust `mod`, Python imports, JS/TS relative imports, C `#include "…"`),
+and the files calling what it defines (from the symbol index, once that is built). A decaying
+per-project share of handles the model went on to use (a `ctx-*` read of the handle, or an
+`fs-read` of the file) sets how many each read gets, down to none with a one-handle probe every
+tenth read; it lives under `<agent dir>/prefetch/` and is shared by every session on the project in
+the process. The read waits at most 150 ms for it. Adoption counts ride the `agent prefetch` event.
+Non-goals: putting neighbour text in the context.
+
 Error enrichment (`kernel::error_context`): a user cell that raised, or a `bash()` command a cell
 awaited that exited non-zero (the kernel's `command-failure` display), gets an `[error context]`
 block appended to its result: the source lines (±3) around each error location the output names,

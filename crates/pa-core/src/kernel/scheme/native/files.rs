@@ -16,6 +16,11 @@
 //! call ends with its cell: a stopped cell does not wait for a long search.
 //!
 //! Beyond what `native.rs` lists:
+//! - `(fs-read path [options])` in a session that keeps paged-out output
+//!   also returns `'related`: the file's likely next reads (its tests, the
+//!   workspace files it imports, the files calling what it defines), each a
+//!   hash of `'path`, `'why` (`"test"`, `"import"`, `"caller"`) and `'handle`
+//!   (the whole file, for `ctx-page`), named in the last line of `'text`.
 //! - `(fs-symbol name [options])` returns where one identifier is defined and
 //!   used: `'name`, `'definitions` and `'references` (each a hash of `'path`,
 //!   `'line`, `'text`; a definition also `'kind` and `'handle`, its source for
@@ -216,6 +221,7 @@ impl Files {
         FsEditHost {
             observer: None,
             seen: None,
+            prefetch: None,
         }
         .register(&mut handlers);
         // The session's index is the project's one index; only a kernel

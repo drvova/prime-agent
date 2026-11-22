@@ -622,6 +622,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::fs_edit::RereadObserver
         }),
     ));
+    // A read file's likely next reads page out to the spill store (persistent
+    // sessions only), from the project's one symbol index; telemetry counts the
+    // handles issued and used.
+    let prefetch = session_artifact_dir.as_deref().map(|session_dir| {
+        crate::prefetch::Prefetcher::new(
+            &cwd,
+            Some(&config.agent_dir),
+            crate::symbol_index::SymbolIndex::for_project(&cwd, Some(&config.agent_dir)),
+            crate::kernel::spill::SpillStore::for_session_dir(session_dir),
+            config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_prefetch(fact))
+                    as crate::prefetch::PrefetchObserver
+            }),
+        )
+    });
     crate::fs_edit::FsEditHost {
         observer: config.telemetry.is_some().then(|| {
             let counters = std::sync::Arc::clone(&session_counters);
@@ -629,6 +645,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::fs_edit::EditObserver
         }),
         seen: Some(std::sync::Arc::clone(&seen_files)),
+        prefetch: prefetch.clone(),
     }
     .register(&mut handlers);
     // `ctx.*`: page a cut cell output back in by its handle, from the
@@ -644,18 +661,25 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let counters = std::sync::Arc::clone(&session_counters);
         store.set_observer(std::sync::Arc::new(move |fact| counters.note_spill(fact)));
     }
+    // Telemetry counts each `ctx.*` read; a read of a prefetched handle counts as its use.
+    let ctx_counters = config
+        .telemetry
+        .is_some()
+        .then(|| std::sync::Arc::clone(&session_counters));
+    let ctx_observer = (ctx_counters.is_some() || prefetch.is_some()).then(|| {
+        std::sync::Arc::new(move |read, id: &str| {
+            if let Some(counters) = &ctx_counters {
+                counters.note_ctx_read(read);
+            }
+            if let Some(prefetch) = &prefetch {
+                prefetch.note_handle_read(id);
+            }
+        }) as crate::kernel::spill::host::CtxObserver
+    });
     crate::kernel::spill::host::register_ctx_handlers(
         &mut handlers,
         spill_store.as_ref(),
-        config
-            .telemetry
-            .is_some()
-            .then(|| {
-                let counters = std::sync::Arc::clone(&session_counters);
-                std::sync::Arc::new(move |read| counters.note_ctx_read(read))
-                    as crate::kernel::spill::host::CtxObserver
-            })
-            .as_ref(),
+        ctx_observer.as_ref(),
     );
     // `fs.symbol`: the project's symbol index, built in the background from
     // its first query on; a definition's source pages out to the spill store.

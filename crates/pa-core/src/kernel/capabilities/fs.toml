@@ -48,5 +48,15 @@ properties = [
 ]
 
 [[telemetry]]
+event = "agent prefetch"
+properties = [
+  "prefetch_read_count",
+  "prefetch_issued_count",
+  "prefetch_used_count",
+  "prefetch_unused_count",
+  "prefetch_skipped_count",
+]
+
+[[telemetry]]
 event = "agent fs rereads"
 properties = ["fs_reread_unchanged_count", "fs_reread_diff_count", "fs_reread_full_count"]

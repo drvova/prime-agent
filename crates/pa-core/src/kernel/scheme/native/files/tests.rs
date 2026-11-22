@@ -93,6 +93,7 @@ async fn calls_reach_the_session_handlers_which_shape_rereads_and_count_each_cal
     FsEditHost {
         observer: Some(Arc::new(move |fact| edited(Heard::Edit(fact)))),
         seen: Some(seen),
+        prefetch: None,
     }
     .register(&mut handlers);
     let kernel = kernel_over(handlers, dir.path()).await;
@@ -487,6 +488,7 @@ async fn fs_write_creates_and_replaces_files_through_the_session_handler() {
     FsEditHost {
         observer: Some(Arc::new(move |fact| edited.lock().unwrap().push(fact))),
         seen: Some(seen),
+        prefetch: None,
     }
     .register(&mut handlers);
     let kernel = kernel_over(handlers, dir.path()).await;
@@ -526,6 +528,99 @@ async fn fs_write_creates_and_replaces_files_through_the_session_handler() {
                 EditFact::Read { lines: 1 },
                 EditFact::Failed {
                     operation: crate::fs_edit::FsEditOperation::Write
+                },
+            ],
+        )
+    );
+}
+
+/// A read's reply names the file's neighbours as handles, `(ctx-page ...)`
+/// reads one, and both that read and an `fs-read` of the other neighbour
+/// count as uses when the next read settles them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_read_carries_related_handles_that_ctx_page_reads() {
+    use crate::kernel::spill::content_id;
+    use crate::kernel::spill::host::{register_ctx_handlers, CtxObserver};
+    use crate::prefetch::{PrefetchFact, Prefetcher};
+    let dir = tempfile::tempdir().unwrap();
+    let session_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src/store")).unwrap();
+    for (name, text) in [
+        ("src/store.rs", "mod cache;\n\npub struct Store;\n"),
+        ("src/store/tests.rs", "use super::Store;\n"),
+        ("src/store/cache.rs", "pub struct Cache;\n"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let store = SpillStore::for_session_dir(session_dir.path());
+    let facts = Arc::new(Mutex::new(Vec::new()));
+    let prefetch = Prefetcher::new(
+        dir.path(),
+        /*agent_dir*/ None,
+        SymbolIndex::for_project(dir.path(), /*agent_dir*/ None),
+        store.clone(),
+        Some({
+            let facts = Arc::clone(&facts);
+            Arc::new(move |fact| facts.lock().unwrap().push(fact))
+        }),
+    );
+    let mut handlers = HostRequestHandlers::new();
+    FsEditHost {
+        observer: None,
+        seen: None,
+        prefetch: Some(prefetch.clone()),
+    }
+    .register(&mut handlers);
+    let observer: CtxObserver = Arc::new(move |_read, id: &str| prefetch.note_handle_read(id));
+    register_ctx_handlers(&mut handlers, Some(&store), Some(&observer));
+    let kernel = kernel_over(handlers, dir.path()).await;
+    let read = value(
+        kernel.as_ref(),
+        "(let* ([view (fs-read \"src/store.rs\")]
+                [related (hash-ref view 'related)])
+           (list related
+                 (hash-ref (ctx-page (hash-ref (car related) 'handle)) 'text)
+                 (hash-ref view 'text)))",
+    )
+    .await
+    .unwrap();
+    let settled = value(
+        kernel.as_ref(),
+        "(hash-contains? (fs-read \"src/store/cache.rs\") 'related)",
+    )
+    .await;
+    let handle = |text: &str| format!("out:{}", content_id(text));
+    let (tests, cache) = (handle("use super::Store;\n"), handle("pub struct Cache;\n"));
+    assert_eq!(
+        (
+            read[0].clone(),
+            read[1].clone(),
+            read[2].as_str().unwrap().lines().last().map(str::to_string),
+            settled,
+            facts.lock().unwrap().clone(),
+        ),
+        (
+            json!([
+                {"path": "src/store/tests.rs", "why": "test", "handle": tests},
+                {"path": "src/store/cache.rs", "why": "import", "handle": cache},
+            ]),
+            json!("use super::Store;\n"),
+            Some(format!(
+                "[related, paged out (read with (ctx-page handle)): test src/store/tests.rs {tests} · import src/store/cache.rs {cache}]"
+            )),
+            Ok(json!(false)),
+            vec![
+                PrefetchFact {
+                    issued: 2,
+                    used: 0,
+                    unused: 0,
+                    skipped: false,
+                },
+                PrefetchFact {
+                    issued: 0,
+                    used: 2,
+                    unused: 0,
+                    skipped: false,
                 },
             ],
         )

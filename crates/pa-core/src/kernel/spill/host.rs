@@ -34,8 +34,9 @@ pub(crate) enum CtxRead {
     Info,
 }
 
-/// Hears each `ctx.*` read (telemetry).
-pub(crate) type CtxObserver = std::sync::Arc<dyn Fn(CtxRead) + Send + Sync>;
+/// Hears each answered `ctx.*` read and the id of the handle it read
+/// (telemetry, and the neighbour prefetch's use tracking).
+pub(crate) type CtxObserver = std::sync::Arc<dyn Fn(CtxRead, &str) + Send + Sync>;
 
 /// The id inside a handle (`out:7f3a9c1e04`, or the bare id); `None` when it
 /// is not a spill handle's shape.
@@ -73,7 +74,10 @@ pub(crate) fn register_ctx_handlers(
                 Box::pin(async move {
                     let reply = answer(store.as_ref(), read, &payload.data).await?;
                     if let Some(observer) = observer {
-                        observer(read);
+                        let handle = payload.data.get("handle").and_then(Value::as_str);
+                        if let Some(id) = handle.and_then(parse_handle) {
+                            observer(read, id);
+                        }
                     }
                     Ok(reply)
                 })

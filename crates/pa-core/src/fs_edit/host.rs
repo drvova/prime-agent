@@ -26,6 +26,9 @@ pub(crate) struct FsEditHost {
     /// The session's seen files: whole-file re-reads shrink to "unchanged" or a diff. `None`
     /// shows every read whole.
     pub(crate) seen: Option<Arc<SeenFiles>>,
+    /// Pages a read file's likely next reads out to the spill store and names their handles
+    /// in the read's reply (persistent sessions). `None` names none.
+    pub(crate) prefetch: Option<crate::prefetch::Prefetcher>,
 }
 
 impl FsEditHost {
@@ -54,17 +57,31 @@ impl FsEditHost {
             .await
             .context("fs edit thread")?;
         if let (Some(seen), Some(path), Ok((reply, _, rewrite))) =
-            (&self.seen, path, outcome.as_mut())
+            (&self.seen, path.as_ref(), outcome.as_mut())
         {
             match (operation, rewrite.take()) {
-                (FsEditOperation::Read, _) => seen.shape_read(&path, reply).await,
+                (FsEditOperation::Read, _) => seen.shape_read(path, reply).await,
                 (
                     FsEditOperation::Edit | FsEditOperation::Write,
                     Some(Rewrite { before, after }),
                 ) => {
-                    seen.note_edit(&path, &before, after).await;
+                    seen.note_edit(path, &before, after).await;
                 }
                 (FsEditOperation::Edit | FsEditOperation::Write, None) => {}
+            }
+        }
+        // A read names its neighbours' handles after whatever it shows of the file itself
+        // (bounded wait; none of their text enters the context).
+        if let (Some(prefetch), FsEditOperation::Read, Some(path), Ok((reply, _, _))) =
+            (&self.prefetch, operation, path, outcome.as_mut())
+        {
+            if let Some((related, line)) = prefetch.prefetch(path).await {
+                let text = reply
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                reply["text"] = Value::from(format!("{text}\n{line}"));
+                reply["related"] = related;
             }
         }
         let fact = match &outcome {

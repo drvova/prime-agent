@@ -331,6 +331,15 @@ impl SymbolIndex {
         }
     }
 
+    /// The definitions indexed for `relative` (the project-relative path, `/`-separated).
+    pub(crate) fn definitions_in(&self, relative: &str) -> Vec<Definition> {
+        lock(&self.inner.state)
+            .files
+            .get(relative)
+            .map(|entry| entry.definitions.clone())
+            .unwrap_or_default()
+    }
+
     /// The first full pass has finished.
     pub(crate) fn is_complete(&self) -> bool {
         lock(&self.inner.state).complete
