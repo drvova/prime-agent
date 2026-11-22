@@ -1309,11 +1309,18 @@ fn rpc_compact_flushes_the_start_frame_before_the_pipeline() {
     );
     let cs_ms = start_at.duration_since(sent).as_secs_f64() * 1000.0;
     let start_to_end_ms = end_at.duration_since(start_at).as_secs_f64() * 1000.0;
-    // The flush budget: a pipe write lands in microseconds; the span is tens of milliseconds here.
+    // The flush bound, measured against this run's own compaction rather than
+    // a wall-clock budget: a loaded machine stretches the command's turnaround
+    // and the span alike. A flushed frame arrives at the very start of the run
+    // (0.3-4 ms of ~500 ms here, under 1%); a stranded one leaves only at the
+    // first yield after the pre-summarizer span (78-88 ms of ~500 ms, 15-19%).
+    let start_share = cs_ms / (cs_ms + start_to_end_ms);
     assert!(
-        cs_ms < 20.0,
-        "compaction_start arrived {cs_ms:.1}ms after the command: \
-         the queued frame stranded behind the pre-summarizer span"
+        start_share < 0.05,
+        "compaction_start arrived {cs_ms:.1}ms after the command, {:.1}% into a {:.0}ms \
+         compaction: the queued frame stranded behind the pre-summarizer span",
+        start_share * 100.0,
+        cs_ms + start_to_end_ms
     );
     // Anti-vacuity: a session too small to strand a frame would make the assert above vacuous.
     assert!(
