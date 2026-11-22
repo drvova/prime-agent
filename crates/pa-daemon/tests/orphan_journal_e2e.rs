@@ -74,9 +74,9 @@ fn orphaning_cell() -> String {
     serde_json::to_string(&json!({ "code": code })).expect("serialize cell")
 }
 
-/// The file (in the session's working directory) the wedging cell writes
-/// once it is on the engine.
-const WEDGE_RECEIPT: &str = "wedged.receipt";
+/// The file the wedging cell's native call writes once it is inside it (the
+/// kernel's test seam): from then on no interrupt reaches the cell.
+static WEDGE_MARKER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// The sequential mock: one SSE answer per request in order.
 fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
@@ -170,10 +170,18 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "type": "function",
                         "function": {
                             "name": "eval",
-                            // The cell says it is on the engine, then sits in a
-                            // native call no interrupt reaches.
+                            // The cell sits in a native call no interrupt reaches.
                             "arguments": json!({
-                                "code": format!("(fs-write {WEDGE_RECEIPT:?} \"on the engine\") (%test-block-ms 600000)"),
+                                "code": format!(
+                                    "(%test-block {})",
+                                    serde_json::to_string(
+                                        &WEDGE_MARKER
+                                            .get()
+                                            .expect("the test set the marker")
+                                            .to_string_lossy()
+                                    )
+                                    .expect("a Scheme string literal")
+                                ),
                             })
                             .to_string(),
                         }
@@ -422,6 +430,7 @@ fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
     // The session ends with no teardown of its own: its next cell wedges in a
     // native call, the abort finds it still on the engine after the session's
     // grace, and the supervisor ends the session as crashed.
+    let marker = WEDGE_MARKER.get_or_init(|| root.path().join("cell-blocked"));
     let wedged = client.request(
         "p2",
         &json!({
@@ -431,9 +440,7 @@ fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
         }),
     );
     assert_eq!(wedged["success"], true, "second prompt failed: {wedged}");
-    wait_until(Duration::from_secs(30), || {
-        root.path().join(WEDGE_RECEIPT).exists().then_some(())
-    });
+    wait_until(Duration::from_secs(30), || marker.exists().then_some(()));
     let aborted = client.request(
         "ab",
         &json!({ "type": "abort", "activeSessionId": active_session_id }),
