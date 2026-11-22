@@ -1274,7 +1274,7 @@ async fn template_expansion_applies() {
 #[tokio::test]
 async fn run_boundaries_record_git_state() {
     fn git(cwd: &std::path::Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = pa_types::session_scope::std_command("git")
             .args(args)
             .current_dir(cwd)
             .output()
@@ -1285,7 +1285,7 @@ async fn run_boundaries_record_git_state() {
         std::fs::write(dir.join("file.txt"), format!("{message}\n")).unwrap();
         git(dir, &["add", "-A"]);
         git(dir, &["commit", "-q", "-m", message]);
-        let output = std::process::Command::new("git")
+        let output = pa_types::session_scope::std_command("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(dir)
             .output()

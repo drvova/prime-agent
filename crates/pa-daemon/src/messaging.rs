@@ -197,7 +197,7 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
-                std::env::current_dir()
+                pa_types::session_scope::current_dir()
                     .ok()
                     .map(|dir| dir.to_string_lossy().to_string())
             })

@@ -22,7 +22,9 @@ pub struct AwsCredentials {
 }
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+    pa_types::session_scope::var(name)
+        .ok()
+        .filter(|value| !value.is_empty())
 }
 
 /// AWS credential files use `[profile name]` (config) or `[name]`.
@@ -94,7 +96,7 @@ fn aws_file_paths(lookup: impl Fn(&str) -> Option<String>, home: Option<&Path>) 
 /// file (`AWS_CONFIG_FILE` or `~/.aws/config`). May run the credential process; dropping the future
 /// kills it.
 pub async fn resolve_credentials(profile: Option<&str>) -> Option<AwsCredentials> {
-    if std::env::var("AWS_BEDROCK_SKIP_AUTH").as_deref() == Ok("1") {
+    if pa_types::session_scope::var("AWS_BEDROCK_SKIP_AUTH").as_deref() == Ok("1") {
         return Some(AwsCredentials {
             access_key_id: "dummy-access-key".to_string(),
             secret_access_key: "dummy-secret-key".to_string(),

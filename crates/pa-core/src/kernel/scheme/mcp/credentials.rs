@@ -69,7 +69,7 @@ pub(super) fn stored_key(value: &str) -> String {
     if value.is_empty() || value.starts_with('!') {
         return String::new();
     }
-    std::env::var(value)
+    pa_types::session_scope::var(value)
         .ok()
         .filter(|resolved| !resolved.trim().is_empty())
         .map_or_else(|| value.to_string(), |resolved| resolved.trim().to_string())
@@ -88,7 +88,12 @@ pub(super) fn stdio_env(
     let invalid = |reason: &str| Failure::new(FailureKind::Invalid, reason.to_string());
     let mut env: HashMap<String, String> = INHERITED_ENV
         .iter()
-        .filter_map(|name| Some(((*name).to_string(), std::env::var(name).ok()?)))
+        .filter_map(|name| {
+            Some((
+                (*name).to_string(),
+                pa_types::session_scope::var(name).ok()?,
+            ))
+        })
         .collect();
     let declared = match config.get("env") {
         None | Some(Value::Null) => return Ok((env, Vec::new())),
@@ -116,7 +121,7 @@ pub(super) fn stdio_env(
                 .ok_or_else(|| {
                     invalid("MCP stdio env values must use {\"env\": \"NAME\"} references")
                 })?;
-            std::env::var(source).map_err(|_| {
+            pa_types::session_scope::var(source).map_err(|_| {
                 Failure::new(
                     FailureKind::Invalid,
                     format!("the MCP stdio environment reference for '{name}' is unavailable"),

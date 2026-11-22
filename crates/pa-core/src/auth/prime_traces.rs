@@ -23,7 +23,7 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 5_000;
 pub fn resolve_prime_agent_traces_base_url(base_url: Option<&str>) -> String {
     let override_url = base_url
         .map(str::to_string)
-        .or_else(|| std::env::var("PRIME_AGENT_TRACES_BASE_URL").ok());
+        .or_else(|| pa_types::session_scope::var("PRIME_AGENT_TRACES_BASE_URL").ok());
     normalize_base_url(override_url.as_deref())
 }
 

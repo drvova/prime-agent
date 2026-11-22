@@ -536,7 +536,8 @@ impl McpManager {
         if let Some(env_var) = bearer_token_env_var {
             // The configured env var is the ONLY credential source: when it is unset, a stale OAuth
             // credential must never authorize dispatch.
-            return std::env::var(env_var).is_ok_and(|value| !value.trim().is_empty());
+            return pa_types::session_scope::var(env_var)
+                .is_ok_and(|value| !value.trim().is_empty());
         }
         // ONE shared grant-usability rule (with the view states): typed
         // oauth, non-empty access, endpoint binding, no expired-no-refresh.

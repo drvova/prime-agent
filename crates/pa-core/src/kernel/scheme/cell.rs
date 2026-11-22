@@ -369,6 +369,18 @@ struct BackgroundCell {
     ended: tokio::sync::watch::Sender<Option<CellEnding>>,
     notice: Mutex<Notice>,
 }
+/// How long an interrupted cell's thread may take to return before the cell
+/// is reported as stuck.
+const STUCK_CELL_GRACE: Duration = Duration::from_secs(20);
+
+/// Overrides [`STUCK_CELL_GRACE`] in milliseconds.
+const STUCK_CELL_GRACE_ENV: &str = "PRIME_AGENT_STUCK_CELL_GRACE_MS";
+
+/// Told when a cell's thread outlives its interrupt, with one line saying
+/// so. A process that hosts several sessions sets one on each session's
+/// [`pa_types::session_scope::SessionScope`] and ends the session it names:
+/// the engine the stuck thread holds can never run another cell.
+pub struct StuckCellSink(pub Box<dyn Fn(&str) + Send + Sync>);
 
 /// Why the kernel stopped a cell its call was waiting for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1053,7 +1065,28 @@ pub(super) async fn execute(
         Waited::Ended(joined) => (joined, None),
         Waited::Stopped(stop) => {
             cells.interrupt(&cell);
-            (thread.await, Some(stop))
+            // The interrupt stops Scheme code and every host function that
+            // watches the cell's signal. One that does not can only be
+            // reported: the session's host decides what to do with a thread
+            // that will not come back.
+            let grace = pa_types::session_scope::var(STUCK_CELL_GRACE_ENV)
+                .ok()
+                .and_then(|raw| raw.parse().ok())
+                .map_or(STUCK_CELL_GRACE, Duration::from_millis);
+            match tokio::time::timeout(grace, &mut thread).await {
+                Ok(joined) => (joined, Some(stop)),
+                Err(_) => {
+                    if let Some(sink) = pa_types::session_scope::current()
+                        .and_then(|scope| scope.slot::<StuckCellSink>())
+                    {
+                        (sink.0)(&format!(
+                            "a kernel cell did not stop within {} ms of its interrupt: a host call is not observing the cell's cancellation",
+                            grace.as_millis()
+                        ));
+                    }
+                    (thread.await, Some(stop))
+                }
+            }
         }
         Waited::Outlived => {
             let shown = take_shown(on_late_sent_agent_message);

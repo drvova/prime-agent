@@ -38,7 +38,7 @@ impl NetworkMode {
     /// package manager reads it).
     #[must_use]
     pub fn from_env() -> Self {
-        let offline = std::env::var("PI_OFFLINE").is_ok_and(|value| {
+        let offline = pa_types::session_scope::var("PI_OFFLINE").is_ok_and(|value| {
             value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
         });
         if offline {

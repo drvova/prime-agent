@@ -583,7 +583,7 @@ async fn run_bash(run: RunBash<'_>) -> BashEnd {
         Ok(shell) => shell,
         Err(error) => return spawn_failure(error.to_string()),
     };
-    let mut command = tokio::process::Command::new(&shell.shell);
+    let mut command = pa_types::session_scope::tokio_command(&shell.shell);
     command
         .args(&shell.args)
         .arg(&resolved)
@@ -1292,7 +1292,7 @@ mod tests {
             events: &mut tokio::sync::broadcast::Receiver<Arc<crate::worker::OutboundFrame>>,
         ) -> Self {
             let fifo = cwd.join("child-alive");
-            let made = std::process::Command::new("mkfifo")
+            let made = pa_types::session_scope::std_command("mkfifo")
                 .arg(&fifo)
                 .status()
                 .expect("run mkfifo");

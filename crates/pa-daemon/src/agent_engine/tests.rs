@@ -67,7 +67,7 @@ pub(crate) fn telemetry_opt_in() -> TelemetryOptIn {
     let guard = crate::test_support::TELEMETRY_ENV_MUTEX
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let previous = std::env::var_os("DO_NOT_TRACK");
+    let previous = pa_types::session_scope::var_os("DO_NOT_TRACK");
     std::env::set_var("DO_NOT_TRACK", "0");
     TelemetryOptIn {
         previous,

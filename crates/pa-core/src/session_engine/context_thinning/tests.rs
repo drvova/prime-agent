@@ -485,7 +485,7 @@ fn a_hanging_spill_writer_never_delays_the_thinned_view() {
     // Opening a FIFO for writing blocks until a reader opens it: the writer
     // thread's temp-file create for the first thinned result never returns.
     let fifo = spill_dir.join(format!("{}.tmp", content_id(&result_text(&messages[2]))));
-    let status = std::process::Command::new("mkfifo")
+    let status = pa_types::session_scope::std_command("mkfifo")
         .arg(&fifo)
         .status()
         .expect("mkfifo");

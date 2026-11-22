@@ -163,7 +163,7 @@ fn find_program(name: &str) -> Option<PathBuf> {
     } else {
         &[""]
     };
-    std::env::split_paths(&std::env::var_os("PATH")?)
+    std::env::split_paths(&pa_types::session_scope::var_os("PATH")?)
         .flat_map(|directory| {
             suffixes
                 .iter()
@@ -285,7 +285,7 @@ async fn run(check: Check) -> Outcome {
     let Ok(error_end) = output_end.try_clone() else {
         return failed(started);
     };
-    let mut command = tokio::process::Command::new(&check.argv[0]);
+    let mut command = pa_types::session_scope::tokio_command(&check.argv[0]);
     command
         .args(&check.argv[1..])
         .current_dir(&check.cwd)
@@ -596,7 +596,7 @@ mod tests {
         std::fs::create_dir_all(&bin).unwrap();
         // A child process writes the script, so no thread of this one can
         // hold it open for writing while it is being started.
-        let written = std::process::Command::new("sh")
+        let written = pa_types::session_scope::std_command("sh")
             .arg("-c")
             .arg("printf '#!/bin/sh\\nexit 0\\n' > tsc && chmod +x tsc")
             .current_dir(&bin)

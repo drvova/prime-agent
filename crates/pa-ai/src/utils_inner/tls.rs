@@ -20,7 +20,7 @@ static NATIVE_CERTS: LazyLock<Vec<CertificateDer<'static>>> = LazyLock::new(|| {
 });
 
 static EXTRA_CERTS: LazyLock<Vec<CertificateDer<'static>>> = LazyLock::new(|| {
-    let Some(path) = std::env::var_os("NODE_EXTRA_CA_CERTS") else {
+    let Some(path) = pa_types::session_scope::var_os("NODE_EXTRA_CA_CERTS") else {
         return Vec::new();
     };
     let mut certs = Vec::new();

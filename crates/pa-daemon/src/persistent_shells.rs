@@ -243,7 +243,7 @@ pub(crate) async fn respond(
 #[cfg(all(test, unix))]
 mod test_support {
     use std::path::Path;
-    use std::process::{Child, Command};
+    use std::process::Child;
 
     /// A setsid'd `sleep` registered in `agent_dir`'s persistent-shell home,
     /// assigned to `session_id`, under `start_id` (`None`: its real start identity).
@@ -252,7 +252,7 @@ mod test_support {
         session_id: &str,
         start_id: Option<&str>,
     ) -> Child {
-        let mut command = Command::new("sleep");
+        let mut command = pa_types::session_scope::std_command("sleep");
         command.arg("60");
         pa_core::platform::process::set_new_session(&mut command);
         let child = command.spawn().expect("spawn sleeper");
@@ -286,7 +286,7 @@ mod test_support {
 #[cfg(all(test, unix))]
 mod tests {
     use std::os::unix::process::{CommandExt, ExitStatusExt};
-    use std::process::{Child, Command};
+    use std::process::Child;
 
     use nix::sys::signal::{kill, Signal as NixSignal};
     use nix::unistd::Pid;
@@ -304,13 +304,13 @@ mod tests {
     /// A registered `sleep` leading its own process group, plus one member in
     /// that group.
     fn registered_group(agent_dir: &std::path::Path) -> (Child, Child, String) {
-        let mut leader_command = Command::new("sleep");
+        let mut leader_command = pa_types::session_scope::std_command("sleep");
         leader_command.arg("60");
         pa_core::platform::process::set_new_process_group(&mut leader_command);
         let leader = leader_command.spawn().unwrap();
         let start_id = crate::lease::get_process_start_id(leader.id()).unwrap();
         let id = register(agent_dir, leader.id(), &start_id, "s1");
-        let member = Command::new("sleep")
+        let member = pa_types::session_scope::std_command("sleep")
             .arg("60")
             .process_group(leader.id() as i32)
             .spawn()
@@ -363,7 +363,7 @@ mod tests {
         use std::io::BufRead;
         let root = tempfile::tempdir().unwrap();
         let (mut leader, member, id) = registered_group(root.path());
-        let mut stubborn = Command::new("sh")
+        let mut stubborn = pa_types::session_scope::std_command("sh")
             .args(["-c", "trap '' TERM; echo ready; exec sleep 60"])
             .process_group(leader.id() as i32)
             .stdout(std::process::Stdio::piped())
@@ -391,7 +391,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let marker = root.path().join("cleaned-up");
         let (leader, member, id) = registered_group(root.path());
-        let mut cleanup = Command::new("sh")
+        let mut cleanup = pa_types::session_scope::std_command("sh")
             .args([
                 "-c",
                 "trap 'sleep 1; touch \"$0\"; exit 0' TERM; echo ready; while :; do sleep 0.05; done",
@@ -464,7 +464,9 @@ mod tests {
     fn shell_rows_list_every_shell_with_its_session_and_the_output_tail_reads_the_newest_lines() {
         let root = tempfile::tempdir().unwrap();
         let mut sleeper = registered_sleeper(root.path(), "s1", None);
-        let mut done = Command::new("true").spawn().unwrap();
+        let mut done = pa_types::session_scope::std_command("true")
+            .spawn()
+            .unwrap();
         done.wait().unwrap();
         let finished = register(root.path(), done.id(), "proc:0", "gone");
         std::fs::write(shell_file(root.path(), &finished, "rc"), "3\n").unwrap();

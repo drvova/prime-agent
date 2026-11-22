@@ -78,7 +78,7 @@ pub fn find_env_keys(provider: &str) -> Option<Vec<String>> {
     let env_vars = get_api_key_env_vars(provider)?;
     let found: Vec<String> = env_vars
         .into_iter()
-        .filter(|env_var| std::env::var_os(env_var).is_some_and(|v| !v.is_empty()))
+        .filter(|env_var| pa_types::session_scope::var_os(env_var).is_some_and(|v| !v.is_empty()))
         .map(std::string::ToString::to_string)
         .collect();
     if found.is_empty() {
@@ -94,7 +94,7 @@ pub fn find_env_keys(provider: &str) -> Option<Vec<String>> {
 pub fn get_env_api_key(provider: &str) -> Option<String> {
     if let Some(keys) = find_env_keys(provider) {
         if let Some(first) = keys.first() {
-            if let Ok(value) = std::env::var(first) {
+            if let Ok(value) = pa_types::session_scope::var(first) {
                 if !value.is_empty() {
                     return Some(value);
                 }
@@ -106,15 +106,16 @@ pub fn get_env_api_key(provider: &str) -> Option<String> {
         let has_credentials = has_vertex_adc_credentials();
         let has_project = ["GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT"]
             .iter()
-            .any(|var| std::env::var(var).is_ok_and(|v| !v.is_empty()));
-        let has_location = std::env::var("GOOGLE_CLOUD_LOCATION").is_ok_and(|v| !v.is_empty());
+            .any(|var| pa_types::session_scope::var(var).is_ok_and(|v| !v.is_empty()));
+        let has_location =
+            pa_types::session_scope::var("GOOGLE_CLOUD_LOCATION").is_ok_and(|v| !v.is_empty());
         if has_credentials && has_project && has_location {
             return Some("<authenticated>".to_string());
         }
     }
 
     if provider == "amazon-bedrock" {
-        let env = |name: &str| std::env::var(name).is_ok_and(|v| !v.is_empty());
+        let env = |name: &str| pa_types::session_scope::var(name).is_ok_and(|v| !v.is_empty());
         if env("AWS_PROFILE")
             || (env("AWS_ACCESS_KEY_ID") && env("AWS_SECRET_ACCESS_KEY"))
             || env("AWS_BEARER_TOKEN_BEDROCK")
@@ -130,7 +131,7 @@ pub fn get_env_api_key(provider: &str) -> Option<String> {
 }
 
 fn has_vertex_adc_credentials() -> bool {
-    if let Ok(gac_path) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+    if let Ok(gac_path) = pa_types::session_scope::var("GOOGLE_APPLICATION_CREDENTIALS") {
         if !gac_path.is_empty() {
             return std::path::Path::new(&gac_path).exists();
         }

@@ -147,7 +147,6 @@ impl WorkspaceCheckpointController for ReplCheckpoints {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
 
     use serde_json::json;
 
@@ -157,7 +156,7 @@ mod tests {
     fn project(root: &std::path::Path, name: &str) -> (Arc<Mutex<SessionCore>>, PathBuf) {
         let workspace = root.join(name);
         std::fs::create_dir_all(&workspace).unwrap();
-        let init = Command::new("git")
+        let init = pa_types::session_scope::std_command("git")
             .args(["init", "-q"])
             .current_dir(&workspace)
             .status();

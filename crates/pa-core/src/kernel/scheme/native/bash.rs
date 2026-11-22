@@ -508,7 +508,7 @@ pub(super) fn open(
             .rev()
             .find(|(variable, _)| variable == name)
             .map(|(_, value)| value.clone())
-            .or_else(|| std::env::var(name).ok())
+            .or_else(|| pa_types::session_scope::var(name).ok())
             .filter(|value| !value.is_empty())
     };
     let cores = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);

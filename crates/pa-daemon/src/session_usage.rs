@@ -809,7 +809,7 @@ mod tests {
     #[test]
     #[ignore = "needs a captured session fixture (SAVED_USAGE_FIXTURE)"]
     fn captured_session_summary_matches_the_ts_fold() {
-        let Some(path) = std::env::var_os("SAVED_USAGE_FIXTURE") else {
+        let Some(path) = pa_types::session_scope::var_os("SAVED_USAGE_FIXTURE") else {
             return;
         };
         let summary = read_own_usage_summary(Path::new(&path));

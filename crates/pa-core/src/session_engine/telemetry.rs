@@ -40,8 +40,8 @@ mod track;
 pub use track::{
     track_catalog_refresh, track_compaction_abort_declared, track_daemon_event_summary,
     track_deleted_child_usage_captured, track_model_refused, track_provider_oauth_login,
-    track_sessions_imported, track_worker_adoption, track_worker_children_closed,
-    OAuthLoginSurface,
+    track_session_crashed, track_sessions_imported, track_worker_adoption,
+    track_worker_children_closed, OAuthLoginSurface,
 };
 
 mod classify;

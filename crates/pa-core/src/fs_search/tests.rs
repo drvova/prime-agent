@@ -276,7 +276,10 @@ fn paths_print_with_slashes_relative_to_the_cwd() {
 /// glob. Prints both timings (in-process search vs spawning `rg`).
 #[test]
 fn matches_ripgrep_on_the_workspace_sources() {
-    let Ok(probe) = std::process::Command::new("rg").arg("--version").output() else {
+    let Ok(probe) = pa_types::session_scope::std_command("rg")
+        .arg("--version")
+        .output()
+    else {
         eprintln!("rg is not installed; skipping the ripgrep parity check");
         return;
     };
@@ -297,7 +300,7 @@ fn matches_ripgrep_on_the_workspace_sources() {
     .unwrap();
     let in_process = started.elapsed();
     let started = std::time::Instant::now();
-    let output = std::process::Command::new("rg")
+    let output = pa_types::session_scope::std_command("rg")
         .args([
             "--line-number",
             "--no-heading",

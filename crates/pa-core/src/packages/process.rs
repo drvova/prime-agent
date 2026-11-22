@@ -4,7 +4,7 @@
 //! strings are part of the CLI parity surface.
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 /// Poll interval for the capture timeout loop.
@@ -16,7 +16,7 @@ pub fn run_command(
     args: &[&str],
     cwd: Option<&std::path::Path>,
 ) -> anyhow::Result<()> {
-    let mut command = Command::new(program);
+    let mut command = pa_types::session_scope::std_command(program);
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
@@ -42,7 +42,7 @@ pub fn run_command_capture(
     timeout: Option<Duration>,
     env: &[(&str, &str)],
 ) -> anyhow::Result<String> {
-    let mut command = Command::new(program);
+    let mut command = pa_types::session_scope::std_command(program);
     command.args(args);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);

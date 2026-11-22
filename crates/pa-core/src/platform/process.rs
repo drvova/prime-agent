@@ -263,12 +263,12 @@ pub fn kill_process_group_or_pid(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    let system_root =
-        std::env::var_os("SystemRoot").unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
+    let system_root = pa_types::session_scope::var_os("SystemRoot")
+        .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
     let taskkill = std::path::Path::new(&system_root)
         .join("System32")
         .join("taskkill.exe");
-    let mut command = Command::new(&taskkill);
+    let mut command = pa_types::session_scope::std_command(&taskkill);
     command
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(std::process::Stdio::null())
@@ -654,7 +654,7 @@ mod exit_wait_tests {
 
     #[tokio::test]
     async fn wait_for_exit_resolves_at_once_for_a_reaped_pid() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("600")
             .spawn()
             .expect("spawn sleep");

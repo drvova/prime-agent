@@ -139,7 +139,7 @@ impl StdioTransport {
             .collect();
         // Longest first, so a value that contains another is redacted whole.
         private.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        let mut command = tokio::process::Command::new(program);
+        let mut command = pa_types::session_scope::tokio_command(program);
         command
             .args(&arguments)
             .env_clear()

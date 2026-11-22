@@ -79,7 +79,7 @@ fn stream_event_snapshots() {
         snapshots.last().unwrap()["partial"]["content"][0]["text"],
         "hello world"
     );
-    if std::env::var_os("PA_STREAM_PARITY_DUMP").is_some() {
+    if pa_types::session_scope::var_os("PA_STREAM_PARITY_DUMP").is_some() {
         println!(
             "PARITY_SNAPSHOTS={}",
             serde_json::to_string(&snapshots).unwrap()

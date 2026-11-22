@@ -38,7 +38,7 @@ fn ps_process_start_id(pid: u32) -> Option<String> {
     if matches!(pid_exists(pid), Ok(false)) {
         return None;
     }
-    let output = std::process::Command::new("ps")
+    let output = crate::session_scope::std_command("ps")
         .args(["-p", &pid.to_string(), "-o", "lstart="])
         .env("LC_ALL", "C")
         .env("LC_TIME", "C")
@@ -349,7 +349,7 @@ pub fn is_process_alive(pid: u32) -> anyhow::Result<bool> {
     let zombie = darwin::kinfo_proc(pid)?.is_some_and(|info| u32::from(info.p_stat) == libc::SZOMB);
     #[cfg(not(target_vendor = "apple"))]
     let zombie = {
-        let output = std::process::Command::new("ps")
+        let output = crate::session_scope::std_command("ps")
             .args(["-p", &pid.to_string(), "-o", "stat="])
             .output()?;
         String::from_utf8_lossy(&output.stdout)
@@ -595,22 +595,24 @@ mod liveness_tests {
     fn a_dead_pid_has_no_identity_and_spawns_no_ps() {
         use std::os::unix::fs::PermissionsExt;
         const CHILD: &str = "PA_TYPES_DEAD_PID_PS_CHILD";
-        if std::env::var_os(CHILD).is_none() {
+        if crate::session_scope::var_os(CHILD).is_none() {
             let dir = tempfile::tempdir().expect("temp dir");
             let fake_ps = dir.path().join("ps");
             std::fs::write(&fake_ps, "#!/bin/sh\necho 'Thu Jan  1 00:00:00 1970'\n")
                 .expect("write the fake ps");
             std::fs::set_permissions(&fake_ps, std::fs::Permissions::from_mode(0o755))
                 .expect("make the fake ps executable");
-            let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
-                .args([
-                    "--exact",
-                    "platform::process::liveness_tests::a_dead_pid_has_no_identity_and_spawns_no_ps",
-                ])
-                .env(CHILD, "1")
-                .env("PATH", dir.path())
-                .output()
-                .expect("re-run with only the fake ps on PATH");
+            let output = crate::session_scope::std_command(
+                std::env::current_exe().expect("test binary"),
+            )
+            .args([
+                "--exact",
+                "platform::process::liveness_tests::a_dead_pid_has_no_identity_and_spawns_no_ps",
+            ])
+            .env(CHILD, "1")
+            .env("PATH", dir.path())
+            .output()
+            .expect("re-run with only the fake ps on PATH");
             assert!(
                 output.status.success(),
                 "{}{}",
@@ -620,7 +622,7 @@ mod liveness_tests {
             return;
         }
         // A spawned `ps` resolves to the fake and would answer `Some("ps:...")`.
-        assert!(!std::process::Command::new("ps")
+        assert!(!crate::session_scope::std_command("ps")
             .output()
             .unwrap()
             .stdout
@@ -643,7 +645,7 @@ mod darwin_process_record_tests {
     /// as test-side ground truth. `/bin/ps` by absolute path, so it still
     /// runs when the test hides `ps` from `PATH`.
     fn ps_lstart_identity(pid: u32) -> Option<String> {
-        let output = Command::new("/bin/ps")
+        let output = crate::session_scope::std_command("/bin/ps")
             .args(["-p", &pid.to_string(), "-o", "lstart="])
             .env("LC_ALL", "C")
             .env("LC_TIME", "C")
@@ -658,10 +660,10 @@ mod darwin_process_record_tests {
     #[test]
     fn identity_and_zombie_state_match_ps_with_no_ps_on_path() {
         const CHILD: &str = "PA_TYPES_PROCESS_RECORD_CHILD";
-        if std::env::var_os(CHILD).is_none() {
+        if crate::session_scope::var_os(CHILD).is_none() {
             // Re-run this very test where `ps` does not resolve: a probe
             // that spawns `ps` answers None/Err there.
-            let output = Command::new(std::env::current_exe().expect("test binary"))
+            let output = crate::session_scope::std_command(std::env::current_exe().expect("test binary"))
                 .args([
                     "--exact",
                     "platform::process::darwin_process_record_tests::identity_and_zombie_state_match_ps_with_no_ps_on_path",
@@ -680,7 +682,7 @@ mod darwin_process_record_tests {
         }
         // Detached stdio: a sleep leaked by an assert failure cannot hold
         // the parent's output pipes open.
-        let mut child = Command::new("/bin/sleep")
+        let mut child = crate::session_scope::std_command("/bin/sleep")
             .arg("600")
             .stdout(Stdio::null())
             .stderr(Stdio::null())

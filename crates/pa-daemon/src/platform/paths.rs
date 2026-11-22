@@ -13,7 +13,8 @@ use crate::paths::hash_key;
 #[cfg(unix)]
 pub fn socket_dir() -> PathBuf {
     let uid = pa_core::platform::process::current_user_id();
-    let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+    let tmp = pa_types::session_scope::var_os("TMPDIR")
+        .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
     socket_dir_for(&tmp, uid)
 }
 
@@ -100,13 +101,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn default_socket_uses_the_same_real_uid_as_the_typescript_daemon() {
-        let output = std::process::Command::new("id")
+        let output = pa_types::session_scope::std_command("id")
             .arg("-ru")
             .output()
             .unwrap();
         assert!(output.status.success());
         let uid = String::from_utf8(output.stdout).unwrap();
-        let tmp = std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let tmp = pa_types::session_scope::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
         assert_eq!(
             socket_dir(),
             socket_dir_for(&tmp, uid.trim().parse().unwrap())

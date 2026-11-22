@@ -199,7 +199,7 @@ impl Registry {
         let variable = text("bearerTokenEnvVar");
         let oauth = config.get("oauth") == Some(&Value::Bool(true));
         let mut bearer = variable
-            .and_then(|variable| std::env::var(variable).ok())
+            .and_then(|variable| pa_types::session_scope::var(variable).ok())
             .map(|token| token.trim().to_string())
             .unwrap_or_default();
         if oauth && bearer.is_empty() {

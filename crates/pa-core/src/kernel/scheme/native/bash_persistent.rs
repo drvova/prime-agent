@@ -203,7 +203,7 @@ pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc
         .open(shell_file(&home, &id, "out"))
         .context("could not create the shell's output file")?;
     let (gate_end, mut gate) = std::io::pipe().context("could not open the start gate")?;
-    let mut process = tokio::process::Command::new(&shell);
+    let mut process = pa_types::session_scope::tokio_command(&shell);
     process
         .arg("-c")
         .arg(WRAPPER)

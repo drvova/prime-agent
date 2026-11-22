@@ -110,7 +110,7 @@ impl ExportCommands {
     /// resolved against the session's cwd and the agent dir.
     fn resolved_theme_name(&self, core: &SessionCore) -> Result<Option<String>> {
         let cwd = if core.cwd.is_empty() {
-            std::env::current_dir().unwrap_or_default()
+            pa_types::session_scope::current_dir().unwrap_or_default()
         } else {
             PathBuf::from(&core.cwd)
         };
@@ -140,7 +140,7 @@ impl ExportCommands {
         // A relative (or omitted) output path lands in the daemon process
         // cwd, like the TS `resolve` default.
         let cwd = if core.cwd.is_empty() {
-            std::env::current_dir().unwrap_or_default()
+            pa_types::session_scope::current_dir().unwrap_or_default()
         } else {
             PathBuf::from(&core.cwd)
         };

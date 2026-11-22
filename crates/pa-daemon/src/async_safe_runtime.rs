@@ -16,6 +16,9 @@ impl AsyncSafeRuntime {
     /// Build the engine's multi-thread runtime.
     pub(crate) fn new_multi_thread() -> anyhow::Result<Self> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
+            // The engine belongs to one session: its threads run in that
+            // session's scope (environment, working directory).
+            .on_thread_start(pa_types::session_scope::inherit())
             .enable_all()
             .build()?;
         Ok(Self {

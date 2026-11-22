@@ -133,7 +133,7 @@ async fn a_hanging_disk_never_blocks_a_spill() {
     // Opening a FIFO for writing blocks until a reader opens it: the writer
     // thread's temp-file create never returns.
     let fifo = spill_dir.join(format!("{}.tmp", content_id(&first)));
-    let status = std::process::Command::new("mkfifo")
+    let status = pa_types::session_scope::std_command("mkfifo")
         .arg(&fifo)
         .status()
         .expect("mkfifo");

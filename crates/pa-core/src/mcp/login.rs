@@ -191,9 +191,11 @@ impl McpOAuth {
         let credential = credentials.clone();
         // The caller may sit on any thread (a runtime worker, a blocking pool, or no runtime at
         // all), so the refresh runs on its own short-lived thread with a private runtime.
+        let session_scope = pa_types::session_scope::current();
         let result = std::thread::Builder::new()
             .name("mcp-oauth-refresh".to_string())
             .spawn(move || {
+                let _session_scope = pa_types::session_scope::enter(session_scope);
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()

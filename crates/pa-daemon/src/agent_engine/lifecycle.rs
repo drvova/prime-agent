@@ -476,7 +476,7 @@ impl AgentSessionEngine {
             })
             .or(shared_branch.as_deref());
         let mut admitted_user_ids = Vec::new();
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.lazy_restore_boundary",
                 &serde_json::json!({
@@ -535,7 +535,7 @@ impl AgentSessionEngine {
             }
             None => None,
         };
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.lazy_restore_context",
                 &serde_json::json!({

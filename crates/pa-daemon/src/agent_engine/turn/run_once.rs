@@ -319,7 +319,7 @@ impl AgentSessionEngine {
                 // dogfood failure); the Arc clone keeps reads free.
                 let session = self.session.lock().await.clone();
                 let engine = session.expect("session built");
-                if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+                if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
                     let state = engine.session.agent().state().await;
                     pa_core::session_engine::compaction_trace::trace(
                         "daemon.before_prompt_admission",

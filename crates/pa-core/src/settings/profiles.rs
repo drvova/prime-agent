@@ -74,15 +74,32 @@ static ACTIVE_PROFILE: RwLock<Option<String>> = RwLock::new(None);
 
 /// Make `name` this process's active profile (`None`: no profile). Every settings read after this
 /// layers its overlay.
+///
+/// Inside a hosted session ([`pa_types::session_scope`]) the profile is that session's alone.
 pub fn set_active_profile(name: Option<String>) {
-    *ACTIVE_PROFILE
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+    match pa_types::session_scope::current() {
+        Some(scope) => scope.set_slot(std::sync::Arc::new(SessionProfile(name))),
+        None => {
+            *ACTIVE_PROFILE
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = name;
+        }
+    }
 }
+
+/// One hosted session's active profile.
+struct SessionProfile(Option<String>);
 
 /// This process's active profile.
 #[must_use]
 pub fn active_profile() -> Option<String> {
+    if let Some(scope) = pa_types::session_scope::current() {
+        // A hosted session never falls back to the process profile: that
+        // would be another launch's choice.
+        return scope
+            .slot::<SessionProfile>()
+            .and_then(|profile| profile.0.clone());
+    }
     ACTIVE_PROFILE
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)

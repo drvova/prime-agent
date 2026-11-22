@@ -302,7 +302,7 @@ impl ProjectCard {
     pub(crate) fn refresh(&self) {
         let root = self.inner.root.as_path();
         if root.parent().is_none()
-            || std::env::var_os("HOME").is_some_and(|home| root == Path::new(&home))
+            || pa_types::session_scope::var_os("HOME").is_some_and(|home| root == Path::new(&home))
         {
             return;
         }

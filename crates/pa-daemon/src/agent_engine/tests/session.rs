@@ -829,7 +829,7 @@ fn dropping_the_engine_kills_the_command_its_kernel_left_running() {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let pipes = tempfile::tempdir().unwrap();
     let held = pipes.path().join("held");
-    assert!(std::process::Command::new("mkfifo")
+    assert!(pa_types::session_scope::std_command("mkfifo")
         .arg(&held)
         .status()
         .unwrap()

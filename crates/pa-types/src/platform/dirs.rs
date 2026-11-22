@@ -11,17 +11,19 @@ use std::path::{Path, PathBuf};
 /// resolves (the per-call-site fallback replaces the TS throw).
 #[must_use]
 pub fn home_dir() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+    if let Some(home) = crate::session_scope::var_os("HOME").filter(|home| !home.is_empty()) {
         return Some(PathBuf::from(home));
     }
     #[cfg(windows)]
     {
-        if let Some(profile) = std::env::var_os("USERPROFILE").filter(|p| !p.is_empty()) {
+        if let Some(profile) = crate::session_scope::var_os("USERPROFILE").filter(|p| !p.is_empty())
+        {
             return Some(PathBuf::from(profile));
         }
-        if let (Some(drive), Some(path)) =
-            (std::env::var_os("HOMEDRIVE"), std::env::var_os("HOMEPATH"))
-        {
+        if let (Some(drive), Some(path)) = (
+            crate::session_scope::var_os("HOMEDRIVE"),
+            crate::session_scope::var_os("HOMEPATH"),
+        ) {
             let mut home = PathBuf::from(drive);
             home.push(path);
             return Some(home);
@@ -123,7 +125,7 @@ impl StateLayout {
 /// not resolve (each caller owns its fallback).
 #[must_use]
 pub fn agent_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os(ENV_AGENT_DIR).filter(|dir| !dir.is_empty()) {
+    if let Some(dir) = crate::session_scope::var_os(ENV_AGENT_DIR).filter(|dir| !dir.is_empty()) {
         return Some(expand_tilde(&dir.to_string_lossy()));
     }
     home_dir().map(|home| StateLayout::BUILD.home_agent_dir(&home))
@@ -162,7 +164,7 @@ mod tests {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let previous: Vec<(&str, Option<std::ffi::OsString>)> = names
             .iter()
-            .map(|(name, _)| (*name, std::env::var_os(name)))
+            .map(|(name, _)| (*name, crate::session_scope::var_os(name)))
             .collect();
         for (name, value) in names {
             match value {

@@ -193,11 +193,11 @@ impl EnvCredentialSource for ProcessEnvCredentials {
     }
 
     fn prime_team_id(&self) -> Option<String> {
-        std::env::var("PRIME_TEAM_ID").ok()
+        pa_types::session_scope::var("PRIME_TEAM_ID").ok()
     }
 
     fn ambient_identity_material(&self, provider: &str) -> String {
-        let env = |name: &str| std::env::var(name).unwrap_or_default();
+        let env = |name: &str| pa_types::session_scope::var(name).unwrap_or_default();
         match provider {
             "amazon-bedrock" => {
                 if !env("AWS_PROFILE").is_empty() {

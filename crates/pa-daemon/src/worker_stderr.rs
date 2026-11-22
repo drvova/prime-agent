@@ -26,27 +26,6 @@ pub(crate) fn log_path(agent_dir: &Path, worker_id: &str) -> PathBuf {
     crate::paths::logs_dir(agent_dir).join(format!("worker-{worker_id}.stderr.log"))
 }
 
-/// Open the worker's stderr log for a spawn: created or truncated so
-/// the child starts with an empty log, then the logs dir is pruned.
-///
-/// # Errors
-///
-/// Returns an error when the logs dir cannot be created or the file cannot be opened.
-pub(crate) fn open_for_spawn(log_path: &Path) -> Result<File> {
-    let logs_dir = log_path
-        .parent()
-        .context("worker stderr log has no parent dir")?;
-    crate::paths::ensure_dir(logs_dir)?;
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).truncate(true).write(true);
-    pa_core::platform::perms::set_private_mode(&mut options);
-    let file = options
-        .open(log_path)
-        .with_context(|| format!("open worker stderr log {}", log_path.display()))?;
-    prune_retained(logs_dir, log_path, worker_stderr_log_name);
-    Ok(file)
-}
-
 /// Keep only the newest [`RETAINED_FILES`] matching logs: worker ids are
 /// minted per launch and socket paths accumulate, so without the prune
 /// every session ever hosted leaves a log. The `keep` path is spared;
@@ -93,10 +72,6 @@ fn prune_retained(logs_dir: &Path, keep: &Path, matches: impl Fn(&str) -> bool) 
         deleted += 1;
     }
     deleted
-}
-
-fn worker_stderr_log_name(name: &str) -> bool {
-    name.starts_with("worker-") && name.ends_with(".stderr.log")
 }
 
 fn socket_log_name(name: &str) -> bool {
@@ -234,25 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_open_truncates_a_leftover_log() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let agent_dir = dir.path().join("agent");
-        let path = write_log(
-            &agent_dir,
-            "logs/worker-a.stderr.log",
-            "previous launch panic\n",
-        );
-        assert_eq!(path, log_path(&agent_dir, "a"));
-        let file = open_for_spawn(&path).expect("open for spawn");
-        drop(file);
-        assert_eq!(
-            std::fs::read_to_string(&path).expect("reopen log"),
-            "",
-            "a new launch starts with an empty log"
-        );
-    }
-
-    #[test]
     fn not_ready_error_carries_the_tail() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = write_log(
@@ -285,64 +241,6 @@ mod tests {
         assert_eq!(
             format!("{error:#}"),
             "session worker a did not come up in time"
-        );
-    }
-
-    #[test]
-    fn prune_keeps_the_newest_retained_logs() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let logs_dir = dir.path().join("logs");
-        // One file per second of age: RETAINED_FILES plus a few excess.
-        for index in 0..(RETAINED_FILES + 6) {
-            let path = write_log(
-                &logs_dir,
-                &format!("worker-{index:03}.stderr.log"),
-                "worker died\n",
-            );
-            backdate(&path, index as i64);
-        }
-        // A foreign file in the logs dir is never pruned (the daemon's
-        // own log lives here too).
-        let daemon_log = write_log(&logs_dir, "daemon.sock.abcd1234.log", "supervisor line\n");
-        // The just-opened log sorts OLDEST (a coarse-mtime tie would
-        // do this): the prune must spare it from the deletion window.
-        let keep = logs_dir.join("worker-000.stderr.log");
-        prune_retained(&logs_dir, &keep, worker_stderr_log_name);
-        let mut remaining: Vec<String> = std::fs::read_dir(&logs_dir)
-            .expect("read logs dir")
-            .filter_map(std::result::Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().to_string())
-            .collect();
-        remaining.sort();
-        assert_eq!(remaining.len(), RETAINED_FILES + 1);
-        assert!(
-            remaining.contains(&"daemon.sock.abcd1234.log".to_string()),
-            "the supervisor's own log is not a prune target"
-        );
-        let worker_logs: Vec<&String> = remaining
-            .iter()
-            .filter(|name| name.starts_with("worker-"))
-            .collect();
-        assert_eq!(worker_logs.len(), RETAINED_FILES);
-        assert!(
-            remaining.contains(&"worker-000.stderr.log".to_string()),
-            "the just-opened log survives even when it sorts into the deletion window"
-        );
-        assert!(
-            worker_logs.iter().all(|name| {
-                let index: i64 = name
-                    .trim_start_matches("worker-")
-                    .trim_end_matches(".stderr.log")
-                    .parse()
-                    .expect("numbered log");
-                index == 0 || index >= 7
-            }),
-            "the oldest logs (past the spared keep) were the ones pruned: {remaining:?}"
-        );
-        assert_eq!(
-            std::fs::read_to_string(&daemon_log).expect("daemon log readable"),
-            "supervisor line\n",
-            "foreign logs are only listed, never rewritten"
         );
     }
 
@@ -384,31 +282,5 @@ mod tests {
         assert!(fresh.exists());
         assert!(foreign.exists());
         assert!(jsonl.exists());
-    }
-
-    #[test]
-    fn prune_spares_a_fresh_burst_of_launches() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let logs_dir = dir.path().join("logs");
-        // A same-tick launch burst: every log is inside the
-        // prune-protection window.
-        for index in 0..(RETAINED_FILES + 6) {
-            write_log(
-                &logs_dir,
-                &format!("worker-{index:03}.stderr.log"),
-                "worker died\n",
-            );
-        }
-        prune_retained(&logs_dir, Path::new("absent-keep"), worker_stderr_log_name);
-        let fresh = std::fs::read_dir(&logs_dir).expect("read logs dir").count();
-        assert_eq!(fresh, RETAINED_FILES + 6, "a fresh burst is not pruned");
-        // The burst ages past the window: the same prune collapses it to
-        // the retention cap.
-        for index in 0..(RETAINED_FILES + 6) {
-            backdate(&logs_dir.join(format!("worker-{index:03}.stderr.log")), 0);
-        }
-        prune_retained(&logs_dir, Path::new("absent-keep"), worker_stderr_log_name);
-        let aged = std::fs::read_dir(&logs_dir).expect("read logs dir").count();
-        assert_eq!(aged, RETAINED_FILES, "an aged burst collapses to the cap");
     }
 }

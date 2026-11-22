@@ -35,7 +35,7 @@ impl FactoryEnvironment {
         FactoryEnvironment {
             agent_dir: Some(agent_dir),
             local_harness_dir,
-            machines_dir: std::env::var("PRIME_AGENT_MACHINES_DIR")
+            machines_dir: pa_types::session_scope::var("PRIME_AGENT_MACHINES_DIR")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())

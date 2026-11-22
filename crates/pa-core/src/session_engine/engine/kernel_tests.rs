@@ -65,7 +65,7 @@ fn piped_lines(
     path: &Path,
 ) -> tokio::io::Lines<tokio::io::BufReader<tokio::net::unix::pipe::Receiver>> {
     use tokio::io::AsyncBufReadExt as _;
-    assert!(std::process::Command::new("mkfifo")
+    assert!(pa_types::session_scope::std_command("mkfifo")
         .arg(path)
         .status()
         .unwrap()

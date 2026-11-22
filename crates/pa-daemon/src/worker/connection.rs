@@ -294,7 +294,7 @@ impl Worker {
             let stream = tokio::select! {
                 accepted = listener.accept() => match accepted {
                     Ok(accepted) => {
-                        if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+                        if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                             eprintln!("[worker {}] accepted connection", std::process::id());
                         }
                         accepted
@@ -378,7 +378,7 @@ impl Worker {
             )
             .await
         {
-            if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+            if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                 eprintln!(
                     "[worker {}] hello write failed: {error:#}",
                     std::process::id()
@@ -507,7 +507,7 @@ impl Worker {
                 .to_string();
             let mut payload: Value = serde_json::from_slice(&frame.payload)
                 .with_context(|| format!("invalid worker command JSON for {command_type}"))?;
-            if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+            if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                 eprintln!("[worker {}] got command {command_type}", std::process::id());
             }
 
@@ -675,7 +675,7 @@ impl Worker {
         }
         match self.authenticate(payload) {
             Ok(()) => {
-                if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+                if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                     eprintln!("[worker {}] auth ok", std::process::id());
                 }
                 let generation = payload

@@ -71,7 +71,7 @@ pub struct TraceCredential {
 
 #[must_use]
 pub fn trace_credential(agent_dir: &Path) -> Option<TraceCredential> {
-    if let Ok(value) = std::env::var("PRIME_AGENT_TRACES_API_KEY") {
+    if let Ok(value) = pa_types::session_scope::var("PRIME_AGENT_TRACES_API_KEY") {
         if !value.trim().is_empty() {
             return Some(TraceCredential {
                 api_key: value,
@@ -88,7 +88,7 @@ pub fn trace_credential(agent_dir: &Path) -> Option<TraceCredential> {
             label: "Prime Agent Traces credential".to_string(),
         });
     }
-    if let Ok(value) = std::env::var("PRIME_API_KEY") {
+    if let Ok(value) = pa_types::session_scope::var("PRIME_API_KEY") {
         if !value.trim().is_empty() {
             return Some(TraceCredential {
                 api_key: value,
@@ -334,7 +334,9 @@ fn resolve_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().unwrap_or_default().join(path)
+        pa_types::session_scope::current_dir()
+            .unwrap_or_default()
+            .join(path)
     };
     let mut resolved = PathBuf::new();
     for component in absolute.components() {

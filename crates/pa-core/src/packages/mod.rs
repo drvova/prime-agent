@@ -36,7 +36,7 @@ pub(crate) use npm::NETWORK_TIMEOUT_MS;
 
 /// True when `PI_OFFLINE` disables all package network operations.
 pub(crate) fn is_offline_mode_enabled() -> bool {
-    std::env::var("PI_OFFLINE").is_ok_and(|value| {
+    pa_types::session_scope::var("PI_OFFLINE").is_ok_and(|value| {
         value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
     })
 }
@@ -46,7 +46,7 @@ pub(crate) fn is_offline_mode_enabled() -> bool {
 /// packaged bun-binary layout), through [`exe_dir_of`] so a launcher
 /// symlink resolves.
 pub(crate) fn package_dir() -> PathBuf {
-    if let Ok(env_dir) = std::env::var("PI_PACKAGE_DIR") {
+    if let Ok(env_dir) = pa_types::session_scope::var("PI_PACKAGE_DIR") {
         if !env_dir.is_empty() {
             return expand_tilde(&env_dir);
         }

@@ -185,7 +185,7 @@ impl Supervisor {
             .map(str::to_string)
             .or(saved_cwd)
             .or_else(|| {
-                std::env::current_dir()
+                pa_types::session_scope::current_dir()
                     .ok()
                     .map(|p| p.to_string_lossy().to_string())
             })
@@ -690,7 +690,8 @@ impl Supervisor {
         }
         // The supervisor-side settings re-read (the fence): the same
         // `idleEvictionMinutes` surface the worker read.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let cwd = pa_types::session_scope::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let settings =
             pa_core::settings::SettingsManager::create(cwd.as_path(), &self.options.agent_dir);
         let Some(current) = crate::idle_eviction::eviction_threshold(settings.get_idle_eviction())
@@ -1013,7 +1014,7 @@ pub(super) async fn probe_worker_socket(
 /// worker-connect budget from spawn time (the TS default, or the env override). An override
 /// past the representable range falls back to the default.
 pub(super) fn worker_connect_deadline() -> tokio::time::Instant {
-    let timeout_ms = std::env::var(WORKER_CONNECT_TIMEOUT_ENV)
+    let timeout_ms = pa_types::session_scope::var(WORKER_CONNECT_TIMEOUT_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|ms| *ms > 0)
@@ -1124,7 +1125,7 @@ mod tests {
     }
 
     fn reaped_pid() -> u32 {
-        let mut child = std::process::Command::new("true")
+        let mut child = pa_types::session_scope::std_command("true")
             .spawn()
             .expect("spawn true");
         let pid = child.id();

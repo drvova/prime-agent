@@ -183,7 +183,7 @@ impl PackageManager {
                 Self::websearch_enabled_by_credential(
                     self.agent_dir(),
                     self.settings.get_web_search_provider(),
-                    &|env| std::env::var(env).ok(),
+                    &|env| pa_types::session_scope::var(env).ok(),
                 )
             })
     }

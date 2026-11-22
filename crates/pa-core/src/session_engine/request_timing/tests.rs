@@ -749,7 +749,7 @@ fn truthy_env_flag_follows_the_offline_convention() {
 #[tokio::test]
 async fn the_env_override_enables_request_timing() {
     let _guard = REQUEST_TIMING_ENV_LOCK.lock().await;
-    let previous = std::env::var(REQUEST_TIMING_ENV).ok();
+    let previous = pa_types::session_scope::var(REQUEST_TIMING_ENV).ok();
     std::env::remove_var(REQUEST_TIMING_ENV);
     assert!(!is_request_timing_enabled(false), "off without the flag");
     std::env::set_var(REQUEST_TIMING_ENV, "1");
@@ -789,7 +789,7 @@ async fn engine_sessions_emit_the_timeline_only_when_the_flag_is_on() {
     // ambient/parallel-test env is pinned for the duration (TS deletes
     // `PI_REQUEST_TIMING` in `beforeEach` for the same isolation).
     let _env = REQUEST_TIMING_ENV_LOCK.lock().await;
-    let previous_env = std::env::var(REQUEST_TIMING_ENV).ok();
+    let previous_env = pa_types::session_scope::var(REQUEST_TIMING_ENV).ok();
     std::env::remove_var(REQUEST_TIMING_ENV);
 
     let dir = tempfile::tempdir().unwrap();
@@ -1027,7 +1027,7 @@ async fn engine_sessions_capture_the_outbound_payload_when_the_flag_is_on() {
     // Both shared-process locks: the env pin and the writer queue.
     let _writer_lock = super::payload::WRITER_TEST_LOCK.lock().await;
     let _env = REQUEST_TIMING_ENV_LOCK.lock().await;
-    let previous_env = std::env::var(REQUEST_TIMING_ENV).ok();
+    let previous_env = pa_types::session_scope::var(REQUEST_TIMING_ENV).ok();
     std::env::remove_var(REQUEST_TIMING_ENV);
 
     let dir = tempfile::tempdir().unwrap();

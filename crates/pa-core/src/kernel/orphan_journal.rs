@@ -22,7 +22,7 @@ pub struct ActiveOrphanProcess {
 }
 
 fn journal_path() -> Option<std::path::PathBuf> {
-    let path = std::env::var(ORPHAN_PROCESS_JOURNAL_ENV).ok()?;
+    let path = pa_types::session_scope::var(ORPHAN_PROCESS_JOURNAL_ENV).ok()?;
     if path.is_empty() {
         return None;
     }
@@ -272,7 +272,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("w.orphans.jsonl");
         let owner = i64::from(std::process::id());
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("0")
             .spawn()
             .expect("spawn short-lived child");

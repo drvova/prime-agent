@@ -771,7 +771,7 @@ impl TurnRunner {
                         if !starts_message && !settles_run {
                             // Streaming updates park in the coalescer; `park_update` only
                             // returns false after the turn joined, which cannot race this closure.
-                            if let Ok(path) = std::env::var("PA_DAEMON_EVENT_LOG") {
+                            if let Ok(path) = pa_types::session_scope::var("PA_DAEMON_EVENT_LOG") {
                                 use std::io::Write;
                                 if let Some(value) = message.clone().into_wire() {
                                     if let Ok(mut file) = std::fs::OpenOptions::new()
@@ -995,7 +995,7 @@ impl TurnRunner {
                 }
                 // Verification seam: dump the emitted session events for
                 // harness debugging (PA_DAEMON_EVENT_LOG=<path>).
-                if let Ok(path) = std::env::var("PA_DAEMON_EVENT_LOG") {
+                if let Ok(path) = pa_types::session_scope::var("PA_DAEMON_EVENT_LOG") {
                     use std::io::Write;
                     if let Ok(mut file) = std::fs::OpenOptions::new()
                         .create(true)

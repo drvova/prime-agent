@@ -7,7 +7,7 @@ pub fn is_catalog_offline() -> bool {
 }
 
 fn offline_flag() -> Option<String> {
-    std::env::var("PI_OFFLINE")
+    pa_types::session_scope::var("PI_OFFLINE")
         .ok()
         .map(|value| value.trim().to_ascii_lowercase())
 }

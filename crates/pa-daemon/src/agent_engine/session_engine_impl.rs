@@ -275,7 +275,7 @@ impl SessionEngine for AgentSessionEngine {
             Some(leaf) => PromptContextBoundary::Leaf(leaf),
             None => PromptContextBoundary::Empty,
         };
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.prompt_boundary",
                 &json!({

@@ -61,7 +61,7 @@ impl UpdateTimeoutBudget {
     /// plumbing, and a typo must never wedge the FSM behind a huge budget.
     #[must_use]
     pub fn from_env() -> Self {
-        Self::from_overrides(|key| std::env::var(key).ok())
+        Self::from_overrides(|key| crate::session_scope::var(key).ok())
     }
 
     /// The budget with overrides from an arbitrary lookup (env in production, a map in tests);

@@ -373,7 +373,7 @@ fn compaction_boundary_serves_the_windowed_reader() {
 #[test]
 #[ignore = "set PA_ACTIVE_STATS_CAPTURED_FIXTURE to the captured session path"]
 fn captured_compaction_boundary_matches_ts_active_stats() {
-    let fixture = std::env::var("PA_ACTIVE_STATS_CAPTURED_FIXTURE")
+    let fixture = pa_types::session_scope::var("PA_ACTIVE_STATS_CAPTURED_FIXTURE")
         .expect("set PA_ACTIVE_STATS_CAPTURED_FIXTURE to the captured session path");
     let path = std::path::PathBuf::from(fixture);
     let full = SessionFile::open(&path).expect("fixture opens");

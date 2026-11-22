@@ -78,7 +78,7 @@ pub fn supports_prompt_caching(model: &Model) -> bool {
     if !has_claude_ref {
         // Application inference profiles don't contain the model name in the ARN. Allow users to
         // force cache points via environment variable.
-        return std::env::var("AWS_BEDROCK_FORCE_CACHE").as_deref() == Ok("1");
+        return pa_types::session_scope::var("AWS_BEDROCK_FORCE_CACHE").as_deref() == Ok("1");
     }
     candidates.iter().any(|s| {
         s.contains("-4-")

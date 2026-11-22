@@ -84,8 +84,11 @@ impl PythonCall {
         // The call reads its inputs through the open handle.
         let _ = std::fs::remove_file(&stdin_path);
         let (stdout, stderr) = prepared?;
-        let mut command =
-            tokio::process::Command::new(if cfg!(windows) { "python" } else { "python3" });
+        let mut command = pa_types::session_scope::tokio_command(if cfg!(windows) {
+            "python"
+        } else {
+            "python3"
+        });
         command
             .arg("-I")
             .arg("-c")

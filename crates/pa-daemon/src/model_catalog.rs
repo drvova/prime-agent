@@ -721,7 +721,7 @@ mod tests {
         // The refreshed requests carried the new credentials only. The
         // team header carries the account's EFFECTIVE team — an ambient
         // `PRIME_TEAM_ID` pins it (the production pin), else team-b rides.
-        let pinned_team = std::env::var("PRIME_TEAM_ID")
+        let pinned_team = pa_types::session_scope::var("PRIME_TEAM_ID")
             .ok()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty());

@@ -86,7 +86,7 @@ pub(crate) async fn assert_async_file_read<T>(
 ) -> T {
     let raw = std::fs::read(path).expect("original state");
     std::fs::remove_file(path).expect("replace state with FIFO");
-    assert!(std::process::Command::new("mkfifo")
+    assert!(pa_types::session_scope::std_command("mkfifo")
         .arg(path)
         .status()
         .expect("mkfifo")
@@ -137,7 +137,7 @@ pub(crate) struct FileReadCounter {
 pub(crate) fn count_file_reads(path: &std::path::Path) -> FileReadCounter {
     let raw = std::fs::read(path).expect("original file");
     std::fs::remove_file(path).expect("replace file with FIFO");
-    assert!(std::process::Command::new("mkfifo")
+    assert!(pa_types::session_scope::std_command("mkfifo")
         .arg(path)
         .status()
         .expect("mkfifo")
@@ -209,7 +209,7 @@ impl KernelEnvOverride {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let saved = pairs
             .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
+            .map(|(key, _)| ((*key).to_string(), pa_types::session_scope::var(key).ok()))
             .collect();
         for (key, value) in pairs {
             match value {

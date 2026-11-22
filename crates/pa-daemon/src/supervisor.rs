@@ -6,6 +6,7 @@
 mod accept_loop;
 mod adoption;
 mod clients;
+mod crash;
 mod launch_budget;
 mod notes;
 mod options;
@@ -78,7 +79,7 @@ use pa_types::daemon::{
 use pa_types::platform::transport::{bind_transport, connect_transport, TransportStream};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::backpressure::RouteAdmission;
@@ -323,6 +324,11 @@ impl Supervisor {
     ///
     /// Panics when the telemetry mutex is poisoned (the holder panicked mid-lock).
     pub async fn run(self: Arc<Self>) -> Result<()> {
+        // Sessions run inside this process: a panic in one is attributed to
+        // it and contained there, and the first session to start takes an
+        // engine that is already built.
+        crate::session_host::install_panic_hook();
+        pa_core::kernel::prewarm_scheme_kernel();
         // Before any socket or worker exists: workers and their kernels
         // inherit the raised limit.
         let open_file_limit = pa_core::platform::process::raise_open_file_limit();
@@ -333,7 +339,7 @@ impl Supervisor {
         // daemon restart.
         {
             let settings = pa_core::settings::SettingsManager::create(
-                std::env::current_dir().unwrap_or_default(),
+                pa_types::session_scope::current_dir().unwrap_or_default(),
                 &self.options.agent_dir,
             );
             let env_forced_off = matches!(

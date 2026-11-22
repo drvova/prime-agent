@@ -54,6 +54,7 @@ mod native;
 mod session;
 pub mod skills;
 
+pub use cell::StuckCellSink;
 pub(in crate::kernel::scheme) use factory::validate_factory_spec;
 pub use factory::{factory_cli_dispatch, FactoryEnvironment};
 pub(crate) use native::FileReads;
@@ -85,7 +86,7 @@ const HOST_BRIDGE: &str = r"
 /// single-threaded: at the top of `main`, before a runtime exists. An
 /// explicit `STEEL_HOME` or an unresolvable agent directory is left alone.
 pub fn pin_scheme_home() {
-    if std::env::var_os("STEEL_HOME").is_some() {
+    if pa_types::session_scope::var_os("STEEL_HOME").is_some() {
         return;
     }
     if let Some(home) = pa_types::platform::agent_dir().map(|dir| dir.join("steel")) {

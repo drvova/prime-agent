@@ -95,7 +95,7 @@ fn make_bare_repo(dir: &Path) -> (PathBuf, PathBuf) {
 }
 
 fn run_git(cwd: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let status = pa_types::session_scope::std_command("git")
         .args(args)
         .current_dir(cwd)
         .status()

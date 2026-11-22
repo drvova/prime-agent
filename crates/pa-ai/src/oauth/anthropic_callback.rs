@@ -74,7 +74,8 @@ impl AnthropicCallbackServer {
     ///
     /// Returns an error when the listener cannot be bound.
     pub fn start(state: &str) -> Result<Self, String> {
-        let host = std::env::var(CALLBACK_HOST_ENV).unwrap_or_else(|_| "127.0.0.1".to_string());
+        let host = pa_types::session_scope::var(CALLBACK_HOST_ENV)
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
         Self::bind(&host, CALLBACK_PORT, state)
     }
 

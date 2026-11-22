@@ -203,7 +203,7 @@ impl Credentials {
         for provider in ProviderId::ALL {
             match provider.access() {
                 ProviderAccess::ApiKey { env, .. } => {
-                    let ambient = std::env::var(env)
+                    let ambient = pa_types::session_scope::var(env)
                         .ok()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());
@@ -220,7 +220,7 @@ impl Credentials {
                     }
                 }
                 ProviderAccess::Endpoint { env } => {
-                    credentials.searxng_endpoint = std::env::var(env)
+                    credentials.searxng_endpoint = pa_types::session_scope::var(env)
                         .ok()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());

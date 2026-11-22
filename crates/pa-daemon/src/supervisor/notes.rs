@@ -39,8 +39,8 @@ impl Supervisor {
     /// Daemon events count and fire only while it is on — an opt-out
     /// window's events never ride a later summary or incident after a
     /// re-enable.
-    fn telemetry_recording_on(&self) -> bool {
-        let cwd = std::env::current_dir().unwrap_or_default();
+    pub(super) fn telemetry_recording_on(&self) -> bool {
+        let cwd = pa_types::session_scope::current_dir().unwrap_or_default();
         let switch = pa_core::session_engine::telemetry::telemetry_enabled_switch(
             &cwd,
             &self.options.agent_dir,

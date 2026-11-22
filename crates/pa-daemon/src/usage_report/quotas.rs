@@ -100,7 +100,7 @@ impl QuotaFetchConfig {
     /// The production configuration (plus the environment's origin override).
     pub(crate) fn from_env() -> Self {
         Self {
-            origin_override: std::env::var(QUOTA_BASE_URL_ENV)
+            origin_override: pa_types::session_scope::var(QUOTA_BASE_URL_ENV)
                 .ok()
                 .filter(|origin| !origin.trim().is_empty()),
             // The transport's own bound plus slack: the outer timeout only fires on a transport

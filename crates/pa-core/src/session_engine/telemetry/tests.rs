@@ -35,7 +35,7 @@ impl Default for CleanTelemetryEnv {
         let saved = TELEMETRY_ENV_VARS
             .iter()
             .map(|var| {
-                let value = std::env::var(var).ok();
+                let value = pa_types::session_scope::var(var).ok();
                 std::env::remove_var(var);
                 (*var, value)
             })

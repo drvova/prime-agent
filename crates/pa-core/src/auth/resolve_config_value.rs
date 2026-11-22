@@ -28,7 +28,7 @@ pub fn resolve_config_value_uncached(config: &str) -> Option<String> {
 /// Unset env var falls back to the literal string; set-but-empty is a missing
 /// credential (never the variable name).
 fn resolve_env_or_literal(config: &str) -> Option<String> {
-    match std::env::var(config) {
+    match pa_types::session_scope::var(config) {
         Ok(value) if !value.is_empty() => Some(value),
         Ok(_) => None,
         Err(_) => Some(config.to_string()),
@@ -66,8 +66,8 @@ fn run_command(command: &str) -> Result<Option<String>> {
 /// shell; Windows tries the configured shell first and falls back to `ComSpec`.
 #[cfg(unix)]
 fn hidden_spawn(command: &str) -> Result<Option<std::process::Output>> {
-    use std::process::{Command, Stdio};
-    let output = Command::new("bash")
+    use std::process::Stdio;
+    let output = pa_types::session_scope::std_command("bash")
         .arg("-c")
         .arg(command)
         .stdin(Stdio::null())
@@ -79,9 +79,9 @@ fn hidden_spawn(command: &str) -> Result<Option<std::process::Output>> {
 
 #[cfg(windows)]
 fn hidden_spawn(command: &str) -> Result<Option<std::process::Output>> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     if let Ok(config) = crate::platform::get_shell_config(None) {
-        match Command::new(&config.shell)
+        match pa_types::session_scope::std_command(&config.shell)
             .args(&config.args)
             .arg(command)
             .stdin(Stdio::null())
@@ -96,8 +96,8 @@ fn hidden_spawn(command: &str) -> Result<Option<std::process::Output>> {
             Err(_) => return Ok(None),
         }
     }
-    let comspec = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-    let output = Command::new(comspec)
+    let comspec = pa_types::session_scope::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
+    let output = pa_types::session_scope::std_command(comspec)
         .args(["/d", "/s", "/c"])
         .arg(command)
         .stdin(Stdio::null())

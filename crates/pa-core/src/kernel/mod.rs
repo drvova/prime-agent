@@ -27,7 +27,7 @@ pub use rlm_runtime::{
 };
 pub use scheme::{
     pin_scheme_home, prewarm_scheme_kernel, SchemeKernel, SchemeKernelOptions,
-    SchemeKernelProvisioner,
+    SchemeKernelProvisioner, StuckCellSink,
 };
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,

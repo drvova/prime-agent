@@ -126,7 +126,7 @@ fn program_on_path(program: &str) -> bool {
     if program.contains(['/', '\\']) {
         return false;
     }
-    let Some(paths) = std::env::var_os("PATH") else {
+    let Some(paths) = pa_types::session_scope::var_os("PATH") else {
         return false;
     };
     std::env::split_paths(&paths).any(|dir| {

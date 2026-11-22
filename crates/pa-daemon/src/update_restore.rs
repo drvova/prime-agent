@@ -379,7 +379,7 @@ pub(crate) fn boot_sweep(agent_dir: &Path, socket_path: &Path) {
 /// Read `PRIME_AGENT_UPDATE_ROSTER`: a coordinator-passed path, never
 /// discovered. `None` on a normal boot; a malformed roster never fails the boot (spec §9).
 pub(crate) fn consume_roster_env() -> Option<UpdateRoster> {
-    let path = std::env::var(UPDATE_ROSTER_ENV).ok()?;
+    let path = pa_types::session_scope::var(UPDATE_ROSTER_ENV).ok()?;
     let path = Path::new(&path);
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
@@ -1649,7 +1649,7 @@ mod tests {
     fn consume_roster_env_none_without_the_env() {
         // NOTE: process env is global; this documents the None path only when no
         // other test set the var.
-        if std::env::var(UPDATE_ROSTER_ENV).is_err() {
+        if pa_types::session_scope::var(UPDATE_ROSTER_ENV).is_err() {
             assert!(consume_roster_env().is_none());
         }
     }

@@ -500,7 +500,7 @@ pub(super) fn spawn(
     let fence = format!("\x1eprime-agent-complete:{first}{second}\x1f").into_bytes();
     // One pipe carries stdout and stderr, so their order is the command's own.
     let (mut output, output_end) = std::io::pipe().context("could not open the output pipe")?;
-    let mut process = tokio::process::Command::new(&shell);
+    let mut process = pa_types::session_scope::tokio_command(&shell);
     process
         .arg("-c")
         .current_dir(&session.cwd)

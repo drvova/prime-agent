@@ -386,7 +386,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     // The TS minimal map for a depth-0 root (the
                     // env-key heuristic is stated in the PR).
                     Some(create_session_launch_env(&model, |key| {
-                        std::env::var(key).ok()
+                        pa_types::session_scope::var(key).ok()
                     })),
                 )
                 .await?;

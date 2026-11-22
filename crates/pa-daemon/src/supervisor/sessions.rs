@@ -579,11 +579,22 @@ impl Supervisor {
                 RouteAdmission::SupervisorInternal,
             )
             .await;
-        if let Some(summary) = response
+        // The last contained crash stays on the row after the session heals.
+        let last_crash = resident
+            .descriptor
+            .lock()
+            .await
+            .rest
+            .get("lastCrash")
+            .cloned();
+        if let Some(mut summary) = response
             .ok()
             .filter(|response| response.success)
             .and_then(|response| response.data)
         {
+            if let (Some(object), Some(crash)) = (summary.as_object_mut(), last_crash) {
+                object.insert("lastCrash".to_string(), crash);
+            }
             return summary;
         }
         let root_active_session_id = resident
@@ -597,6 +608,9 @@ impl Supervisor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut summary = offline_summary(&resident.worker_id);
+        if let Some(crash) = last_crash {
+            summary["lastCrash"] = crash;
+        }
         // A failed live pull loses activity, not the supervisor's trusted family
         // binding. Never borrow identity from a row now owned by another worker.
         if let Some(entry) = roster

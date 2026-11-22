@@ -48,8 +48,8 @@ pub fn collect_launch_env(
 #[must_use]
 pub fn collect_process_launch_env() -> BTreeMap<String, String> {
     collect_launch_env(
-        std::env::vars_os()
-            .filter_map(|(key, value)| Some((key.into_string().ok()?, value.into_string().ok()?))),
+        // A hosted session forwards its own environment, not its host's.
+        crate::session_scope::vars().into_iter(),
     )
 }
 

@@ -124,7 +124,7 @@ impl Worktrees {
         failure: Failure,
     ) -> anyhow::Result<GitOutput> {
         let shown = format!("git {}", args.join(" "));
-        let mut command = tokio::process::Command::new("git");
+        let mut command = pa_types::session_scope::tokio_command("git");
         command
             .args(args)
             .current_dir(cwd)
@@ -772,7 +772,7 @@ pub(super) mod tests {
 
     /// Run git in `cwd` and return what it printed.
     pub(in crate::kernel::scheme::native) fn git(cwd: &Path, args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
+        let output = pa_types::session_scope::std_command("git")
             .args(args)
             .current_dir(cwd)
             .output()

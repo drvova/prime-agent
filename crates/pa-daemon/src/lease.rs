@@ -25,6 +25,21 @@ struct LeaseOwner {
     active_session_id: Option<String>,
     session_path: String,
     created_at: String,
+    /// The daemon process hosting the owner, when the owner is a hosted
+    /// session (`pid` is then its hosted id, `process_start_id` its
+    /// generation). Another process cannot see inside that daemon: for it the
+    /// lease is held for as long as the host lives, and the host itself
+    /// releases the leases of the sessions that died in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host: Option<LeaseHost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LeaseHost {
+    pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    process_start_id: Option<String>,
 }
 
 /// Error matching the TS wire shape (`session_already_active`): `Display`
@@ -98,6 +113,9 @@ pub fn canonical_session_path(path: &Path) -> PathBuf {
 /// pa-core through `pa_types::platform`.
 #[must_use]
 pub fn get_process_start_id(pid: u32) -> Option<String> {
+    if crate::session_host::is_hosted_pid(pid) {
+        return crate::session_host::hosted_generation(pid);
+    }
     pa_types::platform::process::process_start_id(pid)
 }
 
@@ -107,6 +125,11 @@ pub fn get_process_start_id(pid: u32) -> Option<String> {
 ///
 /// Returns an error when the platform cannot answer the liveness check.
 pub fn is_process_alive(pid: u32) -> anyhow::Result<bool> {
+    // A hosted session's id names a lifetime inside a daemon, not a process:
+    // it is alive exactly while that lifetime runs in this process.
+    if crate::session_host::is_hosted_pid(pid) {
+        return Ok(crate::session_host::hosted_alive(pid));
+    }
     pa_types::platform::process::is_process_alive(pid)
 }
 
@@ -124,7 +147,7 @@ fn lease_directory(agent_dir: &Path, session_path: &Path) -> PathBuf {
 
 fn leases_enabled() -> bool {
     matches!(
-        std::env::var(SESSION_LEASES_ENABLED_ENV).as_deref(),
+        pa_types::session_scope::var(SESSION_LEASES_ENABLED_ENV).as_deref(),
         Ok("1" | "true" | "yes")
     )
 }
@@ -146,16 +169,30 @@ fn read_owner(directory: &Path) -> Result<Option<LeaseOwner>> {
 }
 
 fn owner_alive(owner: &LeaseOwner) -> bool {
-    match is_process_alive(owner.pid) {
+    // A session hosted by another daemon process: this process can only see
+    // that host. (A host of this pid with another start id is a dead
+    // predecessor whose pid was reused.)
+    let host = owner.host.as_ref().filter(|host| {
+        host.pid != std::process::id()
+            || host.process_start_id.as_deref().is_some_and(|expected| {
+                pa_types::platform::process::process_start_id(host.pid)
+                    .is_some_and(|current| current != expected)
+            })
+    });
+    let (pid, expected_start_id) = match host {
+        Some(host) => (host.pid, host.process_start_id.as_deref()),
+        None => (owner.pid, owner.process_start_id.as_deref()),
+    };
+    match is_process_alive(pid) {
         Ok(true) => {}
         // A provably-dead owner is stale; an unverifiable one counts as
         // alive, like the TS lease (reclaiming a live owner is worse).
         Ok(false) => return false,
         Err(_) => return true,
     }
-    match owner.process_start_id.as_deref() {
+    match expected_start_id {
         None => true,
-        Some(expected) => match get_process_start_id(owner.pid) {
+        Some(expected) => match get_process_start_id(pid) {
             Some(current) => current == expected,
             // Unobservable identity counts as alive, like the TS lease.
             None => true,
@@ -525,14 +562,21 @@ pub fn acquire_runtime_session_lease(
                 uuid::Uuid::new_v4().simple()
             ));
             fs::create_dir_all(&candidate)?;
+            let owner_pid = crate::session_host::session_pid();
             let owner = LeaseOwner {
                 version: 1,
                 token: token.clone(),
-                pid: std::process::id(),
-                process_start_id: get_process_start_id(std::process::id()),
-                active_session_id: std::env::var(SESSION_LEASE_OWNER_ID_ENV).ok(),
+                pid: owner_pid,
+                process_start_id: get_process_start_id(owner_pid),
+                active_session_id: pa_types::session_scope::var(SESSION_LEASE_OWNER_ID_ENV).ok(),
                 session_path: canonical.to_string_lossy().to_string(),
                 created_at: crate::util::now_iso(),
+                host: crate::session_host::is_hosted_pid(owner_pid).then(|| LeaseHost {
+                    pid: std::process::id(),
+                    process_start_id: pa_types::platform::process::process_start_id(
+                        std::process::id(),
+                    ),
+                }),
             };
             let owner_path = candidate.join("owner.json");
             fs::write(&owner_path, serde_json::to_string_pretty(&owner)? + "\n")?;
@@ -688,6 +732,7 @@ mod tests {
                     .to_string_lossy()
                     .to_string(),
                 created_at: crate::util::now_iso(),
+                host: None,
             };
             fs::write(
                 directory.join("owner.json"),
@@ -740,6 +785,7 @@ mod tests {
             active_session_id: None,
             session_path: canonical_session_path(&path).to_string_lossy().to_string(),
             created_at: crate::util::now_iso(),
+            host: None,
         };
         let directory = lease_directory(dir.path(), &canonical_session_path(&path));
         std::fs::create_dir_all(&directory).unwrap();
@@ -826,6 +872,7 @@ mod tests {
             active_session_id: None,
             session_path: canonical_session_path(&path).to_string_lossy().to_string(),
             created_at: crate::util::now_iso(),
+            host: None,
         };
         let directory = lease_directory(dir.path(), &canonical_session_path(&path));
         std::fs::create_dir_all(&directory).unwrap();

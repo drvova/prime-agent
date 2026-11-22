@@ -197,10 +197,12 @@ impl ProviderAuthResolver {
             provider: ctx.provider.to_string(),
             reason: reason.to_string(),
         };
+        let session_scope = pa_types::session_scope::current();
         std::thread::scope(|scope| {
             std::thread::Builder::new()
                 .name("request-auth".to_string())
                 .spawn_scoped(scope, || {
+                    let _session_scope = pa_types::session_scope::enter(session_scope.clone());
                     let runtime = || {
                         tokio::runtime::Builder::new_current_thread()
                             .enable_all()

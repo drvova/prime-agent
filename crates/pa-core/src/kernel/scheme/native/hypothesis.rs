@@ -266,7 +266,7 @@ impl Hypotheses {
                             "no POSIX shell was found (on Windows, install Git Bash in its default location)"
                         )
                     })?;
-                    let mut process = tokio::process::Command::new(&shell);
+                    let mut process = pa_types::session_scope::tokio_command(&shell);
                     process
                         // The check's stderr joins its stdout before the check
                         // is read, so even its syntax errors land in the tail.

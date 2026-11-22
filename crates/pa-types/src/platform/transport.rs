@@ -305,7 +305,7 @@ fn pipe_name(path: &Path) -> Result<String> {
         return Ok(raw.to_string());
     }
     let absolute = if path.is_relative() {
-        std::env::current_dir()
+        crate::session_scope::current_dir()
             .with_context(|| format!("resolve the relative socket path {}", path.display()))?
             .join(path)
     } else {
@@ -628,7 +628,7 @@ mod pipe_name_tests {
 
     impl CwdGuard {
         fn capture() -> Self {
-            Self(std::env::current_dir().expect("current dir"))
+            Self(crate::session_scope::current_dir().expect("current dir"))
         }
     }
 

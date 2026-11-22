@@ -162,7 +162,7 @@ pub fn tools_section(tools: &[Arc<dyn pa_agent::types::AgentTool>]) -> Vec<Value
 }
 
 fn session_data_from_file(input_path: &Path) -> Result<SessionExportData> {
-    let cwd = std::env::current_dir().unwrap_or_default();
+    let cwd = pa_types::session_scope::current_dir().unwrap_or_default();
     let mut manager = SessionManager::in_memory(&cwd);
     manager.set_session_file(input_path.to_path_buf(), None);
     let entries = manager.get_all_entries();
@@ -266,7 +266,7 @@ mod tests {
         std::fs::create_dir_all(&agent_dir).expect("agent dir");
         let session = fixture_session(dir.path());
         let cwd = tempfile::TempDir::new().expect("cwd");
-        let previous = std::env::current_dir().expect("cwd");
+        let previous = pa_types::session_scope::current_dir().expect("cwd");
         std::env::set_current_dir(cwd.path()).expect("chdir");
         let returned = export_from_file(&session, None, &agent_dir).expect("export");
         std::env::set_current_dir(previous).expect("restore cwd");

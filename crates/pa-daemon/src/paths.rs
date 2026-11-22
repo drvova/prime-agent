@@ -47,7 +47,7 @@ pub fn expand_tilde(path: &str) -> Result<PathBuf> {
 /// Returns an error when the override cannot be tilde-expanded, or when the
 /// fallback needs the home directory and [`home_dir`] cannot resolve it.
 pub fn agent_dir() -> Result<PathBuf> {
-    match std::env::var_os(AGENT_DIR_ENV) {
+    match pa_types::session_scope::var_os(AGENT_DIR_ENV) {
         Some(dir) if !dir.is_empty() => expand_tilde(&dir.to_string_lossy()),
         _ => Ok(pa_types::platform::StateLayout::BUILD.home_agent_dir(&home_dir()?)),
     }
@@ -60,7 +60,7 @@ pub fn agent_dir() -> Result<PathBuf> {
 ///
 /// Returns an error when the override cannot be tilde-expanded.
 pub fn sessions_dir(agent_dir: &Path) -> Result<PathBuf> {
-    match std::env::var_os(SESSION_DIR_ENV) {
+    match pa_types::session_scope::var_os(SESSION_DIR_ENV) {
         Some(dir) if !dir.is_empty() => expand_tilde(&dir.to_string_lossy()),
         _ => Ok(agent_dir.join("sessions")),
     }

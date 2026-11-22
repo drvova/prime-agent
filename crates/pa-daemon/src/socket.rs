@@ -278,7 +278,7 @@ pub const BIND_CAPTURE_GAP_ENV: &str = "PA_DAEMON_BIND_CAPTURE_GAP_MS";
 /// Production binaries never pause startup between bind and identity capture.
 pub async fn bind_capture_gap() {
     #[cfg(debug_assertions)]
-    if let Ok(raw) = std::env::var(BIND_CAPTURE_GAP_ENV) {
+    if let Ok(raw) = pa_types::session_scope::var(BIND_CAPTURE_GAP_ENV) {
         if let Ok(ms @ 1..=2_000) = raw.parse::<u64>() {
             tokio::time::sleep(Duration::from_millis(ms)).await;
         }

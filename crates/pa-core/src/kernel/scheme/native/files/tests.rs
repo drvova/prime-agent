@@ -325,7 +325,7 @@ fn typescript_project(root: &Path, script: &str) {
     std::fs::write(root.join("app.ts"), "let total = 1\n").unwrap();
     let bin = root.join("node_modules/.bin");
     std::fs::create_dir_all(&bin).unwrap();
-    let written = std::process::Command::new("sh")
+    let written = pa_types::session_scope::std_command("sh")
         .arg("-c")
         .arg("printf '%s\\n' \"$1\" > tsc && chmod +x tsc")
         .arg("sh")

@@ -661,7 +661,7 @@ mod tests {
     #[cfg(unix)]
     fn relative_agent_dir_locks_and_loads() {
         let cwd = tempfile::tempdir().unwrap();
-        let previous = std::env::current_dir().unwrap();
+        let previous = pa_types::session_scope::current_dir().unwrap();
         std::env::set_current_dir(cwd.path()).unwrap();
         let relative = std::path::PathBuf::from("relative-agent");
         let storage = FileSettingsStorage::new(cwd.path(), relative.clone());

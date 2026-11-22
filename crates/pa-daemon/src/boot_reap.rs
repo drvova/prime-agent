@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn the_abandoned_id_filter_matches_the_stamped_env_only() {
         let unstamped_guard = ReapOnDrop(
-            std::process::Command::new("sleep")
+            pa_types::session_scope::std_command("sleep")
                 .arg("300")
                 .env_remove(crate::worker::WORKER_ACTIVE_SESSION_ID_ENV)
                 .spawn()
@@ -751,7 +751,7 @@ mod tests {
             "an unstamped environment never matches the abandoned id"
         );
         let stamped_guard = ReapOnDrop(
-            std::process::Command::new("sleep")
+            pa_types::session_scope::std_command("sleep")
                 .arg("300")
                 .env(crate::worker::WORKER_ACTIVE_SESSION_ID_ENV, "6b558be357e3")
                 .spawn()
@@ -795,7 +795,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_real_process_stops_inside_the_term_grace() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("300")
             .spawn()
             .expect("spawn sleep");
@@ -817,7 +817,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let trap_armed = dir.path().join("trap-armed");
         let term_delivered = dir.path().join("term-delivered");
-        let child = std::process::Command::new("bash")
+        let child = pa_types::session_scope::std_command("bash")
             .arg("-c")
             .arg("trap ': > \"$2\"' TERM; : > \"$1\"; while :; do :; done")
             .arg("bash")
@@ -853,7 +853,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_vanished_pid_reports_already_gone() {
-        let mut child = std::process::Command::new("true")
+        let mut child = pa_types::session_scope::std_command("true")
             .spawn()
             .expect("spawn true");
         let pid = child.id();
@@ -863,7 +863,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recycled_pid_is_never_signaled() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("300")
             .spawn()
             .expect("spawn sleep");
@@ -951,7 +951,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_exe_gate_reads_the_kernel_binary() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("2")
             .spawn()
             .expect("spawn sleep");

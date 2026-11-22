@@ -26,7 +26,7 @@ pub(super) fn is_valid_rlm_depth(value: Option<u64>) -> bool {
 }
 
 pub(super) fn root_rlm_depth_from_env() -> u64 {
-    match std::env::var("RLM_DEPTH") {
+    match pa_types::session_scope::var("RLM_DEPTH") {
         Ok(value) if value.is_empty() => 0,
         Ok(value) => value
             .parse::<u64>()
