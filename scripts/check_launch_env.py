@@ -35,8 +35,6 @@ CODE = """(define (command-env name)
                    'PRIME_AGENT_INTERNAL_PARITY_CANARY (command-env "PRIME_AGENT_INTERNAL_PARITY_CANARY"))
         'child_marker (hash-ref (bash "sh -c 'printf %s \\"${PA_ENV_MARKER:-ABSENT}\\"'") 'output)))
 (displayln (string-append "LAUNCH_ENV_PARITY=" (value->jsexpr-string result)))"""
-# The cell says it is on the engine, then sits in a native call no interrupt reaches.
-WEDGE = '(displayln "on the engine") (time/sleep-ms 600000)'
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -150,13 +148,21 @@ def restart(client, provider, phase, active, agent, binary, config, owned, obser
     # End the session with no teardown of its own: its cell outlives the abort
     # (the daemon's stuck-cell grace is the fixture's), so the daemon ends the
     # session as crashed.
-    provider.phase, provider.code = phase, WEDGE
+    # The cell enters the kernel's test seam (debug builds, asked for in the
+    # daemon's environment): a native call no interrupt reaches, which writes
+    # its marker once it is inside and returns when the marker is gone.
+    marker = agent.parent / ('wedged-' + phase)
+    provider.phase, provider.code = phase, '(%%test-block %s)' % json.dumps(str(marker))
     since = len(client.wire)
     client.call('prompt', activeSessionId=active, message='Wedge ' + phase)
-    client.event(active, 'tool_execution_update', since)
+    deadline = time.monotonic() + LIMIT
+    while not marker.exists():
+        assert time.monotonic() < deadline, 'the cell never entered its blocking call'
+        time.sleep(0.02)
     client.call('abort', activeSessionId=active)
     crashed = observation['crash'] = client.event(active, 'session_crashed', since)
     provider.code = CODE
+    marker.unlink()
     assert crashed.get('kind') == 'stuck', crashed
     # The daemon rebuilds the crashed session and tells its attached client.
     observation['recovered'] = client.event(active, 'session_recovered', since)
@@ -190,7 +196,7 @@ def finish_daemon(client, process, kind, **payload):
 def run_case(binary, root, observed):
     env = env_for(root)
     env.update(PA_ENV_BASE='daemon-base', PA_ENV_PRECEDENCE='daemon', RLM_DEPTH='3',
-        PRIME_AGENT_STUCK_CELL_GRACE_MS='300')
+        PRIME_AGENT_STUCK_CELL_GRACE_MS='300', PRIME_AGENT_TEST_BLOCKING_CELL_SEAM='1')
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)
     thread.start()
