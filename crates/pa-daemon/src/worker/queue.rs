@@ -28,6 +28,12 @@ pub(crate) const SIDE_QUESTION_SETTLE_TIMEOUT: Duration = Duration::from_secs(3)
 pub(crate) const QUEUED_INPUT_SUSPENDED: &str =
     "Cannot admit a session action while queued session input is suspended.";
 
+/// The same refusal on a session that came back suspended: the abort that
+/// suspended it was made before the session was rebuilt, and it still holds
+/// (a rebuild heals the session, it does not undo the user's stop).
+pub(crate) const QUEUED_INPUT_SUSPENDED_BEFORE_REBUILD: &str =
+    "Cannot admit a session action while queued session input is suspended. The session was rebuilt after it was stopped, and the stop still holds: resume the queue, or send the prompt with a streamingBehavior.";
+
 /// The item's turn-execution class: items co-deliver as one batched turn only
 /// within the same class; the direct-prompt hand-off never joins a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,25 +302,30 @@ pub(crate) fn checkpoint_queue_recovery(
     );
 }
 
+/// Queue rows as the recovery journal records them.
+pub(crate) fn queue_item_records<'a>(
+    items: impl IntoIterator<Item = &'a QueuedItem>,
+) -> Vec<crate::journal::WorkerQueueItemRecord> {
+    items
+        .into_iter()
+        .map(|item| crate::journal::WorkerQueueItemRecord {
+            message: item.message.clone(),
+            priority: Some(item.priority),
+            preview: item.preview.clone(),
+            custom_message: item.custom_message.clone(),
+            queue_key: item.queue_key.clone(),
+            queue_visible: item.queue_visible,
+            policy: item.policy.journal_value().to_string(),
+            forced_batch: item.forced_batch,
+            images: item.images.clone(),
+        })
+        .collect()
+}
+
 pub(crate) fn queue_lanes(core: &SessionCore) -> QueueLanes {
-    fn items(lane: &VecDeque<QueuedItem>) -> Vec<crate::journal::WorkerQueueItemRecord> {
-        lane.iter()
-            .map(|item| crate::journal::WorkerQueueItemRecord {
-                message: item.message.clone(),
-                priority: Some(item.priority),
-                preview: item.preview.clone(),
-                custom_message: item.custom_message.clone(),
-                queue_key: item.queue_key.clone(),
-                queue_visible: item.queue_visible,
-                policy: item.policy.journal_value().to_string(),
-                forced_batch: item.forced_batch,
-                images: item.images.clone(),
-            })
-            .collect()
-    }
     QueueLanes {
-        steering: items(&core.steering),
-        follow_up: items(&core.follow_up),
+        steering: queue_item_records(&core.steering),
+        follow_up: queue_item_records(&core.follow_up),
     }
 }
 

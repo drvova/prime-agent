@@ -7,17 +7,16 @@
 #   official  `prime-agent`  ~/.local/bin/prime-agent (its own installer's
 #             prefix ~/.local: bin/prime-agent, share/prime-agent/)
 #   fork      `prime`        ~/.local/share/prime-agent-fork/bin/prime
-#             (share/prime-agent/, kernel-venv/), plus ~/.local/bin/prime
+#             (share/prime-agent/), plus ~/.local/bin/prime
 #             when the fork installer found that slot free (a `prime` it
 #             did not write, such as Prime Intellect's own CLI, is never
 #             replaced; then the fork's bin dir has to come first on PATH)
 #   switch    ~/.local/share/prime-switch/bin   (prime-switch: this script)
 #
 # Nothing here ever writes inside the official install. Each build's own
-# launcher pins its agent dir, daemon socket, and kernel venv (the fork's
-# launcher: ~/.prime/agent-fork, prime-agent-fork-<uid>, and
-# <fork prefix>/kernel-venv), so the two never share sessions or a live
-# daemon. The official build keeps ~/.prime/agent (shared with the
+# launcher pins its agent dir and daemon socket (the fork's launcher:
+# ~/.prime/agent-fork and prime-agent-fork-<uid>), so the two never share
+# sessions or a live daemon. The official build keeps ~/.prime/agent (shared with the
 # TypeScript product); the fork keeps its sessions, settings, and logins in
 # ~/.prime/agent-fork. The fork's first run copies the official
 # configuration over once (settings, auth.json, models.json, keybindings,
@@ -211,7 +210,7 @@ run_installer() {
   ri_status=0
   (
     unset PRIME_AGENT_DOWNLOAD_BASE_URL PRIME_AGENT_RELEASE_ASSETS_URL \
-      PRIME_AGENT_VERSION PRIME_AGENT_DAEMON_SOCKET PRIME_AGENT_KERNEL_VENV
+      PRIME_AGENT_VERSION PRIME_AGENT_DAEMON_SOCKET
     PRIME_AGENT_RUST_PREFIX="$(prefix_of "$ri_build")"
     export PRIME_AGENT_RUST_PREFIX
     sh "${ri_scratch}/install.sh"

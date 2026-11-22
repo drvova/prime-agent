@@ -1,0 +1,3 @@
+[[telemetry]]
+event = "agent usage reads"
+properties = ["usage_read_count"]

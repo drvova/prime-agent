@@ -18,6 +18,11 @@ members = [
 # but cap the query poll to 250ms (late real-terminal replies still get a chance).
 [patch.crates-io]
 crossterm = { path = "vendor/crossterm" }
+# steel-core 0.8.3 embeds its Scheme prelude through backslash paths on Windows
+# targets, which only a Windows build host can read; the vendored copy uses one
+# path form everywhere so the Linux-hosted Windows cross-check compiles
+# (vendor/steel-core/PRIME_AGENT_PATCH.md).
+steel-core = { path = "vendor/steel-core" }
 
 [workspace.package]
 version = "0.10.3"
@@ -38,6 +43,9 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
+# The in-process Scheme kernel (pa-core `kernel::scheme`). `sync` makes an engine `Send`, so a
+# session's engine can run on a blocking thread and the spare can live in a static.
+steel-core = { version = "0.8.3", features = ["sync"] }
 tracing = { version = "0.1", features = ["attributes"] }
 pa-telemetry = { path = "crates/pa-telemetry" }
 pa-types = { path = "crates/pa-types" }
@@ -130,6 +138,13 @@ used_underscore_binding = "warn"
 debug = "line-tables-only"
 
 [profile.dev.package."*"]
+debug = false
+
+# The Scheme kernel builds one interpreter per worker process. Unoptimized,
+# that build costs about 2.8 s of CPU against 0.2 s optimized, which is
+# enough to push multi-session e2e tests past their deadlines on a loaded box.
+[profile.dev.package.steel-core]
+opt-level = 3
 debug = false
 
 # Shipping posture, pinned (Kevin, Option C): thin LTO plus 4 codegen

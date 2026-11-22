@@ -86,7 +86,7 @@ fn child_descriptor(
 
 /// A pid that provably belonged to a process which has exited and been reaped.
 fn reaped_pid() -> (u32, Option<String>) {
-    let mut child = std::process::Command::new("true")
+    let mut child = pa_types::session_scope::std_command("true")
         .spawn()
         .expect("spawn true");
     let pid = child.id();
@@ -157,7 +157,7 @@ async fn a_delete_of_a_live_workers_child_still_routes_the_kill() {
         child_file,
         ..
     } = fixture().await;
-    let mut sleeper = std::process::Command::new("sleep")
+    let mut sleeper = pa_types::session_scope::std_command("sleep")
         .arg("60")
         .spawn()
         .expect("spawn sleep");
@@ -261,7 +261,7 @@ async fn a_retried_delete_after_the_tombstone_is_gated_on_the_worker_process() {
         "the retry archives the stopped session"
     );
 
-    let mut sleeper = std::process::Command::new("sleep")
+    let mut sleeper = pa_types::session_scope::std_command("sleep")
         .arg("60")
         .spawn()
         .expect("spawn sleep");

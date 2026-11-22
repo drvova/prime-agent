@@ -67,7 +67,7 @@ FORK_TAG = r"v([0-9]+)\.([0-9]+)\.([0-9]+)-([a-z0-9]+)\.([0-9]+)"
 
 # What a fork release ships: the binary's sources (vendor/ is a patched
 # dependency, install-rust.sh is compiled in), the payload
-# assemble_artifacts.py stages (prime-agent-runtime/, skills/), the published
+# assemble_artifacts.py stages (skills/), the published
 # installers and switchers, the release scripts, and this pipeline itself.
 # A commit range touching none of them (docs, .changes/, other workflows)
 # cuts no automatic release. Test-only paths leave the binary identical and
@@ -78,7 +78,6 @@ TEST_ONLY = re.compile(r"/tests?/|(^|/)tests\.rs$|_tests\.rs$")
 SHIPPED_PREFIXES = (
     "crates/",
     "vendor/",
-    "prime-agent-runtime/",
     "skills/",
     "scripts/release/",
     "scripts/prime-switch",

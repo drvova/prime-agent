@@ -513,7 +513,7 @@ pub(crate) async fn run_child_process(
     timeout_ms: u64,
     envs: &[(&str, &str)],
 ) -> anyhow::Result<ChildProcessResult> {
-    let mut child = tokio::process::Command::new(program)
+    let mut child = pa_types::session_scope::tokio_command(program)
         .args(args)
         .envs(envs.iter().copied())
         .current_dir(cwd)
@@ -789,7 +789,7 @@ mod tests {
     async fn shell_runner_snapshot_tracks_workspace_changes() {
         let dir = tempfile::TempDir::new().unwrap();
         let run = |args: &[&str]| {
-            let mut command = std::process::Command::new("git");
+            let mut command = pa_types::session_scope::std_command("git");
             command.args(args).current_dir(dir.path());
             command
                 .output()
@@ -855,7 +855,7 @@ mod tests {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
         };
         let git = |dir: &Path, args: &[&str]| {
-            let mut command = std::process::Command::new("git");
+            let mut command = pa_types::session_scope::std_command("git");
             command
                 .args(args)
                 .current_dir(dir)
@@ -874,7 +874,7 @@ mod tests {
         };
         let copy = |from: &Path, name: &str| {
             let to = root.path().join(name);
-            let mut cp = std::process::Command::new("cp");
+            let mut cp = pa_types::session_scope::std_command("cp");
             let status = cp.args(["-R"]).args([from, &to]).status().unwrap();
             assert!(status.success());
             to
@@ -1009,7 +1009,7 @@ mod tests {
     async fn snapshot_tracks_edits_inside_a_submodule() {
         let root = tempfile::TempDir::new().unwrap();
         let git = |dir: &Path, args: &[&str]| {
-            let status = std::process::Command::new("git")
+            let status = pa_types::session_scope::std_command("git")
                 .args(["-c", "user.name=t", "-c", "user.email=t@e"])
                 .args(["-c", "protocol.file.allow=always"])
                 .args(args)

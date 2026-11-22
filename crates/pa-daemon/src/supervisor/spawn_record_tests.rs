@@ -130,11 +130,16 @@ async fn a_known_resident_registration_writes_nothing_to_disk() {
 async fn a_relaunch_spawn_record_serves_the_durable_persist() {
     let (_tmp, supervisor, dir) = spawn_record_witness("relaunch");
     let descriptor_path = dir.join("w-relaunch.json");
+    // The relaunch hosts a real session in this process, and a session that
+    // came up would go on to rewrite its record. This one never can: its
+    // socket path runs through a regular file, so the bind fails and the
+    // relaunch stops at the probe, after the spawn record served.
+    std::fs::write(dir.join("occupied"), "").expect("the file in the socket's way");
     let descriptor: DaemonWorkerDescriptor = serde_json::from_value(serde_json::json!({
         "version": 2,
         "workerId": "w-relaunch",
         "pid": 4242,
-        "socketPath": dir.join("w-relaunch.sock").to_string_lossy(),
+        "socketPath": dir.join("occupied").join("w-relaunch.sock").to_string_lossy(),
         "recoveryJournalPath": "/tmp/w-relaunch.recovery.jsonl",
         "supervisorSocketPath": "/tmp/none.sock",
         "authenticationToken": "spawnrec-token",
@@ -157,7 +162,7 @@ async fn a_relaunch_spawn_record_serves_the_durable_persist() {
     let outcome = supervisor.relaunch_worker(&resident).await;
     assert!(
         outcome.is_err(),
-        "no live worker: the relaunch fails at the probe, after the spawn record served"
+        "no session can serve the socket: the relaunch fails at the probe, after the spawn record served"
     );
     let writes = crate::descriptor::atomic_write_probe::take_under(&descriptor_path);
     let spawn_records: Vec<_> = writes
@@ -276,8 +281,9 @@ async fn a_spawn_record_persist_failure_kills_the_child_and_fails_the_launch() {
 /// family never requests it); the create-completion persist
 /// (`launch_worker`'s post-create write) re-establishes the durable
 /// write as the metadata-survival barrier. The oracle drives the real
-/// launch path; it fails at the worker probe (no live worker), after
-/// the spawn record served.
+/// launch path, which hosts a real session in this process: the spawn
+/// record is the launch's first write whether or not that session comes
+/// up inside the pinned connect budget.
 #[tokio::test]
 async fn a_fresh_create_spawn_record_keeps_the_unsynced_shape() {
     let (_tmp, supervisor, dir) = spawn_record_witness("freshcreate");
@@ -300,23 +306,21 @@ async fn a_fresh_create_spawn_record_keeps_the_unsynced_shape() {
     let outcome = supervisor
         .launch_worker(&create, None, RosterFamilySeedOwner::Registration)
         .await;
-    assert!(
-        outcome.is_err(),
-        "no live worker: the fresh launch fails at the probe"
-    );
     let writes = crate::descriptor::atomic_write_probe::take_under(&supervisor.descriptor_dir);
-    let spawn_records: Vec<_> = writes
+    // A launch that came all the way up is stopped; its later persists (the
+    // synced create-completion write among them) are not the spawn record.
+    if let Ok((resident, _created)) = outcome {
+        supervisor
+            .stop_worker(&resident)
+            .await
+            .expect("stop the launched session");
+    }
+    let spawn_record = writes
         .iter()
-        .filter(|(path, _)| path.starts_with(&supervisor.descriptor_dir))
-        .collect();
+        .find(|(path, _)| path.starts_with(&supervisor.descriptor_dir))
+        .expect("the fresh create wrote its spawn record");
     assert!(
-        !spawn_records.is_empty(),
-        "the fresh create wrote its spawn record"
-    );
-    assert!(
-        spawn_records
-            .iter()
-            .all(|(_, sync)| matches!(sync, TempSync::Unsynced)),
-        "the fresh create's spawn record stays the unsynced TS shape: {spawn_records:?}"
+        matches!(spawn_record.1, TempSync::Unsynced),
+        "the fresh create's spawn record stays the unsynced TS shape: {writes:?}"
     );
 }

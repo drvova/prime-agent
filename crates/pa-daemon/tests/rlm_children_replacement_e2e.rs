@@ -48,7 +48,7 @@ impl Drop for Daemon {
 // The timeout panic path cannot wait on the child; the test process exits
 // immediately afterwards, reaping it.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -59,7 +59,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: the ambient environment exports a real one.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
@@ -78,32 +77,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         child,
         socket: socket.to_path_buf(),
     }
-}
-
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live RLM children replacement e2e",
-        candidate.display()
-    );
-    None
 }
 
 fn wait_socket_ready(socket: &Path) {
@@ -256,7 +229,14 @@ fn await_receipt(receipt: &Path) -> String {
 /// The kernel cell: spawn one RLM child through the product `rlm.spawn` surface.
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([handle (rlm-spawn "run the lane task" #:name "kid")])
+      (record {receipt:?} (value->jsexpr-string handle))
+      (displayln (hash-ref handle 'rlm_child_id)))))
+"#,
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -266,7 +246,14 @@ fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
 /// recorded verbatim.
 fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import inspect, traceback\ntry:\n    roster = rlm.list_subagents()\n    if inspect.isawaitable(roster):\n        roster = await roster\n    open({receipt:?}, \"w\").write(repr(roster))\n    print(repr(roster))\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([roster (value->jsexpr-string (rlm-list-subagents))])
+      (record {receipt:?} roster)
+      (displayln roster))))
+",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -275,7 +262,21 @@ fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
 /// The probe cell: the restarted parent's roster rows, then a send to the child.
 fn probe_cell(list_receipt: &Path, send_receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import inspect, json, traceback\ntry:\n    roster = rlm.list_subagents()\n    if inspect.isawaitable(roster):\n        roster = await roster\n    rows = [[s.rlm_child_id, s.status, s.active_session_id] for s in roster]\n    open({list:?}, \"w\").write(json.dumps(rows))\n    receipt = await agent_message.send(\"boot-ping\", receiver_role=\"child\", receiver_name=\"kid\")\n    open({send:?}, \"w\").write(json.dumps(receipt))\n    print(rows, receipt)\nexcept Exception:\n    open({error:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error:?} (to-string e)) (error (to-string e)))
+    (let ([rows (map (lambda (row)
+                       (list (hash-ref row 'rlm_child_id)
+                             (hash-ref row 'status)
+                             (hash-ref row 'active_session_id)))
+                     (rlm-list-subagents))])
+      (record {list:?} (value->jsexpr-string rows))
+      (record {send:?}
+              (value->jsexpr-string
+                (agent-message-send "boot-ping" #:receiver-role "child" #:receiver-name "kid")))
+      (displayln rows))))
+"#,
         list = list_receipt.display().to_string(),
         send = send_receipt.display().to_string(),
         error = error_receipt.display().to_string(),
@@ -286,7 +287,14 @@ fn probe_cell(list_receipt: &Path, send_receipt: &Path, error_receipt: &Path) ->
 /// the product `rlm.create_session` surface.
 fn create_session_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.create_session(\"root session task\", name=\"rootkid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"name\": handle.name}}))\n    print(handle.name)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([handle (rlm-create-session "root session task" #:name "rootkid")])
+      (record {receipt:?} (value->jsexpr-string handle))
+      (displayln (hash-ref handle 'name)))))
+"#,
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -312,11 +320,11 @@ fn write_parent_script(dir: &Path, first_cell: &str, probe_cell: &str) -> PathBu
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": first_cell } },
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": probe_cell } },
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": probe_cell } },
                 ] },
                 { "text": "probe turn done" },
             ],
@@ -360,9 +368,6 @@ fn create_parent(
 
 #[test]
 fn new_session_closes_the_spawned_child_and_empties_the_roster() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -380,7 +385,7 @@ fn new_session_closes_the_spawned_child_and_empties_the_roster() {
         &spawn_cell(&spawn_receipt, &spawn_error),
         &roster_cell(&roster_receipt, &roster_error),
     );
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -490,9 +495,6 @@ fn new_session_closes_the_spawned_child_and_empties_the_roster() {
 /// `closeChildSessions` never matches them.
 #[test]
 fn new_session_keeps_a_created_root_session_running() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -508,7 +510,7 @@ fn new_session_keeps_a_created_root_session_running() {
         &create_session_cell(&create_receipt, &create_error),
         "pass",
     );
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -580,9 +582,6 @@ fn a_daemon_restart_marks_a_still_running_child_as_failed() {
 }
 
 fn restart_relists_child(delay_ms: u64, display_status: &str) {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -606,7 +605,7 @@ fn restart_relists_child(delay_ms: u64, display_status: &str) {
         &spawn_cell(&spawn_receipt, &spawn_error),
         "pass",
     );
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let mut daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -709,7 +708,7 @@ fn restart_relists_child(delay_ms: u64, display_status: &str) {
         assert!(Instant::now() < deadline, "the supervisor never exited");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

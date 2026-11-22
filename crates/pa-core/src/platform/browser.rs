@@ -2,7 +2,7 @@
 //! login dialog's command table — darwin `open`, Windows
 //! `rundll32 url.dll,FileProtocolHandler`, otherwise `xdg-open`).
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[cfg(target_os = "macos")]
 fn opener(url: &str) -> (&'static str, Vec<String>) {
@@ -18,7 +18,8 @@ fn opener(url: &str) -> (&'static str, Vec<String>) {
 fn opener(url: &str) -> (String, Vec<String>) {
     // Absolute System32 path (the TS dialog resolves it from
     // `SystemRoot`, defaulting to `C:\Windows`).
-    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let system_root =
+        pa_types::session_scope::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
     let rundll32 = std::path::Path::new(&system_root)
         .join("System32")
         .join("rundll32.exe");
@@ -33,7 +34,7 @@ fn opener(url: &str) -> (String, Vec<String>) {
 /// the login.
 pub fn open_in_browser(url: &str) {
     let (program, args) = opener(url);
-    let _ = Command::new(program)
+    let _ = pa_types::session_scope::std_command(program)
         .args(&args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -47,7 +48,8 @@ pub fn open_in_browser(url: &str) {
 /// to the device-code flow when this is `false`.
 #[must_use]
 pub fn can_open_browser() -> bool {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let set =
+        |name: &str| pa_types::session_scope::var_os(name).is_some_and(|value| !value.is_empty());
     let display = set("DISPLAY") || set("WAYLAND_DISPLAY");
     let ssh = set("SSH_CONNECTION") || set("SSH_TTY");
     if cfg!(any(target_os = "macos", windows)) {
@@ -74,8 +76,9 @@ mod tests {
     fn browser_launch_uses_system32_program_and_dll_entrypoint_arguments() {
         let url = "https://example.com/login?state=a%20b&code=c";
         let (program, args) = opener(url);
-        let command = Command::new(&program);
-        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        let command = pa_types::session_scope::std_command(&program);
+        let system_root = pa_types::session_scope::var("SystemRoot")
+            .unwrap_or_else(|_| "C:\\Windows".to_string());
         let expected_program = std::path::Path::new(&system_root)
             .join("System32")
             .join("rundll32.exe");

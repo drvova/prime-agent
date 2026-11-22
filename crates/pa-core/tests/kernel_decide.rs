@@ -14,71 +14,11 @@
 #![cfg(unix)]
 
 use std::fmt::Write as _;
-use std::path::PathBuf;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::{json, Value};
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
@@ -113,11 +53,8 @@ fn tool_result(entries: &Value, call_id: &str) -> (String, String) {
     (status, text)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn one_cell_loop_pays_a_model_call_only_per_decision_up_to_the_bound() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -125,26 +62,32 @@ async fn one_cell_loop_pays_a_model_call_only_per_decision_up_to_the_bound() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
 
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
-
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
 
     // One cell: a ten-step loop whose kernel work is free, with a decision at every step.
-    let code = "picked = []\nfor attempt in range(10):\n    try:\n        picked.append(await rlm.decide(f'attempt {attempt} failed; next?', ['stop', 'retry'], context='1 failed'))\n    except RuntimeError as error:\n        picked.append(str(error))\n        break\nprint(picked)";
+    let code = "(define (attempts step picked)
+                  (if (= step 10)
+                      picked
+                      (let ([choice (with-handler
+                                      (lambda (raised) (list (error-object-message raised)))
+                                      (rlm-decide (string-append \"attempt \" (number->string step) \" failed; next?\")
+                                                  (list \"stop\" \"retry\")
+                                                  #:context \"1 failed\"))])
+                        (if (pair? choice)
+                            (cons (car choice) picked)
+                            (attempts (+ step 1) (cons choice picked))))))
+                (for-each displayln (reverse (attempts 0 '())))";
     let model = scripted_model();
     let provider = std::sync::Arc::new(ScriptedProvider::new(model.clone()));
     provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
         &model,
         None,
-        vec![("call-1", "python_repl", json!({ "code": code }))],
+        vec![(
+            "call-1",
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": code }),
+        )],
     )));
     // The eight decisions the bound allows; a ninth would exhaust the script.
     for _ in 0..8 {
@@ -184,8 +127,7 @@ async fn one_cell_loop_pays_a_model_call_only_per_decision_up_to_the_bound() {
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,
@@ -203,14 +145,18 @@ async fn one_cell_loop_pays_a_model_call_only_per_decision_up_to_the_bound() {
         .expect("prompt");
     let entries = serde_json::to_value(engine.session.entries().await).expect("entries json");
 
-    let picked: Vec<String> = std::iter::repeat_n("'retry'".to_string(), 8)
-        .chain(["'rlm.decide: this cell used its 8 decisions; decide the rest in code or end the cell and decide in the next turn'".to_string()])
-        .collect();
     let mut expected = String::new();
     for attempt in 0..8 {
         writeln!(expected, "[decide] attempt {attempt} failed; next? → retry").unwrap();
     }
-    writeln!(expected, "[{}]", picked.join(", ")).unwrap();
+    for _ in 0..8 {
+        writeln!(expected, "retry").unwrap();
+    }
+    writeln!(
+        expected,
+        " rlm.decide: this cell used its 8 decisions; decide the rest in code or end the cell and decide in the next turn"
+    )
+    .unwrap();
     let (status, text) = tool_result(&entries, "call-1");
     assert_eq!((status.as_str(), text.as_str()), ("ok", expected.as_str()));
     // The turn, eight decisions, and the closing turn: nothing else asked the model.

@@ -39,6 +39,32 @@ ignore = [
   # through pdf-extract for `web.read`'s PDF text, on a dedicated big-stack
   # thread. Reviewed 2026-11-19; drop with the lopdf release that moves off it.
   { id = "RUSTSEC-2026-0192", reason = "unmaintained, no vulnerability; via lopdf/pdf-extract for web.read PDF text (reviewed 2026-11-19)" },
+  # im, im-rc and sized-chunks come only through steel-core 0.8.3 (the Scheme
+  # kernel's persistent vectors, hash maps and hash sets). All three are
+  # archived upstream with no fixed release. steel-core's `imbl` feature is no
+  # way out: it keeps im-rc in the graph and its imbl-sized-chunks 0.1.x has
+  # the same flaw (RUSTSEC-2026-0292), fixed only in 0.2.0, which steel-imbl
+  # cannot take. Accepted by the owner 2026-11-22; drop these entries with the
+  # steel-core release that moves off the crates.
+  { id = "RUSTSEC-2026-0248", reason = "im unmaintained; via steel-core only, no maintained path in 0.8.3 (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2026-0250", reason = "im-rc unmaintained; a non-optional steel-core dependency (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2026-0251", reason = "sized-chunks unmaintained; via im/im-rc under steel-core (reviewed 2026-11-22)" },
+  # Also unmaintained with no vulnerability reported, and also only under
+  # steel-core: bitmaps through im/im-rc, bincode and chrono directly.
+  # Accepted by the owner 2026-11-22.
+  { id = "RUSTSEC-2026-0247", reason = "bitmaps unmaintained; via im/im-rc under steel-core (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained, no vulnerability; a steel-core dependency (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; a steel-core dependency (reviewed 2026-11-22)" },
+  # The aliasing violation is in `OrdSet` insertion; steel-core 0.8.3 uses
+  # im's Vector, HashMap and HashSet and never names OrdSet or OrdMap.
+  { id = "RUSTSEC-2023-0126", reason = "im OrdSet insertion; steel-core never uses OrdSet/OrdMap (reviewed 2026-11-22)" },
+  # A double free needs an element's `Drop` to panic while a chunk is being
+  # cleared or trimmed. The elements are Steel values; a cell cannot define a
+  # destructor, and the host types the kernel registers do not panic in Drop.
+  # steel-core does not use RingBuffer or InlineArray. Not ruled out for a
+  # future host type: one whose Drop can panic must not be stored in a Steel
+  # collection.
+  { id = "RUSTSEC-2026-0255", reason = "sized-chunks panic-safety; needs a panicking Drop of a Steel value, which cells cannot define (reviewed 2026-11-22)" },
 ]
 
 [licenses]
@@ -60,6 +86,9 @@ allow = [
   "CDLA-Permissive-2.0",
   # notify (the `@` file index watcher) — CC0 public domain dedication.
   "CC0-1.0",
+  # steel-core (the in-process Scheme kernel) depends on im, im-rc, bitmaps and sized-chunks,
+  # all MPL-2.0-or-later: file-level copyleft, linked unmodified. Accepted by the owner 2026-11-21.
+  "MPL-2.0",
 ]
 # Development-only tools are not shipped; we keep the graph tight instead of
 # adding private/exceptions stanzas.

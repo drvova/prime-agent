@@ -329,6 +329,7 @@ impl Worker {
             scoped_models: Vec::new(),
             retry_abort_requested: false,
             queued_input_suspended: false,
+            suspension_carried_over: false,
             pending_next_turn: Vec::new(),
             active_action: None,
             running_tool_calls: std::collections::HashSet::new(),
@@ -362,7 +363,7 @@ impl Worker {
         let roster_link = std::sync::Arc::new(crate::supervisor_link::SupervisorLink::new(
             config.supervisor_socket_path.clone(),
         ));
-        let worker_token = std::env::var(WORKER_TOKEN_ENV).unwrap_or_default();
+        let worker_token = pa_types::session_scope::var(WORKER_TOKEN_ENV).unwrap_or_default();
         let roster_delta_sequence = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let input_pauses = crate::session_input_pause::InputPauseTable::new();
         // The shared pane-reporter slot: the worker binds it at create and
@@ -405,8 +406,8 @@ impl Worker {
                 // A `{"engine": "faux", ...}` script drives the real agent
                 // engine over the scripted faux provider (verification only).
                 Some(script) if script.get("engine") == Some(&serde_json::json!("faux")) => {
-                    let cwd =
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let cwd = pa_types::session_scope::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
                     match AgentSessionEngine::new(AgentEngineConfig {
                         cwd,
                         agent_dir: config.agent_dir.clone(),
@@ -435,13 +436,13 @@ impl Worker {
                     std::sync::Arc::new(ScriptedEngine::from_value(script).unwrap_or_default())
                 }
                 None => {
-                    let cwd =
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let cwd = pa_types::session_scope::current_dir()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("."));
                     match AgentSessionEngine::new(AgentEngineConfig {
                         cwd,
                         agent_dir: config.agent_dir.clone(),
-                        provider: std::env::var("PRIME_AGENT_MODEL_PROVIDER").ok(),
-                        model: std::env::var("PRIME_AGENT_MODEL").ok(),
+                        provider: pa_types::session_scope::var("PRIME_AGENT_MODEL_PROVIDER").ok(),
+                        model: pa_types::session_scope::var("PRIME_AGENT_MODEL").ok(),
                         api_key: None,
                         thinking: None,
                         session_dir: None,
@@ -939,7 +940,7 @@ impl Worker {
         // `closeKeepsResumeEntry("shutdown")`); `handle_shutdown` already
         // recorded the recovery verdict.
         self.close_listener_then_cleanup_socket().await;
-        std::process::exit(0)
+        crate::session_host::end_session().await
     }
 
     /// The refused-registration self-heal: the supervisor definitively rejected this worker's
@@ -1216,11 +1217,26 @@ fn is_goal_context_item(item: &QueuedItem) -> bool {
 /// Errors when the worker role env is missing, the worker env pair cannot be
 /// read, or the serve loop fails.
 pub async fn run_worker() -> Result<()> {
-    if std::env::var(WORKER_ROLE_ENV).unwrap_or_default() != "1" {
+    if pa_types::session_scope::var(WORKER_ROLE_ENV).unwrap_or_default() != "1" {
         return Err(anyhow!("worker mode requires {WORKER_ROLE_ENV}=1"));
     }
     // Structured logs land in the worker's captured stderr log.
     pa_ai::utils::log::install_stderr_log_sink();
+    // The Scheme kernel's engine takes about 200 ms to build: start it at the
+    // process's first moment so it overlaps session setup instead of
+    // following it.
+    pa_core::kernel::prewarm_scheme_kernel();
+    serve_configured_worker().await
+}
+
+/// Build the worker its environment describes and serve it until it ends:
+/// the body of a worker process, and of a session the daemon hosts (whose
+/// environment is its [`pa_types::session_scope`], never the process's).
+///
+/// # Errors
+///
+/// Errors when the worker env pair cannot be read or the serve loop fails.
+pub(crate) async fn serve_configured_worker() -> Result<()> {
     let config = WorkerConfig::from_env()?;
     // Provider requests share the daemon-wide budget through the supervisor (with this
     // worker's own pool as the bounded-wait fallback).

@@ -130,7 +130,7 @@ pub async fn binary_reported_version(exe: &Path) -> Result<String> {
     const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
     const MAX_VERSION_OUTPUT: usize = 512;
     let deadline = tokio::time::Instant::now() + PROBE_TIMEOUT;
-    let mut child = tokio::process::Command::new(exe)
+    let mut child = pa_types::session_scope::tokio_command(exe)
         .arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -563,7 +563,6 @@ mod tests {
     /// A fixture archive with the exact release payload, deterministically packed.
     fn fixture_archive(dir: &Path, name: &str) -> (PathBuf, String) {
         let staging = dir.join("staging");
-        std::fs::create_dir_all(staging.join("prime-agent-runtime")).unwrap();
         std::fs::create_dir_all(staging.join("skills")).unwrap();
         for file in ["prime-agent", "LICENSE", "README.md"] {
             std::fs::write(staging.join(file), "payload").unwrap();
@@ -576,10 +575,8 @@ mod tests {
             tar.append_path_with_name(staging.join(entry), entry)
                 .unwrap();
         }
-        for dir_entry in ["prime-agent-runtime", "skills"] {
-            tar.append_dir_all(dir_entry, staging.join(dir_entry))
-                .unwrap();
-        }
+        tar.append_dir_all("skills", staging.join("skills"))
+            .unwrap();
         let encoder = tar.into_inner().unwrap();
         encoder.finish().unwrap();
         let bytes = std::fs::read(&archive).unwrap();
@@ -644,7 +641,6 @@ mod tests {
     /// a fixed version — the probe path is the same as a real binary's.
     fn fixture_payload(dir: &Path, name: &str, version: &str) -> PathBuf {
         let payload = dir.join(name);
-        std::fs::create_dir_all(payload.join("prime-agent-runtime")).unwrap();
         std::fs::create_dir_all(payload.join("skills")).unwrap();
         for file in ["LICENSE", "README.md"] {
             std::fs::write(payload.join(file), "payload").unwrap();
@@ -741,10 +737,8 @@ mod tests {
             tar.append_path_with_name(payload.join(entry), entry)
                 .unwrap();
         }
-        for dir_entry in ["prime-agent-runtime", "skills"] {
-            tar.append_dir_all(dir_entry, payload.join(dir_entry))
-                .unwrap();
-        }
+        tar.append_dir_all("skills", payload.join("skills"))
+            .unwrap();
         let encoder = tar.into_inner().unwrap();
         encoder.finish().unwrap();
         let bytes = std::fs::read(&archive).unwrap();

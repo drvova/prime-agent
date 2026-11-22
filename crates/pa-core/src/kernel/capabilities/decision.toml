@@ -1,0 +1,3 @@
+[[telemetry]]
+event = "agent repl decide"
+properties = ["decide_count", "decide_limited_count", "decide_failed_count"]

@@ -133,9 +133,12 @@ pub(super) fn clear_trace_credentials() -> TraceEnvCredentials {
     let saved = [
         (
             "PRIME_AGENT_TRACES_API_KEY",
-            std::env::var_os("PRIME_AGENT_TRACES_API_KEY"),
+            pa_types::session_scope::var_os("PRIME_AGENT_TRACES_API_KEY"),
         ),
-        ("PRIME_API_KEY", std::env::var_os("PRIME_API_KEY")),
+        (
+            "PRIME_API_KEY",
+            pa_types::session_scope::var_os("PRIME_API_KEY"),
+        ),
     ];
     std::env::remove_var("PRIME_AGENT_TRACES_API_KEY");
     std::env::remove_var("PRIME_API_KEY");

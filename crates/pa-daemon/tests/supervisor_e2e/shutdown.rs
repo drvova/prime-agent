@@ -29,21 +29,6 @@ fn child_pids_of(ppid: u32) -> Vec<u32> {
     pids
 }
 
-/// Liveness that ignores zombies: a detached child nobody reaps keeps its
-/// `/proc` entry (exit status pending), so path existence alone would call
-/// an exited process alive.
-fn process_alive(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    // `comm` can contain spaces and parens, so parse after the last ')'.
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    let state = rest.split_whitespace().next().unwrap_or_default();
-    !state.starts_with('Z') && !state.starts_with('X')
-}
-
 fn wait_child_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -57,7 +42,7 @@ fn wait_child_exit(child: &mut Child, timeout: Duration) -> Option<std::process:
     }
 }
 
-/// The shutdown must stop every worker and exit the supervisor, cleaning
+/// The shutdown must stop every session and exit the supervisor, cleaning
 /// up its socket: a supervisor parked on its socket blocks replacement.
 #[test]
 fn shutdown_command_exits_the_supervisor_process() {
@@ -88,17 +73,42 @@ fn shutdown_command_exits_the_supervisor_process() {
     );
     let created = client.read_response("c1");
     assert_eq!(created["success"], true, "create failed: {created}");
-    // The supervisor spawned exactly one worker child for the session.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let worker_pids = loop {
-        let children = child_pids_of(supervisor_pid);
-        if !children.is_empty() {
-            break children;
-        }
-        assert!(Instant::now() < deadline, "worker never spawned");
-        std::thread::sleep(Duration::from_millis(50));
+    // The session runs inside the supervisor: it serves its own socket and
+    // holds its lease, and the supervisor has no child process for it.
+    let session_id = created["data"]["id"].as_str().expect("session id");
+    let descriptor: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+                .join(format!("{session_id}.json")),
+        )
+        .expect("the session's descriptor"),
+    )
+    .expect("descriptor json");
+    let session_socket =
+        std::path::PathBuf::from(descriptor["socketPath"].as_str().expect("socket path"));
+    let held_leases = || -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(agent_dir.join("session-leases"))
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension()
+                            .is_some_and(|extension| extension == "lock")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     };
-    assert_eq!(worker_pids.len(), 1, "one worker per session");
+    assert_eq!(
+        (
+            UnixStream::connect(&session_socket).is_ok(),
+            held_leases().len(),
+            child_pids_of(supervisor_pid),
+        ),
+        (true, 1, Vec::<u32>::new()),
+        "one live session hosted inside the supervisor"
+    );
 
     client.send_command("sd", &serde_json::json!({ "type": "shutdown" }));
     let shutdown = client.read_response("sd");
@@ -107,18 +117,17 @@ fn shutdown_command_exits_the_supervisor_process() {
     let exit = wait_child_exit(&mut daemon.child, Duration::from_secs(10))
         .expect("the supervisor process exited after shutdown");
     assert!(exit.success(), "supervisor exit: {exit:?}");
-    assert!(!socket.exists(), "the socket file is removed on exit");
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    for pid in worker_pids {
-        while process_alive(pid) {
-            assert!(
-                Instant::now() < deadline,
-                "worker {pid} leaked after shutdown"
-            );
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    }
+    // Nothing of the session outlives the supervisor: its socket is not
+    // served and its lease is released.
+    assert_eq!(
+        (
+            socket.exists(),
+            UnixStream::connect(&session_socket).is_ok(),
+            held_leases(),
+        ),
+        (false, false, Vec::<std::path::PathBuf>::new()),
+        "the supervisor's socket file is removed and its session is gone"
+    );
 }
 
 /// SIGTERM to the live supervisor is the graceful drain, not the default

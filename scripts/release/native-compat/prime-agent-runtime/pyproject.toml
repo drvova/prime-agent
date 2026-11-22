@@ -1,0 +1,5 @@
+# Placeholder kept for installers released before the kernel was built into
+# the binary: they refuse an archive without this file. Nothing installs it.
+[project]
+name = "prime-agent-runtime"
+version = "0.0.0"

@@ -1,0 +1,11 @@
+[[telemetry]]
+event = "agent web reads"
+properties = [
+  "web_read_count",
+  "web_read_failed_count",
+  "web_read_site_count",
+  "web_read_pdf_count",
+  "web_read_page_count",
+  "web_read_truncated_count",
+  "web_read_max_ms",
+]

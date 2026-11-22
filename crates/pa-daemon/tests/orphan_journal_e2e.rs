@@ -1,7 +1,6 @@
-//! Orphan-process journal e2e: a kernel (or its worker) dying without a
-//! shutdown hook must not leak the `bash()` process groups it journaled
-//! — the worker-side kernel-teardown reap and the supervisor-side worker
-//! death reap each answer one half of that contract.
+//! Orphan-process journal e2e: a session ending without a teardown of its
+//! own must not leak the `bash` process groups its kernel journaled: the
+//! supervisor reaps them from the journal when it sees the session crashed.
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
     clippy::cast_possible_truncation,
@@ -30,7 +29,6 @@ use serde_json::{json, Value};
 
 struct Daemon {
     child: Child,
-    socket: PathBuf,
 }
 
 impl Drop for Daemon {
@@ -39,34 +37,9 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping orphan journal e2e",
-        candidate.display()
-    );
-    None
-}
-
 // Ownership transfers to Daemon, whose Drop kills and waits for the child.
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -84,36 +57,26 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
         );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
-    }
-    let child = command
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    common::await_listening(socket, &mut child);
+    Daemon { child }
 }
 
-/// The orphaning cell: a released `bash("sleep 600")` handle whose process
-/// group outlives the turn, plus the ids the test needs to kill and probe.
+/// The orphaning cell: a background `(bash "sleep 600")` whose process
+/// group outlives the turn, plus the id the test probes by.
 fn orphaning_cell() -> String {
-    // The e2e kernel namespace does not preload `os`, so the cell imports
-    // it before printing the ids the test kills and probes by.
-    let code = "h = bash(\"sleep 600\")\nimport os\nprint(f'ORPHAN_PGID={h.pid} KERNEL_PID={os.getpid()}')";
+    let code = "(define job (bash \"sleep 600\" (hash 'background #t)))\n(displayln (string-append \"ORPHAN_PGID=\" (number->string (hash-ref job 'pid))))";
     serde_json::to_string(&json!({ "code": code })).expect("serialize cell")
 }
+
+/// The file the wedging cell's native call writes once it is inside it (the
+/// kernel's test seam): from then on no interrupt reaches the cell.
+static WEDGE_MARKER: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// The sequential mock: one SSE answer per request in order.
 fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
@@ -164,8 +127,9 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the python_repl tool call that
-    // starts the orphaning sleep, request 2 settles the turn.
+    // The scripted sequence: request 1 answers the eval tool call that
+    // starts the orphaning sleep, request 2 settles the turn, request 3 is
+    // the cell that crashes the session.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
     let data = match request {
@@ -179,7 +143,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "id": "call-orphan-1",
                         "type": "function",
                         "function": {
-                            "name": "python_repl",
+                            "name": "eval",
                             "arguments": orphaning_cell(),
                         }
                     }]
@@ -194,6 +158,38 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                 None,
             ),
             chunk(&json!({}), Some("stop")),
+        ],
+        2 => [
+            chunk(
+                &json!({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-wedge-1",
+                        "type": "function",
+                        "function": {
+                            "name": "eval",
+                            // The cell sits in a native call no interrupt reaches.
+                            "arguments": json!({
+                                "code": format!(
+                                    "(%test-block {})",
+                                    serde_json::to_string(
+                                        &WEDGE_MARKER
+                                            .get()
+                                            .expect("the test set the marker")
+                                            .to_string_lossy()
+                                    )
+                                    .expect("a Scheme string literal")
+                                ),
+                            })
+                            .to_string(),
+                        }
+                    }]
+                }),
+                None,
+            ),
+            chunk(&json!({}), Some("tool_calls")),
         ],
         _ => [
             chunk(
@@ -306,6 +302,12 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
         &json!({
             "type": "create",
             "name": "orphan-lane",
+            // An aborted cell still on the engine after this long ends its session.
+            // And its kernel has the one native call no interrupt reaches.
+            "launchEnv": {
+                "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+                "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+            },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions.to_string_lossy(),
@@ -322,18 +324,14 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
         .to_string()
 }
 
-/// The session's own ids for the killing and probing: the bash process
-/// group and the kernel pid the orphaning cell printed, parsed from the
+/// The bash process group the orphaning cell printed, parsed from the
 /// tool result the turn settled with. The cell's code echoes through the
-/// tool-call arguments too (`ORPHAN_PGID={h.pid}` there), so the parse
-/// scans every marker occurrence for the first one followed by digits —
-/// only the executed result prints them.
-fn orphan_ids(client: &mut Client, active_session_id: &str) -> (i32, i32) {
+/// tool-call arguments too (`ORPHAN_PGID=` there), so the parse scans
+/// every marker occurrence for the first one followed by digits: only the
+/// executed result prints them.
+fn orphan_pgid(client: &mut Client, active_session_id: &str) -> i32 {
     wait_until(Duration::from_secs(30), || {
-        let messages = client.messages(active_session_id);
-        let pgid = number_after(&messages, "ORPHAN_PGID=")?;
-        let kernel_pid = number_after(&messages, "KERNEL_PID=")?;
-        Some((pgid, kernel_pid))
+        number_after(&client.messages(active_session_id), "ORPHAN_PGID=")
     })
 }
 
@@ -341,42 +339,6 @@ fn number_after(text: &str, marker: &str) -> Option<i32> {
     text.split(marker).skip(1).find_map(|rest| {
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
         digits.parse::<i32>().ok().filter(|pid| *pid > 0)
-    })
-}
-
-/// The persisted worker descriptor's pid for this session: the pid the
-/// supervisor reaps by when the worker itself dies.
-fn worker_pid(agent_dir: &Path, active_session_id: &str) -> i32 {
-    wait_until(Duration::from_secs(30), || {
-        let workers_dir = agent_dir.join("daemon-workers");
-        let Ok(entries) = std::fs::read_dir(&workers_dir) else {
-            return None;
-        };
-        for dir in entries.flatten() {
-            let Ok(files) = std::fs::read_dir(dir.path()) else {
-                continue;
-            };
-            for file in files.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                let Ok(content) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let Ok(descriptor) = serde_json::from_str::<Value>(&content) else {
-                    continue;
-                };
-                if descriptor["workerId"].as_str() != Some(active_session_id) {
-                    continue;
-                }
-                let pid = descriptor["pid"].as_i64().unwrap_or(0);
-                if pid > 0 {
-                    return Some(pid as i32);
-                }
-            }
-        }
-        None
     })
 }
 
@@ -410,28 +372,19 @@ impl Drop for GroupGuard {
     }
 }
 
-/// The shared opening: a live session whose kernel runs a released
-/// `bash("sleep 600")` group, with the daemon, client, and ids in hand.
-struct OrphanedSession {
-    daemon: Daemon,
-    active_session_id: String,
-    pgid: i32,
-    kernel_pid: i32,
-    worker_pid: i32,
-}
-
-fn session_with_orphan(
-    mock_next: &'static AtomicUsize,
-    root: &Path,
-    socket_file: &str,
-) -> OrphanedSession {
-    let Some(kernel_python) = kernel_python() else {
-        panic!("the orphan journal e2e requires a live kernel python");
-    };
-    let agent_dir = root.join("agent");
+/// A crashed session runs no teardown of its own. Its lifetime's end kills
+/// each command's whole group all the same (the watcher of each job is
+/// dropped with the session's runtime, and the host ends the lifetime from
+/// outside the stuck thread), and records it in the journal, so the
+/// supervisor's reap that follows finds nothing left alive.
+#[test]
+fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let agent_dir = root.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let socket = agent_dir.join(socket_file);
-    let url = spawn_mock(mock_next);
+    let socket = agent_dir.join("orphan.sock");
+    let url = spawn_mock(&NEXT);
     std::fs::write(
         agent_dir.join("models.json"),
         json!({
@@ -455,9 +408,9 @@ fn session_with_orphan(
         .to_string(),
     )
     .expect("write models.json");
-    let daemon = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let _daemon = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
-    let active_session_id = create_session(&mut client, "c1", root, &agent_dir);
+    let active_session_id = create_session(&mut client, "c1", root.path(), &agent_dir);
     let started = client.request(
         "p1",
         &json!({
@@ -467,68 +420,44 @@ fn session_with_orphan(
         }),
     );
     assert_eq!(started["success"], true, "first turn failed: {started}");
-    let (pgid, kernel_pid) = orphan_ids(&mut client, &active_session_id);
-    let worker_pid = worker_pid(&agent_dir, &active_session_id);
+    let pgid = orphan_pgid(&mut client, &active_session_id);
+    let _guard = GroupGuard(pgid);
     assert!(
         group_alive(pgid),
-        "the orphaning sleep died before the kill: pgid {pgid}"
+        "the orphaning sleep died before the crash: pgid {pgid}"
     );
-    OrphanedSession {
-        daemon,
-        active_session_id,
-        pgid,
-        kernel_pid,
-        worker_pid,
-    }
-}
 
-/// T1: a kernel killed without its shutdown hook must not leak the
-/// `bash()` groups it journaled — the worker's teardown reaps them.
-#[test]
-fn a_killed_kernel_reaps_its_journaled_bash_groups() {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    if kernel_python().is_none() {
-        return;
-    }
-    let root = tempfile::TempDir::new().expect("temp dir");
-    let session = session_with_orphan(&NEXT, root.path(), "t1.sock");
-    let _guard = GroupGuard(session.pgid);
-
-    signal_pid(Pid::from_raw(session.kernel_pid), Signal::SIGKILL).expect("kill the kernel pid");
-    // Event-driven: the reap lands when the worker notices the dead
-    // kernel and tears it down — never a sleep-based wait.
-    expect_group_dead(session.pgid, "the kernel kill");
-
-    // Teardown: stop the session through the live supervisor so the
-    // worker (and its kernel) do not leak past the test.
-    let mut client = Client::connect(&session.daemon.socket);
-    client.request(
-        "k1",
-        &json!({ "type": "kill", "activeSessionId": session.active_session_id }),
+    // The session ends with no teardown of its own: its next cell wedges in a
+    // native call, the abort finds it still on the engine after the session's
+    // grace, and the supervisor ends the session as crashed.
+    let marker = WEDGE_MARKER.get_or_init(|| root.path().join("cell-blocked"));
+    let wedged = client.request(
+        "p2",
+        &json!({
+            "type": "prompt",
+            "activeSessionId": active_session_id,
+            "message": "wedge the cell",
+        }),
     );
-}
-
-/// T2: the stopped worker cannot run its own teardown reap when the
-/// kernel and worker die — only the supervisor can, from the journal the
-/// dead worker's kernel wrote.
-#[test]
-fn a_dead_worker_reaps_its_journaled_bash_groups_from_the_supervisor() {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    if kernel_python().is_none() {
-        return;
-    }
-    let root = tempfile::TempDir::new().expect("temp dir");
-    let session = session_with_orphan(&NEXT, root.path(), "t2.sock");
-    let _guard = GroupGuard(session.pgid);
-
-    // SIGSTOP first: the worker must not run its kernel-teardown reap when
-    // the kernel dies. SIGKILL cannot be caught, so the worker dies without
-    // ever observing either death.
-    signal_pid(Pid::from_raw(session.worker_pid), Signal::SIGSTOP).expect("stop the worker pid");
-    signal_pid(Pid::from_raw(session.kernel_pid), Signal::SIGKILL).expect("kill the kernel pid");
-    signal_pid(Pid::from_raw(session.worker_pid), Signal::SIGKILL)
-        .expect("kill the stopped worker");
-    // The supervisor's crash monitor owns the only reap: the group dies
-    // when it fires, not on any timeout of ours.
-    expect_group_dead(session.pgid, "the worker kill");
+    assert_eq!(wedged["success"], true, "second prompt failed: {wedged}");
+    wait_until(Duration::from_secs(30), || marker.exists().then_some(()));
+    let aborted = client.request(
+        "ab",
+        &json!({ "type": "abort", "activeSessionId": active_session_id }),
+    );
+    assert_eq!(aborted["success"], true, "abort failed: {aborted}");
+    wait_until(Duration::from_secs(30), || {
+        let listed = client.request("ls", &json!({ "type": "list" }));
+        listed["data"]["sessions"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row["id"] == active_session_id.as_str() && row["lastCrash"]["kind"] == "stuck"
+                })
+            })
+            .then_some(())
+    });
+    // The supervisor's crash handling owns the only reap: the group dies
+    // when it runs, not on any timeout of ours.
+    expect_group_dead(pgid, "the session crash");
 }

@@ -20,7 +20,7 @@ pub(crate) fn resolve_placeholders(base_url: &str) -> Result<Cow<'_, str>, Strin
         if !resolved.contains(&placeholder) {
             continue;
         }
-        let value = std::env::var(name).unwrap_or_default();
+        let value = pa_types::session_scope::var(name).unwrap_or_default();
         let value = value.trim();
         if value.is_empty() {
             return Err(format!(

@@ -1,10 +1,10 @@
-//! The plain-boot revival regression: only journal-busy workers revive
+//! The plain-boot revival regression: only journal-busy sessions revive
 use super::*;
 
-/// A plain supervisor boot revives only dead workers with durable busy
+/// A plain daemon boot revives only the sessions with durable busy
 /// evidence: the idle-at-exit session's journal settled to `busy: false`
-/// (`turn_end`); the busy-at-crash session is killed mid-turn with a
-/// `busy: true` record.
+/// (`turn_end`); the busy-at-crash session dies mid-turn, with its daemon,
+/// on a `busy: true` record.
 #[test]
 fn plain_boot_revives_only_journal_busy_workers() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -100,41 +100,17 @@ fn plain_boot_revives_only_journal_busy_workers() {
             "message": "go",
         }),
     );
-    let (ack, busy_turn_lines) = client.read_response_and_lines("p1");
+    let ack = client.read_response("p1");
     assert_eq!(ack["success"], true, "busy prompt failed: {ack}");
-    drop(busy_turn_lines);
     // The busy-at-crash premise is DURABLE EVIDENCE, never stream pacing:
     // wait for the recovery journal's admission `busy: true` record BEFORE
-    // the kill, or both workers read idle-at-exit and the only-busy-revives
+    // the kill, or both sessions read idle-at-exit and the only-busy-revives
     // signal is lost.
     wait_for_busy_journal_evidence(&agent_dir, &socket, &busy_session);
 
-    // Kill the workers by the supervisor's live children, not the
-    // descriptor pids: a mid-test replacement can leave the descriptor
-    // stale, and a stale-pid kill would leave the real worker streaming.
-    let supervisor_pid = daemon.child.id();
-    let worker_pids = child_pids_of(supervisor_pid);
-    assert_eq!(
-        worker_pids.len(),
-        2,
-        "two session workers under the supervisor"
-    );
+    // Both sessions die with the daemon that hosts them.
     daemon.child.kill().expect("kill -9 supervisor");
     let _ = daemon.child.wait();
-    for pid in &worker_pids {
-        std::process::Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status()
-            .expect("kill -9 worker");
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    for pid in &worker_pids {
-        while process_alive(*pid) {
-            assert!(Instant::now() < deadline, "worker {pid} never died");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 
     let restart_before = pa_daemon::util::now_iso();
     let mut daemon2 = spawn_supervisor(&socket, &agent_dir);
@@ -183,10 +159,10 @@ fn plain_boot_revives_only_journal_busy_workers() {
         "only the busy-at-crash session came back"
     );
 
-    // The relaunched worker replays the restored queue's turn, so the
-    // shutdown's flush barrier rides out the scripted delay: the budgets
-    // below absorb the whole stop pass, never a fixed fast exit.
-    let relaunched = load_worker_descriptor(&agent_dir, &socket, &busy_session);
+    // The revived session replays the restored queue's turn, so the
+    // shutdown's flush barrier rides out the scripted delay: the budget
+    // below absorbs the whole stop pass, never a fixed fast exit.
+    let relaunched = session_socket(&agent_dir, &socket, &busy_session);
     client2.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client2.read_response("sd");
     assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
@@ -195,12 +171,5 @@ fn plain_boot_revives_only_journal_busy_workers() {
         assert!(Instant::now() < deadline, "restarted supervisor exited");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let deadline = Instant::now() + Duration::from_secs(45);
-    while process_alive(relaunched.pid) {
-        assert!(
-            Instant::now() < deadline,
-            "relaunched worker leaked after shutdown"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_sessions_gone(&agent_dir, &[relaunched]);
 }

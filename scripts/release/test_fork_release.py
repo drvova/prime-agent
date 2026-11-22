@@ -85,7 +85,7 @@ class ForkReleasePlanTest(unittest.TestCase):
     def test_test_only_changes_cut_no_release_until_source_changes_too(self):
         tests = ('crates/pa-cli/tests/fork_switch_e2e.rs', 'crates/pa-core/src/kernel/tests/mod.rs',
                  'crates/pa-core/src/session_engine/context_thinning/tests.rs',
-                 'crates/pa-daemon/src/wire_tests.rs', 'prime-agent-runtime/test/test_kernel.py')
+                 'crates/pa-daemon/src/wire_tests.rs', 'skills/goal/test/test_goal.py')
         self.assertEqual(should_release(*tests), 'release=false\n')
         self.assertEqual(should_release(*tests, 'crates/pa-core/src/lib.rs'), 'release=true\n')
 

@@ -35,7 +35,7 @@ fn agent() -> Arc<Agent> {
     }))
 }
 
-fn write_skill(root: &std::path::Path, name: &str, python: bool) {
+fn write_skill(root: &std::path::Path, name: &str) {
     let dir = root.join("skills").join(name);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
@@ -43,20 +43,6 @@ fn write_skill(root: &std::path::Path, name: &str, python: bool) {
         format!("---\nname: {name}\ndescription: Does {name} things. Use when testing reloads.\n---\n\n# {name}\n"),
     )
     .unwrap();
-    if python {
-        let import = name.replace('-', "_");
-        std::fs::create_dir_all(dir.join("src").join(&import)).unwrap();
-        std::fs::write(
-            dir.join("src").join(&import).join("__init__.py"),
-            "def run():\n    return 1\n",
-        )
-        .unwrap();
-        std::fs::write(
-            dir.join("pyproject.toml"),
-            format!("[project]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
-        )
-        .unwrap();
-    }
 }
 
 async fn reload(handlers: &HostRequestHandlers) -> Value {
@@ -72,8 +58,8 @@ async fn reload(handlers: &HostRequestHandlers) -> Value {
 }
 
 /// A skill written after the session started becomes visible on reload: the reply names it, the
-/// model's system prompt lists it from the next call, `/skill:` and the catalog read it, a Python
-/// skill comes back for the kernel client to bind, and a second reload changes nothing.
+/// model's system prompt lists it from the next call, `/skill:` and the catalog read it, and a
+/// second reload changes nothing.
 #[tokio::test]
 async fn a_skill_written_mid_session_is_usable_after_reload() {
     let root = tempfile::tempdir().unwrap();
@@ -118,7 +104,7 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
             prompt: PromptInputs {
                 model_prompt_extras: None,
                 messages_path: None,
-                selected_tools: vec!["python_repl".to_string()],
+                selected_tools: vec!["eval".to_string()],
                 allow_recursion: None,
                 rlm_depth: Some(0),
                 factory_child: false,
@@ -131,7 +117,6 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
         Vec::new(),
         Vec::new(),
         "creation prompt".to_string(),
-        Vec::new(),
     );
     // The baseline: the bundled skills the build ships, if any.
     let baseline = reload(&handlers).await;
@@ -139,20 +124,14 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
     assert_eq!(baseline["systemPromptChanged"], json!(true));
     added.store(0, Ordering::SeqCst);
 
-    write_skill(&agent_dir, "fresh-notes", false);
-    write_skill(&agent_dir, "word-count", true);
-    let package_path = agent_dir.join("skills").join("word-count");
+    write_skill(&agent_dir, "fresh-notes");
+    write_skill(&agent_dir, "word-count");
     assert_eq!(
         reload(&handlers).await,
         json!({
             "skillsAdded": ["fresh-notes", "word-count"],
             "skillsRemoved": [],
             "systemPromptChanged": true,
-            "pythonSkills": [{
-                "name": "word-count",
-                "importName": "word_count",
-                "packagePath": package_path.display().to_string(),
-            }],
         })
     );
     assert_eq!(added.load(Ordering::SeqCst), 2);
@@ -173,7 +152,6 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
             "skillsAdded": [],
             "skillsRemoved": [],
             "systemPromptChanged": false,
-            "pythonSkills": [],
         })
     );
 }

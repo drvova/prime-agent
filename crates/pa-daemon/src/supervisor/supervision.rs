@@ -3,11 +3,10 @@
 use super::routing::{fail_unsent_request, WORKER_REQUEST_TIMEOUT_MS, WORKER_SOCKET_CLOSED};
 use super::{
     anyhow, connect_transport, create_command_payload, json, mpsc, persist_worker,
-    persist_worker_at, probe_worker_socket, util, write_frame, Arc, Child, ClientRouting, Command,
-    Context, DaemonWorkerLifecycle, Duration, Ordering, PathBuf, PrivateFrameReader,
-    ResidentWorker, Result, RouteAdmission, Supervisor, TempSync, TypedCreateRejection, Value,
-    WorkerReply, WorkerRequest, WorkerTransition, DEFAULT_PRIVATE_FRAME_LIMITS, ROUTE_TIMEOUT_MS,
-    WORKER_AUTH_FLOOR_MS,
+    persist_worker_at, probe_worker_socket, util, write_frame, Arc, ClientRouting, Context,
+    DaemonWorkerLifecycle, Duration, Ordering, PathBuf, PrivateFrameReader, ResidentWorker, Result,
+    RouteAdmission, Supervisor, TempSync, TypedCreateRejection, Value, WorkerReply, WorkerRequest,
+    WorkerTransition, DEFAULT_PRIVATE_FRAME_LIMITS, ROUTE_TIMEOUT_MS, WORKER_AUTH_FLOOR_MS,
 };
 use crate::lease::is_process_alive;
 use crate::registry::WorkerRelay;
@@ -45,39 +44,48 @@ impl OrphanGeneration {
     }
 }
 
-/// A child and its cleanup identity must survive descriptor replacements together.
+/// A hosted session and its cleanup identity must survive descriptor replacements together.
 #[derive(Debug)]
 pub(crate) struct SpawnedWorker {
-    child: Child,
+    session: crate::session_host::HostedSession,
     orphan_generation: OrphanGeneration,
 }
 
-/// Compose the worker spawn env (TS `launchWorker`'s merged env,
+/// Compose a hosted session's environment (TS `launchWorker`'s merged env,
 /// `daemon-supervisor.ts`): the daemon's own process env stays the
 /// inherited base, the client-forwarded launch env rides over it, and
 /// the internal identity overrides ride over both — then `RLM_DEPTH`
 /// never survives: a client may itself run inside an agent (its env
-/// carries the recursion marker), and a worker that inherited it would
+/// carries the recursion marker), and a session that inherited it would
 /// stamp every root session it creates with a stale depth (audit #9).
-fn apply_worker_env(
-    command: &mut Command,
-    client_launch_env: Option<&std::collections::BTreeMap<String, String>>,
+/// The result is the session's own value: nothing here touches the
+/// daemon's process environment, so no other session can see it.
+fn session_env(
+    client_launch_env: Option<std::collections::BTreeMap<String, String>>,
     internal_launch_env: std::collections::BTreeMap<String, String>,
+) -> (
+    std::collections::BTreeMap<String, String>,
+    std::collections::BTreeSet<String>,
 ) {
-    if let Some(env) = client_launch_env {
-        command.envs(env);
-    }
-    command.envs(internal_launch_env);
-    command.env_remove("RLM_DEPTH");
+    let mut env = client_launch_env.unwrap_or_default();
+    env.extend(internal_launch_env);
+    env.remove("RLM_DEPTH");
+    (
+        env,
+        std::collections::BTreeSet::from(["RLM_DEPTH".to_string()]),
+    )
 }
 
 impl SpawnedWorker {
+    /// The hosted lifetime's id (see [`crate::session_host::is_hosted_pid`]).
     pub(crate) fn id(&self) -> Option<u32> {
-        self.child.id()
+        Some(self.session.pid())
     }
 
+    /// End the session now and reap the processes it started.
+    #[allow(clippy::unused_async, reason = "the reap runs off the executor")]
     pub(crate) async fn kill(&mut self) -> std::io::Result<()> {
-        self.child.kill().await?;
+        self.session.kill().await;
         self.orphan_generation.reap().await;
         Ok(())
     }
@@ -181,10 +189,15 @@ impl Supervisor {
     ) {
         loop {
             if let Some(mut child) = child.take() {
-                let status = child.child.wait().await;
-                if status.is_ok() {
-                    child.orphan_generation.reap().await;
-                }
+                let status = child.session.wait().await;
+                // The session's runtime is gone: the processes it started
+                // have no owner left, and its lease names a dead lifetime.
+                child.orphan_generation.reap().await;
+                let agent_dir = self.options.agent_dir.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    crate::lease::reclaim_dead_owner_leases(&agent_dir)
+                })
+                .await;
                 if resident.route_state().stop_requested()
                     || self.shutting_down.load(Ordering::SeqCst)
                 {
@@ -194,6 +207,24 @@ impl Supervisor {
                     ));
                     self.note_daemon_event("worker_exited", Some("normal"));
                     return;
+                }
+                if self.superseded(&resident, monitor_epoch) {
+                    return;
+                }
+                match status {
+                    crate::session_host::HostedExit::Crashed(crash) => {
+                        self.record_session_crash(
+                            &resident,
+                            &crash,
+                            super::crash::InterruptedTurn::Settle,
+                        )
+                        .await;
+                    }
+                    crate::session_host::HostedExit::Ended(reason) => self.log_line(&format!(
+                        "session worker {} ended without a stop request ({})",
+                        resident.worker_id,
+                        reason.as_deref().unwrap_or("no error")
+                    )),
                 }
             } else if adopted_pid != 0 {
                 // Adopted worker (no Child handle): park on the kernel's
@@ -306,6 +337,17 @@ impl Supervisor {
                     "session worker {} failed after {failures} consecutive failures",
                     resident.worker_id
                 ));
+                let active_session_id = resident
+                    .descriptor
+                    .lock()
+                    .await
+                    .root_active_session_id
+                    .clone();
+                self.publish_fault_state(&resident, "failed").await;
+                self.publish_session_fault(
+                    &active_session_id,
+                    json!({ "type": "session_failed", "failures": failures }),
+                );
                 return;
             }
             let backoff_ms = (BASE_BACKOFF_MS << (failures - 1).min(7)).min(MAX_BACKOFF_MS);
@@ -327,6 +369,33 @@ impl Supervisor {
                     // accumulate toward the give-up cap (the reset comes only from a stable
                     // lifetime on the crash path).
                     self.note_daemon_event("worker_restarted", None);
+                    let (active_session_id, journal_path) = {
+                        let descriptor = resident.descriptor.lock().await;
+                        (
+                            descriptor.root_active_session_id.clone(),
+                            std::path::PathBuf::from(&descriptor.recovery_journal_path),
+                        )
+                    };
+                    // A session stopped by its user comes back stopped: the rebuild heals
+                    // it, it does not undo the abort. The client is told, so the refusal of
+                    // its next plain prompt is no surprise.
+                    let queued_input_suspended =
+                        crate::journal::WorkerRecoveryJournal::read_queue_snapshot(
+                            &journal_path,
+                            &active_session_id,
+                        )
+                        .ok()
+                        .flatten()
+                        .is_some_and(|(_, _, suspended)| suspended);
+                    self.publish_fault_state(&resident, "recovered").await;
+                    self.publish_session_fault(
+                        &active_session_id,
+                        json!({
+                            "type": "session_recovered",
+                            "failures": failures,
+                            "queuedInputSuspended": queued_input_suspended,
+                        }),
+                    );
                     child = Some(new_child);
                 }
                 Err(error) => {
@@ -422,6 +491,15 @@ impl Supervisor {
         let (payload, injected_compaction_abort) = {
             let descriptor = resident.descriptor.lock().await;
             let mut payload = create_command_payload(&descriptor.create_command);
+            // A fault this relaunch heals rides the create replay: the rebuilt
+            // session keeps it in its transcript, so a later reopen shows it.
+            if let Some(crash) = descriptor
+                .rest
+                .get("lastCrash")
+                .filter(|crash| crash["state"] == "rebuilding")
+            {
+                payload["sessionCrash"] = crash.clone();
+            }
             // The pending terminal record rides the create replay: the replacement
             // discloses the aborted run in the rebuilt transcript, and the record is
             // consumed by the reply.
@@ -595,47 +673,36 @@ impl Supervisor {
             )
         };
 
-        let executable = std::env::current_exe().context("resolve pa-daemon executable")?;
-        let stderr_log_path =
-            crate::worker_stderr::log_path(&self.options.agent_dir, &resident.worker_id);
-        let stderr_log = crate::worker_stderr::open_for_spawn(&stderr_log_path)?;
         // The client launch env travels from the resident (TS `launchEnv`).
         let client_launch_env = resident
             .launch_env
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        let mut command = Command::new(&executable);
-        command.arg("worker");
-        apply_worker_env(&mut command, client_launch_env.as_ref(), launch_env);
-        command
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            // The worker's stderr lands in its per-worker log (a detached supervisor has no
-            // inherited stderr): the launch failure errors below tail this file.
-            .stderr(std::process::Stdio::from(stderr_log));
-        if std::path::Path::new(&cwd).is_dir() {
-            command.current_dir(&cwd);
-        }
-        // Detached and window-hidden, the TS worker spawn (`spawnHidden`, `{ detached: true }`):
-        // the worker leaves the supervisor's console group and shows no fresh console.
-        pa_core::platform::process::set_new_process_group(command.as_std_mut());
-        let child = command
-            .spawn()
-            .with_context(|| format!("spawn session worker {}", resident.worker_id))?;
+        let (env, removed_env) = session_env(client_launch_env, launch_env);
+        let session =
+            crate::session_host::HostedSession::start(crate::session_host::HostedLaunch {
+                worker_id: resident.worker_id.clone(),
+                cwd: PathBuf::from(&cwd),
+                env,
+                removed_env,
+            })
+            .with_context(|| format!("host session worker {}", resident.worker_id))?;
         let child = SpawnedWorker {
             orphan_generation: OrphanGeneration {
-                pid: child.id().unwrap_or(0),
+                // The session's processes are the daemon's children: their
+                // journal records name this process as the owner.
+                pid: std::process::id(),
                 path: orphan_path.clone(),
             },
-            child,
+            session,
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |elapsed| elapsed.as_millis() as u64);
         resident.spawned_at_ms.store(now_ms, Ordering::SeqCst);
-        if std::env::var("PA_DAEMON_DEBUG").is_ok() {
-            eprintln!("[supervisor] spawned worker pid {:?}", child.id());
+        if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
+            eprintln!("[supervisor] hosted session {:?}", child.id());
         }
         let spawn_record = {
             let mut descriptor = resident.descriptor.lock().await;
@@ -643,7 +710,7 @@ impl Supervisor {
             // at spawn): the holder checks need it to recognize a recycled pid.
             let child_pid = child.id().unwrap_or(0);
             descriptor.pid = u64::from(child_pid);
-            descriptor.process_start_id = crate::protocol::process_start_id(child_pid);
+            descriptor.process_start_id = Some(child.session.generation().to_string());
             // Publish the path with its owner identity, never against the
             // previous generation's pid before the spawn succeeds.
             descriptor.orphan_process_journal_path = Some(orphan_path);
@@ -674,14 +741,45 @@ impl Supervisor {
 
         // A worker that never comes up inside the connect budget is killed here, so a
         // stuck child never outlives its failed launch.
-        if let Err(error) =
-            probe_worker_socket(&resident.worker_id, &worker_socket, connect_deadline).await
-        {
-            let mut child = child;
+        let mut child = child;
+        // A session that ends before its socket answers will never answer:
+        // the launch fails now, not when the connect budget runs out.
+        let ready = tokio::select! {
+            probed = probe_worker_socket(&resident.worker_id, &worker_socket, connect_deadline) => probed,
+            _ = child.session.wait() => Err(anyhow!(
+                "session worker {} ended before its socket was ready",
+                resident.worker_id
+            )),
+        };
+        if let Err(error) = ready {
+            // A session that already ended says why itself (a refused
+            // configuration, a socket it could not bind).
+            let ended = child.session.ended();
             let _ = child.kill().await;
+            // The failure names the session first, then why, then what the session logged
+            // on its way down: the reason is appended to the session's own log so that tail
+            // always holds it.
+            let reason = match ended {
+                Some(crate::session_host::HostedExit::Ended(Some(reason))) => {
+                    Some(format!("ended before it was ready: {reason}"))
+                }
+                Some(crate::session_host::HostedExit::Crashed(crash)) => Some(format!(
+                    "crashed before it was ready: {} ({})",
+                    crash.message, crash.location
+                )),
+                Some(crate::session_host::HostedExit::Ended(None)) | None => None,
+            };
+            let Some(reason) = reason else {
+                return Err(error);
+            };
+            crate::worker_stderr::append_launch_failure(
+                &self.options.agent_dir,
+                &resident.worker_id,
+                &reason,
+            );
             return Err(crate::worker_stderr::not_ready_with_tail(
-                error,
-                &stderr_log_path,
+                anyhow!("session worker {} {reason}", resident.worker_id),
+                &crate::worker_stderr::log_path(&self.options.agent_dir, &resident.worker_id),
             ));
         }
         Ok(child)
@@ -756,7 +854,7 @@ impl Supervisor {
                     DEFAULT_PRIVATE_FRAME_LIMITS,
                 )
                 .await;
-                if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+                if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                     eprintln!(
                         "[supervisor] wrote worker frame {}: {:?}",
                         request.command_type,
@@ -793,7 +891,7 @@ impl Supervisor {
             tokio::spawn(async move {
                 let mut reader = PrivateFrameReader::new(reader, DEFAULT_PRIVATE_FRAME_LIMITS);
                 while let Ok(Some(frame)) = reader.read_frame().await {
-                    if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+                    if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
                         eprintln!(
                             "[supervisor] worker frame: {:?}",
                             frame.header.get("outboundType")
@@ -1046,12 +1144,12 @@ impl Supervisor {
 mod tests {
     use super::*;
 
-    /// The spawn env precedence (TS `launchWorker`): the client's env
+    /// The session env precedence (TS `launchWorker`): the client's env
     /// rides over the inherited daemon base, the internal identity
     /// overrides ride over the client's env (a client-supplied worker
-    /// token never wins), and `RLM_DEPTH` is an explicit removal even
-    /// when the client forwarded one — the only removal, so the daemon's
-    /// own env stays the inherited base.
+    /// token never wins), and `RLM_DEPTH` is hidden even when the client
+    /// forwarded one — the only removal, so the daemon's own env stays the
+    /// inherited base.
     #[test]
     fn the_client_env_rides_under_the_internal_overrides() {
         let client = std::collections::BTreeMap::from([
@@ -1066,59 +1164,18 @@ mod tests {
             crate::worker::WORKER_TOKEN_ENV.to_string(),
             "internal-token".to_string(),
         )]);
-        let mut command = Command::new("x");
-        apply_worker_env(&mut command, Some(&client), internal);
-        let envs: std::collections::BTreeMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> =
-            command.as_std().get_envs().collect();
         assert_eq!(
-            envs.get(std::ffi::OsStr::new("PA_MARKER")),
-            Some(&Some(std::ffi::OsStr::new("a-client"))),
-            "the client env rides into the worker"
-        );
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new(crate::worker::WORKER_TOKEN_ENV)),
-            Some(&Some(std::ffi::OsStr::new("internal-token"))),
-            "the internal identity beats a client-supplied same key"
-        );
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new("RLM_DEPTH")),
-            Some(&None),
-            "a client-forwarded RLM_DEPTH is an explicit removal"
-        );
-        let removals: Vec<&std::ffi::OsStr> = envs
-            .iter()
-            .filter(|(_, value)| value.is_none())
-            .map(|(key, _)| *key)
-            .collect();
-        assert_eq!(
-            removals,
-            vec![std::ffi::OsStr::new("RLM_DEPTH")],
-            "RLM_DEPTH is the only removal: the daemon's own env stays             inherited (the e2e's base-sentinel check proves the layer)"
-        );
-    }
-
-    /// The recursion marker is stripped even with no client env at all
-    /// (audit #9): a supervisor started inside an agent's shell spawns
-    /// depth-0 workers.
-    #[test]
-    fn rlm_depth_is_stripped_without_a_client_env() {
-        let internal = std::collections::BTreeMap::from([(
-            crate::worker::WORKER_ROLE_ENV.to_string(),
-            "1".to_string(),
-        )]);
-        let mut command = Command::new("x");
-        apply_worker_env(&mut command, None, internal);
-        let envs: std::collections::BTreeMap<&std::ffi::OsStr, Option<&std::ffi::OsStr>> =
-            command.as_std().get_envs().collect();
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new("RLM_DEPTH")),
-            Some(&None),
-            "RLM_DEPTH is stripped even with no launch env"
-        );
-        assert_eq!(
-            envs.get(std::ffi::OsStr::new(crate::worker::WORKER_ROLE_ENV)),
-            Some(&Some(std::ffi::OsStr::new("1"))),
-            "the internal identity still rides"
+            session_env(Some(client), internal),
+            (
+                std::collections::BTreeMap::from([
+                    ("PA_MARKER".to_string(), "a-client".to_string()),
+                    (
+                        crate::worker::WORKER_TOKEN_ENV.to_string(),
+                        "internal-token".to_string(),
+                    ),
+                ]),
+                std::collections::BTreeSet::from(["RLM_DEPTH".to_string()]),
+            )
         );
     }
 }

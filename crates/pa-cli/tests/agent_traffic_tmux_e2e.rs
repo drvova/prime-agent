@@ -3,7 +3,7 @@
 //! tmux user-level verifier for the scoped agents view's Traffic pane: the real `prime-agent`
 //! binary runs in a private tmux server against its own daemon, an isolated HOME, the real
 //! kernel, and the scripted faux provider. The root spawns two children; each child messages
-//! its sibling through `agent_message.send`. The test opens the scoped agents view from the
+//! its sibling through `agent-message-send`. The test opens the scoped agents view from the
 //! dock, presses `m`, and polls the pane until both directions list (never a fixed sleep).
 
 use std::path::{Path, PathBuf};
@@ -13,24 +13,6 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-/// The kernel Python with prime-agent-runtime installed (`PA_E2E_KERNEL_PYTHON`, else the
-/// product's kernel-venv layout under the runner's HOME, which the CI shards bootstrap).
-fn kernel_python() -> PathBuf {
-    let python = std::env::var_os("PA_E2E_KERNEL_PYTHON").map_or_else(
-        || {
-            PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join(".prime/agent/kernel-venv/bin/python")
-        },
-        PathBuf::from,
-    );
-    assert!(
-        python.exists(),
-        "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
-        python.display()
-    );
-    python
-}
 
 /// A private tmux server (its own socket in the test's temp dir) holding one pane that runs
 /// the product; dropped, it shuts the product's daemon down and kills the server.
@@ -100,7 +82,7 @@ impl Drop for Pane {
 }
 
 fn cell(code: &str) -> serde_json::Value {
-    json!({ "content": [{ "type": "toolCall", "name": "python_repl", "arguments": { "code": code } }] })
+    json!({ "content": [{ "type": "toolCall", "name": "eval", "arguments": { "code": code } }] })
 }
 
 fn start(dir: &Path) -> Pane {
@@ -122,22 +104,25 @@ fn start(dir: &Path) -> Pane {
     // (first, no marker yet) spawns the two children; each child polls the roster for its
     // sibling and messages it directly.
     let code = format!(
-        "import asyncio, json, os\n\
-         from rlm import host_request\n\
-         marker = {marker:?}\n\
-         if not os.path.exists(marker):\n\
-         \x20   open(marker, 'w').close()\n\
-         \x20   await rlm.spawn('say hello to your sibling', name='alpha')\n\
-         \x20   await rlm.spawn('say hello to your sibling', name='beta')\n\
-         else:\n\
-         \x20   sibling = None\n\
-         \x20   for _ in range(600):\n\
-         \x20       roster = await host_request('agent_observe.list', {{}})\n\
-         \x20       sibling = next((a['sessionName'] for a in roster['agents'] if a.get('relationship') == 'sibling' and a.get('sessionName')), None)\n\
-         \x20       if sibling:\n\
-         \x20           break\n\
-         \x20       await asyncio.sleep(0.05)\n\
-         \x20   await host_request('agent_message.send', {{'message': 'contract ready for review', 'receiver_role': 'sibling', 'receiver_name': sibling}})\n",
+        r#"(define marker {marker:?})
+(if (not (= 0 (hash-ref (bash (string-append "test -e '" marker "'")) 'exit-code)))
+    (begin
+      (fs-write marker "")
+      (rlm-spawn "say hello to your sibling" #:name "alpha")
+      (rlm-spawn "say hello to your sibling" #:name "beta"))
+    (let loop ([tries 600])
+      (let ([siblings (filter (lambda (agent)
+                                (and (equal? (hash-try-get agent 'relationship) "sibling")
+                                     (string? (hash-try-get agent 'sessionName))))
+                              (hash-ref (agent-observe-list) 'agents))])
+        (cond
+          [(pair? siblings)
+           (agent-message-send "contract ready for review"
+                               #:receiver-role "sibling"
+                               #:receiver-name (hash-ref (car siblings) 'sessionName))]
+          [(> tries 0) (bash "sleep 0.05") (loop (- tries 1))]
+          [else (error "no sibling appeared")]))))
+"#,
         marker = marker.display().to_string(),
     );
     let mut responses = vec![cell(&code), json!({ "text": "cell done" })];
@@ -155,11 +140,10 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_KERNEL_PYTHON={python} \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
-            python = quote(&kernel_python()),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),

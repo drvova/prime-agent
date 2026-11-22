@@ -464,9 +464,10 @@ async fn message_host_handler_round_trip() {
     // The removed roster request answers with the TS migration error.
     let list_agents = handlers.get("agent_message.list_agents").unwrap().clone();
     let removed = send_request(&list_agents, json!({})).unwrap_err();
-    assert!(removed.to_string().starts_with(
-        "agent_message.list_agents was removed; the family roster now lives in agent_observe.list_agents()"
-    ));
+    assert_eq!(
+        removed.to_string(),
+        "agent_message.list_agents was removed; the family roster is `(agent-observe-list)`."
+    );
 }
 
 /// The per-sender bucket bursts three deliveries, refuses the fourth with the retry hint, and

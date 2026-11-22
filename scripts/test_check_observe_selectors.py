@@ -192,14 +192,9 @@ class SelectorReceiptTests(unittest.TestCase):
             fixture.await_child_identities(snapshot, lambda *_args: self.fail('malformed publication'), {},
                                            expected_tasks=fixture.FOREIGN_CHILD_TASKS, clock=lambda: 100)
 
-    def test_identical_cell_uses_actual_skill_functions(self):
+    def test_the_cell_reads_each_selector_through_the_observe_functions(self):
         code = fixture.cell({'exact': 'actual-a', 'foreign_suffix': 'FFF-123'})
-        tree = ast.parse(code)
-        calls = {node.func.attr for node in ast.walk(tree) if isinstance(node, ast.Call)
-                 and isinstance(node.func, ast.Attribute)}
-        self.assertTrue({'list_agents', 'get_agent', 'recent_messages'} <= calls)
-        self.assertIn("'foreign_suffix': 'FFF-123'", code)
-
+        self.assertIn('(list "exact" "actual-a") (list "foreign_suffix" "FFF-123")', code)
 
 if __name__ == '__main__':
     unittest.main()

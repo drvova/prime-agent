@@ -62,7 +62,7 @@ fn resolve_deployment_name(model: &Model, options: Option<&AzureOpenAIResponsesO
         return deployment.clone();
     }
     let mapped = parse_deployment_name_map(
-        std::env::var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP")
+        pa_types::session_scope::var("AZURE_OPENAI_DEPLOYMENT_NAME_MAP")
             .ok()
             .as_deref(),
     )
@@ -134,7 +134,7 @@ fn resolve_responses_url(
         .and_then(|options| options.azure_api_version.clone())
         .filter(|value| !value.is_empty())
         .or_else(|| {
-            std::env::var("AZURE_OPENAI_API_VERSION")
+            pa_types::session_scope::var("AZURE_OPENAI_API_VERSION")
                 .ok()
                 .filter(|value| !value.is_empty())
         })
@@ -144,14 +144,14 @@ fn resolve_responses_url(
         .and_then(|options| options.azure_base_url.as_ref())
         .map(|url| url.trim().to_string())
         .or_else(|| {
-            std::env::var("AZURE_OPENAI_BASE_URL")
+            pa_types::session_scope::var("AZURE_OPENAI_BASE_URL")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty())
         });
     let resource_name = options
         .and_then(|options| options.azure_resource_name.clone())
-        .or_else(|| std::env::var("AZURE_OPENAI_RESOURCE_NAME").ok())
+        .or_else(|| pa_types::session_scope::var("AZURE_OPENAI_RESOURCE_NAME").ok())
         .filter(|value| !value.is_empty());
 
     let mut resolved_base_url = base_url;

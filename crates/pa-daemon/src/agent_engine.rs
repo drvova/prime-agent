@@ -78,7 +78,7 @@ mod session_engine_impl;
 
 mod turn;
 
-/// The session's snapshot-flushing kernel stop as a boxed-future factory.
+/// The session's kernel release (see `BuiltHandles::kernel_release`) as a boxed-future factory.
 pub(crate) type SettledKernelRelease =
     std::sync::Arc<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>;
 
@@ -306,13 +306,12 @@ pub struct AgentSessionEngine {
         std::sync::Mutex<Option<pa_core::session_engine::semantic_edges::SemanticEdgeIdentity>>,
 }
 
-/// An engine never leaves its kernel process running past itself. The built
-/// session's kernel manager can outlive the engine through the session's own
-/// reference graph, and a kernel left running then sees stdin close only at
-/// process exit, where its graceful exit flushes a final snapshot into an
-/// artifact dir the engine's owner may already have removed. The kill is
-/// synchronous on a plain thread (the manager waits for the process to stop);
-/// inside a runtime it stays the fire-and-forget kill the async paths use.
+/// An engine never leaves its kernel running past itself. The built
+/// session's kernel can outlive the engine through the session's own
+/// reference graph, and its shell commands and MCP servers would then run on
+/// until the process exits. On a plain thread the kernel's cell, commands
+/// and factory loops stop before this returns; inside a runtime the kill is
+/// spawned there.
 impl Drop for AgentSessionEngine {
     fn drop(&mut self) {
         let built = self
@@ -322,7 +321,7 @@ impl Drop for AgentSessionEngine {
             .and_then(|session| session.as_ref().map(std::sync::Arc::clone));
         if let Some(provisioner) = built.and_then(|built| built.kernel_provisioner_weak().upgrade())
         {
-            provisioner.kill();
+            provisioner.kill_detached();
         }
     }
 }

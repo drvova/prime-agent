@@ -275,7 +275,7 @@ impl SessionEngine for AgentSessionEngine {
             Some(leaf) => PromptContextBoundary::Leaf(leaf),
             None => PromptContextBoundary::Empty,
         };
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.prompt_boundary",
                 &json!({
@@ -720,7 +720,7 @@ impl SessionEngine for AgentSessionEngine {
                             .and_then(|usage| serde_json::to_value(usage).ok()),
                         entry: serde_json::to_value(&run.entry).unwrap_or(Value::Null),
                         ipython_state: run
-                            .ipython_state
+                            .kernel_state
                             .as_ref()
                             .map(crate::session_commands::custom_message_value),
                     }),
@@ -1412,6 +1412,18 @@ impl SessionEngine for AgentSessionEngine {
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) {
+        // The faux script's `panicOn` seam (verification only, as on the
+        // scripted engine): the turn panics before anything is admitted.
+        if let Some(fault) = self
+            .config
+            .faux_script
+            .as_deref()
+            .and_then(|script| serde_json::from_str::<Value>(script).ok())
+            .and_then(|script| script.get("panicOn").cloned())
+            .filter(|fault| fault["message"] == request.message.as_str())
+        {
+            panic!("{}", fault["panic"].as_str().unwrap_or("scripted panic"));
+        }
         let mut emit = self.goal_tracking_emit(emit);
         // The accepted-turn row carries the skill-expanded text (the
         // transcript renders the skill card).

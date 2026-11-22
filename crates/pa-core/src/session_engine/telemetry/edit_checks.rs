@@ -1,56 +1,26 @@
 //! `agent edit checks` (v2): the checks the kernel ran after edits, by
-//! outcome (counts only: never a path, a command, or output).
+//! outcome (counts only: never a path, a command, or output). The `fs` capability's rule file
+//! names the event; session end emits it through the generic capability counter.
 
-use super::{SessionCounters, SessionTelemetry, Value};
+use super::SessionCounters;
 use crate::kernel::edit_checks::EditCheckOutcome;
 
-/// Checks by outcome.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct EditCheckCounts {
-    clean: u64,
-    found: u64,
-    late: u64,
-    skipped: u64,
-    failed: u64,
-}
-
 impl SessionCounters {
-    /// One check after an edit, by outcome.
+    /// One check after an edit, by outcome: a clean, finding, or failed check also counts as a
+    /// run; a late or skipped one does not.
     pub(crate) fn note_edit_check(&self, outcome: EditCheckOutcome) {
-        self.with(|values| {
-            let counts = &mut values.edit_checks;
-            *match outcome {
-                EditCheckOutcome::Clean => &mut counts.clean,
-                EditCheckOutcome::Found => &mut counts.found,
-                EditCheckOutcome::Late => &mut counts.late,
-                EditCheckOutcome::Skipped => &mut counts.skipped,
-                EditCheckOutcome::Failed => &mut counts.failed,
-            } += 1;
-        });
-    }
-}
-
-impl SessionTelemetry {
-    /// Track `agent edit checks`, unless no edit was checked.
-    pub(super) fn track_edit_checks(&self) {
-        let mut counts = EditCheckCounts::default();
-        self.counters.with(|values| counts = values.edit_checks);
-        if counts == EditCheckCounts::default() {
-            return;
+        let (ran, outcome_property) = match outcome {
+            EditCheckOutcome::Clean => (true, None),
+            EditCheckOutcome::Found => (true, Some("edit_check_found_count")),
+            EditCheckOutcome::Failed => (true, Some("edit_check_failed_count")),
+            EditCheckOutcome::Late => (false, Some("edit_check_late_count")),
+            EditCheckOutcome::Skipped => (false, Some("edit_check_skipped_count")),
+        };
+        if ran {
+            self.note_capability("edit_check_run_count", 1);
         }
-        let mut properties = self.session_properties();
-        for (key, value) in [
-            (
-                "edit_check_run_count",
-                counts.clean + counts.found + counts.failed,
-            ),
-            ("edit_check_found_count", counts.found),
-            ("edit_check_late_count", counts.late),
-            ("edit_check_skipped_count", counts.skipped),
-            ("edit_check_failed_count", counts.failed),
-        ] {
-            properties.set(key, Value::from(value));
+        if let Some(property) = outcome_property {
+            self.note_capability(property, 1);
         }
-        self.client.track("agent edit checks", properties);
     }
 }

@@ -93,7 +93,7 @@ pub struct BuildSystemPromptOptions<'a> {
     /// heartbeat firing). The wake-up facts the daemonless line states
     /// must match the embedding's wiring.
     pub daemonless: bool,
-    /// Whether `rlm.spawn` can create children in this session (the
+    /// Whether `rlm-spawn` can create children in this session (the
     /// daemonless print host or a daemon worker); a daemonless session
     /// without one cannot spawn at all.
     pub can_spawn: bool,
@@ -155,21 +155,15 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         .sum::<usize>()
         + 2 * segments.len().saturating_sub(1);
 
-    // The dynamic tail, in fixed order: packages -> project context ->
-    // project card -> skills inventory -> MCP servers -> environment -> session role ->
-    // additional guidance -> appended prompt.
+    // The dynamic tail, in fixed order: project context -> project card -> skills inventory ->
+    // MCP servers -> environment -> session role -> appended prompt. The Scheme kernel has no
+    // packages, so the tail has no packages segment.
     let tools: Vec<&str> = options
         .selected_tools
         .clone()
-        .unwrap_or_else(|| vec![pa_types::ai::PYTHON_TOOL_NAME]);
-    let has_ipython = tools.contains(&pa_types::ai::PYTHON_TOOL_NAME);
-    let has_file_access = has_ipython || tools.contains(&"bash");
-
-    segments.push(PromptSegment::dynamic_segment(
-        "packages",
-        "kernel bootstrap defaults",
-        packages_section(),
-    ));
+        .unwrap_or_else(|| vec![pa_types::ai::SCHEME_TOOL_NAME]);
+    let has_kernel = tools.contains(&pa_types::ai::KERNEL_TOOL_NAME);
+    let has_file_access = has_kernel || tools.contains(&"bash");
 
     let context = context_files_section(&options.context_files);
     if !context.is_empty() {
@@ -206,7 +200,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         ));
     }
 
-    if has_ipython {
+    if has_kernel {
         let mcp = format_generic_mcp_guidance(&options.generic_mcp_servers);
         if !mcp.is_empty() {
             segments.push(PromptSegment::dynamic_segment(
@@ -223,7 +217,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         environment_section(options),
     ));
 
-    let role = session_role_section(options, has_ipython);
+    let role = session_role_section(options, has_kernel);
     if !role.is_empty() {
         segments.push(PromptSegment::dynamic_segment(
             "session-role",
@@ -252,19 +246,6 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         assembled,
         cached_prefix_len,
     }
-}
-
-fn packages_section() -> String {
-    use crate::kernel::bootstrap::default_rlm_extra_import_labels;
-    let mut lines = vec![format!(
-        "Pre-installed Python packages: {}.",
-        default_rlm_extra_import_labels().join(", ")
-    )];
-    lines.push(
-        "Install additional packages with `uv pip install <pkg>` (this is a uv-managed venv with no pip module)."
-            .to_string(),
-    );
-    lines.join("\n")
 }
 
 fn context_files_section(context_files: &[(String, String)]) -> String {
@@ -304,14 +285,14 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
 }
 
 /// The environment line of a session whose model accepts image input.
-const IMAGE_INPUT_SEEN: &str = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `attach_image(path)`: reading its bytes with `open()` or `bash` does not show it to you.";
+const IMAGE_INPUT_SEEN: &str = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `(attach-image path)`: reading its bytes with `fs-read` or `bash` does not show it to you.";
 /// The environment line of a session whose model is text-only.
 const IMAGE_INPUT_UNSEEN: &str =
-    "Image input: this model cannot see images; `attach_image` errors for it.";
+    "Image input: this model cannot see images; `attach-image` raises for it.";
 
 /// `prompt` with its environment image-input line stating `vision_capable`:
 /// a model switch changes what the session model can see, and
-/// a stale line keeps a vision model from ever calling `attach_image` (or
+/// a stale line keeps a vision model from ever calling `attach-image` (or
 /// sends a text-only one into its refusal). The environment section follows
 /// the project context, so the last occurrence is the line; a prompt without
 /// it (a custom `--system-prompt`) comes back unchanged.
@@ -328,7 +309,7 @@ pub(crate) fn with_image_input(prompt: &str, vision_capable: bool) -> String {
     }
 }
 
-fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -> String {
+fn session_role_section(options: &BuildSystemPromptOptions, has_kernel: bool) -> String {
     let depth = options.rlm_depth.unwrap_or(0);
     let mut lines = vec![format!(
         "Recursive agent depth: {depth}{}",
@@ -336,28 +317,28 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
     )];
     if options.daemonless {
         lines.push(if options.can_spawn {
-            "This session has no daemon: heartbeats never fire, and background `bash()` completions wake you with a queued `[bash-done]` turn; the run waits for live background commands and your subagents before it exits. Subagent replies and exit notices still wake you."
+            "This session has no daemon: heartbeats never fire, and background `bash` completions wake you with a queued `[bash-done]` turn; the run waits for live background commands and your subagents before it exits. Subagent replies and exit notices still wake you."
                 .to_string()
         } else {
-            "This session has no daemon: `rlm.spawn` is unavailable, heartbeats never fire, and background `bash()` completions wake you with a queued `[bash-done]` turn."
+            "This session has no daemon: `rlm-spawn` is unavailable, heartbeats never fire, and background `bash` completions wake you with a queued `[bash-done]` turn."
                 .to_string()
         });
     }
-    if has_ipython {
+    if has_kernel {
         lines.push(
-            "`await bash(cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `await bash(cmd).wait(seconds)` (up to 600). If the command is still running when the wait runs out, it returns a snapshot: `r.running` is True, `r.exit_code` is None, `r.output` is the newest output, `r.duration` is the elapsed seconds, and `r.handle` is the live handle. A completed result has `r.running` False and an integer `r.exit_code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
+            "`(bash cmd)` waits up to 10 seconds and returns the moment the command finishes. For a command you expect to take longer (a build or test suite), ask for a longer wait up front: `(bash cmd (hash 'wait-ms 120000))` (up to 600000). If the command is still running when the wait runs out, it returns a snapshot: `running` is `#t`, `exit-code` is `#f`, `output` is the newest output, `duration-ms` is the elapsed time, and `job` is the id `bash-wait`, `bash-tail`, and `bash-kill` take. A completed result has `running` `#f` and an integer `exit-code`. The command keeps running after a snapshot; end the turn and collect the final result on the `[bash-done]` notification."
                 .to_string(),
         );
         lines.push(if options.daemonless {
-            "Do not run long blocking work in a cell; start long Python work as an asyncio task and check on it in later cells."
+            "A cell still running when its `timeout` passes is interrupted: do not run long blocking work in a cell; start a long command with `(bash cmd (hash 'background #t))` and check on it in later cells."
                 .to_string()
         } else {
-            "A cell still running when its `timeout` passes continues in the background instead of being stopped; do not wait on it: go on with other work or end your turn, and its `[cell-done]` notice brings the result."
+            "A cell still running when its `timeout` passes continues in the background instead of being stopped, and keeps the engine: no other cell runs until it ends. Do not wait on it: end your turn or do work that needs no `eval`, and its `[cell-done]` notice brings the result."
                 .to_string()
         });
     } else {
         lines.push(
-            "This session has no Python REPL (`python_repl` tool): the programmatic tools described above are unavailable here."
+            "This session has no Scheme kernel (`eval` tool): the programmatic tools described above are unavailable here."
                 .to_string(),
         );
     }
@@ -373,14 +354,14 @@ fn session_role_section(options: &BuildSystemPromptOptions, has_ipython: bool) -
             lines.push(
                 "Your final message is this state's output, which the factory reads; do not message the parent.".to_string(),
             );
-        } else if has_ipython {
+        } else if has_kernel {
             lines.push(
-                "When a task calls for an answer, reply explicitly with `await agent_message.send(message, receiver_role=\"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
+                "When a task calls for an answer, reply explicitly with `(agent-message-send message #:receiver-role \"parent\")`. Not every message or task needs a reply; continue cleanup after sending and go idle normally.".to_string(),
             );
         }
-        if has_ipython {
+        if has_kernel {
             lines.push(
-                "For long-running work, report brief progress with `await rlm.progress_note('...')` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
+                "For long-running work, report brief progress with `(rlm-progress-note \"...\")` (at most 512 characters, throttled to about one note per 10 seconds); the parent sees notes without needing a reply.".to_string(),
             );
         }
     }
@@ -421,7 +402,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     let mut lines = vec![
         "# Generic MCP Connections".to_string(),
         String::new(),
-        "Generic MCP connections are accessed through the pre-imported Python `mcp` object in the Python REPL, not as top-level native tool namespaces or installed Python skills.".to_string(),
+        "Generic MCP connections are accessed through the `mcp-*` functions of the Scheme kernel, not as top-level native tool namespaces or installed skills.".to_string(),
         format!(
             "Enabled generic MCP servers: {}.",
             enabled
@@ -433,7 +414,7 @@ fn format_generic_mcp_guidance(servers: &[String]) -> String {
     ];
     for server in &enabled {
         lines.push(format!(
-            "For `{server}`, first discover its tools with `await mcp.list_tools(\"{server}\")`, then call one with `await mcp.call_tool(\"{server}\", \"<tool>\", arguments)`."
+            "For `{server}`, first discover its tools with `(mcp-list-tools \"{server}\")`, then call one with `(mcp-call-tool \"{server}\" \"<tool>\" arguments)`."
         ));
     }
     lines.join("\n")
@@ -445,7 +426,7 @@ mod tests {
     use crate::skills::{create_synthetic_source_info, SkillKind, SourceScope};
     use std::path::PathBuf;
 
-    fn skill(name: &str, import: Option<&str>) -> Skill {
+    fn skill(name: &str, kind: SkillKind) -> Skill {
         Skill {
             name: name.to_string(),
             description: format!("Skill {name}"),
@@ -453,16 +434,7 @@ mod tests {
             base_dir: PathBuf::from("/skills"),
             source_info: create_synthetic_source_info("/skills", "user", SourceScope::User, None),
             disable_model_invocation: false,
-            kind: if import.is_some() {
-                SkillKind::Python
-            } else {
-                SkillKind::Markdown
-            },
-            python: import.map(|import_name| crate::skills::SkillPythonMetadata {
-                import_name: import_name.to_string(),
-                package_path: PathBuf::from("/skills"),
-                pyproject_path: PathBuf::from("/skills/pyproject.toml"),
-            }),
+            kind,
         }
     }
 
@@ -471,9 +443,9 @@ mod tests {
             cwd: "/w".to_string(),
             messages_path: Some("/log.jsonl".to_string()),
             skills: vec![
-                skill("web-search", Some("websearch")),
-                skill("refine", Some("refine")),
-                skill("agent-message", Some("agent_message")),
+                skill("web-search", SkillKind::Scheme),
+                skill("refine", SkillKind::Scheme),
+                skill("agent-message", SkillKind::Scheme),
             ],
             ..Default::default()
         }
@@ -493,7 +465,7 @@ mod tests {
             .collect();
         assert_eq!(
             names[..4],
-            ["core", "usage", "opinionated", "packages"],
+            ["core", "usage", "opinionated", "skills-inventory"],
             "core/usage/opinionated layers, then the dynamic tail"
         );
         assert_eq!(
@@ -510,7 +482,6 @@ mod tests {
         assert!(tail.contains("Conversation log: /log.jsonl"));
         assert!(tail.contains("<available_skills>"));
         assert!(tail.contains("Recursive agent depth: 0 (root)"));
-        assert!(tail.contains("Pre-installed Python packages: requests, httpx,"));
     }
 
     #[test]
@@ -537,7 +508,7 @@ mod tests {
 
     #[test]
     fn factory_child_gets_the_factory_line_instead_of_the_reply_line() {
-        const REPLY: &str = "reply explicitly with `await agent_message.send(";
+        const REPLY: &str = "reply explicitly with `(agent-message-send message";
         const FACTORY: &str = "Your final message is this state's output";
         let mut child = base_options();
         child.rlm_depth = Some(1);
@@ -610,7 +581,13 @@ mod tests {
             .collect();
         assert_eq!(
             names[..5],
-            ["core", "usage", "opinionated", "model-prompts", "packages"],
+            [
+                "core",
+                "usage",
+                "opinionated",
+                "model-prompts",
+                "skills-inventory"
+            ],
             "extras are the last static segment, directly before the dynamic tail"
         );
     }

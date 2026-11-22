@@ -12,9 +12,9 @@
 #   5. assert each route's launcher answers --version and the payload
 #      layout carries the .exe binary + the runtime sidecar + skills.
 #
-# The kernel pre-warm installs uv when it is missing (the astral route; the
-# runner has no uv but the network is up), then bootstraps the kernel venv —
-# offline the step degrades to an honest note and the install still succeeds.
+# The kernel is built into the binary: install.ps1 installs no uv and no
+# venv. install-rust.sh still obtains a Python for its own scripting steps
+# through uv (the channel manifest's JSON parsing).
 #
 # Usage (from the repo root, on windows-latest):
 #   pwsh -File scripts/release/test_windows_install.ps1
@@ -126,27 +126,19 @@ Set-Content -LiteralPath (Join-Path $channel 'latest.json') -Value "{`"version`"
 $server = Start-Process -FilePath $py -ArgumentList '-m','http.server','8123','--directory',$channel -PassThru -WindowStyle Hidden
 # install.ps1 writes the User PATH (the PATH-parity flow); the e2e strips
 # exactly its own scratch-prefixed PATH entries in the cleanup below (a
-# stale whole-value snapshot would linger or clobber). THE UV INSTALL IS
-# ISOLATED (the reviewers' finding): ownership of a file in the shared
-# ~/.local/bin is unprovable (a transcript line proves an attempt, not a
-# landing; a concurrent external install races the attribution) - so the
-# harness never lets the installers touch the shared dir: both routes
-# honor PRIME_AGENT_UV_BIN_DIR and the harness points it at its scratch.
-# The uv PRE-STATE still guards the parity gate below - install.ps1 skips
-# its uv branch when the machine already answers uv, so the gate runs
-# only against the fresh-runner contract.
-$uvWasOnPath = [bool](Get-Command uv -CommandType Application -ErrorAction SilentlyContinue) -or (Test-Path (Join-Path $HOME '.local\bin\uv.exe'))
-# The kernel pre-warm's writes (the venv, uv's cache, uv's pythons) and the
-# uv install itself would land in the real user profile; the harness
-# steers all of them into its own scratch dir through the product's
-# override knobs and restores the caller's values in the cleanup (the
-# discipline install.ps1 itself runs).
-$callerKernelVenv = $env:PRIME_AGENT_KERNEL_VENV
+# stale whole-value snapshot would linger or clobber). THE SH ROUTE'S UV
+# INSTALL IS ISOLATED (the reviewers' finding): install-rust.sh installs uv
+# for its own Python when the machine has none, and ownership of a file in
+# the shared ~/.local/bin is unprovable (a concurrent external install
+# races the attribution) - so the harness never lets it touch the shared
+# dir: install-rust.sh honors PRIME_AGENT_UV_BIN_DIR and the harness
+# points it, uv's cache, and uv's pythons at its scratch, restoring the
+# caller's values in the cleanup. install.ps1 uses no uv at all (the gate
+# after route A).
 $callerUvCacheDir = $env:UV_CACHE_DIR
 $callerUvPythonDir = $env:UV_PYTHON_INSTALL_DIR
 $callerUvBinDir = $env:PRIME_AGENT_UV_BIN_DIR
 try {
-    $env:PRIME_AGENT_KERNEL_VENV = Join-Path $scratch 'kernel-venv'
     $env:UV_CACHE_DIR = Join-Path $scratch 'uv-cache'
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $scratch 'uv-python'
     $env:PRIME_AGENT_UV_BIN_DIR = Join-Path $scratch 'uv-bin'
@@ -163,30 +155,18 @@ try {
     $env:PRIME_AGENT_RELEASE_CHANNEL = 'stable'
     $env:PRIME_AGENT_RUST_PREFIX = $prefixA
     $env:PRIME_AGENT_ALLOW_HTTP = '1'
-    # The transcript is captured (the fallback harness's pattern): it is the
-    # uv gate's evidence below - the branch's own verdict, not the network's.
     $ps1Lines = @(& pwsh -File (Join-Path $repo 'install.ps1') 2>&1 | ForEach-Object { "$_" })
     if ($LASTEXITCODE -ne 0) { $ps1Lines | Write-Host; throw 'install.ps1 failed' }
-    $ps1Transcript = $ps1Lines -join [Environment]::NewLine
     $cmdLauncher = Join-Path $prefixA 'bin\prime-agent.cmd'
     if (-not (Test-Path $cmdLauncher)) { throw "the cmd launcher is missing: $cmdLauncher" }
     $versionA = (& $cmdLauncher --version) | Select-Object -First 1
     if ($versionA -ne $version) { throw "the cmd launcher answered '$versionA' instead of '$version'" }
-    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\pyproject.toml', 'share\prime-agent\LICENSE', 'share\prime-agent\THIRD-PARTY-NOTICES.txt', 'share\prime-agent\skills')) {
+    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\LICENSE', 'share\prime-agent\THIRD-PARTY-NOTICES.txt', 'share\prime-agent\skills')) {
         if (-not (Test-Path (Join-Path $prefixA $entry))) { throw "the ps1 route's payload is missing $entry" }
     }
-    # The uv parity gate asserts the CONTRACT, never astral.sh availability
-    # (the reviewer's finding): the branch is best-effort by design - offline
-    # it degrades to the honest note and the install still succeeds - so
-    # the gate demands either the landed binary (the online path) or the
-    # honest degradation in the transcript. A branch that lands NEITHER is
-    # broken; the network being down is not.
-    $uvExePath = Join-Path (Join-Path $scratch 'uv-bin') 'uv.exe'
-    $uvLanded = Test-Path $uvExePath
-    $degradedHonestly = $ps1Transcript -match [regex]::Escape('could not install uv; the kernel pre-warm was skipped')
-    if (-not $uvWasOnPath -and -not $uvLanded -and -not $degradedHonestly) {
-        throw "install.ps1's uv branch landed no uv.exe and no honest degradation note (the branch is broken, not the network)"
-    }
+    # The kernel is built into the binary, so the ps1 route installs nothing
+    # for it: the uv target stays absent until the sh route below runs.
+    if (Test-Path (Join-Path $scratch 'uv-bin')) { throw 'install.ps1 installed uv (the kernel needs none)' }
 
     # 6. Route B: install-rust.sh under Git Bash (the sh entry point).
     $prefixB = Join-Path $scratch 'prefix-b'
@@ -208,7 +188,7 @@ try {
     $prefixBMsys = (& $bash -c ("cygpath -u '" + $prefixB + "'")).Trim()
     $versionB = (& $bash -c ('"' + $prefixBMsys + '/bin/prime-agent" --version') | Select-Object -First 1)
     if ($versionB -ne $version) { throw "the sh launcher answered '$versionB' instead of '$version'" }
-    foreach ($entry in @('share\prime-agent\prime-agent.exe', 'share\prime-agent\prime-agent-runtime\pyproject.toml')) {
+    foreach ($entry in @('share\prime-agent\prime-agent.exe')) {
         if (-not (Test-Path (Join-Path $prefixB $entry))) { throw "the sh route's payload is missing $entry" }
     }
 
@@ -248,10 +228,9 @@ try {
     } finally {
         if ($envKey) { $envKey.Close() }
     }
-    # The uv install needs no cleanup: it never left the scratch dir (the
-    # PRIME_AGENT_UV_BIN_DIR knob above steered both installers), and the
+    # The sh route's uv install needs no cleanup: it never left the scratch
+    # dir (the PRIME_AGENT_UV_BIN_DIR knob above steered it), and the
     # user's ~/.local/bin was never touched at all.
-    $env:PRIME_AGENT_KERNEL_VENV = $callerKernelVenv
     $env:UV_CACHE_DIR = $callerUvCacheDir
     $env:UV_PYTHON_INSTALL_DIR = $callerUvPythonDir
     $env:PRIME_AGENT_UV_BIN_DIR = $callerUvBinDir

@@ -22,12 +22,14 @@ from lifecycle_lib import digest
 from check_restore_notice import texts
 
 MARKER = 'LIVE_MCP_PARITY_RESULT='
-CELL = """import os, json
-from rlm import host_request
-live_mcp_result = {'pid': os.getpid(), 'configs': {}}
-for live_mcp_name in ['fixture-before', 'fixture-after']:
-    live_mcp_result['configs'][live_mcp_name] = await host_request('mcp.config', {'server': live_mcp_name})
-print('LIVE_MCP_PARITY_RESULT=' + json.dumps(live_mcp_result))"""
+CELL = """(define probes-so-far (with-handler (lambda (e) 0) (eval 'kept-probe-count)))
+(eval (list 'define 'kept-probe-count (+ 1 probes-so-far)))
+(define (live-mcp-config name) (host-request "mcp.config" (hash 'server name)))
+(displayln (string-append "LIVE_MCP_PARITY_RESULT="
+                          (value->jsexpr-string
+                            (hash 'probe (+ 1 probes-so-far)
+                                  'configs (hash 'fixture-before (live-mcp-config "fixture-before")
+                                                 'fixture-after (live-mcp-config "fixture-after"))))))"""
 BEFORE = {'type': 'stdio', 'command': 'python3', 'args': ['-c', 'print("before")']}
 AFTER = {'type': 'stdio', 'command': 'python3', 'args': ['-c', 'print("after")']}
 
@@ -70,9 +72,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         requests.append(body)
         if len(requests) == 1:
             offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-            name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.server.errors.append('No supported REPL tool offered')
+                self.server.errors.append('No kernel tool offered')
                 self.send_error(422)
                 return
             self.server.tools[self.server.phase] = name
@@ -168,16 +170,16 @@ def stop(process):
 def validate_observation(observation):
     assert observation['before']['configs'] == {'fixture-before': BEFORE, 'fixture-after': {}}, observation['before']
     assert observation['after']['configs'] == {'fixture-before': {}, 'fixture-after': AFTER}, observation['after']
-    observation['kernel_pid_equal'] = observation['before']['pid'] == observation['after']['pid']
-    assert observation['kernel_pid_equal'], 'reload replaced the kernel; stale-handler regression was not exercised'
+    # A definition made by the first cell is still there for the second.
+    observation['kernel_kept'] = (observation['before']['probe'], observation['after']['probe']) == (1, 2)
+    assert observation['kernel_kept'], 'reload replaced the kernel; stale-handler regression was not exercised'
 
 
 def run_case(binary, root, observation):
     for name in ('home', 'agent', 'sessions', 'work', 'tmp'):
         (root / name).mkdir(parents=True)
     agent, cwd = root / 'agent', root / 'work'
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ',
-           'PRIME_AGENT_KERNEL_PYTHON', 'PA_E2E_KERNEL_PYTHON') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent),
                PRIME_AGENT_CODING_AGENT_DIR=str(agent), PI_SESSION_DIR=str(root / 'sessions'),
@@ -247,7 +249,7 @@ def main():
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
     result = {'verified': False, 'scope': 'Exact mcp.config objects before/after public reload; the kernel/host handler must survive',
-              'tool_name_selection': 'Offered python_repl or legacy ipython.'}
+              'tool_name_selection': 'The offered eval tool.'}
     try:
         assert sys.platform == 'linux', 'requires hosted Linux CI'
         binary = Path(os.environ['PA_RUST_BINARY']).resolve()

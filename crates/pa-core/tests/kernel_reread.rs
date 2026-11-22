@@ -12,72 +12,11 @@
 //! "unchanged since turn N" line with a handle instead of the file again.
 #![cfg(unix)]
 
-use std::path::PathBuf;
-
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::{json, Value};
 use sha2::Digest as _;
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
@@ -112,11 +51,8 @@ fn tool_result(entries: &Value, call_id: &str) -> (String, String) {
     (status, text)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -124,15 +60,6 @@ async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
     std::fs::write(cwd.join("a.txt"), "alpha\nbeta\ngamma\n").expect("file");
-
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
 
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
@@ -144,8 +71,8 @@ async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
             None,
             vec![(
                 call_id,
-                "python_repl",
-                json!({ "code": "print(await fs.read('a.txt'))" }),
+                pa_types::ai::KERNEL_TOOL_NAME,
+                json!({ "code": "(displayln (hash-ref (fs-read \"a.txt\") 'text))" }),
             )],
         )));
     }
@@ -183,8 +110,7 @@ async fn a_reread_of_an_unchanged_file_is_one_line_in_the_transcript() {
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,

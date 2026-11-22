@@ -8,8 +8,7 @@ description: Search the web with the provider chosen in /settings (auto by defau
 Search the web with the provider chosen in `/settings` → **Agents** → **Web search provider**.
 The default, `auto`, uses any keyed provider whose API key is configured and otherwise
 searches keyless engines (DuckDuckGo, Startpage, Mojeek, Ecosia), so it works with no key.
-The search runs in Prime Agent's native engine, the same one as `web.search(...)` in the
-Python kernel.
+The search runs in Prime Agent's native engine, through `(web-search ...)` in the Scheme kernel.
 
 ## Setup
 
@@ -21,15 +20,19 @@ https://you.com/platform), then run `/mcp` in Prime Agent and choose its
 If web search reports a missing key for a selected provider, walk the user through those
 two steps; don't ask them to set environment variables.
 
-Optional overrides (environment variables):
-
-- `PRIME_AGENT_WEBSEARCH_TIMEOUT` - HTTP timeout in seconds (default 45).
-- `PRIME_AGENT_WEBSEARCH_NUM_RESULTS` - number of organic results to return (default 5; You.com Eco returns at most 10).
-
 ## Usage
 
-Call the prepared `websearch` import directly in the Python kernel:
+```scheme
+(define found (web-search "latest Prime Agent release"))
+(displayln (hash-ref found 'text))
 
-```python
-print(await websearch("latest Prime Agent release"))
+;; Options are keywords: results, recency, one provider, seconds per request.
+(web-search "tokio select cancel safety" #:num-results 8 #:recency "year")
+
+;; Read a result as markdown.
+(displayln (hash-ref (web-read (car (hash-ref found 'sources))) 'text))
 ```
+
+`text` is the readable numbered list; `sources` holds `{title, url, snippet,
+publishedDate, author}` hashes; `answer` is set by answer-synthesizing providers.
+`(api-help "web")` prints the full reference of `web-search` and `web-read`.

@@ -18,7 +18,6 @@ runtime (PI_PACKAGE_DIR override, else the directory of the executable):
   LICENSE
   models.bundled.json       bundled catalog assets (spec §3.2 layer 2),
   mcp-services.bundled.json staged beside the executable
-  prime-agent-runtime/   the kernel runtime sidecar (dev caches excluded)
   skills/                built-in skills
   docs/                  user-facing docs
 
@@ -52,22 +51,20 @@ ROOT = Path(__file__).resolve().parent.parent
 # code the assemble_artifacts.py pipeline packs with).
 sys.path.insert(0, str(ROOT / "scripts" / "release"))
 from bundle_catalog import BUNDLED_CATALOG_FILES, validate_bundled_catalog_dir  # noqa: E402
-# The shipped-content policy (runtime dev-only files, user-facing docs) lives
+# The shipped-content policy (development leftovers, user-facing docs) lives
 # with the CI payload producer so the local dry-run and the published
 # tarball carry identical content; this packer imports it instead of
 # redefining it. verify_release.py already imports from the same module.
 # The Linux fail-closed decoder gates (strict binary+decoder pairing, DWARF
 # rejection, decoder leak guards) come from the same module too.
 from assemble_artifacts import (  # noqa: E402
-    RUNTIME_EXCLUDED_NAMES,
-    RUNTIME_EXCLUDED_SUFFIXES,
     debug_sections,
     decoder_facts,
     fail_if_decoder_in_archive,
     fail_if_decoder_in_tree,
 )
-# `--root` re-anchors asset discovery (workspace version, prime-agent-runtime,
-# skills, docs, README) so integration tests can package synthetic trees.
+# `--root` re-anchors asset discovery (workspace version, skills, docs,
+# README) so integration tests can package synthetic trees.
 
 
 # The TS copy-binary-assets exclusion set: development caches never ship and
@@ -85,8 +82,7 @@ EXCLUDED_NAMES = {
 EXCLUDED_SUFFIXES = (".pyc", ".egg-info")
 
 # Required assets after staging (TS validateBinaryAssets + the bundled
-# catalog assets the catalog spec §3.2 layer 2 requires): the kernel sidecar
-# must carry its manifest and the REPL entry point, and the bundled catalog
+# catalog assets the catalog spec §3.2 layer 2 requires): the bundled catalog
 # assets must sit beside the executable.
 REQUIRED_FILES = (
     "prime-agent",
@@ -95,13 +91,11 @@ REQUIRED_FILES = (
     "LICENSE",
     "models.bundled.json",
     "mcp-services.bundled.json",
-    "prime-agent-runtime/pyproject.toml",
-    "prime-agent-runtime/src/rlm/repl.py",
 )
-REQUIRED_DIRS = ("prime-agent-runtime/src/rlm", "skills")
+REQUIRED_DIRS = ("skills",)
 
 # Tree assets copied with the exclusion filter; everything else is a single file.
-TREE_ASSETS = ("prime-agent-runtime", "skills")
+TREE_ASSETS = ("skills",)
 
 
 def parse_args(argv):
@@ -160,25 +154,18 @@ def binary_name_for_platform(tag):
     return "prime-agent.exe" if tag == "win32-x64" else "prime-agent"
 
 
-def include_path(relative, extra_excluded_names=frozenset(), extra_excluded_suffixes=()):
+def include_path(relative):
     parts = Path(relative).parts
     return not any(
-        part in EXCLUDED_NAMES
-        or part in extra_excluded_names
-        or part.endswith(EXCLUDED_SUFFIXES)
-        or part.endswith(extra_excluded_suffixes)
+        part in EXCLUDED_NAMES or part.endswith(EXCLUDED_SUFFIXES)
         for part in parts
     )
 
 
-def copy_tree(source, target, extra_excluded_names=frozenset(),
-              extra_excluded_suffixes=()):
+def copy_tree(source, target):
     """Copy an asset tree, rejecting symlinks and excluded entries (the TS
     `includeBinaryAsset` filter: a stale `.venv` or cache never ships, and an
     unexpected symlink fails the packaging instead of riding the artifact).
-
-    `extra_excluded_*` widen the exclusion set for one asset (the runtime's
-    dev-only files).
     """
     if not source.is_dir():
         raise SystemExit(f"error: missing packaging asset directory: {source}")
@@ -186,7 +173,7 @@ def copy_tree(source, target, extra_excluded_names=frozenset(),
     def walk(source_dir, relative):
         for entry in sorted(source_dir.iterdir(), key=lambda item: item.name):
             entry_relative = relative / entry.name
-            if not include_path(entry_relative, extra_excluded_names, extra_excluded_suffixes):
+            if not include_path(entry_relative):
                 continue
             if entry.is_symlink():
                 raise SystemExit(f"error: unexpected symlink in binary assets: {entry}")
@@ -227,12 +214,7 @@ def stage(root, binary, version, stage_dir, catalog_assets, binary_name):
     for name in BUNDLED_CATALOG_FILES:
         shutil.copy2(catalog_assets / name, stage_dir / name)
     for name in TREE_ASSETS:
-        if name == "prime-agent-runtime":
-            copy_tree(root / name, stage_dir / name,
-                      extra_excluded_names=RUNTIME_EXCLUDED_NAMES,
-                      extra_excluded_suffixes=RUNTIME_EXCLUDED_SUFFIXES)
-        else:
-            copy_tree(root / name, stage_dir / name)
+        copy_tree(root / name, stage_dir / name)
     shutil.copy2(root / "README.md", stage_dir / "README.md")
     # The license ships with the binary (TS binaryAssets keeps LICENSE beside
     # it; the release pipeline packages it the same way).

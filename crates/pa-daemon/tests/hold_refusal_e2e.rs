@@ -62,18 +62,12 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
         );
-    let child = command.spawn().expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let mut child = command.spawn().expect("spawn pa-daemon supervisor");
+    common::await_listening(socket, &mut child);
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 struct Client {

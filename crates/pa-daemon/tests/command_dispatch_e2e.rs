@@ -150,7 +150,7 @@ fn serve(mut stream: TcpStream, requests: &Arc<Mutex<usize>>) -> std::io::Result
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
-    let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
@@ -170,17 +170,11 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 /// One client connection: request/response plus the session events that stream while a response is
@@ -193,7 +187,21 @@ struct Client {
 
 impl Client {
     fn connect(socket: &Path) -> Client {
-        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+        // The socket file appears at `bind`, before `listen`: a connect in
+        // between is refused, so it is retried until the supervisor listens.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match std::os::unix::net::UnixStream::connect(socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ConnectionRefused
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
         let writer = stream.try_clone().expect("clone");
         let mut client = Client {
             reader: BufReader::new(stream),

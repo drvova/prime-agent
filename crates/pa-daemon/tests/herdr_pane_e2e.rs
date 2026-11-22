@@ -48,43 +48,11 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python (the same resolution the MCP product-path e2e
-/// uses): an explicit `PA_E2E_KERNEL_PYTHON`, else the machine's live
-/// install. Skipped (with a note) on machines without one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping the herdr pane e2e",
-        candidate.display()
-    );
-    None
-}
-
 /// Spawn the real supervisor inside a HOSTILE Herdr ambient env: the
 /// daemon (and every worker it spawns) "boots" in pane `w0:boot` — the
 /// boot-context bug class setup. The session's own pane identity must
 /// come from the create payload, never from here.
-fn spawn_supervisor(
-    socket: &Path,
-    agent_dir: &Path,
-    kernel_python: &Path,
-    herdr_socket: &Path,
-) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, herdr_socket: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -97,7 +65,6 @@ fn spawn_supervisor(
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
         // THE HOSTILE BOOT CONTEXT: a Herdr pane identity in the daemon's
@@ -271,9 +238,6 @@ fn pane_env(herdr_socket: &Path, pane_id: &str) -> Value {
 /// settle, and the release as the kill's last write, with silence after.
 #[test]
 fn the_session_reports_its_payload_pane_across_the_lifecycle() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let herdr_socket = dir.path().join("herdr.sock");
@@ -283,7 +247,7 @@ fn the_session_reports_its_payload_pane_across_the_lifecycle() {
     let responses = json!([{ "text": "turn done" }, { "text": "turn done" }]);
     let script = write_faux_script(dir.path(), &responses);
     let requests = fake_herdr(&herdr_socket);
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, &herdr_socket);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &herdr_socket);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -402,9 +366,6 @@ fn the_session_reports_its_payload_pane_across_the_lifecycle() {
 /// (adopt-if-absent), reports for, and releases at its stop.
 #[test]
 fn an_envless_session_stays_silent_until_its_attach_adopts_the_pane() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let herdr_socket = dir.path().join("herdr.sock");
@@ -414,7 +375,7 @@ fn an_envless_session_stays_silent_until_its_attach_adopts_the_pane() {
     let responses = json!([{ "text": "turn done" }, { "text": "turn done" }]);
     let script = write_faux_script(dir.path(), &responses);
     let requests = fake_herdr(&herdr_socket);
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, &herdr_socket);
+    let _daemon = spawn_supervisor(&socket, &agent_dir, &herdr_socket);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

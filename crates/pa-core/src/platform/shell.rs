@@ -115,7 +115,7 @@ pub fn get_shell_config(_custom_shell_path: Option<&str>) -> anyhow::Result<Shel
 
 #[cfg(unix)]
 fn find_bash_on_path() -> Option<String> {
-    let out = std::process::Command::new("which")
+    let out = pa_types::session_scope::std_command("which")
         .arg("bash")
         .output()
         .ok()?;
@@ -131,7 +131,7 @@ fn find_bash_on_path() -> Option<String> {
 /// report non-existent paths), System32 candidates demoted to last.
 #[cfg(windows)]
 fn find_bash_on_path() -> Option<String> {
-    let mut command = std::process::Command::new("where");
+    let mut command = pa_types::session_scope::std_command("where");
     command.arg("bash.exe");
     crate::platform::process::set_no_window(&mut command);
     let out = command.output().ok()?;
@@ -145,9 +145,12 @@ fn find_bash_on_path() -> Option<String> {
         .filter(|line| !line.is_empty())
         .map(str::to_string)
         .collect();
-    order_windows_bash_candidates(&matches, std::env::var("SystemRoot").ok().as_deref())
-        .into_iter()
-        .find(|candidate| Path::new(candidate).exists())
+    order_windows_bash_candidates(
+        &matches,
+        pa_types::session_scope::var("SystemRoot").ok().as_deref(),
+    )
+    .into_iter()
+    .find(|candidate| Path::new(candidate).exists())
 }
 
 /// The TS candidate ordering (`orderWindowsBashCandidates`): System32 matches
@@ -183,10 +186,10 @@ fn bash_config(shell: &str) -> ShellConfig {
 #[cfg(windows)]
 fn windows_git_bash_search_paths() -> Vec<String> {
     let mut paths = Vec::new();
-    if let Ok(program_files) = std::env::var("ProgramFiles") {
+    if let Ok(program_files) = pa_types::session_scope::var("ProgramFiles") {
         paths.push(format!("{program_files}\\Git\\bin\\bash.exe"));
     }
-    if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+    if let Ok(program_files_x86) = pa_types::session_scope::var("ProgramFiles(x86)") {
         paths.push(format!("{program_files_x86}\\Git\\bin\\bash.exe"));
     }
     paths

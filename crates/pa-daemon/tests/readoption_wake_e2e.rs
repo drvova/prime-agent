@@ -1,7 +1,9 @@
-//! Re-adoption wake e2e: the wake paths of a session whose worker is
-//! re-adopted across a supervisor kill -9 + relaunch. The bash-completion
-//! notice must WAKE the idle session (`bash.completed`, TS async handler;
-//! the frozen-watcher incident); the scheduled-jobs wake keeps firing.
+//! Scheduled-job wake e2e across a daemon kill -9 + relaunch. Sessions are
+//! hosted inside the daemon and die with it: the boot revives the one that
+//! was mid-turn, whose heartbeat fires again, and never the one a client had
+//! killed. (A detached command cannot outlive the daemon that hosted its
+//! session — the boot reaps it, see `supervisor_restart_e2e` — so no
+//! completion notice crosses a restart.)
 #![allow(clippy::large_futures)]
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
@@ -23,13 +25,10 @@
 
 mod common;
 
-use std::fmt::Write as _;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -46,33 +45,8 @@ impl Drop for Daemon {
     }
 }
 
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live re-adoption wake e2e",
-        candidate.display()
-    );
-    None
-}
-
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -85,133 +59,23 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
         .arg("--agent-dir")
         .arg(agent_dir)
         .env_remove("PRIME_API_KEY")
-        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
-        // A supervisor killed at teardown must not leak its session workers: the
-        // supervisor-lost exit runs on this short window (far wider than the restart gap below).
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "20000",
-        );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
-    }
+        .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir);
     let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn pa-daemon supervisor");
+    // Listening, not merely bound: the socket file appears before `listen`.
     let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
+    while UnixStream::connect(socket).is_err() {
+        assert!(Instant::now() < deadline, "supervisor socket never came up");
         std::thread::sleep(Duration::from_millis(20));
     }
-    panic!("supervisor socket never appeared");
-}
-
-/// The sequential mock: one SSE answer per request in order.
-fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
-    let url = format!(
-        "http://127.0.0.1:{}/v1",
-        listener.local_addr().unwrap().port()
-    );
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(stream) = stream else { continue };
-            std::thread::spawn(move || {
-                let _ = serve(stream, next);
-            });
-        }
-    });
-    PathBuf::from(url)
-}
-
-fn chunk(delta: &Value, finish_reason: Option<&str>) -> String {
-    json!({
-        "id": "chatcmpl-wake",
-        "object": "chat.completion.chunk",
-        "created": 1_750_000_000,
-        "model": "mock-1",
-        "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-    })
-    .to_string()
-}
-
-fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut content_length = 0usize;
-    loop {
-        let mut line = String::new();
-        if reader.read_line(&mut line)? == 0 {
-            return Ok(());
-        }
-        if line == "\r\n" {
-            break;
-        }
-        let lower = line.to_ascii_lowercase();
-        if let Some(value) = lower.strip_prefix("content-length:") {
-            content_length = value.trim().parse().unwrap_or_default();
-        }
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    let mut body = vec![0u8; content_length];
-    if content_length > 0 {
-        reader.read_exact(&mut body)?;
-    }
-    // The scripted sequence: request 1 answers the ipython tool call that starts the
-    // detached watcher, request 2 ends the turn, every later request the woken reply.
-    let request = next.fetch_add(1, Ordering::SeqCst);
-    let mut payload = String::new();
-    let data = match request {
-        0 => [
-            chunk(
-                &json!({
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "call-wake-1",
-                        "type": "function",
-                        "function": {
-                            "name": "python_repl",
-                            "arguments": "{\"code\": \"bash(\\\"sleep 12; echo RW_WAKE_DONE\\\")\\nprint('watcher armed')\"}"
-                        }
-                    }]
-                }),
-                None,
-            ),
-            chunk(&json!({}), Some("tool_calls")),
-        ],
-        1 => [
-            chunk(
-                &json!({"role": "assistant", "content": "watcher started"}),
-                None,
-            ),
-            chunk(&json!({}), Some("stop")),
-        ],
-        _ => [
-            chunk(
-                &json!({"role": "assistant", "content": "woken by the bash-done notice"}),
-                None,
-            ),
-            chunk(&json!({}), Some("stop")),
-        ],
-    };
-    for data in data {
-        write!(payload, "data: {data}\n\n").expect("write to String");
-    }
-    payload.push_str("data: [DONE]\n\n");
-    stream.write_all(
-        format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n{payload}"
-        )
-        .as_bytes(),
-    )
 }
 
 struct Client {
@@ -295,15 +159,6 @@ impl Client {
             })
             .collect()
     }
-
-    fn messages(&mut self, active_session_id: &str) -> String {
-        let response = self.request(
-            "gm",
-            &json!({ "type": "get_messages", "activeSessionId": active_session_id }),
-        );
-        assert_eq!(response["success"], true, "get_messages failed: {response}");
-        serde_json::to_string(&response["data"]).expect("messages json")
-    }
 }
 
 fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T {
@@ -317,145 +172,10 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
     }
 }
 
-fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -> (String, String) {
-    let sessions = agent_dir.join("sessions");
-    std::fs::create_dir_all(&sessions).expect("sessions dir");
-    let created = client.request(
-        id,
-        &json!({
-            "type": "create",
-            "name": "wake-lane",
-            "config": {
-                "cwd": dir.to_string_lossy(),
-                "sessionDir": sessions.to_string_lossy(),
-                "provider": "prime-inference",
-                "model": "mock-1",
-            },
-        }),
-    );
-    assert_eq!(created["success"], true, "create failed: {created}");
-    let active_id = created["data"]["id"]
-        .as_str()
-        .or_else(|| created["data"]["activeSessionId"].as_str())
-        .expect("active session id")
-        .to_string();
-    let session_id = created["data"]["sessionId"]
-        .as_str()
-        .expect("durable session id")
-        .to_string();
-    (active_id, session_id)
-}
-
+/// A session's armed heartbeat must keep firing across a daemon death with
+/// nobody reopening the session.
 #[test]
-fn a_detached_bash_completion_wakes_the_idle_session_across_a_supervisor_restart() {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    let root = tempfile::TempDir::new().expect("temp dir");
-    let dir = root.path().to_path_buf();
-    let agent_dir = dir.join("agent");
-    std::fs::create_dir_all(&agent_dir).expect("agent dir");
-    let socket = dir.join("daemon.sock");
-    let url = spawn_mock(&NEXT);
-    std::fs::write(
-        agent_dir.join("models.json"),
-        json!({
-            "providers": {
-                "prime-inference": {
-                    "api": "openai-completions",
-                    "baseUrl": url.to_string_lossy(),
-                    "apiKey": "sk-wake",
-                    "models": [
-                        {
-                            "id": "mock-1",
-                            "name": "Mock 1",
-                            "api": "openai-completions",
-                            "contextWindow": 128_000,
-                            "maxTokens": 4096
-                        }
-                    ]
-                }
-            }
-        })
-        .to_string(),
-    )
-    .expect("write models.json");
-
-    // First generation: the session starts the detached watcher and goes idle
-    // (the turn settles while `sleep 12` keeps running).
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
-    let mut client = Client::connect(&socket);
-    let (active_id, session_id) = create_session(&mut client, "c1", &dir, &agent_dir);
-    let started = client.request(
-        "p1",
-        &json!({
-            "type": "prompt_and_wait",
-            "activeSessionId": active_id,
-            "message": "start the watcher and stop",
-        }),
-    );
-    assert_eq!(started["success"], true, "first turn failed: {started}");
-    let session_file = agent_dir
-        .join("sessions")
-        .join(format!("{session_id}.jsonl"));
-    assert!(
-        supervisor
-            .child
-            .try_wait()
-            .expect("supervisor alive")
-            .is_none(),
-        "the first supervisor died mid-test"
-    );
-
-    // The supervisor dies hard (kill -9: the worker survives, orphaned) and
-    // relaunches over the same socket — the adoption scan re-adopts it.
-    drop(client);
-    // Only the supervisor process dies: once it is reaped the guard's tree
-    // teardown finds no descendants, so the orphaned workers live on for the
-    // relaunch to re-adopt; `_orphans` reaps them at teardown.
-    let _orphans = common::Orphans::of(&supervisor.child);
-    let _ = supervisor.child.kill();
-    let _ = supervisor.child.wait();
-    drop(supervisor);
-    std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
-    let mut client = Client::connect(&socket);
-    wait_until(Duration::from_secs(30), || {
-        client
-            .listed_sessions()
-            .iter()
-            .any(|(active, id)| *active == active_id || *id == session_id)
-            .then_some(())
-    });
-
-    // THE ASSERT: the detached command finishes after the re-adoption and its completion
-    // notice WAKES the idle session — the bash-done row lands and the woken turn runs to its reply.
-    let messages = wait_until(Duration::from_mins(1), || {
-        let messages = client.messages(&active_id);
-        (messages.contains("bash-done") && messages.contains("woken by the bash-done notice"))
-            .then_some(messages)
-    });
-    assert!(
-        messages.contains("[bash-done pid:"),
-        "the bash-done notice never landed: {messages}"
-    );
-    let file = std::fs::read_to_string(&session_file).expect("session file");
-    assert!(
-        file.contains("async_bash_completion"),
-        "the async_bash_completion row never persisted"
-    );
-
-    // Teardown: stop the session through the live supervisor so the worker (and
-    // its kernel + watcher) do not leak past the test.
-    client.request(
-        "k1",
-        &json!({ "type": "kill", "activeSessionId": active_id }),
-    );
-}
-
-#[test]
-fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
+fn a_heartbeat_keeps_firing_across_a_daemon_restart() {
     let root = tempfile::TempDir::new().expect("temp dir");
     let dir = root.path().to_path_buf();
     let agent_dir = dir.join("agent");
@@ -480,7 +200,7 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     )
     .expect("write faux script");
 
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -541,15 +261,12 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     });
 
     drop(client);
-    // Only the supervisor process dies: once it is reaped the guard's tree
-    // teardown finds no descendants, so the orphaned workers live on for the
-    // relaunch to re-adopt; `_orphans` reaps them at teardown.
-    let _orphans = common::Orphans::of(&supervisor.child);
+    // The daemon dies hard, and the idle session with it.
     let _ = supervisor.child.kill();
     let _ = supervisor.child.wait();
     drop(supervisor);
     std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     wait_until(Duration::from_secs(30), || {
         client
@@ -559,7 +276,7 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
             .then_some(())
     });
 
-    // THE ASSERT: the heartbeat keeps firing after the re-adoption — the row count
+    // THE ASSERT: the heartbeat keeps firing after the restart — the row count
     // grows past the pre-restart snapshot.
     let grew = wait_until(Duration::from_secs(30), || {
         let rows = session_rows_containing(&session_file, "heartbeat_prompt");
@@ -576,10 +293,130 @@ fn a_heartbeat_keeps_firing_across_a_supervisor_restart() {
     );
 }
 
-/// Boot-time wake vs the storm gates (the ~200-agent boot crash class): the ADOPTED-ALIVE
-/// worker fires, the KILLED sibling never resurrects (#2592/#2642 gates hold).
+/// A heartbeat whose time passes while no daemon runs is fired once by the next daemon,
+/// which wakes its idle session for it, and its next run is counted from that fire (the
+/// store's rule for a late job: no fire per missed interval).
 #[test]
-fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibling() {
+fn a_heartbeat_that_came_due_while_the_daemon_was_down_fires_once_at_the_next_boot() {
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let dir = root.path().to_path_buf();
+    let agent_dir = dir.join("agent");
+    let socket = dir.join("late.sock");
+    let script = dir.join("faux.json");
+    std::fs::write(
+        &script,
+        json!({ "engine": "faux", "responses": [{ "text": "the lane works on" }], "repeatLastResponse": true })
+            .to_string(),
+    )
+    .expect("write faux script");
+
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let sessions = agent_dir.join("sessions");
+    std::fs::create_dir_all(&sessions).expect("sessions dir");
+    let created = client.request(
+        "c1",
+        &json!({
+            "type": "create",
+            "name": "late-lane",
+            "config": {
+                "cwd": dir.to_string_lossy(),
+                "sessionDir": sessions.to_string_lossy(),
+                "script": script.to_string_lossy(),
+            },
+        }),
+    );
+    assert_eq!(created["success"], true, "create failed: {created}");
+    let active_id = created["data"]["id"]
+        .as_str()
+        .expect("active id")
+        .to_string();
+    let session_id = created["data"]["sessionId"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+    let session_file = sessions.join(format!("{session_id}.jsonl"));
+    let heartbeat = client.request(
+        "hb",
+        &json!({
+            "type": "heartbeat_set",
+            "activeSessionId": active_id,
+            "schedule": "every 10s",
+            "prompt": "liveness ping",
+        }),
+    );
+    assert_eq!(
+        heartbeat["success"], true,
+        "heartbeat_set failed: {heartbeat}"
+    );
+    // The session's own record of its job: when it next runs.
+    let jobs_file = agent_dir
+        .join("session-artifacts")
+        .join(&session_id)
+        .join("scheduled-jobs.json");
+    let next_run = || {
+        pa_core::cron::store::read_scheduled_jobs_artifact(&jobs_file)
+            .first()
+            .and_then(|job| job.next_run_at.as_deref())
+            .and_then(pa_daemon::util::iso_to_unix_ms)
+    };
+    // One fire has landed and the session is idle again, with its next run recorded.
+    let rows_before = wait_until(Duration::from_secs(30), || {
+        let rows = session_rows_containing(&session_file, "heartbeat_prompt");
+        (rows > 0).then_some(rows)
+    });
+    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        .join(format!("{active_id}.recovery.jsonl"));
+    let due = wait_until(Duration::from_secs(30), || {
+        (!pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal))
+            .then(next_run)
+            .flatten()
+            .filter(|due| *due > pa_daemon::util::now_ms())
+    });
+
+    drop(client);
+    let _ = supervisor.child.kill();
+    let _ = supervisor.child.wait();
+    drop(supervisor);
+    std::fs::remove_file(&socket).ok();
+    // No daemon runs while the job's time passes.
+    wait_until(Duration::from_secs(30), || {
+        (pa_daemon::util::now_ms() > due).then_some(())
+    });
+    assert_eq!(
+        (
+            session_rows_containing(&session_file, "heartbeat_prompt"),
+            next_run()
+        ),
+        (rows_before, Some(due)),
+        "nothing fired, and nothing moved the job, while the daemon was down"
+    );
+    let booted = pa_daemon::util::now_ms();
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
+    wait_until(Duration::from_secs(60), || {
+        (session_rows_containing(&session_file, "heartbeat_prompt") > rows_before).then_some(())
+    });
+    let rescheduled = wait_until(Duration::from_secs(30), || {
+        next_run().filter(|next| *next != due)
+    });
+    assert!(
+        rescheduled >= booted + 10_000,
+        "the late job's next run ({rescheduled}) is a whole interval after the boot ({booted}), \
+         not one of the runs missed since {due}"
+    );
+
+    let mut client = Client::connect(&socket);
+    client.request(
+        "k1",
+        &json!({ "type": "kill", "activeSessionId": active_id }),
+    );
+}
+
+/// Boot-time wake vs the storm gates (the ~200-agent boot crash class): the session the
+/// boot REVIVES (it was mid-turn) fires its due job, the KILLED sibling never resurrects
+/// (#2592/#2642 gates hold).
+#[test]
+fn a_boot_fires_the_revived_session_due_job_and_never_resurrects_the_killed_sibling() {
     let root = tempfile::TempDir::new().expect("temp dir");
     let dir = root.path().to_path_buf();
     let agent_dir = dir.join("agent");
@@ -590,21 +427,16 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
         json!({
             "engine": "faux",
             "responses": [
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-                { "text": "the lane works on" },
-            ]
+                // Every turn is slow enough for the daemon to die inside one.
+                { "text": "the lane works on", "delayMs": 3000 },
+            ],
+            "repeatLastResponse": true,
         })
         .to_string(),
     )
     .expect("write faux script");
 
-    let mut supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let mut supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -662,23 +494,32 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     );
     assert_eq!(killed["success"], true, "kill failed: {killed}");
 
-    let rows_before_restart = wait_until(Duration::from_secs(20), || {
-        let rows = session_rows_containing(&wake_file, "heartbeat_prompt");
-        (rows > 0).then_some(rows)
+    wait_until(Duration::from_secs(20), || {
+        (session_rows_containing(&wake_file, "heartbeat_prompt") > 0).then_some(())
+    });
+    // The wake lane is mid-turn when the daemon dies (the journal's busy record is the
+    // durable evidence), so the boot owes it a revival.
+    let prompted = client.request(
+        "busy",
+        &json!({ "type": "prompt", "activeSessionId": wake_active, "message": "in flight" }),
+    );
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        .join(format!("{wake_active}.recovery.jsonl"));
+    wait_until(Duration::from_secs(20), || {
+        pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal).then_some(())
     });
 
-    // The supervisor dies hard and relaunches: the wake lane's worker is adopted
-    // alive, the killed lane's stop finishes at the boot scan instead of resurrecting.
+    // The daemon dies hard, both lanes' sessions with it, and relaunches: the wake lane
+    // is revived, the killed lane's stop finishes at the boot scan instead of resurrecting.
     drop(client);
-    // Only the supervisor process dies: once it is reaped the guard's tree
-    // teardown finds no descendants, so the orphaned workers live on for the
-    // relaunch to re-adopt; `_orphans` reaps them at teardown.
-    let _orphans = common::Orphans::of(&supervisor.child);
     let _ = supervisor.child.kill();
     let _ = supervisor.child.wait();
     drop(supervisor);
+    // Nothing writes the session file between the two daemons.
+    let rows_before_restart = session_rows_containing(&wake_file, "heartbeat_prompt");
     std::fs::remove_file(&socket).ok();
-    let _supervisor = spawn_daemon(&socket, &agent_dir, None);
+    let _supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     wait_until(Duration::from_secs(30), || {
         client
@@ -689,7 +530,7 @@ fn a_boot_fires_the_adopted_worker_due_job_and_never_resurrects_the_killed_sibli
     });
 
     // THE STORM GATE: the killed lane never resurrects across the boot window,
-    // while the adopted worker's due fire keeps landing.
+    // while the revived session's due fire keeps landing.
     let window = Instant::now() + Duration::from_secs(20);
     while Instant::now() < window {
         let roster = client.listed_sessions();

@@ -302,18 +302,18 @@ impl ProjectCard {
     pub(crate) fn refresh(&self) {
         let root = self.inner.root.as_path();
         if root.parent().is_none()
-            || std::env::var_os("HOME").is_some_and(|home| root == Path::new(&home))
+            || pa_types::session_scope::var_os("HOME").is_some_and(|home| root == Path::new(&home))
         {
             return;
         }
         let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("project-card".to_string())
-            .spawn(move || {
+            .spawn(pa_types::session_scope::propagate(move || {
                 let derived = derive(&inner.root);
                 lock(&inner.state).derived = Some(derived);
                 inner.save();
-            });
+            }));
     }
 
     /// Learn one command a cell ran (only build/test/check shapes count).
@@ -340,7 +340,7 @@ impl ProjectCard {
         let inner = Arc::clone(&self.inner);
         let _ = std::thread::Builder::new()
             .name("project-card-save".to_string())
-            .spawn(move || inner.save());
+            .spawn(pa_types::session_scope::propagate(move || inner.save()));
     }
 
     /// The card for the prompt's dynamic tail, or `None` when nothing is known
@@ -405,6 +405,7 @@ impl Inner {
         let mut stored = lock(&self.state).clone();
         stored.schema = SCHEMA;
         let written = (|| -> std::io::Result<()> {
+            pa_types::session_scope::ensure_live()?;
             let body = serde_json::to_vec(&stored)?;
             let dir = path.parent().unwrap_or_else(|| Path::new("."));
             std::fs::create_dir_all(dir)?;

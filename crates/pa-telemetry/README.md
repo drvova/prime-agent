@@ -19,6 +19,15 @@ pseudonymous installation identity for Prime Agent product analytics.
   `FileSink` (local JSONL transparency mirror at `<agentDir>/telemetry.jsonl`),
   `NoopSink` (opt-out fast path), `MockSink` (tests, also re-exported for
   downstream crate tests).
+- The kernel capabilities' standalone adoption events: one rule file per capability under
+  `src/catalog/capabilities/`, holding the events that capability's manifest
+  (`crates/pa-core/src/kernel/capabilities/<name>.toml`) claims (a pair that shares one event
+  shares one file: todo+ask, notify+model, resource_reload+settings, mcp+session; fs owns six
+  events, bash, core and ctx two each; the web search counts ride `agent session ended`, whose
+  rule stays in the catalog), listed in emission order as
+  `CAPABILITY_EVENTS_BEFORE_SESSION_END` / `CAPABILITY_EVENTS_AFTER_SESSION_END`, which
+  pa-core's generic capability counter emits as they stand: a rule's counted properties in rule
+  order, then its derived ones.
 - `install_id`: `<agentDir>/telemetry.json` `{version, installationId}`,
   exclusive 0600 create, validated on load (TS parity).
 - `rename_onto`: the shared rename-onto-destination primitive for durable
@@ -56,6 +65,9 @@ pseudonymous installation identity for Prime Agent product analytics.
 - `parse_bool_override(value)`, `existing_install_id(agent_dir)`
 - Sinks: `AnalyticsSink` (+ `ANALYTICS_ENDPOINT`), `FileSink`, `NoopSink`, `MockSink`
   (+ `RecordedBatch`)
+- `CAPABILITY_EVENTS_BEFORE_SESSION_END`, `CAPABILITY_EVENTS_AFTER_SESSION_END`: the capability
+  rule files' events (`&[&EventRule]`), in the order pa-core emits them around
+  `agent session ended`.
 - `AnalyticsSink::new(endpoint)` and `with_timeout(endpoint, duration)` retain
   their default HTTP clients. `with_http_builder(endpoint, builder)` lets the
   caller supply its trust configuration while retaining the product timeout;

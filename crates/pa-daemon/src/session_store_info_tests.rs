@@ -275,7 +275,7 @@ fn untimestamped_fallback_is_not_cached() {
 
 #[test]
 fn captured_fixture_matches_legacy_if_available() {
-    let Ok(path) = std::env::var("PA_SESSION_INFO_CAPTURED_FIXTURE") else {
+    let Ok(path) = pa_types::session_scope::var("PA_SESSION_INFO_CAPTURED_FIXTURE") else {
         return;
     };
     assert_fold_matches(Path::new(&path));
@@ -284,7 +284,8 @@ fn captured_fixture_matches_legacy_if_available() {
 #[test]
 #[ignore = "run with PA_SESSION_INFO_CAPTURED_FIXTURE to benchmark the real corpus"]
 fn captured_fixture_cold_and_warm_timings() {
-    let path = std::env::var("PA_SESSION_INFO_CAPTURED_FIXTURE").expect("captured fixture path");
+    let path = pa_types::session_scope::var("PA_SESSION_INFO_CAPTURED_FIXTURE")
+        .expect("captured fixture path");
     let path = Path::new(&path);
     let mut legacy = Vec::new();
     let mut cold = Vec::new();

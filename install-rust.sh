@@ -38,7 +38,7 @@
 #      candidate is classified by IDENTITY first — a hello whose
 #      runtime build id is this product's ("pa-daemon-rs-<version>",
 #      carried since the port) is OUR daemon of any build (the update
-#      flow: the running daemon holds the old binary and venv state, the
+#      flow: the running daemon holds the old binary, the
 #      update needs it down, the next invocation boots the new daemon —
 #      the summary's next-step line says so) — then by the protocol-7
 #      SCHEMA FAMILY: the family prefix minus this product's own hash is
@@ -103,9 +103,9 @@
 #      behind an override reads as stale, the same behavior in both
 #      products). Default pin + clean stop: out of the box, the two
 #      daemons cannot fight over a socket after install.
-#      Together with the kernel pre-warm below (uv + the Python venv at
-#      install time), a fresh install's FIRST session works out of the
-#      box, online or offline.
+#      The kernel is built into the binary: there is nothing to prepare
+#      at install time, and a fresh install's FIRST session works out of
+#      the box, online or offline.
 #
 # THE SHARED STORE IS NEVER TOUCHED: ~/.prime/agent/ (sessions, leases,
 # config) is read and written by BOTH products by design — the same
@@ -125,7 +125,8 @@
 #   PRIME_AGENT_RUST_PREFIX       install prefix (default: ~/.local; the
 #                                  launcher lands at $PREFIX/bin/prime-agent,
 #                                  the payload at $PREFIX/share/prime-agent/)
-#   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: ~/.local/bin)
+#   PRIME_AGENT_UV_BIN_DIR         where the installer puts the uv it uses
+#                                  for its own Python (default: ~/.local/bin)
 #
 # THE CHANNEL (the R2 form, the TS install.sh parity): the script reads
 # the channel pointer (<base>/stable or <base>/beta) for the version,
@@ -153,7 +154,8 @@
 # existing interpreter when there is one, else uv's own managed 3.11 —
 # no system python3 anywhere). Offline without uv, a system python3 is
 # the fallback; with neither, the installer names the one missing
-# prerequisite and exits.
+# prerequisite and exits. uv and that Python serve THIS SCRIPT only: the
+# product needs neither (its kernel is built into the binary).
 set -eu
 
 # The publish-rendered defaults: the release pipeline copies this script
@@ -174,11 +176,10 @@ RELEASE_CHANNEL_DEFAULT="stable"
 #   PREFIX_DEFAULT              the default prefix (empty = ~/.local)
 #   VARIANT_NAME                a distribution's own daemon socket
 #                               (prime-agent-<variant>-<uid>, never the
-#                               official prime-agent-rust-<uid>), its own
-#                               kernel venv (<prefix>/kernel-venv), and its own
+#                               official prime-agent-rust-<uid>) and its own
 #                               agent dir (~/.prime/agent-<variant>: sessions,
 #                               settings, auth - never the official
-#                               ~/.prime/agent), all pinned by the launcher;
+#                               ~/.prime/agent), both pinned by the launcher;
 #                               empty = the official build
 #   COMMAND_NAME                the command a distribution build installs
 #                               instead of prime-agent (its launcher is
@@ -231,10 +232,8 @@ A distribution build's installer takes nothing over: it installs beside the offi
 build and the TypeScript product, and stops only its own daemon.
 
 Needs curl + sh (+ the network): the installer bootstraps its own Python via
-uv — no system python3 required. It also pre-warms the Python kernel (uv +
-`prime-agent --prime-agent-bootstrap`); offline, that step degrades to a
-warning and the first session bootstraps the kernel itself — it needs the
-network once.
+uv — no system python3 required. Prime Agent itself needs neither: its kernel
+is built into the binary.
 
 Options:
   --update    accepted alias; identical to a plain run
@@ -268,7 +267,8 @@ Environment:
                                  pointer read; the manifest + SHA256SUMS
                                  checks still run)
   PRIME_AGENT_RUST_PREFIX        install prefix (~/.local by default)
-  PRIME_AGENT_UV_BIN_DIR         uv install dir (~/.local/bin by default)
+  PRIME_AGENT_UV_BIN_DIR         where the installer puts the uv it uses for
+                                 its own Python (~/.local/bin by default)
   PRIME_AGENT_RUST_VERBOSE       1 = the --verbose output mode
   PRIME_AGENT_ROLLBACK_CHECK     1 = with --rollback, print the resolved
                                  rollback source and exit without touching
@@ -1027,8 +1027,8 @@ fi
 # THIS install's prefix bin dir instead (the payload-adjacent fallback)
 # and the store is never written. (uv's install otherwise lands on PATH
 # at ~/.local/bin, the same default prefix this script uses; a custom
-# prefix simply keeps uv at ~/.local, where the product's own ensure_uv
-# also looks for it.)
+# prefix simply keeps uv at ~/.local, where a later run of this script
+# finds it again.)
 # The physical-path probe is POSIX-only (cd + pwd -P): readlink -f is
 # coreutils, and macOS ships without it. A DANGLING target (a uv target
 # directory that does not exist yet - the normal shape at install time)
@@ -1072,8 +1072,8 @@ esac
 # route probes real Windows files - uv.exe, not uv.
 uv_name="uv"
 if [ "$WINDOWS" = "yes" ]; then uv_name="uv.exe"; fi
-# The PATH scan's candidate names match the child's own executable
-# search (ensure_uv): the bare name first, then on Windows the SUPPORTED
+# The PATH scan's candidate names match a child process's own executable
+# search: the bare name first, then on Windows the SUPPORTED
 # PATHEXT entries in PATHEXT order - the defaults only when PATHEXT
 # names none.
 uv_path_candidates="uv"
@@ -1109,9 +1109,9 @@ fi
 # shared ~/.local/bin). The Windows C:\ spelling reaches this script
 # through the env - it normalizes exactly like PRIME_AGENT_RUST_PREFIX
 # (cygpath); a POSIX spelling passes through untouched. A RELATIVE knob
-# is refused (the reviewer's finding): a relative target would ride PATH
-# guidance into every later shell, which resolves it from its own working
-# directory - an absolute target is the only honest contract.
+# is refused (the reviewer's finding): a relative target resolves from
+# whichever working directory a later run starts in - an absolute target
+# is the only honest contract.
 if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ]; then
   uv_bin_dir="${PRIME_AGENT_UV_BIN_DIR}"
   if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
@@ -1122,7 +1122,7 @@ if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ]; then
     *) die "PRIME_AGENT_UV_BIN_DIR must be an absolute path: ${PRIME_AGENT_UV_BIN_DIR}" ;;
   esac
   # THE PATH SEPARATOR (the reviewer's finding): a target containing a
-  # colon would corrupt every PATH export and prepend that carries it.
+  # colon cannot be named by a PATH entry.
   case "$uv_bin_dir" in
     *:*) die "PRIME_AGENT_UV_BIN_DIR must not contain a colon: ${PRIME_AGENT_UV_BIN_DIR}" ;;
   esac
@@ -1644,8 +1644,8 @@ fi
 # busy-ness — the Rust daemon owns the store after this install, and the
 # TS sessions' state is on disk for the Rust side to resume what the
 # user resumes — and THIS PRODUCT'S OWN daemon is stopped too (the
-# operator's update ruling: a running rust daemon holds the old binary
-# and venv state; the update needs it down, and the next invocation
+# operator's update ruling: a running rust daemon holds the old
+# binary; the update needs it down, and the next invocation
 # boots the new daemon — the summary's next-step line says so).
 # The stop is ESCALATING but still clean: the graceful `shutdown`
 # request first (force:false — the daemon's own stop path), a confirm
@@ -2137,6 +2137,20 @@ def kill_supervisor():
     if not is_prime_agent_daemon(command_line(pid)):
         progress("pid %d is not a Prime Agent daemon; not signalled" % pid)
         return "not-daemon"
+    # A Rust daemon may run under a restart owner, which its hello names as
+    # keeperPid: a process with the same command line that starts the daemon
+    # again when it dies. It is told to stop first (it passes a SIGTERM on to
+    # its daemon and exits once that daemon has), so the kill below is not
+    # answered with a restart. The same command-line check guards the signal.
+    keeper = current.get("keeperPid")
+    if (isinstance(keeper, int) and keeper > 1
+            and keeper not in (os.getpid(), os.getppid())
+            and is_prime_agent_daemon(command_line(keeper))):
+        progress("stopping the daemon's restart owner (pid %d)" % keeper)
+        try:
+            os.kill(keeper, signal.SIGTERM)
+        except OSError:
+            pass
     signalled = False
     for sig, wait_s, name in ((signal.SIGTERM, FORCE_TERM_WAIT_S, "SIGTERM"),
                               (signal.SIGKILL, FORCE_KILL_WAIT_S, "SIGKILL")):
@@ -2966,27 +2980,20 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent" "$@"
 EOF
 fi
 # THE DISTRIBUTION PINS (VARIANT_NAME set): the launcher keeps the official
-# text with three pins of its own — its own agent dir
+# text with two pins of its own — its own agent dir
 # ($HOME/.prime/agent-<variant>, the binary's stamped default too: the
 # distribution never lists, resumes, or leases the official products'
 # sessions; its first run imports the official configuration, never the
-# sessions), its own daemon socket (the official pin's directory renamed,
-# so the two builds never share a live daemon), and its own kernel venv
-# under the prefix (each build's readiness probe matches its own runtime,
-# so switching builds never rebuilds a shared venv). All honor an explicit
-# env value, like the official pins.
+# sessions) and its own daemon socket (the official pin's directory
+# renamed, so the two builds never share a live daemon). Both honor an
+# explicit env value, like the official pins.
 if [ -n "${VARIANT_NAME:-}" ]; then
-  variant_prefix="$(cd "$PREFIX" && pwd -P)"
-  # The payload is a native Windows exe: it reads the venv path in the
-  # drive spelling (C:/...), never the MSYS one (/c/...).
-  if [ "$WINDOWS" = "yes" ] && command -v cygpath >/dev/null 2>&1; then
-    variant_prefix="$(cygpath -m "$variant_prefix")"
-  fi
-  variant_venv="$(printf '%s' "${variant_prefix}/kernel-venv" | sed "s/'/'\\\\''/g")"
-  variant_line="[ -n \"\${PRIME_AGENT_KERNEL_VENV:-}\" ] || PRIME_AGENT_KERNEL_VENV='${variant_venv}'; export PRIME_AGENT_KERNEL_VENV"
+  # The Windows launcher has no socket pin to rename (the official build
+  # uses the binary's default pipe there), so the variant's pipe pin is a
+  # line of its own after the agent dir.
+  variant_line=""
   if [ "$WINDOWS" = "yes" ]; then
-    variant_line="${variant_line}
-[ -n \"\${PRIME_AGENT_DAEMON_SOCKET:-}\" ] || PRIME_AGENT_DAEMON_SOCKET='\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon'; export PRIME_AGENT_DAEMON_SOCKET"
+    variant_line="[ -n \"\${PRIME_AGENT_DAEMON_SOCKET:-}\" ] || PRIME_AGENT_DAEMON_SOCKET='\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon'; export PRIME_AGENT_DAEMON_SOCKET"
   fi
   VARIANT_LINE="$variant_line" awk -v from="prime-agent-rust-" -v to="${DAEMON_SOCKET_DIR_NAME}-" \
     -v store="/.prime/agent}" -v own_store="/.prime/agent-${VARIANT_NAME}}" '
@@ -2995,7 +3002,7 @@ if [ -n "${VARIANT_NAME:-}" ]; then
       $0 = substr($0, 1, i - 1) own_store substr($0, i + length(store))
     }
     { print }
-    /^export PRIME_AGENT_CODING_AGENT_DIR=/ { print ENVIRON["VARIANT_LINE"] }
+    /^export PRIME_AGENT_CODING_AGENT_DIR=/ && ENVIRON["VARIANT_LINE"] != "" { print ENVIRON["VARIANT_LINE"] }
   ' "$launcher_tmp" > "${launcher_tmp}.variant"
   mv -f "${launcher_tmp}.variant" "$launcher_tmp"
 fi
@@ -3038,9 +3045,7 @@ if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%U
 EOF
   if [ -n "${VARIANT_NAME:-}" ]; then
     # The same distribution pins as the sh launcher, in cmd syntax.
-    cmd_venv="$(cygpath -w "${variant_prefix}/kernel-venv" 2>/dev/null || printf '%s' "${variant_prefix}/kernel-venv")"
-    CMD_PINS="if not defined PRIME_AGENT_KERNEL_VENV set \"PRIME_AGENT_KERNEL_VENV=${cmd_venv}\"
-if not defined PRIME_AGENT_DAEMON_SOCKET set \"PRIME_AGENT_DAEMON_SOCKET=\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon\"" \
+    CMD_PINS="if not defined PRIME_AGENT_DAEMON_SOCKET set \"PRIME_AGENT_DAEMON_SOCKET=\\\\.\\pipe\\${DAEMON_SOCKET_DIR_NAME}-daemon\"" \
       awk -v store='\\.prime\\agent"' -v own_store="\\\\.prime\\\\agent-${VARIANT_NAME}\"" '
         /^if not defined PRIME_AGENT_CODING_AGENT_DIR / && (i = index($0, store)) > 0 {
           $0 = substr($0, 1, i - 1) own_store substr($0, i + length(store))
@@ -3147,7 +3152,7 @@ fi
 # stays one candidate (the bots' finding). The TS candidates classify by
 # identity first, then the schema family; the pinned rust socket is OUR
 # daemon by construction (the update flow: a running rust daemon holds
-# the old binary and venv state, the update needs it down, the next
+# the old binary, the update needs it down, the next
 # invocation boots the new daemon).
 last_stop_recorded=""
 last_stop_was_rust=""
@@ -3246,108 +3251,17 @@ except Exception:
   fi
 fi
 
-# --- the kernel pre-warm: uv + the Python kernel venv ------------------------
-# The payload ships the prime-agent-runtime/ sidecar but NOT uv and not the
-# venv: without this step the FIRST session fails with "uv is required to
-# set up the Python kernel" — and the Python kernel is the product's only
-# tool, so a fresh install would be dead in the water. The binary's own
-# install-time entry (`--prime-agent-bootstrap`, the TS cli-main.ts
-# precedent) creates the venv now; both steps are best-effort — an offline
-# machine still gets a successful install, and the first session retries
-# the bootstrap online per the product's own guidance.
-# THE PRE-WARM'S PATH FIX (the bots' finding): the product's own ensure_uv
-# searches PATH and ~/.local/bin/uv, so a payload-adjacent uv (the
-# store-alias fallback) is invisible to the launcher unless the prefix's
-# bin dir rides PATH — the pre-warm's child inherits this PATH, and the
-# profile note below tells the user to make it permanent.
-# THE INCOMING PATH (the reviewer's finding): the persistent-PATH guidance
-# near the end of this script must describe the user's NEXT session, never
-# this process's temporary prepend - so the pre-warm fix below captures the
-# incoming PATH first and the guidance compares against that.
+# --- the incoming PATH ------------------------------------------------------------
+# The kernel is built into the binary: the install prepares nothing for
+# it (no uv, no venv, no first-run download). The PATH guidance near the
+# end of this script describes the user's NEXT session, so it compares
+# against the PATH this script was started with.
 incoming_path="${PATH:-}"
-# THE GUARD (the reviewer's finding): the prepend runs only when no uv
-# already answers on PATH - a working PATH uv is never shadowed by a stale
-# target file - and it serves the uv at the target (the product's ensure_uv
-# does not know the knob's dir).
-if ! uv_on_path && [ -n "$uv_bin_dir" ] && [ "$uv_bin_dir" != "${HOME}/.local/bin" ]; then
-  # An unset PATH must not become a trailing colon (that would expose the
-  # cwd to the child's PATH search): the prepend sets the PATH outright.
-  if [ -z "${PATH+x}" ]; then
-    PATH="$uv_bin_dir"
-  else
-    PATH="${uv_bin_dir}:${PATH}"
-  fi
-  export PATH
-fi
-if uv_on_path \
-   || { [ -n "$uv_bin_dir" ] && [ -x "${uv_bin_dir}/${uv_name}" ]; } \
-   || { [ "$uv_under_store" = "no" ] && [ -x "${HOME}/.local/bin/${uv_name}" ]; }; then
-  say "uv found (the kernel venv's package manager)"
-else
-  if [ -n "$uv_bin_dir" ]; then
-    step_start "Installing uv"
-    say "installing uv (the kernel venv's package manager — the command the"
-    say "product's own error message names):"
-  else
-    say "uv was not installed (no target outside the shared session store;"
-    say "  the first session needs uv on PATH or at ~/.local/bin/uv):"
-  fi
-  # The fetch and the script run are checked SEPARATELY: a plain
-  # `curl | sh` pipeline reports the SCRIPT's status, so a dead network
-  # (curl fails, sh reads nothing and exits 0) would masquerade as success.
-  # The computed uv target is passed EXPLICITLY (the default path in the
-  # normal case, the payload-adjacent prefix bin dir under the store
-  # alias — the store-alias fallback above), which also overrides any
-  # inherited value pointing into the shared session store.
-  if [ -n "$uv_bin_dir" ] \
-     && curl_out="$(curl -LsSf --connect-timeout 10 --max-time 60 --retry 2 \
-          https://astral.sh/uv/install.sh)" \
-     && printf '%s\n' "$curl_out" \
-        | env -u UV_UNMANAGED_INSTALL UV_INSTALL_DIR="$uv_bin_dir" sh >&3 2>&1; then
-    if [ -x "${uv_bin_dir}/${uv_name}" ]; then
-      step_ok "uv installed"
-    else
-      step_fail "Installing uv"
-      note "! The uv installer reported success but ${uv_bin_dir}/${uv_name} is missing; the"
-      note "  first session may need to install uv itself."
-    fi
-  else
-    if [ -n "$ui_step" ]; then step_fail "Installing uv"; fi
-    note "! Could not install uv; the kernel pre-warm was skipped. The first"
-    note "  session needs uv. Install it with:"
-    todo "curl -LsSf https://astral.sh/uv/install.sh | sh"
-  fi
-fi
-# THE PRE-WARM GATE (the reviewer's finding): it must agree with the
-# 'uv found' gate above - a default-location uv must actually WARM the
-# kernel, not only be reported found (the product's ensure_uv finds
-# ~/.local/bin/uv by itself), and never in the store-alias shape (the
-# store is never written from this installer).
-if uv_on_path \
-   || { [ -n "$uv_bin_dir" ] && [ -x "${uv_bin_dir}/${uv_name}" ]; } \
-   || { [ "$uv_under_store" = "no" ] && [ -x "${HOME}/.local/bin/${uv_name}" ]; }; then
-  step_start "Preparing the Python kernel"
-  if bootstrap_out="$("$install_probe_launcher" --prime-agent-bootstrap 2>&1)"; then
-    step_ok "Kernel ready"
-    say "kernel pre-warmed: the first session's Python kernel is ready"
-    say "$bootstrap_out"
-  else
-    step_fail "Preparing the Python kernel" "the first session retries it"
-    note "! The kernel pre-warm failed; the install stands and the first session"
-    note "  retries it online:"
-    note "$bootstrap_out"
-  fi
-else
-  note "! The kernel pre-warm was skipped (no uv); the first session sets the"
-  note "  kernel up itself and needs the network once."
-fi
 
 # --- verify: the launcher must answer --version -----------------------------------
-# Tried once. The probe prints the compiled-in version and does not run the
-# first-run kernel venv bootstrap (the pre-warm above stays best-effort; the
-# first session retries it), so a failure here is a broken payload and must
-# fail installation: a published payload alone does not certify a working
-# command.
+# Tried once. The probe prints the compiled-in version and starts nothing
+# else, so a failure here is a broken payload and must fail installation:
+# a published payload alone does not certify a working command.
 if version_out="$("$install_probe_launcher" --version 2>&1)"; then
   say "installed: ${version_out}"
 else
@@ -3418,16 +3332,12 @@ fi
 
 # --- PATH check (warn, not fail) ---------------------------------------------------
 # The installer never edits a shell profile: it prints the one line that
-# does it for the user's shell (from $SHELL) and reloads it. THE CUSTOM UV
-# TARGET joins the check (the reviewer's finding: a documented install
-# target must stay discoverable once the installer exits - the product's
-# own ensure_uv searches PATH and ~/.local/bin only; the store-alias
-# fallback already points at the launcher's own bin dir, which the first
-# check covers).
+# does it for the user's shell (from $SHELL) and reloads it. The uv this
+# script uses for its own Python is not part of the check: nothing the
+# user runs needs it on PATH.
 path_check_note() {
   # The guidance compares against the INCOMING PATH (a fresh session's
-  # view): this script's own temporary pre-warm prepend must never
-  # suppress the persistent-PATH guidance for a dir the user still needs.
+  # view).
   case ":$incoming_path:" in
     *":$1:"*) return 0 ;;
   esac
@@ -3503,10 +3413,4 @@ if [ -n "$COMMAND_NAME" ]; then
     note "! \`${COMMAND_NAME}\` on your PATH runs ${command_winner}, not this build."
     note "  Put $(tilde "$command_dir") before its directory on PATH, or run ${launcher}."
   fi
-fi
-if [ -n "${PRIME_AGENT_UV_BIN_DIR:-}" ] \
-   && [ -n "$uv_bin_dir" ] \
-   && [ "$uv_bin_dir" != "${bin_dir}" ] \
-   && [ "$uv_bin_dir" != "${HOME}/.local/bin" ]; then
-  path_check_note "${uv_bin_dir}"
 fi

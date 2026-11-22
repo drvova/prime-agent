@@ -208,15 +208,34 @@ pub fn local() -> &'static Arc<LocalAdmission> {
 
 /// Route this process's provider requests through `source` (the daemon
 /// worker's supervisor-shared budget).
+///
+/// Inside a hosted session ([`pa_types::session_scope`]) the source is that
+/// session's alone: another session in the same process keeps its own.
 pub fn install(source: Arc<dyn AdmissionSource>) {
-    *installed()
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+    match pa_types::session_scope::current() {
+        Some(scope) => scope.set_slot(Arc::new(SessionSource(source))),
+        None => {
+            *installed()
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(source);
+        }
+    }
 }
+
+/// One hosted session's admission source.
+struct SessionSource(Arc<dyn AdmissionSource>);
+
+/// One hosted session's default request class.
+struct SessionPriority(AtomicU8);
 
 /// The source requests acquire from now.
 #[must_use]
 pub fn current_source() -> Arc<dyn AdmissionSource> {
+    if let Some(source) =
+        pa_types::session_scope::current().and_then(|scope| scope.slot::<SessionSource>())
+    {
+        return Arc::clone(&source.0);
+    }
     installed()
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -228,14 +247,28 @@ static PROCESS_PRIORITY: AtomicU8 = AtomicU8::new(0);
 
 /// The class of this process's requests when a request names none: a
 /// daemon worker hosting a subagent session sets [`Priority::Subagent`].
+///
+/// Inside a hosted session the class is that session's alone: a subagent
+/// never demotes the other sessions of its process.
 pub fn set_process_priority(priority: Priority) {
-    PROCESS_PRIORITY.store(priority_code(priority), Ordering::Relaxed);
+    match pa_types::session_scope::current() {
+        Some(scope) => scope.set_slot(Arc::new(SessionPriority(AtomicU8::new(priority_code(
+            priority,
+        ))))),
+        None => PROCESS_PRIORITY.store(priority_code(priority), Ordering::Relaxed),
+    }
 }
 
 /// The class a request without its own runs at.
 #[must_use]
 pub fn process_priority() -> Priority {
-    match PROCESS_PRIORITY.load(Ordering::Relaxed) {
+    let code = pa_types::session_scope::current()
+        .and_then(|scope| scope.slot::<SessionPriority>())
+        .map_or_else(
+            || PROCESS_PRIORITY.load(Ordering::Relaxed),
+            |priority| priority.0.load(Ordering::Relaxed),
+        );
+    match code {
         1 => Priority::Subagent,
         2 => Priority::Helper,
         3 => Priority::Background,
@@ -293,7 +326,7 @@ pub fn pinned_boot_concurrency(raw: Option<&str>) -> Option<u32> {
 #[must_use]
 pub fn session_boot_controller_config() -> ControllerConfig {
     let pinned = pinned_boot_concurrency(
-        std::env::var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS")
+        pa_types::session_scope::var("PRIME_AGENT_MAX_CONCURRENT_KERNEL_BOOTS")
             .ok()
             .as_deref(),
     );

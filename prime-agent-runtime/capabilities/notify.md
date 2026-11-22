@@ -1,1 +1,0 @@
-- `notify(message: str, *, level: str = "info") -> bool`: a non-blocking ping (`level` is `info`/`success`/`warning`/`error`): the user sees a notice row and their terminal asks for attention. Use it when long or unattended work finishes or needs a look; unlike `ask` it never waits. Returns whether a user was attached to see it (`False` in headless runs).

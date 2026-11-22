@@ -19,7 +19,7 @@ use super::*;
 
 /// Read one numeric knob with a default.
 fn race_knob(name: &str, default: u64) -> u64 {
-    std::env::var(name)
+    pa_types::session_scope::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
@@ -83,7 +83,7 @@ async fn abort_and_send_idle_race_rate_harness() {
     let window_ms = race_knob("PA_RACE_IDLE_WINDOW_MS", 300).clamp(50, 600_000);
     // The worker's event-log seam: one file for the whole run, one
     // rep-marker line per rep, the frames append behind each marker.
-    let event_log = std::env::var("PA_RACE_EVENT_LOG").ok();
+    let event_log = pa_types::session_scope::var("PA_RACE_EVENT_LOG").ok();
     if let Some(path) = &event_log {
         std::env::set_var("PA_DAEMON_EVENT_LOG", path);
     }

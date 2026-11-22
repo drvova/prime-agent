@@ -24,7 +24,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 /// env override when it is a finite non-negative number, else the default.
 fn lost_exit_ms() -> u64 {
     lost_exit_ms_from(
-        std::env::var(WORKER_SUPERVISOR_LOST_EXIT_MS_ENV)
+        pa_types::session_scope::var(WORKER_SUPERVISOR_LOST_EXIT_MS_ENV)
             .ok()
             .as_deref(),
     )
@@ -46,6 +46,10 @@ async fn supervisor_reachable(socket: &Path) -> bool {
 /// Arm the orphan-exit monitor for `worker`: it runs for the process's whole lifetime,
 /// like the TS `startSupervisorMonitor` timer chain.
 pub(crate) fn start(worker: Arc<Worker>) {
+    // A hosted session shares its supervisor's process: it cannot outlive it.
+    if crate::session_host::is_hosted() {
+        return;
+    }
     tokio::spawn(async move {
         monitor(worker).await;
     });
@@ -131,7 +135,7 @@ async fn exit_orphaned(worker: &Worker, absent_since: tokio::time::Instant) {
     // deterministic-path relaunch - while the worker's own dead file
     // still unlinks through the identity gate.
     worker.close_listener_then_cleanup_socket().await;
-    std::process::exit(0);
+    crate::session_host::end_session().await;
 }
 
 #[cfg(test)]

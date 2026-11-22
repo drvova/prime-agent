@@ -1,6 +1,8 @@
-//! End-to-end fd-lifecycle audit against the real `pa-daemon` supervisor: run
-//! create/prompt/kill session cycles and sample `/proc/<pid>/fd` per cycle so any
-//! monotonically growing fd class in the supervisor is caught as a regression.
+//! End-to-end fd-lifecycle audit against the real `pa-daemon`. Sessions are hosted inside
+//! the daemon process, so every descriptor a session opens is the daemon's and one leaked
+//! per session, prompt, connection or failed rebuild accumulates in the process that hosts
+//! every other session. Each test samples the daemon's `/proc/<pid>/fd` around the work and
+//! holds it to its baseline.
 // Stack-resident futures by design; boxing for a lint tick is a perf regression.
 #![allow(clippy::large_futures)]
 // 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
@@ -25,7 +27,6 @@
 mod common;
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -87,36 +88,24 @@ impl Drop for Daemon {
 // immediately afterwards, reaping it.
 #[allow(clippy::zombie_processes)]
 fn spawn_daemon(mut launcher: Command, socket: &Path, agent_dir: &Path) -> Daemon {
-    let child = launcher
+    let mut child = launcher
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
-        // worker never cleans: keep them in the test's own dir.
+        // Session sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in
+        // the test's own dir.
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // A supervisor killed at teardown must not leak its session workers into later
-        // test binaries: the supervisor-lost exit runs here.
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 struct Client {
@@ -192,23 +181,12 @@ impl Client {
     }
 }
 
-/// The worker pid for a session, from the supervisor's persisted descriptor.
-fn worker_pid(agent_dir: &Path, socket_path: &Path, worker_id: &str) -> Option<u32> {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(socket_path.to_string_lossy().as_bytes());
-    let mut hex = String::new();
-    for byte in &digest {
-        write!(hex, "{byte:02x}").expect("write to String");
-    }
-    let descriptor_dir = agent_dir.join("daemon-workers").join(&hex[..12]);
-    let descriptor: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json"))).ok()?,
-    )
-    .ok()?;
-    descriptor
-        .get("pid")
-        .and_then(serde_json::Value::as_u64)
-        .map(|p| p as u32)
+/// Whether the daemon still holds a record of the session (its descriptor file): a
+/// stopped session is retired once this is gone.
+fn session_recorded(agent_dir: &Path, socket_path: &Path, worker_id: &str) -> bool {
+    pa_daemon::descriptor::descriptor_dir(agent_dir, socket_path)
+        .join(format!("{worker_id}.json"))
+        .exists()
 }
 
 #[track_caller]
@@ -228,7 +206,7 @@ const CYCLES: usize = 20;
 const FD_SLACK: usize = 6;
 
 #[test]
-fn supervisor_fd_count_stable_across_session_cycles() {
+fn daemon_fd_count_returns_to_baseline_across_session_cycles() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -268,9 +246,6 @@ fn supervisor_fd_count_stable_across_session_cycles() {
             .or_else(|| created["data"]["sessionId"].as_str())
             .expect("session id")
             .to_string();
-        let pid = worker_pid(&agent_dir, &socket, &session_id).expect("worker pid from descriptor");
-        assert_ne!(pid, supervisor_pid);
-
         client.send_command(
             &format!("a{cycle}"),
             &serde_json::json!({ "type": "attach", "activeSessionId": session_id }),
@@ -291,17 +266,6 @@ fn supervisor_fd_count_stable_across_session_cycles() {
         let prompt = client.read_response(&format!("p{cycle}"));
         assert_eq!(prompt["success"], true, "prompt failed: {prompt}");
 
-        // While the worker is alive, record its own fd count too: a
-        // per-session worker leak shows up here before the supervisor's.
-        let worker_fds = fd_snapshot(pid);
-        if cycle % 5 == 0 {
-            println!(
-                "cycle {cycle}: worker pid {pid} open fds {} ({:?})",
-                worker_fds.len(),
-                fd_classes(&worker_fds)
-            );
-        }
-
         client.send_command(
             &format!("k{cycle}"),
             &serde_json::json!({ "type": "kill", "activeSessionId": session_id }),
@@ -309,10 +273,11 @@ fn supervisor_fd_count_stable_across_session_cycles() {
         let killed = client.read_response(&format!("k{cycle}"));
         assert_eq!(killed["success"], true, "kill failed: {killed}");
 
-        // The kill settles asynchronously: the worker exits and the roster drops the row;
-        // sample only once both are observed, so a slow reap cannot fake stability.
+        // The kill settles asynchronously: the session's record is retired and the
+        // roster drops the row; sample only once both are observed, so a slow stop
+        // cannot fake stability.
         wait_until(Duration::from_secs(10), || {
-            fd_snapshot(pid).is_empty() || worker_pid(&agent_dir, &socket, &session_id).is_none()
+            !session_recorded(&agent_dir, &socket, &session_id)
         });
         wait_until(Duration::from_secs(10), || {
             client.send_command("l", &serde_json::json!({ "type": "list" }));
@@ -324,7 +289,7 @@ fn supervisor_fd_count_stable_across_session_cycles() {
 
         let targets = fd_snapshot(supervisor_pid);
         println!(
-            "cycle {cycle}: supervisor open fds {} ({:?})",
+            "cycle {cycle}: daemon open fds {} ({:?})",
             targets.len(),
             fd_classes(&targets)
         );
@@ -338,7 +303,7 @@ fn supervisor_fd_count_stable_across_session_cycles() {
     for (index, count) in counts.iter().enumerate() {
         assert!(
             *count <= baseline + FD_SLACK,
-            "supervisor fd count grew across cycles: baseline {baseline}, \
+            "the daemon's fd count grew across session cycles: baseline {baseline}, \
              cycle {index} count {count} ({:?} at cycle {index})",
             fd_classes(&fd_snapshot(supervisor_pid))
         );
@@ -350,7 +315,7 @@ fn supervisor_fd_count_stable_across_session_cycles() {
 }
 
 #[test]
-fn worker_fd_count_stable_across_prompts() {
+fn daemon_fd_count_stable_across_a_sessions_prompts() {
     const PROMPTS: usize = 30;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
@@ -398,7 +363,6 @@ fn worker_fd_count_stable_across_prompts() {
         .or_else(|| created["data"]["sessionId"].as_str())
         .expect("session id")
         .to_string();
-    let pid = worker_pid(&agent_dir, &socket, &session_id).expect("worker pid");
     client.send_command(
         "a0",
         &serde_json::json!({ "type": "attach", "activeSessionId": session_id }),
@@ -419,38 +383,28 @@ fn worker_fd_count_stable_across_prompts() {
         let prompt = client.read_response(&id);
         assert_eq!(prompt["success"], true, "prompt failed: {prompt}");
         if turn % 5 == 0 {
-            let worker_fds = fd_snapshot(pid);
-            let supervisor_fds = fd_snapshot(supervisor_pid);
+            let daemon_fds = fd_snapshot(supervisor_pid);
             println!(
-                "turn {turn}: worker fds {} ({:?}), supervisor fds {}",
-                worker_fds.len(),
-                fd_classes(&worker_fds),
-                supervisor_fds.len(),
+                "turn {turn}: daemon fds {} ({:?})",
+                daemon_fds.len(),
+                fd_classes(&daemon_fds),
             );
-            // The turn's roster pushes each dial their own supervisor-link
-            // socket and may still be in flight after the reply; a leaked
-            // fd never drains, a push's socket does.
-            let baseline = *baseline.get_or_insert(worker_fds.len());
+            // The turn's roster pushes each dial their own socket and may
+            // still be in flight after the reply; a leaked fd never drains,
+            // a push's socket does.
+            let baseline = *baseline.get_or_insert(daemon_fds.len());
             wait_until(Duration::from_secs(10), || {
-                fd_snapshot(pid).len() <= baseline + FD_SLACK
+                fd_snapshot(supervisor_pid).len() <= baseline + FD_SLACK
             });
         }
     }
+    assert!(
+        baseline.is_some_and(|baseline| baseline >= 3),
+        "fd sampling looked broken (no fds observed)"
+    );
 }
 
-// Worker fd table across connection churn (the EMFILE class)
-
-/// Liveness that ignores zombies (an unreaped child keeps its /proc entry).
-fn process_alive(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    let state = rest.split_whitespace().next().unwrap_or_default();
-    !state.starts_with('Z') && !state.starts_with('X')
-}
+// The daemon's fd table across connection churn on a session's socket (the EMFILE class)
 
 /// Pids whose parent is `ppid`.
 fn child_pids_of(ppid: u32) -> Vec<u32> {
@@ -494,7 +448,7 @@ fn read_exact_timeout(stream: &mut UnixStream, buffer: &mut [u8], deadline: Inst
     }
 }
 
-/// A raw private-frame probe against a worker's own socket: connect, consume the
+/// A raw private-frame probe against a session's own socket: connect, consume the
 /// hello frame, drop — the exact shape of liveness probes and peer deliveries.
 fn probe_worker(socket: &Path) {
     let mut stream = UnixStream::connect(socket).expect("connect worker socket");
@@ -514,7 +468,7 @@ fn probe_worker(socket: &Path) {
     assert_eq!(header["outboundType"], "daemon_hello");
 }
 
-/// The persisted worker descriptor's socket path.
+/// The socket the hosted session serves on, from its descriptor.
 fn worker_socket_path(agent_dir: &Path, socket: &Path, worker_id: &str) -> PathBuf {
     let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
     let content = std::fs::read_to_string(descriptor_dir.join(format!("{worker_id}.json")))
@@ -524,7 +478,7 @@ fn worker_socket_path(agent_dir: &Path, socket: &Path, worker_id: &str) -> PathB
 }
 
 #[test]
-fn worker_fd_table_stable_across_client_connection_churn() {
+fn daemon_fd_table_stable_across_connection_churn_on_a_session_socket() {
     const PROBES: usize = 15;
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
@@ -559,58 +513,37 @@ fn worker_fd_table_stable_across_client_connection_churn() {
         .or_else(|| created["data"]["sessionId"].as_str())
         .expect("session id")
         .to_string();
-    let pid = worker_pid(&agent_dir, &socket, &session_id).expect("worker pid");
     let worker_socket = worker_socket_path(&agent_dir, &socket, &session_id);
-    assert!(process_alive(pid), "worker {pid} is alive");
 
-    // Warm-up probes, then the baseline.
+    // Warm-up probes, then the baseline: the count the table settles back to
+    // once the session has seen each probe's EOF.
     for _ in 0..2 {
         probe_worker(&worker_socket);
     }
-    std::thread::sleep(Duration::from_millis(300));
-    let baseline = fd_snapshot(pid);
-    println!(
-        "worker baseline fds {} ({:?})",
-        baseline.len(),
-        fd_classes(&baseline)
-    );
+    let mut baseline = fd_snapshot(supervisor_pid).len();
+    wait_until(Duration::from_secs(10), || {
+        let settled = fd_snapshot(supervisor_pid).len() == baseline;
+        baseline = fd_snapshot(supervisor_pid).len();
+        settled
+    });
+    println!("daemon baseline fds {baseline}");
 
     for _ in 0..PROBES {
         probe_worker(&worker_socket);
-        std::thread::sleep(Duration::from_millis(20));
     }
-    // Let the worker's read loops observe EOF and the fan-out tasks exit.
-    std::thread::sleep(Duration::from_millis(500));
-    let final_table = fd_snapshot(pid);
-    println!(
-        "worker fds after {PROBES} connections: {} ({:?})",
-        final_table.len(),
-        fd_classes(&final_table)
-    );
-    assert!(
-        final_table.len() <= baseline.len() + 1,
-        "worker fd table grew across {PROBES} client connections: baseline {}, final {} ({:?})",
-        baseline.len(),
-        final_table.len(),
-        fd_classes(&final_table)
-    );
+    // The session's read loops observe EOF and the fan-out tasks exit: a
+    // leaked connection never drains, a closing one does.
+    wait_until(Duration::from_secs(10), || {
+        fd_snapshot(supervisor_pid).len() <= baseline + 1
+    });
 
-    // The worker still serves after the churn: a routed command round-trips.
+    // The session still serves after the churn: a routed command round-trips.
     client.send_command(
         "g1",
         &serde_json::json!({ "type": "get_last_assistant_text", "activeSessionId": session_id }),
     );
     let last = client.read_response("g1");
     assert_eq!(last["success"], true, "routed command failed: {last}");
-
-    // And the supervisor held its own baseline through the churn.
-    let supervisor_fds = fd_snapshot(supervisor_pid);
-    assert!(
-        supervisor_fds.len() <= 20,
-        "supervisor fd table suspiciously large: {} ({:?})",
-        supervisor_fds.len(),
-        fd_classes(&supervisor_fds)
-    );
 
     client.send_command(
         "k1",
@@ -619,21 +552,18 @@ fn worker_fd_table_stable_across_client_connection_churn() {
     let killed = client.read_response("k1");
     assert_eq!(killed["success"], true, "kill failed: {killed}");
     wait_until(Duration::from_secs(10), || {
-        child_pids_of(supervisor_pid)
-            .into_iter()
-            .filter(|p| process_alive(*p))
-            .count()
-            == 0
+        !session_recorded(&agent_dir, &socket, &session_id)
     });
 }
 
-// Restart loop: no orphan workers, stable fds, terminal cleanup
+// Rebuild loop: nothing left behind, stable fds, terminal cleanup
 
-/// The supervisor's restart loop must not leak worker processes when the create replay
-/// keeps failing (a corrupt session store): each failed relaunch kills the worker it
-/// spawned (the "failure 4/5 restart loop" shape from the EMFILE report).
+/// The daemon's rebuild loop must not leak when the create replay keeps failing (a corrupt
+/// session store): each failed rebuild releases what it opened, and the give-up leaves no
+/// process, no lease and no extra descriptor behind (the "failure 4/5 restart loop" shape
+/// from the EMFILE report).
 #[test]
-fn supervisor_restart_loop_leaves_no_orphan_workers() {
+fn a_failing_rebuild_loop_leaves_nothing_behind() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -646,7 +576,11 @@ fn supervisor_restart_loop_leaves_no_orphan_workers() {
     let script_path = dir.path().join("script.json");
     std::fs::write(
         &script_path,
-        serde_json::json!({ "responses": [ { "text": "once" } ] }).to_string(),
+        serde_json::json!({
+            "responses": [ { "text": "once" } ],
+            "panicOn": { "message": "crash now", "panic": "injected fault" },
+        })
+        .to_string(),
     )
     .expect("write script");
     client.send_command(
@@ -671,19 +605,21 @@ fn supervisor_restart_loop_leaves_no_orphan_workers() {
         .as_str()
         .expect("session file in create response")
         .to_string();
-    let pid = worker_pid(&agent_dir, &socket, &session_id).expect("worker pid");
-    assert!(process_alive(pid), "worker {pid} is alive");
 
     let baseline = fd_snapshot(supervisor_pid);
 
-    // Corrupt the durable session file, then kill the worker: every create replay fails.
+    // Corrupt the durable session file, then crash the session: every create replay fails.
     std::fs::write(&session_file, "not valid jsonl\n").expect("corrupt session file");
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .status()
-        .expect("send SIGKILL to worker");
+    client.send_command(
+        "crash",
+        &serde_json::json!({
+            "type": "prompt",
+            "activeSessionId": session_id,
+            "message": "crash now",
+        }),
+    );
 
-    // The restart loop runs to its failure budget and removes the session.
+    // The rebuild loop runs to its failure budget and removes the session.
     wait_until(Duration::from_mins(1), || {
         client.send_command("l", &serde_json::json!({ "type": "list" }));
         let list = client.read_response("l");
@@ -692,32 +628,30 @@ fn supervisor_restart_loop_leaves_no_orphan_workers() {
             .is_some_and(std::vec::Vec::is_empty)
     });
 
-    // No orphan worker survives the loop: each either served or was killed with its relaunch.
-    std::thread::sleep(Duration::from_millis(500));
-    let orphans = child_pids_of(supervisor_pid)
-        .into_iter()
-        .filter(|p| process_alive(*p))
-        .collect::<Vec<_>>();
-    assert!(
-        orphans.is_empty(),
-        "orphan worker processes survived the restart loop: {orphans:?}"
+    // Nothing of the session survives the loop: no process under the daemon, no lease.
+    let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        (child_pids_of(supervisor_pid), held_leases),
+        (Vec::<u32>::new(), Vec::<PathBuf>::new()),
+        "the failed rebuilds left something behind"
     );
 
-    // The supervisor's own fd table returns to baseline (each failed relaunch cost one connection).
-    std::thread::sleep(Duration::from_millis(500));
-    let final_fds = fd_snapshot(supervisor_pid);
-    println!(
-        "restart loop: supervisor fds baseline {}, final {} ({:?})",
-        baseline.len(),
-        final_fds.len(),
-        fd_classes(&final_fds)
-    );
-    assert!(
-        final_fds.len() <= baseline.len() + 1,
-        "supervisor fd table grew across the restart loop: baseline {}, final {}",
-        baseline.len(),
-        final_fds.len()
-    );
+    // The daemon's own fd table returns to baseline: the session that held
+    // its share is gone, and no failed rebuild kept a descriptor.
+    wait_until(Duration::from_secs(10), || {
+        fd_snapshot(supervisor_pid).len() <= baseline.len() + 1
+    });
 }
 
 /// A supervisor started under a low soft fd limit raises it to the hard

@@ -170,7 +170,7 @@ fn posix_node_path_resolve(base: &str, path: &str) -> String {
             absolute = Some(Vec::new());
         } else if absolute.is_none() {
             // Neither is absolute: Node resolves against process.cwd().
-            let cwd = std::env::current_dir().unwrap_or_default();
+            let cwd = pa_types::session_scope::current_dir().unwrap_or_default();
             let cwd = cwd.to_string_lossy().to_string();
             absolute = Some(
                 cwd.split('/')
@@ -325,9 +325,9 @@ fn win32_node_path_resolve(base: &str, path: &str) -> String {
 /// else the process cwd (the caller's drive check decides whether the answer applies).
 #[cfg(any(windows, test))]
 fn win32_device_cwd(device: &str) -> String {
-    std::env::var_os(format!("={device}")).map_or_else(
+    pa_types::session_scope::var_os(format!("={device}")).map_or_else(
         || {
-            std::env::current_dir()
+            pa_types::session_scope::current_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()
@@ -352,7 +352,7 @@ fn win32_resolve_with(base: &str, path: &str, device_cwd: &dyn Fn(&str) -> Strin
                 part => part.to_string(),
             }
         } else if resolved_device.is_empty() {
-            std::env::current_dir()
+            pa_types::session_scope::current_dir()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned()

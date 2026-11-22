@@ -139,8 +139,7 @@ async fn engine_runs_tool_loop_and_persists() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -251,8 +250,7 @@ async fn spawned_child_prompt_stamps_its_depth() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -326,8 +324,7 @@ async fn oauth_creds_unlock_generic_mcp_gating_in_new_sessions() {
             model_info: None,
             on_background_work_settled: None,
             bash_notice_wake: None,
-            kernel_ready_gate: None,
-            prewarm_ipython_kernel: None,
+            prewarm_kernel: None,
             queued_goal_context_purge: None,
         }
     }
@@ -442,10 +439,7 @@ async fn create_session_registers_the_kernel_backed_tools_without_cron_wiring() 
         .iter()
         .map(|tool| tool.name().to_string())
         .collect();
-    assert!(
-        names.iter().any(|name| name == "python_repl"),
-        "tools: {names:?}"
-    );
+    assert!(names.iter().any(|name| name == "eval"), "tools: {names:?}");
 }
 
 /// A daemon-shaped resume: an in-memory session manager (the daemon's
@@ -518,8 +512,7 @@ async fn create_session_appends_missing_resume_settings_rows() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -616,28 +609,14 @@ fn prompt_lists_skill(engine: &SessionEngine, name: &str) -> bool {
         .contains(&format!("<name>{name}</name>"))
 }
 
-fn kernel_skill_imports(engine: &SessionEngine) -> Vec<String> {
-    engine
-        .provisioner
-        .python_skills()
-        .iter()
-        .map(|skill| skill.import_name.clone())
-        .collect()
-}
-
 /// One model-visible surface per embedding, keyed on the wired host
-/// handlers (#8): the prompt and the kernel pre-import list only the
-/// skills whose host requests registered. Print wires the messaging
+/// handlers (#8): the prompt lists only the skills whose host requests
+/// registered. Print wires the messaging
 /// handlers, RPC none, the daemon shape all three (its cron wiring also
 /// serves the heartbeat requests).
 #[tokio::test]
 async fn model_visible_skills_follow_the_embedding_wiring() {
     let all = ["agent-message", "agent-observe", "rlm-heartbeat"];
-    let imports_of = [
-        ("agent-message", "agent_message"),
-        ("agent-observe", "agent_observe"),
-        ("rlm-heartbeat", "rlm_heartbeat"),
-    ];
     let cron_dir = tempfile::tempdir().unwrap();
     let daemon_cron = Some(cron_wiring(cron_dir.path()));
     let cases = [
@@ -670,14 +649,6 @@ async fn model_visible_skills_follow_the_embedding_wiring() {
                 prompt_lists_skill(&engine, skill),
                 visible.contains(&skill),
                 "{label}: {skill}"
-            );
-        }
-        let imports = kernel_skill_imports(&engine);
-        for (skill, import) in imports_of {
-            assert_eq!(
-                imports.iter().any(|name| name == import),
-                visible.contains(&skill),
-                "{label}: {import}"
             );
         }
     }
@@ -818,7 +789,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
     let provider = Arc::new(ScriptedProvider::new(model.clone()));
     provider.push_tool_call_turn(
         None,
-        vec![("call-1", PYTHON_TOOL_NAME, serde_json::json!({}))],
+        vec![("call-1", KERNEL_TOOL_NAME, serde_json::json!({}))],
     );
     provider.push_text_turn("all done");
     let tmp = tempfile::tempdir().unwrap();
@@ -841,7 +812,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         },
     };
     let recording_tool = ToolDefinition {
-        name: PYTHON_TOOL_NAME.to_string(),
+        name: KERNEL_TOOL_NAME.to_string(),
         label: "Python".to_string(),
         description: "Runs a python cell.".to_string(),
         prompt_snippet: String::new(),
@@ -903,8 +874,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
         model_info: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         queued_goal_context_purge: None,
     })
     .await
@@ -963,7 +933,7 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
             entry,
             pa_types::session::FileEntry::Custom { payload, .. }
                 if payload.custom_type
-                    == crate::session_engine::late_sent_messages::IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE
+                    == crate::session_engine::late_sent_messages::KERNEL_SENT_AGENT_MESSAGE_CUSTOM_TYPE
         )),
         "the receipt persists as a custom entry"
     );
@@ -971,8 +941,8 @@ async fn late_receipts_recorded_before_the_row_lands_apply_on_landing() {
 
 /// A model switch rewrites the prompt's image-input line: a session that
 /// starts on a text-only model and switches to a vision model must be told
-/// it can now see images, or it never calls `attach_image` (the stale line
-/// says it errors).
+/// it can now see images, or it never calls `attach-image` (the stale line
+/// says it raises).
 #[tokio::test]
 async fn a_model_switch_rewrites_the_image_input_line() {
     let model = pa_agent::types::Model {
@@ -1009,7 +979,7 @@ async fn a_model_switch_rewrites_the_image_input_line() {
         model_info: Some(registry_model(serde_json::json!(["text"]))),
         stream_fn: Some(provider.stream_fn()),
         daemonless: true,
-        prewarm_ipython_kernel: Some(false),
+        prewarm_kernel: Some(false),
         ..Default::default()
     })
     .await
@@ -1033,8 +1003,8 @@ async fn a_model_switch_rewrites_the_image_input_line() {
         .into_iter()
         .map(|context| context.system_prompt.unwrap_or_default())
         .collect();
-    let text_only = "Image input: this model cannot see images; `attach_image` errors for it.";
-    let vision = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `attach_image(path)`: reading its bytes with `open()` or `bash` does not show it to you.";
+    let text_only = "Image input: this model cannot see images; `attach-image` raises for it.";
+    let vision = "Image input: this model can see images; to look at an image file (a screenshot, diagram, chart, or photo), call `(attach-image path)`: reading its bytes with `fs-read` or `bash` does not show it to you.";
     assert!(
         prompts[0].contains(text_only),
         "the text-only session states it: {}",

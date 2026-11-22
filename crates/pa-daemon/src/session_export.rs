@@ -110,7 +110,7 @@ impl ExportCommands {
     /// resolved against the session's cwd and the agent dir.
     fn resolved_theme_name(&self, core: &SessionCore) -> Result<Option<String>> {
         let cwd = if core.cwd.is_empty() {
-            std::env::current_dir().unwrap_or_default()
+            pa_types::session_scope::current_dir().unwrap_or_default()
         } else {
             PathBuf::from(&core.cwd)
         };
@@ -119,19 +119,39 @@ impl ExportCommands {
     }
 
     /// `export_jsonl`: the current branch re-chained linearly into a JSONL
-    /// file; the response carries the resolved path (TS `{ path }`).
-    pub(crate) fn export_jsonl(&self, payload: &Value) -> DaemonResponse {
-        let output_path = payload
-            .get("outputPath")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        match self.export_jsonl_impl(output_path.as_deref()) {
+    /// file; the response carries the resolved path (TS `{ path }`). The
+    /// branch is copied under the session's state lock and written after it
+    /// is released, off the runtime: a slow target (a network mount, a pipe
+    /// nobody reads) delays this command's own answer and nothing else.
+    pub(crate) async fn export_jsonl(&self, payload: &Value) -> DaemonResponse {
+        let output_path = payload.get("outputPath").and_then(Value::as_str);
+        let written = match self.jsonl_snapshot(output_path) {
+            // The test seam: the write happens under the state lock, on this thread.
+            Ok((file_path, body))
+                if cfg!(debug_assertions)
+                    && pa_types::session_scope::var(EXPORT_HOLDS_SESSION_SEAM_ENV).as_deref()
+                        == Ok("1") =>
+            {
+                let _held = self.core.lock().unwrap();
+                write_export(&file_path, &body)
+            }
+            Ok((file_path, body)) => {
+                tokio::task::spawn_blocking(move || write_export(&file_path, &body))
+                    .await
+                    .unwrap_or_else(|error| {
+                        Err(anyhow::anyhow!("the export writer failed: {error}"))
+                    })
+            }
+            Err(error) => Err(error),
+        };
+        match written {
             Ok(path) => response_success(None, "export_jsonl", Some(json!({ "path": path }))),
             Err(error) => response_failure(None, "export_jsonl", &format!("{error:#}"), None),
         }
     }
 
-    fn export_jsonl_impl(&self, output_path: Option<&str>) -> Result<String> {
+    /// Where an `export_jsonl` writes and what: read under the state lock.
+    fn jsonl_snapshot(&self, output_path: Option<&str>) -> Result<(PathBuf, String)> {
         let core = self.core.lock().unwrap();
         let store = core
             .store
@@ -140,7 +160,7 @@ impl ExportCommands {
         // A relative (or omitted) output path lands in the daemon process
         // cwd, like the TS `resolve` default.
         let cwd = if core.cwd.is_empty() {
-            std::env::current_dir().unwrap_or_default()
+            pa_types::session_scope::current_dir().unwrap_or_default()
         } else {
             PathBuf::from(&core.cwd)
         };
@@ -158,10 +178,6 @@ impl ExportCommands {
                 pa_core::session::manager::format_iso_now().replace([':', '.'], "-")
             )),
         };
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
         let header = json!({
             "type": "session",
             "version": pa_core::session::CURRENT_SESSION_VERSION,
@@ -184,11 +200,27 @@ impl ExportCommands {
             previous = value.get("id").and_then(Value::as_str).map(str::to_string);
             lines.push(serde_json::to_string(&value)?);
         }
-        let body = format!("{}\n", lines.join("\n"));
-        std::fs::write(&file_path, body)
-            .with_context(|| format!("writing {}", file_path.display()))?;
-        Ok(file_path.to_string_lossy().into_owned())
+        Ok((file_path, format!("{}\n", lines.join("\n"))))
     }
+}
+
+/// Set to `1` in a session's launch environment, in a debug build,
+/// `export_jsonl` writes its file while it holds the session's state lock, on
+/// the session's own runtime thread. An export into a pipe nobody reads then
+/// stops everything of the session that needs its state until the pipe is
+/// drained: the tests' stand-in for a session that does not answer (what
+/// SIGSTOP was to a worker process). Release builds ignore it.
+pub const EXPORT_HOLDS_SESSION_SEAM_ENV: &str = "PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION";
+
+/// Write one export's `body` to `file_path`, creating its directory, and
+/// return the path as the response carries it.
+fn write_export(file_path: &Path, body: &str) -> Result<String> {
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    std::fs::write(file_path, body).with_context(|| format!("writing {}", file_path.display()))?;
+    Ok(file_path.to_string_lossy().into_owned())
 }
 
 /// The export's custom-tool renderer: resolves a tool by name against the
@@ -271,7 +303,7 @@ mod tests {
         let core = Arc::new(Mutex::new(core_with_session(dir.path())));
         let engine: Arc<dyn SessionEngine> = Arc::new(crate::engine::ScriptedEngine::default());
         let exports = ExportCommands::new(engine, core, dir.path().join("agent"));
-        let response = exports.export_jsonl(&json!({}));
+        let response = exports.export_jsonl(&json!({})).await;
         assert!(response.success, "export failed: {:?}", response.error);
         let path = response
             .data
@@ -293,6 +325,50 @@ mod tests {
         let second: Value = serde_json::from_str(lines[2]).expect("second entry");
         assert_eq!(second["id"], "e2");
         assert_eq!(second["parentId"], "e1");
+    }
+
+    /// A target that takes no bytes (a pipe nobody reads) holds the export
+    /// alone: the session's state stays free for everything else meanwhile.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_stalled_export_target_leaves_the_session_state_free() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let core = Arc::new(Mutex::new(core_with_session(dir.path())));
+        let engine: Arc<dyn SessionEngine> = Arc::new(crate::engine::ScriptedEngine::default());
+        let exports = Arc::new(ExportCommands::new(
+            engine,
+            Arc::clone(&core),
+            dir.path().join("agent"),
+        ));
+        let pipe = dir.path().join("stalled.pipe");
+        let made = std::process::Command::new("mkfifo").arg(&pipe).status();
+        assert!(made.is_ok_and(|status| status.success()), "mkfifo failed");
+        let exporting = {
+            let (exports, pipe) = (Arc::clone(&exports), pipe.clone());
+            tokio::spawn(async move {
+                exports
+                    .export_jsonl(&json!({ "outputPath": pipe.display().to_string() }))
+                    .await
+            })
+        };
+        // Opening the read end returns once the export holds the write end.
+        let mut reader = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::fs::File::open(&pipe),
+        )
+        .await
+        .expect("the export never opened its target")
+        .expect("open the pipe's read end");
+        let state_free = core.try_lock().is_ok();
+        let mut body = String::new();
+        tokio::io::AsyncReadExt::read_to_string(&mut reader, &mut body)
+            .await
+            .expect("drain the export");
+        let response = exporting.await.expect("export task");
+        assert_eq!(
+            (state_free, response.success, body.lines().count()),
+            (true, true, 3)
+        );
     }
 
     #[tokio::test]

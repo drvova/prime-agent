@@ -34,7 +34,9 @@ fn shared() -> &'static Mutex<HashMap<Option<PathBuf>, Arc<ModelCatalog>>> {
 /// Panics if the shared catalog registry mutex is poisoned.
 pub fn catalog_for(models_json_path: Option<&Path>) -> Arc<ModelCatalog> {
     let key = models_json_path.map(models_dir);
-    let mut shared = shared().lock().unwrap();
+    let mut shared = shared()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Arc::clone(
         shared
             .entry(key.clone())
@@ -51,7 +53,7 @@ pub fn catalog_for(models_json_path: Option<&Path>) -> Arc<ModelCatalog> {
 pub fn install_catalog(models_json_path: &Path, catalog: Arc<ModelCatalog>) {
     shared()
         .lock()
-        .unwrap()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .insert(Some(models_dir(models_json_path)), catalog);
 }
 

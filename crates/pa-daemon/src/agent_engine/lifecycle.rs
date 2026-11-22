@@ -265,6 +265,24 @@ impl AgentSessionEngine {
             self.retire_handles();
             return Err(error);
         }
+        // Every build starts on a new kernel engine: a session whose adopted
+        // transcript shows kernel use since it was last told (a rebuild after
+        // a crash or a stuck cell, a revival after a daemon restart, a plain
+        // resume) is told once, ahead of its next turn. The engine's own
+        // build-time check cannot see this: its session is in memory and
+        // empty until the adoption above.
+        let adopted = built
+            .session
+            .shared_persistence()
+            .lock()
+            .await
+            .active_context()
+            .messages;
+        if let Some(row) =
+            pa_core::session_engine::state_restore_notice::notice_for_resumed(&adopted)
+        {
+            built.session.queue_next_turn_row(row);
+        }
         self.session.lock().await.replace(built);
         Ok(())
     }
@@ -476,7 +494,7 @@ impl AgentSessionEngine {
             })
             .or(shared_branch.as_deref());
         let mut admitted_user_ids = Vec::new();
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.lazy_restore_boundary",
                 &serde_json::json!({
@@ -535,7 +553,7 @@ impl AgentSessionEngine {
             }
             None => None,
         };
-        if std::env::var_os("PA_COMPACTION_TRACE").is_some() {
+        if pa_types::session_scope::var_os("PA_COMPACTION_TRACE").is_some() {
             pa_core::session_engine::compaction_trace::trace(
                 "daemon.lazy_restore_context",
                 &serde_json::json!({
@@ -1072,7 +1090,7 @@ impl AgentSessionEngine {
             model: Some(agent_model),
             thinking_level: Some(map_thinking_level(self.effective_thinking())),
             stream_fn: Some(stream_fn),
-            // Model tools: `python_repl` only; the engine adds the kernel-backed `python_repl` tool itself.
+            // Model tools: `eval` only; the engine adds the kernel-backed `eval` tool itself.
             tools: vec![],
             custom_system_prompt: create_resources.system_prompt,
             prompt_guidelines: create_resources.append_system_prompt,
@@ -1098,8 +1116,7 @@ impl AgentSessionEngine {
             daemonless: false,
             model_info: Some(model.clone()),
             // Prewarm at every depth: a subagent worker's kernel boots during its first model call.
-            kernel_ready_gate: None,
-            prewarm_ipython_kernel: Some(true),
+            prewarm_kernel: Some(true),
             on_background_work_settled,
             bash_notice_wake: None,
             // The worker-installed purge withdraws queued minted continuations.

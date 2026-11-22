@@ -138,7 +138,9 @@ fn apply_cache_hints(
 ) {
     if options.cache_retention.is_none() {
         options.cache_retention = policy::request_cache_retention(
-            std::env::var(policy::CACHE_RETENTION_ENV).ok().as_deref(),
+            pa_types::session_scope::var(policy::CACHE_RETENTION_ENV)
+                .ok()
+                .as_deref(),
             retention,
         );
     }

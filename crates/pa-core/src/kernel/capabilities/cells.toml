@@ -1,0 +1,14 @@
+internal_host_requests = ["cell.completed", "cell.consumed"]
+
+[[telemetry]]
+event = "agent repl background cells"
+properties = [
+  "cell_backgrounded_count",
+  "cell_background_ok_count",
+  "cell_background_error_count",
+  "cell_background_interrupted_count",
+  "cell_window_learned_count",
+  "cell_window_timeout_count",
+  "cell_window_setting_count",
+  "cell_window_default_count",
+]

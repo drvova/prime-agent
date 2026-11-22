@@ -1,7 +1,7 @@
 use super::compact_session::CompactOutcome;
 use super::{
-    compaction, compaction_trace, ipython_state, provider_adapter, rebuilt_loop_messages, refine,
-    session_message_to_loop, standard_message, AgentMessage, AgentSession, FileEntry,
+    compaction, compaction_trace, kernel_state_notice, provider_adapter, rebuilt_loop_messages,
+    refine, session_message_to_loop, standard_message, AgentMessage, AgentSession, FileEntry,
     SessionAgentMessage, TrailingAssistantFilter,
 };
 
@@ -226,14 +226,18 @@ impl AgentSession {
         // `/compact` preparing (update mode) instead of skipping.
         let kernel_state = match self.kernel_state.as_ref() {
             Some(probe) => {
-                ipython_state::sync_after_compaction(probe.as_ref(), &self.session, &self.agent)
-                    .await?
+                kernel_state_notice::sync_after_compaction(
+                    probe.as_ref(),
+                    &self.session,
+                    &self.agent,
+                )
+                .await?
             }
             None => None,
         };
         let notice_landed = kernel_state.is_some();
         if let CompactOutcome::Ran(run) = &mut outcome {
-            run.ipython_state = kernel_state;
+            run.kernel_state = kernel_state;
         }
         compaction_trace::trace(
             "compact.returned",
@@ -335,7 +339,7 @@ impl AgentSession {
                         result: prepared.result,
                         entry: prepared.entry,
                         duration_ms: started_at.elapsed().as_millis() as u64,
-                        ipython_state: None,
+                        kernel_state: None,
                     },
                 )));
             }

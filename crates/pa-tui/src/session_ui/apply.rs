@@ -39,6 +39,7 @@ impl SessionUi {
             ConnectionEffect::ErrorRow(text) => self.error_row(text, view),
             ConnectionEffect::None
             | ConnectionEffect::Connect { .. }
+            | ConnectionEffect::Launch
             | ConnectionEffect::Attach(_) => {}
         }
         if let ConnectionEffect::Exit { reason, .. } = &effect {
@@ -49,6 +50,7 @@ impl SessionUi {
                 effect,
                 ConnectionEffect::None
                     | ConnectionEffect::Connect { .. }
+                    | ConnectionEffect::Launch
                     | ConnectionEffect::Attach(_)
             )
         {
@@ -495,6 +497,16 @@ impl SessionUi {
             TurnUpdate::CustomRow(entry) => {
                 view.push_entry(entry);
             }
+            // The daemon's report on this session's health lands in the transcript where it
+            // happened; the count is handed off and never awaited here.
+            TurnUpdate::SessionFault(fault) => {
+                view.push_entry(crate::crash_notice::fault_row(&fault));
+                crate::crash_notice::report_shown(
+                    self.telemetry.as_ref(),
+                    crate::crash_notice::fault_kind(&fault),
+                );
+                self.dirty = true;
+            }
             // A recovered episode this client watched leaves the nc-style receipt with the
             // wait it measured; a replayed or unwatched one keeps the daemon's row text.
             TurnUpdate::RetryRecovered {
@@ -537,18 +549,22 @@ impl SessionUi {
                 // reticks the settled id on this run's paints, so it lands
                 // on nothing too.
                 if !self.aborted_tools.contains(&tool_call_id) && self.turn_active {
-                    // The live label is the call's title: a python cell's preview (a `%%bash`
-                    // cell previews its command), else the tool's name.
-                    let title = if pa_types::ai::is_python_tool_name(&tool_name) {
-                        let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
-                        let preview = crate::code_preview::preview_ipython_code(code);
-                        if preview.text.is_empty() {
-                            tool_name.clone()
-                        } else {
-                            preview.text
+                    // The live label is the call's title: a kernel cell's preview (a Python
+                    // `%%bash` cell previews its command), else the tool's name.
+                    let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
+                    let preview = match pa_types::ai::kernel_tool_language(&tool_name) {
+                        Some(pa_types::ai::KernelLanguage::Scheme) => {
+                            crate::code_preview::preview_scheme_code(code)
                         }
-                    } else {
+                        Some(pa_types::ai::KernelLanguage::Python) => {
+                            crate::code_preview::preview_ipython_code(code).text
+                        }
+                        None => String::new(),
+                    };
+                    let title = if preview.is_empty() {
                         tool_name.clone()
+                    } else {
+                        preview
                     };
                     let title =
                         crate::width::truncate_to_width(&title, TOOL_LABEL_MAX_WIDTH, "\u{2026}");
@@ -1267,10 +1283,10 @@ impl SessionUi {
         });
     }
 
-    /// `tui ipython bash rendered`: the settled ipython card that renders
+    /// `tui ipython bash rendered`: the settled kernel cell card that renders
     /// as bash reports its bash share, primitives only.
     fn track_ipython_bash_rendered(&self, card: &crate::tool_card::ToolCallCard) {
-        if !pa_types::ai::is_python_tool_name(&card.name) {
+        if !pa_types::ai::is_kernel_tool_name(&card.name) {
             return;
         }
         let Some(stats) = crate::tool_card::ipython::bash_dominated_stats(card) else {

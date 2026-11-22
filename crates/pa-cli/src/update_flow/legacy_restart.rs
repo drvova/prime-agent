@@ -398,10 +398,6 @@ async fn boot_roster(
     let successor = wait_for_hello(socket, budget.boot_ms)
         .await
         .context("replacement daemon did not start")?;
-    anyhow::ensure!(
-        successor.pid == spawned_pid,
-        "a different daemon won the socket during migration"
-    );
     let (replacement, _events) = pa_tui::daemon_client::DaemonClient::connect(socket).await?;
     let replacement_hello = replacement.hello().clone();
     replacement.close();
@@ -439,8 +435,14 @@ fn validate_successor(hello: &Value, pid: u64, version: &str) -> Result<()> {
         hello.get("appVersion").and_then(Value::as_str) == Some(version)
             && hello.get("schemaId").and_then(Value::as_str)
                 == Some(pa_types::daemon::DAEMON_SCHEMA_ID)
-            && hello.get("supervisorPid").and_then(Value::as_u64) == Some(pid),
-        "replacement daemon does not match the spawned process and installed release"
+            // The spawned process is the daemon's restart owner where one exists, and the
+            // daemon itself otherwise.
+            && hello
+                .get("keeperPid")
+                .or_else(|| hello.get("supervisorPid"))
+                .and_then(Value::as_u64)
+                == Some(pid),
+        "replacement daemon does not match the spawned process and installed release (a different daemon won the socket during migration?)"
     );
     Ok(())
 }

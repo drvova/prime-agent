@@ -36,6 +36,23 @@ impl Worker {
         }
         let session_path = match payload.get("sessionPath").and_then(Value::as_str) {
             Some(path) => match paths::expand_tilde(path) {
+                // A relative path names a file under the session's own
+                // working directory, never the daemon process's.
+                Ok(expanded) if expanded.is_relative() => {
+                    match pa_types::session_scope::current_dir() {
+                        Ok(cwd) => Some(cwd.join(expanded)),
+                        Err(error) => {
+                            return response_failure(
+                                None,
+                                "create",
+                                &format!(
+                                "resolve the session path against the working directory: {error}"
+                            ),
+                                None,
+                            )
+                        }
+                    }
+                }
                 Ok(expanded) => Some(expanded),
                 Err(error) => return response_failure(None, "create", &error.to_string(), None),
             },
@@ -595,6 +612,7 @@ impl Worker {
             // The restored lanes carry their suspension: a user-aborted queue
             // revives still parked, never auto-running its prompts.
             core.queued_input_suspended = restored_suspended;
+            core.suspension_carried_over = restored_suspended;
             // A resumed session's tool counter re-seeds from its file: a
             // revived worker keeps the count its roster rows carried.
             core.tool_use_count = store.tool_call_count();
@@ -614,6 +632,55 @@ impl Worker {
                             .is_err()
                     {
                         interrupted_compaction_persisted = false;
+                    }
+                }
+            }
+            // The fault this lifetime was rebuilt after (the supervisor's create replay
+            // names it): the transcript keeps what the attached clients were shown
+            // live. The fault's own time identifies its rows, so a replayed create
+            // adds nothing.
+            if let (Some(Ok(crash)), Some(store)) = (
+                payload.get("sessionCrash").map(|crash| {
+                    serde_json::from_value::<crate::session_host::SessionCrash>(crash.clone())
+                }),
+                core.store.as_mut(),
+            ) {
+                let already_kept = store.entries().iter().any(|entry| {
+                    entry.type_ == "custom_message"
+                        && entry.fields["customType"] == pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE
+                        && entry.fields["details"]["at"] == crash.at.as_str()
+                });
+                let rows = [
+                    (
+                        json!({
+                            "type": "session_crashed",
+                            "kind": crash.kind,
+                            "message": crash.message,
+                            "location": crash.location,
+                            "thread": crash.thread,
+                            "at": crash.at,
+                        }),
+                        crash.reason(),
+                        crash.at,
+                    ),
+                    (
+                        json!({ "type": "session_recovered" }),
+                        "Session recovered: it was rebuilt from its transcript.".to_string(),
+                        crate::util::now_iso(),
+                    ),
+                ];
+                for (event, content, timestamp) in rows.into_iter().filter(|_| !already_kept) {
+                    if let Err(error) = store.persist_entry_at(
+                        "custom_message",
+                        json!({
+                            "customType": pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE,
+                            "content": content,
+                            "display": true,
+                            "details": event,
+                        }),
+                        &timestamp,
+                    ) {
+                        eprintln!("pa-daemon: the session's fault row was not saved: {error:#}");
                     }
                 }
             }

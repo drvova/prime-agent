@@ -95,6 +95,7 @@ pub struct DaemonEventMeta {
 
 pub mod agent_roster;
 mod command;
+mod crash;
 pub mod framing;
 pub mod herdr_env;
 pub mod launch_env;
@@ -108,6 +109,10 @@ pub use command::{
     CycleDirection, DaemonCommand, DaemonCommandEnvelope, DaemonCommandFrameType,
     DaemonCommandWire, DaemonSessionLifecycle, ForkPosition, PromptInput, StreamingBehavior,
     TranscriptPage,
+};
+pub use crash::{
+    DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent, SessionFaultState,
+    SESSION_FAULT_CUSTOM_TYPE,
 };
 pub use outbound::{
     DaemonClosingReason, DaemonErrorInfo, DaemonEventEnvelope, DaemonOutbound,

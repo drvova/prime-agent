@@ -18,15 +18,17 @@ static SINK: OnceLock<Sink> = OnceLock::new();
 static START: OnceLock<Instant> = OnceLock::new();
 
 fn sink() -> &'static Sink {
-    SINK.get_or_init(|| match std::env::var("PA_COMPACTION_TRACE") {
-        Err(_) => Sink::Off,
-        Ok(value) if value == "1" || value == "stderr" => Sink::Stderr,
-        Ok(path) => std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_or(Sink::Off, |file| Sink::File(std::sync::Mutex::new(file))),
-    })
+    SINK.get_or_init(
+        || match pa_types::session_scope::var("PA_COMPACTION_TRACE") {
+            Err(_) => Sink::Off,
+            Ok(value) if value == "1" || value == "stderr" => Sink::Stderr,
+            Ok(path) => std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_or(Sink::Off, |file| Sink::File(std::sync::Mutex::new(file))),
+        },
+    )
 }
 
 /// One phase boundary: `phase` names it (dotted `surface.stage[.what]`);

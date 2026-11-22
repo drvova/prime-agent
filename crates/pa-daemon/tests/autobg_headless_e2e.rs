@@ -1,12 +1,10 @@
-//! Bounded bash await, headless e2e: a `python_repl` tool call that does a
-//! blocking `await bash(...)` keeps the turn moving instead of wedging it,
-//! with NO override — the kernel bootstrap's default wiring (the
-//! bash.completed host handler flips the runtime's bounded default on) is
-//! the thing under test.
+//! Bounded bash wait, headless e2e: an `eval` tool call whose `bash` waits
+//! on a command that outlives its window keeps the turn moving instead of
+//! wedging it.
 //!
-//! The mock provider scripts the turn: request 1 calls `python_repl` with a
-//! one-shot `await bash('sleep 5; echo ...').wait(1)`. The await degrades at
-//! its 1s window: the tool result carries the still-running handle, and the
+//! The mock provider scripts the turn: request 1 calls `eval` with a
+//! `(bash "sleep 5; echo ..." (hash 'wait-ms 1000))`. The wait ends at its
+//! 1s window: the tool result carries the still-running snapshot, and the
 //! turn settles while the command keeps running. Its `[bash-done ...]`
 //! notice then wakes the idle session. Everything is asserted by transcript
 //! event ORDER, not wall-clock caps.
@@ -52,31 +50,6 @@ impl Drop for Daemon {
     fn drop(&mut self) {
         common::reap_tree(&mut self.child);
     }
-}
-
-/// The kernel Python with prime-agent-runtime installed; `PA_E2E_KERNEL_PYTHON` overrides.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping bounded-await e2e",
-        candidate.display()
-    );
-    None
 }
 
 /// The sequential mock: one SSE answer per request in order.
@@ -128,8 +101,8 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the python_repl tool call that
-    // runs the bounded one-shot await, request 2 ends the turn, every later
+    // The scripted sequence: request 1 answers the eval tool call that
+    // runs the bounded wait, request 2 ends the turn, every later
     // request the woken reply.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
@@ -144,8 +117,11 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "id": "call-bounded-1",
                         "type": "function",
                         "function": {
-                            "name": "python_repl",
-                            "arguments": "{\"code\": \"from rlm import bash\\nres = await bash('sleep 5; echo BOUNDED_AWAIT_E2E_DONE').wait(1)\\nres\"}"
+                            "name": "eval",
+                            "arguments": json!({
+                                "code": "(bash \"sleep 5; echo BOUNDED_AWAIT_E2E_DONE\" (hash 'wait-ms 1000))",
+                            })
+                            .to_string(),
                         }
                     }]
                 }),
@@ -264,7 +240,7 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -283,34 +259,22 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
         );
-    if let Some(kernel_python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", kernel_python);
-    }
-    let child = command
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 #[test]
 fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let root = tempfile::TempDir::new().expect("temp dir");
     let dir = root.path().to_path_buf();
     let agent_dir = dir.join("agent");
@@ -341,7 +305,7 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     )
     .expect("write models.json");
 
-    let supervisor = spawn_daemon(&socket, &agent_dir, Some(&kernel_python));
+    let supervisor = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -365,25 +329,24 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
         .expect("active session id")
         .to_string();
 
-    // THE TURN: the tool call awaits a 5s command; the
-    // default wiring must degrade the await and settle the turn while the
-    // command is still running.
+    // THE TURN: the tool call waits on a 5s command; the wait must end at
+    // its window and the turn settle while the command is still running.
     let turn = client.request(
         "p1",
         &json!({
             "type": "prompt_and_wait",
             "activeSessionId": active_id,
-            "message": "run the blocking await and finish",
+            "message": "run the bounded wait and finish",
         }),
     );
     assert_eq!(turn["success"], true, "turn failed: {turn}");
 
-    // Event ORDER, part 1 — the tool result shows the RUNNING snapshot (the
-    // degrade hint rides the same stderr lane) and the turn settled before
-    // the command finished: no completed-result repr anywhere yet.
+    // Event ORDER, part 1 — the tool result shows the RUNNING snapshot (its
+    // note says how to collect the result) and the turn settled before the
+    // command finished: no completed result anywhere yet.
     let after_turn = client.messages(&active_id);
     let snapshot = after_turn
-        .find("<BashSnapshot running pid=")
+        .find("'running: #true")
         .expect("the tool result never showed the running snapshot");
     let turn_end = after_turn
         .find("turn complete")
@@ -393,12 +356,12 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
         "the running-snapshot tool result must precede the turn's end: {after_turn}"
     );
     assert!(
-        !after_turn.contains("BashResult("),
-        "the await blocked to completion instead of degrading: {after_turn}"
+        !after_turn.contains("'exit-code: 0"),
+        "the wait ran to completion instead of ending at its window: {after_turn}"
     );
     assert!(
-        after_turn.contains("still running after"),
-        "the budgeted degrade hint never reached the tool result: {after_turn}"
+        after_turn.contains("still running after 1s"),
+        "the snapshot's note never reached the tool result: {after_turn}"
     );
 
     // Event ORDER, part 2 — the command finishes past the turn, and its

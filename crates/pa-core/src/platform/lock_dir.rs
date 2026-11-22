@@ -681,7 +681,9 @@ mod tests {
         let file = dir.path().join("harness_state.json");
         let old =
             LockDir::acquire_owned_retrying(&file, Duration::from_secs(10), 1, MIN_STALE).unwrap();
-        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let mut child = pa_types::session_scope::std_command("true")
+            .spawn()
+            .unwrap();
         let dead_pid = child.id();
         child.wait().unwrap();
         fs::write(old.path.join("owner"), format!("{dead_pid} dead-token\n")).unwrap();

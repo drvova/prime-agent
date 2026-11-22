@@ -282,6 +282,14 @@ pub enum DaemonOutbound {
         /// reconnecting client knows whether to queue its attach. Rust-only extension.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_resume: Option<crate::daemon::update_flow::DaemonUpdateResume>,
+        /// The death this daemon was started after, when its restart owner started it
+        /// because its predecessor died (or the owner before it gave up). Rust-only extension.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        daemon_death: Option<crate::daemon::DaemonDeathRecord>,
+        /// The process that restarts this daemon when it dies abnormally; absent when nothing
+        /// does. Rust-only extension.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        keeper_pid: Option<u64>,
         client_id: DaemonClientId,
         server_capabilities: Vec<DaemonServerCapability>,
         #[serde(flatten)]

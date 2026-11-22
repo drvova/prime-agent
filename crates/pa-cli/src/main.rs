@@ -12,6 +12,16 @@ fn main() {
     if args.first().map(String::as_str) != Some("worker") {
         pa_daemon::worker::strip_inherited_worker_env();
     }
+    // Still single-threaded: a kept daemon launch splits into the daemon and its restart
+    // owner here (a launch written any other way is kept all the same, one program start
+    // later); any other process sheds the owner's hand-off.
+    pa_daemon::keeper::enter(
+        args.windows(2)
+            .any(|pair| pair[0] == "--mode" && pair[1] == "daemon"),
+    );
+    // Still single-threaded: the Scheme interpreter's own directory moves
+    // under the agent directory before anything can build an engine.
+    pa_core::kernel::pin_scheme_home();
     let code = pa_cli::main_with_runtime(&args, &pa_cli::PrintRuntime);
     // Restore the Windows VT bit before process exit.
     pa_types::platform::console_restore();

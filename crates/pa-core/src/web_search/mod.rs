@@ -1,7 +1,6 @@
 //! Native web search: one engine, shared by every kernel, session, and
-//! subagent of the process, that the Python REPL reaches through the
-//! `web.search` host request (`rlm.web.search(...)` in the kernel, and the
-//! bundled websearch skill on top of it).
+//! subagent of the process, that a kernel cell reaches through the
+//! `web.search` host request (`(web-search ...)` in the kernel).
 //!
 //! The design: a provider catalog
 //! ([`ProviderId`]) over keyed APIs and keyless engines, the `auto` chain that
@@ -204,7 +203,7 @@ impl Credentials {
         for provider in ProviderId::ALL {
             match provider.access() {
                 ProviderAccess::ApiKey { env, .. } => {
-                    let ambient = std::env::var(env)
+                    let ambient = pa_types::session_scope::var(env)
                         .ok()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());
@@ -221,7 +220,7 @@ impl Credentials {
                     }
                 }
                 ProviderAccess::Endpoint { env } => {
-                    credentials.searxng_endpoint = std::env::var(env)
+                    credentials.searxng_endpoint = pa_types::session_scope::var(env)
                         .ok()
                         .map(|value| value.trim().to_string())
                         .filter(|value| !value.is_empty());

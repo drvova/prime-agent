@@ -81,13 +81,7 @@ impl Installation {
 pub const MANAGED_MARKER: &str = "prime-agent-native-v1";
 
 /// The payload every staged release must carry.
-pub const RELEASE_ASSETS: &[&str] = &[
-    "prime-agent",
-    "prime-agent-runtime",
-    "skills",
-    "LICENSE",
-    "README.md",
-];
+pub const RELEASE_ASSETS: &[&str] = &["prime-agent", "skills", "LICENSE", "README.md"];
 
 /// The launcher symlink names under `<root>/bin/`.
 pub const CURRENT_LAUNCHER: &str = "prime-agent";

@@ -345,7 +345,7 @@ fn resolve_path(dir: &Path) -> PathBuf {
     let joined = if dir.is_absolute() {
         dir.to_path_buf()
     } else {
-        std::env::current_dir()
+        pa_types::session_scope::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(dir)
     };

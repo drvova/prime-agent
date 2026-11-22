@@ -1,8 +1,11 @@
 //! Worker session-end kernel disposal e2e (TS `closeSession` parity): every session-end path
-//! (`kill`, daemon `shutdown`, supervisor SIGKILL) must call `AgentSessionEngine::dispose_kernel`
-//! explicitly — a process exit runs no destructors, so a surviving kernel is orphaned forever.
-//! The process-table scans diff against a baseline (ambient kernels never interfere).
-// The kernel census scans /proc: Linux only.
+//! a live daemon runs (`kill`, daemon `shutdown`) must call `AgentSessionEngine::dispose_kernel`
+//! explicitly, and a daemon that was killed outright disposes nothing, so the next boot reaps what
+//! its sessions journalled. The kernel is an engine inside the daemon, but the shell commands
+//! its cells start are processes of their own: a command that survives its session is
+//! orphaned forever. Each test starts one in the background from a scripted `eval` cell and
+//! watches that process.
+// Process liveness is read from /proc: Linux only.
 #![cfg(target_os = "linux")]
 
 mod common;
@@ -11,102 +14,27 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The three tests scan the whole process table, so this std lock serializes them.
-static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-fn test_lock() -> MutexGuard<'static, ()> {
-    TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+/// Whether process `pid` still runs (a zombie waiting for its reaper has ended).
+fn is_running(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+        // The state follows the parenthesized command name.
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z'))
+    })
 }
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel-dispose e2e",
-        candidate.display()
-    );
-    None
-}
-
-/// Every live `python -m rlm.repl` pid on the box (ambient kernels are part of the baseline).
-fn kernel_pids() -> Vec<u32> {
-    let mut found = Vec::new();
-    let entries = std::fs::read_dir("/proc").unwrap_or_else(|e| panic!("read /proc: {e}"));
-    for entry in entries.flatten() {
-        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(cmdline) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) else {
-            continue;
-        };
-        // The kernel is spawned as `python -m rlm.repl` (NUL-separated argv): the adjacent
-        // pair avoids matching an unrelated process that merely mentions the module.
-        let args: Vec<&str> = cmdline.split('\0').collect();
-        if args.windows(2).any(|window| window == ["-m", "rlm.repl"]) {
-            found.push(pid);
-        }
-    }
-    found.sort_unstable();
-    found
-}
-
-/// Poll until at least one kernel pid exists outside `baseline`.
-fn await_new_kernel(baseline: &[u32], budget: Duration) -> Vec<u32> {
+/// Poll until the session's background command is gone: the session-end dispose under
+/// test. A survivor past the budget is the leak this test exists to catch.
+fn await_command_gone(pid: u32, budget: Duration) {
     let deadline = Instant::now() + budget;
-    loop {
-        let fresh: Vec<u32> = kernel_pids()
-            .into_iter()
-            .filter(|pid| !baseline.contains(pid))
-            .collect();
-        if !fresh.is_empty() {
-            return fresh;
-        }
+    while is_running(pid) {
         assert!(
             Instant::now() < deadline,
-            "no kernel process appeared within the budget (baseline {baseline:?})"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Poll until no kernel pid exists outside `baseline` — the session-end dispose under test;
-/// a survivor past the budget is the leak this test exists to catch.
-fn await_kernels_gone(baseline: &[u32], budget: Duration) {
-    let deadline = Instant::now() + budget;
-    loop {
-        let fresh: Vec<u32> = kernel_pids()
-            .into_iter()
-            .filter(|pid| !baseline.contains(pid))
-            .collect();
-        if fresh.is_empty() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "kernel processes {fresh:?} outlived the session-end path (missing dispose)"
+            "the session's background command (pid {pid}) outlived the session-end path (missing dispose)"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -123,12 +51,7 @@ impl Drop for Daemon {
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(
-    socket: &Path,
-    agent_dir: &Path,
-    kernel_python: &Path,
-    lost_window_ms: &str,
-) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, lost_window_ms: &str) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
@@ -139,7 +62,6 @@ fn spawn_supervisor(
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: point every fallback at the test sandbox.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
         .env_remove("PRIME_API_KEY")
@@ -235,15 +157,17 @@ impl Client {
     }
 }
 
-/// A faux script whose single turn runs one ipython cell that writes a receipt:
-/// proves the session built and its kernel executed real code.
+/// A faux script whose single turn runs one cell that starts a long command in the
+/// background. The command writes its own pid as a receipt first: proof that the session
+/// built, its kernel ran the cell, and the process to watch.
 fn write_faux_script(dir: &Path) -> PathBuf {
     let receipts_dir = dir.join("receipts");
     std::fs::create_dir_all(&receipts_dir).expect("receipts dir");
-    let receipt = receipts_dir.join("cell.json");
+    let receipt = receipts_dir.join("command.pid");
+    let command = format!("echo $$ > '{}'; exec sleep 3600", receipt.to_string_lossy());
     let cell = format!(
-        "open({receipt:?}, \"w\").write(\"kernel alive\")\nprint(\"kernel alive\")",
-        receipt = receipt.to_string_lossy(),
+        "(bash {} (hash 'background #t))",
+        serde_json::to_string(&command).expect("a Scheme string literal")
     );
     let script = dir.join("faux.json");
     std::fs::write(
@@ -252,7 +176,7 @@ fn write_faux_script(dir: &Path) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": cell,
                     } },
                 ] },
@@ -304,18 +228,20 @@ fn create_session_with_kernel(client: &mut Client, dir: &Path, script: &Path, id
     session_id
 }
 
-/// The cell's receipt proves the kernel executed code for the session.
-fn await_receipt(dir: &Path) {
-    let receipt = dir.join("receipts").join("cell.json");
+/// The pid of the background command the session's cell started, once it is running.
+fn await_command(dir: &Path) -> u32 {
+    let receipt = dir.join("receipts").join("command.pid");
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if let Ok(content) = std::fs::read_to_string(&receipt) {
-            assert_eq!(content, "kernel alive");
-            return;
+        let pid = std::fs::read_to_string(&receipt)
+            .ok()
+            .and_then(|content| content.trim().parse::<u32>().ok());
+        if let Some(pid) = pid.filter(|pid| is_running(*pid)) {
+            return pid;
         }
         assert!(
             Instant::now() < deadline,
-            "kernel cell receipt never appeared at {}",
+            "the cell's background command never wrote its pid to {}",
             receipt.display()
         );
         std::thread::sleep(Duration::from_millis(50));
@@ -324,25 +250,19 @@ fn await_receipt(dir: &Path) {
 
 #[test]
 fn kill_disposes_the_session_kernel() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    let _guard = test_lock();
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
+    let _daemon = spawn_supervisor(&socket, &agent_dir, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
 
-    // The session's kernel booted and executed the cell.
-    let kernels = await_new_kernel(&baseline, Duration::from_mins(2));
-    await_receipt(dir.path());
+    // The session's kernel ran the cell and its command is alive.
+    let command = await_command(dir.path());
 
     // User delete: the routed `kill` closes the session (the worker stops right after).
     client.send_command(
@@ -351,70 +271,62 @@ fn kill_disposes_the_session_kernel() {
     );
     let killed = client.read_response("k1");
     assert_eq!(killed["success"], true, "kill failed: {killed}");
-    let _ = kernels;
 
-    // The kernel died with the session: process exit never runs the
+    // The command died with the session: process exit never runs the
     // engine-drop teardown, so only the explicit dispose clears this.
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    await_command_gone(command, Duration::from_secs(90));
 }
 
 /// Daemon `shutdown` routes a `shutdown` to every worker: each disposes its kernel
 /// before its own process exit (no destructors run on `std::process::exit`).
 #[test]
 fn shutdown_disposes_session_kernels_before_the_worker_exits() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    let _guard = test_lock();
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "15000");
+    let _daemon = spawn_supervisor(&socket, &agent_dir, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let _session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
-    await_new_kernel(&baseline, Duration::from_mins(2));
-    await_receipt(dir.path());
+    let command = await_command(dir.path());
 
     // Daemon stop: the supervisor routes `shutdown` to the workers and exits.
     client.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client.read_response("sd");
     assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
 
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    await_command_gone(command, Duration::from_secs(90));
 }
 
+/// A daemon that is killed outright takes its sessions with it and disposes
+/// nothing, so a command a cell left running is orphaned. Each command is
+/// journalled before it starts; the next daemon on the socket reaps what the
+/// dead one's sessions journalled.
 #[test]
-fn orphan_exit_disposes_the_kernel_before_the_worker_exits() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    let _guard = test_lock();
+fn a_command_orphaned_by_the_daemons_death_is_reaped_at_the_next_boot() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let socket = dir.path().join("supervisor.sock");
     let script = write_faux_script(dir.path());
-    let baseline = kernel_pids();
 
-    // A short supervisor-lost window: the orphan exits quickly once the supervisor is gone.
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python, "5000");
+    let mut daemon = spawn_supervisor(&socket, &agent_dir, "15000");
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     let _session_id = create_session_with_kernel(&mut client, dir.path(), &script, "c1");
-    await_new_kernel(&baseline, Duration::from_mins(2));
-    await_receipt(dir.path());
+    let command = await_command(dir.path());
 
-    // Hard-kill the supervisor: no graceful stop runs, so the worker's
-    // supervisor-lost monitor is the only cleanup left.
     daemon.child.kill().expect("SIGKILL supervisor");
     let _ = daemon.child.wait();
+    assert!(
+        is_running(command),
+        "the command outlives the daemon that started it: only the next boot can end it"
+    );
 
-    // The orphaned worker exits on the lost window and disposes its kernel; the first check
-    // lands 1.5s after boot and the window is 5s, so 90s covers slow boxes.
-    await_kernels_gone(&baseline, Duration::from_secs(90));
+    let _next = spawn_supervisor(&socket, &agent_dir, "15000");
+    wait_socket_ready(&socket);
+    await_command_gone(command, Duration::from_secs(30));
 }

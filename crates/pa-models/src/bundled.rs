@@ -26,7 +26,7 @@ impl BundledAssets {
     /// identifier, kept for TS parity), else the executable's directory
     /// (launcher symlinks resolve through [`exe_dir_of`]).
     pub fn package_dir() -> PathBuf {
-        std::env::var_os("PI_PACKAGE_DIR")
+        pa_types::session_scope::var_os("PI_PACKAGE_DIR")
             .filter(|value| !value.is_empty())
             .map_or_else(
                 || {

@@ -1,7 +1,9 @@
-//! Direct-attach transport e2e: a client attaches through a supervisor-
-//! issued ticket, streams over the worker's OWN socket, survives a
-//! supervisor `kill -9` mid-stream, and reattaches after a restart; also
-//! verifies the peer gate (single-use grants, session-plane allowlist).
+//! Direct-attach transport e2e: a client attaches through a daemon-issued
+//! ticket and streams over the session's OWN socket. The session is hosted
+//! inside the daemon, so a daemon `kill -9` mid-stream ends the direct
+//! connection at once; the restarted daemon revives the session and a fresh
+//! ticket attaches to it again. Also verifies the peer gate (single-use
+//! grants, session-plane allowlist).
 #![allow(clippy::large_futures)]
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
@@ -49,20 +51,13 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
-        // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
-        // worker never cleans: keep them in the test's own dir.
+        // Session sockets land in `<TMPDIR>/prime-agent-<uid>/`, which a killed
+        // daemon never cleans: keep them in the test's own dir.
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // A supervisor killed at teardown must not leak its session workers: the worker's
-        // supervisor-lost exit (TS `exitIfSupervisorOrphanedForTooLong`) runs on this short
-        // window, not the 5-minute default.
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
         .spawn()
         .expect("spawn pa-daemon supervisor");
     Daemon {
@@ -151,6 +146,11 @@ impl Client {
 
 struct WorkerClient {
     stream: UnixStream,
+    /// Session events that arrived while a response was awaited. A turn's
+    /// first events can reach the socket before the response to the prompt
+    /// that started it, so [`Self::request`] keeps them for
+    /// [`Self::next_event`] instead of reading past them.
+    events: std::collections::VecDeque<Value>,
 }
 
 impl WorkerClient {
@@ -159,7 +159,10 @@ impl WorkerClient {
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .expect("set timeout");
-        let mut client = WorkerClient { stream };
+        let mut client = WorkerClient {
+            stream,
+            events: std::collections::VecDeque::new(),
+        };
         let (header, payload) = client.read_frame();
         assert_eq!(header["outboundType"], "daemon_hello", "worker hello");
         let hello: Value = serde_json::from_slice(&payload).expect("hello payload");
@@ -214,11 +217,18 @@ impl WorkerClient {
                 value["id"] = json!(request_id);
                 return value;
             }
+            if header["outboundType"].as_str() == Some("session_event") {
+                self.events
+                    .push_back(serde_json::from_slice(&body).expect("event payload"));
+            }
         }
     }
 
     /// The next session-event frame payload, or `None` once the connection closes.
     fn next_event(&mut self, timeout: Duration) -> Option<Value> {
+        if let Some(event) = self.events.pop_front() {
+            return Some(event);
+        }
         let deadline = Instant::now() + timeout;
         loop {
             assert!(Instant::now() < deadline, "timed out waiting for an event");
@@ -291,20 +301,23 @@ fn peer_auth(worker: &mut WorkerClient, ticket: &Value) -> Value {
 }
 
 #[test]
-fn direct_attach_ticket_streams_across_supervisor_kill9() {
+fn direct_attach_ends_with_a_killed_daemon_and_reattaches_to_the_revived_session() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
 
-    // Turn 1 is slow so it is streaming when the supervisor dies; turn 2 proves the reattach works.
+    // Turn 1 streams over the direct socket. Turn 2 is held open by its scripted delay, so
+    // it is in flight when the daemon dies; the revived session runs it again. Turn 3 proves
+    // the reattach works.
     let script_path = dir.path().join("script.json");
     std::fs::write(
         &script_path,
         json!({ "responses": [
-            { "text": "turn-1", "delayMs": 1500 },
-            { "text": "turn-2", "delayMs": 10 },
+            { "text": "turn-1", "delayMs": 10 },
+            { "text": "turn-2", "delayMs": 1500 },
+            { "text": "turn-3", "delayMs": 10 },
         ] })
         .to_string(),
     )
@@ -407,8 +420,7 @@ fn direct_attach_ticket_streams_across_supervisor_kill9() {
         "TS gate string"
     );
 
-    // Turn 1 streams over the DIRECT socket; the supervisor dies mid-stream and
-    // the stream must not even hiccup.
+    // Turn 1 streams over the DIRECT socket, to its end.
     let prompt = worker.request(
         "prompt",
         &json!({
@@ -418,66 +430,104 @@ fn direct_attach_ticket_streams_across_supervisor_kill9() {
         }),
     );
     assert_eq!(prompt["success"], true, "direct prompt failed: {prompt}");
-    // The accepted user message arrives as a message_start + message_end pair at turn
-    // start; the scripted reply arrives after its delayMs, so killing at the user row
-    // is still mid-turn.
-    let mut saw_message_start = false;
-    let event = loop {
+    let mut streamed = Value::Null;
+    loop {
         let event = worker
             .next_event(Duration::from_secs(10))
             .expect("event on the direct socket");
-        match event["event"]["type"].as_str() {
-            Some("message_start") if !saw_message_start => {
-                saw_message_start = true;
-                daemon.child.kill().expect("kill -9 supervisor");
-                let _ = daemon.child.wait();
-            }
-            Some("message_end") if event["event"]["message"]["role"] == "assistant" => {
-                break event;
-            }
-            _ => {}
+        if event["event"]["type"] == "message_end"
+            && event["event"]["message"]["role"] == "assistant"
+        {
+            streamed = event["event"]["message"]["content"].clone();
         }
-    };
-    assert!(saw_message_start, "the kill happened mid-stream");
+        if event["event"]["type"] == "agent_end" {
+            break;
+        }
+    }
     assert_eq!(
-        event["event"]["message"]["content"], "turn-1",
-        "the in-flight turn completed over the direct socket with the supervisor dead"
+        streamed, "turn-1",
+        "the turn streamed over the direct socket"
     );
-    let mut saw_turn_end = false;
-    while !saw_turn_end {
+
+    // Turn 2 has started and sits in its scripted delay when the daemon dies.
+    let prompt = worker.request(
+        "prompt",
+        &json!({
+            "type": "prompt",
+            "activeSessionId": session_id,
+            "message": "second turn",
+        }),
+    );
+    assert_eq!(prompt["success"], true, "direct prompt failed: {prompt}");
+    loop {
         let event = worker
             .next_event(Duration::from_secs(10))
-            .expect("turn end after the kill");
-        if event["event"]["type"] == "turn_end" {
-            saw_turn_end = true;
+            .expect("event on the direct socket");
+        if event["event"]["type"] == "agent_start" {
+            break;
+        }
+    }
+    daemon.child.kill().expect("kill -9 supervisor");
+    let _ = daemon.child.wait();
+    // The session lived in the daemon: the direct connection ends with it,
+    // at once, instead of leaving the client waiting on a turn that nothing
+    // will finish on this connection.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut rest = [0u8; 4096];
+    loop {
+        match worker.stream.read(&mut rest) {
+            // End of stream, or a reset: the connection is over.
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                assert!(
+                    Instant::now() < deadline,
+                    "the direct connection outlived the daemon that hosted its session"
+                );
+            }
+            Err(_) => break,
         }
     }
 
-    // Restart the supervisor on the same socket path; the roster rebuilds from the
-    // worker's re-registration.
+    // Restart the daemon on the same socket path: the boot revives the session that was
+    // mid-turn, under the same id, and starts its interrupted turn again.
     let mut daemon2 = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client2, _hello) = Client::connect(&socket);
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let roster = loop {
         client2.send_command("list", &json!({ "type": "list" }));
         let list = client2.read_response("list");
-        assert!(Instant::now() < deadline, "roster never rebuilt: {list}");
+        assert!(
+            Instant::now() < deadline,
+            "the session never came back: {list}\nlog: {}",
+            std::fs::read_to_string(pa_daemon::paths::daemon_log_path(&socket, &agent_dir))
+                .unwrap_or_default()
+        );
         let sessions = list["data"]["sessions"]
             .as_array()
             .cloned()
             .unwrap_or_default();
-        if sessions
-            .iter()
-            .any(|summary| summary["id"].as_str() == Some(session_id.as_str()))
-        {
+        if sessions.iter().any(|summary| {
+            summary["id"].as_str() == Some(session_id.as_str()) && summary["lifecycle"] == "live"
+        }) {
             break sessions;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
     assert_eq!(roster.len(), 1, "roster rebuilt with the same session");
+    client2.send_command(
+        "idle",
+        &json!({ "type": "wait_for_idle", "activeSessionId": session_id }),
+    );
+    let idle = client2.read_response("idle");
+    assert_eq!(idle["success"], true, "wait_for_idle failed: {idle}");
+    let identity = load_worker_identity(&agent_dir, &socket, &session_id);
 
-    // A NEW ticket for the same session from the restarted supervisor, and a fresh
+    // A NEW ticket for the same session from the restarted daemon, and a fresh
     // direct attach with it.
     let ticket2 = get_ticket(&mut client2, &session_id);
     assert_eq!(ticket2["activeSessionId"], session_id);
@@ -498,12 +548,51 @@ fn direct_attach_ticket_streams_across_supervisor_kill9() {
         }),
     );
     assert_eq!(attach2["success"], true, "reattach failed: {attach2}");
+    // How far the interrupted turn had been saved when the daemon died decides
+    // the death's wording ("started again" or "continues from what was saved")
+    // and whether a turn-interrupted row follows, so the conversation and the
+    // records are compared apart: each prompt once, the death and the recovery
+    // each recorded once.
+    let rows = attach2["data"]["snapshot"]["messages"]
+        .as_array()
+        .expect("snapshot messages");
+    let conversation: Vec<(Value, Value)> = rows
+        .iter()
+        .filter(|message| message["role"] != "custom")
+        .map(|message| (message["role"].clone(), message["content"].clone()))
+        .collect();
+    let recorded = |opening: &str| {
+        rows.iter()
+            .filter(|message| {
+                message["role"] == "custom"
+                    && message["content"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with(opening))
+            })
+            .count()
+    };
     assert_eq!(
-        attach2["data"]["snapshot"]["messages"]
-            .as_array()
-            .map(Vec::len),
-        Some(2),
-        "the snapshot carries the persisted first turn: {attach2}"
+        (
+            conversation,
+            recorded(
+                "Session crashed (daemon_restart): the daemon stopped while this session's turn \
+                 was running; the session was rebuilt from its transcript and the turn "
+            ),
+            recorded("Session recovered: it was rebuilt from its transcript."),
+        ),
+        (
+            vec![
+                (json!("user"), json!("first turn")),
+                (json!("assistant"), json!("turn-1")),
+                (json!("user"), json!("second turn")),
+                (json!("assistant"), json!("turn-2")),
+            ],
+            1,
+            1,
+        ),
+        "the snapshot carries the turn the dead daemon finished, the turn it was running \
+         brought to its end with its prompt saved once, and one record each of the daemon's \
+         death and the recovery: {rows:?}"
     );
 
     let prompt2 = worker2.request(
@@ -511,10 +600,13 @@ fn direct_attach_ticket_streams_across_supervisor_kill9() {
         &json!({
             "type": "prompt_and_wait",
             "activeSessionId": session_id,
-            "message": "second turn",
+            "message": "third turn",
         }),
     );
-    assert_eq!(prompt2["success"], true, "second prompt failed: {prompt2}");
+    assert_eq!(
+        prompt2["success"], true,
+        "the prompt after the reattach failed: {prompt2}"
+    );
     let answer = loop {
         let event = worker2
             .next_event(Duration::from_secs(10))
@@ -527,7 +619,7 @@ fn direct_attach_ticket_streams_across_supervisor_kill9() {
             break event["event"]["message"]["content"].clone();
         }
     };
-    assert_eq!(answer, "turn-2", "second scripted turn completed");
+    assert_eq!(answer, "turn-3", "the turn after the reattach completed");
 
     client2.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client2.read_response("sd");

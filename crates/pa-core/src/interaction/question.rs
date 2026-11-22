@@ -102,7 +102,7 @@ pub(super) async fn ask(
         let mut open = lock(&hub.question);
         if let Some(open) = open.as_ref() {
             bail!(
-                "another question (\"{}\") is still waiting for the user; await it before asking again",
+                "another question (\"{}\") is still waiting for the user; let it settle before asking again",
                 open.question.id
             );
         }

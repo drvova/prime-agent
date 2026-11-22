@@ -84,7 +84,7 @@ fn thinned_text(text: &str, call: &str) -> String {
     let head: String = chars[..240].iter().collect();
     let tail: String = chars[chars.len() - 120..].iter().collect();
     format!(
-        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: await rlm.session.tool_result(\"{call}\") ...]\n{tail}",
+        "{head}\n[... {} of {} chars of this older result thinned from the request; full text: (rlm-session-tool-result \"{call}\") ...]\n{tail}",
         chars.len() - 360,
         chars.len(),
     )
@@ -254,7 +254,7 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     );
     let pointer = result_text(&view.messages[2]);
     let call = pointer
-        .split("rlm.session.tool_result(\"")
+        .split("(rlm-session-tool-result \"")
         .nth(1)
         .and_then(|rest| rest.split('"').next())
         .expect("pointer names a tool call id");
@@ -431,10 +431,17 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
         let at = 2 + 2 * index;
         let original = result_text(&messages[at]);
         let chars: Vec<char> = original.chars().collect();
-        let head: String = chars[..240].iter().collect();
-        let tail: String = chars[chars.len() - 120..].iter().collect();
+        // The result's surprise-weighted preview (pinned by the preview's own
+        // tests), within the same 360-char budget, then its handle.
+        let preview = crate::kernel::spill::preview::build(
+            &original,
+            360,
+            &crate::kernel::spill::noise::NoiseSet::default(),
+        )
+        .expect("a 4,000-char result previews")
+        .text;
         let thinned = format!(
-            "{head}\n[out:{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]\n{tail}",
+            "{preview}\n[out:{} · {} chars · {} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
             content_id(&original),
             crate::kernel::spill::group_digits(chars.len()),
             original.lines().count(),
@@ -485,7 +492,7 @@ fn a_hanging_spill_writer_never_delays_the_thinned_view() {
     // Opening a FIFO for writing blocks until a reader opens it: the writer
     // thread's temp-file create for the first thinned result never returns.
     let fifo = spill_dir.join(format!("{}.tmp", content_id(&result_text(&messages[2]))));
-    let status = std::process::Command::new("mkfifo")
+    let status = pa_types::session_scope::std_command("mkfifo")
         .arg(&fifo)
         .status()
         .expect("mkfifo");

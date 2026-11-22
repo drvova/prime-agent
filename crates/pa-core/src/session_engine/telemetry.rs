@@ -40,17 +40,23 @@ mod track;
 pub use track::{
     track_catalog_refresh, track_compaction_abort_declared, track_daemon_event_summary,
     track_deleted_child_usage_captured, track_model_refused, track_provider_oauth_login,
-    track_sessions_imported, track_worker_adoption, track_worker_children_closed,
-    OAuthLoginSurface,
+    track_session_crashed, track_sessions_imported, track_worker_adoption,
+    track_worker_children_closed, OAuthLoginSurface,
 };
 
 mod classify;
 pub use classify::provider_category;
 
+mod capability_counts;
+use capability_counts::CapabilityCounts;
+
 mod edit_checks;
 mod error_enrichment;
 mod hypotheses;
+mod prefetch;
+mod previews;
 mod readonly_cache;
+mod rizin;
 mod symbol_index;
 mod test_summaries;
 
@@ -355,18 +361,6 @@ pub struct SessionCounters {
     telemetry_enabled: std::sync::OnceLock<Arc<dyn Fn() -> bool + Send + Sync>>,
 }
 
-/// The kernel `worktree` operations for one session (counts only).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct WorktreeCounts {
-    created: u64,
-    diffed: u64,
-    merged: u64,
-    branched: u64,
-    conflicted: u64,
-    removed: u64,
-    failed: u64,
-}
-
 /// `agent_message.wait` outcomes for one session (counts only).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct AgentMessageWaitCounts {
@@ -410,35 +404,15 @@ struct CounterValues {
     cache_savings_usd: f64,
     /// `feature_<name>_<outcome>_count` over the fixed feature vocabulary.
     feature_outcomes: std::collections::BTreeMap<String, u64>,
-    /// The kernel `todo.*`/`ask(...)` counters, reported by their own
-    /// `agent todos and questions` event.
-    interaction: InteractionCounts,
+    /// Every kernel capability's adoption counts, by the catalog property they report as (the
+    /// capability rule files in pa-telemetry): one generic counter for every capability event.
+    capabilities: CapabilityCounts,
     /// The `agent goal verification` counters.
     goal: GoalVerificationCounts,
-    /// The `/better` counters, reported by `agent better prompt`.
-    better: BetterCounts,
-    /// The kernel `web.read` counters, reported by `agent web reads`.
-    web_read: WebReadCounts,
     /// The provider layer's Responses transport counts, reported by `agent responses transport`.
     responses_transport: pa_ai::responses_transport::ResponsesTransportCounts,
     /// The worker process's endpoint discovery counts, reported by `agent endpoint discovery`.
     endpoint_discovery: pa_ai::responses_transport::DiscoveryCounts,
-    /// The kernel `fs.*` search counters, reported by `agent fs search`.
-    fs_search: FsSearchCounts,
-    /// The kernel `fs.read`/`fs.edit` counters, reported by `agent fs edit`.
-    fs_edit: FsEditCounts,
-    /// Whole-file re-reads of seen files, reported by `agent fs rereads`.
-    rereads: RereadCounts,
-    /// The kernel `schedule.*` counters, reported by `agent repl schedule`.
-    repl_schedule: ReplScheduleCounts,
-    /// The kernel `checkpoint.*` counters, reported by `agent repl checkpoint`.
-    repl_checkpoint: ReplCheckpointCounts,
-    /// Kernel `usage.get()` reads, reported by `agent usage reads`.
-    usage_read_count: u64,
-    /// The kernel `worktree` operations, reported by `agent worktrees`.
-    worktrees: WorktreeCounts,
-    /// Spills and `ctx.*` reads, reported by `agent context paging`.
-    context_paging: ContextPagingCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -447,213 +421,9 @@ struct CounterValues {
     agent_message_refusals: super::agent_messaging::AgentMessageRefusals,
     /// `agent_message.wait` outcomes, reported by `agent message waits`.
     agent_message_waits: AgentMessageWaitCounts,
-    /// The adaptive delegation depth bound's moves and the briefs scaled to it, reported by
-    /// `agent rlm delegation depth`.
-    rlm_depth: RlmDepthCounts,
-    /// The kernel `rlm.abort` counters, reported by `agent rlm child abort`.
-    rlm_abort: RlmAbortCounts,
-    /// The kernel `mcp.login` and `rlm.session.search` counters, reported by
-    /// `agent kernel login and recall`.
-    login_recall: LoginRecallCounts,
-    /// Kernel `notify(...)` pings and `model.set_effort(...)` calls, reported by `agent repl notify`.
-    notify_effort: NotifyEffortCounts,
-    /// Kernel `rlm.decide(...)` calls, reported by `agent repl decide`.
-    decisions: DecideCounts,
-    /// Kernel `rlm.reload()` and `settings.get()` calls, reported by `agent repl reload`.
-    repl_reload: ReplReloadCounts,
-    /// Cells that continued in the background, and where each cell's yield
-    /// window came from, reported by `agent repl background cells`.
-    background_cells: BackgroundCellCounts,
-    /// `fs.symbol` queries, reported by `agent symbol index`.
-    symbol_index: symbol_index::SymbolIndexCounts,
     /// Failed cells and commands given their error locations' source lines,
     /// reported by `agent error enrichment`.
     error_enrichment: error_enrichment::ErrorEnrichmentCounts,
-    /// Read-only command cache lookups, reported by `agent readonly cache`.
-    readonly_cache: readonly_cache::ReadonlyCacheCounts,
-    /// Finished `rlm.hypotheses` runs, reported by `agent repl hypotheses`.
-    hypotheses: hypotheses::HypothesesCounts,
-    /// The kernel's checks after edits, by outcome, reported by `agent edit checks`.
-    edit_checks: edit_checks::EditCheckCounts,
-    /// Awaited test runs the kernel summarized, reported by `agent test summaries`.
-    test_summaries: test_summaries::TestSummaryCounts,
-}
-
-/// `agent repl reload`: reloads, the skills they added, and settings reads.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ReplReloadCounts {
-    reloads: u64,
-    skills_added: u64,
-    settings_reads: u64,
-}
-
-/// `agent repl notify`: pings (and those nobody saw), and effort switches (applied and refused).
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct NotifyEffortCounts {
-    notified: u64,
-    undelivered: u64,
-    effort_set: u64,
-    effort_refused: u64,
-}
-
-/// `agent repl decide`: decisions made, refused at the per-cell bound, and failed.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct DecideCounts {
-    decided: u64,
-    limited: u64,
-    failed: u64,
-}
-
-/// `agent repl background cells`: cells that outlived their yield window, how they ended, and
-/// where each armed window came from.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct BackgroundCellCounts {
-    backgrounded: u64,
-    ended_ok: u64,
-    ended_with_error: u64,
-    interrupted: u64,
-    window_learned: u64,
-    window_timeout: u64,
-    window_setting: u64,
-    window_default: u64,
-}
-
-/// `agent rlm child abort`: aborts by outcome.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct RlmAbortCounts {
-    aborted: u64,
-    idle: u64,
-    failed: u64,
-}
-
-/// `agent rlm delegation depth`: the adaptive bound's raises and drops, and the brief-mode
-/// `better` runs whose depth followed the remaining bound.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct RlmDepthCounts {
-    raised: u64,
-    lowered: u64,
-    scaled_briefs: u64,
-}
-
-/// `agent kernel login and recall`: kernel MCP logins by outcome, and past-session searches,
-/// their hits, transcript reads, and failed recall calls.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct LoginRecallCounts {
-    login_ok: u64,
-    login_failed: u64,
-    login_unavailable: u64,
-    searches: u64,
-    search_hits: u64,
-    reads: u64,
-    recall_failed: u64,
-}
-
-/// `agent fs rereads`: whole-file re-reads of seen files shown as unchanged, as a diff, or whole.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct RereadCounts {
-    unchanged: u64,
-    diff: u64,
-    full: u64,
-}
-
-/// `agent fs edit`: anchored reads and lines shown, patches by outcome, edits applied, and stale
-/// anchors.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct FsEditCounts {
-    reads: u64,
-    read_lines: u64,
-    read_failed: u64,
-    applied: u64,
-    edits: u64,
-    rejected: u64,
-    stale_anchors: u64,
-    edit_failed: u64,
-}
-
-/// `agent context paging`: spills with their bytes, refusals, evictions, and `ctx.*` reads.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ContextPagingCounts {
-    spills: u64,
-    spill_bytes: u64,
-    not_stored: u64,
-    evicted: u64,
-    page: u64,
-    grep: u64,
-    tail: u64,
-    info: u64,
-}
-
-impl ContextPagingCounts {
-    /// The spilled bytes as a size bucket (never the size itself).
-    fn bytes_bucket(&self) -> &'static str {
-        const MB: u64 = 1024 * 1024;
-        match self.spill_bytes {
-            0 => "none",
-            bytes if bytes < MB => "lt_1mb",
-            bytes if bytes < 16 * MB => "lt_16mb",
-            bytes if bytes < 64 * MB => "lt_64mb",
-            bytes if bytes < 256 * MB => "lt_256mb",
-            _ => "ge_256mb",
-        }
-    }
-}
-
-/// `agent repl schedule`: jobs added by kind, listings, cancels, and refused calls.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ReplScheduleCounts {
-    added_once: u64,
-    added_recurring: u64,
-    listed: u64,
-    cancelled: u64,
-    rejected: u64,
-}
-
-/// `agent repl checkpoint`: checkpoints taken, listings, and restores by outcome.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct ReplCheckpointCounts {
-    created: u64,
-    listed: u64,
-    restored: u64,
-    restore_declined: u64,
-    restore_disabled: u64,
-    failed: u64,
-}
-
-/// `agent fs search`: calls by operation, failures, capped calls, results, and the slowest call.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct FsSearchCounts {
-    grep: u64,
-    glob: u64,
-    find: u64,
-    failed: u64,
-    truncated: u64,
-    results: u64,
-    max_ms: u64,
-}
-
-/// `agent web reads`: reads by outcome and kind, truncations, and the slowest read.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct WebReadCounts {
-    reads: u64,
-    failed: u64,
-    site: u64,
-    pdf: u64,
-    page: u64,
-    truncated: u64,
-    max_ms: u64,
-}
-
-/// `agent todos and questions`: lists set, items newly done, and questions by outcome.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-struct InteractionCounts {
-    todo_list_set: u64,
-    todo_item_done: u64,
-    question_asked: u64,
-    question_answered: u64,
-    question_declined: u64,
-    question_timed_out: u64,
-    question_no_user: u64,
-    question_cancelled: u64,
 }
 
 /// One goal verification or budget fact, counted into `agent goal verification`.
@@ -701,23 +471,6 @@ pub enum BetterTelemetryFact {
     CheckPassed,
     /// One acceptance check of a round failed.
     CheckFailed,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-struct BetterCounts {
-    runs: u64,
-    completed: u64,
-    cancelled: u64,
-    failed: u64,
-    sent_as_is: u64,
-    edited: u64,
-    discarded: u64,
-    brief_runs: u64,
-    brief_unchanged: u64,
-    verification_passes: u64,
-    check_rounds: u64,
-    checks_passed: u64,
-    checks_failed: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -790,24 +543,32 @@ impl SessionCounters {
                 .zip(&next.items)
                 .any(|(old, new)| old.id != new.id || old.text != new.text);
         self.with(|values| {
-            values.interaction.todo_list_set += u64::from(replaced);
-            values.interaction.todo_item_done += newly_done;
+            values
+                .capabilities
+                .add("todo_list_set_count", u64::from(replaced));
+            values.capabilities.add("todo_item_done_count", newly_done);
         });
     }
 
     /// A kernel `ask(...)` settled with `status` (the question never uploads).
     pub fn note_question(&self, status: QuestionStatus) {
+        let outcome = match status {
+            QuestionStatus::Answered => "question_answered_count",
+            QuestionStatus::Declined => "question_declined_count",
+            QuestionStatus::TimedOut => "question_timed_out_count",
+            QuestionStatus::NoUser => "question_no_user_count",
+            QuestionStatus::Cancelled => "question_cancelled_count",
+        };
         self.with(|values| {
-            let counts = &mut values.interaction;
-            counts.question_asked += 1;
-            match status {
-                QuestionStatus::Answered => counts.question_answered += 1,
-                QuestionStatus::Declined => counts.question_declined += 1,
-                QuestionStatus::TimedOut => counts.question_timed_out += 1,
-                QuestionStatus::NoUser => counts.question_no_user += 1,
-                QuestionStatus::Cancelled => counts.question_cancelled += 1,
-            }
+            values.capabilities.add("question_asked_count", 1);
+            values.capabilities.add(outcome, 1);
         });
+    }
+
+    /// Add `count` to one capability adoption property (a name its pa-telemetry rule file
+    /// declares). Counts only: never a name, a path, or content.
+    pub(crate) fn note_capability(&self, property: &'static str, count: u64) {
+        self.with(|values| values.capabilities.add(property, count));
     }
 
     /// One goal verification or budget fact (counts only: never a command or judge text).
@@ -829,25 +590,24 @@ impl SessionCounters {
 
     /// One `/better` fact (counts only: never a prompt, a rewrite, or a path).
     pub fn note_better(&self, fact: BetterTelemetryFact) {
-        self.with(|values| {
-            let counts = &mut values.better;
-            let counter = match fact {
-                BetterTelemetryFact::Run => &mut counts.runs,
-                BetterTelemetryFact::Completed => &mut counts.completed,
-                BetterTelemetryFact::Cancelled => &mut counts.cancelled,
-                BetterTelemetryFact::Failed => &mut counts.failed,
-                BetterTelemetryFact::SentAsIs => &mut counts.sent_as_is,
-                BetterTelemetryFact::Edited => &mut counts.edited,
-                BetterTelemetryFact::Discarded => &mut counts.discarded,
-                BetterTelemetryFact::BriefRun => &mut counts.brief_runs,
-                BetterTelemetryFact::BriefUnchanged => &mut counts.brief_unchanged,
-                BetterTelemetryFact::VerificationPass => &mut counts.verification_passes,
-                BetterTelemetryFact::CheckRound => &mut counts.check_rounds,
-                BetterTelemetryFact::CheckPassed => &mut counts.checks_passed,
-                BetterTelemetryFact::CheckFailed => &mut counts.checks_failed,
-            };
-            *counter += 1;
-        });
+        self.note_capability(
+            match fact {
+                BetterTelemetryFact::Run => "better_run_count",
+                BetterTelemetryFact::Completed => "better_completed_count",
+                BetterTelemetryFact::Cancelled => "better_cancelled_count",
+                BetterTelemetryFact::Failed => "better_failed_count",
+                BetterTelemetryFact::SentAsIs => "better_sent_as_is_count",
+                BetterTelemetryFact::Edited => "better_edited_count",
+                BetterTelemetryFact::Discarded => "better_discarded_count",
+                BetterTelemetryFact::BriefRun => "better_brief_run_count",
+                BetterTelemetryFact::BriefUnchanged => "better_brief_unchanged_count",
+                BetterTelemetryFact::VerificationPass => "better_verification_pass_count",
+                BetterTelemetryFact::CheckRound => "better_check_round_count",
+                BetterTelemetryFact::CheckPassed => "better_check_passed_count",
+                BetterTelemetryFact::CheckFailed => "better_check_failed_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `web.read` (counts only: never the URL or the content).
@@ -874,45 +634,53 @@ impl SessionCounters {
         outcome: crate::web_read::ReadOutcome,
         elapsed: std::time::Duration,
     ) {
+        use crate::web_read::{ReadKind, ReadOutcome};
         self.with(|values| {
-            let counts = &mut values.web_read;
-            counts.reads += 1;
+            let counts = &mut values.capabilities;
+            counts.add("web_read_count", 1);
             match outcome {
-                crate::web_read::ReadOutcome::Read { kind, truncated } => {
-                    let bucket = match kind {
-                        crate::web_read::ReadKind::Site => &mut counts.site,
-                        crate::web_read::ReadKind::Pdf => &mut counts.pdf,
-                        crate::web_read::ReadKind::Page => &mut counts.page,
-                    };
-                    *bucket += 1;
-                    counts.truncated += u64::from(truncated);
+                ReadOutcome::Read { kind, truncated } => {
+                    counts.add(
+                        match kind {
+                            ReadKind::Site => "web_read_site_count",
+                            ReadKind::Pdf => "web_read_pdf_count",
+                            ReadKind::Page => "web_read_page_count",
+                        },
+                        1,
+                    );
+                    counts.add("web_read_truncated_count", u64::from(truncated));
                 }
-                crate::web_read::ReadOutcome::Failed => counts.failed += 1,
+                ReadOutcome::Failed => counts.add("web_read_failed_count", 1),
             }
-            counts.max_ms = counts
-                .max_ms
-                .max(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX));
+            counts.raise(
+                "web_read_max_ms",
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
+            );
         });
     }
 
     /// One kernel `fs.grep`/`fs.glob`/`fs.find` (counts only: never a pattern or a path).
     pub(crate) fn note_fs_search(&self, fact: crate::fs_search::SearchFact) {
+        use crate::fs_search::FsOperation;
         self.with(|values| {
-            let counts = &mut values.fs_search;
-            let operation = match fact.operation {
-                crate::fs_search::FsOperation::Grep => &mut counts.grep,
-                crate::fs_search::FsOperation::Glob => &mut counts.glob,
-                crate::fs_search::FsOperation::Find => &mut counts.find,
-            };
-            *operation += 1;
+            let counts = &mut values.capabilities;
+            counts.add(
+                match fact.operation {
+                    FsOperation::Grep => "fs_grep_count",
+                    FsOperation::Glob => "fs_glob_count",
+                    FsOperation::Find => "fs_find_count",
+                },
+                1,
+            );
             match fact.results {
-                Some(results) => counts.results += results as u64,
-                None => counts.failed += 1,
+                Some(results) => counts.add("fs_search_result_count", results as u64),
+                None => counts.add("fs_search_failed_count", 1),
             }
-            counts.truncated += u64::from(fact.truncated);
-            counts.max_ms = counts
-                .max_ms
-                .max(u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX));
+            counts.add("fs_search_truncated_count", u64::from(fact.truncated));
+            counts.raise(
+                "fs_search_max_ms",
+                u64::try_from(fact.elapsed.as_millis()).unwrap_or(u64::MAX),
+            );
         });
     }
 
@@ -920,148 +688,157 @@ impl SessionCounters {
     /// One whole-file re-read of a seen file and how it was shown (never a path or content).
     pub(crate) fn note_reread(&self, fact: crate::fs_edit::RereadFact) {
         use crate::fs_edit::RereadFact;
-        self.with(|values| match fact {
-            RereadFact::Unchanged => values.rereads.unchanged += 1,
-            RereadFact::Diff => values.rereads.diff += 1,
-            RereadFact::Full => values.rereads.full += 1,
-        });
+        self.note_capability(
+            match fact {
+                RereadFact::Unchanged => "fs_reread_unchanged_count",
+                RereadFact::Diff => "fs_reread_diff_count",
+                RereadFact::Full => "fs_reread_full_count",
+            },
+            1,
+        );
     }
 
     pub(crate) fn note_fs_edit(&self, fact: crate::fs_edit::EditFact) {
         use crate::fs_edit::{EditFact, FsEditOperation};
         self.with(|values| {
-            let counts = &mut values.fs_edit;
+            let counts = &mut values.capabilities;
             match fact {
                 EditFact::Read { lines } => {
-                    counts.reads += 1;
-                    counts.read_lines += lines as u64;
+                    counts.add("fs_read_count", 1);
+                    counts.add("fs_read_line_count", lines as u64);
                 }
                 EditFact::Applied { edits } => {
-                    counts.applied += 1;
-                    counts.edits += edits as u64;
+                    counts.add("fs_edit_count", 1);
+                    counts.add("fs_edit_op_count", edits as u64);
                 }
                 EditFact::Rejected { stale } => {
-                    counts.rejected += 1;
-                    counts.stale_anchors += stale as u64;
+                    counts.add("fs_edit_rejected_count", 1);
+                    counts.add("fs_edit_stale_anchor_count", stale as u64);
                 }
                 EditFact::Failed {
                     operation: FsEditOperation::Read,
-                } => counts.read_failed += 1,
+                } => counts.add("fs_read_failed_count", 1),
                 EditFact::Failed {
                     operation: FsEditOperation::Edit,
-                } => counts.edit_failed += 1,
+                } => counts.add("fs_edit_failed_count", 1),
+                EditFact::Written { created } => {
+                    counts.add("fs_write_count", 1);
+                    counts.add("fs_write_created_count", u64::from(created));
+                }
+                EditFact::Failed {
+                    operation: FsEditOperation::Write,
+                } => counts.add("fs_write_failed_count", 1),
             }
         });
     }
 
     /// One kernel `schedule.add/list/cancel` call (counts only: never a prompt or a schedule).
     pub(crate) fn note_repl_schedule(&self, fact: super::runtime::ScheduleFact) {
-        self.with(|values| {
-            let counts = &mut values.repl_schedule;
-            *match fact {
-                super::runtime::ScheduleFact::AddedOnce => &mut counts.added_once,
-                super::runtime::ScheduleFact::AddedRecurring => &mut counts.added_recurring,
-                super::runtime::ScheduleFact::Listed => &mut counts.listed,
-                super::runtime::ScheduleFact::Cancelled => &mut counts.cancelled,
-                super::runtime::ScheduleFact::Rejected => &mut counts.rejected,
-            } += 1;
-        });
+        use super::runtime::ScheduleFact;
+        self.note_capability(
+            match fact {
+                ScheduleFact::AddedOnce => "schedule_once_added_count",
+                ScheduleFact::AddedRecurring => "schedule_recurring_added_count",
+                ScheduleFact::Listed => "schedule_list_count",
+                ScheduleFact::Cancelled => "schedule_cancelled_count",
+                ScheduleFact::Rejected => "schedule_rejected_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `checkpoint.*` call (counts only: never a label or a path).
     pub(crate) fn note_repl_checkpoint(&self, fact: super::checkpoint_host::CheckpointFact) {
         use super::checkpoint_host::CheckpointFact;
-        self.with(|values| {
-            let counts = &mut values.repl_checkpoint;
-            *match fact {
-                CheckpointFact::Created => &mut counts.created,
-                CheckpointFact::Listed => &mut counts.listed,
-                CheckpointFact::Restored => &mut counts.restored,
-                CheckpointFact::RestoreDeclined => &mut counts.restore_declined,
-                CheckpointFact::RestoreDisabled => &mut counts.restore_disabled,
-                CheckpointFact::Failed => &mut counts.failed,
-            } += 1;
-        });
+        self.note_capability(
+            match fact {
+                CheckpointFact::Created => "checkpoint_created_count",
+                CheckpointFact::Listed => "checkpoint_list_count",
+                CheckpointFact::Restored => "checkpoint_restored_count",
+                CheckpointFact::RestoreDeclined => "checkpoint_restore_declined_count",
+                CheckpointFact::RestoreDisabled => "checkpoint_restore_disabled_count",
+                CheckpointFact::Failed => "checkpoint_failed_count",
+            },
+            1,
+        );
     }
 
     /// One step in a backgrounded cell's life (counts only: never code, output, or an id).
     pub(crate) fn note_background_cell(&self, fact: crate::kernel::shared::BackgroundCellFact) {
         use crate::kernel::shared::BackgroundCellFact;
-        self.with(|values| {
-            let counts = &mut values.background_cells;
-            *match fact {
-                BackgroundCellFact::Backgrounded => &mut counts.backgrounded,
-                BackgroundCellFact::EndedOk { .. } => &mut counts.ended_ok,
-                BackgroundCellFact::EndedWithError { .. } => &mut counts.ended_with_error,
-                BackgroundCellFact::Interrupted => &mut counts.interrupted,
-            } += 1;
-        });
+        self.note_capability(
+            match fact {
+                BackgroundCellFact::Backgrounded => "cell_backgrounded_count",
+                BackgroundCellFact::EndedOk { .. } => "cell_background_ok_count",
+                BackgroundCellFact::EndedWithError { .. } => "cell_background_error_count",
+                BackgroundCellFact::Interrupted => "cell_background_interrupted_count",
+            },
+            1,
+        );
     }
 
     /// One cell armed with a yield window, by the window's source (a count: never a duration).
     pub(crate) fn note_cell_window(&self, source: crate::kernel::cell_window::CellWindowSource) {
         use crate::kernel::cell_window::CellWindowSource;
-        self.with(|values| {
-            let counts = &mut values.background_cells;
-            *match source {
-                CellWindowSource::Learned => &mut counts.window_learned,
-                CellWindowSource::ModelTimeout => &mut counts.window_timeout,
-                CellWindowSource::Setting => &mut counts.window_setting,
-                CellWindowSource::ColdDefault => &mut counts.window_default,
-            } += 1;
-        });
+        self.note_capability(
+            match source {
+                CellWindowSource::Learned => "cell_window_learned_count",
+                CellWindowSource::ModelTimeout => "cell_window_timeout_count",
+                CellWindowSource::Setting => "cell_window_setting_count",
+                CellWindowSource::ColdDefault => "cell_window_default_count",
+            },
+            1,
+        );
     }
 
     /// One spill-store event of this session (counts and bytes: never a handle or text).
     pub(crate) fn note_spill(&self, fact: crate::kernel::spill::SpillFact) {
         use crate::kernel::spill::SpillFact;
-        self.with(|values| {
-            let counts = &mut values.context_paging;
-            match fact {
-                SpillFact::Queued { bytes } => {
-                    counts.spills += 1;
-                    counts.spill_bytes += bytes;
-                }
-                SpillFact::NotStored => counts.not_stored += 1,
-                SpillFact::Evicted => counts.evicted += 1,
+        match fact {
+            SpillFact::Queued { bytes } => {
+                self.note_capability("spill_count", 1);
+                // The raw bytes stay in the session: `agent context paging` reports their bucket.
+                self.note_capability(capability_counts::SPILL_BYTES, bytes);
             }
-        });
+            SpillFact::NotStored => self.note_capability("spill_not_stored_count", 1),
+            SpillFact::Evicted => self.note_capability("spill_evicted_count", 1),
+        }
     }
 
     /// One kernel `ctx.*` read (a count: never a handle or a pattern).
     pub(crate) fn note_ctx_read(&self, read: crate::kernel::spill::host::CtxRead) {
         use crate::kernel::spill::host::CtxRead;
-        self.with(|values| {
-            let counts = &mut values.context_paging;
-            *match read {
-                CtxRead::Page => &mut counts.page,
-                CtxRead::Grep => &mut counts.grep,
-                CtxRead::Tail => &mut counts.tail,
-                CtxRead::Info => &mut counts.info,
-            } += 1;
-        });
+        self.note_capability(
+            match read {
+                CtxRead::Page => "ctx_page_count",
+                CtxRead::Grep => "ctx_grep_count",
+                CtxRead::Tail => "ctx_tail_count",
+                CtxRead::Info => "ctx_info_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `worktree` operation (counts only: never a name, a path, or a diff).
     pub(crate) fn note_worktree(&self, fact: crate::worktree_host::WorktreeFact) {
         use crate::worktree_host::WorktreeFact;
-        self.with(|values| {
-            let counts = &mut values.worktrees;
+        self.note_capability(
             match fact {
-                WorktreeFact::Created => counts.created += 1,
-                WorktreeFact::Diffed => counts.diffed += 1,
-                WorktreeFact::Merged => counts.merged += 1,
-                WorktreeFact::Branched => counts.branched += 1,
-                WorktreeFact::Conflicted => counts.conflicted += 1,
-                WorktreeFact::Removed => counts.removed += 1,
-                WorktreeFact::Failed => counts.failed += 1,
-            }
-        });
+                WorktreeFact::Created => "worktree_created_count",
+                WorktreeFact::Diffed => "worktree_diff_count",
+                WorktreeFact::Merged => "worktree_merged_count",
+                WorktreeFact::Branched => "worktree_branched_count",
+                WorktreeFact::Conflicted => "worktree_conflict_count",
+                WorktreeFact::Removed => "worktree_removed_count",
+                WorktreeFact::Failed => "worktree_failed_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `usage.get()` read (a count: never a cost or a token number).
     pub(crate) fn note_usage_read(&self) {
-        self.with(|values| values.usage_read_count += 1);
+        self.note_capability("usage_read_count", 1);
     }
 
     /// One recorded assistant call's billing mode (a count: never its cost or provider).
@@ -1099,68 +876,70 @@ impl SessionCounters {
     /// One kernel `rlm.abort` (counts only): its outcome, `None` when it failed.
     pub(crate) fn note_rlm_abort(&self, outcome: Option<super::rlm_host::RlmAbortOutcome>) {
         use super::rlm_host::RlmAbortOutcome;
-        self.with(|values| {
-            let counts = &mut values.rlm_abort;
-            *match outcome {
-                Some(RlmAbortOutcome::Aborted) => &mut counts.aborted,
-                Some(RlmAbortOutcome::Idle) => &mut counts.idle,
-                None => &mut counts.failed,
-            } += 1;
-        });
+        self.note_capability(
+            match outcome {
+                Some(RlmAbortOutcome::Aborted) => "rlm_abort_aborted_count",
+                Some(RlmAbortOutcome::Idle) => "rlm_abort_idle_count",
+                None => "rlm_abort_failed_count",
+            },
+            1,
+        );
     }
 
     /// One observation of the adaptive delegation depth bound (counts only).
     pub(crate) fn note_rlm_depth(&self, change: pa_types::control::DepthChange) {
         use pa_types::control::DepthChange;
-        self.with(|values| match change {
-            DepthChange::Raised => values.rlm_depth.raised += 1,
-            DepthChange::Lowered => values.rlm_depth.lowered += 1,
+        match change {
+            DepthChange::Raised => self.note_capability("rlm_depth_raised_count", 1),
+            DepthChange::Lowered => self.note_capability("rlm_depth_lowered_count", 1),
             DepthChange::Unchanged => {}
-        });
+        }
     }
 
     /// One brief-mode `better` run whose depth followed the remaining delegation bound.
     pub(crate) fn note_scaled_brief(&self) {
-        self.with(|values| values.rlm_depth.scaled_briefs += 1);
+        self.note_capability("rlm_depth_scaled_brief_count", 1);
     }
 
     /// One kernel `rlm.reload()` and the count of skills it added (never a name).
     pub(crate) fn note_repl_reload(&self, skills_added: usize) {
         self.with(|values| {
-            values.repl_reload.reloads += 1;
-            values.repl_reload.skills_added += skills_added as u64;
+            values.capabilities.add("repl_reload_count", 1);
+            values
+                .capabilities
+                .add("repl_reload_skills_added_count", skills_added as u64);
         });
     }
 
     /// One kernel `settings.get()` read (never a value).
     pub(crate) fn note_repl_settings_read(&self) {
-        self.with(|values| values.repl_reload.settings_reads += 1);
+        self.note_capability("repl_settings_get_count", 1);
     }
 
     /// One kernel `mcp.login`: `Some(true)` logged in, `Some(false)` failed, `None` unavailable.
     pub(crate) fn note_kernel_mcp_login(&self, outcome: Option<bool>) {
-        self.with(|values| {
-            let counts = &mut values.login_recall;
-            *match outcome {
-                Some(true) => &mut counts.login_ok,
-                Some(false) => &mut counts.login_failed,
-                None => &mut counts.login_unavailable,
-            } += 1;
-        });
+        self.note_capability(
+            match outcome {
+                Some(true) => "kernel_mcp_login_count",
+                Some(false) => "kernel_mcp_login_failed_count",
+                None => "kernel_mcp_login_unavailable_count",
+            },
+            1,
+        );
     }
 
     /// One kernel past-session recall call (counts only: never a query or a session).
     pub(crate) fn note_session_recall(&self, fact: super::session_search::SessionRecallFact) {
         use super::session_search::SessionRecallFact;
         self.with(|values| {
-            let counts = &mut values.login_recall;
+            let counts = &mut values.capabilities;
             match fact {
                 SessionRecallFact::Searched { hits } => {
-                    counts.searches += 1;
-                    counts.search_hits += hits as u64;
+                    counts.add("session_search_count", 1);
+                    counts.add("session_search_hit_count", hits as u64);
                 }
-                SessionRecallFact::Read => counts.reads += 1,
-                SessionRecallFact::Failed => counts.recall_failed += 1,
+                SessionRecallFact::Read => counts.add("session_search_read_count", 1),
+                SessionRecallFact::Failed => counts.add("session_search_failed_count", 1),
             }
         });
     }
@@ -1168,30 +947,37 @@ impl SessionCounters {
     /// One kernel `notify(...)` ping and whether a user was attached to see it (never the text).
     pub(crate) fn note_notification(&self, delivered: bool) {
         self.with(|values| {
-            values.notify_effort.notified += 1;
-            values.notify_effort.undelivered += u64::from(!delivered);
+            values.capabilities.add("notify_count", 1);
+            values
+                .capabilities
+                .add("notify_undelivered_count", u64::from(!delivered));
         });
     }
 
     /// One kernel `rlm.decide(...)` outcome (never the question, the options, or the choice).
     pub(crate) fn note_decision(&self, fact: super::decision::DecideFact) {
-        self.with(|values| match fact {
-            super::decision::DecideFact::Decided => values.decisions.decided += 1,
-            super::decision::DecideFact::Limited => values.decisions.limited += 1,
-            super::decision::DecideFact::Failed => values.decisions.failed += 1,
-        });
+        use super::decision::DecideFact;
+        self.note_capability(
+            match fact {
+                DecideFact::Decided => "decide_count",
+                DecideFact::Limited => "decide_limited_count",
+                DecideFact::Failed => "decide_failed_count",
+            },
+            1,
+        );
     }
 
     /// One kernel `model.set_effort(...)`: applied, or refused (the setting is off or the
     /// level invalid). Never the level.
     pub(crate) fn note_effort_switch(&self, applied: bool) {
-        self.with(|values| {
+        self.note_capability(
             if applied {
-                values.notify_effort.effort_set += 1;
+                "effort_set_count"
             } else {
-                values.notify_effort.effort_refused += 1;
-            }
-        });
+                "effort_refused_count"
+            },
+            1,
+        );
     }
 
     /// An MCP connector call (the server name never uploads).
@@ -1367,7 +1153,7 @@ impl SessionCounters {
 /// Skills present at session start (adoption counts on `agent started`).
 pub struct SkillCounts {
     pub skill_count: usize,
-    pub python_skill_count: usize,
+    pub scheme_skill_count: usize,
 }
 
 /// Install the telemetry subscriber on an agent and emit `agent started`.
@@ -1429,8 +1215,8 @@ pub async fn install_session_telemetry(
         if let Some(counts) = skill_counts {
             properties.set("skill_count", Value::from(counts.skill_count as u64));
             properties.set(
-                "python_skill_count",
-                Value::from(counts.python_skill_count as u64),
+                "scheme_skill_count",
+                Value::from(counts.scheme_skill_count as u64),
             );
         }
     }
@@ -1647,30 +1433,9 @@ impl SessionTelemetry {
                 );
             }
         }
-        // The todo/question adoption rides its own event (the ended event sits at the key
-        // cap); a session that used neither sends none.
-        let interaction = self
-            .counters
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .interaction;
-        if interaction != InteractionCounts::default() {
-            let mut counts = self.session_properties();
-            for (key, value) in [
-                ("todo_list_set_count", interaction.todo_list_set),
-                ("todo_item_done_count", interaction.todo_item_done),
-                ("question_asked_count", interaction.question_asked),
-                ("question_answered_count", interaction.question_answered),
-                ("question_declined_count", interaction.question_declined),
-                ("question_timed_out_count", interaction.question_timed_out),
-                ("question_no_user_count", interaction.question_no_user),
-                ("question_cancelled_count", interaction.question_cancelled),
-            ] {
-                counts.set(key, Value::from(value));
-            }
-            self.client.track("agent todos and questions", counts);
-        }
+        // The capability events that ride ahead of the ended event (the todo/question adoption:
+        // the ended event sits at the key cap); a session that used none sends none.
+        self.track_capability_events(pa_telemetry::CAPABILITY_EVENTS_BEFORE_SESSION_END);
         self.counters.write_into(&mut properties);
         self.client.track("agent session ended", properties);
         // A session whose goals never ran a verifier or hit a budget sends no goal event.
@@ -1691,30 +1456,6 @@ impl SessionTelemetry {
             }
             self.client
                 .track("agent goal verification", goal_properties);
-        }
-        // A session that never ran `/better` sends no better event.
-        let mut better = BetterCounts::default();
-        self.counters.with(|values| better = values.better);
-        if better != BetterCounts::default() {
-            let mut better_properties = self.session_properties();
-            for (key, value) in [
-                ("better_run_count", better.runs),
-                ("better_completed_count", better.completed),
-                ("better_cancelled_count", better.cancelled),
-                ("better_failed_count", better.failed),
-                ("better_sent_as_is_count", better.sent_as_is),
-                ("better_edited_count", better.edited),
-                ("better_discarded_count", better.discarded),
-                ("better_brief_run_count", better.brief_runs),
-                ("better_brief_unchanged_count", better.brief_unchanged),
-                ("better_verification_pass_count", better.verification_passes),
-                ("better_check_round_count", better.check_rounds),
-                ("better_check_passed_count", better.checks_passed),
-                ("better_check_failed_count", better.checks_failed),
-            ] {
-                better_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent better prompt", better_properties);
         }
         // A session whose requests never chose a Responses transport sends no transport event.
         if let Some(counts) = self
@@ -1880,163 +1621,6 @@ impl SessionTelemetry {
             self.client
                 .track("agent endpoint discovery", discovery_properties);
         }
-        // A session that never read a URL sends no web-read event.
-        let mut web_read = WebReadCounts::default();
-        self.counters.with(|values| web_read = values.web_read);
-        if web_read != WebReadCounts::default() {
-            let mut read_properties = self.session_properties();
-            for (key, value) in [
-                ("web_read_count", web_read.reads),
-                ("web_read_failed_count", web_read.failed),
-                ("web_read_site_count", web_read.site),
-                ("web_read_pdf_count", web_read.pdf),
-                ("web_read_page_count", web_read.page),
-                ("web_read_truncated_count", web_read.truncated),
-                ("web_read_max_ms", web_read.max_ms),
-            ] {
-                read_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent web reads", read_properties);
-        }
-        // A session that never searched sends no fs-search event.
-        let mut fs_search = FsSearchCounts::default();
-        self.counters.with(|values| fs_search = values.fs_search);
-        if fs_search != FsSearchCounts::default() {
-            let mut search_properties = self.session_properties();
-            for (key, value) in [
-                ("fs_grep_count", fs_search.grep),
-                ("fs_glob_count", fs_search.glob),
-                ("fs_find_count", fs_search.find),
-                ("fs_search_failed_count", fs_search.failed),
-                ("fs_search_truncated_count", fs_search.truncated),
-                ("fs_search_result_count", fs_search.results),
-                ("fs_search_max_ms", fs_search.max_ms),
-            ] {
-                search_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent fs search", search_properties);
-        }
-        // A session that never read or edited by anchor sends no fs-edit event.
-        let mut fs_edit = FsEditCounts::default();
-        self.counters.with(|values| fs_edit = values.fs_edit);
-        if fs_edit != FsEditCounts::default() {
-            let mut edit_properties = self.session_properties();
-            for (key, value) in [
-                ("fs_read_count", fs_edit.reads),
-                ("fs_read_line_count", fs_edit.read_lines),
-                ("fs_read_failed_count", fs_edit.read_failed),
-                ("fs_edit_count", fs_edit.applied),
-                ("fs_edit_op_count", fs_edit.edits),
-                ("fs_edit_rejected_count", fs_edit.rejected),
-                ("fs_edit_stale_anchor_count", fs_edit.stale_anchors),
-                ("fs_edit_failed_count", fs_edit.edit_failed),
-            ] {
-                edit_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent fs edit", edit_properties);
-        }
-        // A session that never re-read a seen file sends no rereads event.
-        let mut rereads = RereadCounts::default();
-        self.counters.with(|values| rereads = values.rereads);
-        if rereads != RereadCounts::default() {
-            let mut reread_properties = self.session_properties();
-            for (key, value) in [
-                ("fs_reread_unchanged_count", rereads.unchanged),
-                ("fs_reread_diff_count", rereads.diff),
-                ("fs_reread_full_count", rereads.full),
-            ] {
-                reread_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent fs rereads", reread_properties);
-        }
-        // A session that never scheduled from the kernel sends no schedule event.
-        let mut schedule = ReplScheduleCounts::default();
-        self.counters.with(|values| schedule = values.repl_schedule);
-        if schedule != ReplScheduleCounts::default() {
-            let mut schedule_properties = self.session_properties();
-            for (key, value) in [
-                ("schedule_once_added_count", schedule.added_once),
-                ("schedule_recurring_added_count", schedule.added_recurring),
-                ("schedule_list_count", schedule.listed),
-                ("schedule_cancelled_count", schedule.cancelled),
-                ("schedule_rejected_count", schedule.rejected),
-            ] {
-                schedule_properties.set(key, Value::from(value));
-            }
-            self.client
-                .track("agent repl schedule", schedule_properties);
-        }
-        // A session that never took a kernel checkpoint sends no checkpoint event.
-        let mut checkpoint = ReplCheckpointCounts::default();
-        self.counters
-            .with(|values| checkpoint = values.repl_checkpoint);
-        if checkpoint != ReplCheckpointCounts::default() {
-            let mut checkpoint_properties = self.session_properties();
-            for (key, value) in [
-                ("checkpoint_created_count", checkpoint.created),
-                ("checkpoint_list_count", checkpoint.listed),
-                ("checkpoint_restored_count", checkpoint.restored),
-                (
-                    "checkpoint_restore_declined_count",
-                    checkpoint.restore_declined,
-                ),
-                (
-                    "checkpoint_restore_disabled_count",
-                    checkpoint.restore_disabled,
-                ),
-                ("checkpoint_failed_count", checkpoint.failed),
-            ] {
-                checkpoint_properties.set(key, Value::from(value));
-            }
-            self.client
-                .track("agent repl checkpoint", checkpoint_properties);
-        }
-        // A session that never read its usage sends no usage event.
-        let mut usage_reads = 0;
-        self.counters
-            .with(|values| usage_reads = values.usage_read_count);
-        if usage_reads > 0 {
-            let mut usage_properties = self.session_properties();
-            usage_properties.set("usage_read_count", Value::from(usage_reads));
-            self.client.track("agent usage reads", usage_properties);
-        }
-        // A session that never used a worktree sends no worktree event.
-        let mut worktrees = WorktreeCounts::default();
-        self.counters.with(|values| worktrees = values.worktrees);
-        if worktrees != WorktreeCounts::default() {
-            let mut worktree_properties = self.session_properties();
-            for (key, value) in [
-                ("worktree_created_count", worktrees.created),
-                ("worktree_diff_count", worktrees.diffed),
-                ("worktree_merged_count", worktrees.merged),
-                ("worktree_branched_count", worktrees.branched),
-                ("worktree_conflict_count", worktrees.conflicted),
-                ("worktree_removed_count", worktrees.removed),
-                ("worktree_failed_count", worktrees.failed),
-            ] {
-                worktree_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent worktrees", worktree_properties);
-        }
-        // A session that neither spilled nor read paged-out output sends no paging event.
-        let mut paging = ContextPagingCounts::default();
-        self.counters.with(|values| paging = values.context_paging);
-        if paging != ContextPagingCounts::default() {
-            let mut paging_properties = self.session_properties();
-            for (key, value) in [
-                ("spill_count", paging.spills),
-                ("spill_not_stored_count", paging.not_stored),
-                ("spill_evicted_count", paging.evicted),
-                ("ctx_page_count", paging.page),
-                ("ctx_grep_count", paging.grep),
-                ("ctx_tail_count", paging.tail),
-                ("ctx_info_count", paging.info),
-            ] {
-                paging_properties.set(key, Value::from(value));
-            }
-            paging_properties.set("spill_bytes_bucket", Value::from(paging.bytes_bucket()));
-            self.client.track("agent context paging", paging_properties);
-        }
         // A session that recorded no classified call sends no billing event.
         let mut billing = pa_types::billing::BillingSplit::default();
         self.counters.with(|values| billing = values.billing_modes);
@@ -2085,131 +1669,27 @@ impl SessionTelemetry {
             }
             self.client.track("agent message waits", wait_properties);
         }
-        // A session that never aborted a child from the kernel sends no abort event.
-        let mut abort = RlmAbortCounts::default();
-        self.counters.with(|values| abort = values.rlm_abort);
-        if abort != RlmAbortCounts::default() {
-            let mut abort_properties = self.session_properties();
-            for (key, value) in [
-                ("rlm_abort_aborted_count", abort.aborted),
-                ("rlm_abort_idle_count", abort.idle),
-                ("rlm_abort_failed_count", abort.failed),
-            ] {
-                abort_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent rlm child abort", abort_properties);
-        }
-        // A session whose depth bound never moved and that scaled no brief sends no depth event.
-        let mut depth = RlmDepthCounts::default();
-        self.counters.with(|values| depth = values.rlm_depth);
-        if depth != RlmDepthCounts::default() {
-            let mut depth_properties = self.session_properties();
-            for (key, value) in [
-                ("rlm_depth_raised_count", depth.raised),
-                ("rlm_depth_lowered_count", depth.lowered),
-                ("rlm_depth_scaled_brief_count", depth.scaled_briefs),
-            ] {
-                depth_properties.set(key, Value::from(value));
-            }
-            self.client
-                .track("agent rlm delegation depth", depth_properties);
-        }
-        // A session that never reloaded or read its settings sends no reload event.
-        let mut repl_reload = ReplReloadCounts::default();
-        self.counters
-            .with(|values| repl_reload = values.repl_reload);
-        if repl_reload != ReplReloadCounts::default() {
-            let mut reload_properties = self.session_properties();
-            for (key, value) in [
-                ("repl_reload_count", repl_reload.reloads),
-                ("repl_reload_skills_added_count", repl_reload.skills_added),
-                ("repl_settings_get_count", repl_reload.settings_reads),
-            ] {
-                reload_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent repl reload", reload_properties);
-        }
-        // A session that neither logged in nor searched past sessions sends no recall event.
-        let mut login_recall = LoginRecallCounts::default();
-        self.counters
-            .with(|values| login_recall = values.login_recall);
-        if login_recall != LoginRecallCounts::default() {
-            let mut recall_properties = self.session_properties();
-            for (key, value) in [
-                ("kernel_mcp_login_count", login_recall.login_ok),
-                ("kernel_mcp_login_failed_count", login_recall.login_failed),
-                (
-                    "kernel_mcp_login_unavailable_count",
-                    login_recall.login_unavailable,
-                ),
-                ("session_search_count", login_recall.searches),
-                ("session_search_hit_count", login_recall.search_hits),
-                ("session_search_read_count", login_recall.reads),
-                ("session_search_failed_count", login_recall.recall_failed),
-            ] {
-                recall_properties.set(key, Value::from(value));
-            }
-            self.client
-                .track("agent kernel login and recall", recall_properties);
-        }
-        // A session that never pinged or switched effort sends no notify event.
-        let mut notify_effort = NotifyEffortCounts::default();
-        self.counters
-            .with(|values| notify_effort = values.notify_effort);
-        if notify_effort != NotifyEffortCounts::default() {
-            let mut notify_properties = self.session_properties();
-            for (key, value) in [
-                ("notify_count", notify_effort.notified),
-                ("notify_undelivered_count", notify_effort.undelivered),
-                ("effort_set_count", notify_effort.effort_set),
-                ("effort_refused_count", notify_effort.effort_refused),
-            ] {
-                notify_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent repl notify", notify_properties);
-        }
-        // A session that never called `rlm.decide` sends no decide event.
-        let mut decisions = DecideCounts::default();
-        self.counters.with(|values| decisions = values.decisions);
-        if decisions != DecideCounts::default() {
-            let mut decide_properties = self.session_properties();
-            for (key, value) in [
-                ("decide_count", decisions.decided),
-                ("decide_limited_count", decisions.limited),
-                ("decide_failed_count", decisions.failed),
-            ] {
-                decide_properties.set(key, Value::from(value));
-            }
-            self.client.track("agent repl decide", decide_properties);
-        }
-        // A session that armed no cell window and backgrounded no cell sends no background-cell
-        // event.
-        let mut cells = BackgroundCellCounts::default();
-        self.counters.with(|values| cells = values.background_cells);
-        if cells != BackgroundCellCounts::default() {
-            let mut cell_properties = self.session_properties();
-            for (key, value) in [
-                ("cell_backgrounded_count", cells.backgrounded),
-                ("cell_background_ok_count", cells.ended_ok),
-                ("cell_background_error_count", cells.ended_with_error),
-                ("cell_background_interrupted_count", cells.interrupted),
-                ("cell_window_learned_count", cells.window_learned),
-                ("cell_window_timeout_count", cells.window_timeout),
-                ("cell_window_setting_count", cells.window_setting),
-                ("cell_window_default_count", cells.window_default),
-            ] {
-                cell_properties.set(key, Value::from(value));
-            }
-            self.client
-                .track("agent repl background cells", cell_properties);
-        }
-        self.track_symbol_index();
         self.track_error_enrichment();
-        self.track_readonly_cache();
-        self.track_hypotheses();
-        self.track_edit_checks();
-        self.track_test_summaries();
+        // Every kernel capability's standalone event (the pa-telemetry rule files), in emission
+        // order; a capability the session never used sends none.
+        self.track_capability_events(pa_telemetry::CAPABILITY_EVENTS_AFTER_SESSION_END);
         self.client.flush().await
+    }
+
+    /// Emit each of `rules` whose capability counted: every property in rule order.
+    fn track_capability_events(&self, rules: &[&pa_telemetry::EventRule]) {
+        let mut capabilities = CapabilityCounts::default();
+        self.counters
+            .with(|values| capabilities = values.capabilities.clone());
+        for rule in rules {
+            if let Some(values) = capabilities.event_properties(rule) {
+                let mut properties = self.session_properties();
+                for (key, value) in values {
+                    properties.set(key, value);
+                }
+                self.client.track(rule.name, properties);
+            }
+        }
     }
 
     /// `session archived` (schema v1): the session reached the archive

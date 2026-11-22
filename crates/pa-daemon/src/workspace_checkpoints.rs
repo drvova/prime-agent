@@ -15,7 +15,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -212,8 +212,8 @@ impl Store {
         // Never one workspace: the root, a top-level directory (`/tmp`, `/home`,
         // ...), the temp directory, the home directory, or its parent.
         let same = |dir: &Path| std::fs::canonicalize(dir).is_ok_and(|dir| dir == workspace);
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
+        let home = pa_types::session_scope::var_os("HOME")
+            .or_else(|| pa_types::session_scope::var_os("USERPROFILE"))
             .map(PathBuf::from);
         if workspace.components().count() <= 2
             || same(&std::env::temp_dir())
@@ -405,7 +405,7 @@ impl Store {
 
     /// Run `git <args>` against the shadow store; stdout on success.
     fn git(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let mut child = Command::new("git")
+        let mut child = pa_types::session_scope::std_command("git")
             .args(args)
             .current_dir(&self.workspace)
             .env("GIT_DIR", &self.git_dir)
@@ -421,10 +421,10 @@ impl Store {
             .spawn()?;
         // Drained on its own thread so a full pipe never stalls the child.
         let mut pipe = child.stdout.take().expect("stdout is piped");
-        let stdout = std::thread::spawn(move || {
+        let stdout = std::thread::spawn(pa_types::session_scope::propagate(move || {
             let mut bytes = Vec::new();
             pipe.read_to_end(&mut bytes).map(|_| bytes)
-        });
+        }));
         let deadline = Instant::now() + GIT_TIMEOUT;
         let status = loop {
             if let Some(status) = child.try_wait()? {
@@ -501,7 +501,7 @@ mod tests {
     ) {
         let workspace = root.join("project");
         std::fs::create_dir_all(&workspace).unwrap();
-        let init = Command::new("git")
+        let init = pa_types::session_scope::std_command("git")
             .args(["init", "-q"])
             .current_dir(&workspace)
             .status();

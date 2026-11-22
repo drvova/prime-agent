@@ -2,8 +2,8 @@
 
 //! tmux user-level verifier for the kernel todo tray and question panel: the real `prime-agent`
 //! binary runs in a private tmux server against its own daemon, an isolated HOME, the real
-//! kernel, and the scripted faux provider. A `python_repl` cell calls `todo.set` / `todo.update`
-//! and `ask(...)`; the test drives the screen with keys only and asserts what the user sees (the
+//! kernel, and the scripted faux provider. An `eval` cell calls `todo-set` / `todo-update`
+//! and `ask`; the test drives the screen with keys only and asserts what the user sees (the
 //! docked tray, its fold toggle, the question panel, the cell card's todo row, the finished
 //! list's summary and its clearing on the next turn) and that the waiting kernel call received
 //! the keyboard answer (the cell writes it to a file).
@@ -18,24 +18,6 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(60);
-
-/// The kernel Python with prime-agent-runtime installed (`PA_E2E_KERNEL_PYTHON`, else the
-/// product's kernel-venv layout under the runner's HOME, which the CI shards bootstrap).
-fn kernel_python() -> PathBuf {
-    let python = std::env::var_os("PA_E2E_KERNEL_PYTHON").map_or_else(
-        || {
-            PathBuf::from(std::env::var("HOME").expect("HOME"))
-                .join(".prime/agent/kernel-venv/bin/python")
-        },
-        PathBuf::from,
-    );
-    assert!(
-        python.exists(),
-        "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
-        python.display()
-    );
-    python
-}
 
 /// A private tmux server (its own socket in the test's temp dir) holding one pane that runs
 /// the product; dropped, it shuts the product's daemon down and kills the server.
@@ -105,7 +87,7 @@ impl Drop for Pane {
 }
 
 fn cell(code: &str) -> serde_json::Value {
-    json!({ "content": [{ "type": "toolCall", "name": "python_repl", "arguments": { "code": code } }] })
+    json!({ "content": [{ "type": "toolCall", "name": "eval", "arguments": { "code": code } }] })
 }
 
 fn start(dir: &Path) -> Pane {
@@ -135,16 +117,20 @@ fn start(dir: &Path) -> Pane {
         &script,
         json!({ "engine": "faux", "responses": [
             cell(&format!(
-                "await todo.set({plan:?})\n\
-                 await todo.update('1', status='done')\n\
-                 await todo.update('2', status='in_progress')\n\
-                 r = await ask('Which database should the cache use?', ['sqlite', 'postgres'])\n\
-                 open('answer.txt', 'w').write(f'{{r.status}}:{{r.answer}}')"
+                r#"(todo-set (list {plan}))
+(todo-update "1" #:status "done")
+(todo-update "2" #:status "in_progress")
+(define r (ask "Which database should the cache use?" (list "sqlite" "postgres")))
+(fs-write (string-append (session-cwd) "/answer.txt") (string-append (hash-ref r 'status) ":" (hash-ref r 'answer)))"#,
+                plan = plan.map(|item| format!("{item:?}")).join(" "),
             )),
             { "text": "asked" },
-            cell("await todo.set([{'text': i.text, 'status': 'done'} for i in (await todo.get()).items])\n\
-                  r = await ask('Which checks?', ['fmt', 'clippy'], multi=True)\n\
-                  open('checks.txt', 'w').write(f'{r.status}:{r.answer}')"),
+            cell(
+                r#"(todo-set (map (lambda (item) (hash 'text (hash-ref item 'text) 'status "done"))
+               (hash-ref (todo-get) 'items)))
+(define checks (ask "Which checks?" (list "fmt" "clippy") #:multi #t))
+(fs-write (string-append (session-cwd) "/checks.txt") (string-append (hash-ref checks 'status) ":" (string-join (hash-ref checks 'answer) ",")))"#,
+            ),
             { "text": "finished" },
             { "text": "you are welcome" },
         ] })
@@ -159,11 +145,10 @@ fn start(dir: &Path) -> Pane {
         &launcher,
         format!(
             "cd {project}\nexec env -i PATH=/usr/bin:/bin HOME={home} TERM=xterm-256color \
-             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 PRIME_AGENT_KERNEL_PYTHON={python} \
+             LANG=C.UTF-8 DO_NOT_TRACK=1 PI_OFFLINE=1 \
              PRIME_AGENT_FAUX_SCRIPT={script} PRIME_AGENT_DAEMON_SOCKET={socket} {binary} \"$@\"\n",
             project = quote(&project),
             home = quote(&home),
-            python = quote(&kernel_python()),
             script = quote(&script),
             socket = quote(&dir.join("daemon.sock")),
             binary = quote(Path::new(env!("CARGO_BIN_EXE_prime-agent"))),
@@ -285,7 +270,7 @@ fn todos_and_a_question_are_driven_from_the_kernel_and_answered_by_keyboard() {
     );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("project/checks.txt")).expect("the cell's answer"),
-        "answered:['fmt', 'lint']"
+        "answered:fmt,lint"
     );
 
     // ...and the user's next turn clears it.

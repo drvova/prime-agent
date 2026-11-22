@@ -14,7 +14,7 @@ mod support;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pa_tui::interactive::{
     run_interactive, HeadlessPlan, HeadlessStep, InteractiveOptions, ModelSelection,
@@ -94,15 +94,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
     );
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor { child, socket };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
+    support::await_listening(&socket, &mut child);
+    Supervisor { child, socket }
 }
 
 fn marker(turn: usize) -> String {

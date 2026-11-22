@@ -323,9 +323,9 @@ pub enum CacheWarmingSetting {
     Idle,
 }
 
-/// The yield window for user `python_repl` cells before a project's window
+/// The yield window for the model's kernel cells before a project's window
 /// is learned (and the previous fixed default): 60 seconds.
-pub const DEFAULT_PYTHON_CELL_TIMEOUT_MS: u64 = 60_000;
+pub const DEFAULT_CELL_TIMEOUT_MS: u64 = 60_000;
 
 /// The settings document: every known field optional; unknown keys preserved.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -365,13 +365,15 @@ pub struct Settings {
     /// session model does not accept image input. Default: none - image turns on a text-only model
     /// fail with a configuration hint instead of silently dropping the images.
     pub image_model: Option<String>,
-    /// Fixed yield window for user `python_repl` cells, in milliseconds
+    /// Fixed yield window for the model's kernel cells, in milliseconds
     /// (`0` disables). Unset, the window is learned per project from recent
-    /// cells (starting at [`DEFAULT_PYTHON_CELL_TIMEOUT_MS`]). A cell running
+    /// cells (starting at [`DEFAULT_CELL_TIMEOUT_MS`]). A cell running
     /// longer continues in the background, never stopped for time; the model
     /// can pass a per-call `timeout` instead. Daemonless sessions never use
-    /// it: their cells run to the end in the call.
-    pub python_cell_timeout_ms: Option<u64>,
+    /// it: their cells run to the end in the call. The key keeps the name
+    /// settings files already carry.
+    #[serde(rename = "pythonCellTimeoutMs")]
+    pub cell_timeout_ms: Option<u64>,
     pub autonomous: Option<AutonomousSettings>,
     /// Custom shell that runs every kernel `bash()` and user-bash command as
     /// `<shell> -c <command>`: an absolute path to an existing executable,

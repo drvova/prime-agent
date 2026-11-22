@@ -8,6 +8,7 @@ use super::*;
 mod activity_lines;
 mod click_surface;
 mod cost_aggregates;
+mod crash_state;
 mod delete_stop;
 mod drill_down;
 mod edge_jumps;

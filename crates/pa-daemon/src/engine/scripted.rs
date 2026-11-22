@@ -23,7 +23,10 @@ use super::{
 /// skips, `{"error": "..."}` fails. The `sideQuestion` seam scripts
 /// provider calls, one per attempt: `{"text": ...}` answers,
 /// `{"error": ..., "retryAfterMs": 100}` fails (retried per `retry`).
-/// Verification harness only.
+/// The `panicOn` seam (`{"panicOn": {"message": "crash now", "panic":
+/// "injected fault"}}`) panics inside the turn whose prompt is exactly
+/// `message`, wherever that turn falls: a session rebuilt after the crash
+/// serves its other prompts. Verification harness only.
 #[derive(Debug, Default)]
 pub struct ScriptedEngine {
     responses: Vec<Value>,
@@ -39,6 +42,9 @@ pub struct ScriptedEngine {
     /// model-dependent client behavior — the Anthropic subscription
     /// warning's provider gate — opts in).
     model: Option<Value>,
+    /// The scripted fault: the prompt text that panics its turn, and the
+    /// panic's message.
+    panic_on: Option<(String, String)>,
 }
 
 /// A scripted thread goal (the post-compaction goal-continue fixture):
@@ -161,6 +167,12 @@ impl ScriptedEngine {
             .get("model")
             .filter(|model| !model.is_null())
             .cloned();
+        let panic_on = script.get("panicOn").and_then(|fault| {
+            Some((
+                fault.get("message")?.as_str()?.to_string(),
+                fault.get("panic")?.as_str()?.to_string(),
+            ))
+        });
         Ok(ScriptedEngine {
             responses,
             side_question,
@@ -168,6 +180,7 @@ impl ScriptedEngine {
             branch_summary,
             goal,
             model,
+            panic_on,
         })
     }
 
@@ -272,6 +285,13 @@ impl SessionEngine for ScriptedEngine {
         emit: &mut dyn FnMut(EngineEvent) -> bool,
     ) {
         let cancelled = || EngineEvent::Done(Err("prompt cancelled".to_string()));
+        if let Some((_, fault)) = self
+            .panic_on
+            .as_ref()
+            .filter(|(message, _)| *message == request.message)
+        {
+            panic!("{fault}");
+        }
         let scripted = self.responses.get(prompt_index).cloned();
         let text = match &scripted {
             Some(response) => {
@@ -282,6 +302,7 @@ impl SessionEngine for ScriptedEngine {
                     emit(cancelled());
                     return;
                 }
+
                 Self::response_text(response)
             }
             None => format!("echo: {}", request.message),

@@ -918,7 +918,7 @@ impl SupervisorChildSessionsInner {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
         if let Some(hook) = hook {
-            std::thread::spawn(move || hook());
+            std::thread::spawn(pa_types::session_scope::propagate(move || hook()));
         }
         true
     }

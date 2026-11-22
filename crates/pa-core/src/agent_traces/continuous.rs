@@ -421,11 +421,15 @@ fn service() -> &'static Service {
         };
         // Detached OS threads do not extend process lifetime. The host's Tokio
         // blocking pool is never used by uploads or outbox recovery.
+        let session_scope = pa_types::session_scope::current();
         if let Err(error) = std::thread::Builder::new()
             .name("trace-upload".into())
-            .spawn(|| {
+            .spawn(move || {
+                let _session_scope = pa_types::session_scope::enter(session_scope);
                 let runtime = match tokio::runtime::Builder::new_current_thread()
                     .enable_all()
+                    // The runtime's blocking threads run in the session's scope too.
+                    .on_thread_start(pa_types::session_scope::inherit())
                     .build()
                 {
                     Ok(runtime) => runtime,

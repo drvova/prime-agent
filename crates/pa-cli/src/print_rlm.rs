@@ -1332,20 +1332,20 @@ mod tests {
         assert_eq!(admitted, 0);
     }
 
-    /// The fake python tool of the landing test: records one late receipt
+    /// The fake kernel tool of the landing test: records one late receipt
     /// through the print path (the factored async fn) while its cell's
     /// result row has not landed.
-    struct LateReceiptPythonTool {
+    struct LateReceiptKernelTool {
         node: Arc<InlineSessionNode>,
     }
 
-    impl pa_agent::types::AgentTool for LateReceiptPythonTool {
+    impl pa_agent::types::AgentTool for LateReceiptKernelTool {
         fn name(&self) -> &'static str {
-            "python_repl"
+            "eval"
         }
 
         fn description(&self) -> &'static str {
-            "Runs a python cell."
+            "Runs a kernel cell."
         }
 
         fn parameters(&self) -> &serde_json::Value {
@@ -1499,7 +1499,7 @@ mod tests {
         let script = json!({
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "id": "call-1", "name": "python_repl", "arguments": {} }
+                    { "type": "toolCall", "id": "call-1", "name": "eval", "arguments": {} }
                 ] },
                 "all done",
             ],
@@ -1518,13 +1518,13 @@ mod tests {
         .unwrap();
         let engine = Arc::new(headless.engine);
         adopt_built_engine(&node, &engine, &headless.model).await;
-        // The scripted turn runs a fake python tool in place of the
+        // The scripted turn runs a fake kernel tool in place of the
         // kernel-backed one: the tool records the receipt while its cell's
         // result row has not landed.
         engine
             .session
             .agent()
-            .set_tools(vec![Arc::new(LateReceiptPythonTool {
+            .set_tools(vec![Arc::new(LateReceiptKernelTool {
                 node: Arc::clone(&node),
             })])
             .await;

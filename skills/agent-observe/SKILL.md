@@ -6,59 +6,59 @@ description: Read-only roster and observation of an agent's parent, siblings, an
 # Agent Observe
 
 Observe the current agent's nuclear family through the local daemon: parent,
-siblings, direct children, and self. `list_agents` is the one family roster and
-covers every member `agent_message.send` can reach. `get_agent` also returns an
-inactive child's roster row. `recent_messages` also reads a member no worker
-holds (a passivated or finished child) from its session file, read-only,
-without waking it. They cannot read a root sibling that has no live session in
-this worker.
-This skill is read-only: it can list family sessions, inspect one session, and fetch
-bounded recent message previews. It cannot prompt, steer, clear, kill, rename, or
-otherwise mutate another session.
+siblings, direct children, and self. `agent-observe-list` is the one family
+roster and covers every member `agent-message-send` can reach.
+`agent-observe-get` also returns an inactive child's roster row.
+`agent-observe-recent` also reads a member no worker holds (a passivated or
+finished child) from its session file, read-only, without waking it. They
+cannot read a root sibling that has no live session in this worker.
+These functions are read-only: they can list family sessions, inspect one
+session, and fetch bounded recent message previews. They cannot prompt, steer,
+clear, kill, rename, or otherwise mutate another session.
 
-Call directly from the kernel:
+Call them from the kernel:
 
-```python
-children = await rlm.list_subagents()
-child = next((item for item in children if item.active_session_id), None)
-if child is not None:
-    worker = await agent_observe.get_agent(child.session_name)
-    recent = await agent_observe.recent_messages(child.session_name, limit=6)
-    # Deletion is a parent-owned RLM operation, not an observe mutation:
-    await rlm.delete_subagent(child)
+```scheme
+(define children (rlm-list-subagents))
+(define live (filter (lambda (child) (hash-try-get child 'active_session_id)) children))
+(unless (null? live)
+  (let ([name (hash-ref (car live) 'session_name)])
+    (displayln (agent-observe-get name))
+    (displayln (agent-observe-recent name #:limit 6))
+    ;; Deletion is a parent-owned RLM operation, not an observe mutation:
+    (rlm-delete-subagent (car live))))
 ```
 
 ## API
 
-- `await agent_observe.list_agents()` returns `current` (the calling agent's
-  own row) and `agents` (the family: parent, siblings, and direct children,
-  active or not; the caller is excluded from `agents`). Each row carries
-  `sessionId`, optional `sessionName`, `relationship`
-  (`parent`/`sibling`/`child`), `status` (`running`/`idle` for live sessions,
-  `inactive` without one), the live `activity` (`tool`/`model`/`compacting`/
-  `busy`/`user`/`idle`), `isSessionActive`, the counts known
-  for it (`messageCount`, `queuedCount`, `attachedClients`), `cwd` when the
-  roster row carries it, the parent edges (`parentActiveSessionId`,
-  `parentSessionId`) and `rlmChildId` for subagents, and `firstMessage`
-  (capped at 240 chars) for an inactive child. A member with no live session
-  has no `activeSessionId` and no live detail; address it with
-  `agent_message.send` using its `relationship` plus its `sessionName`, or its
-  `sessionId` when the member has no name. For direct children,
-  `await rlm.list_subagents()` also exposes parent-owned lifecycle handles.
-- `await agent_observe.get_agent(target)` returns `agent`, where `agent`
-  contains one agent summary (the same shape as the roster rows, including a
-  passive child's row). `target` is resolved like other live-session
-  selectors: active id, session id or name, or an unambiguous id suffix.
-- `await agent_observe.recent_messages(target, limit=8, max_chars=800)`
-  returns `agent` (the target's summary), `messages` (up to `limit` recent
-  bounded previews), the clamped `limit` and `maxChars`, and `truncated`
-  (true when older messages exist beyond the returned window). `limit` must be
-  1-50, and `max_chars` must be 80-2000. Each preview's `index` is the
-  message's position in the full transcript.
+- `(agent-observe-list)` returns `current` (the calling agent's own row) and
+  `agents` (the family: parent, siblings, and direct children, active or not;
+  the caller is excluded from `agents`). Each row carries `sessionId`,
+  optional `sessionName`, `relationship` (`parent`/`sibling`/`child`),
+  `status` (`running`/`idle` for live sessions, `inactive` without one), the
+  live `activity` (`tool`/`model`/`compacting`/`busy`/`user`/`idle`),
+  `isSessionActive`, the counts known for it (`messageCount`, `queuedCount`,
+  `attachedClients`), `cwd` when the roster row carries it, the parent edges
+  (`parentActiveSessionId`, `parentSessionId`) and `rlmChildId` for subagents,
+  and `firstMessage` (capped at 240 chars) for an inactive child. A member
+  with no live session has no `activeSessionId` and no live detail; address it
+  with `agent-message-send` using its `relationship` plus its `sessionName`,
+  or its `sessionId` when the member has no name. For direct children,
+  `(rlm-list-subagents)` also exposes parent-owned lifecycle rows.
+- `(agent-observe-get target)` returns one agent summary (the same shape as
+  the roster rows, including a passive child's row). `target` is resolved like
+  other live-session selectors: active id, session id or name, or an
+  unambiguous id suffix.
+- `(agent-observe-recent target #:limit #:max-chars)` returns `agent` (the
+  target's summary), `messages` (up to `#:limit` recent bounded previews,
+  default 8), the clamped `limit` and `maxChars`, and `truncated` (true when
+  older messages exist beyond the returned window). `#:limit` must be 1-50,
+  and `#:max-chars` must be 80-2000 (default 800). Each preview's `index` is
+  the message's position in the full transcript.
 
 ## Safety
 
-- This skill is read-only and exposes no mutation commands.
+- These functions are read-only and expose no mutation.
 - Targets outside the nuclear family are rejected; transcript reads follow the
   same family rule as messaging.
 - Message access is bounded by count and per-message character limit.

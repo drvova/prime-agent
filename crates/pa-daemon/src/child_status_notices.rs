@@ -55,7 +55,9 @@ fn pending() -> &'static Mutex<HashMap<String, Instant>> {
 /// 3): eviction could drop a still-live mint; growth is bounded and mints age out.
 pub(crate) fn mint() -> String {
     let nonce = uuid::Uuid::new_v4().to_string();
-    let mut registry = pending().lock().unwrap();
+    let mut registry = pending()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = Instant::now();
     registry.retain(|_, minted| now.duration_since(*minted) < MINT_TTL);
     registry.insert(nonce.clone(), now);
@@ -69,7 +71,11 @@ pub(crate) fn consume(nonce: Option<&str>) -> bool {
     let Some(nonce) = nonce else {
         return false;
     };
-    pending().lock().unwrap().remove(nonce).is_some()
+    pending()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(nonce)
+        .is_some()
 }
 
 #[cfg(test)]

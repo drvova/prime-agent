@@ -25,7 +25,7 @@ impl WorkerMcpLoginUi {
     /// environment) records authorization URLs for headless verification.
     pub fn from_env() -> Self {
         WorkerMcpLoginUi {
-            auth_url_file: std::env::var_os(AUTH_URL_FILE_ENV).map(PathBuf::from),
+            auth_url_file: pa_types::session_scope::var_os(AUTH_URL_FILE_ENV).map(PathBuf::from),
         }
     }
 

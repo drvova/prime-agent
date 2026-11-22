@@ -56,6 +56,10 @@ pub(super) enum AdoptionBoot {
     },
     /// Plain startup: only journal-proven live work revives.
     PlainStartup,
+    /// Not a boot: a session the boot left down has a scheduled job due (see
+    /// `scheduled_wake.rs`). It relaunches without busy evidence, under the same
+    /// ownership vetoes, and its relaunch is no recovery from a daemon death.
+    ScheduledWake,
 }
 
 /// One descriptor's boot-adoption decision, reported as a count in the
@@ -108,6 +112,26 @@ impl Supervisor {
     /// never jumps ahead of a session the user is starting.
     pub(super) async fn adopt_persisted_workers(self: &Arc<Self>, boot: AdoptionBoot) {
         let descriptors = load_descriptors(&self.descriptor_dir, &self.options.socket_path);
+        // The roster's fault marks are in memory; the session records keep each
+        // session's last fault and what became of it, so a restarted daemon's
+        // agents view shows the same marks its predecessor's did.
+        {
+            let mut roster = self
+                .roster
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (_, descriptor) in &descriptors {
+                if let (Some(session_file), Some(fault)) = (
+                    descriptor.session_file.as_deref(),
+                    descriptor
+                        .rest
+                        .get("lastCrash")
+                        .filter(|fault| fault["state"].is_string()),
+                ) {
+                    roster.set_session_fault(session_file, fault.clone());
+                }
+            }
+        }
         let adopted_live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let revived = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let skipped_idle = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -163,6 +187,7 @@ impl Supervisor {
             let boot_label = match boot {
                 AdoptionBoot::UpdateRoster { .. } => "update",
                 AdoptionBoot::PlainStartup => "plain",
+                AdoptionBoot::ScheduledWake => "scheduled",
             };
             self.note_worker_adoption(
                 boot_label,
@@ -212,7 +237,7 @@ impl Supervisor {
     /// Adopt one persisted worker descriptor. Serialized against worker
     /// self-registration by the per-worker adoption gate: whichever path
     /// arrives first builds the roster entry; the other finds it present.
-    async fn adopt_persisted_worker(
+    pub(super) async fn adopt_persisted_worker(
         self: &Arc<Self>,
         path: PathBuf,
         descriptor: crate::descriptor::WorkerDescriptor,
@@ -318,8 +343,29 @@ impl Supervisor {
             let kept = match &boot {
                 AdoptionBoot::UpdateRoster { kept } => kept.contains(&worker_id),
                 AdoptionBoot::PlainStartup => false,
+                // A due job is this relaunch's whole reason, as the roster is a kept one's.
+                AdoptionBoot::ScheduledWake => true,
             };
             if !interrupted && !kept {
+                self.clear_host_death_count(&resident).await;
+                // Its scheduled work went down with it: the session comes back when its
+                // earliest active job is due, not before.
+                let (session_file, session_id) = {
+                    let descriptor = resident.descriptor.lock().await;
+                    (
+                        descriptor.session_file.clone(),
+                        descriptor.root_session_id.clone(),
+                    )
+                };
+                if let Some(session_file) = session_file {
+                    let session_id = session_id.unwrap_or_else(|| {
+                        Path::new(&session_file)
+                            .file_stem()
+                            .map(|stem| stem.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    });
+                    self.arm_scheduled_wake(worker_id.clone(), &session_file, &session_id);
+                }
                 // Dead worker with no durable busy state — and, on an update boot, not
                 // kept: leave it down (the descriptor stays on disk); the session reopens
                 // on the next client create.
@@ -352,8 +398,60 @@ impl Supervisor {
             // Dead worker with journal-proven live work (or a kept worker): relaunch from
             // the durable create command. The spawned child rides out to the monitor arming
             // below — the descriptor's pid is the DEAD pre-restart holder.
+            // An update restart settled its sessions on the way down; any
+            // other boot that finds a turn in flight follows a daemon death.
+            // A deliberate shutdown is neither: its sessions recorded it, and
+            // the turn it cut short continues by design.
+            let shut_down = crate::journal::WorkerRecoveryJournal::read_latest(&journal_path)
+                .is_ok_and(|records| {
+                    records
+                        .iter()
+                        .filter(|record| record.busy)
+                        .all(|record| record.operation == "shutdown")
+                });
+            let host_died = interrupted && !kept && !shut_down;
+            // The transcript says how far the interrupted turn got: the
+            // journal is made to redeliver only what is still owed of it.
+            let session_file = resident.descriptor.lock().await.session_file.clone();
+            let revived_turn = match session_file.filter(|_| interrupted) {
+                Some(session_file) => {
+                    let journal_path = journal_path.clone();
+                    let settled = tokio::task::spawn_blocking(move || {
+                        crate::revived_turn::settle_in_journal(
+                            &journal_path,
+                            std::path::Path::new(&session_file),
+                        )
+                    })
+                    .await;
+                    match settled {
+                        Ok(Ok(revived_turn)) => revived_turn,
+                        Ok(Err(error)) => {
+                            self.log_line(&format!(
+                                "session worker {worker_id}: its interrupted turn could not be checked against its transcript (it is redelivered as queued): {error:#}"
+                            ));
+                            None
+                        }
+                        Err(error) => {
+                            self.log_line(&format!(
+                                "session worker {worker_id}: its interrupted turn could not be checked against its transcript (it is redelivered as queued): {error}"
+                            ));
+                            None
+                        }
+                    }
+                }
+                None => None,
+            };
+            if host_died {
+                self.record_host_death(&resident, revived_turn).await;
+            }
             match self.relaunch_worker(&resident).await {
-                Ok(child) => (Ok(()), Some(child)),
+                Ok(child) => {
+                    // The roster row of a session the daemon died under says it is back.
+                    if host_died {
+                        self.publish_fault_state(&resident, "recovered").await;
+                    }
+                    (Ok(()), Some(child))
+                }
                 Err(error) => (Err(error), None),
             }
         };

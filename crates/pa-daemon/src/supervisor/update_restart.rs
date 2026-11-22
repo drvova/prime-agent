@@ -464,6 +464,9 @@ impl Supervisor {
     /// descriptors on disk — the successor's restore relaunches from them. Contrast
     /// `begin_shutdown`, which deletes descriptors for a terminal stop.
     fn exit_for_update(self: &Arc<Self>) {
+        // The successor is started by the update, with its own restart owner: this daemon's
+        // owner must not answer the handoff with a restart of the old binary.
+        self.note_deliberate_stop();
         // Publish the accept-loop exit before the general shutdown gate, so a client
         // disconnect never observes the transient `shutting_down && !accept_exit` window
         // and mistakes the update restart for a terminal stop pass.

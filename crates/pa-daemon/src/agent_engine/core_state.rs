@@ -21,10 +21,13 @@ pub(crate) struct BuiltHandles {
     /// The in-run autonomous consult's view (see
     /// [`crate::autonomous_continuation`]).
     pub(crate) autonomous_boundary: AutonomousBoundaryMirror,
-    /// The count of live kernel background `bash()` handles (`0` = none).
+    /// The count of the kernel's live background jobs: shell commands and
+    /// cells that outlived their call (`0` = none).
     pub(crate) background_bash_probe: Arc<dyn Fn() -> usize + Send + Sync>,
-    /// The stop-with-snapshot kernel release over a weak provisioner
-    /// reference (the park arm never takes the session mutex).
+    /// The settled session's kernel release over a weak provisioner
+    /// reference (the park arm never takes the session mutex): the engine,
+    /// its shell commands and its MCP connections go, and the model is told
+    /// on its next turn that its definitions went with them.
     pub(crate) kernel_release: SettledKernelRelease,
     pub(crate) progress_notes: Arc<pa_core::session_engine::rlm_host::RlmProgressNotes>,
     /// The last emitted `goal_update`; unchanged states stay silent.
@@ -50,19 +53,13 @@ impl BuiltHandles {
             background_bash_probe: Arc::new(move || {
                 provisioner
                     .upgrade()
-                    .and_then(|provisioner| provisioner.manager())
-                    .map_or(0, |manager| manager.background_job_count())
+                    .map_or(0, |provisioner| provisioner.background_job_count())
             }),
             kernel_release: Arc::new(move || {
                 let provisioner = release_provisioner.clone();
                 Box::pin(async move {
                     if let Some(provisioner) = provisioner.upgrade() {
-                        provisioner
-                            .stop_kernel(Some(pa_core::kernel::shared::KernelShutdownOptions {
-                                snapshot: true,
-                                drain_host_requests: true,
-                            }))
-                            .await;
+                        provisioner.release().await;
                     }
                 })
             }),

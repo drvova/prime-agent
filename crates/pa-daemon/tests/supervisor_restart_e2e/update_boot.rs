@@ -1,9 +1,9 @@
-//! The update-boot revival regression: only roster-kept workers revive
+//! The update-boot revival regression: only roster-kept sessions revive
 use super::*;
 
-/// An update boot relaunches the dead workers its roster keeps, plus any
-/// with durable busy evidence; an unkept idle descriptor must never revive
-/// (the parked session may have a newer worker from a client reopen).
+/// An update boot relaunches the sessions its roster keeps, plus any with
+/// durable busy evidence; an unkept idle descriptor must never revive (the
+/// parked session may have been reopened by a client since).
 #[test]
 fn update_boot_revives_only_roster_kept_workers() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -60,32 +60,9 @@ fn update_boot_revives_only_roster_kept_workers() {
         sessions.push(session_id);
     }
 
-    // Kill the workers by the supervisor's live children, not the
-    // descriptor pids: a mid-test replacement can leave the descriptor
-    // stale, and a stale-pid kill would leave the real worker running.
-    let supervisor_pid = daemon.child.id();
-    let worker_pids = child_pids_of(supervisor_pid);
-    assert_eq!(
-        worker_pids.len(),
-        2,
-        "two session workers under the supervisor"
-    );
+    // Both sessions die, idle, with the daemon that hosts them.
     daemon.child.kill().expect("kill -9 supervisor");
     let _ = daemon.child.wait();
-    for pid in &worker_pids {
-        std::process::Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status()
-            .expect("kill -9 worker");
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    for pid in &worker_pids {
-        while process_alive(*pid) {
-            assert!(Instant::now() < deadline, "worker {pid} never died");
-            std::thread::sleep(Duration::from_millis(20));
-        }
-    }
 
     // The roster keeps only the first session's worker; no session rows
     // (the adoption pass's filter is under test).
@@ -168,7 +145,7 @@ fn update_boot_revives_only_roster_kept_workers() {
         "only the roster-kept session came back"
     );
 
-    let relaunched = load_worker_descriptor(&agent_dir, &socket, &sessions[0]);
+    let relaunched = session_socket(&agent_dir, &socket, &sessions[0]);
     client2.send_command("sd", &json!({ "type": "shutdown" }));
     let shutdown = client2.read_response("sd");
     assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
@@ -177,12 +154,5 @@ fn update_boot_revives_only_roster_kept_workers() {
         assert!(Instant::now() < deadline, "restarted supervisor exited");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while process_alive(relaunched.pid) {
-        assert!(
-            Instant::now() < deadline,
-            "relaunched worker leaked after shutdown"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    assert_sessions_gone(&agent_dir, &[relaunched]);
 }

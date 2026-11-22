@@ -3,11 +3,11 @@
 Open `/mcp` (or `/plugins`), search for **Slack**, and connect. You can also
 run `/mcp login slack` inside Prime Agent. Complete Slack's consent screen in
 your browser. The connection becomes available to the current session through
-the generic `mcp` Python API:
+the kernel's generic `mcp-*` functions:
 
-```python
-tools = await mcp.list_tools("slack")
-# Read the returned inputSchema before calling a tool.
+```scheme
+(define tools (mcp-list-tools "slack"))
+; Read the returned inputSchema before calling a tool.
 ```
 
 Prime Agent connects to Slack's hosted Streamable HTTP server at

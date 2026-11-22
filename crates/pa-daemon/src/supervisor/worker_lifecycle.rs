@@ -185,7 +185,7 @@ impl Supervisor {
             .map(str::to_string)
             .or(saved_cwd)
             .or_else(|| {
-                std::env::current_dir()
+                pa_types::session_scope::current_dir()
                     .ok()
                     .map(|p| p.to_string_lossy().to_string())
             })
@@ -690,7 +690,8 @@ impl Supervisor {
         }
         // The supervisor-side settings re-read (the fence): the same
         // `idleEvictionMinutes` surface the worker read.
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+        let cwd = pa_types::session_scope::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("/"));
         let settings =
             pa_core::settings::SettingsManager::create(cwd.as_path(), &self.options.agent_dir);
         let Some(current) = crate::idle_eviction::eviction_threshold(settings.get_idle_eviction())
@@ -917,6 +918,22 @@ impl Supervisor {
         let Ok(worker_pid) = i32::try_from(pid) else {
             return;
         };
+        // A hosted session's commands were children of the daemon process
+        // that hosted it, and their journal records name that process as
+        // the owner: the generation (`hosted:<daemon pid>:<uuid>`) carries
+        // it. A worker process's records name the worker itself.
+        let journal_owner = if crate::session_host::is_hosted_pid(worker_pid as u32) {
+            start_id
+                .as_deref()
+                .and_then(|generation| generation.strip_prefix("hosted:"))
+                .and_then(|rest| rest.split(':').next())
+                .and_then(|daemon_pid| daemon_pid.parse::<i32>().ok())
+        } else {
+            Some(worker_pid)
+        };
+        let Some(journal_owner) = journal_owner else {
+            return;
+        };
         // The reap is blocking file I/O and kill signals (and on macOS a
         // `ps` probe): keep it off the async executor, as the adoption
         // identity probes do.
@@ -932,7 +949,7 @@ impl Supervisor {
             }
             pa_core::kernel::orphan_journal::reap_worker_orphan_processes(
                 Path::new(&orphan_path),
-                worker_pid,
+                journal_owner,
             );
         })
         .await;
@@ -1013,7 +1030,7 @@ pub(super) async fn probe_worker_socket(
 /// worker-connect budget from spawn time (the TS default, or the env override). An override
 /// past the representable range falls back to the default.
 pub(super) fn worker_connect_deadline() -> tokio::time::Instant {
-    let timeout_ms = std::env::var(WORKER_CONNECT_TIMEOUT_ENV)
+    let timeout_ms = pa_types::session_scope::var(WORKER_CONNECT_TIMEOUT_ENV)
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
         .filter(|ms| *ms > 0)
@@ -1124,7 +1141,7 @@ mod tests {
     }
 
     fn reaped_pid() -> u32 {
-        let mut child = std::process::Command::new("true")
+        let mut child = pa_types::session_scope::std_command("true")
             .spawn()
             .expect("spawn true");
         let pid = child.id();

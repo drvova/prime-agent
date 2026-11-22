@@ -23,7 +23,7 @@ use crate::worker::Worker;
 /// worker's) advertise the lane only while the setting reads enabled.
 pub(crate) fn factory_lane_enabled(agent_dir: &Path) -> bool {
     pa_core::settings::SettingsManager::create(
-        std::env::current_dir().unwrap_or_default(),
+        pa_types::session_scope::current_dir().unwrap_or_default(),
         agent_dir,
     )
     .get_factory_enabled()

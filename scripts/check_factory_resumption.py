@@ -22,18 +22,17 @@ from lifecycle_lib import OwnedProcesses, TAG, finish
 from check_restore_notice import texts
 
 MARKER = 'FACTORY_RECOVERY_RESULT='
-CELL = '''import asyncio, json, time
-factory_harness = rlm.get_harness_state()
-factory_harness.create_factory('Recovery fixture', 'Actual factory output recovery', id='recovery-fixture', machine={
-    'states': [{'id': 'work', 'entry': True, 'max_entries': 1,
-                'subagent': {'prompt': 'FACTORY_RECOVERY_CHILD'},
-                'outputs': [{'name': 'data', 'type': 'json'}]},
-               {'id': 'verified', 'max_entries': 1,
-                'subagent': {'prompt': 'FACTORY_RECOVERY_CHILD_VERIFY'}}],
-    'transitions': [{'from': 'work', 'to': 'verified',
-        'when': {'output': 'data', 'path': 'ok', 'op': 'eq', 'value': True}}]})
-factory_started = await rlm.factory.run('recovery-fixture')
-print('FACTORY_RECOVERY_RESULT=' + json.dumps(factory_started))'''
+CELL = '''(harness-create-factory "Recovery fixture" "Actual factory output recovery" #:id "recovery-fixture"
+  #:machine (hash
+    'states (list (hash 'id "work" 'entry #t 'max_entries 1
+                        'subagent (hash 'prompt "FACTORY_RECOVERY_CHILD")
+                        'outputs (list (hash 'name "data" 'type "json")))
+                  (hash 'id "verified" 'max_entries 1
+                        'subagent (hash 'prompt "FACTORY_RECOVERY_CHILD_VERIFY")))
+    'transitions (list (hash 'from "work" 'to "verified"
+                             'when (hash 'output "data" 'path "ok" 'op "eq" 'value #t)))))
+(displayln (string-append "FACTORY_RECOVERY_RESULT="
+                          (value->jsexpr-string (factory-run "recovery-fixture"))))'''
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -69,9 +68,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.server.parent_requests.append(body)
             if len(self.server.parent_requests) == 1:
                 offered = [t['function']['name'] for t in body.get('tools', [])]
-                assert 'python_repl' in offered, offered
+                assert 'eval' in offered, offered
                 delta = {'tool_calls': [{'index': 0, 'id': 'factory_probe', 'type': 'function',
-                    'function': {'name': 'python_repl', 'arguments': json.dumps({'code': CELL})}}]}
+                    'function': {'name': 'eval', 'arguments': json.dumps({'code': CELL})}}]}
                 reason = 'tool_calls'
             else:
                 delta, reason = {'content': 'Factory probe complete.'}, 'stop'

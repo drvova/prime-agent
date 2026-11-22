@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hosted actual RLM spawn, durable ledger and warm-list liveness check.
 
-A real parent kernel admits a child with rlm.spawn. The synthetic provider holds
+A real parent kernel admits a child with rlm-spawn. The synthetic provider holds
 that child's turn while the daemon answers repeated list/roster reads. This checks
 the live family plus real disk relocation/deletion, the ended child's current exit
 sidecar and catalog wake restore. Historical flat-path tombstone rows are explicit
@@ -28,9 +28,9 @@ CHILD = 'LEDGER_LIVENESS_CHILD_HOLD'
 NAME = 'ledger-fixture-child'
 BILLING = 'LEDGER_CACHE_BILLING_TURN'
 MARKER = 'LEDGER_LIVENESS_ADMITTED='
-CODE = """import json
-ledger_handle = await rlm.spawn('LEDGER_LIVENESS_CHILD_HOLD', name='ledger-fixture-child')
-print('LEDGER_LIVENESS_ADMITTED=' + json.dumps({'child_id': ledger_handle.rlm_child_id}))"""
+CODE = """(define ledger-handle (rlm-spawn "LEDGER_LIVENESS_CHILD_HOLD" #:name "ledger-fixture-child"))
+(displayln (string-append "LEDGER_LIVENESS_ADMITTED="
+                          (value->jsexpr-string (hash 'child_id (hash-ref ledger-handle 'rlm_child_id)))))"""
 
 
 def admitted_probe(body):
@@ -129,9 +129,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.server.parent_calls += 1
                 if self.server.parent_calls == 1:
                     offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-                    tool = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+                    tool = 'eval' if 'eval' in offered else None
                     if tool is None:
-                        self.send_error(422, 'No real REPL tool offered')
+                        self.send_error(422, 'No kernel tool offered')
                         return
                     delta = {'tool_calls': [{'index': 0, 'id': 'ledger_spawn', 'type': 'function',
                               'function': {'name': tool, 'arguments': json.dumps({'code': CODE})}}]}
@@ -244,7 +244,7 @@ def cache_boundaries(client, config, root, created, child, ledger_path, provider
     usage = own.get('usage')
     assert usage and usage['inputTokens'] > 0 and usage['outputTokens'] > 0, own
     # Controlled, valid historic ledger input: unlike the initial admission this
-    # edge is seeded by the fixture, never claimed to be an actual rlm.spawn.
+    # edge is seeded by the fixture, never claimed to be an actual rlm-spawn.
     records = [
         {'v': 1, 'op': 'spawn', 'at': '2026-01-01T00:00:00Z', 'childId': 'fixture-flat-child',
          'parent': str(parent_file), 'child': str(billing_file), 'depth': 1, 'name': 'billing-child'},

@@ -218,7 +218,7 @@ impl RegistrationTask {
             socket_path: self.identity.socket_path.clone(),
             worker_instance_id: self.identity.worker_instance_id.clone(),
             token: self.identity.token.clone(),
-            pid: u64::from(std::process::id()),
+            pid: u64::from(crate::session_host::session_pid()),
             rest: Map::default(),
         };
         let envelope = json!({
@@ -308,7 +308,7 @@ async fn read_line(reader: &mut BufReader<Box<dyn AsyncReadHalf>>) -> Result<Val
 }
 
 fn debug_log(message: &str) {
-    if std::env::var("PA_DAEMON_DEBUG").is_ok() {
+    if pa_types::session_scope::var("PA_DAEMON_DEBUG").is_ok() {
         eprintln!("[worker {} registration] {message}", std::process::id());
     }
 }

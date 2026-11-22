@@ -124,7 +124,7 @@ impl RosterPushQueue {
     /// Spawn the flush consumer: flushes serialize here, so a wedged
     /// supervisor delays pushes but never reorders them.
     pub(crate) fn spawn(context: crate::worker::RosterPushContext) -> Self {
-        if std::env::var_os(ROSTER_PUSH_DISABLE_ENV).is_some()
+        if pa_types::session_scope::var_os(ROSTER_PUSH_DISABLE_ENV).is_some()
             || context.worker_token.is_empty()
             || context.roster_link.socket_path().as_os_str().is_empty()
         {

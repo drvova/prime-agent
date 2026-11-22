@@ -175,6 +175,12 @@ fn spawn_supervisor_detached(socket_path: &Path, spawn_cwd: &Path, exe: &Path) -
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // The spawned process is the daemon's restart owner: it starts the daemon with these same
+    // arguments and starts it again when it dies abnormally. Unix only: the owner forwards
+    // signals and reads the daemon's terminating signal, neither of which exists on Windows,
+    // where the daemon is started unkept as before.
+    #[cfg(unix)]
+    command.env(pa_daemon::keeper::KEEPER_ENV, "1");
     // The binary entry strips any inherited worker handshake env, so the
     // spawned supervisor never starts in worker mode. A daemon must also not
     // share the launching TUI's terminal session: a session-wide terminal

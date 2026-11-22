@@ -79,52 +79,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     panic!("supervisor socket never appeared");
 }
 
-/// Liveness that ignores zombies (a killed child nobody has reaped yet
-/// keeps its `/proc` entry until the status is collected).
-fn process_alive(pid: u32) -> bool {
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-        return false;
-    };
-    let Some((_, rest)) = stat.rsplit_once(')') else {
-        return false;
-    };
-    let state = rest.split_whitespace().next().unwrap_or_default();
-    !state.starts_with('Z') && !state.starts_with('X')
-}
-
-/// SIGSTOP the worker and wait until every one of its threads is parked:
-/// `kill` returns once the stop is queued, and a runtime thread still running
-/// serves the next command before it stops.
-fn freeze(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-STOP")
-        .arg(pid.to_string())
-        .status()
-        .expect("SIGSTOP the worker");
-    assert!(status.success(), "SIGSTOP must reach the worker");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !all_threads_stopped(pid) {
-        assert!(Instant::now() < deadline, "the worker never stopped");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Whether every `/proc/<pid>/task/<tid>/stat` reads `T` (stopped).
-fn all_threads_stopped(pid: u32) -> bool {
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-        return false;
-    };
-    let states: Vec<Option<char>> = tasks
-        .flatten()
-        .map(|task| {
-            let stat = std::fs::read_to_string(task.path().join("stat")).ok()?;
-            let (_, rest) = stat.rsplit_once(')')?;
-            rest.split_whitespace().next()?.chars().next()
-        })
-        .collect();
-    !states.is_empty() && states.iter().all(|state| *state == Some('T'))
-}
-
 struct Client {
     reader: BufReader<UnixStream>,
     writer: UnixStream,
@@ -292,104 +246,6 @@ fn session_state(session_file: &Path) -> String {
 }
 
 #[test]
-fn a_hung_worker_is_killed_within_the_escalation_window_and_its_lease_frees() {
-    let dir = tempfile::TempDir::new().expect("temp dir");
-    let agent_dir = dir.path().join("agent");
-    // The sessions dir exists before the create: the lease keys on the
-    // canonical session path.
-    std::fs::create_dir_all(agent_dir.join("sessions")).expect("sessions dir");
-    let socket = dir.path().join("escalation.sock");
-    let daemon = spawn_supervisor(&socket, &agent_dir);
-    let mut client = Client::connect(&socket);
-    let session = create_session(&mut client, "create", dir.path(), &agent_dir);
-    let session_file = session_file_of(&mut client, &session.active_id);
-    let (descriptor, worker_pid) = worker_descriptor_of(&agent_dir, &socket, &session.session_id);
-
-    assert!(
-        pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir).is_err(),
-        "the live worker must hold the session lease"
-    );
-
-    // SIGSTOP freezes the worker's command pump: the routed kill and the
-    // stop's graceful `shutdown` both go unanswered.
-    freeze(worker_pid);
-
-    // THE STOP: the route times out; the stop completes anyway (TS's
-    // root-kill `finally`) and escalates.
-    let sent = Instant::now();
-    let killed = client.request(
-        "kill",
-        &json!({ "type": "kill", "activeSessionId": session.active_id }),
-    );
-    let elapsed = sent.elapsed();
-    assert_eq!(
-        killed["success"], false,
-        "the hung worker never answers: {killed}"
-    );
-    assert!(
-        killed["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("timed out")),
-        "the refusal is the route timeout: {killed}"
-    );
-    assert!(
-        elapsed >= Duration::from_secs(30),
-        "the graceful route window must run before the escalation: {elapsed:?}"
-    );
-    assert!(
-        elapsed <= Duration::from_secs(105),
-        "the escalation must stay bounded: {elapsed:?}"
-    );
-
-    // Only the SIGKILL half of the escalation can end a SIGSTOPped process.
-    assert!(
-        !process_alive(worker_pid),
-        "the escalation must have killed the hung worker"
-    );
-    assert!(
-        !descriptor.exists(),
-        "the provably-dead worker's descriptor must be gone"
-    );
-    assert_eq!(session_state(&session_file), "archived");
-
-    let lease = pa_daemon::lease::acquire_runtime_session_lease(&session_file, &agent_dir)
-        .expect("the dead worker's lease must be reclaimable");
-    drop(lease);
-    let reopened = client.request(
-        "reopen",
-        &json!({
-            "type": "create",
-            "sessionPath": session_file.to_string_lossy(),
-            "config": {
-                "cwd": dir.path().to_string_lossy(),
-                "sessionDir": agent_dir.join("sessions").to_string_lossy(),
-                "script": write_script(dir.path()).to_string_lossy(),
-                "name": "stop-escalation",
-            },
-        }),
-    );
-    assert_eq!(
-        reopened["success"], true,
-        "the stopped session must reopen: {reopened}"
-    );
-
-    // The reopened worker is a normal citizen: the wire kill cleans it up
-    // (no leftovers for the test machine).
-    let reopened_id = reopened["data"]["activeSessionId"]
-        .as_str()
-        .or_else(|| reopened["data"]["id"].as_str())
-        .expect("reopened session id");
-    let cleaned = client.request(
-        "cleanup",
-        &json!({ "type": "kill", "activeSessionId": reopened_id }),
-    );
-    assert_eq!(cleaned["success"], true, "cleanup kill failed: {cleaned}");
-
-    drop(client);
-    drop(daemon);
-}
-
-#[test]
 fn a_well_behaved_worker_keeps_the_clean_stop() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
@@ -413,14 +269,15 @@ fn a_well_behaved_worker_keeps_the_clean_stop() {
         "the clean stop must not wait out a route budget: {elapsed:?}"
     );
 
+    assert!(
+        pa_daemon::session_host::is_hosted_pid(worker_pid),
+        "the session is hosted by the daemon, not a process: {worker_pid}"
+    );
+    // The stop retires the session once its host thread has let go.
     let deadline = Instant::now() + Duration::from_secs(15);
-    while process_alive(worker_pid) && Instant::now() < deadline {
+    while descriptor.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(
-        !process_alive(worker_pid),
-        "the worker must exit on the stop"
-    );
     assert!(
         !descriptor.exists(),
         "the cleanly stopped worker's descriptor must be gone"

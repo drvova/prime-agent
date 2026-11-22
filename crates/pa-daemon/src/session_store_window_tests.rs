@@ -219,7 +219,7 @@ fn window_preserves_transcript_metadata_and_append_then_hydrate() {
 #[test]
 #[ignore = "requires a captured local session path"]
 fn captured_window_matches_full_transcript_and_stats() {
-    let source = PathBuf::from(std::env::var("PA_WINDOW_FIXTURE").unwrap());
+    let source = PathBuf::from(pa_types::session_scope::var("PA_WINDOW_FIXTURE").unwrap());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("capture.jsonl");
     std::fs::copy(source, &path).unwrap();

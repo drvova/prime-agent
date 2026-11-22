@@ -9,8 +9,8 @@
 )]
 
 //! Verifier: the end-turn contract over a REAL kernel and the full
-//! session-engine tool path. One scripted `python_repl` turn runs
-//! `rlm.end_turn()`; the kernel marks the cell, the tool result carries
+//! session-engine tool path. One scripted `eval` turn runs
+//! `(rlm-end-turn)`; the kernel marks the cell, the tool result carries
 //! the "turn ended" confirmation, the batch terminates, and no further
 //! assistant response is streamed (the pushed second turn stays
 //! unconsumed). The settled ruling's second half is pinned too: the turn
@@ -20,7 +20,6 @@
 //! `ScriptedProvider` answers from the pushed turns.
 #![cfg(unix)]
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -32,66 +31,6 @@ use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use pa_core::session_engine::messages::ASYNC_BASH_COMPLETION_CUSTOM_TYPE;
 use pa_core::session_engine::PromptOptions;
 use serde_json::json;
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-/// This binary carries exactly one live-kernel test, so nothing races.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
@@ -114,28 +53,14 @@ fn registry_model() -> pa_types::ai::Model {
     .expect("faux registry model")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
-
-    // Hermeticity: the kernel runs on the bootstrapped kernel venv, and no
-    // ambient agent state leaks in.
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
 
     // A persisted session: the transcript rows land in the session file.
     let mut session = SessionManager::in_memory(&cwd);
@@ -163,8 +88,8 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         Some("ending the turn"),
         vec![(
             "call-1",
-            "python_repl",
-            json!({ "code": "h = bash('sleep 3 && echo background-marker')\nresult = await rlm.end_turn()\nresult" }),
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": "(define job (bash \"sleep 3 && echo background-marker\" (hash 'background #t)))\n(display (list \"ended\" (hash-ref (rlm-end-turn) 'endedTurn)))" }),
         )],
     )));
     provider.push_text_turn("never reached");
@@ -204,8 +129,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         telemetry: None,
         model_info: Some(registry_model()),
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: Some(wake),
         queued_goal_context_purge: None,
@@ -248,7 +172,7 @@ async fn an_end_turn_cell_ends_the_turn_without_another_assistant_response() {
         "the tool result must carry the end-turn confirmation: {serialized}"
     );
     assert!(
-        serialized.contains("{'endedTurn': True}"),
+        serialized.contains("(ended #true)"),
         "the cell must surface the host reply: {serialized}"
     );
 

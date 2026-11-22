@@ -27,11 +27,10 @@ DEFAULT = {'type': 'http', 'url': 'https://fixture.invalid/default', 'oauth': Tr
 BEFORE = {'type': 'http', 'url': 'https://fixture.invalid/mcp', 'oauth': True,
           'clientId': 'fixture-client-before', 'callbackPort': 3118}
 AFTER = {**BEFORE, 'clientId': 'fixture-client-after', 'callbackPort': 4118}
-CELL = """from rlm import host_request
-oauth_configs = {}
-for name in ('fixture-oauth', 'fixture-default'):
-    oauth_configs[name] = await host_request('mcp.config', {'server': name})
-print('MCP_OAUTH_CONFIG_RESULT=' + __import__('json').dumps(oauth_configs))"""
+CELL = """(define (oauth-config name) (host-request "mcp.config" (hash 'server name)))
+(displayln (string-append "MCP_OAUTH_CONFIG_RESULT="
+                          (value->jsexpr-string (hash 'fixture-oauth (oauth-config "fixture-oauth")
+                                                      'fixture-default (oauth-config "fixture-default")))))"""
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -57,9 +56,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         requests.append(body)
         if len(requests) == 1:
             offered = {tool['function']['name'] for tool in body.get('tools', [])}
-            name = next((n for n in ('python_repl', 'ipython') if n in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.server.errors.append('no Python REPL tool')
+                self.server.errors.append('no kernel tool')
                 self.send_error(422)
                 return
             delta = {'tool_calls': [{'index': 0, 'id': 'oauth_config_' + self.server.phase,

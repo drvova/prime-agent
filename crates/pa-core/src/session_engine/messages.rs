@@ -250,7 +250,7 @@ fn push_output_tail(content: &mut String, output: BackgroundOutputTail<'_>, full
 
 /// The detached kernel bash completion notice: the `[bash-done pid:N exit:M]` header,
 /// the JSON-encoded command, and the output tail, so the model reads the result
-/// without spending a round on `await h`. A later kernel read that reaches the
+/// without spending a round on reading the job. A later kernel read that reaches the
 /// model first withdraws it through its details (`bash.consumed`).
 #[must_use]
 pub fn create_async_bash_completion_message(
@@ -264,7 +264,11 @@ pub fn create_async_bash_completion_message(
     let encoded_command = serde_json::to_string(command).unwrap_or_default();
     let mut content =
         format!("[bash-done pid:{pid} exit:{exit_code}]\n\nCommand: {encoded_command}");
-    push_output_tail(&mut content, output, "`await h` on the saved handle");
+    push_output_tail(
+        &mut content,
+        output,
+        "`(bash-output job)` with the job's id",
+    );
     pa_types::session::CustomMessage {
         custom_type: ASYNC_BASH_COMPLETION_CUSTOM_TYPE.to_string(),
         content: UserContent::Text(content),
@@ -273,6 +277,37 @@ pub fn create_async_bash_completion_message(
             "pid": pid,
             "command": command,
             "exitCode": exit_code,
+        })),
+        timestamp,
+        rest: serde_json::Map::default(),
+    }
+}
+
+/// The notice for a detached command that was still running when its kernel
+/// ended: the `[bash-lost pid:N]` header, the JSON-encoded command, and what
+/// became of it. It rides the `[bash-done]` row type, so it queues, wakes
+/// and renders as a completion does; its details carry `lost` in place of an
+/// exit code.
+#[must_use]
+pub fn create_async_bash_lost_message(
+    pid: u32,
+    command: &str,
+    timestamp: u64,
+) -> pa_types::session::CustomMessage {
+    let encoded_command = serde_json::to_string(command).unwrap_or_default();
+    pa_types::session::CustomMessage {
+        custom_type: ASYNC_BASH_COMPLETION_CUSTOM_TYPE.to_string(),
+        content: UserContent::Text(format!(
+            "[bash-lost pid:{pid}]\n\nCommand: {encoded_command}\n\n\
+             This command was still running when the session's kernel ended \
+             (the session was stopped or restarted, or its host exited), so it \
+             was killed and has no result. Start it again if you still need it."
+        )),
+        display: true,
+        details: Some(serde_json::json!({
+            "pid": pid,
+            "command": command,
+            "lost": true,
         })),
         timestamp,
         rest: serde_json::Map::default(),
@@ -326,7 +361,7 @@ pub fn create_async_cell_completion_message(
     push_output_tail(
         &mut content,
         output,
-        &format!("`await rlm.cells.get({encoded_cell})`"),
+        &format!("`(cell-status {encoded_cell})`"),
     );
     pa_types::session::CustomMessage {
         custom_type: ASYNC_CELL_COMPLETION_CUSTOM_TYPE.to_string(),
@@ -462,6 +497,7 @@ pub fn convert_to_llm(messages: &[AgentMessage]) -> Vec<AgentMessage> {
                         | MCP_CONNECTION_OUTCOME_CUSTOM_TYPE
                         | REFINEMENT_OUTCOME_CUSTOM_TYPE
                         | PROVIDER_RETRY_OUTCOME_CUSTOM_TYPE
+                        | pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE
                         | crate::prompts::model_prompts::MODEL_PROMPT_ERROR_CUSTOM_TYPE
                 ) {
                     continue;
@@ -855,7 +891,7 @@ state
                 custom_type: "async_bash_completion".to_string(),
                 content: UserContent::Text(
                     "[bash-done pid:4321 exit:0]\n\nCommand: \"sleep 12; echo RW_WAKE_DONE\"\n\n\
-                     Output (truncated, newest lines only; `await h` on the saved handle for the full output):\n\
+                     Output (truncated, newest lines only; `(bash-output job)` with the job's id for the full output):\n\
                      ```\nline 19\nRW_WAKE_DONE\n```"
                         .to_string()
                 ),
@@ -900,7 +936,7 @@ state
                 custom_type: "async_cell_completion".to_string(),
                 content: UserContent::Text(
                     "[cell-done cell:cell-7 status:ok]\n\nValue:\n```\n'finished'\n```\n\n\
-                     Output (truncated, newest lines only; `await rlm.cells.get(\"cell-7\")` for the full output):\n\
+                     Output (truncated, newest lines only; `(cell-status \"cell-7\")` for the full output):\n\
                      ```\nstep 19\nstep 20\n```"
                         .to_string()
                 ),

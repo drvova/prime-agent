@@ -263,12 +263,12 @@ pub fn kill_process_group_or_pid(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    let system_root =
-        std::env::var_os("SystemRoot").unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
+    let system_root = pa_types::session_scope::var_os("SystemRoot")
+        .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
     let taskkill = std::path::Path::new(&system_root)
         .join("System32")
         .join("taskkill.exe");
-    let mut command = Command::new(&taskkill);
+    let mut command = pa_types::session_scope::std_command(&taskkill);
     command
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(std::process::Stdio::null())
@@ -293,6 +293,87 @@ pub fn pid_exists(pid: u32) -> bool {
         return false;
     }
     unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Which side of a [`split_process`] the caller is on.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Split {
+    /// The original process; `child` is the new one's pid.
+    Parent { child: u32 },
+    /// The new process: a copy of the original at the moment of the split.
+    Child,
+}
+
+/// How a child process ended.
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildExit {
+    /// It exited with this status.
+    Code(i32),
+    /// It was killed by this signal.
+    Signal(i32),
+}
+
+/// Split this process in two (`fork`) with no `exec`: both sides continue from
+/// here, the child as an exact copy in a session of its own (`setsid`), so it
+/// shares no terminal session or process group with the original. Callers
+/// must be single-threaded: the
+/// copy has only the calling thread, so a lock another thread held (the
+/// allocator's included) would stay locked in it forever. The one caller is
+/// the daemon launch, first thing in `main`.
+///
+/// # Errors
+///
+/// Returns an error when the operating system refuses the new process.
+#[cfg(unix)]
+pub fn split_process() -> std::io::Result<Split> {
+    // SAFETY: the caller is single-threaded (the documented contract; the
+    // only call site is the top of `main`, before any thread exists), so the
+    // child starts with every lock free and may run arbitrary code.
+    match unsafe { nix::unistd::fork() }.map_err(std::io::Error::from)? {
+        nix::unistd::ForkResult::Parent { child } => Ok(Split::Parent {
+            child: child.as_raw().unsigned_abs(),
+        }),
+        nix::unistd::ForkResult::Child => {
+            // A new process is never a process-group leader, the one case in
+            // which `setsid` fails, so there is no failure to report here.
+            let _ = nix::unistd::setsid();
+            Ok(Split::Child)
+        }
+    }
+}
+
+/// The calling process's parent pid.
+#[cfg(unix)]
+#[must_use]
+pub fn parent_pid() -> u32 {
+    nix::unistd::getppid().as_raw().unsigned_abs()
+}
+
+/// Block until the child process `pid` ends and report how. Only a child of
+/// the calling process can be waited for.
+///
+/// # Errors
+///
+/// Returns an error when `pid` is not a waitable child of this process.
+#[cfg(unix)]
+pub fn wait_child(pid: u32) -> std::io::Result<ChildExit> {
+    use nix::sys::wait::{waitpid, WaitStatus};
+    let pid = nix::unistd::Pid::from_raw(
+        i32::try_from(pid).map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?,
+    );
+    loop {
+        match waitpid(pid, None).map_err(std::io::Error::from)? {
+            WaitStatus::Exited(_, code) => return Ok(ChildExit::Code(code)),
+            WaitStatus::Signaled(_, signal, _) => return Ok(ChildExit::Signal(signal as i32)),
+            // Stops and continues are not ends (none are requested; the arms
+            // keep the match total).
+            WaitStatus::Stopped(..) | WaitStatus::Continued(_) | WaitStatus::StillAlive => {}
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            WaitStatus::PtraceEvent(..) | WaitStatus::PtraceSyscall(_) => {}
+        }
+    }
 }
 
 /// The kernel-held process handle (`pidfd_open`): pins the exact process
@@ -654,7 +735,7 @@ mod exit_wait_tests {
 
     #[tokio::test]
     async fn wait_for_exit_resolves_at_once_for_a_reaped_pid() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("600")
             .spawn()
             .expect("spawn sleep");
@@ -672,6 +753,35 @@ mod exit_wait_tests {
 /// of a process that has no console gets a new, visible console window, so
 /// no product spawn may detach from the console, and every other
 /// creation-flags call stays in the listed sites.
+/// Point this process's standard input at the null device, so nothing in it
+/// can block reading a terminal or a pipe it was started with. A daemon that
+/// hosts sessions calls this once at boot: a session cell's `(read-line)`
+/// then reads end-of-file, however the daemon was started.
+///
+/// # Errors
+///
+/// Returns the operating system's error when the null device cannot be
+/// opened or put in place of descriptor 0.
+#[cfg(unix)]
+pub fn close_standard_input() -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let null = std::fs::File::open("/dev/null")?;
+    nix::unistd::dup2(null.as_raw_fd(), 0)
+        .map(|_| ())
+        .map_err(std::io::Error::from)
+}
+
+/// Windows consoles are not redirected here: a daemon there is started
+/// detached, with no console input to read.
+///
+/// # Errors
+///
+/// Never fails.
+#[cfg(not(unix))]
+pub fn close_standard_input() -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod creation_flag_tests {
     use std::path::{Path, PathBuf};

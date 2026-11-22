@@ -120,7 +120,7 @@ async fn run(command: &str) -> Option<Vec<u8>> {
     #[cfg(windows)]
     let mut process = {
         use std::os::windows::process::CommandExt as _;
-        let mut process = tokio::process::Command::new("cmd");
+        let mut process = pa_types::session_scope::tokio_command("cmd");
         process
             .as_std_mut()
             .raw_arg(format!("/d /s /c \"{command}\""));
@@ -128,7 +128,7 @@ async fn run(command: &str) -> Option<Vec<u8>> {
     };
     #[cfg(not(windows))]
     let mut process = {
-        let mut process = tokio::process::Command::new("sh");
+        let mut process = pa_types::session_scope::tokio_command("sh");
         process.args(["-c", command]);
         process
     };
@@ -365,7 +365,7 @@ mod tests {
         // The resolution future is dropped once the select returns; its process must exit.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
-            let state = std::process::Command::new("ps")
+            let state = pa_types::session_scope::std_command("ps")
                 .args(["-o", "stat=", "-p", &pid.to_string()])
                 .output()
                 .expect("ps runs");

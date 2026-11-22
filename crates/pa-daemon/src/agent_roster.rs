@@ -48,6 +48,10 @@ pub(crate) struct AgentRoster {
     /// The TS worker never needs any of this — its roster deltas ride
     /// one ordered supervisor client socket.
     delta_watermarks: HashMap<String, DeltaWatermark>,
+    /// Each session's last fault (the row's `lastCrash`), by canonical session file: set when
+    /// the supervisor records a crash, a recovery or a give-up, and attached to the session's
+    /// row whenever the row is stored, so a row a worker rewrites keeps it.
+    session_faults: HashMap<String, Value>,
 }
 
 /// One worker's stale-delta slot: the process generation the watermark
@@ -67,7 +71,28 @@ impl AgentRoster {
             bucket_fold_ticket: 0,
             bucket_applied_ticket: 0,
             delta_watermarks: HashMap::new(),
+            session_faults: HashMap::new(),
         }
+    }
+
+    /// Record `fault` as the last fault of the session stored in `session_file` and stamp it
+    /// on that session's row; returns the row when it exists, for the caller's push.
+    pub(crate) fn set_session_fault(
+        &mut self,
+        session_file: &str,
+        fault: Value,
+    ) -> Option<AgentRosterEntry> {
+        let file = canonical_roster_path(session_file);
+        let entry = self
+            .agent_id_by_session_file
+            .get(&file)
+            .and_then(|agent_id| self.entries.get_mut(agent_id))
+            .map(|entry| {
+                entry.summary["lastCrash"] = fault.clone();
+                entry.clone()
+            });
+        self.session_faults.insert(file, fault);
+        entry
     }
 
     /// The stale-delta gate for one worker's `worker_roster_delta`: a sequence at or below
@@ -232,6 +257,12 @@ impl AgentRoster {
             file.as_deref()
                 .and_then(|key| self.deleted_descendant_usage.get(key)),
         );
+        if let (Some(fault), Value::Object(object)) = (
+            file.as_deref().and_then(|key| self.session_faults.get(key)),
+            &mut summary,
+        ) {
+            object.insert("lastCrash".to_string(), fault.clone());
+        }
         let stored = AgentRosterEntry {
             agent_id: agent_id.clone(),
             queued_child,

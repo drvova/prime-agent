@@ -15,32 +15,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed; set
-/// `PA_E2E_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live model-facts e2e",
-        candidate.display()
-    );
-    None
-}
-
 struct Supervisor {
     child: Child,
     #[allow(dead_code)]
@@ -54,9 +28,9 @@ impl Drop for Supervisor {
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Supervisor {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
-    let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
@@ -68,7 +42,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Su
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .env_remove("PRIME_API_KEY")
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         // A supervisor killed at teardown must not leak its session workers
@@ -80,17 +53,11 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Su
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 /// JSONL supervisor client (command envelopes, id-matched responses).
@@ -202,11 +169,13 @@ fn write_models_json(agent_dir: &Path) {
     .expect("write models.json");
 }
 
-/// One probe cell: the kernel-side `model.info` and `compact.status` host
-/// requests answered inside the turn, written to a receipt for the verifier.
+/// One probe cell: the kernel's `(model-info)` and `(compact-status)`
+/// answered inside the turn, written to a receipt for the verifier.
 fn probe_cell(receipt: &Path) -> String {
     format!(
-        "import json\nfrom rlm import host_request\npayload = {{}}\npayload[\"model_info\"] = await host_request(\"model.info\", {{}})\npayload[\"compact_status\"] = await host_request(\"compact.status\", {{}})\nopen({receipt:?}, \"w\").write(json.dumps(payload))\nprint(\"FACTS_PROBED\")",
+        r#"(fs-write {receipt:?} (value->jsexpr-string (hash 'model_info (model-info) 'compact_status (compact-status))))
+(displayln "FACTS_PROBED")
+"#,
         receipt = receipt.display().to_string(),
     )
 }
@@ -220,13 +189,13 @@ fn write_faux_script(dir: &Path, on_a: &Path, on_b: &Path) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": probe_cell(on_a),
                     } },
                 ] },
                 { "text": "probed" },
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": {
+                    { "type": "toolCall", "name": "eval", "arguments": {
                         "code": probe_cell(on_b),
                     } },
                 ] },
@@ -284,9 +253,6 @@ fn read_receipt(client: &mut Client, session_id: &str, receipt: &Path, read_id: 
 /// window, not the session-creation model's.
 #[test]
 fn set_model_rebinds_the_kernel_model_facts() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
@@ -296,7 +262,7 @@ fn set_model_rebinds_the_kernel_model_facts() {
     let on_b = dir.path().join("facts-on-b.json");
     let script = write_faux_script(dir.path(), &on_a, &on_b);
     let socket = dir.path().join("model-facts.sock");
-    let _supervisor = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _supervisor = spawn_supervisor(&socket, &agent_dir);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
     client.send_command(

@@ -1,0 +1,7 @@
+# goal: the persistent thread goal
+
+A goal is an objective the harness keeps re-prompting you to pursue across turns until it is complete. Only one goal can be active. Pausing, resuming, clearing, and budget-limiting belong to the user and the host.
+
+- `(goal-get)`: `{goal, remaining_tokens, completion_budget_report}`; `goal` is unset when there is none, else it carries `objective`, `status`, `token_budget`, `tokens_used`, `time_used_seconds`, and timestamps
+- `(goal-create objective #:token-budget #:check #:verify #:max-cost-usd)`: start a new active goal and return the goal state. Fails while a goal is pending (active, paused, or budget-limited); a completed or errored one is replaced. `#:check` is a shell command that must exit 0 before the goal completes; `#:verify "judge"` adds a read-only judge that must answer MET citing evidence already in context (a `path:line` or verbatim command output); `#:max-cost-usd` caps the goal's spend. Pass `#:token-budget` only when a token budget was asked for
+- `(goal-complete)`: mark the goal achieved and return the final goal state; report its `completion_budget_report` to the user. With `#:check` or `#:verify` the claim is verified first: when `verification`'s `passed` is false the goal stays active and its `gap` (also sent with the next continuation) names what remains. Saying the goal is done is not enough: the harness keeps continuing it until this call arrives

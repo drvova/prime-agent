@@ -500,7 +500,7 @@ else console.log(JSON.stringify(process.argv.slice(2)));
     def test_real_installer_keeps_bridge_but_retires_ts_package(self):
         installer = (Path(__file__).resolve().parents[2] / "install-rust.sh").read_text()
         retirement = installer.split("# The TS npm package:", 1)[1].split(
-            "# --- the kernel pre-warm:", 1)[0]
+            "# --- the incoming PATH", 1)[0]
         retirement = "# The TS npm package:" + retirement
         fake_bin = self.root / "fake-bin"
         fake_bin.mkdir()
@@ -543,7 +543,7 @@ class InstallerTakeoverTests(unittest.TestCase):
         launcher_section = installer.split("# --- the launcher (the takeover lives here)", 1)[1].split(
             "# The cmd/PowerShell launcher twin", 1)[0]
         retirement = installer.split("# The TS npm package:", 1)[1].split(
-            "# --- the kernel pre-warm:", 1)[0]
+            "# --- the incoming PATH", 1)[0]
         recovery = installer.split("on_exit() {", 1)[1].split('  [ -n "$launcher_tmp" ]', 1)[0]
         for shared, uninstall_fails in ((True, 0), (False, 0), (True, 1), (True, 2)):
             with self.subTest(shared=shared, uninstall_fails=uninstall_fails), tempfile.TemporaryDirectory() as temp:

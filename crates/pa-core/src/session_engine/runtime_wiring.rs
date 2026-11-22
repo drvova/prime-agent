@@ -1,25 +1,13 @@
-//! Wires the session runtime (goal + rlm-heartbeat host bridge) and the Python kernel
-//! into the session engine build (the product-path equivalent of the TS `AgentSession`
-//! host-request controllers): the kernel provisioner receives the host-handler registry,
-//! and the agent loop gains the `ipython` tool backed by that kernel.
+//! Wires the session runtime (goal + rlm-heartbeat host bridge) into the session engine
+//! build: the host-handler registry the session's kernel answers its cells' host requests
+//! from, and which bundled skills that registry makes model-visible.
 
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use super::runtime::QueuedGoalContextPurge;
-use crate::kernel::bootstrap::KernelPythonSkill;
-use crate::kernel::provisioner::{
-    IpythonKernelProvisioner as KernelProvisioner, IpythonKernelProvisionerOptions,
-};
 use crate::kernel::shared::HostRequestHandlers;
 use crate::session::manager::SessionManager;
-use crate::skills::{get_python_skill_runtime_info, Skill};
-use crate::tools::ipython::{
-    IpythonKernelProvisioner, IpythonToolOptions, KernelAttachment, KernelErrorInfo,
-    KernelExecuteOptions, KernelExecutor,
-};
+use crate::skills::Skill;
 
 use super::host_requests::SessionBinding;
 use super::rlm_host::{register_rlm_host_handlers, RlmHostBridge, RlmSubagentHost};
@@ -233,113 +221,6 @@ pub fn model_visible_skills(skills: Vec<Skill>, handlers: &HostRequestHandlers) 
         .collect()
 }
 
-/// Kernel-side Python skill modules, pre-imported at bootstrap.
-#[must_use]
-pub fn kernel_python_skills(skills: &[Skill]) -> Vec<KernelPythonSkill> {
-    get_python_skill_runtime_info(skills)
-        .into_iter()
-        .map(|info| KernelPythonSkill {
-            name: info.name,
-            import_name: info.import_name,
-            package_path: info.package_path,
-            pyproject_path: info.pyproject_path,
-        })
-        .collect()
-}
-
-/// Build the kernel provisioner for a session: host handlers for the goal/heartbeat bridge
-/// plus the pre-imported skills. The session's agent dir is propagated into the kernel env
-/// (`PRIME_AGENT_CODING_AGENT_DIR`): an embedding host whose ambient env differs must not
-/// leak its own paths into the kernel (#109). A persistent session's artifact dir is
-/// likewise propagated (`RLM_SESSION_DIR` + `RLM_HARNESS_STATE_DIR`), so kernel-side
-/// harness writes land in the session-local store. The artifact dir is keyed by the
-/// durable session id (the session file's stem), exported as `RLM_SESSION_ID` for the
-/// persistent `bash()` shells' assignment. `cwd` is the SESSION's working directory.
-/// `shell_path` is the session-start-resolved kernel shell: an invalid `shellPath` fails
-/// `create_session`, not the kernel boot.
-#[allow(clippy::too_many_arguments)] // one wiring funnel, same style as AgentSession::from_session_arc
-#[must_use]
-pub fn kernel_provisioner(
-    session_id: String,
-    handlers: HostRequestHandlers,
-    python_skills: Vec<KernelPythonSkill>,
-    cwd: std::path::PathBuf,
-    agent_dir: &std::path::Path,
-    shell_path: Option<std::path::PathBuf>,
-    command_prefix: Option<String>,
-    websearch_env: Vec<(String, String)>,
-    session_artifact_dir: Option<std::path::PathBuf>,
-    cell_window: crate::kernel::cell_window::CellWindow,
-    error_context: crate::kernel::error_context::ErrorContext,
-    output_budget: crate::kernel::spill::OutputBudget,
-    on_restore: Option<crate::kernel::provisioner::RestoreCallback>,
-    on_background_work_settled: Option<crate::kernel::shared::BackgroundWorkSettledCallback>,
-    on_background_cell: Option<crate::kernel::shared::BackgroundCellObserver>,
-    on_unavailable_skills: Option<crate::kernel::provisioner::UnavailableSkillsCallback>,
-    on_bootstrap_result: Option<crate::kernel::provisioner::KernelBootstrapResultHandler>,
-    ready_gate: Option<crate::kernel::provisioner::KernelReadyGate>,
-) -> Arc<KernelProvisioner> {
-    let mut env = HashMap::with_capacity(4);
-    env.insert(
-        "PRIME_AGENT_CODING_AGENT_DIR".to_string(),
-        agent_dir.to_string_lossy().to_string(),
-    );
-    // A distribution build names its variant, so the runtime's agent-dir fallback (a process
-    // started without the dir above) lands in this build's own `~/.prime/agent-<variant>`.
-    match pa_types::platform::StateLayout::BUILD {
-        pa_types::platform::StateLayout::Official => {}
-        pa_types::platform::StateLayout::Distribution { variant } => {
-            env.insert("PRIME_AGENT_DIST_VARIANT".to_string(), variant.to_string());
-        }
-    }
-    // Always set: an unsaved session blanks an inherited id (a run started inside another
-    // session's kernel), so its persistent shells never join that session.
-    let rlm_session_id = session_artifact_dir
-        .as_deref()
-        .and_then(std::path::Path::file_name)
-        .map(|id| id.to_string_lossy().to_string())
-        .unwrap_or_default();
-    env.insert("RLM_SESSION_ID".to_string(), rlm_session_id);
-    for (key, value) in [
-        ("RLM_SESSION_DIR", session_artifact_dir.clone()),
-        (
-            "RLM_HARNESS_STATE_DIR",
-            crate::refinement::get_local_harness_state_dir(session_artifact_dir.as_deref()),
-        ),
-    ] {
-        if let Some(value) = value {
-            env.insert(key.to_string(), value.to_string_lossy().to_string());
-        }
-    }
-    env.extend(websearch_env);
-    Arc::new(KernelProvisioner::new(
-        cwd,
-        IpythonKernelProvisionerOptions {
-            python: None,
-            env,
-            command_prefix,
-            shell_path,
-            session_id: Some(session_id),
-            host_handlers: handlers,
-            python_skills,
-            // Only persistent sessions (which have an artifact dir) get
-            // a revivable snapshot (TS `snapshotDir`).
-            snapshot_dir: session_artifact_dir,
-            // The engine-resolved cell yield window policy (daemonless: none;
-            // the runtime bootstrap and state ops never use it).
-            cell_window,
-            error_context,
-            output_budget,
-            ready_gate,
-            on_restore,
-            on_background_work_settled,
-            on_background_cell,
-            on_unavailable_skills,
-            on_bootstrap_result,
-        },
-    ))
-}
-
 /// The websearch skill's kernel env, only when a websearch skill is loaded:
 /// the selected provider (`PRIME_AGENT_WEBSEARCH_PROVIDER`, so the settings
 /// choice stays visible kernel-side). API keys never ride the kernel env:
@@ -357,192 +238,6 @@ pub(crate) fn websearch_env(
         "PRIME_AGENT_WEBSEARCH_PROVIDER".to_string(),
         provider.id().to_string(),
     )]
-}
-
-impl IpythonKernelProvisioner for KernelProvisioner {
-    fn ensure(
-        &self,
-        on_progress: Option<crate::tools::ipython::BootstrapProgressHandler>,
-        signal: Option<crate::tools::tool_definition::AbortSignal>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<Box<dyn KernelExecutor>>> + Send>> {
-        let this = self.clone();
-        Box::pin(async move {
-            // The tool contract uses the raw cancellation token; the kernel
-            // wraps it in its own abort signal.
-            let signal = signal.map(crate::kernel::cancellation::AbortSignal::from_token);
-            // The learned window's stored state loads while the kernel boots.
-            this.cell_window().prime();
-            let manager = this.ensure(on_progress, signal).await?;
-            Ok(Box::new(KernelManagerExecutor {
-                manager,
-                cell_window: this.cell_window().clone(),
-                error_context: this.error_context().clone(),
-                spill: this.spill_store(),
-                project_card: crate::project_card::ProjectCard::registered(this.cwd()),
-                output_budget: this.output_budget().clone(),
-            }) as Box<dyn KernelExecutor>)
-        })
-    }
-
-    fn kill(&self) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let this = self.clone();
-        Box::pin(async move {
-            this.kill();
-        })
-    }
-}
-
-/// Adapts the kernel manager to the ipython tool's executor contract.
-struct KernelManagerExecutor {
-    manager: crate::kernel::manager::ReplKernelManager,
-    /// The session's cell yield window policy.
-    cell_window: crate::kernel::cell_window::CellWindow,
-    /// Where a user cell's cut output pages out (persistent sessions).
-    spill: Option<crate::kernel::spill::SpillStore>,
-    /// The project card, which learns the build/test commands cells run.
-    project_card: Option<crate::project_card::ProjectCard>,
-    /// The source lines a failed cell or awaited command gets.
-    error_context: crate::kernel::error_context::ErrorContext,
-    /// The session's output cap policy, read when each cell starts.
-    output_budget: crate::kernel::spill::OutputBudget,
-}
-
-impl KernelExecutor for KernelManagerExecutor {
-    fn execute(
-        &self,
-        code: &str,
-        options: KernelExecuteOptions<'_>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<crate::tools::ipython::ExecuteResult>> + Send>>
-    {
-        let manager = self.manager.clone();
-        let code = code.to_string();
-        let signal = options.signal;
-        let on_late_sent_agent_message = options.on_late_sent_agent_message;
-        // The session decides whether cells can go to the background at all;
-        // the model's per-call `timeout` only replaces the default window. The
-        // window is fixed here, when the cell starts.
-        let cell_yield_ms = self.cell_window.arm(options.timeout_ms);
-        let cell_window = self.cell_window.clone();
-        let spill = self.spill.clone();
-        let project_card = self.project_card.clone();
-        let error_context = self.error_context.clone();
-        // Only a session that keeps cut text tightens the cap: without a
-        // store a tighter cap would destroy more.
-        let max_output_chars = spill
-            .is_some()
-            .then(|| self.output_budget.max_output_chars());
-        Box::pin(async move {
-            let result = manager
-                .execute(
-                    &code,
-                    crate::kernel::shared::ExecuteOptions {
-                        signal: signal.map(crate::kernel::cancellation::AbortSignal::from_token),
-                        on_late_sent_agent_message,
-                        cell_yield_ms,
-                        spill: spill.clone(),
-                        max_output_chars,
-                        ..Default::default()
-                    },
-                )
-                .await?;
-            // A cell that ended in its window teaches the learned window its
-            // time (a backgrounded one teaches it when it ends); an interrupted
-            // or aborted cell's time says nothing about the work.
-            if result.backgrounded_cell.is_none() {
-                match result.status {
-                    crate::kernel::shared::ExecuteStatus::Ok
-                    | crate::kernel::shared::ExecuteStatus::Error => {
-                        cell_window.observe(std::time::Duration::from_millis(result.duration_ms));
-                    }
-                    crate::kernel::shared::ExecuteStatus::Aborted => {}
-                }
-            }
-            if let (Some(card), Some(commands)) = (&project_card, &result.bash_commands) {
-                card.observe_command(&commands.first);
-            }
-            // A failed cell or awaited command carries its error locations'
-            // source lines; the reads wait at most a short budget.
-            let traceback = result
-                .error
-                .as_ref()
-                .filter(|_| result.status == crate::kernel::shared::ExecuteStatus::Error)
-                .map(|error| error.traceback.concat());
-            let context = error_context
-                .enrich(
-                    crate::kernel::error_context::CellFailure {
-                        traceback: traceback.as_deref(),
-                        streams: [&result.stdout, &result.stderr],
-                        commands: &result.command_failures,
-                    },
-                    spill.as_ref(),
-                )
-                .await;
-            let mut converted = convert_execute_result(result);
-            converted.error_context = context;
-            Ok(converted)
-        })
-    }
-}
-
-fn convert_status(
-    status: crate::kernel::shared::ExecuteStatus,
-) -> crate::tools::ipython::ExecuteStatus {
-    match status {
-        crate::kernel::shared::ExecuteStatus::Ok => crate::tools::ipython::ExecuteStatus::Ok,
-        crate::kernel::shared::ExecuteStatus::Error => crate::tools::ipython::ExecuteStatus::Error,
-        crate::kernel::shared::ExecuteStatus::Aborted => {
-            crate::tools::ipython::ExecuteStatus::Aborted
-        }
-    }
-}
-
-fn convert_execute_result(
-    result: crate::kernel::shared::ExecuteResult,
-) -> crate::tools::ipython::ExecuteResult {
-    crate::tools::ipython::ExecuteResult {
-        status: convert_status(result.status),
-        stdout: result.stdout,
-        stderr: result.stderr,
-        result: result.result,
-        duration_ms: Some(result.duration_ms),
-        background_output: result.background_output,
-        error: result.error.map(|error| KernelErrorInfo {
-            ename: error.ename,
-            evalue: error.evalue,
-            traceback: error.traceback,
-        }),
-        attachments: result
-            .attachments
-            .unwrap_or_default()
-            .into_iter()
-            .map(|attachment| KernelAttachment {
-                mime_type: attachment.mime_type,
-                data: attachment.data,
-            })
-            .collect(),
-        diffs: result.diffs.unwrap_or_default(),
-        sent_agent_messages: result.sent_agent_messages.unwrap_or_default(),
-        bash_commands: result.bash_commands,
-        bash_waits: result.bash_waits,
-        transcript_reads: result.transcript_reads.unwrap_or_default(),
-        todo_list: result.todo_list,
-        questions: result.questions.unwrap_or_default(),
-        backgrounded_cell: result.backgrounded_cell,
-        ended_turn: result.ended_turn,
-        error_context: None,
-    }
-}
-
-/// Build the ipython tool options for a wired kernel provisioner.
-#[must_use]
-pub fn ipython_tool_options(
-    provisioner: Arc<KernelProvisioner>,
-    on_late_sent_agent_message: Option<crate::tools::ipython::LateSentAgentMessageHandler>,
-) -> IpythonToolOptions {
-    IpythonToolOptions {
-        provisioner,
-        on_late_sent_agent_message,
-    }
 }
 
 #[cfg(test)]
@@ -597,7 +292,6 @@ mod tests {
             source_info: create_synthetic_source_info("/skills", "user", SourceScope::User, None),
             disable_model_invocation: false,
             kind: SkillKind::Markdown,
-            python: None,
         }
     }
 

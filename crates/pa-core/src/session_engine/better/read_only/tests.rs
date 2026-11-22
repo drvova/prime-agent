@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use serde_json::json;
+
 use super::*;
 
 fn context(cwd: &Path, limit: u32) -> ReadContext {
@@ -5,86 +9,6 @@ fn context(cwd: &Path, limit: u32) -> ReadContext {
         cwd: cwd.to_path_buf(),
         budget: Arc::new(ReadBudget::new(limit)),
         progress: Arc::new(|_| {}),
-    }
-}
-
-#[test]
-fn a_cell_of_literal_fs_calls_parses_to_its_calls() {
-    let calls = parse_repl_cell(
-        "# look around\nprint(await fs.read('src/lib.rs', start=1, end=40))\n\
-         fs.grep(r\"fn \\w+\", \"src\", glob=[\"*.rs\", \"!target/**\"],\n    case='smart'); \
-         str(await fs.find(name=None, kind=\"file\", max_depth=2))",
-    )
-    .unwrap();
-    assert_eq!(
-        calls,
-        vec![
-            FsCall {
-                op: FsOp::Read,
-                arguments: vec![
-                    ("path", Literal::Str("src/lib.rs".to_string())),
-                    ("start", Literal::Int(1)),
-                    ("end", Literal::Int(40)),
-                ],
-            },
-            FsCall {
-                op: FsOp::Grep,
-                arguments: vec![
-                    ("pattern", Literal::Str("fn \\w+".to_string())),
-                    ("path", Literal::Str("src".to_string())),
-                    (
-                        "glob",
-                        Literal::List(vec![
-                            Literal::Str("*.rs".to_string()),
-                            Literal::Str("!target/**".to_string()),
-                        ])
-                    ),
-                    ("case", Literal::Str("smart".to_string())),
-                ],
-            },
-            FsCall {
-                op: FsOp::Find,
-                arguments: vec![
-                    ("name", Literal::None),
-                    ("kind", Literal::Str("file".to_string())),
-                    ("max_depth", Literal::Int(2)),
-                ],
-            },
-        ]
-    );
-}
-
-#[test]
-fn anything_but_a_literal_fs_read_is_refused_by_the_parser() {
-    for (code, reason) in [
-        (
-            "x = await fs.read('a')",
-            "each line must be one fs.read/grep/glob/find call",
-        ),
-        (
-            "open('a', 'w').write('x')",
-            "each line must be one fs.read/grep/glob/find call",
-        ),
-        (
-            "import os",
-            "each line must be one fs.read/grep/glob/find call",
-        ),
-        (
-            "await fs.edit('a', [])",
-            "fs.edit is not a read; only read/grep/glob/find",
-        ),
-        (
-            "fs.read(path)",
-            "`path` is a name, and only literal arguments are accepted",
-        ),
-        (
-            "fs.read('a', mode='w')",
-            "fs.read() has no parameter `mode`",
-        ),
-        ("fs.read('a') + fs.read('b')", "`+` is not accepted here"),
-        ("", "the cell holds no fs call"),
-    ] {
-        assert_eq!(parse_repl_cell(code), Err(reason.to_string()), "{code}");
     }
 }
 
@@ -155,7 +79,7 @@ async fn every_write_the_helper_attempts_is_refused_and_nothing_changes() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("parser.rs");
     std::fs::write(&file, "fn parse() {}\n").unwrap();
-    let parent: Vec<Arc<dyn AgentTool>> = ["edit", "bash", pa_types::ai::PYTHON_TOOL_NAME]
+    let parent: Vec<Arc<dyn AgentTool>> = ["edit", "bash", pa_types::ai::KERNEL_TOOL_NAME]
         .into_iter()
         .map(|name| named_tool(name))
         .collect();
@@ -182,23 +106,28 @@ async fn every_write_the_helper_attempts_is_refused_and_nothing_changes() {
         run(0, json!({ "path": "parser.rs", "edits": [] })).await,
         run(1, json!({ "command": "echo hi > parser.rs" })).await,
         run(1, json!({ "command": "rm parser.rs" })).await,
-        run(2, json!({ "code": "open('parser.rs', 'w').write('')" })).await,
+        run(2, json!({ "code": "(fs-write \"parser.rs\" \"\")" })).await,
         run(
             2,
-            json!({ "code": "await fs.edit('parser.rs', {'append': 'x'})" }),
+            json!({ "code": "(fs-edit \"parser.rs\" (hash 'append \"x\"))" }),
         )
         .await,
+        run(2, json!({ "code": "(bash \"rm parser.rs\")" })).await,
     ];
     assert_eq!(
         refusals
             .each_ref()
             .map(|text| text.starts_with("Refused: ")),
-        [true; 5],
+        [true; 6],
         "{refusals:#?}"
     );
     assert_eq!(refusals[0], EDIT_REFUSED);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn parse() {}\n");
-    let read = run(2, json!({ "code": "print(await fs.read('parser.rs'))" })).await;
+    let read = run(
+        2,
+        json!({ "code": "(displayln (hash-ref (fs-read \"parser.rs\") 'text))" }),
+    )
+    .await;
     assert!(read.contains("|fn parse() {}"), "{read}");
 }
 
@@ -207,7 +136,8 @@ async fn reads_past_the_budget_are_refused_with_how_to_answer() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.txt"), "a\n").unwrap();
     let context = context(dir.path(), 1);
-    let text = run_repl_cell("fs.read('a.txt')\nfs.read('a.txt')", &context).await;
+    let text =
+        scheme_reads::run_eval_cell("(fs-read \"a.txt\")\n(fs-read \"a.txt\")", &context).await;
     let sections: Vec<&str> = text.split("\n\n").collect();
     assert_eq!(sections.len(), 2, "{text}");
     assert!(sections[0].contains("|a"), "{text}");

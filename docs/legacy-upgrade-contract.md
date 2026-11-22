@@ -135,6 +135,8 @@ and requires these regular files at the archive root:
 - `install.sh`
 - `prime-agent-runtime/pyproject.toml`
 - `prime-agent-runtime/src/rlm/repl.py`
+  (both are placeholders from `scripts/release/native-compat/`: the kernel is
+  built into the binary, and the old installer only checks that the files exist)
 - `theme/prime.json`
 - `export-html/template.html`
 - `photon_rs_bg.wasm`

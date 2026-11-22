@@ -190,6 +190,9 @@ impl Supervisor {
         if !rendered.starts_with("Unknown active session:") {
             return WakeOutcome::Failed(rendered);
         }
+        // A boot still reviving the sessions its predecessor died under may be about to host
+        // this very file: the wake waits it out and then reuses the revived session.
+        self.wait_for_boot_revival().await;
         // The catalog scope: the source session's cwd and session dir when
         // agent-origin, the supervisor's defaults otherwise.
         let cwd = source
@@ -197,7 +200,7 @@ impl Supervisor {
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| {
-                std::env::current_dir()
+                pa_types::session_scope::current_dir()
                     .ok()
                     .map(|dir| dir.to_string_lossy().to_string())
             })

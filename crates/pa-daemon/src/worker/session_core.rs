@@ -98,6 +98,10 @@ pub(crate) struct SessionCore {
     /// by the resume sites: `steer`/`follow_up`, `streamingBehavior`, `resume_queue`,
     /// a queued-message mutation, a cron/heartbeat fire, a compact with an active goal.
     pub(crate) queued_input_suspended: bool,
+    /// The suspension was carried over from the session's earlier lifetime
+    /// (an abort that ended in a rebuild, a revival): the refusal of a plain
+    /// prompt says so. An abort in this lifetime makes it this lifetime's.
+    pub(crate) suspension_carried_over: bool,
     /// Restored next-turn rows (TS `_pendingNextTurnMessages`,
     /// `restore_next_turn`): delivered as prefix rows with the next turn.
     pub(crate) pending_next_turn: Vec<Value>,
@@ -169,6 +173,7 @@ impl SessionCore {
             scoped_models: Vec::new(),
             retry_abort_requested: false,
             queued_input_suspended: false,
+            suspension_carried_over: false,
             pending_next_turn: Vec::new(),
             active_action: None,
         }

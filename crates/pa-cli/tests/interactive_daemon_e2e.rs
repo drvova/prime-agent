@@ -43,8 +43,8 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (a
-        // kernel bootstrap, a bytecode compile) outlive a worker-only kill and
+        // Freeze the whole tree before any kill: a worker's grandchildren (the
+        // commands its session started) outlive a worker-only kill and
         // keep writing into the test's temp dir after its removal. A stopped
         // process cannot fork, so the walk settles once every member is stopped.
         let root = self.child.id();
@@ -494,15 +494,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
             Ok(())
         });
     }
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_mins(1);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor { child, socket };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
+    support::await_listening(&socket, &mut child);
+    Supervisor { child, socket }
 }
 
 /// Create a live session through the daemon protocol, writing the scripted engine config first.

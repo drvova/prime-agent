@@ -1,0 +1,13 @@
+internal_host_requests = ["worktree.record"]
+
+[[telemetry]]
+event = "agent worktrees"
+properties = [
+  "worktree_created_count",
+  "worktree_diff_count",
+  "worktree_merged_count",
+  "worktree_branched_count",
+  "worktree_conflict_count",
+  "worktree_removed_count",
+  "worktree_failed_count",
+]

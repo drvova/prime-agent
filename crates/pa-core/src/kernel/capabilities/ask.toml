@@ -1,0 +1,12 @@
+internal_host_requests = ["question.cancel"]
+
+[[telemetry]]
+event = "agent todos and questions"
+properties = [
+  "question_asked_count",
+  "question_answered_count",
+  "question_declined_count",
+  "question_timed_out_count",
+  "question_no_user_count",
+  "question_cancelled_count",
+]

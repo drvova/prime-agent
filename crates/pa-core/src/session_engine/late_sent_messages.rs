@@ -12,11 +12,11 @@ use tokio::sync::Mutex;
 
 use crate::kernel::shared::{parse_sent_agent_message, KernelSentAgentMessage};
 use crate::session::manager::SessionManager;
-use crate::tools::ipython::sent_agent_message_json;
+use crate::tools::kernel_cell::sent_agent_message_json;
 
 /// The persisted row for one receipt that landed after its cell's tool
 /// result (TS `IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_ENTRY`).
-pub const IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE: &str = "ipython_sent_agent_message";
+pub const KERNEL_SENT_AGENT_MESSAGE_CUSTOM_TYPE: &str = "ipython_sent_agent_message";
 
 /// One persisted receipt parsed off the session branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub fn scan_sent_agent_message_entries<'a>(
         .into_iter()
         .filter_map(|entry| match entry {
             FileEntry::Custom { payload, .. }
-                if payload.custom_type == IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE =>
+                if payload.custom_type == KERNEL_SENT_AGENT_MESSAGE_CUSTOM_TYPE =>
             {
                 payload
                     .data
@@ -81,7 +81,7 @@ pub(crate) fn append_to_tool_result(
     // The python tool's aliases all count (an `ipython`/`python`-named
     // call, and TS-era files, store the name the model called): the
     // receipt patches the row whatever the alias was.
-    if result.tool_call_id != tool_call_id || !pa_types::ai::is_python_tool_name(&result.tool_name)
+    if result.tool_call_id != tool_call_id || !pa_types::ai::is_kernel_tool_name(&result.tool_name)
     {
         return false;
     }
@@ -124,7 +124,7 @@ pub(crate) async fn record(
         } else {
             session
                 .append_custom_entry(
-                    IPYTHON_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
+                    KERNEL_SENT_AGENT_MESSAGE_CUSTOM_TYPE,
                     Some(sent_agent_message_entry(tool_call_id, message)),
                 )
                 .map(|_| ())
@@ -183,7 +183,7 @@ pub(crate) fn landing_transform(
             if !matches!(
                 &message,
                 AgentMessage::Standard(Message::ToolResult(result))
-                    if pa_types::ai::is_python_tool_name(&result.tool_name)
+                    if pa_types::ai::is_kernel_tool_name(&result.tool_name)
             ) {
                 return message;
             }

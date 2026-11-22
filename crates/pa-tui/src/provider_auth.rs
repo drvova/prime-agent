@@ -1243,6 +1243,19 @@ mod tests {
             Box::pin(std::future::ready(()))
         }
 
+        fn crash_notice_shown(
+            &self,
+            kind: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([kind, "crash_notice", "", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
         fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             Box::pin(std::future::ready(()))
         }
@@ -1530,6 +1543,25 @@ mod tests {
         assert_eq!(
             *telemetry.reports.lock().unwrap(),
             vec![["api_key", "named", "login", "saved"]]
+        );
+    }
+
+    /// A crash notice's report is fire-and-forget as well: with a sink that never replies, the
+    /// hand-off on the notice's paint path returns at once and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_crash_notice_report_never_holds_the_paint_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::crash_notice::report_shown(Some(&hook), "session_crashed");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["session_crashed", "crash_notice", "", ""]]
         );
     }
 

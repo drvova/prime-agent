@@ -14,17 +14,21 @@ fn busy_turn() -> Value {
     })
 }
 
-/// Boot a supervisor in `dir`, create one scripted session, and prompt it:
-/// (daemon, client, session id, session file).
-fn boot_with_prompted_session(dir: &Path) -> (Daemon, Client, String, String) {
+/// The scripted session whose first turn is [`busy_turn`].
+fn busy_script() -> Value {
+    json!({ "responses": [busy_turn(), { "text": "next-turn", "delayMs": 10 }] })
+}
+
+/// Boot a supervisor in `dir`, create one session from `script`, and prompt
+/// it: (daemon, client, session id, session file).
+fn boot_with_prompted_session(dir: &Path, script: &Value) -> (Daemon, Client, String, String) {
     let sessions_dir = dir.join("agent").join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
     let daemon = spawn_supervisor(&dir.join("daemon.sock"), &dir.join("agent"));
     wait_socket_ready(&dir.join("daemon.sock"));
     let (mut client, _hello) = Client::connect(&dir.join("daemon.sock"));
-    let script = dir.join("script.json");
-    let responses = json!([busy_turn(), { "text": "next-turn", "delayMs": 10 }]);
-    std::fs::write(&script, json!({ "responses": responses }).to_string()).expect("write script");
+    let script_path = dir.join("script.json");
+    std::fs::write(&script_path, script.to_string()).expect("write script");
     let created = call(
         &mut client,
         &json!({
@@ -32,7 +36,7 @@ fn boot_with_prompted_session(dir: &Path) -> (Daemon, Client, String, String) {
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions_dir.to_string_lossy(),
-                "script": script.to_string_lossy(),
+                "script": script_path.to_string_lossy(),
             },
         }),
     );
@@ -100,7 +104,8 @@ fn shut_down(client: &mut Client, daemon: &mut Daemon) {
 #[test]
 fn graceful_shutdown_continues_the_aborted_turn_after_restart() {
     let dir = tempfile::TempDir::new().expect("temp dir");
-    let (mut daemon, mut client, _session, session_file) = boot_with_prompted_session(dir.path());
+    let (mut daemon, mut client, _session, session_file) =
+        boot_with_prompted_session(dir.path(), &busy_script());
     // The shutdown lands during call-1, so call-2 never starts and the turn
     // ends aborted, not completed.
     wait_for_assistant_row(&session_file);
@@ -129,39 +134,57 @@ fn graceful_shutdown_continues_the_aborted_turn_after_restart() {
     shut_down(&mut client, &mut daemon);
 }
 
-/// The daemon-wide shutdown persists the resumable stop tombstone, so a
-/// boot that finishes the stop after the verdict was lost keeps the session.
+/// The daemon-wide shutdown persists the resumable stop tombstone before it
+/// tells the session, so a boot that finishes the stop after the verdict was
+/// lost keeps the session.
 #[test]
 fn a_lost_shutdown_verdict_never_archives_the_session() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let (socket, agent_dir) = (dir.path().join("daemon.sock"), dir.path().join("agent"));
-    let (mut daemon, mut client, session, session_file) = boot_with_prompted_session(dir.path());
+    let (mut daemon, mut client, session, session_file) =
+        boot_with_prompted_session(dir.path(), &busy_script());
     wait_for_busy_journal_evidence(&agent_dir, &socket, &session);
-
-    // SIGSTOP freezes the worker: the routed shutdown is never answered and
-    // no verdict is written.
-    let worker_pid = child_pids_of(daemon.child.id())[0];
-    freeze(worker_pid);
-    let worker_pid = worker_pid.to_string();
-    let shutdown = call(&mut client, &json!({ "type": "shutdown" }));
-    assert_eq!(shutdown["success"], true, "shutdown failed: {shutdown}");
-    let descriptor_path =
-        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket).join(format!("{session}.json"));
-    wait_for("the shutdown never persisted its stop tombstone", || {
+    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
+    let descriptor_path = descriptor_dir.join(format!("{session}.json"));
+    let tombstone = || {
         std::fs::read_to_string(&descriptor_path)
             .ok()
             .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-            .is_some_and(|descriptor| descriptor["stopRequestedAt"].is_string())
-    });
+            .filter(|descriptor| descriptor["stopRequestedAt"].is_string())
+    };
 
-    // Both processes die inside the stop pass; the worker's SIGKILL writes
-    // no verdict.
+    // The daemon dies inside the stop pass, the session it hosts with it: the
+    // kill lands as soon as the tombstone is on disk, which is before the
+    // session has been told to stop.
+    client.send_command("shutdown", &json!({ "type": "shutdown" }));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while tombstone().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the shutdown never persisted its stop tombstone"
+        );
+        std::thread::yield_now();
+    }
     daemon.child.kill().expect("kill supervisor");
     daemon.child.wait().expect("reap supervisor");
-    Command::new("kill")
-        .args(["-9", worker_pid.as_str()])
-        .status()
-        .expect("kill -9 the worker");
+    // The state under test is the one a death before the verdict leaves. A
+    // session that settled its shutdown inside the kill's latency wrote the
+    // verdict after all: drop it, so every run boots from the same state.
+    let journal_path = descriptor_dir.join(format!("{session}.recovery.jsonl"));
+    let journal = std::fs::read_to_string(&journal_path).expect("recovery journal");
+    let unsettled: Vec<&str> = journal
+        .lines()
+        .filter(|line| {
+            serde_json::from_str::<Value>(line)
+                .is_ok_and(|record| record["operation"] != "shutdown")
+        })
+        .collect();
+    std::fs::write(&journal_path, unsettled.join("\n") + "\n").expect("journal without a verdict");
+    assert_eq!(
+        tombstone().map(|descriptor| descriptor["archiveOnStop"].clone()),
+        Some(json!(false)),
+        "the daemon died holding the resumable stop tombstone"
+    );
 
     // The next boot finishes the tombstoned stop (the descriptor goes away).
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
@@ -184,7 +207,8 @@ fn a_lost_shutdown_verdict_never_archives_the_session() {
 fn a_revived_user_parked_queue_stays_parked() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let (socket, agent_dir) = (dir.path().join("daemon.sock"), dir.path().join("agent"));
-    let (mut daemon, mut client, session, session_file) = boot_with_prompted_session(dir.path());
+    let (mut daemon, mut client, session, session_file) =
+        boot_with_prompted_session(dir.path(), &busy_script());
     wait_for_assistant_row(&session_file);
     let queued = call(
         &mut client,
@@ -202,15 +226,10 @@ fn a_revived_user_parked_queue_stays_parked() {
     });
     let parked_rows = message_rows(&session_file);
 
-    // kill -9 the supervisor first (a live one would settle the journal on
-    // the worker's death), then the worker: the abort-settle row remains.
-    let worker_pid = child_pids_of(daemon.child.id())[0].to_string();
+    // kill -9 the daemon: the session dies with it, idle, and the
+    // abort-settle row is the last thing in its journal.
     daemon.child.kill().expect("kill supervisor");
     daemon.child.wait().expect("reap supervisor");
-    Command::new("kill")
-        .args(["-9", worker_pid.as_str()])
-        .status()
-        .expect("kill -9 the worker");
 
     let restart_before = pa_daemon::util::now_iso();
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
@@ -234,40 +253,7 @@ fn a_revived_user_parked_queue_stays_parked() {
     assert_eq!(
         message_rows(&session_file),
         parked_rows,
-        "the revived worker ran the parked input without a resume"
+        "the revived session ran the parked input without a resume"
     );
     shut_down(&mut client, &mut daemon);
-}
-
-/// SIGSTOP the worker and wait until every one of its threads is parked:
-/// `kill` returns once the stop is queued, and a runtime thread still running
-/// serves the next command before it stops.
-fn freeze(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-STOP")
-        .arg(pid.to_string())
-        .status()
-        .expect("SIGSTOP the worker");
-    assert!(status.success(), "SIGSTOP must reach the worker");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !all_threads_stopped(pid) {
-        assert!(Instant::now() < deadline, "the worker never stopped");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Whether every `/proc/<pid>/task/<tid>/stat` reads `T` (stopped).
-fn all_threads_stopped(pid: u32) -> bool {
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-        return false;
-    };
-    let states: Vec<Option<char>> = tasks
-        .flatten()
-        .map(|task| {
-            let stat = std::fs::read_to_string(task.path().join("stat")).ok()?;
-            let (_, rest) = stat.rsplit_once(')')?;
-            rest.split_whitespace().next()?.chars().next()
-        })
-        .collect();
-    !states.is_empty() && states.iter().all(|state| *state == Some('T'))
 }

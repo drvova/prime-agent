@@ -75,6 +75,9 @@ pub(crate) struct ReconnectLoop {
     pub(super) delay: Duration,
     /// The closing that armed this driver: the reattach banner and the expiry row follow it.
     pub(super) kind: RecoveryKind,
+    /// Whether this recovery already asked for a daemon to be started. Once per recovery: a
+    /// daemon that dies at every start must not be relaunched in a loop by its windows.
+    launch_asked: bool,
 }
 
 impl ReconnectLoop {
@@ -86,6 +89,7 @@ impl ReconnectLoop {
             next_attempt: tokio::time::Instant::now() + delay,
             delay,
             kind: RecoveryKind::Update,
+            launch_asked: false,
         }
     }
 
@@ -97,6 +101,7 @@ impl ReconnectLoop {
             next_attempt: tokio::time::Instant::now() + delay,
             delay,
             kind: RecoveryKind::Lost,
+            launch_asked: false,
         }
     }
 
@@ -109,6 +114,7 @@ impl ReconnectLoop {
             next_attempt: tokio::time::Instant::now() + SHUTDOWN_RECONNECT_RETRY,
             delay: SHUTDOWN_RECONNECT_RETRY,
             kind: RecoveryKind::Shutdown,
+            launch_asked: false,
         }
     }
 
@@ -192,6 +198,9 @@ pub(crate) enum ConnectionEffect {
     Connect {
         retry: bool,
     },
+    /// No daemon came back by itself: ask the composition root's launcher for one, then keep
+    /// polling.
+    Launch,
     /// The run ends with this note and exit reason.
     Exit {
         note: String,
@@ -300,6 +309,17 @@ impl Connection {
             (Event::Tick, Connection::Recovering(driver)) => ConnectionEffect::Connect {
                 retry: !matches!(driver.kind, RecoveryKind::Shutdown),
             },
+            // An unexpected loss whose first attempt found no daemon: nothing brought it back
+            // (no restart owner, or one that gave up), so this window asks for one, once. An
+            // announced shutdown stays stopped, and an update's successor is started by the
+            // update.
+            (Event::ConnectFailed, Connection::Recovering(driver))
+                if driver.kind == RecoveryKind::Lost && !driver.launch_asked =>
+            {
+                driver.launch_asked = true;
+                self.back_off();
+                ConnectionEffect::Launch
+            }
             (Event::ConnectFailed, Connection::Recovering(_)) => {
                 self.back_off();
                 ConnectionEffect::None

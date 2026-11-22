@@ -224,7 +224,7 @@ const LAUNCHER_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 /// elsewhere.
 #[must_use]
 pub fn installer_script_url(channel: Option<&str>) -> String {
-    if let Ok(url) = std::env::var(ENV_INSTALLER_URL) {
+    if let Ok(url) = pa_types::session_scope::var(ENV_INSTALLER_URL) {
         if !url.trim().is_empty() {
             return url;
         }
@@ -242,7 +242,7 @@ pub fn installer_script_url(channel: Option<&str>) -> String {
 /// installer's own knob, else its default.
 #[must_use]
 pub fn download_base_url() -> String {
-    std::env::var(ENV_DOWNLOAD_BASE_URL)
+    pa_types::session_scope::var(ENV_DOWNLOAD_BASE_URL)
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| BUILD_DISTRIBUTION.download_base_url().to_string())
@@ -252,7 +252,7 @@ pub fn download_base_url() -> String {
 /// the installer's own `~/.local` default).
 #[must_use]
 pub fn install_prefix() -> PathBuf {
-    if let Some(prefix) = std::env::var_os(ENV_PREFIX) {
+    if let Some(prefix) = pa_types::session_scope::var_os(ENV_PREFIX) {
         if !prefix.is_empty() {
             return PathBuf::from(prefix);
         }
@@ -777,7 +777,7 @@ fn installer_child(
     prefix: &Path,
     channel: Option<&'static str>,
 ) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(shell);
+    let mut command = pa_types::session_scope::tokio_command(shell);
     command.env(ENV_PREFIX, prefix);
     // The check knobs are the PRE-FLIGHT's alone: a user shell carrying
     // either would make the real run validate and exit without
@@ -913,7 +913,7 @@ async fn launcher_version(prefix: &Path) -> Option<String> {
         if !launcher.is_file() {
             continue;
         }
-        let probe = tokio::process::Command::new(&launcher)
+        let probe = pa_types::session_scope::tokio_command(&launcher)
             .arg("--version")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -1259,8 +1259,8 @@ echo "installed: 9.9.8-continuous.fedcba9876543210"
         // The knobs are SAVED and RESTORED around the probe: the env is
         // process-global, so a pinned value in the surrounding
         // environment must survive it.
-        let prior_override = std::env::var(ENV_INSTALLER_URL).ok();
-        let prior_base = std::env::var(ENV_DOWNLOAD_BASE_URL).ok();
+        let prior_override = pa_types::session_scope::var(ENV_INSTALLER_URL).ok();
+        let prior_base = pa_types::session_scope::var(ENV_DOWNLOAD_BASE_URL).ok();
         std::env::remove_var(ENV_INSTALLER_URL);
         std::env::remove_var(ENV_DOWNLOAD_BASE_URL);
         assert_eq!(

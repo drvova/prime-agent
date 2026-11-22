@@ -102,13 +102,13 @@ Read each tool's `inputSchema` with `mcp.describe_tool` before calling it.
 `get_values` returns formatted strings and has no `valueRenderOption`. For
 unformatted typed values, read the effective values through `get_spreadsheet`:
 
-```python
-grid = await mcp.call_tool("google-sheets", "get_spreadsheet", {
-    "spreadsheetId": spreadsheet_id,
-    "ranges": ["Ledger!A1:F2000"],
-    "includeGridData": True,
-    "fields": ["sheets.data.rowData.values.effectiveValue"],
-})
+```scheme
+(define grid
+  (mcp-call-tool "google-sheets" "get_spreadsheet"
+                 (hash 'spreadsheetId spreadsheet-id
+                       'ranges (list "Ledger!A1:F2000")
+                       'includeGridData #t
+                       'fields (list "sheets.data.rowData.values.effectiveValue"))))
 ```
 
 Each cell's `effectiveValue` carries `numberValue`, `stringValue`, or
@@ -116,6 +116,6 @@ Each cell's `effectiveValue` carries `numberValue`, `stringValue`, or
 
 For large or exact payloads, follow the "Large or integrity-critical payloads"
 section of the `mcp` skill (`skills/mcp/SKILL.md`): load the arguments from a
-file in the Python kernel, write results to a file, and verify them in code.
+file in the kernel, write results to a file, and verify them in code.
 
 Disconnect with `/mcp logout google-drive` (or `google-sheets`).

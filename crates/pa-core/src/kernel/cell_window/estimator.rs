@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// The window before anything is learned: the previous fixed default.
 pub(crate) const COLD_WINDOW: Duration =
-    Duration::from_millis(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS);
+    Duration::from_millis(crate::settings::types::DEFAULT_CELL_TIMEOUT_MS);
 
 /// The shortest learned window. Below about 10 s, ordinary jitter (a cold
 /// import, a busy disk) would push routine cells into the background and cost
@@ -27,7 +27,7 @@ pub(crate) const WINDOW_FLOOR: Duration = Duration::from_secs(10);
 
 /// The longest learned window: the tool's own maximum `timeout`.
 pub(crate) const WINDOW_CEILING: Duration =
-    Duration::from_secs(crate::tools::ipython::PYTHON_REPL_TIMEOUT_MAX_S);
+    Duration::from_secs(crate::tools::kernel_cell::CELL_TIMEOUT_MAX_S);
 
 /// Weight of the newest cell in the running mean and variance. At 0.4 a
 /// cell's weight falls under 1% after ten cells (`0.6^10`), so a project that

@@ -78,11 +78,15 @@ impl ProviderOAuth {
         let refresh_token = refresh_token.clone();
         let enterprise_url = enterprise_url.clone();
         let provider_id = provider_id.to_string();
+        let session_scope = pa_types::session_scope::current();
         std::thread::Builder::new()
             .name("provider-oauth-refresh".to_string())
             .spawn(move || -> Result<AuthCredential, String> {
+                let _session_scope = pa_types::session_scope::enter(session_scope);
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
+                    // The runtime's blocking threads run in the session's scope too.
+                    .on_thread_start(pa_types::session_scope::inherit())
                     .build()
                     .map_err(|error| error.to_string())?;
                 match provider_id.as_str() {

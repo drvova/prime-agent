@@ -33,23 +33,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed. Skipped (with a
-/// note) on machines without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
 /// The faux provider script: the long turn's first model response calls a
 /// kernel cell that sleeps (the tool-call boundary the steers queue
 /// behind), and the scripted replies behind it name every delivery —
@@ -69,9 +52,9 @@ fn faux_script(dir: &Path) -> PathBuf {
             "responses": [
                 {"content": [
                     {"type": "text", "text": "Running the first sleep cell."},
-                    {"type": "toolCall", "name": "python_repl", "id": "toolu_sleep01",
+                    {"type": "toolCall", "name": "eval", "id": "toolu_sleep01",
                      "arguments": {"code":
-                        "import time\nopen('sleep-one-started','w').write('1')\ntime.sleep(4)\nprint('slept one')"}}
+                        "(bash \"touch sleep-one-started; sleep 4\" (hash 'wait-ms #f))\n(displayln \"slept one\")"}}
                 ]},
                 {"content": [{"type": "text", "text": "batch reply for all three steers"}]},
                 {"content": [{"type": "text", "text": "queued reply"}]},
@@ -101,7 +84,7 @@ impl Drop for Supervisor {
 #[allow(clippy::zombie_processes)]
 fn spawn_supervisor(socket: &Path, agent_dir: &Path, script: &Path) -> Supervisor {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
-    let child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pa-daemon"))
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
@@ -117,26 +100,16 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, script: &Path) -> Superviso
         .env_remove("PRIME_AGENT_CODING_AGENT_DIR")
         .env(pa_daemon::worker::WORKER_SCRIPT_ENV, script)
         .env(
-            "PRIME_AGENT_KERNEL_PYTHON",
-            kernel_python().expect("kernel python"),
-        )
-        .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "15000",
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 struct Client {
@@ -248,9 +221,6 @@ impl Client {
 
 #[test]
 fn multi_steer_parked_mid_run_co_delivers_as_one_batched_turn() {
-    let Some(_kernel) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let cwd = dir.path().join("work");

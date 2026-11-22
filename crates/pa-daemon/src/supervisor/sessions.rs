@@ -563,7 +563,16 @@ impl Supervisor {
         response_success(
             Some(&command_id),
             &type_name,
-            Some(json!({ "sessions": summaries })),
+            // `spareKernels`: how many built engines wait for the next
+            // sessions (a new session's first cell pays no engine build
+            // while it is above zero).
+            Some(json!({
+                "sessions": summaries,
+                "spareKernels": pa_core::kernel::spare_scheme_kernels(),
+                // Panics raised outside every session since the daemon
+                // started: its own faults, which no session's restart heals.
+                "daemonCrashes": crate::session_host::daemon_crashes(),
+            })),
         )
     }
 
@@ -579,11 +588,22 @@ impl Supervisor {
                 RouteAdmission::SupervisorInternal,
             )
             .await;
-        if let Some(summary) = response
+        // The last contained crash stays on the row after the session heals.
+        let last_crash = resident
+            .descriptor
+            .lock()
+            .await
+            .rest
+            .get("lastCrash")
+            .cloned();
+        if let Some(mut summary) = response
             .ok()
             .filter(|response| response.success)
             .and_then(|response| response.data)
         {
+            if let (Some(object), Some(crash)) = (summary.as_object_mut(), last_crash) {
+                object.insert("lastCrash".to_string(), crash);
+            }
             return summary;
         }
         let root_active_session_id = resident
@@ -597,6 +617,9 @@ impl Supervisor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut summary = offline_summary(&resident.worker_id);
+        if let Some(crash) = last_crash {
+            summary["lastCrash"] = crash;
+        }
         // A failed live pull loses activity, not the supervisor's trusted family
         // binding. Never borrow identity from a row now owned by another worker.
         if let Some(entry) = roster
@@ -631,6 +654,7 @@ impl Supervisor {
         command: &DaemonCommand,
         client_id: String,
     ) -> Result<Value> {
+        self.wait_for_boot_revival().await;
         // The per-file open single-flight: a concurrent open waits behind this one and then
         // reuses the worker it launched (both launches would race the session lease).
         let opening_guard = self.opening_guard(command).await?;

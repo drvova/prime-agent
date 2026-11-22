@@ -12,6 +12,7 @@ serde_json.workspace = true
 tokio.workspace = true
 futures.workspace = true
 thiserror.workspace = true
+steel-core.workspace = true
 tracing.workspace = true
 pa-types.workspace = true
 pa-ai.workspace = true
@@ -19,6 +20,9 @@ pa-models = { path = "../pa-models" }
 pa-agent.workspace = true
 pa-telemetry.workspace = true
 base64 = "0.22"
+# The Scheme kernel's `attach-image`: decode, scale and re-encode images, as
+# the Python kernel did with Pillow. The same crate and formats pa-tui uses.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 fancy-regex = "0.14"
 # The traces browser login's auth challenge (RSA-2048 keypair, OAEP-SHA256
 # result decrypt; sha2 matches the workspace's version, pem for the SPKI

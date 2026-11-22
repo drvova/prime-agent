@@ -219,7 +219,7 @@ impl BedrockResponse {
 
 /// The TS `AWS_BEDROCK_FORCE_HTTP1` request-handler switch.
 fn bedrock_force_http1() -> bool {
-    std::env::var("AWS_BEDROCK_FORCE_HTTP1").as_deref() == Ok("1")
+    pa_types::session_scope::var("AWS_BEDROCK_FORCE_HTTP1").as_deref() == Ok("1")
 }
 
 /// The TS proxy-env request-handler switch: any configured proxy environment variable selects the
@@ -234,7 +234,7 @@ fn bedrock_proxy_configured() -> bool {
         "no_proxy",
     ]
     .iter()
-    .any(|key| std::env::var(key).is_ok_and(|value| !value.is_empty()))
+    .any(|key| pa_types::session_scope::var(key).is_ok_and(|value| !value.is_empty()))
 }
 
 pub fn stream_bedrock(
@@ -303,7 +303,7 @@ fn resolve_cache_retention(cache_retention: Option<CacheRetention>) -> CacheRete
     if let Some(retention) = cache_retention {
         return retention;
     }
-    if std::env::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
+    if pa_types::session_scope::var("PI_CACHE_RETENTION").as_deref() == Ok("long") {
         return CacheRetention::Long;
     }
     CacheRetention::Short
@@ -582,10 +582,10 @@ async fn run_stream(
     let bearer_token = options
         .bearer_token
         .clone()
-        .or_else(|| std::env::var("AWS_BEARER_TOKEN_BEDROCK").ok())
+        .or_else(|| pa_types::session_scope::var("AWS_BEARER_TOKEN_BEDROCK").ok())
         .filter(|token| !token.is_empty());
-    let use_bearer =
-        bearer_token.is_some() && std::env::var("AWS_BEDROCK_SKIP_AUTH").as_deref() != Ok("1");
+    let use_bearer = bearer_token.is_some()
+        && pa_types::session_scope::var("AWS_BEDROCK_SKIP_AUTH").as_deref() != Ok("1");
 
     if use_bearer {
         headers.push((

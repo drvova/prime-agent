@@ -31,8 +31,8 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (a
-        // kernel bootstrap, a bytecode compile) outlive a worker-only kill and
+        // Freeze the whole tree before any kill: a worker's grandchildren (the
+        // commands its session started) outlive a worker-only kill and
         // keep writing into the test's temp dir after its removal. A stopped
         // process cannot fork, so the walk settles once every member is stopped.
         let root = self.child.id();
@@ -224,15 +224,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
     );
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor { child, socket };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
+    support::await_listening(&socket, &mut child);
+    Supervisor { child, socket }
 }
 
 /// A stub `gh` binary: `auth status` succeeds, `gist create` requires the
@@ -418,10 +412,10 @@ async fn tui_export_and_share_surface() {
     // `state.tools` in the live-session export).
     let tools = data["tools"].as_array().expect("tools section");
     assert!(
-        tools.iter().any(|tool| tool["name"] == "python_repl"
+        tools.iter().any(|tool| tool["name"] == "eval"
             && tool["description"].is_string()
             && tool["parameters"].is_object()),
-        "python_repl contract in export tools: {data}"
+        "eval contract in export tools: {data}"
     );
     // No custom tool ran: the pre-render section is omitted, not null.
     assert!(

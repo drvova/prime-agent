@@ -134,7 +134,7 @@ impl Worker {
                 response_success(None, "abort_branch_summary", None)
             }
             "export_html" => self.exports.export_html(payload).await,
-            "export_jsonl" => self.exports.export_jsonl(payload),
+            "export_jsonl" => self.exports.export_jsonl(payload).await,
             "mutate_queued_message" => self.handle_mutate_queued_message(payload),
             "resume_queue" => self.handle_resume_queue(),
             "factory_activity" => self.handle_factory_activity(payload).await,
@@ -345,6 +345,7 @@ impl Worker {
             // The queue parks and a plain prompt is rejected until a
             // resume site fires.
             core.queued_input_suspended = true;
+            core.suspension_carried_over = false;
         }
         // Queue-INVISIBLE turn actions cancel: a direct prompt admitted on an idle
         // session never became a queue row, so the abort must resolve its waiting
@@ -704,6 +705,7 @@ impl Worker {
         core.turn_cancelled = true;
         // The same TS `requestAbort()` suspension as the bare `abort`.
         core.queued_input_suspended = true;
+        core.suspension_carried_over = false;
         drop(core);
         // And the same eager agent abort.
         self.engine.abort_in_flight_turn();

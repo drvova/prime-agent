@@ -6,11 +6,13 @@
 mod accept_loop;
 mod adoption;
 mod clients;
+mod crash;
 mod launch_budget;
 mod notes;
 mod options;
 mod root_identity;
 mod routing;
+mod scheduled_wake;
 mod sessions;
 mod signals_shutdown;
 pub(crate) mod subscribers;
@@ -78,7 +80,7 @@ use pa_types::daemon::{
 use pa_types::platform::transport::{bind_transport, connect_transport, TransportStream};
 use serde_json::{json, Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, Command};
+
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::backpressure::RouteAdmission;
@@ -235,12 +237,28 @@ pub struct Supervisor {
     /// path, so a client gets its hello at once; the client's first command, the worker adoption
     /// pass and the dead-owner lease reclaim wait on this gate instead.
     pub(crate) boot_reaped: tokio::sync::watch::Sender<bool>,
+    /// Whether no boot revival is pending. A plain startup lowers it before the accept loop
+    /// starts and raises it when the adoption pass has revived the sessions the previous
+    /// daemon died under. An open of a session waits on it (a create, or an attach or message
+    /// that wakes a saved session): a window that reconnects the moment the daemon is back
+    /// would otherwise open the session's file in a second, fresh session while the boot is
+    /// still rebuilding the interrupted one, and the two race its lease.
+    pub(crate) boot_revived: tokio::sync::watch::Sender<bool>,
+    /// The session files (canonical) of the down sessions the boot armed a scheduled wake
+    /// for: each is relaunched when its earliest active job is due (see
+    /// `supervisor/scheduled_wake.rs`), so the boot's dormant-jobs report leaves them out.
+    pub(crate) scheduled_wakes: std::sync::Mutex<std::collections::HashSet<String>>,
     /// The running history import's started frame (`None` while none runs):
     /// a client that connects mid-import hears it after its hello.
     pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
     /// The daemon-wide provider request budget every worker takes permits from.
     pub(crate) admission: Arc<crate::provider_admission::AdmissionService>,
 }
+
+/// The built engines the daemon keeps ready: enough for a parent session
+/// and a small fan-out of children starting together. Beyond that each new
+/// session builds its own, in parallel, while the pool refills.
+const HOSTED_SPARE_KERNELS: usize = 4;
 
 impl Supervisor {
     /// Build the supervisor: descriptor dir, persisted config, event channel, and log.
@@ -307,6 +325,8 @@ impl Supervisor {
             passive_catalog_epoch: std::sync::atomic::AtomicU64::new(0),
             compaction_journal: std::sync::Mutex::new(None),
             boot_reaped: tokio::sync::watch::channel(true).0,
+            boot_revived: tokio::sync::watch::channel(true).0,
+            scheduled_wakes: std::sync::Mutex::new(std::collections::HashSet::new()),
             history_import: std::sync::Mutex::new(None),
         })
     }
@@ -323,6 +343,19 @@ impl Supervisor {
     ///
     /// Panics when the telemetry mutex is poisoned (the holder panicked mid-lock).
     pub async fn run(self: Arc<Self>) -> Result<()> {
+        // Sessions run inside this process: a panic in one is attributed to
+        // it and contained there, and the first session to start takes an
+        // engine that is already built.
+        crate::session_host::install_panic_hook(
+            self.descriptor_dir
+                .join(crate::supervisor::crash::SESSION_CRASH_LOG),
+        );
+        // No hosted session may block on whatever this process was given as
+        // standard input.
+        if let Err(error) = pa_core::platform::process::close_standard_input() {
+            self.log_line(&format!("standard input was not closed: {error}"));
+        }
+        pa_core::kernel::keep_spare_scheme_kernels(HOSTED_SPARE_KERNELS);
         // Before any socket or worker exists: workers and their kernels
         // inherit the raised limit.
         let open_file_limit = pa_core::platform::process::raise_open_file_limit();
@@ -333,7 +366,7 @@ impl Supervisor {
         // daemon restart.
         {
             let settings = pa_core::settings::SettingsManager::create(
-                std::env::current_dir().unwrap_or_default(),
+                pa_types::session_scope::current_dir().unwrap_or_default(),
                 &self.options.agent_dir,
             );
             let env_forced_off = matches!(
@@ -481,7 +514,21 @@ impl Supervisor {
                 },
                 None => AdoptionBoot::PlainStartup,
             };
+            // An update boot's sessions come back under the restore contract its clients
+            // already follow (the hello's `updateResume`); only a plain startup gates launches.
+            if matches!(boot, AdoptionBoot::PlainStartup) {
+                self.boot_revived.send_replace(false);
+            }
             tokio::spawn(async move {
+                // Raised however the pass ends, a panic included: a launch must never wait
+                // on a revival that is no longer running.
+                struct Revived(Arc<Supervisor>);
+                impl Drop for Revived {
+                    fn drop(&mut self) {
+                        self.0.boot_revived.send_replace(true);
+                    }
+                }
+                let _revived = Revived(Arc::clone(&supervisor));
                 supervisor.wait_for_boot_reap().await;
                 supervisor.adopt_persisted_workers(boot).await;
                 let _ = adoption_tx.send(true);
@@ -572,6 +619,17 @@ impl Supervisor {
 }
 
 impl Supervisor {
+    /// Wait until the boot has revived the sessions its predecessor died under (see
+    /// [`Supervisor::boot_revived`]): an open that follows joins the revived session.
+    pub(crate) async fn wait_for_boot_revival(&self) {
+        // The sender lives in `self`, so the wait can only end by the flip.
+        let _ = self
+            .boot_revived
+            .subscribe()
+            .wait_for(|revived| *revived)
+            .await;
+    }
+
     /// Wait until the boot reap cleared this socket's predecessors (see
     /// [`Supervisor::boot_reaped`]).
     pub(crate) async fn wait_for_boot_reap(&self) {

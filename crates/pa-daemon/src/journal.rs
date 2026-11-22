@@ -116,12 +116,88 @@ pub(crate) fn decode_journal_lines<'a>(bytes: &'a [u8], path: &Path) -> Result<V
     Ok(lines)
 }
 
+/// Exclusive write ownership of one journal: an advisory lock on its
+/// `.writer-lock` sidecar, held by this process.
+#[derive(Debug)]
 pub(crate) struct JournalWriteOwner {
-    file: File,
+    file: std::sync::Arc<File>,
+    ownership_path: std::path::PathBuf,
+    /// The owner's id: see [`crate::session_host::session_pid`].
+    owner: u32,
+    /// The journal's one writer at a time, and which ownership that is: a
+    /// later lifetime's takeover changes it, and from then on this one's
+    /// writes are refused ([`JournalWriteOwner::write`]).
+    gate: std::sync::Arc<std::sync::Mutex<u64>>,
+    /// This ownership, as the gate names it.
+    generation: u64,
 }
+
+impl JournalWriteOwner {
+    /// Run one durable write of the journal, with no other of its writers
+    /// inside one. A hosted session that was ended while a thread of it was
+    /// stuck leaves that thread holding its journal; if the thread wakes
+    /// after the rebuilt session took the journal over, its writes stop
+    /// here instead of landing among the new lifetime's records.
+    ///
+    /// # Errors
+    ///
+    /// A later lifetime of the session owns the journal now, or `write`
+    /// failed.
+    fn write<T>(&self, write: impl FnOnce() -> Result<T>) -> Result<T> {
+        pa_types::session_scope::ensure_live()?;
+        let current = self
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        anyhow::ensure!(
+            *current == self.generation,
+            "the journal {} belongs to a later lifetime of its session: an ended lifetime does not write to it",
+            self.ownership_path.display()
+        );
+        write()
+    }
+}
+
+/// The journal locks this process holds: sidecar path -> owner and locked
+/// file. The operating system's lock excludes other processes; this table
+/// is what lets a rebuilt hosted session take over the lock of a lifetime
+/// that ended without letting go (a stuck thread still owns its handle).
+fn held_ownerships() -> &'static std::sync::Mutex<HeldOwnerships> {
+    static HELD: std::sync::OnceLock<std::sync::Mutex<HeldOwnerships>> = std::sync::OnceLock::new();
+    HELD.get_or_init(Default::default)
+}
+
+/// Sidecar path -> the owner's id, the locked file, and the journal's
+/// write gate.
+type HeldOwnerships = std::collections::HashMap<
+    std::path::PathBuf,
+    (
+        u32,
+        std::sync::Arc<File>,
+        std::sync::Arc<std::sync::Mutex<u64>>,
+    ),
+>;
 
 impl Drop for JournalWriteOwner {
     fn drop(&mut self) {
+        let mut held = held_ownerships()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A successor that took the lock over keeps it locked.
+        if !held
+            .get(&self.ownership_path)
+            .is_some_and(|(owner, file, gate)| {
+                *owner == self.owner
+                    && std::sync::Arc::ptr_eq(file, &self.file)
+                    && *gate
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        == self.generation
+            })
+        {
+            return;
+        }
+        held.remove(&self.ownership_path);
         // Closing one descriptor can leave the lock held by an inherited copy.
         if let Err(error) = pa_core::platform::unlock_file(&self.file) {
             // Drop has no error channel; report without panicking if stderr is unavailable.
@@ -137,18 +213,81 @@ impl Drop for JournalWriteOwner {
 // Empty sidecars remain after retirement; directory entries/inodes can accumulate.
 // Explicit unlock is attempted on guard drop; a failure leaves close as fallback.
 pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
+    static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut ownership_path = path.as_os_str().to_os_string();
     ownership_path.push(".writer-lock");
+    let ownership_path = std::path::PathBuf::from(ownership_path);
+    let owner = crate::session_host::session_pid();
+    let mut held = held_ownerships()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // The holder is a hosted lifetime of this process that has ended: its
+    // lock passes to the caller. Any other holder keeps it.
+    let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if let Some((file, gate)) = held
+        .get(&ownership_path)
+        .filter(|(holder, _, _)| {
+            crate::session_host::is_hosted_pid(*holder)
+                && !crate::session_host::hosted_alive(*holder)
+        })
+        .map(|(_, file, gate)| (std::sync::Arc::clone(file), std::sync::Arc::clone(gate)))
+    {
+        // From here the ended lifetime's writes are refused. One of them
+        // that is inside its write right now cannot be taken back, and
+        // would land after this lifetime's first records: the journal is
+        // not taken over under it.
+        match gate.try_lock() {
+            Ok(mut current) => *current = generation,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => {
+                *poisoned.into_inner() = generation;
+            }
+            Err(std::sync::TryLockError::WouldBlock) => anyhow::bail!(
+                "an ended lifetime of this session is still inside a write to journal {}",
+                path.display()
+            ),
+        }
+        held.insert(
+            ownership_path.clone(),
+            (
+                owner,
+                std::sync::Arc::clone(&file),
+                std::sync::Arc::clone(&gate),
+            ),
+        );
+        return Ok(JournalWriteOwner {
+            file,
+            ownership_path,
+            owner,
+            gate,
+            generation,
+        });
+    }
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
-        .open(std::path::PathBuf::from(ownership_path))
+        .open(&ownership_path)
         .with_context(|| format!("open journal ownership {}", path.display()))?;
     pa_core::platform::try_lock_exclusive(&file)
         .with_context(|| format!("acquire journal ownership {}", path.display()))?;
-    Ok(JournalWriteOwner { file })
+    let file = std::sync::Arc::new(file);
+    let gate = std::sync::Arc::new(std::sync::Mutex::new(generation));
+    held.insert(
+        ownership_path.clone(),
+        (
+            owner,
+            std::sync::Arc::clone(&file),
+            std::sync::Arc::clone(&gate),
+        ),
+    );
+    Ok(JournalWriteOwner {
+        file,
+        ownership_path,
+        owner,
+        gate,
+        generation,
+    })
 }
 
 pub(crate) fn tail_is_torn(path: &Path) -> Result<bool> {
@@ -272,6 +411,30 @@ pub struct WorkerQueueSnapshotRecord {
     #[serde(default)]
     pub suspended: bool,
     pub recorded_at: String,
+    /// The rows of the turn that had just been picked up when this snapshot
+    /// was taken (they have left their lane). A session revived after its
+    /// host died replays them ahead of the lane they came from; a session
+    /// rebuilt after its own crash does not, because the supervisor drops
+    /// them first ([`WorkerRecoveryJournal::drop_running_turns`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running: Vec<WorkerQueueItemRecord>,
+    /// Whether `running` came off the steering lane (else the follow-up lane).
+    #[serde(default)]
+    pub running_steering: bool,
+}
+
+impl WorkerQueueSnapshotRecord {
+    /// The lanes a restore redelivers: the picked-up turn's rows first.
+    fn restored_lanes(&self) -> QueueSnapshotLanes {
+        let (mut steering, mut follow_up) = (self.steering.clone(), self.follow_up.clone());
+        let lane = if self.running_steering {
+            &mut steering
+        } else {
+            &mut follow_up
+        };
+        lane.splice(0..0, self.running.iter().cloned());
+        (steering, follow_up, self.suspended)
+    }
 }
 
 /// One session's latest queue snapshot as read back for a restore: the
@@ -282,7 +445,7 @@ pub type QueueSnapshotLanes = (Vec<WorkerQueueItemRecord>, Vec<WorkerQueueItemRe
 /// Latest busy/operation per active session, plus the latest queue
 /// snapshot per session.
 pub struct WorkerRecoveryJournal {
-    _write_owner: JournalWriteOwner,
+    write_owner: JournalWriteOwner,
     path: std::path::PathBuf,
     latest: HashMap<String, WorkerRecoveryRecord>,
     queue_snapshots: HashMap<String, WorkerQueueSnapshotRecord>,
@@ -304,7 +467,7 @@ impl WorkerRecoveryJournal {
         let write_owner = journal_write_owner(path)?;
         let queue_snapshots = parse_queue_snapshot_records(path)?;
         let journal = WorkerRecoveryJournal {
-            _write_owner: write_owner,
+            write_owner,
             path: path.to_path_buf(),
             latest: parse_worker_records(path)?,
             queue_snapshots,
@@ -405,7 +568,9 @@ impl WorkerRecoveryJournal {
             operation: operation.to_string(),
             recorded_at: crate::util::now_iso(),
         };
-        append_record(&self.path, &serde_json::to_value(&record)?)?;
+        let line = serde_json::to_value(&record)?;
+        self.write_owner
+            .write(|| append_record(&self.path, &line))?;
         self.latest.insert(active_session_id.to_string(), record);
         // TS parity: the all-idle check runs AFTER the insert (TS checks
         // after `set`); checking before it, a single-session journal never
@@ -441,8 +606,12 @@ impl WorkerRecoveryJournal {
             follow_up: follow_up.to_vec(),
             suspended,
             recorded_at: crate::util::now_iso(),
+            running: Vec::new(),
+            running_steering: false,
         };
-        append_record(&self.path, &serde_json::to_value(&record)?)?;
+        let line = serde_json::to_value(&record)?;
+        self.write_owner
+            .write(|| append_record(&self.path, &line))?;
         self.queue_snapshots
             .insert(active_session_id.to_string(), record);
         Ok(())
@@ -476,6 +645,8 @@ impl WorkerRecoveryJournal {
             follow_up: follow_up.to_vec(),
             suspended,
             recorded_at: crate::util::now_iso(),
+            running: Vec::new(),
+            running_steering: false,
         };
         let verdict_unchanged = self.latest.get(active_session_id).is_some_and(|previous| {
             previous.busy == busy
@@ -499,7 +670,8 @@ impl WorkerRecoveryJournal {
         if let Some(record) = &record {
             batch.push(serde_json::to_value(record)?);
         }
-        append_records(&self.path, &batch)?;
+        self.write_owner
+            .write(|| append_records(&self.path, &batch))?;
         self.queue_snapshots
             .insert(active_session_id.to_string(), snapshot);
         if let Some(record) = record {
@@ -516,13 +688,94 @@ impl WorkerRecoveryJournal {
     /// The latest persisted queue rows for `active_session_id`.
     #[must_use]
     pub fn latest_queue_snapshot(&self, active_session_id: &str) -> Option<QueueSnapshotLanes> {
-        self.queue_snapshots.get(active_session_id).map(|record| {
-            (
-                record.steering.clone(),
-                record.follow_up.clone(),
-                record.suspended,
-            )
-        })
+        self.queue_snapshots
+            .get(active_session_id)
+            .map(WorkerQueueSnapshotRecord::restored_lanes)
+    }
+
+    /// Record a turn's pickup: the lanes as they are now, and the rows the
+    /// turn took off one of them. Until the next snapshot, a restore
+    /// redelivers those rows first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot record cannot be serialized or appended.
+    pub(crate) fn record_turn_pickup(
+        &mut self,
+        active_session_id: &str,
+        running: Vec<WorkerQueueItemRecord>,
+        running_steering: bool,
+        lanes: crate::worker::QueueLanes,
+        suspended: bool,
+    ) -> Result<()> {
+        let record = WorkerQueueSnapshotRecord {
+            version: QUEUE_SNAPSHOT_VERSION,
+            r#type: QUEUE_SNAPSHOT_RECORD_TYPE.to_string(),
+            active_session_id: active_session_id.to_string(),
+            steering: lanes.steering,
+            follow_up: lanes.follow_up,
+            suspended,
+            recorded_at: crate::util::now_iso(),
+            running,
+            running_steering,
+        };
+        let line = serde_json::to_value(&record)?;
+        self.write_owner
+            .write(|| append_record(&self.path, &line))?;
+        self.queue_snapshots
+            .insert(active_session_id.to_string(), record);
+        Ok(())
+    }
+
+    /// Forget the turns that were running when the journal's writer went
+    /// down, keeping every queued row behind them: a session rebuilt after
+    /// its own crash must not run the turn that crashed it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be opened or appended.
+    pub fn drop_running_turns(path: &Path) -> Result<()> {
+        let mut journal = Self::open(path)?;
+        for record in journal.queue_snapshots.values_mut() {
+            if !record.running.is_empty() {
+                record.running.clear();
+                record.recorded_at = crate::util::now_iso();
+                let line = serde_json::to_value(&*record)?;
+                journal
+                    .write_owner
+                    .write(|| append_record(&journal.path, &line))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the rows of each turn that was running when the journal's
+    /// writer went down: `replace` is shown every snapshot that holds such
+    /// rows and answers what a restore redelivers in their place (`None`
+    /// keeps them).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be opened or appended.
+    pub(crate) fn replace_running_turns(
+        path: &Path,
+        mut replace: impl FnMut(&WorkerQueueSnapshotRecord) -> Option<Vec<WorkerQueueItemRecord>>,
+    ) -> Result<()> {
+        let mut journal = Self::open(path)?;
+        for record in journal.queue_snapshots.values_mut() {
+            if record.running.is_empty() {
+                continue;
+            }
+            if let Some(running) = replace(record) {
+                record.running = running;
+                record.recorded_at = crate::util::now_iso();
+                let line = serde_json::to_value(&*record)?;
+                journal
+                    .write_owner
+                    .write(|| append_record(&journal.path, &line))?;
+            }
+        }
+        Ok(())
     }
 
     /// Read the latest queue snapshot for a session straight from a journal
@@ -537,8 +790,8 @@ impl WorkerRecoveryJournal {
         active_session_id: &str,
     ) -> Result<Option<QueueSnapshotLanes>> {
         Ok(parse_queue_snapshot_records(path)?
-            .remove(active_session_id)
-            .map(|record| (record.steering, record.follow_up, record.suspended)))
+            .get(active_session_id)
+            .map(WorkerQueueSnapshotRecord::restored_lanes))
     }
 
     fn compact(&self, finalize: Finalize) -> Result<()> {
@@ -553,7 +806,8 @@ impl WorkerRecoveryJournal {
             .map(serde_json::to_value)
             .collect::<std::result::Result<_, _>>()?;
         records.extend(snapshots);
-        rewrite_records(&self.path, &records, finalize)
+        self.write_owner
+            .write(|| rewrite_records(&self.path, &records, finalize))
     }
 }
 
@@ -601,6 +855,11 @@ fn parse_queue_snapshot_records(path: &Path) -> Result<HashMap<String, WorkerQue
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            running: parse_snapshot_lane(record.get("running")),
+            running_steering: record
+                .get("running_steering")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         };
         latest.insert(active_session_id.to_string(), entry);
     }
@@ -1234,7 +1493,7 @@ mod tests {
             .record("s1", "sess1", None, true, "prompt_accepted")
             .unwrap();
         let expected = owner.get_latest();
-        let inherited = owner._write_owner.file.try_clone().unwrap();
+        let inherited = owner.write_owner.file.try_clone().unwrap();
         assert!(WorkerRecoveryJournal::open(&path).is_err());
 
         drop(owner);

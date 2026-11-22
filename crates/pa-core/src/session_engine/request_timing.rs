@@ -51,7 +51,12 @@ fn truthy_env_flag(value: Option<&str>) -> bool {
 /// On when either the settings flag or the env override is set.
 #[must_use]
 pub fn is_request_timing_enabled(settings_flag: bool) -> bool {
-    settings_flag || truthy_env_flag(std::env::var(REQUEST_TIMING_ENV).ok().as_deref())
+    settings_flag
+        || truthy_env_flag(
+            pa_types::session_scope::var(REQUEST_TIMING_ENV)
+                .ok()
+                .as_deref(),
+        )
 }
 
 // Log

@@ -55,7 +55,7 @@ impl TelemetrySwitch {
 #[must_use]
 pub fn telemetry_switch(settings: &SettingsManager) -> TelemetrySwitch {
     switch_from(
-        |var| std::env::var(var).ok(),
+        |var| pa_types::session_scope::var(var).ok(),
         settings.telemetry_enabled_setting(),
     )
 }

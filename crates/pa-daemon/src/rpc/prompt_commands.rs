@@ -187,7 +187,7 @@ async fn run_session_command(
         if let Some(message) = execution
             .compaction
             .as_ref()
-            .and_then(|compaction| compaction.ipython_state.as_ref())
+            .and_then(|compaction| compaction.kernel_state.as_ref())
         {
             write_command_row(state, message).await;
         }

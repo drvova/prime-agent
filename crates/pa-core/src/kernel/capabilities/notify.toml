@@ -1,0 +1,3 @@
+[[telemetry]]
+event = "agent repl notify"
+properties = ["notify_count", "notify_undelivered_count"]

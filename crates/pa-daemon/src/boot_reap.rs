@@ -120,6 +120,19 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
 /// its routed `shutdown`) on the `STOP_FORCE_TIMEOUT` budget, not the boot reap's fast
 /// verify. `None` as the start id trusts liveness alone.
 pub(crate) async fn stop_process(pid: u32, start_id: Option<String>) -> ReapOutcome {
+    // A hosted session is not a process: no signal reaches it. Its forced
+    // stop ends its host thread, and only the lifetime the caller named.
+    if crate::session_host::is_hosted_pid(pid) {
+        let current = crate::session_host::hosted_generation(pid);
+        return if current.is_some()
+            && current == start_id
+            && crate::session_host::stop_hosted(pid).await
+        {
+            ReapOutcome::Kill
+        } else {
+            ReapOutcome::AlreadyGone
+        };
+    }
     stop_target_within(
         &ReapTarget {
             pid,
@@ -450,7 +463,8 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
     let socket = normalize_socket_spelling(socket_path);
     let mut targets = Vec::new();
     for pid in numeric_proc_entries() {
-        if pid == std::process::id() {
+        // This daemon's restart owner runs the same command line; it is not a predecessor.
+        if pid == std::process::id() || Some(pid) == crate::keeper::keeper_pid() {
             continue;
         }
         // Identity-first capture, as the worker census.
@@ -732,7 +746,7 @@ mod tests {
     #[test]
     fn the_abandoned_id_filter_matches_the_stamped_env_only() {
         let unstamped_guard = ReapOnDrop(
-            std::process::Command::new("sleep")
+            pa_types::session_scope::std_command("sleep")
                 .arg("300")
                 .env_remove(crate::worker::WORKER_ACTIVE_SESSION_ID_ENV)
                 .spawn()
@@ -751,7 +765,7 @@ mod tests {
             "an unstamped environment never matches the abandoned id"
         );
         let stamped_guard = ReapOnDrop(
-            std::process::Command::new("sleep")
+            pa_types::session_scope::std_command("sleep")
                 .arg("300")
                 .env(crate::worker::WORKER_ACTIVE_SESSION_ID_ENV, "6b558be357e3")
                 .spawn()
@@ -795,7 +809,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_real_process_stops_inside_the_term_grace() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("300")
             .spawn()
             .expect("spawn sleep");
@@ -817,7 +831,7 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let trap_armed = dir.path().join("trap-armed");
         let term_delivered = dir.path().join("term-delivered");
-        let child = std::process::Command::new("bash")
+        let child = pa_types::session_scope::std_command("bash")
             .arg("-c")
             .arg("trap ': > \"$2\"' TERM; : > \"$1\"; while :; do :; done")
             .arg("bash")
@@ -853,7 +867,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_vanished_pid_reports_already_gone() {
-        let mut child = std::process::Command::new("true")
+        let mut child = pa_types::session_scope::std_command("true")
             .spawn()
             .expect("spawn true");
         let pid = child.id();
@@ -863,7 +877,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recycled_pid_is_never_signaled() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("300")
             .spawn()
             .expect("spawn sleep");
@@ -951,7 +965,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn the_exe_gate_reads_the_kernel_binary() {
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("2")
             .spawn()
             .expect("spawn sleep");

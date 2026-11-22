@@ -74,7 +74,9 @@ pub async fn latest_release(
     base_url: &str,
     timeout: Duration,
 ) -> Result<Option<LatestRelease>> {
-    if std::env::var("PI_SKIP_VERSION_CHECK").is_ok() || std::env::var("PI_OFFLINE").is_ok() {
+    if pa_types::session_scope::var("PI_SKIP_VERSION_CHECK").is_ok()
+        || pa_types::session_scope::var("PI_OFFLINE").is_ok()
+    {
         return Ok(None);
     }
     let manifest_path =

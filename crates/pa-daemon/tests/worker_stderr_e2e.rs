@@ -1,7 +1,8 @@
-//! Per-worker stderr capture e2e: a worker's stderr lands in its per-worker
-//! log, a never-ready worker reports the captured stderr tail in the create
-//! failure, and the spawn-time prune bounds retained logs (never-ready via
-//! a `TMPDIR` pointing at a plain file - the real bind path failing).
+//! Per-session log e2e: what a hosted session logs lands in that session's
+//! own log, tagged with the session; a session that never comes up reports
+//! why, with the tail of its log, in the create failure; and opening a log
+//! prunes the retained ones (never-ready via a `TMPDIR` pointing at a plain
+//! file - the real bind path failing).
 #![cfg(unix)]
 
 mod common;
@@ -58,15 +59,9 @@ impl DaemonBuilder {
     // exits immediately afterwards, reaping it.
     #[allow(clippy::zombie_processes)]
     fn spawn(mut self, socket: &Path) -> Daemon {
-        let child = self.command.spawn().expect("spawn pa-daemon supervisor");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if socket.exists() {
-                return Daemon { child };
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("supervisor socket never appeared");
+        let mut child = self.command.spawn().expect("spawn pa-daemon supervisor");
+        common::await_listening(socket, &mut child);
+        Daemon { child }
     }
 }
 
@@ -216,7 +211,13 @@ fn worker_stderr_lands_in_the_per_worker_log_and_prunes_retention() {
         std::fs::read_to_string(&log_path).expect("worker stderr log for the created session");
     assert!(
         contents.contains("auth ok"),
-        "the worker's stderr output is in its per-worker log: {contents}"
+        "the session's log lines are in its own log: {contents}"
+    );
+    assert!(
+        contents
+            .lines()
+            .all(|line| line.contains(&format!("[session {session_id}] "))),
+        "every line is tagged with its session: {contents}"
     );
 
     // The fresh log rides inside the prune-protection window (never a
@@ -272,9 +273,11 @@ fn never_ready_worker_failure_carries_the_captured_stderr_tail() {
         message.starts_with("session worker "),
         "names the worker first: {message}"
     );
+    // A hosted session that cannot come up says so at once, with its reason: nothing waits
+    // out the connect budget the way a silent worker process had to be waited out.
     assert!(
-        message.contains("did not come up in time"),
-        "the not-ready headline: {message}"
+        message.contains("ended before it was ready: Not a directory"),
+        "the not-ready headline carries the reason: {message}"
     );
     assert!(
         message.contains("session worker stderr ("),

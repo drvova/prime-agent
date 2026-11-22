@@ -9,11 +9,11 @@
 )]
 
 //! Verifier: the turn-boundary host-request contract (`model.info`, `compact.*`, `refine.*`) over a
-//! REAL kernel: one turn's `ipython` cell calls the `rlm.host_request` bridge directly; the raw
+//! REAL kernel: one turn's `eval` cell calls `(host-request ...)` directly; the raw
 //! handler responses are asserted, then the scheduled refinement reaches the boundary seam.
 #![cfg(unix)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptStep, ScriptedProvider, ScriptedTurn};
 use pa_agent::stream::AssistantMessageEvent;
@@ -23,63 +23,19 @@ use pa_core::session_engine::turn_boundary::PendingRefine;
 use pa_core::session_engine::PromptOptions;
 use serde_json::{json, Value};
 
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-/// This binary carries exactly one live-kernel test, so nothing races.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
+/// `value` with each float that holds a whole number as that integer.
+fn whole_numbers(value: Value) -> Value {
+    match value {
+        Value::Number(number) => match number.as_f64() {
+            Some(float) if number.is_f64() && float.fract() == 0.0 => json!(float as i64),
+            _ => Value::Number(number),
+        },
+        Value::Array(items) => items.into_iter().map(whole_numbers).collect(),
+        Value::Object(fields) => fields
+            .into_iter()
+            .map(|(key, field)| (key, whole_numbers(field)))
+            .collect(),
+        other @ (Value::Null | Value::Bool(_) | Value::String(_)) => other,
     }
 }
 
@@ -88,7 +44,24 @@ impl Drop for EnvOverride {
 /// carries the same proof into the session transcript).
 fn harness_cell(receipt_path: &Path) -> String {
     format!(
-        "import json\nfrom rlm import host_request\npayload = {{}}\npayload[\"model_info\"] = await host_request(\"model.info\", {{}})\npayload[\"compact_status\"] = await host_request(\"compact.status\", {{}})\npayload[\"refine_status_before\"] = await host_request(\"refine.status\", {{}})\npayload[\"refine_run\"] = await host_request(\"refine.run\", {{\"instructions\": \"persist the kernel round-trip contract observation\", \"global\": True}})\npayload[\"refine_status_after\"] = await host_request(\"refine.status\", {{}})\npayload[\"compact_run\"] = await host_request(\"compact.run\", {{\"instructions\": \"keep the observation\"}})\nopen({receipt_path:?}, \"w\").write(json.dumps(payload))\nprint(\"HARNESS_CELL_OK\")",
+        "(define model-info (host-request \"model.info\" (hash)))
+         (define compact-status (host-request \"compact.status\" (hash)))
+         (define refine-before (host-request \"refine.status\" (hash)))
+         (define refine-run (host-request \"refine.run\"
+                                          (hash 'instructions \"persist the kernel round-trip contract observation\"
+                                                'global #t)))
+         (define refine-after (host-request \"refine.status\" (hash)))
+         (define compact-run (host-request \"compact.run\" (hash 'instructions \"keep the observation\")))
+         (define written
+           (fs-write {receipt_path:?}
+                     (value->jsexpr-string
+                       (hash 'model_info model-info
+                             'compact_status compact-status
+                             'refine_status_before refine-before
+                             'refine_run refine-run
+                             'refine_status_after refine-after
+                             'compact_run compact-run))))
+         (displayln \"HARNESS_CELL_OK\")",
         receipt_path = receipt_path.display().to_string(),
     )
 }
@@ -114,11 +87,8 @@ fn registry_model() -> pa_types::ai::Model {
     .expect("faux registry model")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -126,17 +96,6 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
     let receipt_path = dir.path().join("harness-receipt.json");
-
-    // Hermeticity: the kernel runs on the bootstrapped kernel venv, and no
-    // ambient agent state leaks in.
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
 
     // A persisted session: the refine handlers register only for depth-0
     // sessions with a local harness state dir (TS `_autoRefineAllowedForSession`).
@@ -153,7 +112,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
         Some("running the harness cell"),
         vec![(
             "call-1",
-            "python_repl",
+            pa_types::ai::KERNEL_TOOL_NAME,
             json!({ "code": harness_cell(&receipt_path) }),
         )],
     );
@@ -209,8 +168,7 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
         telemetry: None,
         model_info: Some(registry_model()),
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,
@@ -230,7 +188,8 @@ async fn turn_boundary_host_requests_round_trip_through_a_real_kernel() {
 
     let raw = std::fs::read_to_string(&receipt_path)
         .unwrap_or_else(|_| panic!("kernel cell wrote no receipt at {}", receipt_path.display()));
-    let payload: Value = serde_json::from_str(&raw).expect("receipt json");
+    // Scheme writes every number as a float; the host's counts read as integers again.
+    let payload: Value = whole_numbers(serde_json::from_str(&raw).expect("receipt json"));
 
     assert_eq!(
         payload["model_info"],

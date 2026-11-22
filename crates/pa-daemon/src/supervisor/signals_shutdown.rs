@@ -27,8 +27,26 @@ impl Supervisor {
         self.begin_shutdown().await;
     }
 
+    /// Tell this daemon's restart owner, when it has one, that the stop now starting is
+    /// deliberate: it must not be answered with a restart even if it ends in a kill (a forced
+    /// shutdown's escalation, a second signal). An intent that cannot be written is logged; the
+    /// exit status of a stop that completes says the same thing.
+    pub(super) fn note_deliberate_stop(&self) {
+        if crate::keeper::keeper_pid().is_none() {
+            return;
+        }
+        if let Err(error) =
+            crate::keeper::record_stop_intent(&self.options.agent_dir, &self.options.socket_path)
+        {
+            self.log_line(&format!(
+                "the stop intent for the restart owner could not be recorded: {error:#}"
+            ));
+        }
+    }
+
     pub(super) async fn begin_shutdown(self: &Arc<Self>) {
         self.shutting_down.store(true, Ordering::SeqCst);
+        self.note_deliberate_stop();
         for resident in self.registry.list().await {
             resident.transition(WorkerTransition::RetireStopped);
             // The stop tombstone persists before the worker is even told (TS
@@ -74,6 +92,7 @@ impl Supervisor {
         {
             return false;
         }
+        self.note_deliberate_stop();
         self.log_line(
             "received shutdown signal; entering graceful drain: new client commands refused, running turns settle through the workers' routed shutdown",
         );

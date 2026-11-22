@@ -30,7 +30,7 @@ impl Drop for Daemon {
 
 // The timeout panic path cannot wait on the child; the test exits and reaps it.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -41,7 +41,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: the ambient environment exports a real
         // agent dir; point every fallback at the test sandbox instead.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -55,31 +54,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .spawn()
         .expect("spawn pa-daemon supervisor");
     Daemon { child }
-}
-
-/// The kernel Python; `PA_E2E_KERNEL_PYTHON` points at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live RLM child-usage e2e",
-        candidate.display()
-    );
-    None
 }
 
 fn wait_socket_ready(socket: &Path) {
@@ -198,7 +172,14 @@ fn await_receipt(receipt: &Path) -> String {
 /// product `rlm.spawn` surface and record its child id + session dir.
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"run the lane task\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id, \"session_dir\": str(handle.session_dir)}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([handle (rlm-spawn "run the lane task" #:name "kid")])
+      (record {receipt:?} (value->jsexpr-string handle))
+      (displayln (hash-ref handle 'rlm_child_id)))))
+"#,
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -213,7 +194,7 @@ fn write_parent_script(dir: &Path, first_cell: &str) -> PathBuf {
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython", "arguments": { "code": first_cell } },
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
             ],
@@ -331,9 +312,6 @@ fn settled_child_usage(child_file: &Path) -> Value {
 /// resume semantics).
 #[test]
 fn child_usage_attributed_row_reaches_the_parent_transcript() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -356,7 +334,7 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
     )
     .expect("write child script");
     let parent_script = write_parent_script(dir.path(), &spawn_cell(&spawn_receipt, &spawn_error));
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -415,7 +393,7 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
     };
 
     // The target names an assistant message row in the same file, and that
-    // row is the spawn's issuer (the ipython tool call that ran the cell).
+    // row is the spawn's issuer (the eval tool call that ran the cell).
     let rows = transcript_rows(Path::new(&parent_session_file));
     let target_id = row["targetId"].as_str().expect("targetId");
     let target = rows
@@ -429,7 +407,7 @@ fn child_usage_attributed_row_reaches_the_parent_transcript() {
             .as_array()
             .expect("content blocks")
             .iter()
-            .any(|block| block["type"] == "toolCall" && block["name"] == "ipython"),
+            .any(|block| block["type"] == "toolCall" && block["name"] == "eval"),
         "the target is the spawning assistant row: {target}"
     );
 

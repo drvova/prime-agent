@@ -10,7 +10,6 @@ import http.server
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -61,17 +60,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.requests.append(body)
         count = len(self.server.requests)
         offered = {tool['function']['name'] for tool in body.get('tools', [])}
-        name = next((n for n in ('python_repl', 'ipython') if n in offered), None)
+        name = 'eval' if 'eval' in offered else None
         if count == 1:
-            command = shlex.join(['python3', '-c',
-                f"import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:{self.server.server_port}/background', timeout=90).read().decode())"])
-            code = 'h = bash(' + repr(command) + ")\nprint('PRINT_BASH_STARTED=' + __import__('json').dumps({'pid': h.pid}))"
+            command = f'curl -s --max-time 90 http://127.0.0.1:{self.server.server_port}/background'
+            code = ('(define job (bash ' + json.dumps(command) + " (hash 'background #t)))\n"
+                    '(displayln (string-append "PRINT_BASH_STARTED=" '
+                    "(value->jsexpr-string (hash 'pid (hash-ref job 'pid)))))")
         elif count == 3:
             notice = [t for m in body.get('messages', []) if m.get('role') == 'user'
                       for t in texts(m.get('content')) if '[bash-done pid:' in t]
             if not notice:
                 self.server.errors.append('wake request lacks actual bash completion notice')
-            code = "print('PRINT_BASH_FINISHED=' + __import__('json').dumps({'completed': 'BG_DONE' in h.output()}))"
+            code = ('(displayln (string-append "PRINT_BASH_FINISHED=" (value->jsexpr-string '
+                    "(hash 'completed (string-contains? (bash-output job) \"BG_DONE\")))))")
         else:
             code = None
         if count not in (1, 2, 3, 4) or (code and name is None):

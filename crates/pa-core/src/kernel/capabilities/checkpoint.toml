@@ -1,0 +1,10 @@
+[[telemetry]]
+event = "agent repl checkpoint"
+properties = [
+  "checkpoint_created_count",
+  "checkpoint_list_count",
+  "checkpoint_restored_count",
+  "checkpoint_restore_declined_count",
+  "checkpoint_restore_disabled_count",
+  "checkpoint_failed_count",
+]

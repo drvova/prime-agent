@@ -33,8 +33,8 @@ Every contributor (human or agent) must read this before working on this repo.
   signal, not a merge limit: when adding to an already-large file, consider splitting by
   responsibility rather than growing it further. Move related tests and docs with extracted code.
 - Name modules for what they own, not `utils` or `common`. Follow existing structure: in
-  `crates/pa-core/src/kernel/manager/`, `mod.rs` connects `execution.rs`, `requests.rs`, and
-  `teardown.rs`; put a new kernel-manager concern beside them. In
+  `crates/pa-core/src/kernel/scheme/`, `mod.rs` connects `cell.rs`, `session.rs`, and
+  `confinement.rs`; put a new kernel concern beside them. In
   `crates/pa-core/src/cron/store/`, `mod.rs` connects `heartbeat.rs`, `jobs.rs`, and
   `session_artifacts.rs`; keep storage work there rather than growing the scheduler.
 - Inline format args: always prefer `format!("{x}")` over positional.
@@ -111,6 +111,12 @@ Rules:
 - Tests that mock a sink or run offline cannot prove the above (the
   benchmark's mock hides the POST). The regression test with a hanging
   sink is the required verifier.
+- A session never waits to build its kernel. Building a Scheme engine
+  costs about 200 ms, so the daemon keeps spare engines built ahead of
+  time and refills them in the background; engines are built
+  independently, never copied (copies share interpreter state between
+  sessions). `first-eval` and `warm-first-eval` in `crates/pa-perf`
+  measure this.
 
 Example (the #3288 regression this rule exists to prevent): the
 telemetry startup flush was awaited on the interactive launch path, so
@@ -165,10 +171,12 @@ EXPLICIT EXCEPTION: wire-protocol identifiers (e.g. the PI_PACKAGE_DIR env var, 
 
 ## Surface contract (must not change)
 
-- Tools exposed to the model: `bash`, `edit`, `python_repl` (internal helpers: `rename`, `stdout`).
-- RLM kernel API in the persistent Python REPL: `rlm.spawn/find_models/collect/list_subagents/delete_subagent/create_session/progress_note`, `rlm.harness` CRUD, `agent_message.send`, `agent_observe`, `compact`, `goal`, `refine`, `attach_image`, skills (markdown + Python) per the skill contract in the base system prompt.
-- System prompt structure: layered — cache-stable static layer files (core harness description with the full API surface, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (packages, project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
-- CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon/session-worker) keep their behavior.
+- Tool exposed to the model: `eval`, a persistent Scheme kernel (Steel) that runs inside the agent process. Everything else the model does is a Scheme function called from an `eval` cell. Saved sessions that contain `python_repl` cells from before the kernel moved to Scheme still render and replay (`pa_types::ai::kernel_tool_language`).
+- Kernel API, as Scheme functions: `bash` and its job functions, `fs-read/write/edit/grep/glob/find/symbol` and `edit`, `rlm-spawn/find-models/collect/list-subagents/delete-subagent/create-session/progress-note`, the `harness-*` store, `agent-message-*`, `agent-observe-*`, `compact-*`, `goal-*`, `refine-*`, `mcp-*`, `web-*`, `worktree-*`, `factory-*`, `rz-*`, `attach-image`, and skills (markdown, optionally with Scheme source) per the skill contract in the base system prompt. The reference in `crates/pa-core/src/prompts/capabilities/` is the authority, and `crates/pa-core/tests/prompt_guards.rs` fails when a kernel function and that reference disagree: change both in the same PR.
+- A cell reaches the system only through those functions. Steel's own file, process, loader, environment, thread and blocking builtins are closed (`crates/pa-core/src/kernel/scheme/confinement.rs`), and the names a cell can reach are pinned in `confinement/open_globals.txt`: a Steel upgrade or a new builtin that changes the list fails its test and needs a deliberate decision.
+- The product ships and installs no Python: no interpreter, venv, uv, or packages. The one place a Python is used is a factory machine's optional `python` state, which runs the `python3` already on `PATH` and fails that state when there is none. `--prime-agent-bootstrap` is accepted and does nothing, and a release archive keeps two placeholder files under `prime-agent-runtime/`, because installers and updaters already in the field require both (`docs/legacy-upgrade-contract.md`).
+- System prompt structure: layered — cache-stable static layer files (core harness description that names every kernel function, mandatory usage rules, opinionated guidelines, per-model additions from the model-prompts TOML rule map) followed by one dynamic tail (project context, skills inventory, MCP servers, environment, session role); the harness digest stays a separate `[harness-digest]` user message. The full reference is not in the prompt: the model reads it with `(api-help [topic])`. `prime-agent prompt` dumps the assembled prompt with its layer breakdown.
+- CLI shape: `prime-agent` keeps its existing commands and flags; headless modes (RPC/daemon) keep their behavior.
 
 ## Crates
 
@@ -178,13 +186,13 @@ The table summarizes each crate's current direct workspace dependencies:
 
 | Crate | Purpose | Direct workspace dependencies |
 | --- | --- | --- |
-| `pa-types` | Shared wire and domain types | none |
+| `pa-types` | Shared wire and domain types, per-session scope | none |
 | `pa-telemetry` | Events and sinks | none |
 | `pa-agent` | Provider-independent agent loop | none |
 | `pa-ai` | Providers, model registry, streaming | `pa-types` |
 | `pa-models` | Live model catalog and transport | `pa-ai`, `pa-types` |
-| `pa-core` | Session engine, tools, skills, kernel, settings | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-telemetry` |
-| `pa-daemon` | Supervisor, workers, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
+| `pa-core` | Session engine, tools, skills, Scheme kernel, settings | `pa-types`, `pa-ai`, `pa-models`, `pa-agent`, `pa-telemetry` |
+| `pa-daemon` | Supervisor, hosted sessions, restart owner, wire protocol | `pa-types`, `pa-core`, `pa-agent`, `pa-ai`, `pa-telemetry`, `pa-models` |
 | `pa-tui` | Terminal UI, daemon-wire client | `pa-types` |
 | `pa-cli` | `prime-agent` binary, composition root | `pa-types`, `pa-core`, `pa-ai`, `pa-agent`, `pa-daemon`, `pa-tui`, `pa-telemetry` |
 | `pa-perf` | Performance corpora + pty bench harness (dev/CI tooling, never shipped) | `pa-types`, `pa-core`, `pa-daemon` |
@@ -199,7 +207,47 @@ Layering rules:
 
 ## Reliability model
 
-- The daemon is a supervisor: it spawns one worker process per active session instead of hosting sessions in-process. Workers are supervised, restarted with backoff, and sessions persist on disk (append-only JSONL, same layout as `~/.prime/agent/sessions`) so reattach works even if the supervisor restarts.
+Sessions run inside the daemon process: each on its own thread and runtime
+(`crates/pa-daemon/src/session_host.rs`), with its kernel in the same process. There is no
+worker process per session, so the isolation a process boundary gave is built from the rules
+below. A change that weakens one of them needs the same scrutiny as a change to the wire.
+
+- Per-session state is data, never process state. A session's launch environment, working
+  directory, settings profile, admission priority and log go through
+  `pa_types::session_scope`; session code never calls `std::env::var`, `std::env::current_dir`
+  or `Command::new` directly, and a thread or runtime started on a session's behalf
+  propagates the scope. Process-wide by design, and therefore not per session:
+  `SSL_CERT_FILE`/`SSL_CERT_DIR`, `TMPDIR`, `STEEL_HOME`, the telemetry origin.
+- Containment: a panic on a session's thread ends that session only. Every panic is either
+  attributed to a session or recorded as a daemon-level crash; none goes to the default hook
+  unrecorded. Locks shared between sessions tolerate poisoning.
+- Visibility: a session crash is appended to `session-crashes.jsonl`, stamped on the session
+  (`lastCrash`), sent to attached clients (`session_crashed`, then `session_recovered` or
+  `session_failed`), saved in the session file as a display-only row, and shown in the TUI.
+- Self-heal: a crashed session is rebuilt from its transcript with a fresh kernel (250 ms
+  backoff doubling to 30 s, give up after 5 failures in a row). The turn that was running
+  fails with the real reason and is not run again, and the model is told once that its
+  kernel definitions are gone.
+- A stopped cell must leave the engine promptly: every Scheme-callable host function either
+  returns at once or observes the cell's cancellation. A cell still on the engine after the
+  grace is reported, its session is rebuilt, and nothing of the ended lifetime may write
+  (`session_scope::ensure_live`). A new blocking host function without cancellation is a bug.
+- Limits a cell cannot exceed: source nesting, value depth across the host bridge, source
+  size, and single-allocation counts (`crates/pa-core/src/kernel/scheme/limits.rs`). Cells run
+  on their own large-stack thread. Not bounded: a cell's total memory, and CPU between
+  sessions.
+- Daemon death: an abort-class fault (stack overflow, out of memory, a fault in native code)
+  ends the daemon and every session in it. A restart owner (`crates/pa-daemon/src/keeper.rs`,
+  unix, for interactive, ACP and post-update launches) restarts the daemon with the same
+  backoff and give-up limit and records every death; a deliberate stop is not restarted. At
+  boot a session that was mid-turn is revived, its interrupted turn continued or settled by
+  what the transcript shows was saved, a command its kernel left running is reaped and
+  reported to the model, and an idle session with an armed scheduled job is woken when the
+  job is due. Attached clients reconnect on their own and show what happened.
+- Sessions persist on disk (append-only JSONL, same layout as `~/.prime/agent/sessions`), so
+  every recovery above starts from the transcript.
+- Fault-injection seams for tests (`panicOn`, `(%test-block marker)`, the export hold) exist
+  in debug builds only.
 - No stubs, no `todo!()`, no swallowed errors (`anyhow` bubbling to UI is fine).
 
 ## References

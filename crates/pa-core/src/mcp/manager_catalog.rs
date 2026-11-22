@@ -228,10 +228,11 @@ fn now_ms() -> u64 {
 
 fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
-        return std::env::var("HOME").map_or_else(|_| PathBuf::from("~"), PathBuf::from);
+        return pa_types::session_scope::var("HOME")
+            .map_or_else(|_| PathBuf::from("~"), PathBuf::from);
     }
     if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
+        if let Ok(home) = pa_types::session_scope::var("HOME") {
             return PathBuf::from(home).join(rest);
         }
     }

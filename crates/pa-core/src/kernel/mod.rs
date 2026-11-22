@@ -1,55 +1,35 @@
-//! RLM kernel layer: persistent Python REPL lifecycle.
-//!
-//! The kernel is a JSON-lines subprocess (`python -m rlm.repl`): requests on stdin,
-//! events on stdout, stderr kept as a diagnostics tail. The protocol is documented in
-//! `prime-agent-runtime/src/rlm/repl.md` (protocol version 3).
+//! RLM kernel layer: the session's in-process Scheme kernel ([`scheme`]) and
+//! the host-side services its cells use (host requests, output spill, cell
+//! windows, error context, session-boot admission).
 
 pub mod boot_admission;
-pub mod bootstrap;
 pub mod cancellation;
-pub(crate) mod capabilities;
+#[cfg(test)]
+mod capabilities;
 pub mod cell_window;
 pub(crate) mod command_cache;
 pub(crate) mod edit_checks;
 pub mod error_context;
 pub(crate) mod hypotheses;
-pub mod live_kernels;
-pub mod manager;
 pub mod orphan_journal;
-pub mod protocol;
-pub mod provisioner;
-pub(crate) mod python_env;
 pub mod rlm_runtime;
+pub mod scheme;
 pub mod shared;
 pub mod spill;
-pub mod state_snapshot;
 pub(crate) mod test_runs;
 
-pub use bootstrap::{
-    build_rlm_bootstrap_code, ensure_kernel_python, kernel_venv_dir, EnsureKernelPythonOptions,
-    KernelBootstrapProgressHandler, KernelBytecode, KernelPythonSkill,
-    PYTHON_SKILL_IMPORT_ERROR_REPORT_MARKER,
-};
 pub use cancellation::AbortSignal;
-pub use manager::ReplKernelManager;
-pub use provisioner::IpythonKernelProvisioner;
 pub use rlm_runtime::{
     create_default_rlm_subagent_session_name, find_rlm_model_matches,
     find_unique_rlm_short_form_model_match, format_rlm_model_unavailable_error,
     normalize_requested_rlm_subagent_model, normalize_requested_rlm_subagent_session_name,
     normalize_requested_rlm_subagent_thinking_level, RlmModelInfo, RlmModelMatch, THINKING_LEVELS,
 };
+pub use scheme::{
+    keep_spare_scheme_kernels, pin_scheme_home, prewarm_scheme_kernel, spare_scheme_kernels,
+    SchemeKernel, SchemeKernelOptions, SchemeKernelProvisioner, StuckCellSink,
+};
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,
-    KernelManagerOptions, KernelSentAgentMessage, KernelShutdownOptions, KernelSnapshotConfig,
-    StreamName, EXECUTE_STATUS_ABORTED, EXECUTE_STATUS_ERROR, EXECUTE_STATUS_OK,
+    KernelSentAgentMessage,
 };
-pub use state_snapshot::{manifest_path_in, snapshot_path_in, RestoreResult, SnapshotResult};
-
-/// Environment for a Python process: ambient Python import roots and the
-/// default user site are disabled before interpreter initialization.
-#[must_use]
-pub fn python_process_environment(
-) -> std::collections::HashMap<std::ffi::OsString, std::ffi::OsString> {
-    python_env::inherited_python_env()
-}

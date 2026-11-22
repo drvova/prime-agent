@@ -3,7 +3,9 @@
 //! HTTP failures as [`ProviderError::Http`]; request-send failures as
 //! [`ProviderError::Connection`].
 
-use std::sync::OnceLock;
+use std::sync::{Mutex, PoisonError};
+
+use crate::utils_inner::tls::ClientEnvironment;
 
 use tokio_util::sync::CancellationToken;
 
@@ -12,30 +14,36 @@ use crate::utils::stream_failure::{
     ProviderHttpError,
 };
 
-static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-static H2_ALPN_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
-/// The HTTP/1.1 client every provider shares, pinned with `http1_only()` so that enabling the
-/// reqwest `http2` feature (bedrock) cannot change the transport of any other provider.
-pub(crate) fn client() -> &'static reqwest::Client {
-    CLIENT.get_or_init(|| {
-        crate::utils_inner::tls::http_client_builder()
-            .http1_only()
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .build()
-            .expect("reqwest client")
-    })
+/// The provider clients of this process: one per transport and per
+/// [`ClientEnvironment`], so sessions hosted together share connections only
+/// when they share proxies and trust.
+fn shared_client(transport: Transport) -> reqwest::Client {
+    static CLIENTS: Mutex<Vec<((Transport, ClientEnvironment), reqwest::Client)>> =
+        Mutex::new(Vec::new());
+    let key = (transport, ClientEnvironment::current());
+    let mut clients = CLIENTS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, client)) = clients.iter().find(|(built, _)| *built == key) {
+        return client.clone();
+    }
+    let builder = crate::utils_inner::tls::http_client_builder()
+        .pool_idle_timeout(std::time::Duration::from_secs(90));
+    let client = match transport {
+        // Pinned with `http1_only()` so that enabling the reqwest `http2`
+        // feature (bedrock) cannot change the transport of any other provider.
+        Transport::Http1 => builder.http1_only(),
+        // HTTP/2 preferred (ALPN-negotiated), like the TS default transport;
+        // cleartext bedrock endpoints go through `providers/bedrock/h2.rs`.
+        Transport::H2Alpn => builder,
+    }
+    .build()
+    .expect("reqwest client");
+    clients.push((key, client.clone()));
+    client
 }
 
-/// The TLS-ALPN client for bedrock https endpoints: HTTP/2 preferred (ALPN-negotiated), like the TS
-/// default transport; cleartext bedrock endpoints go through `providers/bedrock/h2.rs` instead.
-fn h2_alpn_client() -> &'static reqwest::Client {
-    H2_ALPN_CLIENT.get_or_init(|| {
-        crate::utils_inner::tls::http_client_builder()
-            .pool_idle_timeout(std::time::Duration::from_secs(90))
-            .build()
-            .expect("reqwest h2 client")
-    })
+/// The HTTP/1.1 client every provider shares within one client environment.
+pub(crate) fn client() -> reqwest::Client {
+    shared_client(Transport::Http1)
 }
 
 /// The wire transport a request is issued with.
@@ -224,10 +232,7 @@ pub async fn send(request: RequestOptions) -> Result<HttpResponse, ProviderError
         return Err(ProviderError::Aborted);
     }
 
-    let client = match request.transport {
-        Transport::Http1 => client(),
-        Transport::H2Alpn => h2_alpn_client(),
-    };
+    let client = shared_client(request.transport);
     let mut builder = client.request(request.method, &request.url);
     for (name, value) in &request.headers {
         builder = builder.header(name, value);

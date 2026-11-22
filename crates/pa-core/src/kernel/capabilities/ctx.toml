@@ -1,0 +1,24 @@
+[[telemetry]]
+event = "agent context paging"
+properties = [
+  "spill_count",
+  "spill_bytes_bucket",
+  "spill_not_stored_count",
+  "spill_evicted_count",
+  "ctx_page_count",
+  "ctx_grep_count",
+  "ctx_tail_count",
+  "ctx_info_count",
+]
+
+[[telemetry]]
+event = "agent previews"
+properties = [
+  "preview_count",
+  "preview_kept_line_count",
+  "preview_dropped_line_count",
+  "preview_repeat_collapsed_count",
+  "preview_noise_line_count",
+  "preview_noise_pattern_learned_count",
+  "preview_followup_read_count",
+]

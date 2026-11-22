@@ -279,6 +279,9 @@ impl SessionUi {
         // lives INSIDE this function — a caller-side timeout would cancel this future mid-attach
         // and skip the failure-path `close()`, leaking the half-installed client's connection.
         const REATTACH_BUDGET: Duration = Duration::from_secs(30);
+        // How old a session's recorded fault may be for a reconnect to report it: the
+        // reconnect window (10 minutes) plus slack.
+        const LAST_CRASH_REPORT_MS: i64 = 15 * 60 * 1000;
         let hello_resume = client
             .hello()
             .get("updateResume")
@@ -355,10 +358,89 @@ impl SessionUi {
                     text,
                     kind: status_kind,
                 });
+                // What happened to the daemon, whatever its age: this window lived through it.
+                self.show_daemon_death(view, None);
+                // Then what it did to this session: the daemon recorded the interrupted turn
+                // on the session's row while nobody was attached. The read is spawned; its
+                // note lands when it does.
+                let client = self.client.clone();
+                let notes = self.notes.clone();
+                let active_session_id = self.active_session_id.clone();
+                let telemetry = self.telemetry.clone();
+                tokio::spawn(async move {
+                    let listed = client
+                        .request_ok(DaemonCommand::List {
+                            id: None,
+                            all: None,
+                            cwd: None,
+                            session_dir: None,
+                            include_client_owned: None,
+                            rest: Map::default(),
+                        })
+                        .await;
+                    let rows = match listed {
+                        Ok(data) => data.get("sessions").cloned().unwrap_or(Value::Null),
+                        Err(error) => {
+                            let _ = notes.send(format!(
+                                "the session's state after the restart could not be read: {error:#}"
+                            ));
+                            return;
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| elapsed.as_millis() as i64);
+                    let crash = rows
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .find(|row| {
+                            row.get("id").and_then(Value::as_str) == Some(&active_session_id)
+                                || row.get("sessionId").and_then(Value::as_str) == Some(&durable)
+                        })
+                        .and_then(|row| row.get("lastCrash"))
+                        .and_then(|crash| {
+                            serde_json::from_value::<pa_types::daemon::SessionCrashInfo>(
+                                crash.clone(),
+                            )
+                            .ok()
+                        })
+                        // Only the fault this reconnect follows: an older one was reported when
+                        // it happened.
+                        .filter(|crash| {
+                            crate::agents_view_state::iso_to_unix_ms(&crash.at)
+                                .is_some_and(|at_ms| now_ms - at_ms <= LAST_CRASH_REPORT_MS)
+                        });
+                    if let Some(crash) = crash {
+                        let _ = notes.send(crate::crash_notice::crash_reason(&crash));
+                        if let Some(telemetry) = telemetry {
+                            telemetry.crash_notice_shown("session_last_crash").await;
+                        }
+                    }
+                });
             }
         }
         self.dirty = true;
         Ok(ReattachOutcome::Attached)
+    }
+
+    /// Show the death the connected daemon was started after, when its hello carries one.
+    /// `recent_as_of_ms` limits the report to a recent death (a window opening passes the
+    /// wall clock); `None` reports it whatever its age.
+    pub(crate) fn show_daemon_death(&mut self, view: &mut AgentView, recent_as_of_ms: Option<i64>) {
+        let row = self
+            .client
+            .hello()
+            .get("daemonDeath")
+            .and_then(|death| {
+                serde_json::from_value::<pa_types::daemon::DaemonDeathRecord>(death.clone()).ok()
+            })
+            .and_then(|record| crate::crash_notice::daemon_death_row(&record, recent_as_of_ms));
+        if let Some(row) = row {
+            view.push_entry(row);
+            crate::crash_notice::report_shown(self.telemetry.as_ref(), "daemon_death");
+            self.dirty = true;
+        }
     }
 
     /// Detach the current session and attach `id`, rebuilding the transcript from the slim attach

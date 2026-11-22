@@ -19,6 +19,17 @@
 //! Public API: the tool-definition contract; subsystem internals are `pub(crate)`.
 //! `SessionEngine` (message in -> events out) is the future facade.
 
+/// The lines this crate logs with `eprintln!` belong to the session whose code logged them.
+/// Sessions hosted in one daemon share its standard error, so in this crate the macro hands
+/// each line to the calling session's log ([`pa_types::session_scope::log_line`]); outside a
+/// hosted session (the CLI's own modes, a test) it is the process's standard error as
+/// before. Declared before the modules so it is in scope in all of them.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        pa_types::session_scope::log_line(format_args!($($arg)*))
+    };
+}
+
 pub(crate) mod tools;
 
 // Tool-definition contract.
@@ -35,13 +46,11 @@ pub use tools::path_utils::resolve_read_path;
 // elision consumes alongside the tool renderers (narrow re-export).
 pub use tools::render_utils::{get_image_dimensions_prefix, IMAGE_DIMENSIONS_PREFIX_BYTES};
 
-// ipython tool: definition + kernel lifecycle seam (RLM bootstrap included).
-pub use tools::ipython::{
-    create_ipython_tool_definition, sent_agent_message_json, ExecuteResult, ExecuteStatus,
-    IpythonKernelProvisioner, IpythonToolOptions, KernelAttachment, KernelErrorInfo,
-    KernelExecutor, LateSentAgentMessageHandler,
+// Kernel cells: a cell's result types and the kernel lifecycle seam.
+pub use tools::kernel_cell::{
+    sent_agent_message_json, ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo,
+    KernelExecutor, KernelProvisioner, KernelToolOptions, LateSentAgentMessageHandler,
 };
-// RLM kernel subsystem: persistent IPython kernel lifecycle.
 pub mod agent_traces;
 pub mod auth;
 pub mod autonomous;
@@ -56,6 +65,7 @@ pub mod mcp;
 pub mod models;
 pub mod packages;
 pub mod platform;
+pub(crate) mod prefetch;
 pub(crate) mod project_card;
 pub mod prompts;
 pub mod refinement;
@@ -71,4 +81,3 @@ pub mod usage_host;
 pub(crate) mod web_read;
 pub mod web_search;
 pub mod worktree_host;
-pub use kernel::ReplKernelManager;

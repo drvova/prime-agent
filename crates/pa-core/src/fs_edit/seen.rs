@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use serde_json::{json, Value};
 
 use crate::kernel::spill::{SpillCopy, SpillStore, HANDLE_PREFIX};
-use crate::tools::ipython::diff_lines;
+use crate::tools::kernel_cell::diff_lines;
 
 /// Unchanged lines shown around each change of a re-read diff.
 const DIFF_CONTEXT: usize = 2;

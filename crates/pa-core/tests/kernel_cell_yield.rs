@@ -10,75 +10,15 @@
 
 //! A cell still running when its `timeout` (the yield window) passes continues in
 //! the background, as Nodecode's evaluations do: the tool result says so with its
-//! output so far, nothing interrupts it, the next cell runs meanwhile, and its end
-//! arrives as a `[cell-done]` notice that wakes the session.
+//! output so far, nothing interrupts it, a cell sent meanwhile is refused without
+//! running (the session's one engine is held), and its end arrives as a `[cell-done]`
+//! notice that wakes the session.
 #![cfg(unix)]
-
-use std::path::PathBuf;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
 use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::{json, Value};
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
@@ -113,11 +53,8 @@ fn tool_result(entries: &Value, call_id: &str) -> (String, String) {
     (status, text)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_the_session() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -126,32 +63,33 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
     std::fs::create_dir_all(&cwd).expect("project dir");
     let flag = dir.path().join("go");
 
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
-
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
 
     let model = scripted_model();
     let provider = std::sync::Arc::new(ScriptedProvider::new(model.clone()));
     let long_cell = format!(
-        "import os, time\nprint('before')\nwhile not os.path.exists({flag:?}):\n    time.sleep(0.02)\nprint('after')\n'finished'"
+        "(displayln \"before\")
+         (let wait ()
+           (when (null? (hash-ref (fs-glob \"go\" (hash 'path {dir:?})) 'entries))
+             (time/sleep-ms 20)
+             (wait)))
+         (displayln \"after\")
+         \"finished\"",
+        dir = dir.path().display().to_string(),
     );
     for (call_id, args) in [
-        ("call-1", json!({ "code": "x = 41" })),
+        ("call-1", json!({ "code": "(define x 41)" })),
         ("call-2", json!({ "code": long_cell, "timeout": 1 })),
-        ("call-3", json!({ "code": "print(x + 1)" })),
+        (
+            "call-3",
+            json!({ "code": "(display (+ x 1))", "timeout": 1 }),
+        ),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
             &model,
             None,
-            vec![(call_id, "python_repl", args)],
+            vec![(call_id, pa_types::ai::KERNEL_TOOL_NAME, args)],
         )));
     }
     provider.push_text_turn("done");
@@ -191,8 +129,7 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         // Registers the in-process notice handlers (bash and cell) with this wake.
         bash_notice_wake: Some(std::sync::Arc::new(move || wake.notify_one())),
@@ -222,9 +159,13 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
     assert!(text.starts_with("before\n\n[cell "), "{text}");
     assert!(text.contains("continues in the background"), "{text}");
 
-    // The next cell ran while it did, on the intact namespace.
+    // The next cell did not run while it held the engine, and says which cell does.
     let (status, text) = tool_result(&entries, "call-3");
-    assert_eq!((status.as_str(), text.as_str()), ("ok", "42\n"));
+    assert_eq!(
+        (status.as_str(), text.starts_with("This cell did not run. ")),
+        ("error", true),
+        "{text}"
+    );
 
     // Released after the run ended, its end wakes the session with the
     // [cell-done] row queued on the agent.
@@ -247,7 +188,7 @@ async fn a_cell_past_its_window_continues_in_the_background_and_its_end_wakes_th
         (
             &json!("async_cell_completion"),
             &json!(format!(
-                "[cell-done cell:{cell} status:ok]\n\nValue:\n```\n'finished'\n```\n\nOutput:\n```\nafter\n```"
+                "[cell-done cell:{cell} status:ok]\n\nValue:\n```\n\"finished\"\n```\n\nOutput:\n```\nafter\n```"
             )),
             &json!({ "cell": cell, "status": "ok" }),
         )

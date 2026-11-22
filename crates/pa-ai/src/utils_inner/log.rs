@@ -48,12 +48,10 @@ pub type LogSink = std::sync::Arc<dyn Fn(&LogEntry) + Send + Sync>;
 static SINK: RwLock<Option<LogSink>> = RwLock::new(None);
 
 /// Install the process-wide log sink. Pass None to restore the default.
-///
-/// # Panics
-///
-/// Panics when the sink lock is poisoned.
 pub fn set_log_sink(next: Option<LogSink>) {
-    *SINK.write().unwrap() = next;
+    *SINK
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
 }
 
 /// Install a sink writing each entry to stderr as one JSON line.
@@ -73,7 +71,10 @@ fn emit(level: LogLevel, component: &str, msg: &str, fields: serde_json::Value) 
         msg: msg.to_string(),
         fields,
     };
-    let sink = SINK.read().unwrap().clone();
+    let sink = SINK
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
     if let Some(sink) = sink {
         sink(&entry);
     }

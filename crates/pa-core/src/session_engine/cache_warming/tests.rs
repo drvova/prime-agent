@@ -392,7 +392,9 @@ async fn real_requests_carry_the_static_prefix_and_retention() {
     .expect("request");
     while other.next_event().await.is_some() {}
     let retention = policy::request_cache_retention(
-        std::env::var(policy::CACHE_RETENTION_ENV).ok().as_deref(),
+        pa_types::session_scope::var(policy::CACHE_RETENTION_ENV)
+            .ok()
+            .as_deref(),
         CacheRetentionSetting::Short,
     );
     assert_eq!(

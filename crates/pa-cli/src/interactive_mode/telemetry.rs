@@ -235,6 +235,23 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn crash_notice_shown(
+        &self,
+        kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui image paste`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the notice's paint spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("kind", serde_json::Value::from(kind));
+            client.track("tui crash notice", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn menu_opened(
         &self,
         _menu: &'static str,

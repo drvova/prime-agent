@@ -1,0 +1,3 @@
+[[telemetry]]
+event = "agent repl reload"
+properties = ["repl_reload_count", "repl_reload_skills_added_count"]

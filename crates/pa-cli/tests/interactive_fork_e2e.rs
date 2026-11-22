@@ -17,6 +17,8 @@
 //! daemon-active guard on the fork arm).
 #![cfg(unix)]
 
+mod support;
+
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::path::{Path, PathBuf};
@@ -67,8 +69,8 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's grandchildren (a
-        // kernel bootstrap, a bytecode compile) outlive a worker-only kill and
+        // Freeze the whole tree before any kill: a worker's grandchildren (the
+        // commands its session started) outlive a worker-only kill and
         // keep writing into the test's temp dir after its removal. A stopped
         // process cannot fork, so the walk settles once every member is stopped.
         let root = self.child.id();
@@ -266,18 +268,12 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, session_dir: &Path) -> Supe
         "15000",
     );
     command.env("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000");
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
+    support::await_listening(socket, &mut child);
+    Supervisor {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 /// Open the source session as a live daemon worker (a create with

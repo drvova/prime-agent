@@ -6,8 +6,8 @@ use super::diagnostics::ResourceDiagnostic;
 use super::frontmatter::parse_frontmatter;
 use super::skill_markdown_name;
 use super::{
-    create_synthetic_source_info, validate_skill_description, validate_skill_name, Skill,
-    SkillKind, SkillPythonMetadata, SourceScope,
+    create_synthetic_source_info, scheme_source_files, validate_skill_description,
+    validate_skill_name, Skill, SkillKind, SourceScope,
 };
 
 /// Sources that pick up a synthetic scope.
@@ -17,51 +17,6 @@ fn scope_for_source(source: &str) -> SourceScope {
         "project" => SourceScope::Project,
         _ => SourceScope::Temporary,
     }
-}
-
-fn python_import_name_for_skill(name: &str) -> String {
-    name.replace('-', "_")
-}
-
-fn is_valid_python_import_name(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-        _ => return false,
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-}
-
-fn detect_python_skill(
-    skill_dir: &Path,
-    name: &str,
-    diagnostics: &mut Vec<ResourceDiagnostic>,
-) -> Option<SkillPythonMetadata> {
-    let pyproject_path = skill_dir.join("pyproject.toml");
-    if !pyproject_path.is_file() {
-        return None;
-    }
-    let import_name = python_import_name_for_skill(name);
-    if !is_valid_python_import_name(&import_name) {
-        diagnostics.push(ResourceDiagnostic::Warning {
-            message: format!("python skill import name \"{import_name}\" is invalid"),
-            path: Some(pyproject_path.display().to_string()),
-        });
-        return None;
-    }
-    let package_init_path = skill_dir.join("src").join(&import_name).join("__init__.py");
-    if !package_init_path.is_file() {
-        diagnostics.push(ResourceDiagnostic::Warning {
-            message: format!("python skill package src/{import_name}/__init__.py not found"),
-            path: Some(pyproject_path.display().to_string()),
-        });
-        return None;
-    }
-    Some(SkillPythonMetadata {
-        import_name,
-        package_path: skill_dir.to_path_buf(),
-        pyproject_path,
-    })
 }
 
 /// Load a single skill file (SKILL.md or root .md).
@@ -118,10 +73,12 @@ pub(crate) fn load_skill_from_file(
         return (None, diagnostics);
     }
 
-    let python = if file_path.file_name().is_some_and(|n| n == "SKILL.md") {
-        detect_python_skill(skill_dir, &name, &mut diagnostics)
+    let kind = if file_path.file_name().is_some_and(|n| n == "SKILL.md")
+        && !scheme_source_files(skill_dir).is_empty()
+    {
+        SkillKind::Scheme
     } else {
-        None
+        SkillKind::Markdown
     };
     let skill = Skill {
         name,
@@ -138,12 +95,7 @@ pub(crate) fn load_skill_from_file(
             .get("disable-model-invocation")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
-        kind: if python.is_some() {
-            SkillKind::Python
-        } else {
-            SkillKind::Markdown
-        },
-        python,
+        kind,
     };
     (Some(skill), diagnostics)
 }

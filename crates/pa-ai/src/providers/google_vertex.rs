@@ -59,7 +59,7 @@ fn resolve_api_key(options: &GoogleVertexOptions) -> Option<String> {
         .base
         .api_key
         .clone()
-        .or_else(|| std::env::var("GOOGLE_CLOUD_API_KEY").ok())
+        .or_else(|| pa_types::session_scope::var("GOOGLE_CLOUD_API_KEY").ok())
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty());
     api_key.filter(|key| {
@@ -71,8 +71,8 @@ fn resolve_project(options: &GoogleVertexOptions) -> Result<String, String> {
     options
         .project
         .clone()
-        .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT").ok())
-        .or_else(|| std::env::var("GCLOUD_PROJECT").ok())
+        .or_else(|| pa_types::session_scope::var("GOOGLE_CLOUD_PROJECT").ok())
+        .or_else(|| pa_types::session_scope::var("GCLOUD_PROJECT").ok())
         .ok_or_else(|| {
             "Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options."
                 .to_string()
@@ -83,7 +83,7 @@ fn resolve_location(options: &GoogleVertexOptions) -> Result<String, String> {
     options
         .location
         .clone()
-        .or_else(|| std::env::var("GOOGLE_CLOUD_LOCATION").ok())
+        .or_else(|| pa_types::session_scope::var("GOOGLE_CLOUD_LOCATION").ok())
         .ok_or_else(|| {
             "Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options."
                 .to_string()
@@ -96,12 +96,12 @@ fn resolve_location(options: &GoogleVertexOptions) -> Result<String, String> {
 /// `GOOGLE_OAUTH_ACCESS_TOKEN` env var or the gcloud CLI's credential source; failures surface as
 /// provider errors.
 fn resolve_adc_access_token() -> Result<String, String> {
-    if let Ok(token) = std::env::var("GOOGLE_OAUTH_ACCESS_TOKEN") {
+    if let Ok(token) = pa_types::session_scope::var("GOOGLE_OAUTH_ACCESS_TOKEN") {
         if !token.trim().is_empty() {
             return Ok(token.trim().to_string());
         }
     }
-    let output = std::process::Command::new("gcloud")
+    let output = pa_types::session_scope::std_command("gcloud")
         .args(["auth", "print-access-token"])
         .output()
         .map_err(|error| format!("Failed to run gcloud for ADC access token: {error}"))?;

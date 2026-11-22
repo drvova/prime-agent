@@ -14,6 +14,7 @@
 #![cfg(unix)]
 
 use std::fmt::Write as _;
+
 use std::path::PathBuf;
 
 use pa_agent::scripted::{tool_call_turn_steps, ScriptedProvider, ScriptedTurn};
@@ -21,65 +22,6 @@ use pa_core::session::manager::SessionManager;
 use pa_core::session_engine::engine::{create_session, SessionEngineConfig};
 use serde_json::{json, Value};
 use sha2::Digest as _;
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the
-/// TS product's kernel venv bootstraps). Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
-/// Scoped process-env overrides: applied on construction, restored on drop.
-struct EnvOverride {
-    saved: Vec<(String, Option<String>)>,
-}
-
-impl EnvOverride {
-    fn apply(pairs: &[(&str, Option<String>)]) -> Self {
-        let saved = pairs
-            .iter()
-            .map(|(key, _)| ((*key).to_string(), std::env::var(key).ok()))
-            .collect();
-        for (key, value) in pairs {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-        EnvOverride { saved }
-    }
-}
-
-impl Drop for EnvOverride {
-    fn drop(&mut self) {
-        for (key, value) in &self.saved {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-    }
-}
 
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
@@ -154,8 +96,7 @@ async fn engine_for(
         telemetry: None,
         model_info: None,
         mcp_manager: None,
-        kernel_ready_gate: None,
-        prewarm_ipython_kernel: None,
+        prewarm_kernel: None,
         on_background_work_settled: None,
         bash_notice_wake: None,
         queued_goal_context_purge: None,
@@ -167,11 +108,8 @@ async fn engine_for(
     .expect("create_session")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -179,20 +117,12 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
 
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
-
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
 
-    // What the first cell prints: 100,000 lines, about 1.2 MB.
-    let printed: String = (0..100_000).fold(String::new(), |mut out, n| {
+    // What the first cell prints: 20,000 lines, 240,000 characters (a cell keeps at most
+    // 262,144 bytes of what it printed, and its result shows 65,536 characters).
+    let printed: String = (0..20_000).fold(String::new(), |mut out, n| {
         let _ = writeln!(out, "line {n:06}");
         out
     });
@@ -205,17 +135,21 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     for (call_id, args) in [
         (
             "call-1",
-            json!({ "code": "print('\\n'.join(f'line {n:06}' for n in range(100_000)))" }),
+            json!({ "code": "(let count ([n 0])
+                               (when (< n 20000)
+                                 (let ([digits (number->string n)])
+                                   (displayln (string-append \"line \" (make-string (- 6 (string-length digits)) #\\0) digits)))
+                                 (count (+ n 1))))" }),
         ),
         (
             "call-2",
-            json!({ "code": format!("print(await ctx.page({handle:?}, start=50_000, lines=3))") }),
+            json!({ "code": format!("(displayln (hash-ref (ctx-page {handle:?} #:start 10000 #:lines 3) 'text))") }),
         ),
     ] {
         provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
             &model,
             None,
-            vec![(call_id, "python_repl", args)],
+            vec![(call_id, pa_types::ai::KERNEL_TOOL_NAME, args)],
         )));
     }
     provider.push_text_turn("done");
@@ -234,7 +168,7 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     assert_eq!(status, "ok", "{text}");
     assert!(
         text.contains(&format!(
-            "[{handle} · 1,200,000 chars · 100,000 lines · 1,134,464 chars not shown]"
+            "[{handle} · 240,000 chars · 20,000 lines · 211,903 chars not shown]"
         )),
         "{}",
         &text[text.len().saturating_sub(400)..]
@@ -243,13 +177,7 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     let (status, text) = tool_result(&entries, "call-2");
     assert_eq!(
         (status.as_str(), text.as_str()),
-        (
-            "ok",
-            format!(
-                "[{handle} lines 50000..50003 of 100000]\nline 050000\nline 050001\nline 050002\n\n"
-            )
-            .as_str()
-        )
+        ("ok", "line 010000\nline 010001\nline 010002\n\n")
     );
 }
 
@@ -277,28 +205,17 @@ fn request_results(context: &pa_agent::stream::LlmContext) -> Vec<(String, Strin
 }
 
 /// Live kernel: past the thinning threshold, the request replays the oldest
-/// rounds as their spill handle plus a short head and tail, and a later cell
+/// rounds as a short preview and their spill handle, and a later cell
 /// pages a thinned result back in whole with `ctx.page`, byte for byte.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
     const ROUNDS: usize = 16;
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
     let cwd = dir.path().join("project");
     std::fs::create_dir_all(&cwd).expect("project dir");
-    let _env = EnvOverride::apply(&[
-        (
-            "PRIME_AGENT_KERNEL_PYTHON",
-            Some(kernel_python.display().to_string()),
-        ),
-        ("PRIME_AGENT_CODING_AGENT_DIR", None),
-        ("PRIME_API_KEY", None),
-    ]);
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
 
@@ -313,8 +230,12 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
             None,
             vec![(
                 format!("call-{round:02}").as_str(),
-                "python_repl",
-                json!({ "code": format!("print('\\n'.join(f'r{round:02} line {{n:04}}' for n in range(470)))") }),
+                pa_types::ai::KERNEL_TOOL_NAME,
+                json!({ "code": format!("(let count ([n 0])
+                               (when (< n 470)
+                                 (let ([digits (number->string n)])
+                                   (displayln (string-append \"r{round:02} line \" (make-string (- 4 (string-length digits)) #\\0) digits)))
+                                 (count (+ n 1))))") }),
             )],
         )));
     }
@@ -329,12 +250,20 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
     let (status, original) = tool_result(&entries, "call-00");
     assert_eq!(status, "ok", "{original}");
 
-    // The last request carried call-00 as its handle plus head and tail.
+    // The last request carried call-00 as a preview of its lines, then its
+    // handle. Every line of this result is as informative as the next, so the
+    // preview keeps the first and last two and fills its 360 characters in
+    // order: nine lines, the gap, and the last two.
     let id = &format!("{:x}", sha2::Sha256::digest(original.as_bytes()))[..10];
     let chars: Vec<char> = original.chars().collect();
-    let head: String = chars[..240].iter().collect();
-    let tail: String = chars[chars.len() - 120..].iter().collect();
-    let lines = original.lines().count();
+    let all: Vec<&str> = original.lines().collect();
+    let lines = all.len();
+    let preview = format!(
+        "{}\n[… {} lines …]\n{}",
+        all[..9].join("\n"),
+        lines - 11,
+        all[lines - 2..].join("\n")
+    );
     let last = provider.calls().pop().expect("a request");
     let thinned = request_results(&last)
         .into_iter()
@@ -346,7 +275,7 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
             "call-00".to_string(),
             format!(
                 // Grouped digits; the result is a few thousand chars.
-                "{head}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; ctx.page/ctx.grep read it whole]\n{tail}",
+                "{preview}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
                 chars.len() / 1000,
                 chars.len() % 1000,
             )
@@ -359,8 +288,8 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
         None,
         vec![(
             "call-page",
-            "python_repl",
-            json!({ "code": format!("page = await ctx.page('out:{id}', lines={lines})\nprint(page.text, end='')") }),
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": format!("(display (hash-ref (ctx-page \"out:{id}\" #:lines {lines}) 'text))") }),
         )],
     )));
     provider.push_text_turn("paged");

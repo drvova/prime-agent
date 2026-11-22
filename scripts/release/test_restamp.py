@@ -112,14 +112,6 @@ class ContinuousFixture:
         (root / "LICENSE").write_text("license\n")
         (root / "deny.toml").write_text('[licenses]\nallow = ["MIT"]\n')
         (root / "README.md").write_text("readme\n")
-        runtime = root / "runtime"
-        runtime.mkdir()
-        (runtime / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (runtime / "src" / "rlm").mkdir(parents=True)
-        (runtime / "src" / "rlm" / "repl.py").write_text("# fixture REPL\n")
-        (root / "prime-agent-runtime").mkdir()
-        (root / "prime-agent-runtime" / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-
         source = root / "resolver.c"
         source.write_text(VERSION_RESOLVER_C % version)
         self.raw = root / "bin" / "cargo-prime-agent"
@@ -144,7 +136,6 @@ class ContinuousFixture:
     def assemble_into(self, out_dir: Path, sha: str | None, target: str = HOST_TARGET):
         args = ["--repo-root", str(self.root), "--version", self.version,
                 "--target", target, "--binary", str(self.binary),
-                "--runtime-dir", str(self.root / "runtime"),
                 "--out-dir", str(out_dir)]
         if target.endswith("-unknown-linux-gnu"):
             args += ["--decoder", str(self.decoder)]

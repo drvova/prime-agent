@@ -45,7 +45,7 @@ pub struct CompactionExecution {
     /// The post-compaction `ipython_state` notice row when a kernel was
     /// running (already durable; hosts broadcast its `message_start` /
     /// `message_end` pair).
-    pub ipython_state: Option<CustomMessage>,
+    pub kernel_state: Option<CustomMessage>,
 }
 
 /// What one execution produced.
@@ -268,7 +268,7 @@ async fn execute_compact(
             execution.compaction = Some(CompactionExecution {
                 entry: run.entry,
                 result: run.result,
-                ipython_state: run.ipython_state,
+                kernel_state: run.kernel_state,
             });
         }
     }

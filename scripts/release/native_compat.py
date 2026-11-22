@@ -20,12 +20,12 @@ COMPAT_ASSETS = (
     "export-html/template.html",
     "photon_rs_bg.wasm",
     "PHOTON-LICENSE.md",
+    # The kernel is built into the binary; these two placeholders stand where
+    # the old installer looks for the Python runtime it used to set up.
+    "prime-agent-runtime/pyproject.toml",
+    "prime-agent-runtime/src/rlm/repl.py",
 )
-REQUIRED_NATIVE_FILES = (
-    "prime-agent", "package.json", "install.sh",
-    "prime-agent-runtime/pyproject.toml", "prime-agent-runtime/src/rlm/repl.py",
-    *COMPAT_ASSETS,
-)
+REQUIRED_NATIVE_FILES = ("prime-agent", "package.json", "install.sh", *COMPAT_ASSETS)
 
 
 def stage_native_compat(staging: Path) -> list[str]:
@@ -40,7 +40,10 @@ def stage_native_compat(staging: Path) -> list[str]:
     # This file is validated, not executed, by the already-running TS installer.
     # Ship the maintained Rust installer so manual repair uses current code.
     shutil.copyfile(ASSET_DIR.parents[2] / "install-rust.sh", staging / "install.sh")
-    return ["theme", "export-html", "photon_rs_bg.wasm", "PHOTON-LICENSE.md", "install.sh"]
+    return [
+        "theme", "export-html", "photon_rs_bg.wasm", "PHOTON-LICENSE.md",
+        "prime-agent-runtime", "install.sh",
+    ]
 
 
 def validate_compatibility_archive(path: Path) -> None:

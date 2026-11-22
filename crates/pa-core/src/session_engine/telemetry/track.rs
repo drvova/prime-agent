@@ -113,6 +113,17 @@ pub fn track_worker_children_closed(client: &TelemetryClient, count: usize) {
     client.track("daemon event", properties);
 }
 
+/// Track one contained session crash's `daemon event` (kind `session_crashed`): `source` is the
+/// fault class (`panic` or `stuck`). The panic's message and location stay in the daemon's
+/// crash log, never here.
+pub fn track_session_crashed(client: &TelemetryClient, source: &str) {
+    let mut properties = base_properties("daemon");
+    properties.set("kind", Value::from("session_crashed"));
+    properties.set("source", Value::from(source));
+    properties.set("count", Value::from(1));
+    client.track("daemon event", properties);
+}
+
 /// The surface a descriptor `oauth` sign-in ran on (`agent provider oauth
 /// login` `surface`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

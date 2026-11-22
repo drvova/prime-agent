@@ -56,7 +56,7 @@ impl TurnBoundary {
         if !self.json_mode {
             return;
         }
-        let Some(row) = &run.ipython_state else {
+        let Some(row) = &run.kernel_state else {
             return;
         };
         let value = crate::headless_autonomous::custom_row_wire_value(row);

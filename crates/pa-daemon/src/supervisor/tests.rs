@@ -27,7 +27,7 @@ impl Default for CleanTelemetryEnv {
         let saved = TELEMETRY_ENV_VARS
             .iter()
             .map(|var| {
-                let value = std::env::var(var).ok();
+                let value = pa_types::session_scope::var(var).ok();
                 std::env::remove_var(var);
                 (*var, value)
             })
@@ -97,14 +97,16 @@ fn churn_accumulates_and_a_stable_lifetime_resets() {
 
 /// A failed relaunch produced no worker, so the count accumulates instead of
 /// resetting.
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn a_failed_relaunch_accumulates_to_the_give_up_cap() {
     let dir = tempfile::TempDir::new().unwrap();
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).unwrap();
-    // The relaunch fails deterministically: a file stands where the logs dir would
-    // go, so every spawn dies at the worker stderr log's open.
-    std::fs::write(agent_dir.join("logs"), "not a directory").unwrap();
+    // The relaunch fails deterministically: a file stands where the session's
+    // socket directory would go, so every hosted session ends at its bind.
+    // The session runs on its own thread in real time, so the backoff between
+    // the five attempts is real too (under eight seconds in all).
+    std::fs::write(dir.path().join("blocked"), "not a directory").unwrap();
     let supervisor = Arc::new(
         Supervisor::new(SupervisorOptions {
             socket_path: dir.path().join("daemon.sock"),
@@ -116,7 +118,7 @@ async fn a_failed_relaunch_accumulates_to_the_give_up_cap() {
         "version": 2,
         "workerId": "w-relaunch",
         "pid": 0,
-        "socketPath": "/tmp/none.sock",
+        "socketPath": dir.path().join("blocked").join("worker.sock").to_string_lossy(),
         "recoveryJournalPath": dir.path().join("journal.jsonl").to_string_lossy(),
         "supervisorSocketPath": "/tmp/none.sock",
         "authenticationToken": "token",
@@ -240,7 +242,7 @@ async fn an_adopted_watch_hands_off_at_exit_without_a_timer() {
     );
     {
         // A stop that landed owns the exit's terminal state.
-        let mut worker = std::process::Command::new("sleep")
+        let mut worker = pa_types::session_scope::std_command("sleep")
             .arg("600")
             .spawn()
             .expect("spawn sleep");
@@ -270,7 +272,7 @@ async fn an_adopted_watch_hands_off_at_exit_without_a_timer() {
         // An explicit new monitor (an update abandon's relaunch) took the
         // resident. The old watch returns at the exit instead of running
         // the crash arm over the new owner's process.
-        let mut worker = std::process::Command::new("sleep")
+        let mut worker = pa_types::session_scope::std_command("sleep")
             .arg("600")
             .spawn()
             .expect("spawn sleep");
@@ -320,12 +322,12 @@ async fn a_pid_only_replacement_keeps_the_adopted_predecessor_out_of_crash_recov
         })
         .expect("supervisor"),
     );
-    let mut predecessor = tokio::process::Command::new("sleep")
+    let mut predecessor = pa_types::session_scope::tokio_command("sleep")
         .arg("600")
         .kill_on_drop(true)
         .spawn()
         .expect("spawn isolated predecessor");
-    let mut replacement = tokio::process::Command::new("sleep")
+    let mut replacement = pa_types::session_scope::tokio_command("sleep")
         .arg("600")
         .kill_on_drop(true)
         .spawn()
@@ -401,11 +403,11 @@ async fn a_registered_replacement_pid_is_monitored_after_the_predecessor_exits()
         })
         .expect("supervisor"),
     );
-    let mut predecessor = std::process::Command::new("sleep")
+    let mut predecessor = pa_types::session_scope::std_command("sleep")
         .arg("600")
         .spawn()
         .expect("spawn the predecessor");
-    let mut replacement = std::process::Command::new("sleep")
+    let mut replacement = pa_types::session_scope::std_command("sleep")
         .arg("600")
         .spawn()
         .expect("spawn the replacement");
@@ -531,7 +533,7 @@ async fn a_superseded_watch_leaves_the_failure_count_to_the_new_monitor() {
         })
         .expect("supervisor"),
     );
-    let mut worker = std::process::Command::new("sleep")
+    let mut worker = pa_types::session_scope::std_command("sleep")
         .arg("600")
         .spawn()
         .expect("spawn sleep");
@@ -612,7 +614,7 @@ async fn a_superseded_watch_in_backoff_does_not_relaunch_over_the_new_owner() {
         })
         .expect("supervisor"),
     );
-    let mut worker = std::process::Command::new("sleep")
+    let mut worker = pa_types::session_scope::std_command("sleep")
         .arg("600")
         .spawn()
         .expect("spawn sleep");

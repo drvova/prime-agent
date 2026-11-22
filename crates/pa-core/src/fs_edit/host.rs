@@ -1,5 +1,5 @@
-//! The `fs.read` and `fs.edit` host requests the kernel's `rlm.fs` client
-//! sends. Each runs on a blocking thread: reading, hashing, and the atomic
+//! The `fs.read`, `fs.edit`, and `fs.write` host requests the kernel's file
+//! functions send. Each runs on a blocking thread: reading, hashing, and the atomic
 //! replace touch the disk, and the async runtime never waits on them.
 //!
 //! Payloads carry the absolute `path` and the REPL's `cwd` (the client
@@ -12,6 +12,7 @@ use anyhow::{anyhow, Context};
 use serde_json::Value;
 
 use super::seen::SeenFiles;
+use super::write::{parse_write, write};
 use super::{edit, parse_edit, parse_read, read, EditFact, FsEditOperation, Rewrite};
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 
@@ -19,16 +20,19 @@ use crate::kernel::shared::{host_handler, HostRequestHandlers};
 /// file content.
 pub(crate) type EditObserver = Arc<dyn Fn(EditFact) + Send + Sync>;
 
-/// One session's `fs.read`/`fs.edit` handler wiring.
+/// One session's `fs.read`/`fs.edit`/`fs.write` handler wiring.
 pub(crate) struct FsEditHost {
     pub(crate) observer: Option<EditObserver>,
     /// The session's seen files: whole-file re-reads shrink to "unchanged" or a diff. `None`
     /// shows every read whole.
     pub(crate) seen: Option<Arc<SeenFiles>>,
+    /// Pages a read file's likely next reads out to the spill store and names their handles
+    /// in the read's reply (persistent sessions). `None` names none.
+    pub(crate) prefetch: Option<crate::prefetch::Prefetcher>,
 }
 
 impl FsEditHost {
-    /// Register the `fs.read` and `fs.edit` handlers.
+    /// Register the `fs.read`, `fs.edit`, and `fs.write` handlers.
     pub(crate) fn register(self, handlers: &mut HostRequestHandlers) {
         let host = Arc::new(self);
         let handler = |operation: FsEditOperation| {
@@ -40,6 +44,7 @@ impl FsEditHost {
         };
         handlers.register("fs.read", handler(FsEditOperation::Read));
         handlers.register("fs.edit", handler(FsEditOperation::Edit));
+        handlers.register("fs.write", handler(FsEditOperation::Write));
     }
 
     #[tracing::instrument(skip_all, fields(operation = ?operation))]
@@ -52,14 +57,31 @@ impl FsEditHost {
             .await
             .context("fs edit thread")?;
         if let (Some(seen), Some(path), Ok((reply, _, rewrite))) =
-            (&self.seen, path, outcome.as_mut())
+            (&self.seen, path.as_ref(), outcome.as_mut())
         {
             match (operation, rewrite.take()) {
-                (FsEditOperation::Read, _) => seen.shape_read(&path, reply).await,
-                (FsEditOperation::Edit, Some(Rewrite { before, after })) => {
-                    seen.note_edit(&path, &before, after).await;
+                (FsEditOperation::Read, _) => seen.shape_read(path, reply).await,
+                (
+                    FsEditOperation::Edit | FsEditOperation::Write,
+                    Some(Rewrite { before, after }),
+                ) => {
+                    seen.note_edit(path, &before, after).await;
                 }
-                (FsEditOperation::Edit, None) => {}
+                (FsEditOperation::Edit | FsEditOperation::Write, None) => {}
+            }
+        }
+        // A read names its neighbours' handles after whatever it shows of the file itself
+        // (bounded wait; none of their text enters the context).
+        if let (Some(prefetch), FsEditOperation::Read, Some(path), Ok((reply, _, _))) =
+            (&self.prefetch, operation, path, outcome.as_mut())
+        {
+            if let Some((related, line)) = prefetch.prefetch(path).await {
+                let text = reply
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                reply["text"] = Value::from(format!("{text}\n{line}"));
+                reply["related"] = related;
             }
         }
         let fact = match &outcome {
@@ -72,6 +94,7 @@ impl FsEditHost {
         let label = match operation {
             FsEditOperation::Read => "fs.read",
             FsEditOperation::Edit => "fs.edit",
+            FsEditOperation::Write => "fs.write",
         };
         outcome
             .map(|(reply, _, _)| reply)
@@ -90,5 +113,6 @@ fn run(
             Ok((reply, EditFact::Read { lines }, None))
         }
         FsEditOperation::Edit => edit(&parse_edit(data)?),
+        FsEditOperation::Write => write(&parse_write(data)?),
     }
 }

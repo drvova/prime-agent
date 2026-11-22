@@ -53,11 +53,16 @@ impl Worker {
             let mut core = self.core.lock().unwrap();
             if core.queued_input_suspended && !core.busy {
                 if streaming_behavior.is_none() {
+                    let refusal = if core.suspension_carried_over {
+                        super::queue::QUEUED_INPUT_SUSPENDED_BEFORE_REBUILD
+                    } else {
+                        QUEUED_INPUT_SUSPENDED
+                    };
                     drop(core);
                     return response_failure(
                         None,
                         if wait { "prompt_and_wait" } else { "prompt" },
-                        QUEUED_INPUT_SUSPENDED,
+                        refusal,
                         None,
                     );
                 }
@@ -157,7 +162,19 @@ impl Worker {
                 None => response_success(None, "prompt_and_wait", None),
                 Some(error) => response_failure(None, "prompt_and_wait", &error, None),
             },
-            Err(_) => response_failure(None, "prompt_and_wait", "Prompt did not complete", None),
+            // The turn went away without settling. When this session's crash
+            // unwound it, the caller is told the crash here: this reply can
+            // reach the client before the host's own failure of the request.
+            Err(_) => response_failure(
+                None,
+                "prompt_and_wait",
+                &crate::session_host::recorded_crash(crate::session_host::session_pid())
+                    .map_or_else(
+                        || "Prompt did not complete".to_string(),
+                        |crash| crash.reason(),
+                    ),
+                None,
+            ),
         }
     }
 

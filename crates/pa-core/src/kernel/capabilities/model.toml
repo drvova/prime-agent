@@ -1,0 +1,3 @@
+[[telemetry]]
+event = "agent repl notify"
+properties = ["effort_set_count", "effort_refused_count"]

@@ -11,7 +11,7 @@ import threading
 import time
 
 from check_agent_bounce import Client, Provider, Handler, LIMIT
-from lifecycle_lib import digest, env_for, stop
+from lifecycle_lib import digest, env_for, stop, verify_session
 
 
 class CompletionHandler(Handler):
@@ -71,6 +71,22 @@ def owned_processes(root):
     return {int(path.name): identity for path in Path('/proc').iterdir()
             if path.name.isdigit()
             and (identity := owned_identity(int(path.name), root)) is not None}
+
+
+def session_identity(binary, tree):
+    """The busy session's socket and lifetime while the tree's daemon still hosts it, else None.
+
+    Sessions run inside their daemon; one that was stopped, or rebuilt as
+    another lifetime, no longer answers to the identity captured at launch.
+    """
+    for path in (tree['root'] / 'agent/daemon-workers').rglob('*.json'):
+        try:
+            row = json.loads(path.read_text())
+            if row.get('rootActiveSessionId') == tree['active']:
+                return verify_session(row, tree['active'], binary, tree['socket'], tree['process'].pid)
+        except (OSError, ValueError, AssertionError):
+            pass
+    return None
 
 
 def survivors(original, root):
@@ -154,16 +170,16 @@ def launch(binary, root, socket_path, shared_tmp, provider, trees):
         'provider': 'parity-local', 'model': 'parity-1', 'noExtensions': True,
         'noSkills': True, 'noTools': True, 'noContextFiles': True, 'telemetryDisabled': True})
     active = created.get('activeSessionId') or created.get('id')
-    worker_pid = created.get('workerPid')
-    assert isinstance(worker_pid, int), 'create did not identify its worker'
     assert active, created
     marker = 'SHUTDOWN_SCOPE_BUSY_' + root.name
     client.call('prompt', activeSessionId=active, message=marker)
     provider.wait_for(marker)
     original = tree['original_processes'] = owned_processes(root)
-    assert process.pid in original and worker_pid in original, 'live supervisor and worker not observed'
-    tree['critical_processes'] = {pid: original[pid] for pid in (process.pid, worker_pid)}
-    tree['process_roles'] = {str(pid): {'role': 'supervisor' if pid == process.pid else 'worker' if pid == worker_pid else 'other inherited-environment process', 'cmdline': process_command(pid)} for pid in original}
+    tree['active'] = active
+    session = tree['session'] = session_identity(binary, tree)
+    assert process.pid in original and session is not None, 'live supervisor and its hosted session not observed'
+    tree['critical_processes'] = {process.pid: original[process.pid]}
+    tree['process_roles'] = {str(pid): {'role': 'supervisor' if pid == process.pid else 'other inherited-environment process', 'cmdline': process_command(pid)} for pid in original}
     return tree
 
 
@@ -191,6 +207,7 @@ def run_case(binary, root, mode, observed):
         own = launch(binary, root / 'own', pins / 'own.sock', shared_tmp, provider, trees)
         observed['process_roles'] = {name: tree['process_roles'] for name, tree in [('own', own), ('foreign', foreign)]}
         observed['critical_processes'] = {name: tree['critical_processes'] for name, tree in [('own', own), ('foreign', foreign)]}
+        observed['sessions'] = {name: tree['session'] for name, tree in [('own', own), ('foreign', foreign)]}
         observed['original_processes'] = {name: tree['original_processes']
             for name, tree in [('own', own), ('foreign', foreign)]}
         if mode == 'exact_socket':
@@ -201,7 +218,8 @@ def run_case(binary, root, mode, observed):
             wait_stopped(own['process'])
             kept = survivors(foreign['original_processes'], foreign['root'])
             observed['foreign_original_processes_after'] = kept
-            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'exact socket shutdown harmed foreign supervisor or worker'
+            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'exact socket shutdown harmed the foreign supervisor'
+            assert session_identity(binary, foreign) == foreign['session'], 'exact socket shutdown harmed the foreign session'
         else:
             status = observed['status_cli'] = invoke(binary, ['status', '--json'], own)
             assert status['returncode'] == 0, status
@@ -227,7 +245,8 @@ def run_case(binary, root, mode, observed):
             kept = survivors(foreign['original_processes'], foreign['root'])
             observed['foreign_original_processes_after'] = kept
             observed['own_supervisor_stopped'] = own['process'].poll() is not None
-            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'pinned root shutdown harmed foreign supervisor or worker'
+            assert survivors(foreign['critical_processes'], foreign['root']) == foreign['critical_processes'], 'pinned root shutdown harmed the foreign supervisor'
+            assert session_identity(binary, foreign) == foreign['session'], 'pinned root shutdown harmed the foreign session'
         observed['provider_requests'] = provider.requests
     except Exception as error:
         primary_error = error
@@ -257,9 +276,9 @@ def main():
     parser.add_argument('--receipt', required=True, type=Path)
     args = parser.parse_args()
     receipt = {'scenario': 'shutdown_scope', 'verified': False, 'cases': {},
-        'scope': 'real supervisor and busy worker identities, exact-socket shutdown, pinned-root status and shutdown',
-        'process_scope': 'original foreign supervisor and worker identities must survive; other inherited-environment processes are role/cmdline captured but can complete naturally',
-        'not_covered': 'doctor output, inherited worker environment routing, overlapping agent-dir regression (separate Rust hosted red/green test)'}
+        'scope': 'real supervisor and busy hosted-session identities, exact-socket shutdown, pinned-root status and shutdown',
+        'process_scope': 'the original foreign supervisor and its busy session (same socket, same lifetime) must survive; other inherited-environment processes are role/cmdline captured but can complete naturally',
+        'not_covered': 'doctor output, inherited session environment routing, overlapping agent-dir regression (separate Rust hosted red/green test)'}
     try:
         with tempfile.TemporaryDirectory(prefix='pa-shutdown-scope-', dir='/tmp') as folder:
             binary = Path(os.environ['PA_RUST_BINARY']).resolve()

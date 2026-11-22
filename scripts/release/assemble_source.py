@@ -96,7 +96,6 @@ REQUIRED_TREE_ENTRIES = (
     "Cargo.lock",
     "crates",
     "vendor",
-    "prime-agent-runtime",
     "skills",
     "LICENSE",
     "README.md",

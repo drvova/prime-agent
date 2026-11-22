@@ -1,0 +1,9 @@
+internal_host_requests = ["mcp.config", "mcp.refresh"]
+
+[[telemetry]]
+event = "agent kernel login and recall"
+properties = [
+  "kernel_mcp_login_count",
+  "kernel_mcp_login_failed_count",
+  "kernel_mcp_login_unavailable_count",
+]

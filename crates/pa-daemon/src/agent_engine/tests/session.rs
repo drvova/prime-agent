@@ -817,51 +817,61 @@ fn the_parse_failure_log_line_carries_the_senders_identity_not_the_payload() {
     );
 }
 
-/// An engine's kernel process does not outlive the engine: the built session's
-/// kernel manager can stay referenced past the engine, and a kernel left
-/// running then flushes its exit snapshot into an artifact dir the engine's
-/// owner may already have removed. A plain-thread drop kills the kernel and
-/// returns only once it stopped running.
+/// What an engine's kernel started does not outlive the engine: the built
+/// session's kernel can stay referenced past the engine, and a command one of
+/// its cells left running would then run on until the process exits. A
+/// plain-thread drop kills it.
+#[cfg(unix)]
 #[test]
-fn dropping_the_engine_stops_its_kernel_before_the_drop_returns() {
-    let Some(python) = crate::test_support::live_kernel_python() else {
-        return;
-    };
+fn dropping_the_engine_kills_the_command_its_kernel_left_running() {
     let _faux = FAUX_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _env = crate::test_support::KernelEnvOverride::apply(&[(
-        "PRIME_AGENT_KERNEL_PYTHON",
-        Some(python.display().to_string()),
-    )]);
-    let (_dir, engine) = faux_engine_with_settings(&json!({ "responses": ["ok"] }), 1);
-    let mut events: Vec<EngineEvent> = Vec::new();
-    admit(&engine, "build the session".to_string(), &mut events);
-    let pid = {
-        let built = engine
-            .runtime
-            .block_on(engine.session.lock())
-            .clone()
-            .expect("the admitted turn built the session");
-        let provisioner = built
-            .kernel_provisioner_weak()
-            .upgrade()
-            .expect("the session's kernel provisioner");
-        engine
-            .runtime
-            .block_on(provisioner.ensure(None, None))
-            .expect("the kernel started")
-            .process_id()
-            .expect("a running kernel has a pid")
-    };
-    assert!(
-        pa_types::platform::process::is_process_alive(pid.unsigned_abs()).unwrap_or(false),
-        "the kernel runs while the engine lives"
+    let pipes = tempfile::tempdir().unwrap();
+    let held = pipes.path().join("held");
+    assert!(pa_types::session_scope::std_command("mkfifo")
+        .arg(&held)
+        .status()
+        .unwrap()
+        .success());
+    // The command holds the pipe's writing end for as long as it lives.
+    let cell = format!(
+        "(bash {} (hash 'background #t))",
+        json!(format!("exec sleep 600 > '{}'", held.display()))
     );
+    let (_dir, engine) = faux_engine_with_settings(
+        &json!({ "responses": [
+            { "content": [
+                { "type": "toolCall", "name": "eval", "arguments": { "code": cell } },
+            ] },
+            "ok",
+        ] }),
+        1,
+    );
+    let mut events: Vec<EngineEvent> = Vec::new();
+    admit(&engine, "start the command".to_string(), &mut events);
+    // Opening the pipe waits for the command to hold its other end, and
+    // reading it ends when that last writer is gone.
+    let (said, heard) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read as _;
+        let opened = std::fs::File::open(held);
+        // The test may have given up waiting.
+        let _ = said.send("the command runs");
+        let ended = opened.and_then(|mut pipe| pipe.read_to_end(&mut Vec::new()));
+        let _ = said.send(if ended.is_ok() {
+            "the command ended"
+        } else {
+            "the pipe could not be read"
+        });
+    });
+    let patience = std::time::Duration::from_secs(30);
+    let before_the_drop = heard.recv_timeout(patience);
     drop(engine);
-    assert!(
-        !pa_types::platform::process::is_process_alive(pid.unsigned_abs()).unwrap_or(true),
-        "kernel {pid} still runs after its engine dropped"
+    assert_eq!(
+        (before_the_drop, heard.recv_timeout(patience)),
+        (Ok("the command runs"), Ok("the command ended")),
+        "{events:?}"
     );
 }
 

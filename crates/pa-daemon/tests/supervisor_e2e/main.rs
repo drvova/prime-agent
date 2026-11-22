@@ -67,7 +67,7 @@ fn spawn_daemon_in(
     cwd: &std::path::Path,
 ) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .current_dir(cwd)
         .arg("supervisor")
         .arg("--socket")
@@ -88,17 +88,11 @@ fn spawn_daemon_in(
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 struct Client {

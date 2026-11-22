@@ -181,7 +181,17 @@ impl Supervisor {
                 Err(anyhow!(WORKER_NOT_CONNECTED))
             }
             Ok(Ok(reply)) => Ok(reply),
-            Ok(Err(_)) => Err(anyhow!(WORKER_SOCKET_CLOSED)),
+            // The session went away under the request. When it crashed, the
+            // caller is told what it crashed of, not that a socket closed.
+            Ok(Err(_)) => Err(
+                match u32::try_from(resident.descriptor.lock().await.pid)
+                    .ok()
+                    .and_then(crate::session_host::recorded_crash)
+                {
+                    Some(crash) => anyhow!(crash.reason()),
+                    None => anyhow!(WORKER_SOCKET_CLOSED),
+                },
+            ),
             Err(_) => {
                 // A timed-out request's reply slot must not sit in the pending map forever
                 // (a wedged worker never answers).
@@ -1029,7 +1039,8 @@ impl Supervisor {
             rest: serde_json::Map::default(),
         };
         // Reuse before launching (TS `createOrReuseWorker`): a concurrent revival
-        // may already host the file.
+        // may already host the file, and a boot's revival pass is waited out first.
+        self.wait_for_boot_revival().await;
         if let Some(resident) = self.registry.find_by_session_file(&session_file).await {
             return Some(crate::messaging::WakeOutcome::Woken(resident));
         }

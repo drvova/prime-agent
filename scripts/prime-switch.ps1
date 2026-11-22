@@ -6,12 +6,12 @@
 # nothing needs switching:
 #   official  `prime-agent`  $HOME\.local\bin\prime-agent.cmd (share\prime-agent\)
 #   fork      `prime`        $HOME\.local\share\prime-agent-fork\bin\prime.cmd
-#             (share\prime-agent\, kernel-venv\); its installer puts that bin dir
+#             (share\prime-agent\); its installer puts that bin dir
 #             on the user PATH and never touches another `prime` (such as Prime
 #             Intellect's own CLI) - whichever comes first on PATH runs
 #   switch    $HOME\.local\share\prime-switch\bin   (prime-switch.ps1: this script)
 #
-# Each build's own launcher pins its agent dir, daemon pipe, and kernel venv, so the
+# Each build's own launcher pins its agent dir and daemon pipe, so the
 # two never share sessions or a live daemon: the official build keeps ~/.prime/agent,
 # the fork keeps its sessions, settings, and logins in ~/.prime/agent-fork (its first
 # run copies the official configuration over once, never the sessions; `uninstall
@@ -160,7 +160,7 @@ function Invoke-Installer($build) {
     # The other build's knobs must not leak in: each installer reads only its own
     # rendered defaults plus the prefix named here.
     $saved = @{}
-    foreach ($name in 'PRIME_AGENT_DOWNLOAD_BASE_URL', 'PRIME_AGENT_RELEASE_ASSETS_URL', 'PRIME_AGENT_VERSION', 'PRIME_AGENT_DAEMON_SOCKET', 'PRIME_AGENT_KERNEL_VENV', 'PRIME_AGENT_RUST_PREFIX') {
+    foreach ($name in 'PRIME_AGENT_DOWNLOAD_BASE_URL', 'PRIME_AGENT_RELEASE_ASSETS_URL', 'PRIME_AGENT_VERSION', 'PRIME_AGENT_DAEMON_SOCKET', 'PRIME_AGENT_RUST_PREFIX') {
         $saved[$name] = [Environment]::GetEnvironmentVariable($name)
         [Environment]::SetEnvironmentVariable($name, $null)
     }

@@ -1,5 +1,6 @@
-//! Hashline editing for the kernel: `fs.read` and `fs.edit` (the REPL's
-//! `rlm.fs` module), served by `fs.read`/`fs.edit` host requests.
+//! Hashline editing for the kernel: the `fs.read`, `fs.edit`, and `fs.write`
+//! host requests behind its `fs-read`, `fs-edit`, and `fs-write` functions.
+//! `fs.write` creates or replaces a whole file ([`write`]).
 //!
 //! `fs.read` tags every line with an anchor, `LINE:abc` (the 1-based line
 //! number and three letters of a content hash), and renders `12:abc|text`.
@@ -25,6 +26,7 @@ mod patch;
 mod seen;
 #[cfg(test)]
 mod tests;
+mod write;
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -48,6 +50,7 @@ const READ_MAX_LINES: usize = 20_000;
 pub(crate) enum FsEditOperation {
     Read,
     Edit,
+    Write,
 }
 
 /// What adoption telemetry learns of one call: counts only.
@@ -59,6 +62,8 @@ pub(crate) enum EditFact {
     Applied { edits: usize },
     /// `fs.edit` rejected a patch: `stale` anchors no longer matched.
     Rejected { stale: usize },
+    /// `fs.write` wrote a whole file, which it `created` or replaced.
+    Written { created: bool },
     /// The call failed (bad input, binary file, I/O): nothing was written.
     Failed { operation: FsEditOperation },
 }

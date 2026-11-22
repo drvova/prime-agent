@@ -69,11 +69,10 @@ struct Supervisor {
 impl Drop for Supervisor {
     fn drop(&mut self) {
         graceful_shutdown(&self.socket);
-        // Freeze the whole tree before any kill: a worker's kernel bootstrap
-        // (`uv pip install`) and bytecode compile are grandchildren that a
-        // worker-only kill orphans, and they kept writing the venv into the
-        // test's temp dir after its removal. A stopped process cannot fork,
-        // so the walk settles once every member is stopped.
+        // Freeze the whole tree before any kill: a worker's grandchildren (the
+        // commands its session started) outlive a worker-only kill and keep
+        // writing into the test's temp dir after its removal. A stopped process
+        // cannot fork, so the walk settles once every member is stopped.
         let root = self.child.id();
         unsafe {
             libc::kill(root as i32, libc::SIGSTOP);
@@ -251,7 +250,6 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         .args(["--mode", "daemon", "--daemon-socket"])
         .arg(&socket)
         .env("PRIME_AGENT_CODING_AGENT_DIR", &agent_dir)
-        .env("PRIME_AGENT_KERNEL_VENV", dir.join("kernel-venv"))
         // Worker sockets land in `<TMPDIR>/prime-agent-<uid>/`: keep them in the
         // test's temp dir, which a SIGKILLed worker never cleans up after.
         .env("TMPDIR", dir)
@@ -284,15 +282,9 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
     );
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor { child, socket };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
+    support::await_listening(&socket, &mut child);
+    Supervisor { child, socket }
 }
 
 /// The headless run's interactive options (`client_auth` stays `None` so
@@ -552,7 +544,7 @@ async fn mcp_view_lists_the_configured_mock_connection() {
         rendered.contains("/mcp is not available in this client yet"),
         "Enter dispatched the login and the logout arm stayed routed:\n{rendered}"
     );
-    // The teardown reaps the whole tree (the kernel bootstrap included)
+    // The teardown reaps the whole tree
     // before the temp dir drops, so nothing writes into it afterwards.
     let tree = descendants_of(supervisor.child.id());
     drop(supervisor);

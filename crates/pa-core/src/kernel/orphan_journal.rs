@@ -22,7 +22,7 @@ pub struct ActiveOrphanProcess {
 }
 
 fn journal_path() -> Option<std::path::PathBuf> {
-    let path = std::env::var(ORPHAN_PROCESS_JOURNAL_ENV).ok()?;
+    let path = pa_types::session_scope::var(ORPHAN_PROCESS_JOURNAL_ENV).ok()?;
     if path.is_empty() {
         return None;
     }
@@ -74,7 +74,10 @@ pub fn record_orphan_process_state(pid: i32, active: bool) {
     let Ok(mut file) = options.open(&path) else {
         return;
     };
-    let _ = writeln!(file, "{record}");
+    // One write per record: the in-process kernel journals from several
+    // threads at once, and a record written in pieces interleaves with
+    // another into lines the reader has to drop.
+    let _ = file.write_all(format!("{record}\n").as_bytes());
     let _ = file.sync_all();
 }
 
@@ -269,7 +272,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("w.orphans.jsonl");
         let owner = i64::from(std::process::id());
-        let mut child = std::process::Command::new("sleep")
+        let mut child = pa_types::session_scope::std_command("sleep")
             .arg("0")
             .spawn()
             .expect("spawn short-lived child");

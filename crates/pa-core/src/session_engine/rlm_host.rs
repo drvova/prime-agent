@@ -445,7 +445,7 @@ pub fn resolve_rlm_max_depth(
                 .map(|depth| (depth, "global"))
         })
         .or_else(|| {
-            std::env::var("RLM_MAX_DEPTH")
+            pa_types::session_scope::var("RLM_MAX_DEPTH")
                 .ok()
                 .filter(|value| !value.is_empty())
                 .and_then(|value| value.parse::<u64>().ok())

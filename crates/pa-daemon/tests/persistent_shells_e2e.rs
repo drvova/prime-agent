@@ -1,12 +1,11 @@
-//! Persistent `bash()` shells across the daemon: a shell started with
-//! `bash(..., persistent=True)` survives the daemon's shutdown (it is neither
-//! journaled for the orphan reaper nor killed by the kernel's exit hook), shows
-//! on the INACTIVE session's saved-catalog row, is re-attached by the kernel of
-//! the reopened session, and keeps running after the session's delete, its
-//! record still assigned to the deleted session. The machine-wide
-//! `list_persistent_shells` lists every shell with its assignment, and
-//! `kill_persistent_shell` ends an orphan. The live-kernel test skips (with a
-//! note) without a kernel install.
+//! Persistent `bash` shells across the daemon: a shell started with
+//! `(bash ... (hash 'persistent #t))` survives the daemon's shutdown (it is
+//! neither journaled for the orphan reaper nor killed when the worker disposes
+//! its kernel), shows on the INACTIVE session's saved-catalog row, is
+//! re-attached by the kernel of the reopened session, and keeps running after
+//! the session's delete, its record still assigned to the deleted session. The
+//! machine-wide `list_persistent_shells` lists every shell with its assignment,
+//! and `kill_persistent_shell` ends an orphan.
 #![cfg(target_os = "linux")]
 // Narrowing casts sit at OS boundaries (pid) where the kernel bounds the values.
 #![allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
@@ -25,22 +24,6 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{killpg, Signal};
 use nix::unistd::Pid;
 use serde_json::{json, Value};
-
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        return Some(PathBuf::from(explicit));
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").unwrap_or_default())
-        .join(".prime/agent/kernel-venv/bin/python");
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live persistent-shell e2e",
-        candidate.display()
-    );
-    None
-}
 
 struct Daemon {
     child: Child,
@@ -78,7 +61,7 @@ fn group_alive(pgid: i32) -> bool {
 
 // The returned Daemon's Drop kills and reaps the child.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path>) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -99,9 +82,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: Option<&Path
         )
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    if let Some(python) = kernel_python {
-        command.env("PRIME_AGENT_KERNEL_PYTHON", python);
-    }
     let child = command.spawn().expect("spawn pa-daemon supervisor");
     let deadline = Instant::now() + Duration::from_secs(15);
     while UnixStream::connect(socket).is_err() {
@@ -183,34 +163,6 @@ fn saved_row(client: &mut Client, id: &str, sessions_dir: &Path, session_id: &st
 }
 
 #[test]
-fn persistent_python_unit_regressions() {
-    let Some(python) = kernel_python() else {
-        assert!(
-            std::env::var_os("CI").is_none(),
-            "CI must bootstrap the kernel interpreter before persistent-shell tests"
-        );
-        return;
-    };
-    let runtime = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../prime-agent-runtime");
-    // The Python cases' scratch dirs (and the detached shells writing into
-    // them) land in a temp dir this test owns, not the shared TMPDIR.
-    let scratch = tempfile::TempDir::new().expect("python scratch dir");
-    let output = Command::new(python)
-        .current_dir(&runtime)
-        .env("PYTHONPATH", runtime.join("src"))
-        .env("TMPDIR", scratch.path())
-        .args(["-m", "unittest", "test.test_bash.PersistentBashTest"])
-        .output()
-        .expect("run persistent-shell Python regressions");
-    assert!(
-        output.status.success(),
-        "persistent-shell Python regressions failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-}
-
-#[test]
 fn saved_row_lists_its_live_shells_and_the_machine_wide_list_every_shell() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
@@ -258,7 +210,7 @@ fn saved_row_lists_its_live_shells_and_the_machine_wide_list_every_shell() {
     }
 
     let socket = dir.path().join("supervisor.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, None);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let row = saved_row(&mut client, "l1", &sessions_dir, session_id);
 
@@ -291,9 +243,6 @@ fn saved_row_lists_its_live_shells_and_the_machine_wide_list_every_shell() {
 
 #[test]
 fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_delete() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = dir.path().join("sessions");
@@ -302,14 +251,15 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
     let script = write_faux_script(
         &dir.path().join("faux.json"),
         &format!(
-            "h = bash('echo hi; sleep 600', persistent=True)\nopen({:?}, 'w').write(str(h.pid))\n",
+            r#"(define shell (bash "echo hi; sleep 600" (hash 'persistent #t 'background #t)))
+(fs-write {:?} (number->string (hash-ref shell 'pid)))
+"#,
             receipt.to_string_lossy()
         ),
     );
 
-    let baseline = kernel_pids();
     let socket = dir.path().join("supervisor.sock");
-    let mut daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let mut daemon = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let created = client.request(
         "c1",
@@ -337,19 +287,13 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
         .expect("pid");
     let _guard = GroupGuard(pid);
 
-    // Daemon stop: the workers dispose their kernels (exit hook + orphan reaper).
+    // Daemon stop: the sessions it hosts dispose their kernels (which end
+    // their own commands) and the orphan reaper runs before the process
+    // exits. The shell must outlive both.
     client.request("sd", &json!({ "type": "shutdown" }));
     let deadline = Instant::now() + Duration::from_secs(90);
     while daemon.child.try_wait().expect("poll supervisor").is_none() {
         assert!(Instant::now() < deadline, "the supervisor never exited");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let deadline = Instant::now() + Duration::from_secs(90);
-    while kernel_pids().iter().any(|pid| !baseline.contains(pid)) {
-        assert!(
-            Instant::now() < deadline,
-            "the session kernel outlived shutdown"
-        );
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
@@ -359,7 +303,7 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
 
     // A fresh daemon lists the inactive session's shell.
     let socket = dir.path().join("supervisor-2.sock");
-    let _daemon = spawn_supervisor(&socket, &agent_dir, Some(&kernel_python));
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     let row = saved_row(&mut client, "l1", &sessions_dir, &session_id);
     assert_eq!(row["persistentShells"][0]["pid"], pid);
@@ -369,7 +313,11 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
     let script = write_faux_script(
         &dir.path().join("faux-reopen.json"),
         &format!(
-            "import json\nfrom rlm import persistent_shells\njson.dump([[h.pid, h.running, h.output()] for h in persistent_shells()], open({:?}, 'w'))\n",
+            r"(fs-write {:?} (value->jsexpr-string
+      (map (lambda (shell)
+             (list (hash-ref shell 'pid) (bash-running? shell) (bash-output shell)))
+           (bash-persistent-shells))))
+",
             reattached.to_string_lossy()
         ),
     );
@@ -458,7 +406,7 @@ fn write_faux_script(path: &Path, cell: &str) -> PathBuf {
     std::fs::write(
         path,
         json!({ "engine": "faux", "responses": [
-            { "content": [{ "type": "toolCall", "name": "python_repl",
+            { "content": [{ "type": "toolCall", "name": "eval",
                             "arguments": { "code": cell } }] },
             { "text": "done" },
         ] })
@@ -466,20 +414,4 @@ fn write_faux_script(path: &Path, cell: &str) -> PathBuf {
     )
     .expect("write faux script");
     path.to_path_buf()
-}
-
-/// Every live `python -m rlm.repl` kernel pid on the box.
-fn kernel_pids() -> Vec<u32> {
-    std::fs::read_dir("/proc")
-        .expect("read /proc")
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
-            let cmdline = std::fs::read_to_string(entry.path().join("cmdline")).ok()?;
-            let args: Vec<&str> = cmdline.split('\0').collect();
-            args.windows(2)
-                .any(|window| window == ["-m", "rlm.repl"])
-                .then_some(pid)
-        })
-        .collect()
 }

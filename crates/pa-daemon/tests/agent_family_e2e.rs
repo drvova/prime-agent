@@ -79,7 +79,7 @@ fn parent_worker_token(agent_dir: &Path, active_session_id: &str) -> String {
     panic!("parent worker descriptor not found");
 }
 
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");
@@ -92,7 +92,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         .stdout(Stdio::null())
         .stderr(Stdio::from(log_err))
         // A supervisor killed at teardown must not leak its session workers: the worker's
@@ -207,38 +206,33 @@ impl Client {
     }
 }
 
-/// The kernel Python with the runtime installed; the child's reply cell needs it. Skipped (with a
-/// note) without a live install.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live family e2e",
-        candidate.display()
-    );
-    None
+/// A cell that evaluates `call` and writes its result as JSON to `<name>.json`, or its error
+/// to `<name>.error`. A rerun replaces the earlier record.
+fn record_cell(call: &str, name: &str, receipts_dir: &Path) -> String {
+    let receipt_path = receipts_dir
+        .join(format!("{name}.json"))
+        .display()
+        .to_string();
+    let error_path = receipts_dir
+        .join(format!("{name}.error"))
+        .display()
+        .to_string();
+    format!(
+        r"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
+    (record {receipt_path:?} (value->jsexpr-string {call}))))
+"
+    )
 }
 
 /// The child's reply turn; no receiver name: the parent is the only Parent member.
 fn child_cell(receipts_dir: &Path) -> String {
-    let receipt_path = receipts_dir.join("child-reply.json").display().to_string();
-    let error_path = receipts_dir.join("child-reply.error").display().to_string();
-    format!(
-        "from rlm import host_request\nimport json, traceback\ntry:\n    receipt = await host_request(\"agent_message.send\", {{\"message\": \"kid reply\", \"receiver_role\": \"parent\"}})\n    open({receipt_path:?}, \"w\").write(json.dumps(receipt))\nexcept Exception:\n    open({error_path:?}, \"w\").write(traceback.format_exc())\n    raise",
+    record_cell(
+        r#"(agent-message-send "kid reply" #:receiver-role "parent")"#,
+        "child-reply",
+        receipts_dir,
     )
 }
 
@@ -247,7 +241,7 @@ fn child_responses(receipts_dir: &Path) -> Value {
     let cell = child_cell(receipts_dir);
     let reply = json!([
         { "content": [
-            { "type": "toolCall", "name": "python_repl", "arguments": { "code": cell } },
+            { "type": "toolCall", "name": "eval", "arguments": { "code": cell } },
         ] },
         { "text": "kid turn done" },
     ]);
@@ -342,9 +336,6 @@ async fn send_agent_message(
 
 #[tokio::test]
 async fn parent_child_agent_message_round_trip_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -366,8 +357,7 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
     );
     let child_script = write_faux_script(dir.path(), "child", &child_responses(&receipts_dir));
 
-    // The supervisor passes the kernel python to the workers it launches.
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -589,24 +579,10 @@ async fn parent_child_agent_message_round_trip_end_to_end() {
     );
 }
 
-fn record_cell(request: &str, name: &str, receipts_dir: &Path) -> String {
-    let receipt_path = receipts_dir
-        .join(format!("{name}.json"))
-        .display()
-        .to_string();
-    let error_path = receipts_dir
-        .join(format!("{name}.error"))
-        .display()
-        .to_string();
-    format!(
-        "from rlm import host_request\nimport json, traceback\ntry:\n    result = await host_request({request})\n    open({receipt_path:?}, \"w\").write(json.dumps(result))\nexcept Exception:\n    open({error_path:?}, \"w\").write(traceback.format_exc())\n    raise",
-    )
-}
-
 fn cell_turn(code: &str) -> Value {
     json!([
         { "content": [
-            { "type": "toolCall", "name": "python_repl", "arguments": { "code": code } },
+            { "type": "toolCall", "name": "eval", "arguments": { "code": code } },
         ] },
         { "text": "cell turn done" },
     ])
@@ -614,9 +590,6 @@ fn cell_turn(code: &str) -> Value {
 
 #[tokio::test]
 async fn family_edges_never_cross_families_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -628,9 +601,9 @@ async fn family_edges_never_cross_families_end_to_end() {
     // Parent-a's one kernel turn records its roster and broadcast receipts.
     let parent_a_cell = format!(
         "{}\n{}",
-        record_cell(r#""agent_observe.list""#, "parent-observe", &receipts_dir),
+        record_cell("(agent-observe-list)", "parent-observe", &receipts_dir),
         record_cell(
-            r#""agent_message.send", {"message": "parent broadcast", "target": "all"}"#,
+            r#"(agent-message-broadcast "parent broadcast")"#,
             "parent-broadcast",
             &receipts_dir
         )
@@ -640,7 +613,7 @@ async fn family_edges_never_cross_families_end_to_end() {
         "parent-a",
         &json!([
             { "content": [
-                { "type": "toolCall", "name": "python_repl", "arguments": { "code": parent_a_cell } },
+                { "type": "toolCall", "name": "eval", "arguments": { "code": parent_a_cell } },
             ] },
             { "text": "parent-a turn done" },
             { "text": "parent-a turn done" },
@@ -654,21 +627,21 @@ async fn family_edges_never_cross_families_end_to_end() {
     );
     let kid_cells = [
         record_cell(
-            r#""agent_message.send", {"message": "hello sibling", "receiver_role": "sibling", "receiver_name": "kid-b"}"#,
+            r#"(agent-message-send "hello sibling" #:receiver-role "sibling" #:receiver-name "kid-b")"#,
             "kid-sibling-cross",
             &receipts_dir,
         ),
         record_cell(
-            r#""agent_message.send", {"message": "parent update", "receiver_role": "parent"}"#,
+            r#"(agent-message-send "parent update" #:receiver-role "parent")"#,
             "kid-parent-reply",
             &receipts_dir,
         ),
         record_cell(
-            r#""agent_message.send", {"message": "kid broadcast", "target": "all"}"#,
+            r#"(agent-message-broadcast "kid broadcast")"#,
             "kid-broadcast",
             &receipts_dir,
         ),
-        record_cell(r#""agent_observe.list""#, "kid-observe", &receipts_dir),
+        record_cell("(agent-observe-list)", "kid-observe", &receipts_dir),
     ];
     // One scripted turn per cell: the tool-call entry, then the text entry that closes it (a nested
     // array is not a valid script).
@@ -686,7 +659,7 @@ async fn family_edges_never_cross_families_end_to_end() {
     }
     let kid_script = write_faux_script(dir.path(), "kid", &json!(kid_responses));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -1148,9 +1121,6 @@ async fn family_edges_never_cross_families_end_to_end() {
 /// name (`rlm.collect` by the old name fails, the new name hits).
 #[tokio::test]
 async fn parent_renames_a_child_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -1165,7 +1135,7 @@ async fn parent_renames_a_child_end_to_end() {
     );
     let child_script = write_faux_script(dir.path(), "child", &json!([{ "text": "kid spawned" }]));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -1310,24 +1280,39 @@ async fn parent_renames_a_child_end_to_end() {
 }
 
 /// The cell that reads its own transcript (the count, the newest user rows, the
-/// head, then everything) and records what `rlm.session.messages` returned.
+/// head, then everything) and records what `rlm-session-messages` returned.
 fn transcript_cell(receipts_dir: &Path) -> String {
-    let receipt_path = receipts_dir.join("transcript.json").display().to_string();
-    let error_path = receipts_dir.join("transcript.error").display().to_string();
-    format!(
-        "import json, traceback\ntry:\n    total = await rlm.session.count()\n    users = await rlm.session.messages(-3, 3, role=\"user\")\n    head = await rlm.session.messages(0, 4)\n    rows = await rlm.session.messages(0, total)\n    open({receipt_path:?}, \"w\").write(json.dumps({{\"total\": total, \"users\": [[m.index, m.text] for m in users], \"head\": [[m.index, m.id, m.role, m.text] for m in head], \"roles\": [m.role for m in rows]}}))\nexcept Exception:\n    open({error_path:?}, \"w\").write(traceback.format_exc())\n    raise",
+    record_cell(
+        r#"(let* ([role (lambda (row) (hash-ref (hash-ref row 'message) 'role))]
+       [text (lambda (row)
+               (let ([message (hash-ref row 'message)])
+                 (if (hash-contains? message 'summary)
+                     (hash-ref message 'summary)
+                     (let ([content (hash-ref message 'content)])
+                       (if (string? content)
+                           content
+                           (apply string-append
+                                  (map (lambda (block) (hash-ref block 'text)) content)))))))]
+       [total (rlm-session-count)]
+       [users (rlm-session-messages #:start -3 #:limit 3 #:role "user")]
+       [head (rlm-session-messages #:start 0 #:limit 4)]
+       [rows (rlm-session-messages #:start 0 #:limit total)])
+  (hash 'total total
+        'users (map (lambda (row) (list (hash-ref row 'index) (text row))) users)
+        'head (map (lambda (row) (list (hash-ref row 'index) (hash-ref row 'id) (role row) (text row)))
+                   head)
+        'roles (map role rows)))"#,
+        "transcript",
+        receipts_dir,
     )
 }
 
-/// `rlm.session.messages` end to end: a kernel cell in a windowed daemon
+/// `rlm-session-messages` end to end: a kernel cell in a windowed daemon
 /// session reads its own transcript via the real host handler and supervisor
 /// route, into the rows its compaction summarized away (the summary in place),
 /// without the in-flight step, and the cell's tool result carries each read.
 #[tokio::test]
 async fn session_messages_reads_the_transcript_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -1380,7 +1365,7 @@ async fn session_messages_reads_the_transcript_end_to_end() {
         &cell_turn(&transcript_cell(&receipts_dir)),
     );
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -1541,9 +1526,6 @@ fn resident_session_ids(client: &mut Client, id: &str) -> Vec<String> {
 /// session file, and no worker comes back for it.
 #[tokio::test]
 async fn passivated_child_recent_messages_reads_its_file_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -1558,7 +1540,7 @@ async fn passivated_child_recent_messages_reads_its_file_end_to_end() {
     let root_script = write_faux_script(dir.path(), "root", &json!([{ "text": "root turn done" }]));
     let kid_script = write_faux_script(dir.path(), "kid", &json!([{ "text": "kid spawned" }]));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");
@@ -1704,9 +1686,6 @@ async fn passivated_child_recent_messages_reads_its_file_end_to_end() {
 /// child reads from its file without a worker coming back.
 #[tokio::test]
 async fn family_members_read_each_others_transcripts_end_to_end() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -1721,7 +1700,7 @@ async fn family_members_read_each_others_transcripts_end_to_end() {
     let root_script = write_faux_script(dir.path(), "root", &json!([{ "text": "root turn done" }]));
     let kid_script = write_faux_script(dir.path(), "kid", &json!([{ "text": "kid spawned" }]));
 
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

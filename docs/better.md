@@ -27,7 +27,7 @@ it found.
 
 - It runs on the session's own model, provider, thinking level, and credential. Nothing
   switches implicitly.
-- It only reads. Its `python_repl` accepts `fs.read`, `fs.grep`, `fs.glob`, and `fs.find`
+- It only reads. Its `eval` tool accepts `fs-read`, `fs-grep`, `fs-glob`, and `fs-find`
   calls with literal arguments, and its `bash` accepts one read-only `git` command (`log`,
   `show`, `diff`, `status`, `ls-files`, `grep`, `rev-parse`) with no pipes, redirects, or
   substitutions. The host refuses every edit and write.
@@ -51,22 +51,22 @@ In print mode, RPC, and other non-interactive surfaces, `/better <prompt>` retur
 rewrite as the command's result message instead of filling an input box. Nothing is sent to
 the model there either.
 
-## From the REPL: `better(...)` and `rlm.spawn(..., better=True)`
+## From the kernel: `(better ...)` and `(rlm-spawn ... #:better #t)`
 
-The agent can call the same helper from its Python REPL:
+The agent can call the same helper from its kernel:
 
-```python
-deeper = await better("fix the parser")
-brief = await better("Add a test for parse_expr in src/parser.rs", cwd="crates/parser", mode="brief")
-child = await rlm.spawn(brief_text, name="parser-tests", cwd="crates/parser", better=True)
+```scheme
+(define deeper (better "fix the parser"))
+(define brief (better "Add a test for parse_expr in src/parser.rs" #:cwd "crates/parser" #:mode "brief"))
+(define child (rlm-spawn brief-text #:name "parser-tests" #:cwd "crates/parser" #:better #t))
 ```
 
-`mode="brief"` checks a delegation brief against the repository from `cwd`: every path, name,
+`#:mode "brief"` checks a delegation brief against the repository from `cwd`: every path, name,
 and command it mentions must exist there, or run read-only. The helper fixes what is wrong (a
 wrong path, a renamed symbol, a command that does not resolve, no way to tell the work is
 done) and returns the brief unchanged when nothing needs fixing. It starts from no
 conversation: a brief is checked against the repository, not against the chat.
-`rlm.spawn(..., better=True)` runs brief mode first and spawns the checked brief; the spawn
+`(rlm-spawn ... #:better #t)` runs brief mode first and spawns the checked brief; the spawn
 still waits for a session-boot slot like every other spawn, and the helper's model calls pass
 the same provider admission as the session's own.
 
@@ -104,9 +104,9 @@ kept in the session's spill store under that `out:<id>` handle.
   last notice asks the model to say what still fails.
 - A new prompt without a block disarms the checks; a prompt with a new block replaces them.
 
-The same checks are readable from the REPL. `better.checks()` returns where they stand
+The same checks are readable from the kernel. `(better-checks)` returns where they stand
 (`status` is `none`, `pending`, `passed`, or `failed`, plus the checks, the rounds run, and the
-latest round's evidence). `better.evidence("out:7f3a9c1e04")` returns one round's per-check
+latest round's evidence). `(better-evidence "out:7f3a9c1e04")` returns one round's per-check
 results with each failure's raw reason. Telemetry counts the rounds and the checks that passed
 and failed, and nothing else.
 

@@ -68,6 +68,21 @@ impl KernelNotice {
         }
     }
 
+    /// The `[bash-lost]` notice for one command that was still running when
+    /// its kernel ended: it was killed, and no result will come.
+    #[must_use]
+    pub fn bash_lost(pid: u32, command: &str) -> Self {
+        Self {
+            row: messages::create_async_bash_lost_message(
+                pid,
+                command,
+                crate::autonomous::now_millis(),
+            ),
+            preview_label: ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+            delivery: NoticeDelivery::Steer,
+        }
+    }
+
     /// The `[cell-done]` notice for one backgrounded cell that ended.
     #[must_use]
     pub fn cell_completion(
@@ -216,8 +231,12 @@ pub fn register_kernel_notice_host_handlers(
 /// TS `createAsyncBashCompletionHostHandler` validation: a positive
 /// integer pid, a non-empty string command, an integer exit code, plus the
 /// kernel's bounded output tail (a string and its `outputTruncated` flag).
+/// A command lost with its kernel (`lost` true) has neither of the last two.
 fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
     let (pid, command) = bash_job(data)?;
+    if data.get("lost") == Some(&Value::Bool(true)) {
+        return Ok(KernelNotice::bash_lost(pid, &command));
+    }
     let exit_code = data
         .get("exitCode")
         .and_then(Value::as_i64)
@@ -650,6 +669,38 @@ mod tests {
                     "kind": "budget_exceeded",
                     "detail": "run budget_ms 2000 exceeded",
                 })),
+            )
+        );
+    }
+
+    #[test]
+    fn a_lost_command_is_announced_as_lost_with_no_exit_code() {
+        let notice = validate_completion(&serde_json::json!({
+            "pid": 4321,
+            "command": "sleep 600",
+            "lost": true,
+        }))
+        .expect("a lost command needs no exit code or output");
+        assert_eq!(
+            (
+                notice.row.custom_type.as_str(),
+                notice.row.content.text(),
+                notice.row.details,
+                notice.delivery,
+            ),
+            (
+                ASYNC_BASH_COMPLETION_CUSTOM_TYPE,
+                "[bash-lost pid:4321]\n\nCommand: \"sleep 600\"\n\n\
+                 This command was still running when the session's kernel ended \
+                 (the session was stopped or restarted, or its host exited), so it \
+                 was killed and has no result. Start it again if you still need it."
+                    .to_string(),
+                Some(serde_json::json!({
+                    "pid": 4321,
+                    "command": "sleep 600",
+                    "lost": true,
+                })),
+                NoticeDelivery::Steer,
             )
         );
     }

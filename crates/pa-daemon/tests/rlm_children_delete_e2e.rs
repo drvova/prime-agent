@@ -36,7 +36,7 @@ impl Drop for Daemon {
 
 // The timeout panic path cannot wait on the child; the test exits and reaps it.
 #[allow(clippy::zombie_processes)]
-fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let child = Command::new(binary)
         .arg("supervisor")
@@ -47,7 +47,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         .env("TMPDIR", socket.parent().expect("socket dir"))
         .arg("--agent-dir")
         .arg(agent_dir)
-        .env("PRIME_AGENT_KERNEL_PYTHON", kernel_python)
         // Hermetic agent dir: the ambient environment exports a real
         // agent dir; point every fallback at the test sandbox instead.
         .env("PRIME_AGENT_CODING_AGENT_DIR", agent_dir)
@@ -66,31 +65,6 @@ fn spawn_supervisor(socket: &Path, agent_dir: &Path, kernel_python: &Path) -> Da
         child,
         socket: socket.to_path_buf(),
     }
-}
-
-/// The kernel Python; `PA_E2E_KERNEL_PYTHON` points at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_E2E_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live RLM delete e2e",
-        candidate.display()
-    );
-    None
 }
 
 fn wait_socket_ready(socket: &Path) {
@@ -234,7 +208,14 @@ fn create_parent(
 
 fn semantic_spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        "import json, traceback\ntry:\n    handle = await rlm.spawn(\"child task text\", name=\"kid\")\n    open({receipt:?}, \"w\").write(json.dumps({{\"rlm_child_id\": handle.rlm_child_id, \"session_dir\": str(handle.session_dir)}}))\n    print(handle.rlm_child_id)\nexcept Exception:\n    open({error_receipt:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
+    (let ([handle (rlm-spawn "child task text" #:name "kid")])
+      (record {receipt:?} (value->jsexpr-string handle))
+      (displayln (hash-ref handle 'rlm_child_id)))))
+"#,
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
@@ -275,7 +256,15 @@ fn semantic_delete_cell(
     delete_error: &Path,
 ) -> String {
     format!(
-        "import json, traceback\ntry:\n    child = json.load(open({spawn_receipt:?}))\n    sub = await rlm.delete_subagent(child[\"rlm_child_id\"])\n    open({delete_receipt:?}, \"w\").write(json.dumps({{\"status\": sub.status, \"rlm_child_id\": sub.rlm_child_id}}))\n    print(sub.status)\nexcept Exception:\n    open({delete_error:?}, \"w\").write(traceback.format_exc())\n    raise",
+        r#"(let ([record (lambda (path text)
+                (fs-write path text))])
+  (with-handler
+    (lambda (e) (record {delete_error:?} (to-string e)) (error (to-string e)))
+    (let* ([spawned (hash-ref (bash (string-append "cat " {spawn_receipt:?})) 'output)]
+           [deleted (rlm-delete-subagent (hash-ref (string->jsexpr spawned) 'rlm_child_id))])
+      (record {delete_receipt:?} (value->jsexpr-string deleted))
+      (displayln (hash-ref deleted 'status)))))
+"#,
         spawn_receipt = spawn_receipt.display().to_string(),
         delete_receipt = delete_receipt.display().to_string(),
         delete_error = delete_error.display().to_string(),
@@ -292,11 +281,11 @@ fn write_two_turn_parent_script(dir: &Path, first_cell: &str, second_cell: &str)
             "engine": "faux",
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": first_cell } },
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
                 { "content": [
-                    { "type": "toolCall", "name": "python_repl", "arguments": { "code": second_cell } },
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": second_cell } },
                 ] },
                 { "text": "delete turn done" },
             ],
@@ -315,9 +304,6 @@ fn write_two_turn_parent_script(dir: &Path, first_cell: &str, second_cell: &str)
 /// records a `child_returned` one.
 #[test]
 fn a_deleted_running_child_records_the_cancel_edge() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -346,7 +332,7 @@ fn a_deleted_running_child_records_the_cancel_edge() {
         &semantic_spawn_cell(&spawn_receipt, &spawn_error),
         &semantic_delete_cell(&spawn_receipt, &delete_receipt, &delete_error),
     );
-    let _daemon = spawn_supervisor(&socket, &agent_dir, &kernel_python);
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
     let (mut client, hello) = Client::connect(&socket);
     assert_eq!(hello["type"], "daemon_hello");

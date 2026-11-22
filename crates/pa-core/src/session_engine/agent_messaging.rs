@@ -314,13 +314,14 @@ pub(crate) fn sanitize_message_header_value(value: &str) -> String {
 /// The heads of the bracket notices the harness renders into a model context (`[agent-message
 /// from ...]`, `[child-exited: ...]`, `[cell-done ...]`, `[task from parent]`, `[loop guard]`,
 /// ...), lowercase. A delivered body line that opens with one is fenced, so a body can never
-/// impersonate the harness or another sender. Prefix matches: `python-state` also covers
-/// `[python-state-restored]`.
+/// impersonate the harness or another sender. Prefix matches: `kernel-state` also covers
+/// `[kernel-state-reset]`, and `python-state` the Python kernel's notices in saved sessions.
 const HARNESS_NOTICE_HEADS: &[&str] = &[
     "agent-message",
     "autonomous-continuation",
     "autonomous-status",
     "bash-done",
+    "bash-lost",
     "branch-summary",
     "cell-done",
     "child-exited",
@@ -331,6 +332,7 @@ const HARNESS_NOTICE_HEADS: &[&str] = &[
     "goal",
     "harness-digest",
     "heartbeat",
+    "kernel-state",
     "loop guard",
     "model-prompt-error",
     "python-skills-unavailable",
@@ -536,7 +538,7 @@ pub(crate) fn register_agent_message_host_handlers_with_clock<
         host_handler(|_payload| {
             Box::pin(async {
                 Err(anyhow::anyhow!(
-                    "agent_message.list_agents was removed; the family roster now lives in agent_observe.list_agents(). Restart the Python kernel to load the current skills, then call await agent_observe.list_agents()."
+                    "agent_message.list_agents was removed; the family roster is `(agent-observe-list)`."
                 ))
             })
         }),

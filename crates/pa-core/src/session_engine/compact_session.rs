@@ -70,7 +70,7 @@ fn message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
         },
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
-                || payload.custom_type == super::ipython_state::IPYTHON_STATE_CUSTOM_TYPE
+                || payload.custom_type == super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
             {
                 return None;
             }
@@ -114,7 +114,7 @@ pub struct CompactRun {
     pub duration_ms: u64,
     /// The post-compaction `ipython_state` notice, when a kernel was running:
     /// the row is already durable and in the live context; surfaces broadcast it.
-    pub ipython_state: Option<pa_types::session::CustomMessage>,
+    pub kernel_state: Option<pa_types::session::CustomMessage>,
 }
 
 /// What `/compact` did. `Skipped` carries the skip message; the caller

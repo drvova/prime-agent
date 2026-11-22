@@ -56,7 +56,9 @@ fn shared() -> &'static Mutex<SharedCaches> {
 /// supervisor's startup refresh and hourly loop share the same snapshots.
 fn plugins_catalog_cache_for(agent_dir: &Path) -> Arc<PluginsCatalogCache> {
     let cache_path = agent_dir.join(PLUGINS_CACHE_FILE);
-    let mut shared = shared().lock().unwrap();
+    let mut shared = shared()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     Arc::clone(shared.entry(cache_path.clone()).or_insert_with(move || {
         Arc::new(PluginsCatalogCache::at_url(
             MCP_SERVICE_CATALOG_URL,

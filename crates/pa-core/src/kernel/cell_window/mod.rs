@@ -1,4 +1,4 @@
-//! The `python_repl` cell yield window: how long a cell runs inside its tool
+//! The kernel cell yield window: how long a cell runs inside its tool
 //! call before it continues in the background.
 //!
 //! Precedence, decided when each cell starts and fixed for that cell:

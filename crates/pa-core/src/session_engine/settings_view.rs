@@ -28,7 +28,7 @@ pub const SETTINGS_HOST_REQUEST_TYPE: &str = "settings.host";
 /// The creation-time values the session armed (see the module docs).
 #[derive(Clone)]
 pub(crate) struct ArmedSettings {
-    /// The `python_repl` cell yield window policy; `cellTimeoutMs` reports the
+    /// The kernel cell yield window policy; `cellTimeoutMs` reports the
     /// window it arms now (`None`: cells run to their end in the call).
     pub(crate) cell_window: crate::kernel::cell_window::CellWindow,
     pub(crate) compaction_enabled: bool,

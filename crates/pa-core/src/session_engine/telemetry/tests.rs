@@ -14,6 +14,8 @@ use super::*;
 use crate::session_engine::agent_messaging::AgentMessageRefusals;
 use crate::session_engine::decision::DecideFact;
 
+mod capability_events;
+
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
 /// The env is process-wide, so these tests (and the packages env tests)
@@ -35,7 +37,7 @@ impl Default for CleanTelemetryEnv {
         let saved = TELEMETRY_ENV_VARS
             .iter()
             .map(|var| {
-                let value = std::env::var(var).ok();
+                let value = pa_types::session_scope::var(var).ok();
                 std::env::remove_var(var);
                 (*var, value)
             })
@@ -1928,6 +1930,11 @@ async fn fs_edits_ride_their_own_event() {
         EditFact::Failed {
             operation: FsEditOperation::Edit,
         },
+        EditFact::Written { created: true },
+        EditFact::Written { created: false },
+        EditFact::Failed {
+            operation: FsEditOperation::Write,
+        },
     ] {
         counters.note_fs_edit(fact);
     }
@@ -1953,6 +1960,9 @@ async fn fs_edits_ride_their_own_event() {
             "fs_edit_rejected_count": 1,
             "fs_edit_stale_anchor_count": 2,
             "fs_edit_failed_count": 1,
+            "fs_write_count": 2,
+            "fs_write_created_count": 1,
+            "fs_write_failed_count": 1,
         })
     );
 }
@@ -2832,6 +2842,103 @@ async fn symbol_index_ride_their_own_event() {
             "symbol_query_partial_count": 1,
             "symbol_definition_count": 3,
             "symbol_reference_count": 4,
+        })
+    );
+}
+
+/// Neighbour prefetches ride their own `agent prefetch` event at session end (counts only: never a path).
+#[tokio::test]
+async fn prefetch_ride_their_own_event() {
+    use crate::prefetch::PrefetchFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    for fact in [
+        PrefetchFact {
+            issued: 3,
+            used: 0,
+            unused: 0,
+            skipped: false,
+        },
+        PrefetchFact {
+            issued: 0,
+            used: 1,
+            unused: 2,
+            skipped: true,
+        },
+    ] {
+        counters.note_prefetch(fact);
+    }
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent prefetch"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent prefetch").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("prefetch_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "prefetch_read_count": 2,
+            "prefetch_issued_count": 3,
+            "prefetch_used_count": 1,
+            "prefetch_unused_count": 2,
+            "prefetch_skipped_count": 1,
+        })
+    );
+}
+
+/// Previews ride their own `agent previews` event at session end, with the `ctx-*` reads that followed one (counts only: never a line or a pattern).
+#[tokio::test]
+async fn previews_ride_their_own_event() {
+    use crate::kernel::spill::PreviewFact;
+    let fixture = fixture();
+    let counters = Arc::new(SessionCounters::default());
+    let mut telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    telemetry.counters = Arc::clone(&counters);
+    counters.note_preview_followup();
+    counters.note_preview(PreviewFact {
+        kept_lines: 10,
+        dropped_lines: 1,
+        repeats_collapsed: 1,
+        noise_lines: 11,
+        patterns_learned: 2,
+    });
+    counters.note_preview_followup();
+    telemetry.end().await.unwrap();
+    assert_eq!(
+        fixture.mock.event_names(),
+        ["agent session ended", "agent previews"]
+    );
+    let properties: serde_json::Map<String, serde_json::Value> =
+        event_properties(&fixture.mock, "agent previews").await[0]
+            .iter()
+            .filter(|(key, _)| key.starts_with("preview_"))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+    assert_eq!(
+        serde_json::Value::Object(properties),
+        serde_json::json!({
+            "preview_count": 1,
+            "preview_kept_line_count": 10,
+            "preview_dropped_line_count": 1,
+            "preview_repeat_collapsed_count": 1,
+            "preview_noise_line_count": 11,
+            "preview_noise_pattern_learned_count": 2,
+            "preview_followup_read_count": 1,
         })
     );
 }

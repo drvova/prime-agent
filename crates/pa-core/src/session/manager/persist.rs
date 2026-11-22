@@ -156,6 +156,7 @@ impl SessionManager {
 /// non-synced rename can zero the file on a hard crash); other sites are
 /// TS-default.
 pub(super) fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    pa_types::session_scope::ensure_live()?;
     let temp = PathBuf::from(format!("{}.tmp{}", path.display(), std::process::id()));
     {
         let mut options = std::fs::OpenOptions::new();

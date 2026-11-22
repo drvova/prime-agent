@@ -20,8 +20,8 @@ use super::layout::RowOutput;
 use super::{highlight, ToolCallCard};
 use crate::chat::Detail;
 use crate::code_preview::{
-    parse_ipython_bash_cell, preview_bash_command, preview_ipython_code, python_statement_lines,
-    CodePreviewLanguage,
+    parse_ipython_bash_cell, preview_bash_command, preview_ipython_code, preview_scheme_code,
+    python_statement_lines, CodePreviewLanguage,
 };
 use crate::custom_message::AgentMessageDirection;
 use crate::error_summary::{normalize_error_details, summarize_error_details};
@@ -200,7 +200,14 @@ fn layout(
     // expanded. The sent messages are agent messages of their own, so their
     // bodies follow the conversation level, not a click on the card.
     let expanded = detail.tool_output_expanded();
-    let has_code = expanded && render_code(lines, code, theme, width);
+    let has_code = expanded
+        && render_code(
+            lines,
+            code,
+            pa_types::ai::kernel_tool_language(&card.name),
+            theme,
+            width,
+        );
     render_diffs(
         lines,
         &details.diffs,
@@ -240,16 +247,24 @@ fn collapsed_line(
     let accent = theme.fg_style(ThemeColor::Accent);
 
     let dominant = dominant_bash(details, code);
-    let preview = preview_ipython_code(code);
-    let is_bash_cell = parse_ipython_bash_cell(code).is_some();
+    // A cell's own label and preview follow its kernel's language; a saved
+    // session's Python cells keep theirs.
+    let (own_label, preview_text) = match pa_types::ai::kernel_tool_language(&card.name) {
+        Some(pa_types::ai::KernelLanguage::Scheme) => ("scheme", preview_scheme_code(code)),
+        Some(pa_types::ai::KernelLanguage::Python) | None => {
+            let preview = preview_ipython_code(code);
+            let label = match (parse_ipython_bash_cell(code).is_some(), &preview.language) {
+                (true, CodePreviewLanguage::Python) => "bash \u{00b7} python",
+                (true | false, CodePreviewLanguage::Bash) => "bash",
+                (false, CodePreviewLanguage::Python) => "python",
+            };
+            (label, preview.text)
+        }
+    };
     let language_label = if dominant.is_some() {
         "bash".to_string()
     } else {
-        match (is_bash_cell, &preview.language) {
-            (true, CodePreviewLanguage::Python) => "bash \u{00b7} python".to_string(),
-            (true | false, CodePreviewLanguage::Bash) => "bash".to_string(),
-            (false, CodePreviewLanguage::Python) => "python".to_string(),
-        }
+        own_label.to_string()
     };
 
     // The language label is the card's title: it carries the state by colour (accent while
@@ -284,9 +299,9 @@ fn collapsed_line(
         if bash.count > 1 {
             parts.push(vec![Span::styled(format!("+{} more", bash.count - 1), dim)]);
         }
-    } else if !preview.text.is_empty() {
+    } else if !preview_text.is_empty() {
         preview_index = Some(parts.len());
-        parts.push(vec![Span::styled(preview.text, dim)]);
+        parts.push(vec![Span::styled(preview_text, dim)]);
     } else if !card.started {
         parts.push(vec![Span::styled("waiting for code".to_string(), dim)]);
     }
@@ -492,8 +507,15 @@ fn is_magic_line(statement: &str) -> bool {
 
 /// The expanded source rows (TS `renderCode`): the first line guttered
 /// `\u{2570}\u{2500}`, continuation lines indented; bash cells and magic
-/// lines render in bashMode, python lines syntax highlighted.
-fn render_code(lines: &mut RowOutput, code: &str, theme: &Theme, width: usize) -> bool {
+/// lines render in bashMode, python lines syntax highlighted. A Scheme
+/// cell's lines render plain: it has no magic lines and no highlighter.
+fn render_code(
+    lines: &mut RowOutput,
+    code: &str,
+    language: Option<pa_types::ai::KernelLanguage>,
+    theme: &Theme,
+    width: usize,
+) -> bool {
     if code.is_empty() {
         add_wrapped(
             lines,
@@ -509,14 +531,19 @@ fn render_code(lines: &mut RowOutput, code: &str, theme: &Theme, width: usize) -
         );
         return false;
     }
-    let is_bash_cell = parse_ipython_bash_cell(code).is_some();
+    let scheme = language == Some(pa_types::ai::KernelLanguage::Scheme);
+    let is_bash_cell = !scheme && parse_ipython_bash_cell(code).is_some();
     let raw_lines: Vec<&str> = code.split('\n').collect();
-    let highlighted = if is_bash_cell {
+    let highlighted = if is_bash_cell || scheme {
         Vec::new()
     } else {
         highlight::highlight_python(code, &highlight::SyntaxPalette::from_theme(theme))
     };
-    let statements = python_statement_lines(code);
+    let statements = if scheme {
+        Vec::new()
+    } else {
+        python_statement_lines(code)
+    };
     for (index, raw_line) in raw_lines.iter().enumerate() {
         let prefix: Line = if index == 0 {
             vec![Span::styled(

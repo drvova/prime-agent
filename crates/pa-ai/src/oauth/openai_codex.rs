@@ -615,7 +615,7 @@ mod tests {
     /// sets `SO_REUSEPORT`), so the flow's callback server is dead. `None`: the port cannot be
     /// staged this run.
     fn stage_busy_registered_port() -> Option<std::net::TcpListener> {
-        let host = std::env::var(crate::oauth::callback::CALLBACK_HOST_ENV)
+        let host = pa_types::session_scope::var(crate::oauth::callback::CALLBACK_HOST_ENV)
             .unwrap_or_else(|_| "127.0.0.1".to_string());
         std::net::TcpListener::bind((host, 1455)).ok()
     }

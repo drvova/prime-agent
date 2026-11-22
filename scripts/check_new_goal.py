@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 
-from lifecycle_lib import Terminal, digest, env_for, use_skill_python, stop, LIMIT
+from lifecycle_lib import Terminal, digest, env_for, stop, LIMIT
 
 PROMPT = 'NEW_GOAL_PARITY_INITIAL_PROMPT'
 SETTLED = 'Parity fixture settled'
@@ -57,11 +57,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             assert len(self.server.requests) <= 6, 'unexpected continuation loop'
             if self.server.goal and len(self.server.requests) == 1:
                 offered = {t.get('function', {}).get('name') for t in body.get('tools', [])}
-                name = next((n for n in ('python_repl', 'ipython') if n in offered), None)
-                assert name, 'No supported REPL offered'
+                name = 'eval' if 'eval' in offered else None
+                assert name, 'No kernel tool offered'
                 delta = {'tool_calls': [{'index': 0, 'id': 'complete_goal', 'type': 'function',
                          'function': {'name': name, 'arguments': json.dumps({'code':
-                                      'import goal\nawait goal.complete()'})}}]}
+                                      '(goal-complete)'})}}]}
                 finish = 'tool_calls'
             else:
                 delta, finish = {'content': SETTLED}, 'stop'
@@ -87,7 +87,6 @@ def setup(root, provider):
     root.mkdir(parents=True)
     env = env_for(root)
     env['PA_COMPACTION_TRACE'] = 'stderr'
-    use_skill_python(root, env)
     env['PI_SESSION_DIR'] = env['PRIME_AGENT_SESSION_DIR'] = str(root / 'agent/sessions')
     (root / 'agent/models.json').write_text(json.dumps({'providers': {'parity-local': {
         'api': 'openai-completions', 'apiKey': 'fixture-only',
@@ -286,7 +285,7 @@ def main():
               'scope': {'new': 'Real PTY command, owned real daemon, persisted name and model initial prompt.',
                         'goal': 'Actual RPC image-bearing goal_context row and completed goal.',
                         'provider_images': 'Recorded only; existing model-routing limitation is not normalized into context-row evidence.',
-                        'goal_updates': 'Recorded only: RPC publishes before continuation, not on goal.complete; final completion is verified by get_state after agent_end.'}}
+                        'goal_updates': 'Recorded only: RPC publishes before continuation, not on (goal-complete); final completion is verified by get_state after agent_end.'}}
     try:
         assert sys.platform == 'linux', 'requires Linux hosted CI'
         binary = Path(os.environ['PA_RUST_BINARY']).resolve()

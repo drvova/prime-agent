@@ -26,17 +26,14 @@ class PrimeAgent < Formula
   end
 
   depends_on "rust" => :build
-  # The binary bootstraps its kernel venv through uv whenever one must be
-  # created or refreshed, so it is a hard runtime dependency.
-  depends_on "uv"
 
   def install
     system "cargo", "build", "--release", "--locked"
     # The shipped payload set (assemble_artifacts.py STAGED_ENTRIES): the
-    # binary plus the kernel runtime, skills, and the bundled catalog
-    # assets it resolves beside its executable.
+    # binary plus the skills and the bundled catalog assets it resolves
+    # beside its executable.
     libexec.install "target/release/prime-agent"
-    libexec.install "prime-agent-runtime", "skills"
+    libexec.install "skills"
     libexec.install "models.bundled.json", "mcp-services.bundled.json"
     libexec.install "LICENSE", "README.md"
     bin.install_symlink libexec/"prime-agent"

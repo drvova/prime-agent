@@ -308,11 +308,11 @@ impl SymbolIndex {
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new()
             .name("symbol-index".to_string())
-            .spawn(move || {
+            .spawn(pa_types::session_scope::propagate(move || {
                 inner.run_refresh();
                 inner.refreshing.store(false, Ordering::Release);
                 inner.refreshed.notify_waiters();
-            });
+            }));
         if spawned.is_err() {
             self.inner.refreshing.store(false, Ordering::Release);
         }
@@ -329,6 +329,15 @@ impl SymbolIndex {
             }
             notified.await;
         }
+    }
+
+    /// The definitions indexed for `relative` (the project-relative path, `/`-separated).
+    pub(crate) fn definitions_in(&self, relative: &str) -> Vec<Definition> {
+        lock(&self.inner.state)
+            .files
+            .get(relative)
+            .map(|entry| entry.definitions.clone())
+            .unwrap_or_default()
     }
 
     /// The first full pass has finished.

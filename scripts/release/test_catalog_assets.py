@@ -161,18 +161,7 @@ class SyntheticRepo:
         (root / "LICENSE").write_text("license\n")
         (root / "deny.toml").write_text('[licenses]\nallow = ["MIT"]\n')
         (root / "README.md").write_text("readme\n")
-        runtime = root / "runtime"
-        runtime.mkdir()
-        (runtime / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (runtime / "src" / "rlm").mkdir(parents=True)
-        (runtime / "src" / "rlm" / "repl.py").write_text("# fixture REPL\n")
-        # The exe-adjacent kernel runtime tree package_release.py stages.
-        kernel = root / "prime-agent-runtime"
-        (kernel / "src" / "rlm").mkdir(parents=True)
-        (kernel / "pyproject.toml").write_text("[project]\nname='rlm'\n")
-        (kernel / "src" / "rlm" / "repl.py").write_text("# repl\n")
         printed = version if sha is None else f"{version}-continuous.{sha}"
-        (runtime / "src" / "repl.py").write_text("# repl\n")
         source = root / "prime-agent.c"
         source.write_text(f'#include <stdio.h>\nint main(void) {{ puts("{printed}"); return 0; }}\n')
         self.raw_binary = root / "bin" / "cargo-prime-agent"
@@ -192,7 +181,6 @@ class SyntheticRepo:
             "--repo-root", str(self.root), "--version", self.version,
             "--target", target, "--binary", str(self.binary),
             "--decoder", str(self.decoder),
-            "--runtime-dir", str(self.root / "runtime"),
             "--out-dir", str(out_dir),
         ]
         if sha:
@@ -789,7 +777,7 @@ class PackerGates(unittest.TestCase):
         self.assertTrue((staged / "mcp-services.bundled.json").is_file())
 
     def test_kernel_packer_rejects_decoder_leak(self):
-        leaked = self.repo.root / "prime-agent-runtime" / "leak.debug.gz"
+        leaked = self.repo.root / "skills" / "leak.debug.gz"
         leaked.write_bytes(b"decoder-like payload")
         out = self.tmp / "release-package-leak"
         result = run_cli(PACKER, ["--root", str(self.repo.root), "--version", "9.9.9",
@@ -810,7 +798,7 @@ class PackerGates(unittest.TestCase):
 
     def test_linux_assembler_requires_split_binary_and_decoder(self):
         base = ["--repo-root", str(self.repo.root), "--version", "9.9.9",
-                "--target", HOST_TARGET, "--runtime-dir", str(self.repo.root / "runtime"),
+                "--target", HOST_TARGET,
                 "--catalog-assets", str(self.assets), "--out-dir", str(self.tmp / "invalid")]
         wrong_dir = self.tmp / "wrong-decoder"
         wrong_dir.mkdir()

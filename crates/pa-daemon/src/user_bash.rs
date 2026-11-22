@@ -126,8 +126,8 @@ impl UserBash {
 }
 
 impl Worker {
-    /// Rust-native kernel bash activity commands. These inspect the Python
-    /// handle registry, not the user-bash slot or a client-supplied PID.
+    /// Rust-native kernel bash activity commands. These inspect the kernel's
+    /// own shell commands, not the user-bash slot or a client-supplied PID.
     pub(crate) async fn handle_kernel_bash_activity(
         &self,
         command_type: &str,
@@ -583,7 +583,7 @@ async fn run_bash(run: RunBash<'_>) -> BashEnd {
         Ok(shell) => shell,
         Err(error) => return spawn_failure(error.to_string()),
     };
-    let mut command = tokio::process::Command::new(&shell.shell);
+    let mut command = pa_types::session_scope::tokio_command(&shell.shell);
     command
         .args(&shell.args)
         .arg(&resolved)
@@ -1292,7 +1292,7 @@ mod tests {
             events: &mut tokio::sync::broadcast::Receiver<Arc<crate::worker::OutboundFrame>>,
         ) -> Self {
             let fifo = cwd.join("child-alive");
-            let made = std::process::Command::new("mkfifo")
+            let made = pa_types::session_scope::std_command("mkfifo")
                 .arg(&fifo)
                 .status()
                 .expect("run mkfifo");

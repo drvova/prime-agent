@@ -1,0 +1,9 @@
+[[telemetry]]
+event = "agent repl schedule"
+properties = [
+  "schedule_once_added_count",
+  "schedule_recurring_added_count",
+  "schedule_list_count",
+  "schedule_cancelled_count",
+  "schedule_rejected_count",
+]

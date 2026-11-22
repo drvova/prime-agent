@@ -22,6 +22,17 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names
 )]
+/// Session code logs with `eprintln!`, as it did when each session was a process with its own
+/// stderr. Sessions now share the daemon's, so in this crate the macro routes each line to
+/// the calling session's own log, tagged with the session (`worker_stderr::line`); a line
+/// logged outside any session still goes to the daemon's stderr. Declared before the modules
+/// so it is in scope in all of them.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        $crate::worker_stderr::line(format_args!($($arg)*))
+    };
+}
+
 pub mod acp;
 pub mod agent_engine;
 pub mod agent_message_broadcast;
@@ -59,6 +70,7 @@ mod idle_eviction;
 pub(crate) mod image_route;
 pub mod input_pause_lease;
 pub mod journal;
+pub mod keeper;
 pub mod lease;
 pub mod mcp_connections;
 pub mod mcp_login;
@@ -81,6 +93,7 @@ pub(crate) mod queue_commands;
 pub mod registration;
 pub(crate) mod registry;
 mod revival_gate;
+pub(crate) mod revived_turn;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
 pub mod rlm_children;
@@ -97,6 +110,7 @@ pub(crate) mod session_catalog;
 pub(crate) mod session_commands;
 pub(crate) mod session_custom;
 pub mod session_export;
+pub mod session_host;
 pub mod session_input_pause;
 pub mod session_navigation;
 pub(crate) mod session_scan;

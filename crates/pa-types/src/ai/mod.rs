@@ -264,11 +264,50 @@ pub struct ImageContent {
     pub rest: JsonMap,
 }
 
+/// The Python kernel's tool, as saved transcripts name it. No session
+/// registers it any more; it is kept so those transcripts still read.
 pub const PYTHON_TOOL_NAME: &str = "python_repl";
 
+/// The in-process Scheme kernel's tool: the model evaluates Scheme in the session's engine.
+pub const SCHEME_TOOL_NAME: &str = "eval";
+
+/// The tool a session registers for its kernel: what the model calls to run a cell.
+pub const KERNEL_TOOL_NAME: &str = SCHEME_TOOL_NAME;
+
+/// The language of a kernel cell's `code` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelLanguage {
+    /// A cell of the session's Scheme kernel (`eval`).
+    Scheme,
+    /// A cell of the retired Python kernel (`python_repl` and its older
+    /// names), found only in transcripts saved before the switch.
+    Python,
+}
+
+/// The language of the kernel cell a tool call named `name` carries, or
+/// `None` when `name` is not a kernel tool: the current tool, and the names
+/// saved transcripts use for the Python kernel's.
+#[must_use]
+pub fn kernel_tool_language(name: &str) -> Option<KernelLanguage> {
+    match name {
+        SCHEME_TOOL_NAME => Some(KernelLanguage::Scheme),
+        PYTHON_TOOL_NAME | "python" | "ipython" => Some(KernelLanguage::Python),
+        _ => None,
+    }
+}
+
+/// Whether `name` is one of the names saved transcripts use for the Python
+/// kernel's tool: its cells are Python, which no session runs any more.
 #[must_use]
 pub fn is_python_tool_name(name: &str) -> bool {
-    matches!(name, PYTHON_TOOL_NAME | "python" | "ipython")
+    kernel_tool_language(name) == Some(KernelLanguage::Python)
+}
+
+/// Whether a tool call named `name` is a kernel cell, in either language:
+/// its arguments carry `code` and its result details are a cell's.
+#[must_use]
+pub fn is_kernel_tool_name(name: &str) -> bool {
+    kernel_tool_language(name).is_some()
 }
 
 /// Tool call content block (`type: "toolCall"`).

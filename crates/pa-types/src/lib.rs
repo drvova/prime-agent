@@ -22,6 +22,7 @@ pub mod platform;
 pub mod provider_usage;
 pub mod question;
 pub mod session;
+pub mod session_scope;
 pub mod skill_blocks;
 pub mod slash_commands;
 pub mod themes;

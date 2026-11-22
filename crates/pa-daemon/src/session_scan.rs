@@ -384,9 +384,9 @@ mod tests {
     // --nocapture`.
     #[ignore = "wall-clock probe, not a correctness test: prints timings of a real sessions dir (PA_ROSTER_BENCH_DIR)"]
     fn roster_scan_wall_clock() {
-        let dir = match std::env::var_os("PA_ROSTER_BENCH_DIR") {
+        let dir = match pa_types::session_scope::var_os("PA_ROSTER_BENCH_DIR") {
             Some(dir) => PathBuf::from(dir),
-            None => Path::new(&std::env::var_os("HOME").unwrap_or_default())
+            None => Path::new(&pa_types::session_scope::var_os("HOME").unwrap_or_default())
                 .join(".prime/agent/sessions"),
         };
         let warm = list_sessions(&dir);

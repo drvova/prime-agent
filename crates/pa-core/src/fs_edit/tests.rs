@@ -591,6 +591,7 @@ async fn the_host_requests_round_trip_and_report_facts() {
     FsEditHost {
         observer: Some(Arc::new(move |fact| recorded.lock().unwrap().push(fact))),
         seen: None,
+        prefetch: None,
     }
     .register(&mut handlers);
     let root = dir.path().to_string_lossy().to_string();

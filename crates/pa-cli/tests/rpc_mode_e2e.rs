@@ -38,47 +38,12 @@ struct RpcChild {
 
 impl RpcChild {
     fn spawn(args: &[&str], script: &Value) -> RpcChild {
-        Self::spawn_seeded(args, script, None, None)
-    }
-
-    /// Spawn with a live kernel Python: the background-bash lane needs a
-    /// real kernel behind the `ipython` tool.
-    fn spawn_kernel(args: &[&str], script: &Value) -> RpcChild {
-        Self::spawn_seeded(args, script, None, Some(Self::kernel_python()))
-    }
-
-    /// The kernel Python with prime-agent-runtime installed; a missing
-    /// kernel FAILS the lane loudly (the wake lane's proof).
-    fn kernel_python() -> std::path::PathBuf {
-        if let Some(explicit) = std::env::var_os("PA_E2E_KERNEL_PYTHON") {
-            let explicit = std::path::PathBuf::from(explicit);
-            assert!(
-                explicit.exists(),
-                "PA_E2E_KERNEL_PYTHON {} not found",
-                explicit.display()
-            );
-            return explicit;
-        }
-        let candidate = std::path::PathBuf::from(std::env::var("HOME").map_or_else(
-            |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-            |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-        ));
-        assert!(
-            candidate.exists(),
-            "kernel python {} not found: set PA_E2E_KERNEL_PYTHON",
-            candidate.display()
-        );
-        candidate
+        Self::spawn_seeded(args, script, None)
     }
 
     /// Spawn with a seeded `models.json`: the faux provider needs its
     /// provider entry + key to pass the registry's configured-auth gate.
-    fn spawn_seeded(
-        args: &[&str],
-        script: &Value,
-        models: Option<Value>,
-        kernel_python: Option<std::path::PathBuf>,
-    ) -> RpcChild {
+    fn spawn_seeded(args: &[&str], script: &Value, models: Option<Value>) -> RpcChild {
         let home = tempfile::TempDir::new().unwrap();
         if let Some(models) = models {
             let agent_dir = home.path().join("agent");
@@ -94,9 +59,6 @@ impl RpcChild {
             .env("PRIME_AGENT_FAUX_SCRIPT", script.to_string())
             .env_remove("RLM_DEPTH")
             .env_remove("RLM_MAX_DEPTH");
-        if let Some(kernel) = kernel_python {
-            command.env("PRIME_AGENT_KERNEL_PYTHON", kernel);
-        }
         let mut child = command
             .current_dir(home.path())
             .stdin(Stdio::piped())
@@ -680,7 +642,6 @@ fn rpc_get_available_models_lists_the_catalog() {
                 }
             }
         })),
-        None,
     );
     let response = client.request(&json!({ "type": "get_available_models" }));
     assert_eq!(response["success"], true, "the response: {response}");
@@ -912,7 +873,7 @@ fn rpc_failed_replacement_restarts_the_queue_pump() {
     }
 }
 
-/// An idle RPC session wakes on a background `bash()` completion
+/// An idle RPC session wakes on a background `bash` completion
 /// (audit #3; TS registers `bash.completed` in every mode): turn 1
 /// starts a detached command and settles, and the completion row runs
 /// as a second turn with no further client command driving it. The
@@ -920,18 +881,18 @@ fn rpc_failed_replacement_restarts_the_queue_pump() {
 /// the live engine's wake).
 #[test]
 fn rpc_idle_session_runs_a_turn_on_a_background_bash_completion() {
-    let mut client = RpcChild::spawn_kernel(
+    let mut client = RpcChild::spawn(
         &["--mode", "rpc", "--no-session"],
         &json!({
             "responses": [
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "h = bash(\"sleep 3; echo RPC_BG\")\nprint(\"STARTED\")" } },
+                    { "type": "toolCall", "name": "eval",
+                      "arguments": { "code": "(define job (bash \"sleep 3; echo RPC_BG\" (hash 'background #t)))\n(displayln \"STARTED\")" } },
                 ] },
                 "WAITING",
                 { "content": [
-                    { "type": "toolCall", "name": "ipython",
-                      "arguments": { "code": "print(\"WOKEN\", \"RPC_BG\" in h.output())" } },
+                    { "type": "toolCall", "name": "eval",
+                      "arguments": { "code": "(displayln \"WOKEN\" (bash-output job))" } },
                 ] },
                 "RPC WOKEN",
             ],
@@ -1348,11 +1309,18 @@ fn rpc_compact_flushes_the_start_frame_before_the_pipeline() {
     );
     let cs_ms = start_at.duration_since(sent).as_secs_f64() * 1000.0;
     let start_to_end_ms = end_at.duration_since(start_at).as_secs_f64() * 1000.0;
-    // The flush budget: a pipe write lands in microseconds; the span is tens of milliseconds here.
+    // The flush bound, measured against this run's own compaction rather than
+    // a wall-clock budget: a loaded machine stretches the command's turnaround
+    // and the span alike. A flushed frame arrives at the very start of the run
+    // (0.3-4 ms of ~500 ms here, under 1%); a stranded one leaves only at the
+    // first yield after the pre-summarizer span (78-88 ms of ~500 ms, 15-19%).
+    let start_share = cs_ms / (cs_ms + start_to_end_ms);
     assert!(
-        cs_ms < 20.0,
-        "compaction_start arrived {cs_ms:.1}ms after the command: \
-         the queued frame stranded behind the pre-summarizer span"
+        start_share < 0.05,
+        "compaction_start arrived {cs_ms:.1}ms after the command, {:.1}% into a {:.0}ms \
+         compaction: the queued frame stranded behind the pre-summarizer span",
+        start_share * 100.0,
+        cs_ms + start_to_end_ms
     );
     // Anti-vacuity: a session too small to strand a frame would make the assert above vacuous.
     assert!(

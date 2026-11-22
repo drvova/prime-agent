@@ -46,6 +46,7 @@ pub enum ToolCategory {
     Find,
     Ls,
     Ipython,
+    Scheme,
     Mcp,
     Custom,
     Unknown,
@@ -66,6 +67,7 @@ impl ToolCategory {
             "find" => Self::Find,
             "ls" => Self::Ls,
             "python" | "ipython" => Self::Ipython,
+            "eval" => Self::Scheme,
             "mcp" => Self::Mcp,
             "" => Self::Unknown,
             _ => Self::Custom,
@@ -84,6 +86,7 @@ impl ToolCategory {
             Self::Find => "find",
             Self::Ls => "ls",
             Self::Ipython => "ipython",
+            Self::Scheme => "scheme",
             Self::Mcp => "mcp",
             Self::Custom => "custom",
             Self::Unknown => "unknown",
@@ -242,6 +245,7 @@ mod tests {
             ToolCategory::from_tool_name("python_repl"),
             ToolCategory::Ipython
         );
+        assert_eq!(ToolCategory::from_tool_name("eval"), ToolCategory::Scheme);
         assert_eq!(
             ToolCategory::from_tool_name("mcp__github__create_issue"),
             ToolCategory::Mcp
@@ -267,6 +271,7 @@ mod tests {
             ToolCategory::Find,
             ToolCategory::Ls,
             ToolCategory::Ipython,
+            ToolCategory::Scheme,
             ToolCategory::Mcp,
             ToolCategory::Custom,
             ToolCategory::Unknown,

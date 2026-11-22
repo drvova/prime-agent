@@ -1,6 +1,7 @@
-//! RLM child admission vs worker replacement: concurrent spawns stay
-//! admitted, a child replaced between admission and its task prompt still
-//! receives the prompt exactly once, and no admitted child is torn down.
+//! RLM child admission vs session replacement: concurrent spawns stay
+//! admitted, a child whose session crashes and is rebuilt between admission
+//! and its task prompt still receives the prompt exactly once, and no
+//! admitted child is torn down.
 // Stack-resident futures by design on the daemon's hot paths.
 #![allow(clippy::large_futures)]
 // Narrowing casts sit at OS boundaries (pid/fd/time/size) where the kernel
@@ -194,11 +195,23 @@ fn wait_until<T>(budget: Duration, context: &str, mut probe: impl FnMut() -> Opt
     }
 }
 
+/// The prompt every child's script panics on (the scripted engine's
+/// `panicOn` seam): the session's turn code crashes with no teardown.
+const CRASHING_PROMPT: &str = "crash now";
+
 fn write_script(dir: &Path, answer: &str) -> PathBuf {
     let script = dir.join("script.json");
     std::fs::write(
         &script,
-        json!({ "responses": [ { "text": answer, "delayMs": 30 } ] }).to_string(),
+        // A rebuilt kid may count its crashing prompt: the answer is the same at either index.
+        json!({
+            "responses": [
+                { "text": answer, "delayMs": 30 },
+                { "text": answer, "delayMs": 30 },
+            ],
+            "panicOn": { "message": CRASHING_PROMPT, "panic": "replaced mid-admission" },
+        })
+        .to_string(),
     )
     .expect("write script");
     script
@@ -261,23 +274,11 @@ fn child_session_file(agent_dir: &Path, child_id: &str) -> PathBuf {
     )
 }
 
-fn worker_pid(agent_dir: &Path, socket: &Path, worker_id: &str) -> u32 {
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(agent_dir, socket);
-    let path = descriptor_dir.join(format!("{worker_id}.json"));
-    let content = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("read worker descriptor {}: {error}", path.display()));
-    let descriptor: Value = serde_json::from_str(&content).expect("parse worker descriptor");
-    descriptor["pid"]
-        .as_u64()
-        .filter(|pid| *pid != 0)
-        .expect("worker descriptor pid") as u32
-}
-
 // Multi-thread runtime: the detached task prompts (`tokio::spawn` inside
 // `SupervisorChildSessions`) must progress while the test thread blocks in
 // its synchronous JSONL/file polls.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn concurrent_spawns_prompt_exactly_once_across_a_worker_replacement() {
+async fn concurrent_spawns_prompt_exactly_once_across_a_session_replacement() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -333,8 +334,9 @@ async fn concurrent_spawns_prompt_exactly_once_across_a_worker_replacement() {
         );
     }
 
-    // The replacement: kill kid-a's worker between its admission and its
-    // task prompt (the detached prompt fires at the turn boundary, below).
+    // The replacement: kid-a's session crashes between its admission and its
+    // task prompt (the detached prompt fires at the turn boundary, below), and
+    // the daemon rebuilds it.
     let kid_a_worker_id = {
         let row = wait_until(Duration::from_mins(1), "kid-a roster row", || {
             roster_summaries(&mut client, "l1")
@@ -346,13 +348,20 @@ async fn concurrent_spawns_prompt_exactly_once_across_a_worker_replacement() {
             .expect("kid-a worker id")
             .to_string()
     };
-    let kid_a_pid = worker_pid(&agent_dir, &socket, &kid_a_worker_id);
-    let killed = Command::new("kill")
-        .arg("-9")
-        .arg(kid_a_pid.to_string())
-        .status()
-        .expect("kill kid-a worker");
-    assert!(killed.success(), "kill -9 {kid_a_pid}");
+    client.send_command(
+        "crash",
+        &json!({ "type": "prompt", "activeSessionId": kid_a_worker_id, "message": CRASHING_PROMPT }),
+    );
+    let crashing = client.read_response("crash");
+    assert_eq!(crashing["success"], true, "the crashing prompt: {crashing}");
+    wait_until(Duration::from_mins(1), "kid-a's crash on its row", || {
+        roster_summaries(&mut client, "l1c")
+            .into_iter()
+            .find(|summary| {
+                summary["activeSessionId"] == json!(kid_a_worker_id)
+                    && summary["lastCrash"]["kind"] == "panic"
+            })
+    });
 
     children.notify_turn_done();
 

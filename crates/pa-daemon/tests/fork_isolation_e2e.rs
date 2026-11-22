@@ -42,7 +42,7 @@ impl Drop for Daemon {
 #[allow(clippy::zombie_processes)]
 fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
-    let child = Command::new(binary)
+    let mut child = Command::new(binary)
         .arg("supervisor")
         .arg("--socket")
         .arg(socket)
@@ -59,17 +59,11 @@ fn spawn_daemon(socket: &std::path::Path, agent_dir: &std::path::Path) -> Daemon
         )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Daemon {
-                child,
-                socket: socket.to_path_buf(),
-            };
-        }
-        std::thread::sleep(Duration::from_millis(20));
+    common::await_listening(socket, &mut child);
+    Daemon {
+        child,
+        socket: socket.to_path_buf(),
     }
-    panic!("supervisor socket never appeared");
 }
 
 struct Client {
@@ -561,7 +555,8 @@ fn wait_socket_accepts(socket: &std::path::Path) {
 }
 
 /// FINDING 3's restart pin: a failed identity persist, then a restart — the boot serves
-/// the NEW identity (reconciles from live worker state before routing).
+/// the NEW identity (it repairs the stale record from the durable side record before it
+/// revives the session, which died mid-turn with its daemon).
 #[test]
 fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -575,6 +570,8 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
         &script_path,
         serde_json::json!({ "responses": [
             { "text": "original turn one", "delayMs": 10 },
+            // The turn in flight when the daemon dies.
+            { "text": "in-flight turn answer", "delayMs": 3000 },
             { "text": "restart turn answer", "delayMs": 10 },
         ] })
         .to_string(),
@@ -704,14 +701,36 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
     );
     assert_eq!(prober.read_response("k2")["success"], true, "kill failed");
 
-    // THE RESTART: the stale record back on disk (the boot's only word on the worker is
-    // the pre-fork identity), the supervisor killed, the worker left alive, a fresh
+    // The moved session is mid-turn when its daemon dies (the journal's busy record is the
+    // durable evidence), so the next boot owes it a revival.
+    client_a.send_command(
+        "p-busy",
+        &serde_json::json!({
+            "type": "prompt",
+            "activeSessionId": address,
+            "message": "in flight at the restart",
+        }),
+    );
+    let prompted = client_a.read_response("p-busy");
+    assert_eq!(
+        prompted["success"], true,
+        "the in-flight prompt: {prompted}"
+    );
+    let journal_path = descriptor_dir.join(format!("{address}.recovery.jsonl"));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !pa_daemon::journal::WorkerRecoveryJournal::read_interrupted(&journal_path) {
+        assert!(
+            Instant::now() < deadline,
+            "the in-flight turn never reached the journal"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    // THE RESTART: the stale record back on disk (the descriptor's word on the session is
+    // the pre-fork identity), the daemon killed and the session with it, a fresh
     // supervisor over the same agent dir.
     std::fs::remove_dir_all(&descriptor_path).expect("clear the record path");
     std::fs::write(&descriptor_path, &stale_record).expect("restore the stale record");
-    // The worker outlives the kill for supervisor B to adopt; the guard reaps
-    // it at teardown, which B's tree no longer reaches.
-    let _orphans = common::Orphans::of(&supervisor_a);
     supervisor_a.kill().expect("kill supervisor A");
     let _ = supervisor_a.wait();
 
@@ -721,12 +740,12 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
     };
     wait_socket_accepts(&socket);
 
-    // The boot adopts the live worker and reconciles from live state BEFORE the routing opens: the
+    // The boot repairs the record and revives the session BEFORE the routing opens: the
     // address serves the FORK.
     let mut client_b = Client::connect(&socket);
     let deadline = Instant::now() + Duration::from_secs(15);
     let restarted = loop {
-        assert!(Instant::now() < deadline, "the worker never re-registered");
+        assert!(Instant::now() < deadline, "the session was never revived");
         client_b.send_command(
             "s2",
             &serde_json::json!({ "type": "get_session_stats", "activeSessionId": address }),
@@ -798,6 +817,16 @@ fn a_restart_after_a_failed_identity_persist_serves_the_moved_session() {
         "the original's message never reaches the fork's file"
     );
 
+    // The revived session runs its interrupted turn again; the next prompt follows it.
+    client_b.send_command(
+        "idle",
+        &serde_json::json!({ "type": "wait_for_idle", "activeSessionId": address }),
+    );
+    let idle = client_b.read_response("idle");
+    assert_eq!(
+        idle["success"], true,
+        "the revived turn never settled: {idle}"
+    );
     client_b.scripted_turn("p4", &address, "message for the fork");
     let fork_texts = message_texts(&mut client_b, "m1", &address);
     assert!(
@@ -830,20 +859,10 @@ fn spawn_supervisor_raw(socket: &std::path::Path, agent_dir: &std::path::Path) -
         .arg(agent_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .env(
-            pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
-            "15000",
-        )
         .spawn()
         .expect("spawn pa-daemon supervisor");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return child;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    wait_socket_accepts(socket);
+    child
 }
 
 /// Kills the supervisor at scope exit (the restart test's supervisor B).

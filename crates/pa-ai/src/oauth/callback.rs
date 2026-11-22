@@ -66,7 +66,8 @@ impl CodexCallbackServer {
     /// Bind the registered redirect port; a bind failure leaves the
     /// dead server.
     pub async fn start(state: &str) -> Self {
-        let host = std::env::var(CALLBACK_HOST_ENV).unwrap_or_else(|_| "127.0.0.1".to_string());
+        let host = pa_types::session_scope::var(CALLBACK_HOST_ENV)
+            .unwrap_or_else(|_| "127.0.0.1".to_string());
         Self::bind(&host, CALLBACK_PORT, state)
             .await
             .unwrap_or_else(|_| CodexCallbackServer::dead())

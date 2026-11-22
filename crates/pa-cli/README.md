@@ -44,7 +44,7 @@ the child session/engine build, the kickoff row), the
 the quiescence drive that holds the run open until every admitted
 descendant settles and its replies and notices drain (the #2270 fix),
 the goal/autonomous deferral behind unsettled work, and the exit
-disposal (kernels snapshotted, drivers joined; no child outlives the
+disposal (kernels released, drivers joined; no child outlives the
 process).
 Session slash commands (`print_session_command.rs`, the #253 residue): print
 prompts that are `/compact`, `/refine`, `/goal`, `/autonomous`, or `/better` execute
@@ -75,15 +75,17 @@ pa-daemon supervisor over its JSONL Unix socket through the crate-private client
 (`daemon_client.rs`). The client never spawns a daemon - the TS CLI only auto-starts one for
 the internal `daemon start`/`open` commands, which are not reachable from the public surface.
 
-## Packaged layout / kernel packaging
+## Packaged layout
 
 The release artifact is exe-adjacent (TS install.sh native layout): the binary
 plus `package.json` (the version manifest `--version` reads at runtime, with
-the compiled-in version as the fallback), `prime-agent-runtime/` (the kernel
-sidecar), `skills/`, and `docs/`. `scripts/package_release.py` (`make package`)
-assembles, validates, version-pins, hashes, and tars it; the hidden
-`--prime-agent-bootstrap` flag is the installer handoff that pre-bootstraps the
-kernel venv. Verifier: `tests/packaged_layout_e2e.rs`.
+the compiled-in version as the fallback), `skills/`, and `docs/`. The kernel is
+built into the binary, so the layout carries no runtime of its own.
+`scripts/package_release.py` (`make package`) assembles, validates,
+version-pins, hashes, and tars it. The hidden `--prime-agent-bootstrap` flag,
+which installers released before the kernel was built in still run after
+extracting a release, succeeds without doing anything. Verifier:
+`tests/packaged_layout_e2e.rs`.
 
 ## Daemon discovery
 The discovery commands (`status`, `doctor [--fix]`, `shutdown [--force]`, TS
