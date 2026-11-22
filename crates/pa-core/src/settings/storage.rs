@@ -187,7 +187,9 @@ fn process_lock(path: &Path) -> MutexGuard<'static, ()> {
     static LOCKS: OnceLock<Mutex<HashMap<PathBuf, &'static Mutex<()>>>> = OnceLock::new();
     let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
     let lock = {
-        let mut registry = registry.lock().expect("settings process-lock registry");
+        let mut registry = registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *registry
             .entry(path.to_path_buf())
             .or_insert_with(|| Box::leak(Box::new(Mutex::new(()))))
@@ -448,7 +450,9 @@ impl SettingsStorage for InMemorySettingsStorage {
             SettingsScope::Global => &self.global,
             SettingsScope::Project => &self.project,
         };
-        let mut guard = slot.lock().unwrap();
+        let mut guard = slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(next) = update(guard.clone()) {
             *guard = Some(next);
         }

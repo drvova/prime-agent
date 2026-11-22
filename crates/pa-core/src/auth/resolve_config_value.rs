@@ -36,18 +36,37 @@ fn resolve_env_or_literal(config: &str) -> Option<String> {
 }
 
 fn execute_command(cache_key: &str, command: &str) -> Option<String> {
-    let mut cache = COMMAND_RESULT_CACHE.lock().unwrap();
-    let cache = cache.get_or_insert_with(HashMap::new);
-    if let Some(cached) = cache.get(cache_key) {
-        return Some(cached.clone());
+    // A command runs in its session's environment and directory, so its
+    // result is that session's: sessions hosted in one process never share one.
+    let cache_key = &match pa_types::session_scope::current() {
+        Some(scope) => format!("{}\u{0}{cache_key}", scope.id()),
+        None => cache_key.to_string(),
+    };
+    let cached = || {
+        COMMAND_RESULT_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .and_then(|cache| cache.get(cache_key).cloned())
+    };
+    if let Some(cached) = cached() {
+        return Some(cached);
     }
-    let value = run_command(command).ok().flatten();
+    // Run outside the lock: the cache is the whole process's, and a command
+    // that hangs must not hold up every other session's lookups. Two callers
+    // racing on one key both run it; the first result stays.
+    let value = run_command(command).ok().flatten()?;
     // A command that produced no value is not a resolution: a transient failure
     // must be retried instead of pinning the failure for the process lifetime (TS #2497).
-    if let Some(value) = &value {
-        cache.insert(cache_key.to_string(), value.clone());
-    }
-    value
+    Some(
+        COMMAND_RESULT_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_or_insert_with(HashMap::new)
+            .entry(cache_key.to_string())
+            .or_insert(value)
+            .clone(),
+    )
 }
 
 fn run_command(command: &str) -> Result<Option<String>> {
@@ -142,5 +161,59 @@ mod tests {
         let runs = std::fs::read_to_string(&counter).map_or(0, |text| text.lines().count());
         let _ = std::fs::remove_file(&counter);
         assert_eq!(runs, 3, "failed commands are re-run on each lookup");
+    }
+
+    /// The command cache belongs to the whole process. A command that hangs
+    /// holds up no other lookup (the cache's lock is not held while a
+    /// command runs), and a session hosted beside others gets the result of
+    /// the command run in its own environment, never another session's.
+    #[cfg(unix)]
+    #[test]
+    fn a_hanging_command_holds_up_no_other_lookup_and_results_stay_with_their_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate");
+        nix::unistd::mkfifo(&gate, nix::sys::stat::Mode::S_IRWXU).unwrap();
+        let hanging = format!("!cat {}", gate.display());
+        let blocked = std::thread::spawn(move || resolve_config_value(&hanging));
+        // The command is running once its `cat` holds the pipe's read end:
+        // only then does opening the write end without blocking succeed.
+        let mut release = loop {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(nix::libc::O_NONBLOCK)
+                .open(&gate)
+            {
+                Ok(pipe) => break pipe,
+                Err(_) => std::thread::yield_now(),
+            }
+        };
+        let in_session = |name: &'static str| {
+            let scope = pa_types::session_scope::SessionScope::new(
+                name.to_string(),
+                std::env::temp_dir(),
+                std::collections::BTreeMap::from([(
+                    "PA_COMMAND_CACHE_TEST".to_string(),
+                    format!("of-{name}"),
+                )]),
+                std::collections::BTreeSet::new(),
+            );
+            std::thread::spawn(move || {
+                let _scope = pa_types::session_scope::enter(Some(scope));
+                resolve_config_value("!echo $PA_COMMAND_CACHE_TEST")
+            })
+            .join()
+            .unwrap()
+        };
+        let while_blocked = (in_session("first"), in_session("second"));
+        std::io::Write::write_all(&mut release, b"released\n").unwrap();
+        drop(release);
+        assert_eq!(
+            (while_blocked, blocked.join().unwrap()),
+            (
+                (Some("of-first".to_string()), Some("of-second".to_string())),
+                Some("released".to_string())
+            )
+        );
     }
 }
