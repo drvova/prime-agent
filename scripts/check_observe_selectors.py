@@ -17,7 +17,7 @@ import threading
 import time
 
 from check_agent_bounce import Client
-from lifecycle_lib import digest, use_skill_python
+from lifecycle_lib import digest
 from lifecycle_lib import OwnedProcesses, TAG, finish, verify_worker
 from check_restore_notice import texts
 
@@ -271,7 +271,6 @@ def run_case(binary, root, observation):
         PI_CODING_AGENT_DIR=str(root / 'agent'), PRIME_AGENT_CODING_AGENT_DIR=str(root / 'agent'),
         PI_SESSION_DIR=str(root / 'sessions'), PRIME_AGENT_SESSION_DIR=str(root / 'sessions'),
         XDG_CONFIG_HOME=str(root / 'config'), XDG_CACHE_HOME=str(root / 'cache'), XDG_DATA_HOME=str(root / 'data'))
-    use_skill_python(root, env)
     env[TAG] = str(root)
     provider = Provider()
     thread = threading.Thread(target=provider.serve_forever, daemon=True)

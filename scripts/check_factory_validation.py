@@ -19,19 +19,22 @@ from lifecycle_lib import OwnedProcesses, TAG, finish
 from check_restore_notice import texts
 
 MARKER = 'FACTORY_VALIDATION_RESULT='
-CELL = '''import json
-fixture_harness = rlm.get_harness_state()
-fixture_results = []
-for label, retries in [('positive', 1), ('zero', 0), ('malformed', 'bad')]:
-    try:
-        value = fixture_harness.create_factory('Validation fixture', 'Production harness write',
-            id='fixture-' + label, dag={'nodes': [{'id': 'watcher', 'lifecycle': 'resident',
-                'subagent': {'prompt': 'Watch fixture'}, 'retries': retries}]})
-        fixture_results.append({'case': label, 'stored': fixture_harness.get('factory', 'fixture-' + label) is not None})
-    except ValueError as error:
-        fixture_results.append({'case': label, 'error': str(error),
-            'stored': fixture_harness.get('factory', 'fixture-' + label) is not None})
-print('FACTORY_VALIDATION_RESULT=' + json.dumps(fixture_results))'''
+CELL = '''(define (fixture-stored id)
+  (let ([kind (hash-try-get (hash-ref (harness-state) 'entries) 'factory)])
+    (and kind (hash-contains? kind (string->symbol id)) #t)))
+(define fixture-results
+  (map (lambda (fixture)
+         (let* ([label (car fixture)] [id (string-append "fixture-" label)])
+           (with-handler
+             (lambda (e) (hash 'case label 'error (to-string e) 'stored (fixture-stored id)))
+             (begin
+               (harness-create-factory "Validation fixture" "Production harness write" #:id id
+                 #:dag (hash 'nodes (list (hash 'id "watcher" 'lifecycle "resident"
+                                                'subagent (hash 'prompt "Watch fixture")
+                                                'retries (cadr fixture)))))
+               (hash 'case label 'stored (fixture-stored id))))))
+       (list (list "positive" 1) (list "zero" 0) (list "malformed" "bad"))))
+(displayln (string-append "FACTORY_VALIDATION_RESULT=" (value->jsexpr-string fixture-results)))'''
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -63,7 +66,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.parent_requests.append(body)
         if len(self.server.parent_requests) == 1:
             offered = [t['function']['name'] for t in body.get('tools', [])]
-            repl = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            repl = 'eval' if 'eval' in offered else None
             assert repl is not None, offered
             delta = {'tool_calls': [{'index': 0, 'id': 'factory_probe', 'type': 'function',
                 'function': {'name': repl, 'arguments': json.dumps({'code': CELL})}}]}

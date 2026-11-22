@@ -46,9 +46,6 @@ def stop(process):
 def env_for(root):
     env = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL", "TZ")
            if key in os.environ}
-    for key in ("PRIME_AGENT_KERNEL_PYTHON", "PA_E2E_KERNEL_PYTHON"):
-        if key in os.environ:
-            env[key] = os.environ[key]
     for name in ("home", "tmp", "xdg", "agent/sessions"):
         (root / name).mkdir(parents=True, exist_ok=True)
     env.update(HOME=str(root / "home"), TMPDIR=str(root / "tmp"),
@@ -64,24 +61,6 @@ def env_for(root):
         "parity-local": {"api": "openai-completions", "baseUrl": "http://127.0.0.1:1/v1",
                          "apiKey": "fixture-only", "models": [{"id": "parity-1",
                          "name": "Parity 1", "contextWindow": 128000, "maxTokens": 4096}]}}}))
-    return env
-
-
-def skill_pythonpath():
-    """The bundled skill sources used by a test-selected kernel interpreter."""
-    skills = Path(__file__).resolve().parent.parent / "skills"
-    return os.pathsep.join(sorted(str(path) for path in skills.glob("*/src")))
-
-
-def use_skill_python(root, env):
-    """Give a selected test interpreter the bundled skills without changing product startup."""
-    python = env.get("PRIME_AGENT_KERNEL_PYTHON")
-    if python:
-        wrapper = root / "kernel-python-with-skills"
-        wrapper.write_text("#!/bin/sh\nexport PYTHONPATH=" + shlex.quote(skill_pythonpath())
-                           + "\nexec " + shlex.quote(python) + " \"$@\"\n")
-        wrapper.chmod(0o700)
-        env["PRIME_AGENT_KERNEL_PYTHON"] = str(wrapper)
     return env
 
 
