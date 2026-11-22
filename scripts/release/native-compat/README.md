@@ -2,7 +2,7 @@
 
 Shipped TypeScript native installers validate these paths before activating a
 release and whenever validating an installed release for rollback. Rust ships
-the real historical assets to preserve that contract. They are not loaded by
+the real historical assets, and two placeholders, to preserve that contract. They are not loaded by
 Rust's renderer or image implementation.
 
 - `theme/prime.json` and `export-html/template.html` are unmodified from
@@ -14,6 +14,11 @@ Rust's renderer or image implementation.
   Source: https://registry.npmjs.org/@silvia-odwyer/photon-node/-/photon-node-0.3.4.tgz
   Tarball SHA-256: `5a23015c1cd2c38e3c492dd96929985247b92f52d2ff0fb948d29edca52bc50a`.
   Wasm SHA-256: `10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c`.
+
+- `prime-agent-runtime/pyproject.toml` and `prime-agent-runtime/src/rlm/repl.py`
+  are placeholders. Those installers set up a Python kernel runtime from this
+  directory; the kernel is now built into the binary, so the files only have to
+  exist and be non-empty.
 
 The assembler also supplies `package.json` for every release and copies the
 maintained `install-rust.sh` to `install.sh`. The old updater keeps executing
