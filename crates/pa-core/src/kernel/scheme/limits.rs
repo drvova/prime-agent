@@ -299,13 +299,13 @@ pub(super) fn guards(engine: &mut Engine) -> anyhow::Result<Vec<(String, SteelVa
             // Not a global: one of Steel's own modules holds it.
             engine.extract_value(&format!("#%prim.{name}"))
         }) else {
-            match STEEL_PRIVATE.iter().find_map(|module| {
+            // Not a global: one of Steel's own modules may hold it, and a
+            // Steel without the builtin has nothing to guard.
+            if let Some(builtin) = STEEL_PRIVATE.iter().find_map(|module| {
                 let module = engine.builtin_modules().get(module)?;
                 module.contains(name).then(|| module.get(name.to_string()))
             }) {
-                Some(builtin) => guarded.push((name.to_string(), natively(name, check, builtin)?)),
-                // This Steel has no such builtin.
-                None => {}
+                guarded.push((name.to_string(), natively(name, check, builtin)?));
             }
             continue;
         };
@@ -358,7 +358,7 @@ pub(super) fn sleep(arguments: &[SteelVal]) -> Result<SteelVal, SteelErr> {
     loop {
         if stopped
             .as_ref()
-            .is_some_and(|stopped| stopped.is_cancelled())
+            .is_some_and(crate::tools::tool_definition::AbortSignal::is_cancelled)
         {
             return Err(SteelErr::new(
                 ErrorKind::Generic,

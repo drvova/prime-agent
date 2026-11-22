@@ -213,6 +213,7 @@ impl Drop for JournalWriteOwner {
 // Empty sidecars remain after retirement; directory entries/inodes can accumulate.
 // Explicit unlock is attempted on guard drop; a failure leaves close as fallback.
 pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
+    static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut ownership_path = path.as_os_str().to_os_string();
     ownership_path.push(".writer-lock");
     let ownership_path = std::path::PathBuf::from(ownership_path);
@@ -222,7 +223,6 @@ pub(crate) fn journal_write_owner(path: &Path) -> Result<JournalWriteOwner> {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // The holder is a hosted lifetime of this process that has ended: its
     // lock passes to the caller. Any other holder keeps it.
-    static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Some((file, gate)) = held
         .get(&ownership_path)
@@ -467,7 +467,7 @@ impl WorkerRecoveryJournal {
         let write_owner = journal_write_owner(path)?;
         let queue_snapshots = parse_queue_snapshot_records(path)?;
         let journal = WorkerRecoveryJournal {
-            write_owner: write_owner,
+            write_owner,
             path: path.to_path_buf(),
             latest: parse_worker_records(path)?,
             queue_snapshots,

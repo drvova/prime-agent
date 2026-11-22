@@ -63,7 +63,7 @@ fn execute_command(cache_key: &str, command: &str) -> Option<String> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get_or_insert_with(HashMap::new)
-            .entry(cache_key.to_string())
+            .entry(cache_key.clone())
             .or_insert(value)
             .clone(),
     )

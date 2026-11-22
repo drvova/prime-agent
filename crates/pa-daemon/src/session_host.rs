@@ -41,7 +41,11 @@ use serde::{Deserialize, Serialize};
 
 /// Hosted ids start here: above every real pid (Linux caps pids at 2^22,
 /// macOS at 99,998), and positive as an `i32` so a signal sent to one by
-/// mistake names no process and no process group.
+/// mistake names no process and no process group. Windows documents no cap,
+/// but its process and thread ids are indexes into one kernel handle table
+/// of at most 2^24 entries, times four: below `0x0400_0000`, a sixteenth of
+/// this base. So no platform gate: an id at or above the base is never a
+/// process on any of the three.
 const HOSTED_PID_BASE: u32 = 0x4000_0000;
 
 /// How long a session's runtime may take to drop its tasks once the session
@@ -244,11 +248,11 @@ pub fn daemon_crashes() -> Vec<SessionCrash> {
 /// after each, so the panic is printed as before. Installing again only
 /// moves the log.
 pub fn install_panic_hook(crash_log: PathBuf) {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
     daemon_crash_record()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .0 = Some(crash_log);
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
         let previous = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
