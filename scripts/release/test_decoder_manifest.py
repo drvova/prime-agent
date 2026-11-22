@@ -36,9 +36,7 @@ class DecoderManifest(unittest.TestCase):
             root = Path(tmp)
             repo = root / "repo"
             repo.mkdir()
-            for directory in ("prime-agent-runtime", "skills"):
-                (repo / directory).mkdir()
-            (repo / "prime-agent-runtime/pyproject.toml").write_text("[project]\nname = 'fixture'\nversion = '0.1.0'\n")
+            (repo / "skills").mkdir()
             (repo / "LICENSE").write_text("fixture\n")
             (repo / "deny.toml").write_text('[licenses]\nallow = ["MIT"]\n')
             (repo / "README.md").write_text("fixture\n")

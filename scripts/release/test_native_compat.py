@@ -29,10 +29,6 @@ class NativeCompatibilityTests(unittest.TestCase):
         (self.root / "skills").mkdir()
         for name in ("LICENSE", "README.md"):
             (self.root / name).write_text("test fixture\n")
-        runtime = self.root / "prime-agent-runtime"
-        (runtime / "src/rlm").mkdir(parents=True)
-        (runtime / "src/rlm/repl.py").write_text("# runtime fixture\n")
-        (runtime / "pyproject.toml").write_text('[project]\nname = "fixture"\n')
         for name in BUNDLED_CATALOG_FILES:
             (self.root / name).write_text("{}\n")
         self.binary = self.root / "binary"
@@ -44,7 +40,7 @@ class NativeCompatibilityTests(unittest.TestCase):
         staging.mkdir()
         args = argparse.Namespace(
             repo_root=self.root, target=target, binary=self.binary,
-            runtime_dir=None, catalog_assets=self.root, version="1.0.0", sha="a" * 40,
+            catalog_assets=self.root, version="1.0.0", sha="a" * 40,
         )
         # Catalog validation has its own integration suite and the notices need
         # a Cargo workspace; this test exercises packaging with a minimal

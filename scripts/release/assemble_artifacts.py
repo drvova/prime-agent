@@ -2,7 +2,7 @@
 """Assemble prime-agent release tarballs (Rust rewrite).
 
 Mirrors the TS release pipeline (`~/prime-agent/scripts/assemble-release-archives.mjs`)
-for the Rust workspace: stage the release binary plus the bundled kernel runtime,
+for the Rust workspace: stage the release binary, the built-in
 skills, docs, and license metadata into a scratch tree, pack a deterministic
 tarball with files at the tarball root, and emit `SHA256SUMS` plus a
 TS-installer-compatible `manifest.json` (archive sha256, executable sha256,
@@ -11,7 +11,7 @@ platform alias).
 Usage:
     python3 scripts/release/assemble_artifacts.py \
         --repo-root <repo> --version <x.y.z> --target <triple> \
-        [--binary <path>] [--runtime-dir <dir>] [--out-dir <dir>] [--sha <commit>] \
+        [--binary <path>] [--out-dir <dir>] [--sha <commit>] \
         [--catalog-assets <dir>]
 
 `--catalog-assets` is the directory holding the generated bundled catalog
@@ -26,8 +26,6 @@ one resolved commit per run; offline builds use
 builds) and falls back to `<repo>/target/release/<binary-name>` (host builds),
 where the binary name is `prime-agent.exe` for the Windows MSVC target and
 `prime-agent` everywhere else (`binary_name_for_target`).
-`--runtime-dir` defaults to `<repo>/prime-agent-runtime` (the vendored sidecar
-from the kernel-packaging lane).
 Every archive includes a `package.json` version manifest beside the binary
 (TS installer parity: it is one of NATIVE_RELEASE_ASSETS).
 `--sha` (the continuous-build stamp): a full 40-char git commit SHA. When
@@ -77,7 +75,6 @@ THIRD_PARTY_NOTICES = "THIRD-PARTY-NOTICES.txt"
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
 STAGED_ENTRIES = [
     BINARY_PLACEHOLDER,
-    "prime-agent-runtime",
     "skills",
     "LICENSE",
     THIRD_PARTY_NOTICES,
@@ -101,18 +98,10 @@ def binary_name_for_target(target: str) -> str:
 
 # Shipped-content policy: what the installed tree carries beyond the binary.
 #
-# The runtime sidecar ships only what the kernel consumes. The venv
-# bootstrap installs it with `uv pip install <payload>/prime-agent-runtime`
-# (uv's pip interface builds the hatchling wheel, whose target packages
-# only `src/rlm`), and the venv cache identity hashes `src/rlm/*.py` + the
-# packaged machine library under `src/rlm/machines` + `pyproject.toml` — so
-# the pytest suite (`test/`) and the development
-# `uv.lock` (the pip interface never reads the project lockfile) are dead
-# weight in every installed tree, and dropping them changes neither the
-# built wheel nor the bootstrap-version identity. The cache names and
-# suffixes mirror package_release.py's EXCLUDED_* so a stale `.venv` or
-# `__pycache__` cannot ride the payload either.
-RUNTIME_EXCLUDED_NAMES = frozenset({
+# The skills tree ships without development leftovers: a test directory, a
+# lockfile, or a cache beside a skill is dead weight in every installed tree.
+# The cache names and suffixes mirror package_release.py's EXCLUDED_*.
+DEV_ONLY_NAMES = frozenset({
     "test",
     "uv.lock",
     ".venv",
@@ -124,7 +113,7 @@ RUNTIME_EXCLUDED_NAMES = frozenset({
     ".DS_Store",
     "node_modules",
 })
-RUNTIME_EXCLUDED_SUFFIXES = (".pyc", ".egg-info")
+DEV_ONLY_SUFFIXES = (".pyc", ".egg-info")
 
 # Rust target triple -> TS release-platform alias (the v1 installer schema).
 TARGET_ALIASES = {
@@ -209,7 +198,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--binary", type=Path, default=None)
     parser.add_argument("--decoder", type=Path, default=None,
                         help="separate Linux .debug.gz sidecar from split_debug.py")
-    parser.add_argument("--runtime-dir", type=Path, default=None)
     parser.add_argument("--out-dir", type=Path, default=None)
     parser.add_argument("--sha", default=None,
                         help="full commit SHA to stamp into the binary's "
@@ -258,22 +246,6 @@ def continuous_version(version: str, sha: str) -> str:
 def validate_sha(sha: str) -> None:
     if not SHA_RE.match(sha):
         fail(f"invalid commit SHA {sha!r} (expected 40 hex chars)")
-
-
-def copy_runtime_tree(source: Path, target: Path) -> None:
-    """Copy the kernel sidecar, dropping the dev-only files
-    (RUNTIME_EXCLUDED_*): a plain-file, no-link tree like the rest of the
-    payload (symlinks still fail at pack time in `_deterministic_member`).
-    """
-
-    def ignore(directory, names):
-        return {
-            name for name in names
-            if name in RUNTIME_EXCLUDED_NAMES
-            or name.endswith(RUNTIME_EXCLUDED_SUFFIXES)
-        }
-
-    shutil.copytree(source, target, ignore=ignore)
 
 
 def deny_allowed_licenses(deny_toml: Path) -> list[str]:
@@ -332,38 +304,27 @@ def stage_tree(staging: Path, args: argparse.Namespace, stamped_version: str | N
     `package.json`. The binary reports it at runtime (the same exe-adjacent
     manifest TS binaryAssets carry; Rust resolves it from `current_exe()`).
 
-    The runtime entry ships the curated content (see
-    RUNTIME_EXCLUDED_*); every other entry is a
-    verbatim copy.
+    The skills entry ships without development leftovers (see
+    DEV_ONLY_*); every other entry is a verbatim copy.
     """
     binary_name = binary_name_for_target(args.target)
     binary = resolve_binary(args)
-    runtime_dir = args.runtime_dir or (args.repo_root / "prime-agent-runtime")
     sources = {
         binary_name: binary,
-        "prime-agent-runtime": runtime_dir,
         "skills": args.repo_root / "skills",
         "LICENSE": args.repo_root / "LICENSE",
         "README.md": args.repo_root / "README.md",
     }
-    if not runtime_dir.joinpath("pyproject.toml").is_file():
-        fail(
-            "kernel runtime sidecar not found at "
-            f"{runtime_dir} (expected prime-agent-runtime with pyproject.toml); "
-            "pass --runtime-dir or merge the kernel-packaging lane"
-        )
     for name, source in sources.items():
         target_path = staging / name
         if not source.exists():
             fail(f"release payload entry {name!r} missing at {source}")
         if source.is_dir():
-            if name == "prime-agent-runtime":
-                copy_runtime_tree(source, target_path)
-            elif name == "skills":
+            if name == "skills":
                 shutil.copytree(source, target_path, ignore=lambda _directory, names: {
                     entry for entry in names
-                    if entry in RUNTIME_EXCLUDED_NAMES
-                    or entry.endswith(RUNTIME_EXCLUDED_SUFFIXES)
+                    if entry in DEV_ONLY_NAMES
+                    or entry.endswith(DEV_ONLY_SUFFIXES)
                 })
             else:
                 shutil.copytree(source, target_path)

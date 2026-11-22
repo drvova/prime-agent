@@ -68,13 +68,9 @@ glibc-gate:
 
 # Local mirror of the release build-job gates:
 # release build against the committed lockfile, deterministic tarball assembly,
-# then end-to-end verification of the host-target artifact. The vendored
-# prime-agent-runtime/ at the repo root is the default runtime sidecar
-# (kernel-packaging lane); pass RUNTIME_DIR to re-anchor it.
+# then end-to-end verification of the host-target artifact.
 VERSION := $(shell sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
-RUNTIME_DIR ?=
-RUNTIME_FLAG = $(if $(RUNTIME_DIR),--runtime-dir $(RUNTIME_DIR),)
 
 # Bundled catalog assets (catalog spec §3.2 layer 2): generated at build
 # time, never committed. Release and continuous CI ship the live catalog
@@ -119,7 +115,7 @@ release-dry-run:
 	$(MAKE) glibc-gate
 	python3 scripts/release/bundle_catalog.py generate --$(CATALOG_ASSETS_MODE) --out $(CATALOG_ASSETS_DIR)
 	python3 scripts/release/assemble_artifacts.py \
-		--repo-root . --version "$(VERSION)" --target "$(TARGET)" $(RUNTIME_FLAG) \
+		--repo-root . --version "$(VERSION)" --target "$(TARGET)" \
 		$(RELEASE_ASSEMBLE_FLAGS) $(CATALOG_ASSETS_FLAG) --out-dir target/release/dist
 	$(RELEASE_VERIFY_DECODER)
 	python3 scripts/release/verify_release.py \
@@ -136,7 +132,7 @@ continuous-dry-run:
 	$(MAKE) glibc-gate
 	python3 scripts/release/bundle_catalog.py generate --$(CATALOG_ASSETS_MODE) --out $(CATALOG_ASSETS_DIR)
 	python3 scripts/release/assemble_artifacts.py \
-		--repo-root . --version "$(VERSION)" --target "$(TARGET)" $(RUNTIME_FLAG) \
+		--repo-root . --version "$(VERSION)" --target "$(TARGET)" \
 		--sha "$(GIT_SHA)" $(RELEASE_ASSEMBLE_FLAGS) $(CATALOG_ASSETS_FLAG) --out-dir target/release/dist
 	$(RELEASE_VERIFY_DECODER)
 	python3 scripts/release/verify_release.py \

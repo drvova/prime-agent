@@ -36,8 +36,8 @@ from native_compat import validate_compatibility_archive
 # flow's channel manifest requires alias-named archives).
 from assemble_artifacts import (
     TARGET_ALIASES,
-    RUNTIME_EXCLUDED_NAMES,
-    RUNTIME_EXCLUDED_SUFFIXES,
+    DEV_ONLY_NAMES,
+    DEV_ONLY_SUFFIXES,
     binary_name_for_target,
 )
 
@@ -48,7 +48,6 @@ from assemble_artifacts import (
 # Windows target), resolved in `main` via `binary_name_for_target`.
 EXPECTED_TOP_LEVEL = {
     "prime-agent",
-    "prime-agent-runtime",
     "skills",
     "LICENSE",
     "THIRD-PARTY-NOTICES.txt",
@@ -64,7 +63,9 @@ CONTINUOUS_EXTRA_TOP_LEVEL = {"package.json"}
 # The notices measure about 370 KB on every target; a file this large means the
 # generation pulled in far more than the shipped binary's crates.
 MAX_THIRD_PARTY_NOTICES_BYTES = 1_500_000
-NATIVE_COMPAT_TOP_LEVEL = {"theme", "export-html", "photon_rs_bg.wasm", "PHOTON-LICENSE.md", "install.sh"}
+NATIVE_COMPAT_TOP_LEVEL = {
+    "theme", "export-html", "photon_rs_bg.wasm", "PHOTON-LICENSE.md", "prime-agent-runtime", "install.sh",
+}
 
 # Same shape as `continuous_version` in assemble_artifacts.py.
 CONTINUOUS_SUFFIX = "continuous"
@@ -134,8 +135,8 @@ def main() -> int:
                 f"!= designed payload {sorted(expected_top_level)}"
             )
         for member in members:
-            if member.name.startswith(("skills/", "prime-agent-runtime/")) and any(
-                part in RUNTIME_EXCLUDED_NAMES or part.endswith(RUNTIME_EXCLUDED_SUFFIXES)
+            if member.name.startswith("skills/") and any(
+                part in DEV_ONLY_NAMES or part.endswith(DEV_ONLY_SUFFIXES)
                 for part in Path(member.name).parts
             ):
                 fail(f"tarball contains a development cache entry {member.name!r}")
