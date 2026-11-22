@@ -661,7 +661,7 @@ impl Worker {
                             "at": crash.at,
                         }),
                         crash.reason(),
-                        crash.at.clone(),
+                        crash.at,
                     ),
                     (
                         json!({ "type": "session_recovered" }),

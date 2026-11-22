@@ -884,6 +884,42 @@ mod tests {
         assert!(matches!(entries.as_slice(), [ChatEntry::AgentMessage(_)]));
     }
 
+    /// A reopened session shows the faults its transcript kept as the rows the live
+    /// events drew.
+    #[test]
+    fn a_saved_session_fault_row_reads_as_the_live_event_did() {
+        let row = |details: Value| {
+            decoded(&json!({
+                "role": "custom",
+                "customType": pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE,
+                "content": "saved text",
+                "display": true,
+                "details": details,
+            }))
+        };
+        assert_eq!(
+            [
+                row(json!({
+                    "type": "session_crashed",
+                    "kind": "panic",
+                    "message": "boom",
+                    "location": "a.rs:1:2",
+                })),
+                row(json!({ "type": "session_recovered" })),
+            ],
+            [
+                vec![ChatEntry::Status {
+                    text: "Session crashed (panic): boom at a.rs:1:2 \u{2014} the session is being rebuilt from its transcript.".to_string(),
+                    kind: StatusKind::Error,
+                }],
+                vec![ChatEntry::Status {
+                    text: "Session recovered \u{2014} it was rebuilt from its transcript and is ready.".to_string(),
+                    kind: StatusKind::Info,
+                }],
+            ]
+        );
+    }
+
     #[test]
     fn compaction_outcome_maps_to_status_rows() {
         let skipped = decoded(&json!({

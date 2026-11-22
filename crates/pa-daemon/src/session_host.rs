@@ -281,6 +281,11 @@ pub fn install_panic_hook(crash_log: PathBuf) {
             match session_scope::current().and_then(|scope| scope.slot::<HostControl>()) {
                 Some(control) => {
                     let crash = crash("panic");
+                    // The session is ended first, as before this hook logged anything:
+                    // the unwinding that follows must find its session already going
+                    // down, so the turn's caller is answered with the crash, not with
+                    // what the unwound turn leaves behind.
+                    control.fault(crash.clone());
                     // The panic's text belongs to the session it ended: its log gets
                     // what the default hook would have printed, tagged, and the
                     // daemon's own standard error stays free of it.
@@ -291,7 +296,6 @@ pub fn install_panic_hook(crash_log: PathBuf) {
                         crash.message,
                         std::backtrace::Backtrace::capture()
                     ));
-                    control.fault(crash);
                     return;
                 }
                 None if session_scope::panics_are_caught() => {}

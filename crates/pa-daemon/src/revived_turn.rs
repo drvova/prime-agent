@@ -173,7 +173,11 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let evidence = |name: &str, rows: &[Value], custom_type: Option<&str>| {
             let path = dir.path().join(name);
-            let text: String = rows.iter().map(|row| format!("{row}\n")).collect();
+            let text = rows
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
             std::fs::write(&path, text).expect("write the transcript");
             transcript_evidence(&path, "2026-01-01T00:00:05.000Z", &prompt_item(custom_type))
                 .expect("read the transcript")
@@ -270,7 +274,11 @@ mod tests {
                     "message": { "role": "assistant", "stopReason": "stop" },
                 }));
             }
-            let text: String = rows.iter().map(|row| format!("{row}\n")).collect();
+            let text = rows
+                .iter()
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
             std::fs::write(&transcript, text).expect("write the transcript");
             let settled = settle_in_journal(&journal_path, &transcript).expect("settle");
             let (_, follow_up, _) =

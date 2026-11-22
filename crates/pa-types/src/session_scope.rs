@@ -230,12 +230,11 @@ pub struct LogSink(pub Box<dyn for<'a> Fn(std::fmt::Arguments<'a>) + Send + Sync
 /// error, as `eprintln!` would (a closed standard error is ignored, never a
 /// panic).
 pub fn log_line(message: std::fmt::Arguments<'_>) {
-    match current().and_then(|scope| scope.slot::<LogSink>()) {
-        Some(sink) => (sink.0)(message),
-        None => {
-            use std::io::Write as _;
-            let _ = writeln!(std::io::stderr(), "{message}");
-        }
+    if let Some(sink) = current().and_then(|scope| scope.slot::<LogSink>()) {
+        (sink.0)(message);
+    } else {
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "{message}");
     }
 }
 
