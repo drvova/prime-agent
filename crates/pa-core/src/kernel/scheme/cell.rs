@@ -79,6 +79,9 @@ const COMMAND_SHOWN_CHARS: usize = 1000;
 const STREAM_INTERVAL: Duration = Duration::from_millis(100);
 /// How long `(cell-cancel id)` waits for the cell to end before answering.
 const CANCEL_WAIT: Duration = Duration::from_secs(5);
+/// How long the cell of a session whose lifetime ended is interrupted for
+/// before its thread is given up on.
+const END_WATCH: Duration = Duration::from_secs(60);
 /// The longest `(cell-wait id seconds)`.
 const MAX_WAIT_SECONDS: f64 = 600.0;
 
@@ -582,6 +585,49 @@ impl Cells {
             .clone();
         if let Some(cell) = running {
             self.interrupt(&cell);
+        }
+    }
+
+    /// The session's lifetime ended under its kernel (its host stopped
+    /// serving it: a crash, a forced stop). The runtime the kernel worked on
+    /// is gone, and with it everything that would have stopped the cell on
+    /// the engine, so it is stopped from a thread of its own: its signal is
+    /// cancelled, and the engine is interrupted until the cell has left it
+    /// or [`END_WATCH`] has passed (a native call that never returns keeps
+    /// its thread; that thread writes nothing, see
+    /// [`pa_types::session_scope::ensure_live`]).
+    pub(super) fn end(self: &Arc<Self>) {
+        self.killed.store(true, Ordering::SeqCst);
+        let running = self
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let Some(cell) = running else {
+            return;
+        };
+        cell.0.signal.cancel();
+        self.controller.interrupt();
+        let cells = Arc::clone(self);
+        let watching = std::thread::Builder::new()
+            .name("scheme-cell-end".to_string())
+            .spawn(move || {
+                let until = Instant::now() + END_WATCH;
+                while Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let running = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
+                    if !running
+                        .as_ref()
+                        .is_some_and(|running| Arc::ptr_eq(&running.0, &cell.0))
+                    {
+                        return;
+                    }
+                    // Steel drops a pending interrupt after a collection.
+                    cells.controller.interrupt();
+                }
+            });
+        if let Err(error) = watching {
+            tracing::warn!("an ended session's cell is interrupted once only: {error}");
         }
     }
 

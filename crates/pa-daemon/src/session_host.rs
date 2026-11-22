@@ -405,7 +405,7 @@ impl HostedSession {
                         });
                     },
                 ))));
-                let _scope = session_scope::enter(Some(scope));
+                let _scope = session_scope::enter(Some(Arc::clone(&scope)));
                 let ended = match tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .thread_name(thread_name)
@@ -426,6 +426,11 @@ impl HostedSession {
                     }
                     Err(error) => Some(format!("build the session runtime: {error}")),
                 };
+                // Whatever of this lifetime is still running (a stuck call,
+                // a blocking thread the shutdown did not wait for) is cut
+                // off from the session's durable state before the next
+                // lifetime can exist.
+                scope.end();
                 live()
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)

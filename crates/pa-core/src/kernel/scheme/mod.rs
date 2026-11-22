@@ -665,6 +665,19 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 });
             }
             let session = started?;
+            // A hosted session's lifetime can end without `kill` (its host
+            // drops the runtime): the cell on the engine and the session's
+            // commands stop with it all the same.
+            if let Some(scope) = pa_types::session_scope::current() {
+                // Weakly: a kernel released before then is not kept for it.
+                let ending = Arc::downgrade(&session);
+                scope.at_end(Box::new(move || {
+                    if let Some(ending) = ending.upgrade() {
+                        ending.cells.end();
+                        ending.jobs.kill_all();
+                    }
+                }));
+            }
             *slot = Some(Arc::clone(&session));
             // The spare is spent: build the next session's.
             prewarm_scheme_kernel();

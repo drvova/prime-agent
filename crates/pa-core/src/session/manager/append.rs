@@ -8,6 +8,9 @@ use super::{
 
 impl SessionManager {
     pub(crate) fn append_entry(&mut self, entry: FileEntry) -> std::io::Result<()> {
+        // A thread left over from an ended lifetime of a hosted session
+        // never writes the transcript its rebuilt session owns now.
+        pa_types::session_scope::ensure_live()?;
         let was_assistant = self.has_assistant_entry;
         let was_flushed = self.flushed;
         if matches!(

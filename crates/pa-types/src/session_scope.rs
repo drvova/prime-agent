@@ -33,6 +33,10 @@ pub struct SessionScope {
     env: BTreeMap<String, String>,
     removed_env: BTreeSet<String>,
     slots: Mutex<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>,
+    /// Set once the session's host has ended this lifetime.
+    ended: std::sync::atomic::AtomicBool,
+    /// What to run when it ends.
+    at_end: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
 }
 
 impl std::fmt::Debug for SessionScope {
@@ -63,7 +67,42 @@ impl SessionScope {
             env,
             removed_env,
             slots: Mutex::new(HashMap::new()),
+            ended: std::sync::atomic::AtomicBool::new(false),
+            at_end: Mutex::new(Vec::new()),
         })
+    }
+
+    /// End this lifetime of the session: its host calls this once it has
+    /// stopped serving it. Threads of the session that are still running (a
+    /// call that never returned, a thread the host could not wait for) keep
+    /// this scope, and from now on [`ensure_live`] refuses their durable
+    /// writes; whatever was registered with [`SessionScope::at_end`] runs.
+    pub fn end(&self) {
+        self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        let hooks =
+            std::mem::take(&mut *self.at_end.lock().unwrap_or_else(PoisonError::into_inner));
+        for hook in hooks {
+            hook();
+        }
+    }
+
+    /// Whether this lifetime has ended.
+    #[must_use]
+    pub fn has_ended(&self) -> bool {
+        self.ended.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Run `hook` when this lifetime ends ([`SessionScope::end`]): at once
+    /// if it already has. For work of the session that lives on threads its
+    /// host does not own and must stop with it.
+    pub fn at_end(&self, hook: Box<dyn FnOnce() + Send>) {
+        let mut hooks = self.at_end.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.has_ended() {
+            drop(hooks);
+            hook();
+        } else {
+            hooks.push(hook);
+        }
     }
 
     /// The hosted session's stable id (the daemon's worker id).
@@ -158,6 +197,25 @@ pub fn propagate<T>(body: impl FnOnce() -> T) -> impl FnOnce() -> T {
     move || {
         let _guard = enter(scope);
         body()
+    }
+}
+
+/// Refuse a durable write on a thread whose session's lifetime has ended.
+/// A hosted session that is ended and rebuilt can leave a thread of the old
+/// lifetime behind (stuck in a call, or one the host could not wait for);
+/// if it runs on, it must not write where the rebuilt session writes now.
+/// Every durable write a session makes checks this first.
+///
+/// # Errors
+///
+/// The calling thread's session lifetime has ended.
+pub fn ensure_live() -> std::io::Result<()> {
+    match current() {
+        Some(scope) if scope.has_ended() => Err(std::io::Error::other(format!(
+            "session lifetime {} has ended: its remaining threads do not write",
+            scope.id
+        ))),
+        Some(_) | None => Ok(()),
     }
 }
 

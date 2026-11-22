@@ -697,3 +697,61 @@ async fn a_stopped_cell_leaves_the_engine_whatever_it_was_waiting_in() {
         )
     );
 }
+
+/// A hosted session's lifetime can end without anyone stopping its kernel
+/// (the host drops the session's runtime). The cell on the engine is
+/// stopped all the same, and what is left of the lifetime writes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_lifetime_that_ends_under_a_running_cell_stops_it_and_its_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let scope = pa_types::session_scope::SessionScope::new(
+        "ending".to_string(),
+        dir.path().to_path_buf(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeSet::new(),
+    );
+    // This test's future stays on this thread, where the kernel is started.
+    let _scope = pa_types::session_scope::enter(Some(Arc::clone(&scope)));
+    let kernel = SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+        cwd: dir.path().to_path_buf(),
+        agent_dir: Some(dir.path().join("agent")),
+        ..SchemeKernelOptions::default()
+    })
+    .ensure(None, None)
+    .await
+    .unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let printed = Arc::clone(&started);
+    let ending = Arc::clone(&scope);
+    tokio::spawn(async move {
+        started.notified().await;
+        ending.end();
+    });
+    let on_stream = move |_text: &str, _stream: &'static str| printed.notify_one();
+    // The cell spins until it is stopped, then tries to leave a file behind.
+    let spun = tokio::time::timeout(
+        PATIENCE,
+        kernel.execute(
+            "(displayln \"spinning\")
+             (with-handler (lambda (stopped) (harness-create-memory \"left\" \"behind\"))
+               (let spin () (spin)))",
+            KernelExecuteOptions {
+                signal: None,
+                timeout_ms: None,
+                on_stream: Some(&on_stream),
+                on_late_sent_agent_message: None,
+            },
+        ),
+    )
+    .await
+    .expect("the cell ended with its session's lifetime")
+    .unwrap();
+    assert_eq!(
+        (
+            spun.status,
+            pa_types::session_scope::ensure_live().is_err(),
+            dir.path().join("agent").exists(),
+        ),
+        (ExecuteStatus::Error, true, false)
+    );
+}

@@ -611,6 +611,8 @@ pub(super) fn register(engine: &mut Engine, session: &crate::kernel::scheme::Ses
             let outcome = serde_json::from_str::<Value>(&payload)
                 .map_err(|error| anyhow!("the payload is not JSON: {error}"))
                 .and_then(|options| {
+                    // These calls write files without the session's runtime.
+                    pa_types::session_scope::ensure_live()?;
                     // The user's master switch, read on every call so a
                     // change in /settings applies at once.
                     let disabled = harness
