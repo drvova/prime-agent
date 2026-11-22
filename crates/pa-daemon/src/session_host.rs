@@ -45,13 +45,39 @@ use serde::{Deserialize, Serialize};
 const HOSTED_PID_BASE: u32 = 0x4000_0000;
 
 /// How long a session's runtime may take to drop its tasks once the session
-/// has ended; threads still blocked after that are abandoned.
-const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(5);
+/// has ended; threads still blocked after that are abandoned. Tasks drop at
+/// their next await, so only a blocking call in flight waits this out, and
+/// every stop of such a session pays it.
+const RUNTIME_SHUTDOWN: Duration = Duration::from_secs(1);
 
-/// The hosted lifetimes running in this process: id -> generation.
-fn live() -> &'static Mutex<HashMap<u32, String>> {
-    static LIVE: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+/// The hosted lifetimes running in this process: id -> generation and the
+/// handle that ends it.
+fn live() -> &'static Mutex<HashMap<u32, (String, Arc<HostControl>)>> {
+    static LIVE: OnceLock<Mutex<HashMap<u32, (String, Arc<HostControl>)>>> = OnceLock::new();
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// End the hosted lifetime `pid` whatever it is doing, and wait until its
+/// host thread has let go of it. Returns whether it was running. This is
+/// the forced stop of a session that did not answer its shutdown: its tasks
+/// are dropped, and a thread blocked in a call that never returns is
+/// abandoned.
+pub(crate) async fn stop_hosted(pid: u32) -> bool {
+    let control = live()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&pid)
+        .map(|(_, control)| Arc::clone(control));
+    let Some(control) = control else {
+        return false;
+    };
+    control.end.notify_one();
+    // The host thread removes the lifetime when its runtime is down (bounded
+    // by the runtime's shutdown budget).
+    while hosted_alive(pid) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    true
 }
 
 /// The fault each crashed lifetime ended with, kept while the supervisor
@@ -109,7 +135,7 @@ pub fn hosted_generation(pid: u32) -> Option<String> {
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
         .get(&pid)
-        .cloned()
+        .map(|(generation, _)| generation.clone())
 }
 
 /// The id the calling session records as its owner pid: its hosted id inside
@@ -288,7 +314,7 @@ impl HostedSession {
         live()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(pid, generation.clone());
+            .insert(pid, (generation.clone(), Arc::clone(&control)));
         let thread_control = Arc::clone(&control);
         let thread_name = format!(
             "session-{}",

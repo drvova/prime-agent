@@ -120,6 +120,19 @@ pub(crate) async fn reap_predecessors(supervisor: &Arc<Supervisor>) {
 /// its routed `shutdown`) on the `STOP_FORCE_TIMEOUT` budget, not the boot reap's fast
 /// verify. `None` as the start id trusts liveness alone.
 pub(crate) async fn stop_process(pid: u32, start_id: Option<String>) -> ReapOutcome {
+    // A hosted session is not a process: no signal reaches it. Its forced
+    // stop ends its host thread, and only the lifetime the caller named.
+    if crate::session_host::is_hosted_pid(pid) {
+        let current = crate::session_host::hosted_generation(pid);
+        return if current.is_some()
+            && current == start_id
+            && crate::session_host::stop_hosted(pid).await
+        {
+            ReapOutcome::Kill
+        } else {
+            ReapOutcome::AlreadyGone
+        };
+    }
     stop_target_within(
         &ReapTarget {
             pid,

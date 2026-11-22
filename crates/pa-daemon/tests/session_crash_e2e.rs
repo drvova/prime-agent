@@ -488,3 +488,75 @@ fn a_session_mid_turn_survives_the_daemon_being_killed_and_the_death_is_reported
         "row: {row}\nfinished: {finished}"
     );
 }
+
+#[test]
+fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // The cell sits in a native call for the whole test, and the stuck-cell
+    // watch keeps its default grace: nothing but the stop ends this session.
+    let session = client.create_attached(
+        dir.path(),
+        "wedged",
+        &json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": {
+                        "code": "(displayln \"sleeping\") (time/sleep-ms 600000)",
+                    } },
+                ] },
+                { "text": "done" },
+            ],
+        }),
+        json!({}),
+    );
+    let prompted = client.request(
+        "prompt",
+        &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
+    );
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    client.event(&session, "tool_execution_update");
+
+    let killed = client.request(
+        "kill",
+        &json!({ "type": "kill", "activeSessionId": session }),
+    );
+    // The stop has retired the session when its record is gone; the daemon
+    // still serves, and no session of this process holds a lease.
+    let descriptor =
+        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket).join(format!("{session}.json"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while descriptor.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the wedged session was never retired"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let listed = client.request("list", &json!({ "type": "list" }));
+    let held_leases: Vec<PathBuf> = std::fs::read_dir(agent_dir.join("session-leases"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(
+        (
+            killed["success"].clone(),
+            listed["data"]["sessions"].clone(),
+            held_leases,
+        ),
+        (json!(true), json!([]), Vec::<PathBuf>::new()),
+        "kill: {killed}"
+    );
+}

@@ -355,7 +355,16 @@ impl Supervisor {
             // below — the descriptor's pid is the DEAD pre-restart holder.
             // An update restart settled its sessions on the way down; any
             // other boot that finds a turn in flight follows a daemon death.
-            if interrupted && !kept {
+            // A deliberate shutdown is neither: its sessions recorded it, and
+            // the turn it cut short continues by design.
+            let shut_down = crate::journal::WorkerRecoveryJournal::read_latest(&journal_path)
+                .is_ok_and(|records| {
+                    records
+                        .iter()
+                        .filter(|record| record.busy)
+                        .all(|record| record.operation == "shutdown")
+                });
+            if interrupted && !kept && !shut_down {
                 self.record_host_death(&resident).await;
             }
             match self.relaunch_worker(&resident).await {
