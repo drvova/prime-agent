@@ -44,17 +44,11 @@ pub enum Scenario {
     /// window after ready. Linux-only (/proc).
     IdleCost,
     /// Daemon wire, no TUI: the create command -> a new session's first
-    /// `python_repl` result (worker spawn + kernel boot + the cell).
-    FirstCell,
-    /// Daemon wire, no TUI: the create command -> a new session's first
     /// `eval` result (worker spawn + the in-process Scheme kernel + the cell).
     FirstEval,
-    /// Daemon wire: a parent cell's `rlm.spawn` -> the child's first cell
-    /// finishing (child create + its kernel boot + the cell).
-    SubagentFirstCell,
-    /// Daemon wire: a booted kernel's first `import pandas` cell, start ->
-    /// result.
-    PandasImport,
+    /// Daemon wire: a parent cell's `rlm-spawn` -> the child's first `eval`
+    /// cell finishing (child create + its kernel + the cell).
+    SubagentFirstEval,
 }
 
 /// Every bench knob for one scenario over one corpus.

@@ -43,11 +43,7 @@ impl RpcChild {
 
     /// Spawn with a seeded `models.json`: the faux provider needs its
     /// provider entry + key to pass the registry's configured-auth gate.
-    fn spawn_seeded(
-        args: &[&str],
-        script: &Value,
-        models: Option<Value>,
-    ) -> RpcChild {
+    fn spawn_seeded(args: &[&str], script: &Value, models: Option<Value>) -> RpcChild {
         let home = tempfile::TempDir::new().unwrap();
         if let Some(models) = models {
             let agent_dir = home.path().join("agent");

@@ -185,11 +185,8 @@ fn combined_parent_script() -> serde_json::Value {
 #[test]
 fn print_inline_subagents_wait_for_replies_and_combine_them() {
     let lane = lane();
-    let (stdout, stderr, code) = lane.run(
-        &["-p", "delegate the work"],
-        &combined_parent_script(),
-        &[],
-    );
+    let (stdout, stderr, code) =
+        lane.run(&["-p", "delegate the work"], &combined_parent_script(), &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(stdout.trim_end(), "COMBINED ALPHA-RESULT BETA-RESULT");
 
@@ -333,11 +330,8 @@ fn print_inline_subagents_enforce_the_depth_limit() {
             ] },
         },
     });
-    let (stdout, stderr, code) = lane.run(
-        &["-p", "delegate once"],
-        &script,
-        &[("RLM_MAX_DEPTH", "1")],
-    );
+    let (stdout, stderr, code) =
+        lane.run(&["-p", "delegate once"], &script, &[("RLM_MAX_DEPTH", "1")]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(stdout.trim_end(), "PARENT DONE");
 
@@ -521,8 +515,7 @@ fn print_inline_subagents_report_a_failed_child_then_a_clean_retry() {
             ] },
         },
     });
-    let (stdout, stderr, code) =
-        lane.run(&["-p", "delegate the flaky task"], &script, &[]);
+    let (stdout, stderr, code) = lane.run(&["-p", "delegate the flaky task"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(stdout.trim_end(), "RETRY CLEAN");
 
@@ -1125,11 +1118,7 @@ fn print_inline_child_wakes_on_a_background_bash_completion() {
             ] },
         },
     });
-    let (stdout, stderr, code) = lane.run(
-        &["-p", "delegate the background work"],
-        &script,
-        &[],
-    );
+    let (stdout, stderr, code) = lane.run(&["-p", "delegate the background work"], &script, &[]);
     assert_eq!(code, 0, "stderr: {stderr}\nstdout: {stdout}");
     assert_eq!(
         stdout.trim_end(),

@@ -323,7 +323,6 @@ fn hostile_child_assertions(staged: &Path) {
         "the hostile PI_PACKAGE_DIR must not win: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-
 }
 
 /// Regression for a recurring battery finding: a host exporting

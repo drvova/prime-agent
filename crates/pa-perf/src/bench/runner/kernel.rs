@@ -1,9 +1,9 @@
-//! The python_repl kernel scenarios: no TUI, the daemon wire only. Each
-//! run creates a session whose faux script (the daemon's verification
-//! engine: the real agent loop over a scripted provider) issues real
-//! `python_repl` tool calls, so the measured path is the product's kernel
-//! boot (interpreter start, runtime import, readiness probe, bootstrap
-//! cell) plus the tool round-trip — the provider is the only fake part.
+//! The kernel scenarios: no TUI, the daemon wire only. Each run creates a
+//! session whose faux script (the daemon's verification engine: the real
+//! agent loop over a scripted provider) issues real `eval` tool calls, so
+//! the measured path is the product's own (worker spawn, session create,
+//! the in-process Scheme kernel) plus the tool round-trip: the provider is
+//! the only fake part.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
@@ -126,16 +126,11 @@ impl Client {
     }
 }
 
-/// A kernel tool call record (`python_repl` or `eval`) for a faux script.
-fn tool_cell(tool: &str, code: &str) -> Value {
-    json!({ "content": [
-        { "type": "toolCall", "name": tool, "arguments": { "code": code } },
-    ] })
-}
-
-/// A `python_repl` tool call record for a faux script.
+/// An `eval` tool call record for a faux script.
 fn cell(code: &str) -> Value {
-    tool_cell("python_repl", code)
+    json!({ "content": [
+        { "type": "toolCall", "name": "eval", "arguments": { "code": code } },
+    ] })
 }
 
 /// One kernel tool call as the client saw it: the start and end events'
@@ -148,16 +143,11 @@ struct CellEvents {
 }
 
 impl Client {
-    /// The next `python_repl` call, start -> end.
-    fn python_cell(&mut self, what: &str) -> anyhow::Result<CellEvents> {
-        self.kernel_cell("python_repl", what)
-    }
-
-    /// The next call of the kernel tool `tool`, start -> end. A failed cell
-    /// fails the run: a measured error path is not the metric.
-    fn kernel_cell(&mut self, tool: &str, what: &str) -> anyhow::Result<CellEvents> {
+    /// The next `eval` call, start -> end. A failed cell fails the run: a
+    /// measured error path is not the metric.
+    fn kernel_cell(&mut self, what: &str) -> anyhow::Result<CellEvents> {
         let (start, started) = self.event(&format!("{what} start"), |event| {
-            event["type"] == "tool_execution_start" && event["toolName"] == tool
+            event["type"] == "tool_execution_start" && event["toolName"] == "eval"
         })?;
         let id = start["toolCallId"].clone();
         let (end, ended) = self.event(&format!("{what} result"), |event| {
@@ -195,7 +185,6 @@ pub(super) fn measure(
     let run_dir = socket.parent().context("a socket dir")?;
     let mut client = Client::connect(socket, Instant::now() + ctx.liveness)?;
     match scenario {
-        Scenario::FirstCell => first_cell(ctx, &mut client, run_dir),
         Scenario::FirstEval => {
             // The create command -> the first `eval` result: what a new
             // session's first Scheme cell waits on (worker spawn, session
@@ -204,20 +193,19 @@ pub(super) fn measure(
                 run_dir,
                 "first-eval.json",
                 &[
-                    tool_cell("eval", "(displayln \"first eval\") (+ 1 2)"),
+                    cell("(displayln \"first eval\") (+ 1 2)"),
                     json!({ "text": "done" }),
                 ],
             )?;
             let started = Instant::now();
             start_session(ctx, &mut client, &script, None)?;
-            let cell = client.kernel_cell("eval", "the first eval")?;
+            let cell = client.kernel_cell("the first eval")?;
             Ok(Measured {
                 settled: vec![millis(cell.ended - started)],
                 ..Measured::default()
             })
         }
-        Scenario::SubagentFirstCell => subagent_first_cell(ctx, &mut client, run_dir, run),
-        Scenario::PandasImport => pandas_import(ctx, &mut client, run_dir),
+        Scenario::SubagentFirstEval => subagent_first_eval(ctx, &mut client, run_dir, run),
         Scenario::ColdStart
         | Scenario::ColdReady
         | Scenario::WarmStart
@@ -273,33 +261,14 @@ fn start_session(
     Ok(())
 }
 
-/// first-cell: the create command -> the first `python_repl` result event.
-/// The span is everything a new session's first cell waits on: worker
-/// spawn, session create (which starts the kernel prewarm), the scripted
-/// tool call, and the kernel boot the cell awaits.
-fn first_cell(ctx: &RunCtx, client: &mut Client, run_dir: &Path) -> anyhow::Result<Measured> {
-    let script = write_script(
-        run_dir,
-        "first-cell.json",
-        &[cell("print('first cell')"), json!({ "text": "done" })],
-    )?;
-    let started = Instant::now();
-    start_session(ctx, client, &script, None)?;
-    let cell = client.python_cell("the first cell")?;
-    Ok(Measured {
-        settled: vec![millis(cell.ended - started)],
-        ..Measured::default()
-    })
-}
-
-/// subagent-first-cell: the parent's `rlm.spawn` call -> the child's first
+/// subagent-first-eval: the parent's `rlm-spawn` call -> the child's first
 /// cell finishing. Both stamps are the kernels' own wall clocks (the
 /// parent's before the spawn, the child's at the end of its first cell; one
-/// host, one clock), so the span is the child create + its kernel boot +
-/// its first cell, without the parent's own boot. The product delivers the
+/// host, one clock), so the span is the child create + its kernel + its
+/// first cell, without the parent's own start. The product delivers the
 /// child's task once the spawning cell returns, so the parent cell ends
 /// right after the spawn and the child's receipt file is the end mark.
-fn subagent_first_cell(
+fn subagent_first_eval(
     ctx: &RunCtx,
     client: &mut Client,
     run_dir: &Path,
@@ -321,17 +290,18 @@ fn subagent_first_cell(
         "child.json",
         &[
             cell(&format!(
-                "import time\nopen({receipt:?}, 'w').write(repr(time.time() * 1000))",
+                "(let ([port (open-output-file {receipt:?})])\n  (write-string (number->string (current-milliseconds)) port)\n  (close-output-port port))",
                 receipt = receipt.display().to_string(),
             )),
             json!({ "text": "child done" }),
         ],
     )?;
     let parent_cell = format!(
-        "import time\n\
-         started = time.time() * 1000\n\
-         await rlm.spawn('run the perf cell', name={CHILD_NAME:?})\n\
-         open({spawned:?}, 'w').write(repr(started))",
+        "(define started (current-milliseconds))\n\
+         (rlm-spawn \"run the perf cell\" #:name {CHILD_NAME:?})\n\
+         (let ([port (open-output-file {spawned:?})])\n\
+         \x20 (write-string (number->string started) port)\n\
+         \x20 (close-output-port port))",
         spawned = spawned.display().to_string(),
     );
     let script = write_script(
@@ -340,7 +310,7 @@ fn subagent_first_cell(
         &[cell(&parent_cell), json!({ "text": "done" })],
     )?;
     start_session(ctx, client, &script, Some(&child_script))?;
-    client.python_cell("the parent's spawn cell")?;
+    client.kernel_cell("the parent's spawn cell")?;
     let spawned_at = read_stamp(&spawned)
         .with_context(|| format!("the spawn cell wrote no {}", spawned.display()))?;
     let finished_at = loop {
@@ -356,28 +326,6 @@ fn subagent_first_cell(
     };
     Ok(Measured {
         settled: vec![finished_at - spawned_at],
-        ..Measured::default()
-    })
-}
-
-/// pandas-import: a session's first `import pandas` cell, start event ->
-/// result event. A warm-up cell runs first so the span is the import, not
-/// the kernel boot.
-fn pandas_import(ctx: &RunCtx, client: &mut Client, run_dir: &Path) -> anyhow::Result<Measured> {
-    let script = write_script(
-        run_dir,
-        "pandas.json",
-        &[
-            cell("print('kernel up')"),
-            cell("import pandas\nprint(pandas.__version__)"),
-            json!({ "text": "done" }),
-        ],
-    )?;
-    start_session(ctx, client, &script, None)?;
-    client.python_cell("the warm-up cell")?;
-    let cell = client.python_cell("the import cell")?;
-    Ok(Measured {
-        settled: vec![millis(cell.ended - cell.started)],
         ..Measured::default()
     })
 }
@@ -430,15 +378,15 @@ mod tests {
         };
         let mut client = scripted(vec![
             start("bash-1", "bash"),
-            start("py-1", "python_repl"),
+            start("cell-1", "eval"),
             end("bash-1", "error"),
-            end("py-1", "ok"),
-            start("py-2", "python_repl"),
-            end("py-2", "error"),
+            end("cell-1", "ok"),
+            start("cell-2", "eval"),
+            end("cell-2", "error"),
         ]);
-        client.python_cell("the first cell").expect("the ok cell");
+        client.kernel_cell("the first cell").expect("the ok cell");
         let raised = client
-            .python_cell("the second cell")
+            .kernel_cell("the second cell")
             .expect_err("a raised cell fails the run");
         assert!(
             raised.to_string().starts_with("the second cell failed"),

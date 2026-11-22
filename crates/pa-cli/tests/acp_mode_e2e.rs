@@ -2760,8 +2760,7 @@ fn acp_prompt_reports_outstanding_background_bash_jobs() {
 /// stop sequence, so it is not retested here.
 #[test]
 fn acp_cancel_during_settle_cancels_the_subagents() {
-    let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000);
+    let (mut client, session_id, active_session_id) = spawn_lane(&["--mode", "acp"], 120_000);
     let socket = client.socket.clone();
     let prompt = client.request(
         "session/prompt",
@@ -2803,8 +2802,7 @@ fn acp_cancel_during_settle_cancels_the_subagents() {
 /// cancel a resident session's children.
 #[test]
 fn acp_eof_during_settle_exits_and_leaves_resident_subagents() {
-    let (mut client, session_id, active_session_id) =
-        spawn_lane(&["--mode", "acp"], 120_000);
+    let (mut client, session_id, active_session_id) = spawn_lane(&["--mode", "acp"], 120_000);
     let socket = client.socket.clone();
     client.request(
         "session/prompt",

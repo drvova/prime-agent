@@ -52,11 +52,7 @@ impl Drop for Daemon {
 /// daemon (and every worker it spawns) "boots" in pane `w0:boot` — the
 /// boot-context bug class setup. The session's own pane identity must
 /// come from the create payload, never from here.
-fn spawn_supervisor(
-    socket: &Path,
-    agent_dir: &Path,
-    herdr_socket: &Path,
-) -> Daemon {
+fn spawn_supervisor(socket: &Path, agent_dir: &Path, herdr_socket: &Path) -> Daemon {
     let binary = env!("CARGO_BIN_EXE_pa-daemon");
     let log_file = std::fs::File::create(socket.with_extension("daemon.log")).expect("log file");
     let log_err = log_file.try_clone().expect("clone log file");

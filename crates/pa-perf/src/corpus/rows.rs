@@ -18,8 +18,17 @@ use pa_types::session::{
 
 use crate::rng::{iso_from_millis, Rng};
 
-/// The top-level tools the product exposes to the model.
-const TOOLS: [&str; 5] = ["bash", "edit", "python_repl", "websearch", "attach_image"];
+/// The top-level tools a stored transcript names: the ones the product
+/// exposes to the model, and `python_repl`, the retired Python kernel's tool
+/// that sessions saved before the Scheme kernel still hold.
+const TOOLS: [&str; 6] = [
+    "bash",
+    "edit",
+    "eval",
+    "python_repl",
+    "websearch",
+    "attach_image",
+];
 /// The `custom_message` customType bank (a measured real-session mix).
 const CUSTOM_TYPES: [&str; 8] = [
     "async_bash_completion",
