@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Observe model.info and compact.status through the actual daemon binary.
 
-The session executes the same REPL cell before and after two explicit model
+The session executes the same kernel cell before and after two explicit model
 switches. The first cell builds the kernel; later probes must use its surviving
 namespace, exercising the daemon's live-core rebind rather than fresh startup.
 All provider requests and daemon responses are saved. Model facts and context
@@ -26,10 +26,12 @@ from lifecycle_lib import digest, env_for, stop
 from check_restore_notice import texts
 
 MARKER = 'MODEL_FACTS_PARITY='
-CELL = """import json
-from rlm import host_request
-model_facts_probe_count = globals().get('model_facts_probe_count', 0) + 1
-print('MODEL_FACTS_PARITY=' + json.dumps({'kernel_probe_count': model_facts_probe_count, 'model_info': await host_request('model.info', {}), 'compact_status': await host_request('compact.status', {})}))"""
+CELL = """(define probes-so-far (with-handler (lambda (e) 0) (eval 'kept-probe-count)))
+(eval (list 'define 'kept-probe-count (+ 1 probes-so-far)))
+(displayln (string-append "MODEL_FACTS_PARITY="
+                          (value->jsexpr-string (hash 'kernel_probe_count (+ 1 probes-so-far)
+                                                      'model_info (model-info)
+                                                      'compact_status (compact-status)))))"""
 MODELS = [
     {'id': 'facts-text', 'name': 'Facts text', 'reasoning': False,
      'input': ['text'], 'contextWindow': 128000, 'maxTokens': 4096},
@@ -75,9 +77,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.server.phase_requests += 1
         if self.server.phase_requests == 1:
             offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-            name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.send_error(422, 'No Python REPL offered')
+                self.send_error(422, 'No kernel tool offered')
                 return
             delta = {'tool_calls': [{'index': 0, 'id': 'call_facts_%s' % self.server.phase,
                      'type': 'function', 'function': {'name': name,
@@ -113,7 +115,7 @@ def latest_probe(request, tool_call_id):
                 for line in text.splitlines():
                     if line.startswith(MARKER):
                         found.append(json.loads(line[len(MARKER):]))
-    assert len(found) == 1, 'Expected one actual REPL result for ' + tool_call_id
+    assert len(found) == 1, 'Expected one actual cell result for ' + tool_call_id
     return found[0]
 
 

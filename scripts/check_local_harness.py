@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Drive the real REPL through session-local/global memory CRUD and isolation.
+"""Drive the real kernel through session-local/global memory CRUD and isolation.
 
 Uses the restore-notice check's loopback-provider protocol and subprocess
 isolation. Checks actual tool results and persisted files, not source strings.
-Tool names (legacy ipython/python_repl) are selected from the binary's offer.
 """
 import argparse
 import http.server
@@ -18,32 +17,30 @@ from check_restore_notice import invoke, texts, Server
 from lifecycle_lib import digest
 
 MARKER = 'LOCAL_HARNESS_PARITY='
-READ = """import os, json, dataclasses
-state = rlm.get_harness_state()
-def entry(value):
-    if value is None:
-        return None
-    row = dataclasses.asdict(value)
-    for key in ('created_at', 'updated_at'):
-        row[key] = '<timestamp>'
-    return row
-result = {
-    'env': {key: os.environ.get(key) for key in ('RLM_SESSION_DIR', 'RLM_HARNESS_STATE_DIR', 'RLM_GLOBAL_HARNESS_STATE_DIR')},
-    'local': entry(state.get('memory', 'parity-local')),
-    'global': entry(state.get('memory', 'parity-global', global_=True)),
-    'deleted': entry(state.get('memory', 'parity-delete')),
-    'local_ids': sorted(item.id for item in state.list('memory')),
-    'global_ids': sorted(item.id for item in state.list('memory', global_=True)),
-}
-print('LOCAL_HARNESS_PARITY=' + json.dumps(result))"""
-SETUP = """rlm.harness.create_memory(title='local initial', content='local initial body', id='parity-local')
-rlm.harness.update_memory(id='parity-local', title='local updated', content='local updated body')
-rlm.harness.create_memory(title='global initial', content='global initial body', id='parity-global', global_=True)
-rlm.harness.update_memory(id='parity-global', title='global updated', content='global updated body', global_=True)
-rlm.harness.create_memory(title='delete me', content='temporary', id='parity-delete')
-assert rlm.harness.delete_memory('parity-delete') is True
-rlm.harness.create_memory(title='delete global', content='temporary', id='parity-delete-global', global_=True)
-assert rlm.harness.delete_memory('parity-delete-global', global_=True) is True
+READ = """(define (memory-rows state)
+  (or (hash-try-get (hash-ref state 'entries) 'memory) (hash)))
+(define (masked rows id)
+  (let ([row (hash-try-get rows id)])
+    (if row
+        (hash-insert (hash-insert row 'created_at "<timestamp>") 'updated_at "<timestamp>")
+        void)))
+(define (sorted-ids rows) (sort (map symbol->string (hash-keys->list rows)) string<?))
+(define local-rows (memory-rows (harness-state)))
+(define global-rows (memory-rows (harness-state #:global #t)))
+(displayln (string-append "LOCAL_HARNESS_PARITY="
+                          (value->jsexpr-string (hash 'local (masked local-rows 'parity-local)
+                                                      'global (masked global-rows 'parity-global)
+                                                      'deleted (masked local-rows 'parity-delete)
+                                                      'local_ids (sorted-ids local-rows)
+                                                      'global_ids (sorted-ids global-rows)))))"""
+SETUP = """(harness-create-memory "local initial" "local initial body" #:id "parity-local")
+(harness-update-memory "parity-local" "local updated" "local updated body")
+(harness-create-memory "global initial" "global initial body" #:id "parity-global" #:global #t)
+(harness-update-memory "parity-global" "global updated" "global updated body" #:global #t)
+(harness-create-memory "delete me" "temporary" #:id "parity-delete")
+(unless (harness-delete-memory "parity-delete") (error "the local delete found nothing"))
+(harness-create-memory "delete global" "temporary" #:id "parity-delete-global" #:global #t)
+(unless (harness-delete-memory "parity-delete-global" #:global #t) (error "the global delete found nothing"))
 """ + READ
 
 
@@ -60,9 +57,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         requests.append(body)
         if len(requests) == 1:
             offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-            name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.send_error(422, 'No supported Python REPL tool offered')
+                self.send_error(422, 'No kernel tool offered')
                 return
             self.server.tool_names[self.server.phase] = name
             delta = {'tool_calls': [{'index': 0, 'id': 'call_' + self.server.phase,
@@ -114,8 +111,7 @@ def run_case(binary, root, observation):
     for name in ('home', 'agent', 'sessions', 'work', 'tmp'):
         (root / name).mkdir(parents=True)
     cwd, agent, sessions = root / 'work', root / 'agent', root / 'sessions'
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ',
-           'PRIME_AGENT_KERNEL_PYTHON', 'PA_E2E_KERNEL_PYTHON') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent), PRIME_AGENT_CODING_AGENT_DIR=str(agent),
                PI_SESSION_DIR=str(sessions), PRIME_AGENT_SESSION_DIR=str(sessions),
@@ -156,12 +152,6 @@ def run_case(binary, root, observation):
             current = original if phase != 'other' else next(p for p in files if p != original)
             session_id = json.loads(current.read_text().splitlines()[0])['id']
             artifact = root / 'session-artifacts' / session_id
-            assert probe['env']['RLM_SESSION_DIR'] == str(artifact), probe['env']
-            assert probe['env']['RLM_HARNESS_STATE_DIR'] == str(artifact / 'harness'), probe['env']
-            # RLM_GLOBAL_HARNESS_STATE_DIR stays unset; the runtime resolves
-            # PRIME_AGENT_CODING_AGENT_DIR/harness, checked on disk below.
-            assert probe['env']['RLM_GLOBAL_HARNESS_STATE_DIR'] is None, probe['env']
-            observation[phase]['kernel_env'] = probe.pop('env')
             assert probe['local_ids'] == ([] if phase == 'other' else ['parity-local']), probe
             assert probe['global_ids'] == ['parity-global'], probe
             assert probe['deleted'] is None, probe
@@ -188,8 +178,8 @@ def main():
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
     result = {'verified': False,
-        'tool_name_selection': 'Select offered python_repl or legacy ipython.',
-        'scope': 'Actual REPL results and local/global files: CRUD, resume durability, fresh-session isolation.'}
+        'tool_name_selection': 'The offered eval tool.',
+        'scope': 'Actual cell results and local/global files: CRUD, resume durability, fresh-session isolation.'}
     try:
         assert sys.platform == 'linux', 'requires Linux hosted CI binaries'
         with tempfile.TemporaryDirectory(prefix='local-harness-check-') as temp:

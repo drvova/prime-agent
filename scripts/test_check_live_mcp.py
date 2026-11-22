@@ -14,8 +14,8 @@ import check_live_mcp as check
 
 class VerifierTests(unittest.TestCase):
     def observation(self):
-        return {'before': {'pid': 10, 'configs': {'fixture-before': check.BEFORE, 'fixture-after': {}}},
-                'after': {'pid': 10, 'configs': {'fixture-before': {}, 'fixture-after': check.AFTER}}}
+        return {'before': {'probe': 1, 'configs': {'fixture-before': check.BEFORE, 'fixture-after': {}}},
+                'after': {'probe': 2, 'configs': {'fixture-before': {}, 'fixture-after': check.AFTER}}}
 
     def test_rejects_stale_and_rebuilt_handler(self):
         good = self.observation()
@@ -25,7 +25,7 @@ class VerifierTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             check.validate_observation(stale)
         rebuilt = self.observation()
-        rebuilt['after']['pid'] = 11
+        rebuilt['after']['probe'] = 1
         with self.assertRaises(AssertionError):
             check.validate_observation(rebuilt)
 
@@ -35,14 +35,14 @@ class VerifierTests(unittest.TestCase):
         thread.start()
         try:
             connection = http.client.HTTPConnection(*server.server_address, timeout=3)
-            first = {'tools': [{'type': 'function', 'function': {'name': 'python_repl'}}], 'messages': []}
+            first = {'tools': [{'type': 'function', 'function': {'name': 'eval'}}], 'messages': []}
             connection.request('POST', '/v1/chat/completions', json.dumps(first), {'Content-Type': 'application/json'})
             response = connection.getresponse()
             wire = response.read().decode()
             self.assertEqual(response.status, 200)
             event = json.loads(wire.splitlines()[0].removeprefix('data: '))
             function = event['choices'][0]['delta']['tool_calls'][0]['function']
-            self.assertEqual(function, {'name': 'python_repl', 'arguments': json.dumps({'code': check.CELL})})
+            self.assertEqual(function, {'name': 'eval', 'arguments': json.dumps({'code': check.CELL})})
             with self.assertRaises(AssertionError):
                 check.latest_probe(server.requests['before'])
             actual = self.observation()['before']

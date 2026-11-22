@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Capture mandatory-thinking summary/refiner requests from the real binary.
 
-Python cells run through the offered REPL tool. Only auxiliary request thinking
+Cells run through the offered eval tool. Only auxiliary request thinking
 controls are checked: prompt wording, token budgets, and UI frames are not.
 Branch summary uses an owned daemon and its real navigate_tree command. The owned
 supervisor shuts down workers and kernels before temporary files are removed.
@@ -70,16 +70,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     f'Seed observation {index}.' for index in range(300))}, 'stop'
             elif number == 2:
                 offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-                name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+                name = 'eval' if 'eval' in offered else None
                 if name is None:
-                    self.server.error = 'no supported REPL tool offered'
+                    self.server.error = 'no kernel tool offered'
                     self.send_error(422, self.server.error)
                     return
                 self.server.tool_name = name
                 scenario = self.server.scenario
-                code = (f'import {scenario}, json\n'
-                        f'result = await {scenario}.run("Verify mandatory thinking")\n'
-                        f'print({MARKER!r} + json.dumps(result))')
+                code = (f'(displayln (string-append "{MARKER}" (value->jsexpr-string '
+                        f'({scenario}-run "Verify mandatory thinking"))))')
                 delta = {'tool_calls': [{'index': 0, 'id': 'call_schedule', 'type': 'function',
                          'function': {'name': name, 'arguments': json.dumps({'code': code})}}]}
                 finish = 'tool_calls'
@@ -151,8 +150,7 @@ def run_case(binary, scenario, root, observation):
     for name in ('home', 'agent', 'sessions', 'work', 'tmp'):
         (root / name).mkdir(parents=True)
     agent, sessions, cwd = root / 'agent', root / 'sessions', root / 'work'
-    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ',
-           'PRIME_AGENT_KERNEL_PYTHON', 'PA_E2E_KERNEL_PYTHON') if key in os.environ}
+    env = {key: os.environ[key] for key in ('PATH', 'LANG', 'LC_ALL', 'TZ') if key in os.environ}
     env.update(HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), DO_NOT_TRACK='1',
                PI_OFFLINE='1', PI_CODING_AGENT_DIR=str(agent),
                PRIME_AGENT_CODING_AGENT_DIR=str(agent), PI_SESSION_DIR=str(sessions),
