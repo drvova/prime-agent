@@ -493,6 +493,7 @@ impl StoreState {
     }
 
     fn append_record(&self, record: &IndexRecord) -> std::io::Result<()> {
+        pa_types::session_scope::ensure_live()?;
         let mut line = serde_json::to_string(record)?;
         line.push('\n');
         std::fs::OpenOptions::new()
@@ -505,6 +506,7 @@ impl StoreState {
     /// Write one spill: temp file, then rename into place. A spill whose
     /// file already exists (the same content) is already stored.
     fn write_spill(&self, id: &str, text: &str) -> std::io::Result<()> {
+        pa_types::session_scope::ensure_live()?;
         std::fs::create_dir_all(&self.dir)?;
         let path = self.spill_path(id);
         if path.exists() {

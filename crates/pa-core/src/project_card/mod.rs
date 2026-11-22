@@ -405,6 +405,7 @@ impl Inner {
         let mut stored = lock(&self.state).clone();
         stored.schema = SCHEMA;
         let written = (|| -> std::io::Result<()> {
+            pa_types::session_scope::ensure_live()?;
             let body = serde_json::to_vec(&stored)?;
             let dir = path.parent().unwrap_or_else(|| Path::new("."));
             std::fs::create_dir_all(dir)?;

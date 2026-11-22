@@ -167,6 +167,13 @@ pub(super) fn register(
         move |operation: String, options: SteelVal| -> SteelVal {
             let outcome = crate::kernel::scheme::limits::plain_data(options)
                 .map_err(|error| anyhow!("the options are not plain data: {error}"))
+                .and_then(|options| {
+                    // A cell left over from an ended lifetime (one that caught its
+                    // stop, or woke from a call that ignored it) runs no command and
+                    // touches no file: the workspace belongs to the rebuilt session.
+                    pa_types::session_scope::ensure_live()?;
+                    Ok(options)
+                })
                 .and_then(|options| match operation.as_str() {
                     command if command.starts_with("bash") => {
                         bash::call(&commands, command, &options)

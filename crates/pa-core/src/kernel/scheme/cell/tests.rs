@@ -755,3 +755,93 @@ async fn a_lifetime_that_ends_under_a_running_cell_stops_it_and_its_writes() {
         (ExecuteStatus::Error, true, false)
     );
 }
+
+/// What is left of an ended lifetime does not touch the workspace either.
+/// The engine's stop reaches a cell between its steps, but a thread that is
+/// already past it (inside a native call, or one that wakes into one) reaches
+/// the file and command functions directly: each refuses, and the user's file
+/// is as the rebuilt session finds it.
+#[test]
+fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let scope = pa_types::session_scope::SessionScope::new(
+        "ending".to_string(),
+        dir.path().to_path_buf(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeSet::new(),
+    );
+    std::fs::write(dir.path().join("kept.txt"), "original").unwrap();
+    // The runtime's threads are the session's, as a hosted session's are.
+    // The kernel is started from this thread, outside the scope, so the
+    // lifetime's end does not stop its cell: the cell stands for a thread
+    // the stop came too late for. It runs inside the scope, the lifetime
+    // ends as it prints, and the thread that is left calls the native
+    // functions.
+    let runtime = {
+        let _scope = pa_types::session_scope::enter(Some(Arc::clone(&scope)));
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(pa_types::session_scope::inherit())
+            .build()
+            .unwrap()
+    };
+    let kernel = runtime
+        .block_on(
+            SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+                cwd: dir.path().to_path_buf(),
+                ..SchemeKernelOptions::default()
+            })
+            .ensure(None, None),
+        )
+        .unwrap();
+    let ending = Arc::clone(&scope);
+    let on_stream = move |_text: &str, _stream: &'static str| ending.end();
+    let ended = runtime
+        .block_on(async {
+            tokio::time::timeout(
+                PATIENCE,
+                kernel.execute(
+                    "(define (refusal thunk)
+               (with-handler (lambda (refused) (error-object-message refused)) (thunk)))
+             (displayln \"ready\")
+             ; The lifetime ends on another thread once this has printed: wait
+             ; for it by reading, which the ended lifetime is refused too.
+             (let wait ()
+               (when (with-handler (lambda (refused) #f) (fs-read \"kept.txt\") #t)
+                 (wait)))
+             (list (refusal (lambda () (fs-write \"kept.txt\" \"overwritten\")))
+                   (refusal (lambda () (edit \"kept.txt\" \"original\" \"edited\")))
+                   (refusal (lambda () (bash \"echo ran > ran.txt\"))))",
+                    KernelExecuteOptions {
+                        signal: None,
+                        timeout_ms: None,
+                        on_stream: Some(&on_stream),
+                        on_late_sent_agent_message: None,
+                    },
+                ),
+            )
+            .await
+        })
+        .expect("the cell returned")
+        .unwrap();
+    let refused = |function: &str| {
+        format!("{function}: session lifetime ending has ended: its remaining threads do not write")
+    };
+    assert_eq!(
+        (
+            ended.result,
+            std::fs::read_to_string(dir.path().join("kept.txt")).unwrap(),
+            dir.path().join("ran.txt").exists(),
+        ),
+        (
+            Some(format!(
+                "({:?} {:?} {:?})",
+                refused("fs-write"),
+                refused("edit"),
+                refused("bash")
+            )),
+            "original".to_string(),
+            false,
+        )
+    );
+}

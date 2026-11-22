@@ -65,6 +65,7 @@ impl CellWindowStore for DiskStore {
         let path = self.path.clone();
         async move {
             let written = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                pa_types::session_scope::ensure_live()?;
                 let body = serde_json::to_string(&StoredWindow {
                     schema: SCHEMA,
                     estimator: state,
