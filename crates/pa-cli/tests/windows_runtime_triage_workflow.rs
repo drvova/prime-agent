@@ -326,17 +326,6 @@ fn the_tui_battery_job_drives_the_keyboard_through_both_console_hosts() {
             && fetch.contains("PA_CONPTY_DLL="),
         "the host package is pinned by version and hash and handed to the battery: {fetch}"
     );
-    // The console-window check boots the kernel from a fresh venv: uv is
-    // installed before the battery runs.
-    let uv = runs
-        .iter()
-        .position(|run| run.contains("python -m pip install uv"))
-        .expect("the job installs uv for the kernel bootstrap");
-    let keyboard = runs
-        .iter()
-        .position(|run| run.contains("--test windows_conpty_input_e2e"))
-        .expect("the job runs the windows_conpty_input_e2e battery");
-    assert!(uv < keyboard, "uv is installed before the battery runs");
     let battery = runs
         .iter()
         .find(|run| run.contains("--test windows_conpty_input_e2e"))

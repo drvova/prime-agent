@@ -318,10 +318,6 @@ jobs:
           # ref, and PR-ref entries are the eviction pressure on the
           # release-build caches.
           save-if: ${{ github.event_name == 'push' }}
-      - name: Install uv (the kernel venv bootstrap below uses it)
-        run: |
-          python3 -m pip install --user uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       # The wave's selection, resolved once per leg before anything builds:
       # the narrowed selection's unit list decides whether the bins build
       # below has any work to do (an empty selection runs no units and needs
@@ -345,13 +341,6 @@ jobs:
         # --examples pulls in dev-dependencies, so the bins build with the same
         # feature set as the test units below (CI-only; release jobs unaffected).
         run: cargo build --locked --workspace --bins --examples
-      # The kernel e2e suites resolve the ambient kernel venv; left to
-      # bootstrap lazily, the first session prewarm starts it mid-shard and
-      # the next kernel unit fails against the half-built venv (run
-      # 36764911023). The installer's bootstrap handoff readies it first.
-      - name: Bootstrap the kernel venv (ready before the kernel e2e units)
-        if: steps.selection.outputs.units != '0'
-        run: ./target/debug/prime-agent --prime-agent-bootstrap
       # The tmux user-level verifiers (pa-cli `*_tmux_e2e`) drive the real binary in a private
       # tmux server; the runner image may not ship tmux.
       - name: Ensure tmux (the tmux user-level verifiers drive the binary through it)
@@ -373,7 +362,7 @@ jobs:
   # 10 min against a 4-9 min spread; the checks took 2.5 min of that). As
   # their own job they run beside the shards. The setup is the shard's:
   # the same bins build, the same shared dependency cache (restore only,
-  # the shards own the save), the same kernel venv bootstrap.
+  # the shards own the save).
   lifecycle:
     name: rust lifecycle checks
     needs: trust
@@ -389,25 +378,15 @@ jobs:
         with:
           shared-key: test-shards
           save-if: false
-      - name: Install uv (the kernel venv bootstrap below uses it)
-        run: |
-          python3 -m pip install --user uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build the workspace bins (the binaries the checks drive)
         if: hashFiles('scripts/check_*.py') != ''
         run: cargo build --locked --workspace --bins --examples
-      - name: Bootstrap the kernel venv
-        if: hashFiles('scripts/check_*.py') != ''
-        run: ./target/debug/prime-agent --prime-agent-bootstrap
       - name: Run the rust lifecycle checks
         if: hashFiles('scripts/check_*.py') != ''
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/lifecycle-check-receipts"
           export PA_RUST_BINARY="${GITHUB_WORKSPACE}/target/debug/prime-agent"
-          export PRIME_AGENT_KERNEL_PYTHON="${HOME}/.prime/agent/kernel-venv/bin/python"
-          export PA_E2E_KERNEL_PYTHON="${PRIME_AGENT_KERNEL_PYTHON}"
-          test -x "${PRIME_AGENT_KERNEL_PYTHON}"
           check_status=0
           python3 scripts/test_lifecycle_lib.py || check_status=1
           # Discover independently added checks so feature PRs do not
@@ -456,29 +435,6 @@ jobs:
           python3 scripts/test_ci_pr_crates.py
           python3 scripts/test_ci_test_shard_summary.py
           python3 scripts/ci_test_shard_summary.py --total ${{ env.SHARD_COUNT }} --dir manifests
-
-  # The vendored runtime suite (prime-agent-runtime): the kernel-side Python
-  # (`bash()`, the repl protocol, the bounded-await contract) has no Rust test,
-  # so this is its only CI gate — CPython 3.11, the minimum the runtime
-  # supports and the version the kernel venv pins.
-  runtime:
-    name: runtime suite (python 3.11)
-    needs: trust
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    if: needs.trust.result == 'success' && needs.trust.outputs.allowed == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          persist-credentials: false
-      - name: Install uv
-        run: |
-          python3 -m pip install --user uv
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Run the runtime suite (CPython 3.11)
-        run: |
-          cd prime-agent-runtime
-          uv run --python 3.11 python -m unittest discover -s test
 
   # The Windows job set + the supply-chain deny gate:
   #
@@ -610,7 +566,6 @@ jobs:
         test-shard,
         test-summary,
         lifecycle,
-        runtime,
         windows-cross,
         deny,
       ]

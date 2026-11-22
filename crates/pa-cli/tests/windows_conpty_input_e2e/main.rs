@@ -1113,10 +1113,10 @@ const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
 /// Launching Prime opens no console windows and keeps its own terminal
 /// title. The TUI spawns its daemon the way a real launch does. The
 /// session's worker probes git for the header and the turn checkpoint, a
-/// user shell command runs git, and a turn boots the Python kernel from a
-/// fresh venv. None of their console children may show a window (a
-/// detached parent leaves them none to share, so Windows opens one titled
-/// with the program path, such as `git.exe` or the venv's `python.exe`).
+/// user shell command runs git, and a turn has the kernel run a command.
+/// None of their console children may show a window (a detached parent
+/// leaves them none to share, so Windows opens one titled with the program
+/// path, such as `git.exe` or the shell's own).
 /// None may retitle the terminal either.
 #[test]
 fn background_children_open_no_console_windows() {
@@ -1166,8 +1166,10 @@ fn background_children_open_no_console_windows() {
     assert!(git_init.success(), "git init the project");
     std::fs::write(cwd.join("notes.txt"), "console windows\n").expect("project file");
     let receipt = root.join("kernel-receipt.txt");
+    // The kernel's command is a console child of the worker; its output is
+    // the receipt that the cell ran.
     let cell = format!(
-        "import subprocess, sys\nopen({receipt:?}, 'w').write(sys.executable)\nsubprocess.run(['git', 'status', '--short'], check=False)\nprint('KERNEL_' + 'BOOTED')",
+        "(define ran (bash \"git --version && git status --short\"))\n(let ([port (open-output-file {receipt:?})])\n  (write-string (hash-ref ran 'output) port)\n  (close-output-port port))\n(displayln \"KERNEL_BOOTED\")",
         receipt = receipt.display().to_string(),
     );
     let script = root.join("script.json");
@@ -1178,7 +1180,7 @@ fn background_children_open_no_console_windows() {
         json!({
             "engine": "faux",
             "responses": [
-                { "content": [ { "type": "toolCall", "name": "python_repl", "arguments": {
+                { "content": [ { "type": "toolCall", "name": "eval", "arguments": {
                     "code": cell,
                 } } ] },
                 { "text": "kernel turn done" },
@@ -1196,7 +1198,7 @@ fn background_children_open_no_console_windows() {
         std::process::id()
     ));
     // `base_env` drops every `PRIME_AGENT_*` variable, the worker handshake
-    // included; `PI_PACKAGE_DIR` would point the kernel at another runtime.
+    // included; `PI_PACKAGE_DIR` would point the session at another package dir.
     let mut env: Vec<(String, String)> = base_env()
         .into_iter()
         .filter(|(key, _)| key != "PI_PACKAGE_DIR")
@@ -1208,12 +1210,6 @@ fn background_children_open_no_console_windows() {
         ),
         ("PRIME_AGENT_SESSION_DIR", session_dir.display().to_string()),
         ("PRIME_AGENT_FAUX_SCRIPT", script.display().to_string()),
-        // A fresh kernel venv: the worker bootstraps it, then compiles its
-        // bytecode in the background, as on a first launch.
-        (
-            "PRIME_AGENT_KERNEL_VENV",
-            root.join("kernel-venv").display().to_string(),
-        ),
         ("PA_DAEMON_WORKER_CONNECT_TIMEOUT_MS", "90000".to_string()),
         ("DO_NOT_TRACK", "1".to_string()),
     ] {
@@ -1243,10 +1239,9 @@ fn background_children_open_no_console_windows() {
     let prompt_typed = term.wait_for("boot the kernel", Duration::from_secs(30));
     term.settle(Duration::from_millis(500));
     term.key(Key::Enter);
-    // The first kernel start bootstraps the venv (uv, a Python, the runtime).
-    let turn_done = term.wait_for("kernel turn done", Duration::from_mins(15));
+    let turn_done = term.wait_for("kernel turn done", Duration::from_mins(5));
     term.settle(Duration::from_secs(2));
-    let kernel_python = std::fs::read_to_string(&receipt).unwrap_or_default();
+    let kernel_command = std::fs::read_to_string(&receipt).unwrap_or_default();
     let screen = term.screen.text();
     let stream = String::from_utf8_lossy(&term.stream).to_string();
     shutdown_daemon(&socket);
@@ -1284,13 +1279,13 @@ fn background_children_open_no_console_windows() {
         .iter()
         .filter(|title| {
             let title = title.to_ascii_lowercase();
-            title.contains("git.exe") || title.contains("python.exe")
+            title.contains("git.exe") || title.contains("bash.exe") || title.contains("sh.exe")
         })
         .collect();
     dump(
         "console-windows",
         &format!(
-            "started={started} shell_typed={shell_typed} shell_ran={shell_ran} prompt_typed={prompt_typed} turn_done={turn_done} kernel_python={kernel_python:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
+            "started={started} shell_typed={shell_typed} shell_ran={shell_ran} prompt_typed={prompt_typed} turn_done={turn_done} kernel_command={kernel_command:?}\nopened={opened:#?}\ntitles={titles:#?}\nall shown={:#?}\njob pids={pids:#?}\n--- screen\n{screen}",
             console_windows::shown()
         ),
     );
@@ -1299,8 +1294,8 @@ fn background_children_open_no_console_windows() {
     assert!(shell_ran, "the user shell command ran git:\n{screen}");
     assert!(prompt_typed, "the prompt echoed:\n{screen}");
     assert!(
-        turn_done && !kernel_python.is_empty(),
-        "the turn booted the kernel:\n{screen}"
+        turn_done && kernel_command.contains("git version"),
+        "the turn's kernel command ran git:\n{screen}"
     );
     assert!(
         opened.is_empty(),
