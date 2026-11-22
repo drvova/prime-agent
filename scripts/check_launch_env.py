@@ -25,11 +25,16 @@ from check_restore_notice import texts
 
 MARKER = 'LAUNCH_ENV_PARITY='
 LIMIT = 35
-CODE = """import os, json, subprocess, sys
-keys = ('PA_ENV_MARKER', 'PA_ENV_BASE', 'PA_ENV_PRECEDENCE', 'PRIME_AGENT_INTERNAL_PARITY_CANARY')
-result = {'env': {key: os.environ.get(key) for key in keys},
-          'child_marker': subprocess.check_output([sys.executable, '-c', "import os; print(os.environ.get('PA_ENV_MARKER', 'ABSENT'))"], text=True).strip()}
-print('LAUNCH_ENV_PARITY=' + json.dumps(result))"""
+CODE = """(define (command-env name)
+  (let ([seen (hash-ref (bash (string-append "printf '%s' \\"${" name "-__UNSET__}\\"")) 'output)])
+    (if (equal? seen "__UNSET__") void seen)))
+(define result
+  (hash 'env (hash 'PA_ENV_MARKER (command-env "PA_ENV_MARKER")
+                   'PA_ENV_BASE (command-env "PA_ENV_BASE")
+                   'PA_ENV_PRECEDENCE (command-env "PA_ENV_PRECEDENCE")
+                   'PRIME_AGENT_INTERNAL_PARITY_CANARY (command-env "PRIME_AGENT_INTERNAL_PARITY_CANARY"))
+        'child_marker (hash-ref (bash "sh -c 'printf %s \\"${PA_ENV_MARKER:-ABSENT}\\"'") 'output)))
+(displayln (string-append "LAUNCH_ENV_PARITY=" (value->jsexpr-string result)))"""
 
 
 class Provider(http.server.ThreadingHTTPServer):
@@ -55,9 +60,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         requests.append(body)
         if len(requests) == 1:
             offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-            name = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+            name = 'eval' if 'eval' in offered else None
             if name is None:
-                self.send_error(422, 'missing real REPL tool')
+                self.send_error(422, 'missing kernel tool')
                 return
             delta = {'tool_calls': [{'index': 0, 'id': 'launch_' + phase, 'type': 'function',
                 'function': {'name': name, 'arguments': json.dumps({'code': CODE})}}]}
@@ -316,7 +321,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
-    receipt = {'verified': False, 'scope': 'Raw daemon create, actual REPL/subprocess env, '
+    receipt = {'verified': False, 'scope': 'Raw daemon create, the env of the kernel commands and their children, '
         'env clearing/retention, internal-prefixed launchEnv re-filtering and durable launch-env secret exclusion.',
         'not_verified': ['TUI/ACP sender env collection', 'refreshed attach launchEnv recovery',
                          'rlm.spawn and minimal depth-0 root forwarding']}

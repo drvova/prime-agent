@@ -28,9 +28,9 @@ CHILD = 'LEDGER_LIVENESS_CHILD_HOLD'
 NAME = 'ledger-fixture-child'
 BILLING = 'LEDGER_CACHE_BILLING_TURN'
 MARKER = 'LEDGER_LIVENESS_ADMITTED='
-CODE = """import json
-ledger_handle = await rlm.spawn('LEDGER_LIVENESS_CHILD_HOLD', name='ledger-fixture-child')
-print('LEDGER_LIVENESS_ADMITTED=' + json.dumps({'child_id': ledger_handle.rlm_child_id}))"""
+CODE = """(define ledger-handle (rlm-spawn "LEDGER_LIVENESS_CHILD_HOLD" #:name "ledger-fixture-child"))
+(displayln (string-append "LEDGER_LIVENESS_ADMITTED="
+                          (value->jsexpr-string (hash 'child_id (hash-ref ledger-handle 'rlm_child_id)))))"""
 
 
 def admitted_probe(body):
@@ -129,9 +129,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.server.parent_calls += 1
                 if self.server.parent_calls == 1:
                     offered = {tool.get('function', {}).get('name') for tool in body.get('tools', [])}
-                    tool = next((name for name in ('python_repl', 'ipython') if name in offered), None)
+                    tool = 'eval' if 'eval' in offered else None
                     if tool is None:
-                        self.send_error(422, 'No real REPL tool offered')
+                        self.send_error(422, 'No kernel tool offered')
                         return
                     delta = {'tool_calls': [{'index': 0, 'id': 'ledger_spawn', 'type': 'function',
                               'function': {'name': tool, 'arguments': json.dumps({'code': CODE})}}]}
