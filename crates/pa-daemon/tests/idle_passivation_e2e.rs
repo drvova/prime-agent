@@ -15,8 +15,6 @@
 // fn-length gate is style, not correctness).
 #![allow(clippy::too_many_lines)]
 #![cfg(unix)]
-// Two of the three tests are Linux-only; their imports and helpers idle elsewhere.
-#![cfg_attr(not(target_os = "linux"), allow(unused_imports, dead_code))]
 
 mod common;
 
@@ -151,9 +149,8 @@ fn worker_token(agent_dir: &Path, active_session_id: &str) -> Option<String> {
     None
 }
 
-/// The worker's pid from its persisted descriptor (the process the
-/// passivation must retire).
-fn worker_pid(agent_dir: &Path, active_session_id: &str) -> Option<u64> {
+/// The socket a hosted session serves on, from its persisted descriptor.
+fn session_socket(agent_dir: &Path, active_session_id: &str) -> Option<PathBuf> {
     let instances = std::fs::read_dir(agent_dir.join("daemon-workers")).ok()?;
     for instance in instances.flatten() {
         let descriptor_path = instance.path().join(format!("{active_session_id}.json"));
@@ -161,12 +158,48 @@ fn worker_pid(agent_dir: &Path, active_session_id: &str) -> Option<u64> {
             continue;
         };
         if let Ok(descriptor) = serde_json::from_str::<Value>(&content) {
-            if let Some(pid) = descriptor.get("pid").and_then(Value::as_u64) {
-                return Some(pid);
+            if let Some(socket) = descriptor.get("socketPath").and_then(Value::as_str) {
+                return Some(PathBuf::from(socket));
             }
         }
     }
     None
+}
+
+/// The session leases held under `agent_dir` (one `.lock` directory each).
+fn held_leases(agent_dir: &Path) -> usize {
+    std::fs::read_dir(agent_dir.join("session-leases")).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "lock")
+            })
+            .count()
+    })
+}
+
+/// Wait until a passivated session is gone: nothing serves its socket and
+/// the leases held are down to `leases_left` (its own is released, so its
+/// file can be opened again).
+async fn await_session_gone(
+    agent_dir: &Path,
+    session_socket: &Path,
+    leases_left: usize,
+    what: &str,
+) {
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while UnixStream::connect(session_socket).is_ok() || held_leases(agent_dir) != leases_left {
+        assert!(
+            Instant::now() < deadline,
+            "{what} survived the passivation: its socket is served = {}, leases held = {} (expected {leases_left})",
+            UnixStream::connect(session_socket).is_ok(),
+            held_leases(agent_dir)
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
@@ -183,8 +216,6 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 /// the parent's roster row (done — the POSITIVE verdict), the parent's
 /// `agent_message.send` WAKES a fresh worker over the child's session
 /// file and delivers.
-// Worker liveness and identity are read from /proc: Linux only.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -301,10 +332,18 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
     };
     let child_token =
         worker_token(&agent_dir, &child_active_session_id).expect("the child worker's token");
-    let child_pid =
-        worker_pid(&agent_dir, &child_active_session_id).expect("the child worker's pid");
-    assert!(std::path::Path::new(&format!("/proc/{child_pid}")).exists());
-    let child_alive = || std::path::Path::new(&format!("/proc/{child_pid}")).exists();
+    // Parent and child each run as a session of the daemon, each holding its
+    // own lease.
+    let child_socket =
+        session_socket(&agent_dir, &child_active_session_id).expect("the child session's socket");
+    assert_eq!(
+        (
+            UnixStream::connect(&child_socket).is_ok(),
+            held_leases(&agent_dir)
+        ),
+        (true, 2),
+        "the settled child is a live session before the passivation"
+    );
 
     // THE PASSIVATION ASK: the child worker's supervisor-link request (the worker-side
     // clock and gates are unit-covered; this drives the supervisor's handler, the
@@ -323,56 +362,10 @@ async fn a_settled_child_passivates_stays_listable_and_revives_by_agent_message(
         "the idle passivation stop must succeed: {passivated}"
     );
 
-    // The child worker's PROCESS is GONE (TS's whole-worker eviction semantics:
-    // worker AND its kernel leave; the session file stays).
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if !child_alive() {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the child worker process survived the passivation; proc: {} cmd: {} descriptor: {} stderr: {}",
-            std::fs::read_to_string(format!("/proc/{child_pid}/status"))
-                .unwrap_or_default()
-                .lines()
-                .take(6)
-                .collect::<Vec<_>>()
-                .join(" | "),
-            std::fs::read_to_string(format!("/proc/{child_pid}/cmdline"))
-                .map(|raw| raw.replace('\0', " "))
-                .unwrap_or_default(),
-            {
-                let mut found = std::path::PathBuf::new();
-                if let Ok(entries) = std::fs::read_dir(agent_dir.join("daemon-workers")) {
-                    for instance in entries.flatten() {
-                        let p =
-                            instance.path().join(format!("{child_active_session_id}.json"));
-                        if p.exists() {
-                            found = p;
-                        }
-                    }
-                }
-                std::fs::read_to_string(found).unwrap_or_default()
-            },
-            {
-                let mut tails = Vec::new();
-                if let Ok(entries) = std::fs::read_dir(agent_dir.join("logs")) {
-                    for entry in entries.flatten() {
-                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                            tails.push(format!(
-                                "{}: {}",
-                                entry.path().to_string_lossy(),
-                                content
-                            ));
-                        }
-                    }
-                }
-                tails.join(" --- ")
-            }
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // The child's whole SESSION is GONE (TS's whole-worker eviction semantics:
+    // the session AND its kernel leave; the session file stays): only the
+    // parent's lease is left.
+    await_session_gone(&agent_dir, &child_socket, 1, "the child session").await;
 
     // The parent's roster STILL lists the child (the passive representation).
     let roster = children.list_subagents().await.expect("roster after");
@@ -681,8 +674,8 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
     };
     let revived_token =
         worker_token(&agent_dir, &revived_active_session_id).expect("the fresh worker's token");
-    let revived_pid =
-        worker_pid(&agent_dir, &revived_active_session_id).expect("the fresh worker's pid");
+    let revived_socket =
+        session_socket(&agent_dir, &revived_active_session_id).expect("the fresh session's socket");
 
     // THE SECOND PASSIVATION: the revived worker stops the same way, so
     // the child is passive again — but its roster row is keyed by the
@@ -700,14 +693,7 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
         passivated["success"], true,
         "the second idle passivation must succeed: {passivated}"
     );
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while std::path::Path::new(&format!("/proc/{revived_pid}")).exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the revived worker survived the second passivation"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    await_session_gone(&agent_dir, &revived_socket, 1, "the revived session").await;
 
     // THE RENAME: the parent's rename by the child handle resolves the
     // record's spawn-time active id — the stale id that no longer
@@ -761,8 +747,6 @@ async fn a_parent_rename_after_a_revival_and_second_passivation_reaches_the_chil
 /// (TS `canEvictWorker` reaches roots and children alike) and resumes
 /// by its durable session id: the attach wakes a fresh worker over the
 /// saved file and the snapshot carries the pre-passivation transcript.
-// Worker liveness and identity are read from /proc: Linux only.
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcript() {
     let dir = tempfile::TempDir::new().expect("temp dir");
@@ -819,8 +803,16 @@ async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcri
 
     let root_token =
         worker_token(&agent_dir, &root_active_session_id).expect("the root worker's token");
-    let root_pid = worker_pid(&agent_dir, &root_active_session_id).expect("the root worker's pid");
-    assert!(std::path::Path::new(&format!("/proc/{root_pid}")).exists());
+    let root_socket =
+        session_socket(&agent_dir, &root_active_session_id).expect("the root session's socket");
+    assert_eq!(
+        (
+            UnixStream::connect(&root_socket).is_ok(),
+            held_leases(&agent_dir)
+        ),
+        (true, 1),
+        "the root is a live session before the passivation"
+    );
 
     // THE PASSIVATION ASK for a ROOT: the supervisor's handler accepts an
     // unowned worker regardless of depth (without the fix this answers
@@ -839,15 +831,8 @@ async fn an_idle_root_passivates_and_resumes_by_its_durable_id_with_its_transcri
         "the root's idle passivation must succeed: {passivated}"
     );
 
-    // The root worker's process is gone (the whole-worker stop).
-    let deadline = Instant::now() + Duration::from_secs(60);
-    while std::path::Path::new(&format!("/proc/{root_pid}")).exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the root worker process survived the passivation"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    // The root's session is gone (the whole-session stop).
+    await_session_gone(&agent_dir, &root_socket, 0, "the root session").await;
 
     // THE RESUME: a fresh client attaches by the DURABLE session id (the
     // TUI reattach selector); the route's wake arm resolves the saved

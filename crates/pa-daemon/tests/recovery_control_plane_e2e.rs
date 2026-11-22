@@ -1,7 +1,7 @@
-//! Control-plane priority e2e (design R3): a supervisor booting over a sessions
-//! dir full of dead workers must keep hello/list responsive while the
-//! background recovery (capped relaunch fan-out) runs, and every queued
-//! recovery must complete. Linux-only e2e (`AF_UNIX` sockets, `kill -9` semantics).
+//! Control-plane priority e2e (design R3): a supervisor booting over the
+//! records of sessions that died with its predecessor must keep hello/list
+//! responsive while the background recovery (capped revival fan-out) runs,
+//! and every queued recovery must complete.
 #![allow(clippy::large_futures)]
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
@@ -19,8 +19,7 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names
 )]
-// The worker census reads /proc.
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 mod common;
 
@@ -82,31 +81,6 @@ fn wait_socket_ready(socket: &Path) {
     }
 }
 
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next();
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
-}
-
 /// Worker ids with a registration log line at or after `since` (the log line lands
 /// after the registry records the worker — the "routable" signal).
 fn workers_registered_since(log_path: &Path, since: &str) -> Vec<String> {
@@ -145,17 +119,6 @@ fn distinct(values: Vec<String>) -> Vec<String> {
     values.sort();
     values.dedup();
     values
-}
-
-/// `kill -9` an arbitrary pid: the harness holds Child handles only for the
-/// supervisors; the workers are adopted pids on the wire.
-fn kill9(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status()
-        .expect("spawn kill");
-    assert!(status.success(), "kill -9 {pid} failed: {status}");
 }
 
 struct Client {
@@ -272,30 +235,20 @@ fn control_plane_stays_responsive_while_a_large_adoption_pass_recovers() {
                 .to_string(),
         );
     }
-    let supervisor_pid = daemon.child.id();
-    let deadline = Instant::now() + Duration::from_mins(1);
-    let worker_pids = loop {
-        let children = child_pids_of(supervisor_pid);
-        if children.len() == SESSIONS {
-            break children;
-        }
-        assert!(Instant::now() < deadline, "twelve workers never spawned");
-        std::thread::sleep(Duration::from_millis(50));
-    };
 
+    // The daemon dies hard and all twelve sessions with it: each one's journal
+    // still says its create was in flight, so the next boot owes every one of
+    // them a revival.
     daemon.child.kill().expect("kill -9 supervisor");
     let _ = daemon.child.wait();
-    for pid in &worker_pids {
-        kill9(*pid);
-    }
 
     let restart_before = pa_daemon::util::now_iso();
-    let daemon2 = spawn_supervisor(&socket, &agent_dir);
+    let _daemon2 = spawn_supervisor(&socket, &agent_dir);
     wait_socket_ready(&socket);
-    let restart_supervisor_pid = daemon2.child.id();
+    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
 
     // The control plane answers mid-recovery: hello within the latency bound while
-    // the pass is visibly unfinished (fewer than twelve relaunched children).
+    // the pass is visibly unfinished (fewer than twelve revived sessions registered).
     let hello_start = Instant::now();
     let (mut client, hello) = Client::connect(&socket);
     let hello_latency = hello_start.elapsed();
@@ -304,10 +257,10 @@ fn control_plane_stays_responsive_while_a_large_adoption_pass_recovers() {
         hello_latency < Duration::from_secs(2),
         "hello starved behind the recovery: {hello_latency:?}"
     );
+    let revived_at_hello = distinct(workers_registered_since(&log_path, &restart_before));
     assert!(
-        child_pids_of(restart_supervisor_pid).len() < SESSIONS,
-        "the recovery finished before the first hello; the responsiveness check is vacuous (children: {:?})",
-        child_pids_of(restart_supervisor_pid)
+        revived_at_hello.len() < SESSIONS,
+        "the recovery finished before the first hello; the responsiveness check is vacuous (revived: {revived_at_hello:?})"
     );
 
     // list answers mid-recovery too: it serves the registered rows instead of
@@ -327,8 +280,7 @@ fn control_plane_stays_responsive_while_a_large_adoption_pass_recovers() {
 
     // Queued recoveries complete: every descriptor relaunches and registers within a
     // bounded window. The wait is on registrations (the log line lands after the registry
-    // records the worker), not on child processes.
-    let log_path = pa_daemon::paths::daemon_log_path(&socket, &agent_dir);
+    // records the session).
     let deadline = Instant::now() + Duration::from_mins(2);
     loop {
         if distinct(workers_registered_since(&log_path, &restart_before)).len() == SESSIONS {

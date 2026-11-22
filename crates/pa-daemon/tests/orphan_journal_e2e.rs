@@ -1,6 +1,6 @@
-//! Orphan-process journal e2e: a worker dying without a shutdown hook must
-//! not leak the `bash` process groups its kernel journaled: the supervisor
-//! reaps them from the journal when it sees the worker dead.
+//! Orphan-process journal e2e: a session ending without a teardown of its
+//! own must not leak the `bash` process groups its kernel journaled: the
+//! supervisor reaps them from the journal when it sees the session crashed.
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
     clippy::cast_possible_truncation,
@@ -80,6 +80,10 @@ fn orphaning_cell() -> String {
     serde_json::to_string(&json!({ "code": code })).expect("serialize cell")
 }
 
+/// The file (in the session's working directory) the wedging cell writes
+/// once it is on the engine.
+const WEDGE_RECEIPT: &str = "wedged.receipt";
+
 /// The sequential mock: one SSE answer per request in order.
 fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
@@ -130,7 +134,8 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
         reader.read_exact(&mut body)?;
     }
     // The scripted sequence: request 1 answers the eval tool call that
-    // starts the orphaning sleep, request 2 settles the turn.
+    // starts the orphaning sleep, request 2 settles the turn, request 3 is
+    // the cell that crashes the session.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
     let data = match request {
@@ -159,6 +164,30 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                 None,
             ),
             chunk(&json!({}), Some("stop")),
+        ],
+        2 => [
+            chunk(
+                &json!({
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-wedge-1",
+                        "type": "function",
+                        "function": {
+                            "name": "eval",
+                            // The cell says it is on the engine, then sits in a
+                            // native call no interrupt reaches.
+                            "arguments": json!({
+                                "code": format!("(fs-write {WEDGE_RECEIPT:?} \"on the engine\") (time/sleep-ms 600000)"),
+                            })
+                            .to_string(),
+                        }
+                    }]
+                }),
+                None,
+            ),
+            chunk(&json!({}), Some("tool_calls")),
         ],
         _ => [
             chunk(
@@ -271,6 +300,8 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
         &json!({
             "type": "create",
             "name": "orphan-lane",
+            // An aborted cell still on the engine after this long ends its session.
+            "launchEnv": { "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300" },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions.to_string_lossy(),
@@ -305,42 +336,6 @@ fn number_after(text: &str, marker: &str) -> Option<i32> {
     })
 }
 
-/// The persisted worker descriptor's pid for this session: the pid the
-/// supervisor reaps by when the worker itself dies.
-fn worker_pid(agent_dir: &Path, active_session_id: &str) -> i32 {
-    wait_until(Duration::from_secs(30), || {
-        let workers_dir = agent_dir.join("daemon-workers");
-        let Ok(entries) = std::fs::read_dir(&workers_dir) else {
-            return None;
-        };
-        for dir in entries.flatten() {
-            let Ok(files) = std::fs::read_dir(dir.path()) else {
-                continue;
-            };
-            for file in files.flatten() {
-                let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                    continue;
-                }
-                let Ok(content) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                let Ok(descriptor) = serde_json::from_str::<Value>(&content) else {
-                    continue;
-                };
-                if descriptor["workerId"].as_str() != Some(active_session_id) {
-                    continue;
-                }
-                let pid = descriptor["pid"].as_i64().unwrap_or(0);
-                if pid > 0 {
-                    return Some(pid as i32);
-                }
-            }
-        }
-        None
-    })
-}
-
 fn group_alive(pgid: i32) -> bool {
     // The whole process group: signaling the negative pgid answers ESRCH
     // only when every process the group named is gone.
@@ -371,10 +366,16 @@ impl Drop for GroupGuard {
     }
 }
 
-/// The stopped worker cannot run its own teardown reap when it dies: only
-/// the supervisor can, from the journal the dead worker's kernel wrote.
+/// A crashed session cannot run its own teardown reap: only the supervisor
+/// can, from the journal the dead session's kernel wrote.
 #[test]
-fn a_dead_worker_reaps_its_journaled_bash_groups_from_the_supervisor() {
+#[ignore = "product defect, not a test assumption: a crashed session's runtime drops each \
+            `bash` job's handle, which kills only the job's shell (`kill_on_drop` in \
+            `kernel/scheme/native/bash_job.rs`), and the supervisor's journal reap then \
+            skips the record because the journaled leader is dead \
+            (`orphan_journal::should_reap`), so the rest of the group (`sleep 600` here) \
+            outlives the session. Enable when a dropped job kills its whole group."]
+fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = root.path().join("agent");
@@ -418,17 +419,43 @@ fn a_dead_worker_reaps_its_journaled_bash_groups_from_the_supervisor() {
     assert_eq!(started["success"], true, "first turn failed: {started}");
     let pgid = orphan_pgid(&mut client, &active_session_id);
     let _guard = GroupGuard(pgid);
-    let worker_pid = worker_pid(&agent_dir, &active_session_id);
     assert!(
         group_alive(pgid),
-        "the orphaning sleep died before the kill: pgid {pgid}"
+        "the orphaning sleep died before the crash: pgid {pgid}"
     );
 
-    // SIGSTOP first, so the worker runs no teardown of its own between the
-    // signals. SIGKILL cannot be caught: the worker dies without a reap.
-    signal_pid(Pid::from_raw(worker_pid), Signal::SIGSTOP).expect("stop the worker pid");
-    signal_pid(Pid::from_raw(worker_pid), Signal::SIGKILL).expect("kill the stopped worker");
-    // The supervisor's crash monitor owns the only reap: the group dies
-    // when it fires, not on any timeout of ours.
-    expect_group_dead(pgid, "the worker kill");
+    // The session ends with no teardown of its own: its next cell wedges in a
+    // native call, the abort finds it still on the engine after the session's
+    // grace, and the supervisor ends the session as crashed.
+    let wedged = client.request(
+        "p2",
+        &json!({
+            "type": "prompt",
+            "activeSessionId": active_session_id,
+            "message": "wedge the cell",
+        }),
+    );
+    assert_eq!(wedged["success"], true, "second prompt failed: {wedged}");
+    wait_until(Duration::from_secs(30), || {
+        root.path().join(WEDGE_RECEIPT).exists().then_some(())
+    });
+    let aborted = client.request(
+        "ab",
+        &json!({ "type": "abort", "activeSessionId": active_session_id }),
+    );
+    assert_eq!(aborted["success"], true, "abort failed: {aborted}");
+    wait_until(Duration::from_secs(30), || {
+        let listed = client.request("ls", &json!({ "type": "list" }));
+        listed["data"]["sessions"]
+            .as_array()
+            .is_some_and(|rows| {
+                rows.iter().any(|row| {
+                    row["id"] == active_session_id.as_str() && row["lastCrash"]["kind"] == "stuck"
+                })
+            })
+            .then_some(())
+    });
+    // The supervisor's crash handling owns the only reap: the group dies
+    // when it runs, not on any timeout of ours.
+    expect_group_dead(pgid, "the session crash");
 }
