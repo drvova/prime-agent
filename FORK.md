@@ -163,8 +163,8 @@ Windows has `prime-switch.ps1` with the same commands:
   - **runs once.** Once the marker exists it never runs again on its own, even
     if `~/.prime/agent` gets new chats.
   - **leaves runtime state behind.** It never copies leases, worker state,
-    persistent shells, sockets, logs, lock files, the kernel venv,
-    update/restart state, caches or the telemetry id.
+    persistent shells, sockets, logs, lock files, a kernel venv left by an
+    older version, update/restart state, caches or the telemetry id.
 
   After that the two directories are independent: a chat, login or setting
   changed in one build doesn't reach the other.
@@ -185,10 +185,11 @@ Windows has `prime-switch.ps1` with the same commands:
   the pipe `\\.\pipe\prime-agent-fork-daemon`. The fork binary uses the same
   names by default, even when started without the launcher. A running
   official daemon and a fork CLI therefore never talk to each other.
-- **Separate kernel venv:** the fork's launcher sets
-  `PRIME_AGENT_KERNEL_VENV=<fork prefix>/kernel-venv`. The fork's Python
-  runtime differs from the official one (it adds `rlm.web`, for example), and
-  a shared venv would be rebuilt every time you alternated builds.
+- **No kernel setup:** each build's kernel is built into its binary. Neither
+  installer installs `uv`, Python or a virtual environment for it, and the
+  launchers set no kernel path. A `kernel-venv` directory under the fork
+  prefix was created by an older fork version; nothing uses it any more and
+  you can delete it.
 - **`models.json` from older fork versions.** Before the fork had its own
   directory, a provider using the fork's
   `auth: { "strategy": "token-exchange" }` block may have been written to

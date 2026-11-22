@@ -6,8 +6,8 @@
 //! `install-rust.sh`), switches between them both ways, stops the other
 //! build's daemon through its own launcher, refuses a mid-turn daemon
 //! without `--force`, and never touches the official install. The payloads
-//! are stub scripts that log each call with the launcher's daemon-socket,
-//! kernel-venv, and agent-dir pins, so the pins are observed, not assumed.
+//! are stub scripts that log each call with the launcher's daemon-socket
+//! and agent-dir pins, so the pins are observed, not assumed.
 #![cfg(unix)]
 // too_many_lines: the switch walkthrough is one ordered scenario (each step
 // depends on the state the previous one left), the sibling e2e files' style.
@@ -109,14 +109,14 @@ fn serve_dir(root: PathBuf) -> String {
     format!("http://{address}")
 }
 
-/// The stub payload: it logs `version|args|socket pin|venv pin|agent dir pin` and plays
+/// The stub payload: it logs `version|args|socket pin|agent dir pin` and plays
 /// the daemon commands the switch drives (`list` answers only while
 /// `$HOME/daemon-<version>` exists; `busy-<version>` marks a mid-turn
 /// session; `shutdown` stops it).
 fn stub_payload(version: &str) -> String {
     format!(
         r#"#!/bin/sh
-printf '%s|%s|%s|%s|%s\n' '{version}' "$*" "${{PRIME_AGENT_DAEMON_SOCKET:-}}" "${{PRIME_AGENT_KERNEL_VENV:-}}" "${{PRIME_AGENT_CODING_AGENT_DIR:-}}" >> "$HOME/calls.log"
+printf '%s|%s|%s|%s\n' '{version}' "$*" "${{PRIME_AGENT_DAEMON_SOCKET:-}}" "${{PRIME_AGENT_CODING_AGENT_DIR:-}}" >> "$HOME/calls.log"
 case "$1" in
   list)
     [ -f "$HOME/daemon-{version}" ] || {{ echo 'Error: no daemon' >&2; exit 1; }}
@@ -347,7 +347,7 @@ impl World {
         dir_entries(&self.switch_bin())
     }
 
-    /// The logged calls, `version|args|socket|venv|agent dir` rows.
+    /// The logged calls, `version|args|socket|agent dir` rows.
     fn calls(&self) -> Vec<Vec<String>> {
         std::fs::read_to_string(self.home.join("calls.log"))
             .unwrap_or_default()
@@ -390,6 +390,17 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
         official,
         "the fork install leaves the official tree"
     );
+    // The kernel is built into the binary, so the install prepares nothing
+    // for it: the installer's only calls into the fork payload are its
+    // checks, and the prefix holds the launcher and the payload alone.
+    let install_calls: Vec<String> = world
+        .calls()
+        .into_iter()
+        .filter(|call| call[0] == FORK_VERSION)
+        .map(|call| call[1].clone())
+        .collect();
+    assert_eq!(install_calls, vec!["--version"]);
+    assert_eq!(dir_entries(&world.fork_prefix()), vec!["bin", "share"]);
     // The fork's launcher is `prime`, never a second `prime-agent`.
     assert_eq!(dir_entries(&world.fork_prefix().join("bin")), vec!["prime"]);
     let fork_launcher =
@@ -408,27 +419,12 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
     let version = assert_ok(&world.run(&prime, &["--version"]), "prime --version");
     assert_eq!(version.trim(), FORK_VERSION);
     let last = world.calls().pop().expect("the fork's call");
-    let venv = world
-        .fork_prefix()
-        .join("kernel-venv")
-        .display()
-        .to_string();
     // The fork's own agent dir: it never lists or resumes the sessions the
     // official build (and the TypeScript product) keep in ~/.prime/agent.
     let fork_agent_dir = world.home.join(".prime/agent-fork").display().to_string();
     assert_eq!(
-        (
-            last[0].as_str(),
-            last[1].as_str(),
-            last[3].as_str(),
-            last[4].as_str()
-        ),
-        (
-            FORK_VERSION,
-            "--version",
-            venv.as_str(),
-            fork_agent_dir.as_str()
-        )
+        (last[0].as_str(), last[1].as_str(), last[3].as_str()),
+        (FORK_VERSION, "--version", fork_agent_dir.as_str())
     );
     assert!(
         last[2].contains("/prime-agent-fork-"),
@@ -443,7 +439,7 @@ fn the_fork_installs_as_prime_beside_the_official_prime_agent() {
     let official_agent_dir = world.home.join(".prime/agent").display().to_string();
     let last = world.calls().pop().expect("the official call");
     assert_eq!(
-        (last[0].as_str(), last[4].as_str()),
+        (last[0].as_str(), last[3].as_str()),
         (OFFICIAL_VERSION, official_agent_dir.as_str())
     );
 

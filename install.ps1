@@ -37,11 +37,9 @@
 #   PRIME_AGENT_RELEASE_CHANNEL    stable | beta
 #   PRIME_AGENT_VERSION            pin an exact version
 #   PRIME_AGENT_RUST_PREFIX        install prefix (default: $HOME\.local)
-#   PRIME_AGENT_UV_BIN_DIR         uv install dir (default: $HOME\.local\bin)
 #
-# Prerequisites: Windows 10+ (tar.exe and Get-FileHash ship with the OS;
-# the kernel's Python runtime bootstraps through uv on first session — the
-# pre-warm below installs the venv when uv is available).
+# Prerequisites: Windows 10+ (tar.exe and Get-FileHash ship with the OS).
+# The kernel is built into the binary: there is nothing else to install.
 
 # The whole body runs in a child scope: under `irm | iex` the script shares
 # the caller's session, so the Stop preference and the installer's own
@@ -70,8 +68,8 @@ $ReleaseChannelDefault = 'stable'
 # official copy leaves all four empty): the versioned-asset URL
 # (<this>/v<version>/<file>; empty = <base>/releases), the default prefix
 # relative to $HOME (empty = .local), the variant whose launchers pin their
-# own agent dir (~/.prime/agent-<variant>), daemon pipe, and kernel venv,
-# and the command its launchers answer as
+# own agent dir (~/.prime/agent-<variant>) and daemon pipe, and the
+# command its launchers answer as
 # (bin\<command>.cmd + bin\<command>; empty = prime-agent).
 $ReleaseAssetsUrlDefault = ''
 $PrefixDefault = ''
@@ -234,22 +232,6 @@ if (@('stable', 'beta') -notcontains $channel) { Fail "unknown release channel: 
 # $HOME\.local; the share/bin creation below makes it), but it must name
 # a directory path, not an existing FILE.
 if (Test-Path $prefix -PathType Leaf) { Fail "the install prefix names an existing file: $prefix" }
-
-# THE UV TARGET KNOB VALIDATES EARLY (the reviewer's finding): a bad value
-# must fail BEFORE any side effect - the daemon stop, the payload publish,
-# and the launcher swap all happen below, and a late refusal would leave
-# a half-applied install. The target must be FULLY QUALIFIED (a
-# drive-based or UNC path WITH its server and share): a rooted-only check
-# accepts drive-relative
-# spellings like C:uv-bin or \uv-bin, which resolve against the CURRENT
-# directory in later shells - the exact break this check exists to
-# prevent.
-if ($env:PRIME_AGENT_UV_BIN_DIR -and (($env:PRIME_AGENT_UV_BIN_DIR -notmatch '^[a-zA-Z]:[\\/]') -and ($env:PRIME_AGENT_UV_BIN_DIR -notmatch '^\\\\[^\\\\]+\\[^\\\\]+'))) {
-    Fail "PRIME_AGENT_UV_BIN_DIR must be a fully qualified absolute path (a drive-based or UNC path): $($env:PRIME_AGENT_UV_BIN_DIR)"
-}
-if ($env:PRIME_AGENT_UV_BIN_DIR -and $env:PRIME_AGENT_UV_BIN_DIR.Contains(';')) {
-    Fail "PRIME_AGENT_UV_BIN_DIR must not contain a semicolon (the Windows PATH separator): $($env:PRIME_AGENT_UV_BIN_DIR)"
-}
 
 # The channel files: the pointer (<base>/stable or <base>/beta) names the
 # version, the channel manifest (<base>/latest.json or <base>/beta.json)
@@ -612,11 +594,10 @@ if not defined PRIME_AGENT_CODING_AGENT_DIR set "PRIME_AGENT_CODING_AGENT_DIR=%U
 '@
         # THE DISTRIBUTION PINS (install-rust.sh parity): the variant's own
         # agent dir (~/.prime/agent-<variant>, never the official
-        # ~/.prime/agent), its own kernel venv under the prefix, and its own
-        # daemon pipe, all yielding to an explicit env value.
-        $variantVenv = Join-Path ([IO.Path]::GetFullPath($prefix)) 'kernel-venv'
+        # ~/.prime/agent) and its own daemon pipe, both yielding to an
+        # explicit env value.
         if ($VariantName) {
-            $cmdShim = $cmdShim.Replace("%USERPROFILE%\.prime\agent`"`r`n", "%USERPROFILE%\.prime\agent`"`r`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`r`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`r`n").Replace("%USERPROFILE%\.prime\agent`"`n", "%USERPROFILE%\.prime\agent`"`nif not defined PRIME_AGENT_KERNEL_VENV set `"PRIME_AGENT_KERNEL_VENV=$variantVenv`"`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`n").Replace("%USERPROFILE%\.prime\agent`"", "%USERPROFILE%\.prime\agent-$VariantName`"")
+            $cmdShim = $cmdShim.Replace("%USERPROFILE%\.prime\agent`"`r`n", "%USERPROFILE%\.prime\agent`"`r`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`r`n").Replace("%USERPROFILE%\.prime\agent`"`n", "%USERPROFILE%\.prime\agent`"`nif not defined PRIME_AGENT_DAEMON_SOCKET set `"PRIME_AGENT_DAEMON_SOCKET=$variantPipe`"`n").Replace("%USERPROFILE%\.prime\agent`"", "%USERPROFILE%\.prime\agent-$VariantName`"")
         }
         Set-Content -LiteralPath $launcher -Value $cmdShim
 
@@ -627,8 +608,7 @@ export PRIME_AGENT_CODING_AGENT_DIR="${PRIME_AGENT_CODING_AGENT_DIR:-$HOME/.prim
 exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
 '@
         if ($VariantName) {
-            $shVenv = $variantVenv.Replace('\', '/').Replace("'", "'\''")
-            $shPins = "[ -n `"`${PRIME_AGENT_KERNEL_VENV:-}`" ] || PRIME_AGENT_KERNEL_VENV='$shVenv'; export PRIME_AGENT_KERNEL_VENV`n[ -n `"`${PRIME_AGENT_DAEMON_SOCKET:-}`" ] || PRIME_AGENT_DAEMON_SOCKET='$variantPipe'; export PRIME_AGENT_DAEMON_SOCKET`n"
+            $shPins = "[ -n `"`${PRIME_AGENT_DAEMON_SOCKET:-}`" ] || PRIME_AGENT_DAEMON_SOCKET='$variantPipe'; export PRIME_AGENT_DAEMON_SOCKET`n"
             $shBody = $shBody.Replace("`r`n", "`n").Replace("/.prime/agent}`"`nexec", "/.prime/agent-$VariantName}`"`n${shPins}exec")
         }
         # LF endings + no BOM: the sh launcher must stay a POSIX file.
@@ -705,151 +685,6 @@ exec "$(dirname "$0")/../share/prime-agent/prime-agent.exe" "$@"
     $script:primeAgentInstallLock = $null
 }
 
-# --- the kernel pre-warm: uv + the Python venv (install-rust.sh
-# --- parity — the sh installer INSTALLS uv when it is missing and then
-# --- pre-warms the kernel; the ps1 mirrors the whole flow). THE SEPARATE
-# --- CHECKS (install-rust.sh's own discipline): the fetch and the script
-# --- run are verified one after the other, so a dead network cannot
-# --- masquerade as success — the astral script's own verdict is never
-# --- trusted, the uv.exe FILE decides. The destination rides the env
-# --- EXPLICITLY (UV_INSTALL_DIR, install-rust.sh's UV_INSTALL_DIR=
-# --- "$uv_bin_dir"): the computed target wins over any inherited value,
-# --- and the caller's values come back. Offline the step degrades to the
-# --- honest note plus the exact manual command (install-rust.sh's
-# --- note/todo shape); the install itself still succeeds.
-# THE UV TARGET KNOB (install-rust.sh's own PRIME_AGENT_UV_BIN_DIR): an
-# operator-set dir wins (a packaged install keeps uv inside its own tree,
-# the e2e harnesses point it at their scratch dir so a run never touches
-# the shared ~/.local/bin); without the knob the canonical ~/.local/bin is
-# the target (where the product's ensure_uv also looks).
-$uvInstallDir = Join-Path $HOME '.local\bin'
-# The knob's fully-qualified validation ran early with the other knobs
-# (before any side effect - see the validation block in the knobs section).
-if ($env:PRIME_AGENT_UV_BIN_DIR) { $uvInstallDir = $env:PRIME_AGENT_UV_BIN_DIR }
-$uvExe = Join-Path $uvInstallDir 'uv.exe'
-$uvDefaultExe = Join-Path (Join-Path $HOME '.local\bin') 'uv.exe'
-# THE THREE-WAY LOOKUP (the reviewer's finding): a usable uv is one on
-# PATH (Get-Command), at the install target, or at the canonical
-# ~/.local/bin - the product's own ensure_uv searches PATH and
-# ~/.local/bin, so both pre-existing spellings are honored (no duplicate
-# install), and the pre-warm gate below follows the record.
-# THE REAL-APPLICATION CHECK (the reviewer's finding): a bare Get-Command
-# also finds a PowerShell ALIAS or FUNCTION named uv in the caller's
-# session - which no child process can resolve - so only an Application
-# command (a real executable on PATH) counts.
-$uvOnPath = [bool](Get-Command uv -CommandType Application -ErrorAction SilentlyContinue)
-$uvAtTarget = Test-Path $uvExe -PathType Leaf
-$uvAtDefault = Test-Path $uvDefaultExe -PathType Leaf
-$uvKnown = $uvOnPath -or $uvAtTarget -or $uvAtDefault
-if (-not $uvKnown) {
-    Write-Host "installing uv (the kernel venv's package manager)"
-    $uvInstallerPath = Join-Path $download 'uv-install.ps1'
-    $callerProgressPreference = $ProgressPreference
-    $callerVerbosePreference = $VerbosePreference
-    $ProgressPreference = 'SilentlyContinue'
-    $VerbosePreference = 'SilentlyContinue'
-    try {
-        Invoke-WebRequest -Uri 'https://astral.sh/uv/install.ps1' -OutFile $uvInstallerPath -UseBasicParsing -TimeoutSec 60
-        if ((Test-Path $uvInstallerPath -PathType Leaf) -and ((Get-Item -LiteralPath $uvInstallerPath).Length -gt 0)) {
-            $callerUvInstallDir = $env:UV_INSTALL_DIR
-            $callerUvUnmanaged = $env:UV_UNMANAGED_INSTALL
-            $callerUvInstaller = $env:PRIME_AGENT_UV_INSTALLER
-            try {
-                $env:UV_INSTALL_DIR = $uvInstallDir
-                $env:UV_UNMANAGED_INSTALL = $null
-                # THE CHILD PROCESS (the reviewer's finding): the astral
-                # script exits 1 on its own failures (a Restricted execution
-                # policy among them - a stock Windows PowerShell 5.1 setting),
-                # and under Invoke-Expression that exit would leave THIS
-                # installer's control flow before the catch could degrade it
-                # to the honest note. The fetched script runs in its own
-                # shell with a process-scoped execution policy and its own
-                # silenced progress; the parent reads the child's exit as
-                # DATA, and the uv.exe FILE decides.
-                $childShell = if (Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue) {
-                    (Get-Command pwsh -CommandType Application).Source
-                } elseif (Get-Command powershell -CommandType Application -ErrorAction SilentlyContinue) {
-                    (Get-Command powershell -CommandType Application).Source
-                } else {
-                    # The process we are already running under is a PowerShell:
-                    # its own executable is the honest absolute fallback (a
-                    # bare 'powershell' could be intercepted by a caller alias
-                    # or function).
-                    (Get-Process -Id $PID).Path
-                }
-                # THE PATH RIDES AS DATA (the reviewers' finding): the
-                # download dir sits under the caller's TEMP, and a profile
-                # path with an apostrophe in it would break the single-
-                # quoted literal in the child script - the child parsed
-                # dead, the install skipped, the pre-warm left undone. So
-                # the path never rides the command line OR the script text:
-                # it rides the environment (the same handoff this block
-                # already runs UV_INSTALL_DIR through), and the child reads
-                # the variable - environment inheritance is OS semantics,
-                # no PowerShell parsing of the path happens at any version.
-                $env:PRIME_AGENT_UV_INSTALLER = $uvInstallerPath
-                $childScript = @"
-`$ProgressPreference = 'SilentlyContinue'
-`$VerbosePreference = 'SilentlyContinue'
-& `$env:PRIME_AGENT_UV_INSTALLER
-"@
-                $childEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
-                & $childShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $childEncoded *> $null
-                $uvRunExit = $LASTEXITCODE
-            } finally {
-                $env:UV_INSTALL_DIR = $callerUvInstallDir
-                $env:UV_UNMANAGED_INSTALL = $callerUvUnmanaged
-                $env:PRIME_AGENT_UV_INSTALLER = $callerUvInstaller
-            }
-            if (-not (Test-Path $uvExe -PathType Leaf)) {
-                Step-Fail 'installing uv' "the uv installer exited $uvRunExit; uv.exe is missing"
-            } elseif ($uvRunExit -ne 0) {
-                Step-Fail 'installing uv' "the uv installer exited $uvRunExit (uv.exe landed; keeping it)"
-            } else {
-                Step-Ok 'uv installed' $uvInstallDir
-            }
-        } else {
-            Step-Fail 'installing uv' 'the fetched uv installer is empty'
-        }
-    } catch {
-        Step-Fail 'installing uv' $_.Exception.Message
-    } finally {
-        $ProgressPreference = $callerProgressPreference
-        $VerbosePreference = $callerVerbosePreference
-        Remove-Item -LiteralPath $uvInstallerPath -Force -ErrorAction SilentlyContinue
-    }
-    if (-not (Test-Path $uvExe -PathType Leaf)) {
-        Write-Host 'note: could not install uv; the kernel pre-warm was skipped. The first session needs uv. Install it with:'
-        Write-Host '  irm https://astral.sh/uv/install.ps1 | iex'
-    }
-}
-# THE PRE-WARM'S PATH FIX (install-rust.sh's own): the product's ensure_uv
-# searches PATH and ~/.local/bin/uv(.exe) - it does NOT know the
-# PRIME_AGENT_UV_BIN_DIR target - so the prepend serves the uv THIS RUN
-# installed or found at the target when nothing usable answers on PATH
-# (the reviewer's finding: a pre-warm whose uv is known but unfindable
-# fails). THE GUARD (the macroscope finding): a working PATH uv is never
-# shadowed - a stale target file cannot displace it - and a uv at the
-# canonical ~/.local/bin needs no prepend (ensure_uv finds it by itself).
-# The record is recomputed first: the install above may have landed the
-# target uv.
-$uvAtTarget = Test-Path $uvExe -PathType Leaf
-$uvKnown = $uvOnPath -or $uvAtTarget -or $uvAtDefault
-if (-not $uvOnPath -and $uvAtTarget -and -not (Test-PathEntry $env:PATH $uvInstallDir)) {
-    $env:PATH = "$uvInstallDir;$env:PATH"
-}
-if ($uvKnown) {
-    Write-Host 'kernel pre-warm: provisioning the Python kernel runtime'
-    & $launcher --prime-agent-bootstrap
-    if ($LASTEXITCODE -ne 0) {
-        Step-Fail 'preparing the Python kernel' 'the first session retries it online'
-    } else {
-        Step-Ok 'kernel ready'
-    }
-} else {
-    Write-Host 'note: uv was not found; the first session bootstraps the kernel itself and needs the network once'
-}
-
 # --- the PATH add (the operator's smoothness ask, 2026-10-06; the
 # --- windows-native shape of the sh installer's profile note) --------------------
 # Linux boxes usually carry ~/.local/bin on PATH already, so install-rust.sh
@@ -876,14 +711,9 @@ if ($uvKnown) {
 # PATH above already works and the payload is published at this point, so
 # a registry that will not open or write must degrade to the honest
 # manual note - never abort a finished install over the nicety.
-# THE PATH-ADD TARGETS (the reviewer's finding: a documented install
-# target must stay discoverable once the installer exits - the product's
-# own ensure_uv searches PATH and ~/.local/bin only): the launcher's bin
-# dir always, and the custom uv target when the knob placed one outside
-# the canonical default (the prefix's own bin is already the launcher's
-# bin dir then; the e2e harnesses strip their scratch entries again).
+# THE PATH-ADD TARGET: the launcher's bin dir (the e2e harnesses strip
+# their scratch entries again).
 $pathDirs = @($bin)
-if ($uvInstallDir -ne (Join-Path $HOME '.local\bin') -and $uvInstallDir -ne $bin) { $pathDirs += $uvInstallDir }
 # THE ANY-APPEND FLAG (the reviewer's finding): a write on ANY iteration
 # must broadcast - a later no-op iteration must never suppress an earlier
 # append's WM_SETTINGCHANGE (Explorer would hand new terminals a stale
@@ -962,18 +792,17 @@ try {
             # 0xC0000135, STATUS_DLL_NOT_FOUND: the launcher's process never
             # started - a runtime DLL the binary links is missing. The shipped
             # build links the STATIC VC runtime, so this class should not
-            # occur; the honest message replaces the venv-bootstrap claim (a
-            # DLL failure has nothing to do with the kernel venv, and
-            # re-running cannot fix it).
+            # occur; the message names the class (re-running cannot fix a
+            # missing DLL).
             Write-Warning "the installed launcher failed --version with exit code -1073741515 (0xC0000135: the launcher could not start - a runtime DLL it needs is missing; the shipped build links the static runtime and should not need one - please report this install)"
         } else {
-            Write-Warning "the installed launcher failed --version (exit code $LASTEXITCODE; the first run bootstraps the kernel venv - re-run it)"
+            Write-Warning "the installed launcher failed --version (exit code $LASTEXITCODE)"
         }
     } else {
         Write-Host "installed: $versionOut"
     }
 } catch {
-    Write-Warning "the first --version run failed (the first run bootstraps the kernel venv - re-run it): $($_.Exception.Message)"
+    Write-Warning "the installed launcher's --version run failed: $($_.Exception.Message)"
 }
 Write-Host "launcher:  $launcher"
 Write-Host "payload:   $share"
