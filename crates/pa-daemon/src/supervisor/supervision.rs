@@ -213,7 +213,12 @@ impl Supervisor {
                 }
                 match status {
                     crate::session_host::HostedExit::Crashed(crash) => {
-                        self.record_session_crash(&resident, &crash).await;
+                        self.record_session_crash(
+                            &resident,
+                            &crash,
+                            super::crash::InterruptedTurn::Settle,
+                        )
+                        .await;
                     }
                     crate::session_host::HostedExit::Ended(reason) => self.log_line(&format!(
                         "session worker {} ended without a stop request ({})",
@@ -332,6 +337,16 @@ impl Supervisor {
                     "session worker {} failed after {failures} consecutive failures",
                     resident.worker_id
                 ));
+                let active_session_id = resident
+                    .descriptor
+                    .lock()
+                    .await
+                    .root_active_session_id
+                    .clone();
+                self.publish_session_fault(
+                    &active_session_id,
+                    json!({ "type": "session_failed", "failures": failures }),
+                );
                 return;
             }
             let backoff_ms = (BASE_BACKOFF_MS << (failures - 1).min(7)).min(MAX_BACKOFF_MS);
@@ -353,6 +368,16 @@ impl Supervisor {
                     // accumulate toward the give-up cap (the reset comes only from a stable
                     // lifetime on the crash path).
                     self.note_daemon_event("worker_restarted", None);
+                    let active_session_id = resident
+                        .descriptor
+                        .lock()
+                        .await
+                        .root_active_session_id
+                        .clone();
+                    self.publish_session_fault(
+                        &active_session_id,
+                        json!({ "type": "session_recovered", "failures": failures }),
+                    );
                     child = Some(new_child);
                 }
                 Err(error) => {

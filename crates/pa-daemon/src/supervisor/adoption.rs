@@ -320,6 +320,7 @@ impl Supervisor {
                 AdoptionBoot::PlainStartup => false,
             };
             if !interrupted && !kept {
+                self.clear_host_death_count(&resident).await;
                 // Dead worker with no durable busy state — and, on an update boot, not
                 // kept: leave it down (the descriptor stays on disk); the session reopens
                 // on the next client create.
@@ -352,6 +353,11 @@ impl Supervisor {
             // Dead worker with journal-proven live work (or a kept worker): relaunch from
             // the durable create command. The spawned child rides out to the monitor arming
             // below — the descriptor's pid is the DEAD pre-restart holder.
+            // An update restart settled its sessions on the way down; any
+            // other boot that finds a turn in flight follows a daemon death.
+            if interrupted && !kept {
+                self.record_host_death(&resident).await;
+            }
             match self.relaunch_worker(&resident).await {
                 Ok(child) => (Ok(()), Some(child)),
                 Err(error) => (Err(error), None),

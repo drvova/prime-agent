@@ -7,7 +7,79 @@ use crate::session_host::SessionCrash;
 /// one JSON object per line, never rewritten by the daemon.
 pub(crate) const SESSION_CRASH_LOG: &str = "session-crashes.jsonl";
 
+/// What becomes of the turn that was running when a session went down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InterruptedTurn {
+    /// Settle it as failed for the attached clients and drop it from the
+    /// recovery journal: the rebuilt session comes back idle.
+    Settle,
+    /// Leave it in the recovery journal: the rebuilt session runs it again.
+    Replay,
+}
+
+/// The descriptor field counting consecutive daemon deaths that caught this
+/// session mid-turn.
+const UNCLEAN_REVIVALS: &str = "uncleanRevivals";
+
 impl Supervisor {
+    /// A boot found this session mid-turn in a daemon that died without
+    /// settling it (an abort-class fault, a kill, a power loss). Make that
+    /// visible the way a contained crash is, and decide the turn: the first
+    /// time it is run again; when the daemon dies under the same session's
+    /// turn twice in a row the turn is the likeliest cause, and it is
+    /// settled as failed instead of taking the daemon down a third time.
+    pub(super) async fn record_host_death(self: &Arc<Self>, resident: &Arc<ResidentWorker>) {
+        let prior = {
+            let mut descriptor = resident.descriptor.lock().await;
+            let prior = descriptor
+                .rest
+                .get(UNCLEAN_REVIVALS)
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            descriptor
+                .rest
+                .insert(UNCLEAN_REVIVALS.to_string(), json!(prior + 1));
+            prior
+        };
+        let (message, turn) = if prior == 0 {
+            (
+                "the daemon stopped while this session's turn was running; the session was rebuilt from its transcript and the turn was started again",
+                InterruptedTurn::Replay,
+            )
+        } else {
+            (
+                "the daemon stopped again while this session's turn was running; the session was rebuilt from its transcript and the turn was not started again",
+                InterruptedTurn::Settle,
+            )
+        };
+        self.record_session_crash(
+            resident,
+            &SessionCrash {
+                kind: "daemon_restart".to_string(),
+                message: message.to_string(),
+                location: String::new(),
+                thread: String::new(),
+                at: util::now_iso(),
+            },
+            turn,
+        )
+        .await;
+    }
+
+    /// A boot found this session idle: whatever stopped the daemon earlier,
+    /// its turns have ended cleanly since.
+    pub(super) async fn clear_host_death_count(&self, resident: &Arc<ResidentWorker>) {
+        let mut descriptor = resident.descriptor.lock().await;
+        if descriptor.rest.remove(UNCLEAN_REVIVALS).is_some() {
+            if let Err(error) = persist_worker(&resident.descriptor_path, &descriptor) {
+                self.log_line(&format!(
+                    "session worker {}: its record could not be updated: {error:#}",
+                    resident.worker_id
+                ));
+            }
+        }
+    }
+
     /// Make one session crash visible: append it to the crash log, stamp it
     /// on the session's descriptor (the roster's `lastCrash`), tell every
     /// attached client, and count it. The caller owns what happens next (the
@@ -16,8 +88,9 @@ impl Supervisor {
         self: &Arc<Self>,
         resident: &Arc<ResidentWorker>,
         crash: &SessionCrash,
+        turn: InterruptedTurn,
     ) {
-        let (active_session_id, record) = {
+        let (active_session_id, record, journal_path) = {
             let mut descriptor = resident.descriptor.lock().await;
             let record = json!({
                 "workerId": resident.worker_id,
@@ -44,7 +117,11 @@ impl Supervisor {
                     resident.worker_id
                 ));
             }
-            (descriptor.root_active_session_id.clone(), record)
+            (
+                descriptor.root_active_session_id.clone(),
+                record,
+                std::path::PathBuf::from(&descriptor.recovery_journal_path),
+            )
         };
         let log_path = self.descriptor_dir.join(SESSION_CRASH_LOG);
         let line = format!("{record}\n");
@@ -80,6 +157,35 @@ impl Supervisor {
                 "at": crash.at,
             }),
         );
+        // A turn that was running when the session went down will never emit
+        // its own end: settle it for the attached clients with the reason.
+        if turn == InterruptedTurn::Settle
+            && crate::journal::WorkerRecoveryJournal::read_interrupted(&journal_path)
+        {
+            self.publish_session_fault(
+                &active_session_id,
+                json!({ "type": "turn_end", "error": crash.reason() }),
+            );
+            self.publish_session_fault(&active_session_id, json!({ "type": "agent_end" }));
+            // The rebuilt session must not run that turn again: whatever in
+            // it crashed the session would crash the rebuild too. The
+            // lifetime that wrote the journal is gone, so this writer is its
+            // only one.
+            if let Err(error) = crate::journal::WorkerRecoveryJournal::drop_running_turns(
+                &journal_path,
+            )
+            .and_then(|()| {
+                crate::journal::WorkerRecoveryJournal::settle_busy_records(
+                    &journal_path,
+                    "session_crashed",
+                )
+            }) {
+                self.log_line(&format!(
+                    "session worker {}: the crashed turn could not be settled in its journal: {error:#}",
+                    resident.worker_id
+                ));
+            }
+        }
         if self.telemetry_recording_on() {
             if let Some(client) = &*self.telemetry.lock().unwrap() {
                 pa_core::session_engine::telemetry::track_session_crashed(client, &crash.kind);

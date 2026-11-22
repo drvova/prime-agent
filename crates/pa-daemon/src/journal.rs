@@ -272,6 +272,30 @@ pub struct WorkerQueueSnapshotRecord {
     #[serde(default)]
     pub suspended: bool,
     pub recorded_at: String,
+    /// The rows of the turn that had just been picked up when this snapshot
+    /// was taken (they have left their lane). A session revived after its
+    /// host died replays them ahead of the lane they came from; a session
+    /// rebuilt after its own crash does not, because the supervisor drops
+    /// them first ([`WorkerRecoveryJournal::drop_running_turns`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub running: Vec<WorkerQueueItemRecord>,
+    /// Whether `running` came off the steering lane (else the follow-up lane).
+    #[serde(default)]
+    pub running_steering: bool,
+}
+
+impl WorkerQueueSnapshotRecord {
+    /// The lanes a restore redelivers: the picked-up turn's rows first.
+    fn restored_lanes(&self) -> QueueSnapshotLanes {
+        let (mut steering, mut follow_up) = (self.steering.clone(), self.follow_up.clone());
+        let lane = if self.running_steering {
+            &mut steering
+        } else {
+            &mut follow_up
+        };
+        lane.splice(0..0, self.running.iter().cloned());
+        (steering, follow_up, self.suspended)
+    }
 }
 
 /// One session's latest queue snapshot as read back for a restore: the
@@ -441,6 +465,8 @@ impl WorkerRecoveryJournal {
             follow_up: follow_up.to_vec(),
             suspended,
             recorded_at: crate::util::now_iso(),
+            running: Vec::new(),
+            running_steering: false,
         };
         append_record(&self.path, &serde_json::to_value(&record)?)?;
         self.queue_snapshots
@@ -476,6 +502,8 @@ impl WorkerRecoveryJournal {
             follow_up: follow_up.to_vec(),
             suspended,
             recorded_at: crate::util::now_iso(),
+            running: Vec::new(),
+            running_steering: false,
         };
         let verdict_unchanged = self.latest.get(active_session_id).is_some_and(|previous| {
             previous.busy == busy
@@ -516,13 +544,60 @@ impl WorkerRecoveryJournal {
     /// The latest persisted queue rows for `active_session_id`.
     #[must_use]
     pub fn latest_queue_snapshot(&self, active_session_id: &str) -> Option<QueueSnapshotLanes> {
-        self.queue_snapshots.get(active_session_id).map(|record| {
-            (
-                record.steering.clone(),
-                record.follow_up.clone(),
-                record.suspended,
-            )
-        })
+        self.queue_snapshots
+            .get(active_session_id)
+            .map(WorkerQueueSnapshotRecord::restored_lanes)
+    }
+
+    /// Record a turn's pickup: the lanes as they are now, and the rows the
+    /// turn took off one of them. Until the next snapshot, a restore
+    /// redelivers those rows first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot record cannot be serialized or appended.
+    pub(crate) fn record_turn_pickup(
+        &mut self,
+        active_session_id: &str,
+        running: Vec<WorkerQueueItemRecord>,
+        running_steering: bool,
+        lanes: crate::worker::QueueLanes,
+        suspended: bool,
+    ) -> Result<()> {
+        let record = WorkerQueueSnapshotRecord {
+            version: QUEUE_SNAPSHOT_VERSION,
+            r#type: QUEUE_SNAPSHOT_RECORD_TYPE.to_string(),
+            active_session_id: active_session_id.to_string(),
+            steering: lanes.steering,
+            follow_up: lanes.follow_up,
+            suspended,
+            recorded_at: crate::util::now_iso(),
+            running,
+            running_steering,
+        };
+        append_record(&self.path, &serde_json::to_value(&record)?)?;
+        self.queue_snapshots
+            .insert(active_session_id.to_string(), record);
+        Ok(())
+    }
+
+    /// Forget the turns that were running when the journal's writer went
+    /// down, keeping every queued row behind them: a session rebuilt after
+    /// its own crash must not run the turn that crashed it again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be opened or appended.
+    pub fn drop_running_turns(path: &Path) -> Result<()> {
+        let mut journal = Self::open(path)?;
+        for record in journal.queue_snapshots.values_mut() {
+            if !record.running.is_empty() {
+                record.running.clear();
+                record.recorded_at = crate::util::now_iso();
+                append_record(&journal.path, &serde_json::to_value(&*record)?)?;
+            }
+        }
+        Ok(())
     }
 
     /// Read the latest queue snapshot for a session straight from a journal
@@ -537,8 +612,8 @@ impl WorkerRecoveryJournal {
         active_session_id: &str,
     ) -> Result<Option<QueueSnapshotLanes>> {
         Ok(parse_queue_snapshot_records(path)?
-            .remove(active_session_id)
-            .map(|record| (record.steering, record.follow_up, record.suspended)))
+            .get(active_session_id)
+            .map(WorkerQueueSnapshotRecord::restored_lanes))
     }
 
     fn compact(&self, finalize: Finalize) -> Result<()> {
@@ -601,6 +676,11 @@ fn parse_queue_snapshot_records(path: &Path) -> Result<HashMap<String, WorkerQue
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
+            running: parse_snapshot_lane(record.get("running")),
+            running_steering: record
+                .get("running_steering")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         };
         latest.insert(active_session_id.to_string(), entry);
     }

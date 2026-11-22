@@ -534,12 +534,36 @@ impl Cells {
             // Steel resumes its threads after a collection, which drops an
             // interrupt still pending: it is raised again until the cell has
             // left the engine.
+            // The interrupt stops Scheme code and every host function that
+            // watches the cell's signal. One that does not can only be
+            // reported: the session's host decides what to do with a thread
+            // that will not come back. The report rides this loop, so it
+            // does not depend on anyone still waiting for the cell.
+            let stuck = pa_types::session_scope::current()
+                .and_then(|scope| scope.slot::<StuckCellSink>())
+                .map(|sink| {
+                    let grace = pa_types::session_scope::var(STUCK_CELL_GRACE_ENV)
+                        .ok()
+                        .and_then(|raw| raw.parse().ok())
+                        .map_or(STUCK_CELL_GRACE, Duration::from_millis);
+                    (sink, grace, tokio::time::Instant::now() + grace)
+                });
             self.runtime.spawn(async move {
                 let mut again = tokio::time::interval(Duration::from_millis(20));
                 again.tick().await;
                 loop {
                     again.tick().await;
                     if !raise() {
+                        return;
+                    }
+                    if let Some((sink, grace, _)) = stuck
+                        .as_ref()
+                        .filter(|(_, _, due)| tokio::time::Instant::now() >= *due)
+                    {
+                        (sink.0)(&format!(
+                            "a kernel cell did not stop within {} ms of its interrupt: a host call is not observing the cell's cancellation",
+                            grace.as_millis()
+                        ));
                         return;
                     }
                 }
@@ -1065,28 +1089,7 @@ pub(super) async fn execute(
         Waited::Ended(joined) => (joined, None),
         Waited::Stopped(stop) => {
             cells.interrupt(&cell);
-            // The interrupt stops Scheme code and every host function that
-            // watches the cell's signal. One that does not can only be
-            // reported: the session's host decides what to do with a thread
-            // that will not come back.
-            let grace = pa_types::session_scope::var(STUCK_CELL_GRACE_ENV)
-                .ok()
-                .and_then(|raw| raw.parse().ok())
-                .map_or(STUCK_CELL_GRACE, Duration::from_millis);
-            match tokio::time::timeout(grace, &mut thread).await {
-                Ok(joined) => (joined, Some(stop)),
-                Err(_) => {
-                    if let Some(sink) = pa_types::session_scope::current()
-                        .and_then(|scope| scope.slot::<StuckCellSink>())
-                    {
-                        (sink.0)(&format!(
-                            "a kernel cell did not stop within {} ms of its interrupt: a host call is not observing the cell's cancellation",
-                            grace.as_millis()
-                        ));
-                    }
-                    (thread.await, Some(stop))
-                }
-            }
+            (thread.await, Some(stop))
         }
         Waited::Outlived => {
             let shown = take_shown(on_late_sent_agent_message);

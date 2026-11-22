@@ -296,25 +296,30 @@ pub(crate) fn checkpoint_queue_recovery(
     );
 }
 
+/// Queue rows as the recovery journal records them.
+pub(crate) fn queue_item_records<'a>(
+    items: impl IntoIterator<Item = &'a QueuedItem>,
+) -> Vec<crate::journal::WorkerQueueItemRecord> {
+    items
+        .into_iter()
+        .map(|item| crate::journal::WorkerQueueItemRecord {
+            message: item.message.clone(),
+            priority: Some(item.priority),
+            preview: item.preview.clone(),
+            custom_message: item.custom_message.clone(),
+            queue_key: item.queue_key.clone(),
+            queue_visible: item.queue_visible,
+            policy: item.policy.journal_value().to_string(),
+            forced_batch: item.forced_batch,
+            images: item.images.clone(),
+        })
+        .collect()
+}
+
 pub(crate) fn queue_lanes(core: &SessionCore) -> QueueLanes {
-    fn items(lane: &VecDeque<QueuedItem>) -> Vec<crate::journal::WorkerQueueItemRecord> {
-        lane.iter()
-            .map(|item| crate::journal::WorkerQueueItemRecord {
-                message: item.message.clone(),
-                priority: Some(item.priority),
-                preview: item.preview.clone(),
-                custom_message: item.custom_message.clone(),
-                queue_key: item.queue_key.clone(),
-                queue_visible: item.queue_visible,
-                policy: item.policy.journal_value().to_string(),
-                forced_batch: item.forced_batch,
-                images: item.images.clone(),
-            })
-            .collect()
-    }
     QueueLanes {
-        steering: items(&core.steering),
-        follow_up: items(&core.follow_up),
+        steering: queue_item_records(&core.steering),
+        follow_up: queue_item_records(&core.follow_up),
     }
 }
 

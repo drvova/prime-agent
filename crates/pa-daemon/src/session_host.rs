@@ -54,6 +54,39 @@ fn live() -> &'static Mutex<HashMap<u32, String>> {
     LIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The fault each crashed lifetime ended with, kept while the supervisor
+/// still holds that lifetime's handle.
+fn crashes() -> &'static Mutex<HashMap<u32, SessionCrash>> {
+    static CRASHES: OnceLock<Mutex<HashMap<u32, SessionCrash>>> = OnceLock::new();
+    CRASHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The fault the hosted lifetime `pid` ended with, when it crashed: what a
+/// request that was in flight on it failed for.
+#[must_use]
+pub fn recorded_crash(pid: u32) -> Option<SessionCrash> {
+    crashes()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(&pid)
+        .cloned()
+}
+
+impl SessionCrash {
+    /// The one-line reason a caller is given for work this crash failed.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        if self.location.is_empty() {
+            format!("Session crashed ({}): {}", self.kind, self.message)
+        } else {
+            format!(
+                "Session crashed ({}): {} at {}",
+                self.kind, self.message, self.location
+            )
+        }
+    }
+}
+
 /// Whether `pid` is a hosted session's id rather than a process id.
 #[must_use]
 pub fn is_hosted_pid(pid: u32) -> bool {
@@ -125,6 +158,11 @@ pub(crate) struct HostControl {
 impl HostControl {
     /// Record the first fault and end the session.
     fn fault(&self, crash: SessionCrash) {
+        crashes()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(self.pid)
+            .or_insert_with(|| crash.clone());
         self.crash
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -204,6 +242,15 @@ impl std::fmt::Debug for HostControl {
             .debug_struct("HostControl")
             .field("pid", &self.pid)
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for HostedSession {
+    fn drop(&mut self) {
+        crashes()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.pid);
     }
 }
 

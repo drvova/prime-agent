@@ -88,8 +88,32 @@ impl TurnRunner {
                     None
                 }
             };
+            if let Some((lane, items)) = &item {
+                // The pickup record: these rows have left their lane, and the
+                // journal says so. A revive after the host died redelivers
+                // them; a rebuild after this session's own crash does not.
+                let (active_session_id, lanes, suspended) = {
+                    let core = self.core.lock().unwrap();
+                    (
+                        core.active_session_id.clone(),
+                        super::queue_lanes(&core),
+                        core.queued_input_suspended,
+                    )
+                };
+                if let Some(journal) = self.recovery.lock().unwrap().as_mut() {
+                    if let Err(error) = journal.record_turn_pickup(
+                        &active_session_id,
+                        super::queue::queue_item_records(items),
+                        matches!(lane, Lane::Steering),
+                        lanes,
+                        suspended,
+                    ) {
+                        eprintln!("pa-daemon worker: turn pickup was not journaled: {error:#}");
+                    }
+                }
+            }
             if let Some((lane, items)) = item {
-                // No pickup checkpoint: admission recorded its busy evidence; the
+                // No busy checkpoint here: admission recorded its busy evidence; the
                 // settle's `turn_end` verdict parks the session later. The item leaves
                 // the queue projection BEFORE its turn starts (a stale row would
                 // reject a browse edit).
