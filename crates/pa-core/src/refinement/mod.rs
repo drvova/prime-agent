@@ -140,9 +140,8 @@ pub fn get_harness_state_path(harness_state_dir: &Path) -> PathBuf {
 pub const FACTORY_SETTINGS_FILE_NAME: &str = "settings.json";
 
 /// The one refusal every gated factory surface raises while the opt-in is
-/// off. Byte-identical to the kernel's `FACTORY_DISABLED_MESSAGE`
-/// (`prime-agent-runtime/src/rlm/factory.py`), so one exact message pins
-/// both sides of the gate.
+/// off, from the harness store's writers and the kernel's factory functions
+/// alike.
 pub const FACTORY_DISABLED_MESSAGE: &str = "the factory is disabled; run /factory on to enable it";
 
 /// The `factory.enabled` opt-in setting (default off), read leniently from
@@ -651,8 +650,7 @@ mod tests {
         // A corrupt document reads as the disabled default, never a crash.
         std::fs::write(tmp.path().join(FACTORY_SETTINGS_FILE_NAME), "{ not json").unwrap();
         assert!(!factory_enabled(tmp.path()));
-        // The refusal is the one exact message, byte-identical to the
-        // kernel-side FACTORY_DISABLED_MESSAGE (rlm/factory.py).
+        // The refusal is the one exact message.
         assert_eq!(
             FACTORY_DISABLED_MESSAGE,
             "the factory is disabled; run /factory on to enable it"

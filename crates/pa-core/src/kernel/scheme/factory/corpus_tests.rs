@@ -1,5 +1,5 @@
 //! Replays the calls the Python kernel's factory tests made to its pure
-//! functions (`prime-agent-runtime/test/test_factory.py`, recorded once
+//! functions (`test_factory.py` of the retired Python runtime, recorded once
 //! with every argument and result) against this port: each row names the
 //! Python test it came from, the function, its arguments, and what Python
 //! returned or raised.

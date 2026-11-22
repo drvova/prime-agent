@@ -138,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn wrong_typed_python_cell_timeout_loads_as_unset() {
+    fn wrong_typed_cell_timeout_loads_as_unset() {
         // A known field: a wrong-typed value must behave as unset (the
         // getter's default), not survive raw in `extra` where a save
         // would persist the bad key.
@@ -147,7 +147,7 @@ mod tests {
             "pythonCellTimeoutValid": 30_000
         });
         let settings = from_value_lenient(&value);
-        assert_eq!(settings.python_cell_timeout_ms, None);
+        assert_eq!(settings.cell_timeout_ms, None);
         assert!(
             !settings.extra.contains_key("pythonCellTimeoutMs"),
             "a wrong-typed known field never rides extra into a save"

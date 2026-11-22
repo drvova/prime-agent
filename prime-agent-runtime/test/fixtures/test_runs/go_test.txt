@@ -1,5 +1,0 @@
---- FAIL: TestAdd (0.00s)
-    calc_test.go:7: Add(2, 2) = 5, want 4
-FAIL
-FAIL	example.com/sample	0.006s
-FAIL

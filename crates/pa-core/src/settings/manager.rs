@@ -689,13 +689,13 @@ impl SettingsManager {
         self.save_global(&["favoriteModels"])
     }
 
-    /// The yield window for user `python_repl` cells the user set in a
+    /// The yield window for the model's kernel cells the user set in a
     /// settings file, in milliseconds (`0` disables); `None` when unset, and
     /// the window is then learned per project. Daemonless sessions never use
     /// it.
     #[must_use]
-    pub fn get_python_cell_timeout_ms(&self) -> Option<u64> {
-        self.merged.python_cell_timeout_ms
+    pub fn get_cell_timeout_ms(&self) -> Option<u64> {
+        self.merged.cell_timeout_ms
     }
 
     /// The steering queue's delivery mode: `all` co-delivers every queued message at
@@ -1397,13 +1397,13 @@ mod tests {
     /// An unset `pythonCellTimeoutMs` stays unset (the window is then learned),
     /// distinct from any value the user wrote, zero (the disable) included.
     #[test]
-    fn python_cell_timeout_distinguishes_unset_from_set() {
-        let read = |python_cell_timeout_ms| {
+    fn cell_timeout_distinguishes_unset_from_set() {
+        let read = |cell_timeout_ms| {
             SettingsManager::in_memory(&Settings {
-                python_cell_timeout_ms,
+                cell_timeout_ms,
                 ..Settings::default()
             })
-            .get_python_cell_timeout_ms()
+            .get_cell_timeout_ms()
         };
         assert_eq!(
             [read(None), read(Some(60_000)), read(Some(0))],

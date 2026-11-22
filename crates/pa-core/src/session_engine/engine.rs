@@ -299,7 +299,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let factory_allowed_models = settings.get_allowed_models();
     // Captured before `settings` moves into the resource loader: the cell
     // yield window the user set (`0` disables; unset, it is learned).
-    let python_cell_timeout_ms = settings.get_python_cell_timeout_ms();
+    let cell_timeout_ms = settings.get_cell_timeout_ms();
     // The prompt-cache policy (`cacheRetention`, `cacheWarming`).
     let (cache_retention, cache_warming) =
         (settings.get_cache_retention(), settings.get_cache_warming());
@@ -515,7 +515,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     let cell_window = crate::kernel::cell_window::CellWindow::for_session(
         crate::kernel::cell_window::CellWindowConfig {
             daemonless: config.daemonless,
-            configured_ms: python_cell_timeout_ms,
+            configured_ms: cell_timeout_ms,
             agent_dir: &config.agent_dir,
             project_dir: &cwd,
             on_armed: config.telemetry.is_some().then(|| {

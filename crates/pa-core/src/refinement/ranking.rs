@@ -183,7 +183,7 @@ pub struct HarnessStatePromptOptions {
     pub max_entries_per_kind: Option<usize>,
     pub max_refinements: Option<usize>,
     pub max_content_length: Option<usize>,
-    pub include_ipython_examples: Option<bool>,
+    pub include_kernel_examples: Option<bool>,
     pub include_shell_examples: bool,
     pub include_refine_examples: Option<bool>,
     pub query_terms: Option<HarnessQueryTerms>,
@@ -205,7 +205,7 @@ pub fn format_harness_state_for_prompt(
     let max_content_length = options
         .max_content_length
         .unwrap_or(DEFAULT_OVERVIEW_CONTENT_LIMIT);
-    let include_kernel_tool = options.include_ipython_examples.unwrap_or(true);
+    let include_kernel_tool = options.include_kernel_examples.unwrap_or(true);
     let include_refine = options
         .include_refine_examples
         .unwrap_or(include_kernel_tool);
@@ -380,7 +380,7 @@ pub const HARNESS_DIGEST_FINGERPRINT_VERSION: u32 = 1;
 /// are excluded — the digest stays frozen per delivery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HarnessDigestRenderFlags {
-    pub include_ipython_examples: bool,
+    pub include_kernel_examples: bool,
     pub include_shell_examples: bool,
     pub include_refine_examples: bool,
 }
@@ -468,9 +468,9 @@ pub fn harness_digest_fingerprint(
             serde_json::Value::Object(material)
         })
         .collect::<Vec<_>>();
-    // The shell call-contract renders only when IPython examples are
+    // The shell call-contract renders only when kernel examples are
     // absent: fingerprint only the flags the render reads.
-    let effective_shell_examples = if render_flags.include_ipython_examples {
+    let effective_shell_examples = if render_flags.include_kernel_examples {
         false
     } else {
         render_flags.include_shell_examples
@@ -478,7 +478,7 @@ pub fn harness_digest_fingerprint(
     let mut flags_material = serde_json::Map::new();
     flags_material.insert(
         "includeIpythonExamples".to_string(),
-        serde_json::json!(render_flags.include_ipython_examples),
+        serde_json::json!(render_flags.include_kernel_examples),
     );
     flags_material.insert(
         "includeShellExamples".to_string(),
@@ -646,7 +646,7 @@ mod tests {
     #[test]
     fn factory_digest_line_renders_with_the_run_watch_stop_hint() {
         // TS shape: the factory line renders only when entries exist and
-        // IPython examples are on (the await forms follow the accepted
+        // kernel examples are on (the await forms follow the accepted
         // review fix for the coroutine-object pitfall).
         let mut state = empty_harness_state();
         let mut factory = make_entry("sweep", "PR review sweep", "Sweep review.", "review");
@@ -661,7 +661,7 @@ mod tests {
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(true),
+                include_kernel_examples: Some(true),
                 ..Default::default()
             },
         );
@@ -669,13 +669,13 @@ mod tests {
             "factory: 1 (state-machine workflow specs; run one with `(factory-run \"<id>\")`; watch with `(factory-status run-id)`, stop with `(factory-stop run-id)`, resume a paused run with `(factory-resume run-id)`)"
         ));
         assert!(rendered.contains("- [global:sweep] PR review sweep (review, v1): Sweep review."));
-        // Without IPython examples the hint line stays a plain count.
+        // Without kernel examples the hint line stays a plain count.
         let plain = format_harness_state_for_prompt(
             &state,
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(false),
+                include_kernel_examples: Some(false),
                 ..Default::default()
             },
         );
@@ -687,7 +687,7 @@ mod tests {
             &HarnessStatePromptOptions {
                 max_entries_per_kind: Some(40),
                 query_terms: None,
-                include_ipython_examples: Some(true),
+                include_kernel_examples: Some(true),
                 ..Default::default()
             },
         );
@@ -698,7 +698,7 @@ mod tests {
         // only for skills, so an arguments-only change stays inert, exactly
         // like the TS fingerprint material).
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_kernel_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
         };
@@ -731,7 +731,7 @@ mod tests {
             .unwrap()
             .insert("zeta".to_string(), zeta);
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_kernel_examples: true,
             include_shell_examples: false,
             include_refine_examples: false,
         };
@@ -763,18 +763,18 @@ mod tests {
             .content
             .push_str(" more");
         assert_ne!(harness_digest_fingerprint(&changed, flags), baseline);
-        // The shell flag cannot change the digest while IPython examples
+        // The shell flag cannot change the digest while kernel examples
         // take precedence: it is normalized out of the material.
         let shell_on = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_kernel_examples: true,
             include_shell_examples: true,
             include_refine_examples: false,
         };
         assert_eq!(harness_digest_fingerprint(&state, shell_on), baseline);
-        // Without IPython examples the shell contract renders, so the flag
-        // participates; so does the refine flag while IPython is on.
+        // Without kernel examples the shell contract renders, so the flag
+        // participates; so does the refine flag while the kernel examples are on.
         let shell_only = HarnessDigestRenderFlags {
-            include_ipython_examples: false,
+            include_kernel_examples: false,
             include_shell_examples: true,
             include_refine_examples: false,
         };
@@ -815,7 +815,7 @@ mod tests {
                 created_at: String::new(),
             });
         let flags = HarnessDigestRenderFlags {
-            include_ipython_examples: true,
+            include_kernel_examples: true,
             include_shell_examples: false,
             include_refine_examples: true,
         };

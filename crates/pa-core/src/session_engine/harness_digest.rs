@@ -89,14 +89,14 @@ fn render_digest_with_fingerprint(
         .map(|dir| load_harness_state(dir, HarnessScope::Local));
     let merged = merge_harness_states(&global, local.as_ref());
     let render_flags = HarnessDigestRenderFlags {
-        include_ipython_examples: context.include_kernel_tool,
+        include_kernel_examples: context.include_kernel_tool,
         include_shell_examples: context.include_shell_examples,
         include_refine_examples: context.include_kernel_tool && context.include_refine,
     };
     let digest = format_harness_state_for_prompt(
         &merged,
         &HarnessStatePromptOptions {
-            include_ipython_examples: Some(context.include_kernel_tool),
+            include_kernel_examples: Some(context.include_kernel_tool),
             include_shell_examples: context.include_shell_examples,
             include_refine_examples: Some(render_flags.include_refine_examples),
             query_terms: Some(query_terms),

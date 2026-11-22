@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 
 /// The window before anything is learned: the previous fixed default.
 pub(crate) const COLD_WINDOW: Duration =
-    Duration::from_millis(crate::settings::types::DEFAULT_PYTHON_CELL_TIMEOUT_MS);
+    Duration::from_millis(crate::settings::types::DEFAULT_CELL_TIMEOUT_MS);
 
 /// The shortest learned window. Below about 10 s, ordinary jitter (a cold
 /// import, a busy disk) would push routine cells into the background and cost

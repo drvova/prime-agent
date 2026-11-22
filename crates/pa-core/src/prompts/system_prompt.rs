@@ -162,10 +162,7 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         .selected_tools
         .clone()
         .unwrap_or_else(|| vec![pa_types::ai::SCHEME_TOOL_NAME]);
-    // The kernel tool under either name: a session that still registers the kernel as
-    // `python_repl` gets the same tail.
-    let has_kernel = tools.contains(&pa_types::ai::SCHEME_TOOL_NAME)
-        || tools.contains(&pa_types::ai::PYTHON_TOOL_NAME);
+    let has_kernel = tools.contains(&pa_types::ai::KERNEL_TOOL_NAME);
     let has_file_access = has_kernel || tools.contains(&"bash");
 
     let context = context_files_section(&options.context_files);

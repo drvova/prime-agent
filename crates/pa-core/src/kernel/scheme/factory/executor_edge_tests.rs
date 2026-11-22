@@ -1,7 +1,7 @@
 //! More of the Python kernel's `FactoryExecutorTest` cases: naming, input
 //! binding over a failed or running source, resumes, worker deaths, joins,
 //! residents, scale, and the capture cap. Each test names the Python tests
-//! it carries over (`prime-agent-runtime/test/test_factory.py`).
+//! it carries over (`test_factory.py` of the retired Python runtime).
 
 use serde_json::{json, Value};
 

@@ -2,7 +2,7 @@
 //! control loop waits on the host. The scripted host holds one named
 //! request open (a gate) so the other side acts inside that window; nothing
 //! here depends on timing. Each test names the Python tests it carries over
-//! (`prime-agent-runtime/test/test_factory.py`).
+//! (`test_factory.py` of the retired Python runtime).
 
 use std::time::Duration;
 

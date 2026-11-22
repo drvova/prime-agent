@@ -2,7 +2,7 @@
 //! watch views, the daemon and TUI lane with its capped reply frame, the
 //! machine library, python states, and the Scheme API on a live kernel.
 //! Each test names the Python tests it carries over
-//! (`prime-agent-runtime/test/test_factory.py`).
+//! (`test_factory.py` of the retired Python runtime).
 
 use std::time::Duration;
 

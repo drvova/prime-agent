@@ -1,5 +1,5 @@
 //! The executor against a scripted supervisor: the cases of the Python
-//! kernel's `FactoryExecutorTest` (`prime-agent-runtime/test/test_factory.py`),
+//! kernel's `FactoryExecutorTest` (`test_factory.py` of the retired Python runtime),
 //! each named in its test's comment. Time is tokio's paused clock, so a
 //! poll, a backoff or a budget passes without a real wait.
 
