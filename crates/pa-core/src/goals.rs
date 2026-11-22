@@ -59,7 +59,7 @@ pub struct SerializedGoal {
     pub cost_used_usd: Option<f64>,
 }
 
-/// Reply payload for goal.* host requests from the Python kernel.
+/// Reply payload for goal.* host requests from the kernel.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct GoalHostResponse {

@@ -1151,8 +1151,8 @@ pub(super) async fn execute(
                             edited.join(", ")
                         )
                     };
-                    // The notice's own wording for cut output names a Python
-                    // call; this one says where the rest is in Scheme.
+                    // Cut output says here where the rest is, so the notice
+                    // adds no wording of its own.
                     let data = json!({
                         "type": "cell.completed",
                         "cell": id,

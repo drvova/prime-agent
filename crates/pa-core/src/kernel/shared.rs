@@ -165,7 +165,7 @@ impl KernelCommandFailure {
     }
 }
 
-/// A typed request from Python code running in the kernel to the host.
+/// A typed request from a cell running in the kernel to the host.
 #[derive(Debug, Clone)]
 pub struct HostRequestPayload {
     /// The request payload.
@@ -175,8 +175,8 @@ pub struct HostRequestPayload {
 pub type HostHandlerFuture = Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>;
 pub type HostHandlerFn = Arc<dyn Fn(HostRequestPayload) -> HostHandlerFuture + Send + Sync>;
 
-/// Handles one typed request from Python code running in the kernel.
-/// The returned value is delivered verbatim to the Python caller.
+/// Handles one typed request from a cell running in the kernel.
+/// The returned value is delivered verbatim to the caller.
 pub trait HostRequestHandler: Send + Sync {
     fn handle(&self, payload: HostRequestPayload) -> HostHandlerFuture;
 }

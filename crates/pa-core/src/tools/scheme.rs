@@ -154,8 +154,8 @@ mod tests {
         );
     }
 
-    /// The shared result path describes a background cell in the Python
-    /// kernel's terms; the `eval` tool's result must not.
+    /// The result of a cell that went to the background says what holds for
+    /// a session's one Scheme engine.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_background_cells_result_says_what_holds_for_a_scheme_cell() {
         let dir = tempfile::tempdir().unwrap();

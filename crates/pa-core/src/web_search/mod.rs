@@ -1,7 +1,6 @@
 //! Native web search: one engine, shared by every kernel, session, and
-//! subagent of the process, that the Python REPL reaches through the
-//! `web.search` host request (`rlm.web.search(...)` in the kernel, and the
-//! bundled websearch skill on top of it).
+//! subagent of the process, that a kernel cell reaches through the
+//! `web.search` host request (`(web-search ...)` in the kernel).
 //!
 //! The design: a provider catalog
 //! ([`ProviderId`]) over keyed APIs and keyless engines, the `auto` chain that
