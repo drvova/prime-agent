@@ -1,6 +1,6 @@
-//! The e2e teardown shared by every target that spawns a real supervisor:
-//! reap the supervisor's whole process tree before the test's temp dir
-//! drops.
+//! What every e2e target that spawns a real supervisor shares: the wait
+//! for it to listen, and the teardown that reaps its whole process tree
+//! before the test's temp dir drops.
 //!
 //! Sessions run inside the supervisor, but the commands their cells start
 //! are its child processes: a supervisor-only kill would leave those
@@ -12,12 +12,45 @@ use std::time::{Duration, Instant};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 
+/// Wait until the daemon `child` accepts connections on `socket`.
+///
+/// The socket's file is not readiness: it appears at `bind`, before `listen`,
+/// and a connect in between is refused. This connects until one is accepted;
+/// the probe connection is dropped at once.
+///
+/// # Panics
+///
+/// `child` exited first, or 15 seconds passed.
+// Each test target compiles this module for itself, and not every one waits
+// for a daemon through it.
+#[allow(dead_code)]
+pub fn await_listening(socket: &std::path::Path, child: &mut std::process::Child) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::os::unix::net::UnixStream::connect(socket).is_err() {
+        if let Ok(Some(status)) = child.try_wait() {
+            panic!(
+                "the daemon exited before it listened on {}: {status}",
+                socket.display()
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the daemon never listened on {}",
+            socket.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Freeze `child` and every process below it, then kill and reap them all.
 ///
 /// The freeze comes first: a stopped process cannot fork, so the
 /// descendant walk settles once every member is stopped, and no member
 /// writes between the walk and its kill. Best effort by design: this runs
 /// inside `Drop`, where a panic would abort the test process.
+// Each test target compiles this module for itself, and not every one reaps
+// through it.
+#[allow(dead_code)]
 pub fn reap_tree(child: &mut Child) {
     let root = child.id();
     signal(root, Signal::SIGSTOP);

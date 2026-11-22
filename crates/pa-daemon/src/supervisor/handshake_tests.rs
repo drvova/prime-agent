@@ -620,6 +620,17 @@ async fn a_retry_after_a_lost_connection_relaunches_the_worker() {
     .expect("the lost connection is observed")
     .expect("the resident lives");
 
+    // The retry hosts a real session in this process, and one that came up
+    // inside the pinned budget would answer the retry with success. This one
+    // never can: its socket path now runs through a regular file, so its bind
+    // fails and the retry stops at the probe, after the relaunch was recorded.
+    std::fs::write(dir.path().join("occupied"), "").expect("the file in the socket's way");
+    resident.descriptor.lock().await.socket_path = dir
+        .path()
+        .join("occupied")
+        .join("worker.sock")
+        .to_string_lossy()
+        .into_owned();
     supervisor.pin_worker_connect_budget_for_tests(Duration::from_millis(1));
     let command = DaemonCommand::RetryWorker {
         id: None,

@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use pa_tui::agents_view::{
     AgentsHeadlessPlan, AgentsStep, AgentsViewOptions, AgentsViewOutcome, AgentsViewScope,
@@ -113,18 +113,12 @@ fn spawn_supervisor(dir: &Path) -> Supervisor {
         pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
         "15000",
     );
-    let child = command.spawn().expect("spawn prime-agent --mode daemon");
+    let mut child = command.spawn().expect("spawn prime-agent --mode daemon");
     // Readiness is the socket appearing (observable), not the wait: the
     // sleep is only the poll interval between checks, and the deadline
     // bounds failure — a missing socket panics, it never passes.
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while Instant::now() < deadline {
-        if socket.exists() {
-            return Supervisor { child, socket };
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    panic!("supervisor socket never appeared");
+    support::await_listening(&socket, &mut child);
+    Supervisor { child, socket }
 }
 
 /// One saved-session fixture: a session header whose `parentSession` and

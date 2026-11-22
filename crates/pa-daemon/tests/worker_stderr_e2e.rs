@@ -59,15 +59,9 @@ impl DaemonBuilder {
     // exits immediately afterwards, reaping it.
     #[allow(clippy::zombie_processes)]
     fn spawn(mut self, socket: &Path) -> Daemon {
-        let child = self.command.spawn().expect("spawn pa-daemon supervisor");
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while Instant::now() < deadline {
-            if socket.exists() {
-                return Daemon { child };
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        panic!("supervisor socket never appeared");
+        let mut child = self.command.spawn().expect("spawn pa-daemon supervisor");
+        common::await_listening(socket, &mut child);
+        Daemon { child }
     }
 }
 
