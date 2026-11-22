@@ -133,20 +133,12 @@ fn cell(code: &str) -> Value {
     ] })
 }
 
-/// One kernel tool call as the client saw it: the start and end events'
-/// read instants (the wire's end event carries only the call id, so the
-/// start's id pairs them).
-#[derive(Debug)]
-struct CellEvents {
-    started: Instant,
-    ended: Instant,
-}
-
 impl Client {
-    /// The next `eval` call, start -> end. A failed cell fails the run: a
-    /// measured error path is not the metric.
-    fn kernel_cell(&mut self, what: &str) -> anyhow::Result<CellEvents> {
-        let (start, started) = self.event(&format!("{what} start"), |event| {
+    /// The instant the next `eval` call's end event was read (the wire's end
+    /// event carries only the call id, so the start's id pairs them). A
+    /// failed cell fails the run: a measured error path is not the metric.
+    fn kernel_cell(&mut self, what: &str) -> anyhow::Result<Instant> {
+        let (start, _) = self.event(&format!("{what} start"), |event| {
             event["type"] == "tool_execution_start" && event["toolName"] == "eval"
         })?;
         let id = start["toolCallId"].clone();
@@ -159,7 +151,7 @@ impl Client {
             end["isError"] != true && end["result"]["details"]["status"] != "error",
             "{what} failed: {end}"
         );
-        Ok(CellEvents { started, ended })
+        Ok(ended)
     }
 }
 
@@ -199,9 +191,9 @@ pub(super) fn measure(
             )?;
             let started = Instant::now();
             start_session(ctx, &mut client, &script, None)?;
-            let cell = client.kernel_cell("the first eval")?;
+            let ended = client.kernel_cell("the first eval")?;
             Ok(Measured {
-                settled: vec![millis(cell.ended - started)],
+                settled: vec![millis(ended - started)],
                 ..Measured::default()
             })
         }

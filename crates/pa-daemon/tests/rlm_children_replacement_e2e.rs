@@ -248,7 +248,7 @@ fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
 /// recorded verbatim.
 fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
-        r#"(let ([record (lambda (path text)
+        r"(let ([record (lambda (path text)
                 (let ([port (open-output-file path)])
                   (write-string text port)
                   (close-output-port port)))])
@@ -257,7 +257,7 @@ fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
     (let ([roster (value->jsexpr-string (rlm-list-subagents))])
       (record {receipt:?} roster)
       (displayln roster))))
-"#,
+",
         receipt = receipt.display().to_string(),
         error_receipt = error_receipt.display().to_string(),
     )
