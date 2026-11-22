@@ -91,14 +91,15 @@ const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// `<agent dir>/steel`, so it must run while the process is still
 /// single-threaded: at the top of `main`, before a runtime exists. An
 /// explicit `STEEL_HOME` or an unresolvable agent directory is left alone.
+///
+/// The directory is named, never created: with the variable set Steel only
+/// reads it, and a distribution build's first-run import takes an agent
+/// directory that already exists to mean the first run is over.
 pub fn pin_scheme_home() {
     if pa_types::session_scope::var_os("STEEL_HOME").is_some() {
         return;
     }
     if let Some(home) = pa_types::platform::agent_dir().map(|dir| dir.join("steel")) {
-        // Steel only reads the variable; a directory it later needs and
-        // cannot create is its own reported error.
-        let _ = std::fs::create_dir_all(&home);
         std::env::set_var("STEEL_HOME", home);
     }
 }
