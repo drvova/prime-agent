@@ -260,7 +260,9 @@ impl Check {
 /// The Steel builtins that recurse or allocate by what they are given, and
 /// what each is checked for. Everything else a cell can reach either does
 /// neither, or is listed as unbounded in the module docs.
-pub(super) const GUARDED: [(&str, Check); 13] = [
+pub(super) const GUARDED: [(&str, Check); 15] = [
+    ("emit-expanded", Check::Code),
+    ("#%expand", Check::Code),
     ("value->jsexpr-string", Check::Data),
     ("eval", Check::Code),
     ("eval!", Check::Code),

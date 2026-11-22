@@ -130,3 +130,66 @@ async fn a_cell_reaches_files_and_processes_only_through_the_kernel_functions() 
         )
     );
 }
+
+/// Everything a cell can name in a fresh session engine: each global, and
+/// each function of each builtin module (reached through `require-builtin`
+/// or a module lookup), leaving out the ones bound to the refusal. Names
+/// Steel numbers as it compiles its own library are listed without the
+/// number.
+fn reachable() -> std::collections::BTreeSet<String> {
+    let engine = super::engine().unwrap();
+    let open = |value: &steel::rvals::SteelVal| match value {
+        steel::rvals::SteelVal::FuncV(function) => {
+            !std::ptr::fn_addr_eq(*function, super::refusal as steel::rvals::FunctionSignature)
+        }
+        _ => true,
+    };
+    let mut names = std::collections::BTreeSet::new();
+    for global in engine.globals().iter() {
+        let global = global.resolve().to_string();
+        if engine
+            .extract_value(&global)
+            .is_ok_and(|value| open(&value))
+        {
+            let numbered = ["##gensym", "##__lifted_pure_function"]
+                .into_iter()
+                .find_map(|prefix| global.find(prefix).map(|at| at + prefix.len()))
+                .filter(|at| global[*at..].chars().all(|digit| digit.is_ascii_digit()));
+            names.insert(match numbered {
+                Some(at) => format!("{}N", &global[..at]),
+                None => global,
+            });
+        }
+    }
+    for module in super::STEEL_MODULES {
+        if let Some(functions) = engine.builtin_modules().get(module) {
+            for (name, value) in functions.inner_map().iter() {
+                if open(value) {
+                    names.insert(format!("{module} {name}"));
+                }
+            }
+        }
+    }
+    names
+}
+
+/// The names a cell can reach are exactly the ones `open_globals.txt` lists:
+/// a Steel upgrade that adds a builtin, a module, or a way around a closed
+/// one fails here until the new name is closed in `confinement.rs` or, once
+/// it is known to open nothing, added to the list.
+#[test]
+fn a_cell_can_reach_only_the_names_on_the_open_list() {
+    let listed: std::collections::BTreeSet<String> = include_str!("open_globals.txt")
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let reachable = reachable();
+    assert_eq!(
+        (
+            reachable.difference(&listed).collect::<Vec<_>>(),
+            listed.difference(&reachable).collect::<Vec<_>>(),
+        ),
+        (Vec::new(), Vec::new()),
+        "first: reachable but not listed (close it, or list it); second: listed but gone"
+    );
+}

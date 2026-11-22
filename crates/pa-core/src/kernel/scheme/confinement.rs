@@ -52,7 +52,13 @@ const CLOSED_MODULES: [&str; 7] = [
 /// Functions closed inside modules that otherwise stay: engines without
 /// these limits, loading and running files, the process's environment, and
 /// its standard streams.
-const CLOSED_FUNCTIONS: [&str; 34] = [
+const CLOSED_FUNCTIONS: [&str; 37] = [
+    // Steel's debugger stop, and the value (de)serialization its threads
+    // use: a cell has no use for either, and the second reads bytes a cell
+    // made up as Steel's own structures.
+    "breakpoint!",
+    "serialize-value",
+    "deserialize-value",
     // Each of these waits in native code where no interrupt reaches, for
     // something only another thread could deliver, and a cell has no other
     // thread: a channel's next message, a lock it already holds, a will, a
