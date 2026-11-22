@@ -394,6 +394,21 @@ enum Control {
     List,
 }
 
+/// Stops the cell a call was waiting for when the call is dropped mid-wait.
+struct StopOnDrop {
+    cells: Arc<Cells>,
+    /// The cell to stop; `None` once the wait has ended by itself.
+    cell: Option<CellHandle>,
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        if let Some(cell) = &self.cell {
+            self.cells.interrupt(cell);
+        }
+    }
+}
+
 /// A session's cells: the one its engine is running, and those that outlived
 /// their calls.
 pub(super) struct Cells {
@@ -402,7 +417,7 @@ pub(super) struct Cells {
     controller: ThreadStateController,
     runtime: tokio::runtime::Handle,
     /// The cell on the engine; cleared, with the engine's interrupt, when it ends.
-    running: Mutex<Option<CellHandle>>,
+    running: Arc<Mutex<Option<CellHandle>>>,
     /// Oldest first.
     background: Mutex<VecDeque<Arc<BackgroundCell>>>,
     killed: AtomicBool,
@@ -473,7 +488,7 @@ impl Cells {
             handlers,
             controller,
             runtime: tokio::runtime::Handle::current(),
-            running: Mutex::new(None),
+            running: Arc::new(Mutex::new(None)),
             background: Mutex::new(VecDeque::new()),
             killed: AtomicBool::new(false),
         })
@@ -485,12 +500,38 @@ impl Cells {
         // Cancelled first: a cell that has not reached the engine yet sees
         // it there and never starts.
         cell.0.signal.cancel();
-        let running = self.running.lock().unwrap_or_else(PoisonError::into_inner);
-        if running
-            .as_ref()
-            .is_some_and(|running| Arc::ptr_eq(&running.0, &cell.0))
-        {
-            self.controller.interrupt();
+        let raise = {
+            let (running, controller, cell) = (
+                Arc::clone(&self.running),
+                self.controller.clone(),
+                cell.clone(),
+            );
+            // Whether the cell is still on the engine, where it was interrupted.
+            move || {
+                let running = running.lock().unwrap_or_else(PoisonError::into_inner);
+                let on_engine = running
+                    .as_ref()
+                    .is_some_and(|running| Arc::ptr_eq(&running.0, &cell.0));
+                if on_engine {
+                    controller.interrupt();
+                }
+                on_engine
+            }
+        };
+        if raise() {
+            // Steel resumes its threads after a collection, which drops an
+            // interrupt still pending: it is raised again until the cell has
+            // left the engine.
+            self.runtime.spawn(async move {
+                let mut again = tokio::time::interval(Duration::from_millis(20));
+                again.tick().await;
+                loop {
+                    again.tick().await;
+                    if !raise() {
+                        return;
+                    }
+                }
+            });
         }
     }
 
@@ -921,6 +962,12 @@ pub(super) async fn execute(
             );
         }
     };
+    // An aborted tool call's future may be dropped instead of polled again:
+    // the cell is stopped then too, or it would hold the engine to its end.
+    let mut dropped = StopOnDrop {
+        cells: Arc::clone(cells),
+        cell: Some(cell.clone()),
+    };
     // Printed but not yet reported, and when the last report went out.
     let mut unsent: Vec<(Stream, String)> = Vec::new();
     let mut reported: Option<tokio::time::Instant> = None;
@@ -952,6 +999,7 @@ pub(super) async fn execute(
             },
         }
     };
+    dropped.cell = None;
     let take_shown = |late: Option<LateSentAgentMessageCallback>| {
         let mut state = cell.0.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.settled = true;

@@ -52,7 +52,7 @@ impl SpillHandle {
     /// history.
     pub(crate) fn thinned_marker(&self) -> String {
         format!(
-            "[{HANDLE_PREFIX}{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]",
+            "[{HANDLE_PREFIX}{} · {} chars · {} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
             self.id,
             group_digits(self.total_chars),
             group_digits(self.lines),

@@ -434,7 +434,7 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
         let head: String = chars[..240].iter().collect();
         let tail: String = chars[chars.len() - 120..].iter().collect();
         let thinned = format!(
-            "{head}\n[out:{} · {} chars · {} lines · thinned from this request; ctx.page/ctx.grep read it whole]\n{tail}",
+            "{head}\n[out:{} · {} chars · {} lines · thinned from this request; ctx-page/ctx-grep read it whole]\n{tail}",
             content_id(&original),
             crate::kernel::spill::group_digits(chars.len()),
             original.lines().count(),

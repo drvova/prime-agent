@@ -9,11 +9,10 @@
 )]
 
 //! Verifier integration tests for the session-creation kernel prewarm: a main session with the
-//! config flag boots its kernel at creation (so a compaction with no `ipython` use still lands the
+//! config flag boots its kernel at creation (so a compaction with no `eval` use still lands the
 //! `ipython_state` notice); a depth-1 subagent session boots its kernel at creation too, before
 //! its first cell.
 
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use pa_core::session_engine::compact_session::CompactOutcome;
@@ -27,33 +26,6 @@ use pa_types::session::FileEntry;
 /// The faux provider registry is process-global and both tests drive it:
 /// the std lock serializes them (the only contenders).
 static FAUX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// The kernel Python with prime-agent-runtime installed (the interpreter the session-path
-/// provisioner resolves). Skipped (with a note) on machines without a live install; set
-/// `PA_CORE_KERNEL_PYTHON` to point at an explicit interpreter instead.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live prewarm test",
-        candidate.display()
-    );
-    None
-}
 
 /// One faux provider session: the model, its agent-loop shape, and the
 /// stream function, with the scripted responses queued.
@@ -117,17 +89,14 @@ async fn wait_for_kernel_boot(engine: &pa_core::session_engine::engine::SessionE
     }
 }
 
-/// The prewarm fires at creation (no `ipython` tool use anywhere): the
+/// The prewarm fires at creation (no `eval` tool use anywhere): the
 /// background boot completes, the session's compaction sees
 /// a running kernel, and the hidden `ipython_state` notice lands on the
 /// durable entries — with the empty-namespace arm, because the model never
 /// ran a cell.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::await_holding_lock)]
 async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
-    let Some(_kernel_python) = kernel_python() else {
-        return;
-    };
     let _guard = FAUX_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -148,7 +117,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
     let client = build_client(&settings, &agent_dir);
 
     // Two plain text turns (a single turn is too short for a cut) and the
-    // compaction summarizer's reply; no `ipython` tool call anywhere.
+    // compaction summarizer's reply; no `eval` tool call anywhere.
     let faux = faux_session(vec![
         "history one noted".to_string(),
         "history two noted".to_string(),
@@ -175,7 +144,7 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
     .await
     .expect("create the prewarmed session");
 
-    // The prewarm's boot, without a single ipython tool call.
+    // The prewarm's boot, without a single `eval` tool call.
     wait_for_kernel_boot(&engine).await;
 
     for turn in ["history turn one", "history turn two"] {
@@ -204,13 +173,13 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
     let pa_types::ai::UserContent::Text(content) = &notice.content else {
         panic!("the notice content is text");
     };
-    assert!(content.contains("[python-state]"), "{content}");
+    assert!(content.contains("[kernel-state]"), "{content}");
     assert!(
-        content.contains("Your Python kernel persisted through compaction"),
+        content.contains("Your Scheme kernel persisted through compaction"),
         "{content}"
     );
     // The live-names detail arm is environment-dependent (the bootstrap pre-imports the installed
-    // Python skills as live names), so only the persistence sentence is pinned here — same scoping
+    // skill functions as live names), so only the persistence sentence is pinned here — same scoping
     // as the battery's kernel-notice differential.
     let entries = engine.session.entries().await;
     assert!(
@@ -225,15 +194,12 @@ async fn prewarmed_kernel_lands_compaction_notice_without_tool_use() {
 }
 
 /// Subagent sessions (rlmDepth > 0) prewarm like top-level ones: the
-/// child's kernel is up before any cell is sent, so its first `python_repl`
+/// child's kernel is up before any cell is sent, so its first `eval`
 /// call joins a booted kernel instead of paying the cold start after its
 /// first model call.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::await_holding_lock)]
 async fn subagent_sessions_boot_their_kernel_before_the_first_cell() {
-    let Some(_kernel_python) = kernel_python() else {
-        return;
-    };
     let _guard = FAUX_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -317,12 +283,9 @@ impl Drop for CleanTelemetryEnv {
 /// enable cannot send what the off period counted. Regression for the
 /// pre-install-window finding: the switch used to arrive only at the
 /// first-turn install, so an off-period prewarm boot counted.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 #[allow(clippy::await_holding_lock)]
 async fn an_off_switch_at_creation_keeps_the_prewarm_window_uncounted() {
-    let Some(_kernel_python) = kernel_python() else {
-        return;
-    };
     let _env = CleanTelemetryEnv::default();
     let _guard = FAUX_LOCK
         .lock()

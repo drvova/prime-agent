@@ -20,32 +20,6 @@ use pa_core::session_engine::PromptOptions;
 use pa_types::question::{Question, QuestionKind, QuestionReply};
 use serde_json::json;
 
-/// The kernel Python with prime-agent-runtime installed. Skipped (with a note) on machines
-/// without a live install; `PA_CORE_KERNEL_PYTHON` points at an explicit one.
-fn kernel_python() -> Option<PathBuf> {
-    if let Some(explicit) = std::env::var_os("PA_CORE_KERNEL_PYTHON") {
-        let explicit = PathBuf::from(explicit);
-        assert!(
-            explicit.exists(),
-            "PA_CORE_KERNEL_PYTHON {} not found",
-            explicit.display()
-        );
-        return Some(explicit);
-    }
-    let candidate = PathBuf::from(std::env::var("HOME").map_or_else(
-        |_| "/home/ubuntu/.prime/agent/kernel-venv/bin/python".to_string(),
-        |home| format!("{home}/.prime/agent/kernel-venv/bin/python"),
-    ));
-    if candidate.exists() {
-        return Some(candidate);
-    }
-    eprintln!(
-        "kernel python {} not found; skipping live kernel test",
-        candidate.display()
-    );
-    None
-}
-
 fn scripted_model() -> pa_agent::types::Model {
     serde_json::from_value(json!({
         "id": "faux-1", "name": "Faux", "api": "test", "provider": "faux",
@@ -96,13 +70,17 @@ fn config(
     }
 }
 
-/// One `python_repl` turn running `code`, then a closing text turn; returns the cell's output.
+/// One `eval` turn running `code`, then a closing text turn; returns the cell's output.
 async fn run_cell(engine: &SessionEngine, provider: &ScriptedProvider, code: &str) -> String {
     let model = scripted_model();
     provider.push_turn(ScriptedTurn::Events(tool_call_turn_steps(
         &model,
         None,
-        vec![("call-1", "python_repl", json!({ "code": code }))],
+        vec![(
+            "call-1",
+            pa_types::ai::KERNEL_TOOL_NAME,
+            json!({ "code": code }),
+        )],
     )));
     provider.push_text_turn("done");
     engine
@@ -133,12 +111,8 @@ async fn run_cell(engine: &SessionEngine, provider: &ScriptedProvider, code: &st
         .unwrap_or_default()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn todo_and_ask_round_trip_through_a_real_kernel_and_survive_a_reload() {
-    let Some(kernel_python) = kernel_python() else {
-        return;
-    };
-    std::env::set_var("PRIME_AGENT_KERNEL_PYTHON", &kernel_python);
     let dir = tempfile::tempdir().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
@@ -178,16 +152,21 @@ async fn todo_and_ask_round_trip_through_a_real_kernel_and_survive_a_reload() {
     let output = run_cell(
         &engine,
         &provider,
-        "await todo.set(['read the schema', {'text': 'migrate', 'status': 'in_progress'}])\n\
-         todos = await todo.update('1', status='done', note='3 tables')\n\
-         answer = await ask('Which database?', ['sqlite', 'postgres'], default='sqlite')\n\
-         print(todos)\n\
-         print(answer.status, answer.answer)",
+        "(define (show todos)
+           (for-each (lambda (item)
+                       (displayln (list (hash-ref item 'id) (hash-ref item 'status)
+                                        (hash-ref item 'text) (hash-try-get item 'note))))
+                     (hash-ref todos 'items)))
+         (define created (todo-set (list \"read the schema\" (hash 'text \"migrate\" 'status \"in_progress\"))))
+         (define todos (todo-update \"1\" #:status \"done\" #:note \"3 tables\"))
+         (define answer (ask \"Which database?\" (list \"sqlite\" \"postgres\") #:default \"sqlite\"))
+         (show todos)
+         (displayln (list (hash-ref answer 'status) (hash-ref answer 'answer)))",
     )
     .await;
     assert_eq!(
         output.trim(),
-        "todo list: 1/2 done\n[x] 1. read the schema (3 tables)\n[~] 2. migrate\nanswered postgres"
+        "(1 done read the schema 3 tables)\n(2 in_progress migrate #false)\n(answered postgres)"
     );
     let asked = tokio::time::timeout(Duration::from_secs(5), answering)
         .await
@@ -219,16 +198,21 @@ async fn todo_and_ask_round_trip_through_a_real_kernel_and_survive_a_reload() {
     let output = run_cell(
         &engine,
         &provider,
-        "import time\n\
-         print(await todo.get())\n\
-         started = time.monotonic()\n\
-         answer = await ask('Still there?', ['yes', 'no'], default='yes', timeout=600)\n\
-         print(answer.status, answer.answer, time.monotonic() - started < 5)",
+        "(define (show todos)
+           (for-each (lambda (item)
+                       (displayln (list (hash-ref item 'id) (hash-ref item 'status)
+                                        (hash-ref item 'text) (hash-try-get item 'note))))
+                     (hash-ref todos 'items)))
+         (show (todo-get))
+         (define started (current-milliseconds))
+         (define answer (ask \"Still there?\" (list \"yes\" \"no\") #:default \"yes\" #:timeout 600))
+         (displayln (list (hash-ref answer 'status) (hash-ref answer 'answer)
+                          (< (- (current-milliseconds) started) 5000)))",
     )
     .await;
     assert_eq!(
         output.trim(),
-        "todo list: 1/2 done\n[x] 1. read the schema (3 tables)\n[~] 2. migrate\nno_user yes True"
+        "(1 done read the schema 3 tables)\n(2 in_progress migrate #false)\n(no_user yes #true)"
     );
     engine.dispose_kernel().await;
 }
