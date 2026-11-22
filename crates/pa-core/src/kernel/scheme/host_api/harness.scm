@@ -58,11 +58,11 @@
 (define (harness-delete-prompt-note id #:global [global #f])
   (%harness-delete "harness-delete-prompt-note" "prompt" id global))
 
-;; Create a skill entry; the entry. A skill entry describes a Python REPL
-;; skill: #:reference is required, a hash with 'type "python", a Python
-;; import ('import or 'python_import), and a 'callable or 'call_pattern;
-;; #:arguments describes its parameters. The Scheme kernel stores and lists
-;; these entries but cannot call them.
+;; Create a skill entry; the entry. A skill entry describes a Scheme
+;; function of an installed skill: #:reference is required, a hash with
+;; 'type "scheme", 'skill (the installed skill whose skill.scm or
+;; scheme/*.scm defines the function), and a 'callable (the function's name)
+;; or 'call_pattern (a call of it); #:arguments describes its parameters.
 (define (harness-create-skill title content
                               #:id [id #f] #:path [path "general"]
                               #:reference [reference #f] #:arguments [arguments #f]

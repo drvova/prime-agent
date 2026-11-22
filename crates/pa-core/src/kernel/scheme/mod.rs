@@ -24,6 +24,7 @@
 mod api_help;
 mod attach;
 mod cell;
+mod confinement;
 mod factory;
 mod host_api;
 
@@ -111,7 +112,7 @@ pub fn prewarm_scheme_kernel() {
             return;
         }
         // Built outside the lock: a session starting meanwhile builds its own.
-        let engine = Engine::new();
+        let engine = confinement::engine();
         SPARE
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -209,9 +210,10 @@ pub(crate) struct SessionEnvironment {
 /// One session's engine and the cells it runs.
 struct SessionEngine {
     engine: Mutex<Engine>,
-    /// How many global names the engine had when the kernel was ready: the
-    /// ones after them are what the session's cells defined.
-    own_globals: usize,
+    /// The global names the engine had when the kernel was ready: any other
+    /// is one the session's cells defined. (Their position says nothing: the
+    /// engine gives a new name the slot of a shadowed one.)
+    own_globals: std::collections::HashSet<String>,
     /// The running cell's stop signal, for host functions that block.
     cell: native::CellSignal,
     /// Held by the cell on the engine, from its start to its end: the engine
@@ -436,7 +438,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let starting = std::time::Instant::now();
             let started = tokio::task::spawn_blocking(move || {
                 let spare = SPARE.lock().unwrap_or_else(PoisonError::into_inner).take();
-                let mut engine = spare.unwrap_or_default();
+                let mut engine = spare.unwrap_or_else(confinement::engine);
                 let cells = cell::Cells::new(
                     Arc::clone(&environment),
                     handlers.clone(),
@@ -546,7 +548,11 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
                 skills.start(&mut engine)?;
-                let own_globals = engine.globals().len();
+                let own_globals = engine
+                    .globals()
+                    .iter()
+                    .map(|name| name.resolve().to_string())
+                    .collect();
                 anyhow::Ok(Arc::new(SessionEngine {
                     own_globals,
                     engine: Mutex::new(engine),

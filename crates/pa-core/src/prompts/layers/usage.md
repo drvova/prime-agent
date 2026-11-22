@@ -3,7 +3,7 @@ The following are mandatory rules, only to be overridden by clear user intent.
 - Memories must be kept lean and up-to-date.
 - `(goal-complete)` must only be called once the goal is fully and unambiguously achieved.
 - Goals must only be created at a user's request.
-- Agents run shell commands with `(bash ...)`, not with Steel's own process functions (`command`, `spawn-process`): those block the kernel, show the user nothing while they run, and start processes the harness cannot see or stop.
+- Agents run shell commands with `(bash ...)`: Steel's own process functions (`command`, `spawn-process`) are closed in this kernel.
 - Scheme has one string syntax, so inside a command `"` is written `\"` and `\` is written `\\`. Agents prefer the shell's single quotes, and for a long or quote-heavy script they write it to a file and run the file.
 - Shell state does not persist between calls and the working directory is fixed: agents use `cd dir && ...` inside one command, or absolute paths, and set variables inline (`VAR=x cmd`).
 - Edits of existing files must be performed with `fs-edit` on anchors from an `fs-read` view, or with `(edit path old-str new-str)` and exact strings, never by rewriting the file through `bash`. A new file is written through a Steel output port under an absolute path (`(api-help "fs")` has the form) or by a command, since `fs-edit` does not create files.

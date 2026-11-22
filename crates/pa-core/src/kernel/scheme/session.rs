@@ -88,21 +88,21 @@ impl SchemeKernelProvisioner {
             .is_ok_and(|session| session.is_some())
     }
 
-    /// The top-level names the session's cells have defined, in the order
-    /// they were first defined. `None` when the kernel is not running, or
+    /// The top-level names the session's cells have defined, by name. `None` when the kernel is not running, or
     /// its engine is busy with a cell (a cell in the background holds it
     /// until it ends).
     #[must_use]
     pub fn defined_names(&self) -> Option<Vec<String>> {
         let session = self.state.session.try_lock().ok()?.clone()?;
         let engine = session.engine.try_lock().ok()?;
-        Some(
-            engine
-                .readable_globals(session.own_globals)
-                .into_iter()
-                .map(|name| name.resolve().to_string())
-                .collect(),
-        )
+        let mut names: Vec<String> = engine
+            .readable_globals(0)
+            .into_iter()
+            .map(|name| name.resolve().to_string())
+            .filter(|name| !session.own_globals.contains(name))
+            .collect();
+        names.sort();
+        Some(names)
     }
 
     /// The session's live background jobs: shell commands whose completion

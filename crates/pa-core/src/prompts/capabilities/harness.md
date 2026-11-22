@@ -8,7 +8,7 @@ The continual harness store outlives the turn and compaction. Entries go to this
 - `(harness-create-prompt-note title content #:id #:path #:metadata #:global)`: create a prompt note (standing guidance); the entry. `#:path` defaults to `"policy"`
 - `(harness-update-prompt-note id title content #:path #:metadata #:global)`: replace a prompt note's title and content; the entry
 - `(harness-delete-prompt-note id #:global)`: delete a prompt note; whether it existed
-- `(harness-create-skill title content #:id #:path #:reference #:arguments #:metadata #:global)`: create a skill entry; the entry. A skill entry describes a Python REPL skill: `#:reference` is required, a hash with `'type "python"`, a Python import (`'import` or `'python_import`), and a `'callable` or `'call_pattern`; `#:arguments` describes its parameters. This kernel stores and lists these entries but cannot call them
+- `(harness-create-skill title content #:id #:path #:reference #:arguments #:metadata #:global)`: create a skill entry; the entry. A skill entry describes a Scheme function of an installed skill: `#:reference` is required, a hash with `'type "scheme"`, `'skill` (the installed skill whose `skill.scm` or `scheme/*.scm` defines the function), and a `'callable` (the function's name) or `'call_pattern` (a call of it); `#:arguments` describes its parameters
 - `(harness-update-skill id title content #:path #:reference #:arguments #:metadata #:global)`: replace a skill entry's title and content; the entry
 - `(harness-delete-skill id #:global)`: delete a skill entry; whether it existed
 - `(harness-create-subagent title content #:id #:path #:metadata #:global)`: create a subagent spec, a reusable brief for `rlm-spawn`; the entry

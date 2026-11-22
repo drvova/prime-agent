@@ -4,7 +4,7 @@
 //! live in `harness/harness_state.json`: the session-local store under the
 //! session's artifact dir, or the cross-session one under the agent dir
 //! (`#:global #t`, or an id written `global:<id>`). The file is the one
-//! `/refine` and the Python kernel's `rlm.harness` write, and it is read and
+//! `/refine` writes, and it is read and
 //! written here through [`crate::refinement`]'s own loader and locked
 //! writer, so every writer agrees on its format and its lock.
 //!
@@ -253,24 +253,7 @@ impl Harness {
         let arguments = optional_record(kind_name, &id, "arguments", &options["arguments"])?;
         let metadata = optional_record(kind_name, &id, "metadata", &options["metadata"])?;
         if let Some(reference) = reference.as_ref().filter(|_| kind == RefinementKind::Skill) {
-            let named = |keys: [&str; 2]| {
-                keys.iter().any(|key| {
-                    reference
-                        .get(*key)
-                        .and_then(Value::as_str)
-                        .is_some_and(|text| !text.is_empty())
-                })
-            };
-            let problem = if reference.get("type").and_then(Value::as_str) != Some("python") {
-                Some("skill reference.type must be 'python'")
-            } else if !named(["import", "python_import"]) {
-                Some("skill reference requires a Python import")
-            } else if !named(["callable", "call_pattern"]) {
-                Some("skill reference requires a callable or call_pattern")
-            } else {
-                None
-            };
-            if let Some(problem) = problem {
+            if let Some(problem) = crate::refinement::planner::skill_reference_problem(reference) {
                 bail!("skill entry '{id}' rejected: {problem}");
             }
         }
@@ -324,7 +307,7 @@ impl Harness {
                 (None, true) => {
                     if kind == RefinementKind::Skill && reference.is_none() {
                         bail!(
-                            "skill entry '{id}' rejected: skill entries require a Python reference"
+                            "skill entry '{id}' rejected: skill entries require a Scheme reference"
                         );
                     }
                     let now = format_iso_now();
@@ -451,7 +434,7 @@ impl Harness {
         let (state, file, scope_name) = Self::read(dir.as_deref(), scope);
         let mut lines = vec![
             format!("Harness state ({scope_name}): {file}"),
-            "Call contract: ids read [scope:id] and are accepted as written. Skill entries describe Python REPL skills (a Python reference plus arguments); the Scheme kernel does not call them. Spawn a subagent spec by composing a concise task prompt for (rlm-spawn task #:name \"worker\"): admission returns its handle at once, never the child's answer, and results arrive through agent messages or files. Factory entries declare state-machine workflows of subagent states and are written and run through the factory functions.".to_string(),
+            "Call contract: ids read [scope:id] and are accepted as written. Skill entries describe Scheme functions of installed skills (a reference naming the skill and the function, plus arguments): call them as their call pattern shows. An entry whose reference type is python predates the Scheme kernel and cannot be called. Spawn a subagent spec by composing a concise task prompt for (rlm-spawn task #:name \"worker\"): admission returns its handle at once, never the child's answer, and results arrive through agent messages or files. Factory entries declare state-machine workflows of subagent states and are written and run through the factory functions.".to_string(),
         ];
         for (kind, name) in KINDS {
             let entries = Self::listed(&state, Some(kind));
@@ -735,7 +718,7 @@ mod tests {
             seen(r#"(harness-create-memory "Build notes!" "use make check" #:metadata (hash 'tag "ci"))"#),
             seen(r#"(harness-create-prompt-note "Tone" "be brief" #:id "tone" #:global #t)"#),
             seen(
-                r#"(harness-create-skill "Lint" "runs the linter" #:reference (hash 'type "python" 'import "lint" 'callable "run") #:arguments (hash 'path "str"))"#,
+                r#"(harness-create-skill "Lint" "runs the linter" #:reference (hash 'type "scheme" 'skill "lint" 'callable "lint-run") #:arguments (hash 'path "str"))"#,
             ),
             r#"(harness-delete-memory "build_notes")"#.to_string(),
             r#"(harness-delete-memory "build_notes")"#.to_string(),
@@ -860,8 +843,8 @@ mod tests {
                     raised("harness-create-memory: memory entry 'deploy_steps' already exists"),
                     raised("harness-update-memory: memory entry 'missing' does not exist"),
                     raised("harness-create-memory: memory entry 'title' rejected: content must be a non-empty string, got a list"),
-                    raised("harness-create-skill: skill entry 'lint' rejected: skill entries require a Python reference"),
-                    raised("harness-create-skill: skill entry 'lint' rejected: skill reference.type must be 'python'"),
+                    raised("harness-create-skill: skill entry 'lint' rejected: skill entries require a Scheme reference"),
+                    raised("harness-create-skill: skill entry 'lint' rejected: skill reference.type must be 'scheme'"),
                     raised("harness-record-refinement: refinement event rejected: trigger must be a non-empty string, got an empty string"),
                     Ok(json!(false)),
                     raised("harness-create-memory: this session is not saved, so it has no local harness store; pass #:global #t to persist across sessions"),
