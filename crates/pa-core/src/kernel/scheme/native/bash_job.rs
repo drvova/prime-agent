@@ -18,6 +18,17 @@
 //! settled by its exit: output is read until the pipe closes or goes quiet,
 //! and whatever is left of the group is killed.
 //!
+//! A job's group is killed however its session ends. The task that watches a
+//! job holds its group ([`GroupHold`]): dropped before the group is known to
+//! be gone (its runtime shut down under it, as when a hosted session crashes
+//! or is abandoned), it kills the whole group, where the shell's own
+//! `kill_on_drop` would end the shell alone and leave what it started.
+//!
+//! A saved session also keeps a list of its running commands beside its
+//! other artifacts ([`RUNNING_FILE`]): a command still listed when the
+//! session's next kernel starts was killed with the kernel before it, and
+//! the session is told so once.
+//!
 //! On Windows there is no status channel: the shell is held at a gate on its
 //! stdin until it is inside a kill-on-close job object, its result is its
 //! exit, and ending the job ends every process in it.
@@ -91,6 +102,44 @@ pub(super) fn end_group(pid: u32) -> bool {
     match platform::process::process_group_exists(pid as i32) {
         Ok(false) => true,
         Ok(true) | Err(_) => platform::process::signal_process_group(pid as i32, Signal::Kill),
+    }
+}
+
+/// The file, in a saved session's artifact directory, listing the commands
+/// its kernel has running: one JSON line when a command starts (`job`,
+/// `pid`, `command`, `running` true) and one when its group has ended
+/// (`job`, `running` false). The file is removed whenever nothing runs.
+pub(super) const RUNNING_FILE: &str = "bash-running.jsonl";
+
+/// Add `record` to the session's list of running commands. Best-effort, as
+/// the orphan journal is: a command never fails because it could not be
+/// listed, and a command that is not listed is only not announced as lost.
+fn list_running(list: &std::path::Path, record: &serde_json::Value) {
+    // What is left of an ended session lifetime writes nothing.
+    if pa_types::session_scope::ensure_live().is_err() {
+        return;
+    }
+    // A session that has stored nothing yet has no artifact directory.
+    if let Some(dir) = list.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    platform::perms::set_private_mode(&mut options);
+    if let Ok(mut file) = options.open(list) {
+        let _ = file.write_all(format!("{record}\n").as_bytes());
+    }
+}
+
+/// Held by the task that watches a job, until the job's group is known to be
+/// gone. Dropped before then, it kills the whole group.
+struct GroupHold(Arc<Job>);
+
+impl Drop for GroupHold {
+    fn drop(&mut self) {
+        if !lock(&self.0.state).reaped && self.0.destroy() {
+            record_orphan_process_state(self.0.pid as i32, false);
+        }
     }
 }
 
@@ -651,6 +700,18 @@ pub(super) fn spawn(
         }
         table.jobs.insert(job.id.clone(), Arc::clone(&job));
         table.order.push(job.id.clone());
+        // Under the table's lock, so the list's lines are in the jobs' order.
+        if let Some(list) = &session.running_list {
+            list_running(
+                list,
+                &serde_json::json!({
+                    "job": job.id,
+                    "pid": pid,
+                    "command": super::capped(command),
+                    "running": true,
+                }),
+            );
+        }
         // Windows starts every command at once: its gate only covers the
         // moment before the shell is inside its job object.
         let queued = cfg!(unix) && table.running >= limit;
@@ -683,6 +744,7 @@ async fn supervise(
     mut child: tokio::process::Child,
     #[cfg(unix)] status: std::os::unix::net::UnixStream,
 ) {
+    let _hold = GroupHold(Arc::clone(&job));
     let mut exited = None;
     // The status the shell reported after its command, when it got that far.
     #[cfg(unix)]
@@ -822,6 +884,19 @@ async fn supervise(
             started.push(next);
         }
         table.retire(&job);
+        // A killed kernel's commands stay listed: its session's next kernel
+        // tells the session they were lost.
+        if let (false, Some(list)) = (table.closed, &session.running_list) {
+            if table.running == 0 && table.queue.is_empty() {
+                // Nothing is left to list (a missing file is the same).
+                let _ = std::fs::remove_file(list);
+            } else {
+                list_running(
+                    list,
+                    &serde_json::json!({ "job": job.id, "running": false }),
+                );
+            }
+        }
         started
     };
     for next in started {

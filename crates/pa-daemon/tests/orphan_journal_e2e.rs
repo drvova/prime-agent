@@ -179,7 +179,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                             // The cell says it is on the engine, then sits in a
                             // native call no interrupt reaches.
                             "arguments": json!({
-                                "code": format!("(fs-write {WEDGE_RECEIPT:?} \"on the engine\") (time/sleep-ms 600000)"),
+                                "code": format!("(fs-write {WEDGE_RECEIPT:?} \"on the engine\") (%test-block-ms 600000)"),
                             })
                             .to_string(),
                         }
@@ -301,7 +301,11 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
             "type": "create",
             "name": "orphan-lane",
             // An aborted cell still on the engine after this long ends its session.
-            "launchEnv": { "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300" },
+            // And its kernel has the one native call no interrupt reaches.
+            "launchEnv": {
+                "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+                "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+            },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions.to_string_lossy(),
@@ -366,15 +370,12 @@ impl Drop for GroupGuard {
     }
 }
 
-/// A crashed session cannot run its own teardown reap: only the supervisor
-/// can, from the journal the dead session's kernel wrote.
+/// A crashed session runs no teardown of its own. Its lifetime's end kills
+/// each command's whole group all the same (the watcher of each job is
+/// dropped with the session's runtime, and the host ends the lifetime from
+/// outside the stuck thread), and records it in the journal, so the
+/// supervisor's reap that follows finds nothing left alive.
 #[test]
-#[ignore = "product defect, not a test assumption: a crashed session's runtime drops each \
-            `bash` job's handle, which kills only the job's shell (`kill_on_drop` in \
-            `kernel/scheme/native/bash_job.rs`), and the supervisor's journal reap then \
-            skips the record because the journaled leader is dead \
-            (`orphan_journal::should_reap`), so the rest of the group (`sleep 600` here) \
-            outlives the session. Enable when a dropped job kills its whole group."]
 fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = tempfile::TempDir::new().expect("temp dir");

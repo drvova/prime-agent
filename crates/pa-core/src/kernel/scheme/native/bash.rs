@@ -50,6 +50,10 @@
 //! A job that ends after its cell, unread, is announced to the session
 //! through the `bash.completed` host request (the `[bash-done]` notice);
 //! reading its result later withdraws the notice through `bash.consumed`.
+//! A command that was still running when its kernel ended (the kernel was
+//! killed, or the process hosting the session died) is announced by the
+//! session's next kernel, once, through the same request with `lost` set
+//! (the `[bash-lost]` notice); only a saved session keeps the list for it.
 
 #[path = "bash_cache.rs"]
 mod cache;
@@ -194,6 +198,8 @@ pub(super) struct Session {
     background: BackgroundWork,
     /// Cancelled when the kernel is killed.
     killed: AbortSignal,
+    /// A saved session's list of its running commands ([`job::RUNNING_FILE`]).
+    running_list: Option<PathBuf>,
 }
 
 /// The kernel's hold on its session's commands. Dropping it kills them, as
@@ -555,7 +561,48 @@ pub(super) fn open(
         cache: Arc::new(Mutex::new(cache::CommandCache::default())),
         background: environment.background.clone(),
         killed: AbortSignal::new(),
+        running_list: environment
+            .artifact_dir
+            .as_ref()
+            .map(|dir| dir.join(job::RUNNING_FILE)),
     });
+    // What the session's last kernel left listed as running was killed with
+    // it (or with the process that hosted it): the session hears of each
+    // once, as it hears of a command that ended.
+    if let Some(list) = &session.running_list {
+        let mut lost: Vec<(String, Value)> = Vec::new();
+        for record in std::fs::read_to_string(list)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            let Some(id) = record.get("job").and_then(Value::as_str) else {
+                continue;
+            };
+            lost.retain(|(listed, _)| listed != id);
+            if record.get("running") == Some(&Value::Bool(true)) {
+                lost.push((id.to_string(), record));
+            }
+        }
+        // Taken before anything is told, so a notice is never repeated.
+        let _ = std::fs::remove_file(list);
+        if let Some(handler) = session.host.handlers.get(BASH_COMPLETED_REQUEST_TYPE) {
+            let handler = handler.clone();
+            session.runtime.spawn(async move {
+                for (_, record) in lost {
+                    // A refused notice is lost with the command it names.
+                    let _ = handler(HostRequestPayload {
+                        data: json!({
+                            "pid": record.get("pid"),
+                            "command": record.get("command"),
+                            "lost": true,
+                        }),
+                    })
+                    .await;
+                }
+            });
+        }
+    }
     for job in persistent::rehydrate(&session) {
         let live = session.background.enter();
         session

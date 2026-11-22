@@ -821,3 +821,151 @@ fn no_bash_name_replaces_a_steel_builtin() {
         .collect();
     assert_eq!(taken, Vec::<&str>::new());
 }
+
+/// The cell both lifetime-end tests run: a background shell that leaves a
+/// child of its own, with the shell's pid as the cell's value.
+const HELD_JOB: &str =
+    "(define held (bash \"sleep 300 & echo $! > child.pid; echo up > started; wait\"
+                        (hash 'background #t)))
+     (hash-ref held 'pid)";
+
+/// A session thread that panics drops its runtime, and with it the task
+/// that watches each job. That alone ends each job's whole group, even
+/// while something of the session still holds the kernel.
+#[test]
+fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = pipe_in(dir.path(), "started");
+    let (kept, keep) = std::sync::mpsc::channel();
+    let cwd = dir.path().to_path_buf();
+    let session = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (provisioner, kernel) = runtime.block_on(kernel_in(HostRequestHandlers::new(), &cwd));
+        let shell = runtime.block_on(async {
+            let shell = value(kernel.as_ref(), HELD_JOB).await;
+            read(&started).await;
+            shell
+        });
+        // The kernel outlives this thread, as it does while a thread of the
+        // session is stuck holding it.
+        kept.send((provisioner, kernel, shell)).unwrap();
+        std::panic::resume_unwind(Box::new("the session thread panicked"));
+    });
+    let (_provisioner, _kernel, shell) = keep.recv_timeout(STEP).unwrap();
+    assert!(session.join().is_err());
+    let child = std::fs::read_to_string(dir.path().join("child.pid")).unwrap();
+    let waiting = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    assert_eq!(
+        waiting.block_on(async {
+            (
+                exited(shell.parse().unwrap()).await,
+                exited(child.trim().parse().unwrap()).await,
+            )
+        }),
+        (true, true)
+    );
+}
+
+/// A session whose thread is stuck never runs a destructor: its host ends
+/// the lifetime from outside, and that kills every job's whole group while
+/// the stuck thread still holds the kernel and its runtime.
+#[test]
+fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = pipe_in(dir.path(), "started");
+    let scope = pa_types::session_scope::SessionScope::new(
+        "stuck".to_string(),
+        dir.path().to_path_buf(),
+        std::collections::BTreeMap::new(),
+        std::collections::BTreeSet::new(),
+    );
+    let (told, shell) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (cwd, entered) = (dir.path().to_path_buf(), std::sync::Arc::clone(&scope));
+    let stuck = std::thread::spawn(move || {
+        let _scope = pa_types::session_scope::enter(Some(entered));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(pa_types::session_scope::inherit())
+            .build()
+            .unwrap();
+        let (_provisioner, kernel) = runtime.block_on(kernel_in(HostRequestHandlers::new(), &cwd));
+        told.send(runtime.block_on(async {
+            let shell = value(kernel.as_ref(), HELD_JOB).await;
+            read(&started).await;
+            shell
+        }))
+        .unwrap();
+        // Stuck: nothing here is dropped until the test has seen the jobs die.
+        let _ = held.recv();
+    });
+    let shell = shell.recv_timeout(STEP).unwrap();
+    let child = std::fs::read_to_string(dir.path().join("child.pid")).unwrap();
+    scope.end();
+    let waiting = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let gone = waiting.block_on(async {
+        (
+            exited(shell.parse().unwrap()).await,
+            exited(child.trim().parse().unwrap()).await,
+        )
+    });
+    release.send(()).unwrap();
+    stuck.join().unwrap();
+    assert_eq!(gone, (true, true));
+}
+
+/// A command still running when its kernel ends is killed with it, and the
+/// session's next kernel says so once; a command that ended is not named.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kernel() {
+    let dir = tempfile::tempdir().unwrap();
+    let started = pipe_in(dir.path(), "started");
+    let artifacts = dir.path().join("artifacts");
+    let saved = |handlers| SchemeKernelOptions {
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        artifact_dir: Some(artifacts.clone()),
+        ..SchemeKernelOptions::default()
+    };
+    let (handlers, _received) = recording(&[("bash.completed", json!({}))]);
+    let (provisioner, kernel) = kernel_with(saved(handlers)).await;
+    let pid = value(
+        kernel.as_ref(),
+        "(define lasting (bash \"echo up > started; sleep 300\" (hash 'background #t)))
+         (define brief (bash \"true\" (hash 'background #t)))
+         (define (ended) (if (bash-running? brief) (ended) #t))
+         (ended)
+         (hash-ref lasting 'pid)",
+    )
+    .await;
+    read(&started).await;
+    provisioner.kill().await;
+    let listed = artifacts.join(super::job::RUNNING_FILE);
+    let was_listed = listed.exists();
+    let (handlers, mut received) = recording(&[("bash.completed", json!({}))]);
+    let (_provisioner, _kernel) = kernel_with(saved(handlers)).await;
+    assert_eq!(
+        (was_listed, next(&mut received).await, listed.exists()),
+        (
+            true,
+            (
+                "bash.completed".to_string(),
+                json!({
+                    "pid": pid.parse::<u32>().unwrap(),
+                    "command": "echo up > started; sleep 300",
+                    "lost": true,
+                })
+            ),
+            false,
+        )
+    );
+}

@@ -321,6 +321,7 @@ const HARNESS_NOTICE_HEADS: &[&str] = &[
     "autonomous-continuation",
     "autonomous-status",
     "bash-done",
+    "bash-lost",
     "branch-summary",
     "cell-done",
     "child-exited",
