@@ -850,3 +850,102 @@ fn a_thread_left_over_from_an_ended_lifetime_cannot_change_the_workspace() {
         )
     );
 }
+
+/// A kernel of a saved session: its cut output pages out to the store under
+/// `dir`, which the `ctx-*` functions read.
+async fn paging_kernel(
+    dir: &std::path::Path,
+) -> (Box<dyn KernelExecutor>, crate::kernel::spill::SpillStore) {
+    let store = crate::kernel::spill::SpillStore::for_session_dir(dir);
+    let mut handlers = HostRequestHandlers::new();
+    crate::kernel::spill::host::register_ctx_handlers(
+        &mut handlers,
+        Some(&store),
+        /*observer*/ None,
+    );
+    let kernel = SchemeKernelProvisioner::with_options(SchemeKernelOptions {
+        host_handlers: handlers,
+        cwd: dir.to_path_buf(),
+        artifact_dir: Some(dir.to_path_buf()),
+        ..SchemeKernelOptions::default()
+    })
+    .ensure(None, None)
+    .await
+    .unwrap();
+    (kernel, store)
+}
+
+/// A cell whose long, noisy output is cut returns the lines that carry
+/// information (its ends, the error and its location, the repeated progress
+/// line once with its count) instead of its first screenfuls, then the handle;
+/// the handle still pages everything the cell printed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_cells_output_is_previewed_by_information_and_pages_back_whole() {
+    use crate::kernel::spill::{content_id, group_digits, SpillLookup, StoredSpill};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, store) = paging_kernel(dir.path()).await;
+    let first = "   Compiling app v0.1.0 (/work/app)";
+    let progress = "    Building [=======>                 ] 8/24: serde_derive";
+    let error = "error[E0308]: mismatched types";
+    let location = " --> src/lib.rs:6:22";
+    let last = "error: could not compile `app` (lib) due to 1 previous error";
+    let noise = format!("{progress}\n").repeat(1500);
+    let printed = format!("{first}\n{noise}{error}\n{location}\n{noise}{last}\n");
+    let id = content_id(&printed);
+    let cut = run(
+        kernel.as_ref(),
+        &format!(
+            "(define (progress-lines n)
+               (when (> n 0) (displayln {progress:?}) (progress-lines (- n 1))))
+             (displayln {first:?})
+             (progress-lines 1500)
+             (displayln {error:?})
+             (displayln {location:?})
+             (progress-lines 1500)
+             (displayln {last:?})"
+        ),
+    )
+    .await;
+    let paged = run(
+        kernel.as_ref(),
+        &format!("(display (hash-ref (ctx-page \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
+    )
+    .await;
+    let preview = format!("{first}\n{progress}  ×3000\n{error}\n{location}\n{last}");
+    let total = printed.chars().count();
+    assert_eq!(
+        (cut.stdout, paged.stdout, store.lookup(&id).await),
+        (
+            format!(
+                "{preview}\n[out:{id} · {} chars · 3,004 lines · {} chars not shown]",
+                group_digits(total),
+                group_digits(total - preview.chars().count()),
+            ),
+            format!("{progress}\n{error}\n{location}\n"),
+            SpillLookup::Stored(StoredSpill {
+                text: printed,
+                total_chars: total,
+                lines: 3004,
+            }),
+        )
+    );
+}
+
+/// A cell keeps the first 262,144 bytes of what it prints: the preview and
+/// the handle cover those, and the result says how much came after them.
+#[tokio::test(flavor = "multi_thread")]
+async fn output_printed_past_what_a_cell_keeps_is_named_after_its_preview() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, _store) = paging_kernel(dir.path()).await;
+    let kept = "x".repeat(262_144);
+    let cut = run(kernel.as_ref(), "(display (make-string 300000 #\\x))").await;
+    assert_eq!(
+        cut.stdout,
+        format!(
+            "{}…\n[out:{} · 262,144 chars · 1 lines · 261,943 chars not shown]\n[... 37856 more bytes were printed after the first 262144 and were not kept ...]",
+            "x".repeat(200),
+            crate::kernel::spill::content_id(&kept),
+        )
+    );
+}

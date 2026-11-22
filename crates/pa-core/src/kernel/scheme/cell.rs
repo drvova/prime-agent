@@ -195,6 +195,8 @@ enum Stream {
 struct Printed {
     /// The first [`OUTPUT_KEPT_BYTES`], for the result.
     kept: Vec<u8>,
+    /// Bytes printed after `kept` was full: not kept, only counted.
+    dropped: usize,
     /// Bytes not yet streamed: the start of a split character.
     unstreamed: Vec<u8>,
 }
@@ -471,6 +473,7 @@ impl std::io::Write for CellOutput {
                     .saturating_sub(printed.kept.len())
                     .min(bytes.len());
                 printed.kept.extend_from_slice(&bytes[..kept]);
+                printed.dropped += bytes.len() - kept;
                 printed.unstreamed.extend_from_slice(bytes);
                 let whole = match std::str::from_utf8(&printed.unstreamed) {
                     Ok(text) => text.len(),
@@ -1133,16 +1136,32 @@ pub(super) async fn execute(
             Some(_) => cells.session.output_budget.max_output_chars(),
             None => DEFAULT_MAX_OUTPUT_CHARS,
         };
+        // A preview's noise patterns are learned per command family: the
+        // program of the cell's first `(bash ...)` command, else the kernel
+        // tool.
+        let family = shown
+            .bash_commands
+            .as_ref()
+            .and_then(|commands| {
+                let last = commands.first.rsplit(['&', ';', '|']).next()?;
+                last.split_whitespace().next()
+            })
+            .unwrap_or(pa_types::ai::KERNEL_TOOL_NAME)
+            .to_string();
         let capped = |printed: &mut Printed| {
             let text = String::from_utf8_lossy(&std::mem::take(&mut printed.kept)).into_owned();
-            match (text.char_indices().nth(cap), &store) {
-                (Some((end, _)), Some(store)) => format!(
-                    "{}\n{}",
-                    &text[..end],
-                    store
-                        .spill(crate::kernel::spill::SpillCopy::of_text(&text))
-                        .marker(text[end..].chars().count())
-                ),
+            let mut cut = match (text.char_indices().nth(cap), &store) {
+                // Paged out: within the cap, the lines of what was kept that
+                // carry information (its start when no preview applies),
+                // then the handle that reads all of it.
+                (Some((end, _)), Some(store)) => {
+                    let preview = store
+                        .preview(&text, cap, &family)
+                        .unwrap_or_else(|| text[..end].to_string());
+                    let handle = store.spill(crate::kernel::spill::SpillCopy::of_text(&text));
+                    let not_shown = handle.total_chars.saturating_sub(preview.chars().count());
+                    format!("{preview}\n{}", handle.marker(not_shown))
+                }
                 (Some((end, _)), None) => {
                     format!(
                         "{}\n[... output truncated at {cap} chars ...]",
@@ -1150,7 +1169,16 @@ pub(super) async fn execute(
                     )
                 }
                 (None, _) => text,
+            };
+            // The preview and the handle cover what was kept: say what was not.
+            let dropped = std::mem::take(&mut printed.dropped);
+            if dropped > 0 {
+                let _ = write!(
+                    cut,
+                    "\n[... {dropped} more bytes were printed after the first {OUTPUT_KEPT_BYTES} and were not kept ...]"
+                );
             }
+            cut
         };
         shown.stdout = capped(&mut state.output);
         // What the cell printed comes before a note the kernel added.

@@ -661,6 +661,22 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         let counters = std::sync::Arc::clone(&session_counters);
         store.set_observer(std::sync::Arc::new(move |fact| counters.note_spill(fact)));
     }
+    // Previews collapse this project's learned noise patterns: the session
+    // previews with the set known at its start (a short bounded read), and
+    // what it learns is saved for the next session.
+    if let Some(store) = &spill_store {
+        let mut learner =
+            crate::kernel::spill::noise::NoiseLearner::for_project(&config.agent_dir, &cwd);
+        learner.load(crate::kernel::spill::noise::LOAD_BUDGET).await;
+        store.set_previewer(
+            learner,
+            config.telemetry.is_some().then(|| {
+                let counters = std::sync::Arc::clone(&session_counters);
+                std::sync::Arc::new(move |fact| counters.note_preview(fact))
+                    as crate::kernel::spill::PreviewObserver
+            }),
+        );
+    }
     // Telemetry counts each `ctx.*` read; a read of a prefetched handle counts as its use.
     let ctx_counters = config
         .telemetry
@@ -670,6 +686,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         std::sync::Arc::new(move |read, id: &str| {
             if let Some(counters) = &ctx_counters {
                 counters.note_ctx_read(read);
+                counters.note_preview_followup();
             }
             if let Some(prefetch) = &prefetch {
                 prefetch.note_handle_read(id);

@@ -168,7 +168,7 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     assert_eq!(status, "ok", "{text}");
     assert!(
         text.contains(&format!(
-            "[{handle} · 240,000 chars · 20,000 lines · 174,464 chars not shown]"
+            "[{handle} · 240,000 chars · 20,000 lines · 211,903 chars not shown]"
         )),
         "{}",
         &text[text.len().saturating_sub(400)..]
@@ -205,7 +205,7 @@ fn request_results(context: &pa_agent::stream::LlmContext) -> Vec<(String, Strin
 }
 
 /// Live kernel: past the thinning threshold, the request replays the oldest
-/// rounds as their spill handle plus a short head and tail, and a later cell
+/// rounds as a short preview and their spill handle, and a later cell
 /// pages a thinned result back in whole with `ctx.page`, byte for byte.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
@@ -250,12 +250,20 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
     let (status, original) = tool_result(&entries, "call-00");
     assert_eq!(status, "ok", "{original}");
 
-    // The last request carried call-00 as its handle plus head and tail.
+    // The last request carried call-00 as a preview of its lines, then its
+    // handle. Every line of this result is as informative as the next, so the
+    // preview keeps the first and last two and fills its 360 characters in
+    // order: nine lines, the gap, and the last two.
     let id = &format!("{:x}", sha2::Sha256::digest(original.as_bytes()))[..10];
     let chars: Vec<char> = original.chars().collect();
-    let head: String = chars[..240].iter().collect();
-    let tail: String = chars[chars.len() - 120..].iter().collect();
-    let lines = original.lines().count();
+    let all: Vec<&str> = original.lines().collect();
+    let lines = all.len();
+    let preview = format!(
+        "{}\n[… {} lines …]\n{}",
+        all[..9].join("\n"),
+        lines - 11,
+        all[lines - 2..].join("\n")
+    );
     let last = provider.calls().pop().expect("a request");
     let thinned = request_results(&last)
         .into_iter()
@@ -267,7 +275,7 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
             "call-00".to_string(),
             format!(
                 // Grouped digits; the result is a few thousand chars.
-                "{head}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; ctx-page/ctx-grep read it whole]\n{tail}",
+                "{preview}\n[out:{id} · {},{:03} chars · {lines} lines · thinned from this request; ctx-page/ctx-grep read it whole]",
                 chars.len() / 1000,
                 chars.len() % 1000,
             )

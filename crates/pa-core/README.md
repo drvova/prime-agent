@@ -264,6 +264,24 @@ executor through atomics. Adoption counts ride `agent context paging`. Public su
 transit cap and `bash()`'s 2 MiB head/tail buffer bound memory before the host sees the text)
 and any cross-session sharing.
 
+Surprise-weighted previews (`kernel::spill::preview`, `kernel::spill::noise`): where a cell's cut
+output pages out (`kernel::scheme::cell`), and where a thinned tool result pages out, the text
+shown is chosen by information within the same budget: head/tail anchors, error/warning/failure
+lines (an error's own location ranks with it), then lines with the rarest tokens of that output;
+each distinct line once with its repeats as `×N`, kept lines in order with `[… N lines …]` gaps,
+then the handle. A cell's preview is computed over the 262,144 bytes it keeps, and a note after
+the handle counts what was printed past them. Line shapes a project's command family prints every
+run (three runs, decaying) collapse into one `[… N noise lines …]` marker, unless ever seen on or
+beside a failure line; the family is the program of the cell's first `(bash …)` command, else the
+tool's name. The estimator is per project and shared by that project's sessions in the process
+(poison-tolerant locks); a session previews with the set known at its start (50 ms bounded read
+under `<agent dir>/preview-noise/`) so its request views stay a pure function of history, and
+saves what it learns fire-and-forget on a scope-propagating thread that writes nothing once its
+session lifetime has ended, and nothing over a store it could not read. Adoption counts, with the
+`ctx-*` reads that followed a preview, ride the `agent previews` event. Non-goals: encoding, any
+model or dependency, and previewing `bash`'s own `'output` (it is returned whole beside its
+handle; it is previewed when a cell prints it).
+
 Kernel capability manifests (`kernel::capabilities`, crate-internal): one TOML file per Python
 kernel capability beside the module, embedded with `include_str!`, recording each capability's
 runtime-ready probe statements, closure seed, bootstrap binding, plumbing host requests, and

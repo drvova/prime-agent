@@ -51,6 +51,7 @@ mod edit_checks;
 mod error_enrichment;
 mod hypotheses;
 mod prefetch;
+mod previews;
 mod readonly_cache;
 mod symbol_index;
 mod test_summaries;
@@ -440,6 +441,8 @@ struct CounterValues {
     worktrees: WorktreeCounts,
     /// Spills and `ctx.*` reads, reported by `agent context paging`.
     context_paging: ContextPagingCounts,
+    /// Surprise-weighted previews and the reads after them, reported by `agent previews`.
+    previews: previews::PreviewCounts,
     /// Recorded assistant calls by billing mode (only the calls count), reported by
     /// `agent billing modes`.
     billing_modes: pa_types::billing::BillingSplit,
@@ -2219,6 +2222,7 @@ impl SessionTelemetry {
             self.client
                 .track("agent repl background cells", cell_properties);
         }
+        self.track_previews();
         self.track_symbol_index();
         self.track_prefetch();
         self.track_error_enrichment();
