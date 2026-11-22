@@ -60,8 +60,18 @@ pub(crate) fn fault_row(fault: &SessionFaultEvent) -> ChatEntry {
             ),
             StatusKind::Error,
         ),
-        SessionFaultEvent::SessionRecovered { .. } => (
+        SessionFaultEvent::SessionRecovered {
+            queued_input_suspended: false,
+            ..
+        } => (
             "Session recovered \u{2014} it was rebuilt from its transcript and is ready.".to_string(),
+            StatusKind::Info,
+        ),
+        SessionFaultEvent::SessionRecovered {
+            queued_input_suspended: true,
+            ..
+        } => (
+            "Session recovered \u{2014} it was rebuilt from its transcript. It is still stopped by your abort: queued input waits until you resume it.".to_string(),
             StatusKind::Info,
         ),
         SessionFaultEvent::SessionFailed { failures } => (

@@ -28,6 +28,12 @@ pub(crate) const SIDE_QUESTION_SETTLE_TIMEOUT: Duration = Duration::from_secs(3)
 pub(crate) const QUEUED_INPUT_SUSPENDED: &str =
     "Cannot admit a session action while queued session input is suspended.";
 
+/// The same refusal on a session that came back suspended: the abort that
+/// suspended it was made before the session was rebuilt, and it still holds
+/// (a rebuild heals the session, it does not undo the user's stop).
+pub(crate) const QUEUED_INPUT_SUSPENDED_BEFORE_REBUILD: &str =
+    "Cannot admit a session action while queued session input is suspended. The session was rebuilt after it was stopped, and the stop still holds: resume the queue, or send the prompt with a streamingBehavior.";
+
 /// The item's turn-execution class: items co-deliver as one batched turn only
 /// within the same class; the direct-prompt hand-off never joins a batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

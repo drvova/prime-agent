@@ -406,10 +406,11 @@ fn an_owned_stop_ends_a_wedged_session_and_its_file_resumes() {
 
     let _daemon = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
-    // The second turn's cell says it is on the engine, then never returns.
+    // The second turn's cell enters a native call no interrupt reaches, which writes
+    // its marker once it is inside and never returns.
     let on_engine = dir.path().join("cell-on-engine");
     let cell = format!(
-        "(fs-write {} \"on the engine\") (time/sleep-ms 600000)",
+        "(%test-block {})",
         serde_json::to_string(&on_engine.to_string_lossy()).expect("a Scheme string literal")
     );
     let wedging_script = dir.path().join("wedging.json");
@@ -434,6 +435,9 @@ fn an_owned_stop_ends_a_wedged_session_and_its_file_resumes() {
         &json!({
             "type": "create",
             "lifecycle": "client_owned",
+            // The wedge is the kernel's test seam: no kernel function of its own
+            // ignores a stop.
+            "launchEnv": { "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1" },
             "config": {
                 "cwd": dir.path().to_string_lossy(),
                 "sessionDir": sessions_dir.to_string_lossy(),

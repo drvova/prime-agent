@@ -308,11 +308,11 @@ fn write_parent_script(dir: &Path, first_cell: &str) -> PathBuf {
                     { "type": "toolCall", "name": "eval", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
-                // The turn [`crash_parent`] runs: the cell says it is on the engine, then
-                // sits in a native call no interrupt reaches.
+                // The turn [`crash_parent`] runs: the cell enters a native call no interrupt
+                // reaches, which writes its receipt once it is inside.
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": { "code": format!(
-                        "(fs-write {} \"on the engine\") (time/sleep-ms 600000)",
+                        "(%test-block {})",
                         serde_json::to_string(&dir.join("receipts").join("wedged").to_string_lossy())
                             .expect("a Scheme string literal")
                     ) } },
@@ -343,7 +343,12 @@ fn create_parent(
             "type": "create",
             "name": "parent",
             // An aborted cell still on the engine after this long ends its session.
-            "launchEnv": { "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300" },
+            // The wedge is the kernel's test seam: no kernel function of its own
+            // ignores a stop.
+            "launchEnv": {
+                "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+                "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+            },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions_dir.to_string_lossy(),

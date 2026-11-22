@@ -53,11 +53,16 @@ impl Worker {
             let mut core = self.core.lock().unwrap();
             if core.queued_input_suspended && !core.busy {
                 if streaming_behavior.is_none() {
+                    let refusal = if core.suspension_carried_over {
+                        super::queue::QUEUED_INPUT_SUSPENDED_BEFORE_REBUILD
+                    } else {
+                        QUEUED_INPUT_SUSPENDED
+                    };
                     drop(core);
                     return response_failure(
                         None,
                         if wait { "prompt_and_wait" } else { "prompt" },
-                        QUEUED_INPUT_SUSPENDED,
+                        refusal,
                         None,
                     );
                 }

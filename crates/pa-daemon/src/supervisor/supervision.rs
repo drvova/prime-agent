@@ -369,16 +369,32 @@ impl Supervisor {
                     // accumulate toward the give-up cap (the reset comes only from a stable
                     // lifetime on the crash path).
                     self.note_daemon_event("worker_restarted", None);
-                    let active_session_id = resident
-                        .descriptor
-                        .lock()
-                        .await
-                        .root_active_session_id
-                        .clone();
+                    let (active_session_id, journal_path) = {
+                        let descriptor = resident.descriptor.lock().await;
+                        (
+                            descriptor.root_active_session_id.clone(),
+                            std::path::PathBuf::from(&descriptor.recovery_journal_path),
+                        )
+                    };
+                    // A session stopped by its user comes back stopped: the rebuild heals
+                    // it, it does not undo the abort. The client is told, so the refusal of
+                    // its next plain prompt is no surprise.
+                    let queued_input_suspended =
+                        crate::journal::WorkerRecoveryJournal::read_queue_snapshot(
+                            &journal_path,
+                            &active_session_id,
+                        )
+                        .ok()
+                        .flatten()
+                        .is_some_and(|(_, _, suspended)| suspended);
                     self.publish_fault_state(&resident, "recovered").await;
                     self.publish_session_fault(
                         &active_session_id,
-                        json!({ "type": "session_recovered", "failures": failures }),
+                        json!({
+                            "type": "session_recovered",
+                            "failures": failures,
+                            "queuedInputSuspended": queued_input_suspended,
+                        }),
                     );
                     child = Some(new_child);
                 }

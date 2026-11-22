@@ -607,27 +607,30 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
         .await
         .unwrap();
     let signal = AbortSignal::new();
-    let abort = signal.clone();
-    let started = Arc::new(tokio::sync::Notify::new());
-    let printed = Arc::clone(&started);
-    tokio::spawn(async move {
-        started.notified().await;
-        abort.cancel();
-    });
-    // One native call that watches nothing: no interrupt reaches it, so the
-    // cell never returns within this test's patience.
-    let on_stream = move |_text: &str, _stream: &'static str| printed.notify_one();
+    // One native call that watches nothing: it writes its marker from inside
+    // the call and stays there until the marker is removed, so no interrupt
+    // reaches the cell however late the abort below is raised.
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("blocked");
     let execute = kernel.execute(
-        "(displayln \"sleeping\") (%test-block-ms 3000)",
+        &format!("(%test-block {:?})", marker.display().to_string()),
         KernelExecuteOptions {
-            signal: Some(signal),
+            signal: Some(signal.clone()),
             timeout_ms: None,
-            on_stream: Some(&on_stream),
+            on_stream: None,
             on_late_sent_agent_message: None,
         },
     );
     tokio::pin!(execute);
     let report = tokio::time::timeout(PATIENCE, async {
+        // The cell is inside the call before it is stopped.
+        while !marker.exists() {
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+                result = &mut execute => panic!("the cell returned: {:?}", result.map(|result| result.status)),
+            }
+        }
+        signal.cancel();
         tokio::select! {
             report = reported.recv() => report,
             result = &mut execute => panic!("the cell returned: {:?}", result.map(|result| result.status)),
@@ -635,6 +638,8 @@ async fn a_cell_that_outlives_its_interrupt_is_reported_to_the_sessions_host() {
     })
     .await
     .expect("the stuck cell was reported");
+    // The abandoned call is let go.
+    std::fs::remove_file(&marker).unwrap();
     assert_eq!(
         report.as_deref(),
         Some("a kernel cell did not stop within 100 ms of its interrupt: a host call is not observing the cell's cancellation")

@@ -376,10 +376,15 @@ pub(super) fn sleep(arguments: &[SteelVal]) -> Result<SteelVal, SteelErr> {
 /// The longest a sleeping cell goes without looking at its signal.
 const SLEEP_SLICE: std::time::Duration = std::time::Duration::from_millis(10);
 
-/// Set to `1` in a session's environment, its kernel gets
-/// `(%test-block-ms milliseconds)`: one native sleep that nothing interrupts.
-/// It exists for the tests of the stuck-cell path, which need a host call
-/// that ignores its cell's stop; no kernel function does any more.
+/// Set to `1` in a session's environment, a debug build's kernel gets
+/// `(%test-block marker)`: one native call that nothing interrupts. It
+/// writes the file `marker` once it is inside the call and returns when the
+/// file is gone, so a test that has seen the marker knows the cell is past
+/// every interrupt, and the call lasts until the test lets it go (or its
+/// process ends). It exists for the tests of the stuck-cell path, which need
+/// a host call that ignores its cell's stop; no kernel function does any
+/// more. Release builds do not have it.
+#[cfg(debug_assertions)]
 pub(super) const BLOCKING_SEAM_ENV: &str = "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM";
 
 /// Steel's modules that hold builtins no global names.

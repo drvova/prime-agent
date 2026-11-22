@@ -506,6 +506,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             let native_cwd = state.environment.cwd.clone();
             let runtime = tokio::runtime::Handle::current();
             // Read here, on the session's own thread.
+            // Debug builds only: a session's launch environment is its user's, and no
+            // shipped binary may hold a function a cell cannot be stopped in.
+            #[cfg(debug_assertions)]
             let blocking_seam =
                 pa_types::session_scope::var(limits::BLOCKING_SEAM_ENV).is_ok_and(|set| set == "1");
             let starting = std::time::Instant::now();
@@ -599,9 +602,17 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                         reply.to_string()
                     },
                 );
+                #[cfg(debug_assertions)]
                 if blocking_seam {
-                    engine.register_fn("%test-block-ms", |milliseconds: usize| {
-                        std::thread::sleep(std::time::Duration::from_millis(milliseconds as u64));
+                    engine.register_fn("%test-block", |marker: String| {
+                        let marker = std::path::PathBuf::from(marker);
+                        // The marker appears from inside the native call: whoever sees it
+                        // knows no interrupt can reach this cell any more.
+                        if std::fs::write(&marker, "blocked").is_ok() {
+                            while marker.exists() {
+                                std::thread::sleep(std::time::Duration::from_millis(20));
+                            }
+                        }
                     });
                 }
                 engine.register_value("%session-cwd", SteelVal::StringV(cwd.into()));

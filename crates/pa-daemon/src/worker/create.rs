@@ -612,6 +612,7 @@ impl Worker {
             // The restored lanes carry their suspension: a user-aborted queue
             // revives still parked, never auto-running its prompts.
             core.queued_input_suspended = restored_suspended;
+            core.suspension_carried_over = restored_suspended;
             // A resumed session's tool counter re-seeds from its file: a
             // revived worker keeps the count its roster rows carried.
             core.tool_use_count = store.tool_call_count();

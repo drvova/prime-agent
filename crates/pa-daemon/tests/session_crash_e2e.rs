@@ -210,6 +210,30 @@ fn crash_log(agent_dir: &Path, socket: &Path) -> Vec<Value> {
         .collect()
 }
 
+/// A cell that enters a native call no interrupt reaches (the kernel's test
+/// seam, which the session's launch environment asks for): the call writes
+/// its marker under `dir` once it is inside, and never returns.
+fn wedged_cell(dir: &Path) -> String {
+    format!(
+        "(%test-block {})",
+        serde_json::to_string(&dir.join("cell-blocked").to_string_lossy())
+            .expect("a Scheme string literal")
+    )
+}
+
+/// Wait until the [`wedged_cell`] under `dir` is inside its native call: from
+/// then on a stop cannot reach it, however late it is sent.
+fn await_wedged(dir: &Path) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !dir.join("cell-blocked").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the cell never reached its native call"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// The session leases held under `agent_dir` (one `.lock` directory each).
 fn held_leases(agent_dir: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(agent_dir.join("session-leases"))
@@ -403,7 +427,7 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": "(displayln \"sleeping\") (%test-block-ms 600000)",
+                        "code": wedged_cell(dir.path()),
                     } },
                 ] },
                 { "text": "done" },
@@ -420,8 +444,7 @@ fn a_cell_that_ignores_its_interrupt_is_reported_as_stuck_and_its_session_rebuil
         &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
     );
     assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
-    // The cell has printed: it is on the engine, inside its native sleep.
-    client.event(&session, "tool_execution_update");
+    await_wedged(dir.path());
     client.send(
         "abort",
         &json!({ "type": "abort", "activeSessionId": session }),
@@ -537,7 +560,7 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": "(displayln \"sleeping\") (%test-block-ms 600000)",
+                        "code": wedged_cell(dir.path()),
                     } },
                 ] },
                 { "text": "done" },
@@ -550,7 +573,7 @@ fn a_wedged_session_is_stopped_on_request_and_its_lease_frees() {
         &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
     );
     assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
-    client.event(&session, "tool_execution_update");
+    await_wedged(dir.path());
 
     let killed = client.request(
         "kill",
@@ -650,7 +673,7 @@ fn a_command_a_cell_started_does_not_survive_the_daemons_shutdown() {
 /// first cell is the probe: it fails exactly when `marker` is not defined.
 /// Turn one probes then defines (three responses), turn two probes (two),
 /// turn three answers in text, and the last cell never returns.
-fn kernel_story_script(extra: &Value) -> Value {
+fn kernel_story_script(dir: &Path, extra: &Value) -> Value {
     let cell = |code: &str| {
         json!({ "content": [
             { "type": "toolCall", "name": "eval", "arguments": { "code": code } },
@@ -665,7 +688,7 @@ fn kernel_story_script(extra: &Value) -> Value {
             cell("(displayln marker)"),
             { "text": "probed" },
             { "text": "idle", "delayMs": 1500 },
-            cell("(displayln \"sleeping\") (%test-block-ms 600000)"),
+            cell(&wedged_cell(dir)),
             { "text": "done" },
         ],
     });
@@ -750,9 +773,12 @@ fn a_session_rebuilt_after_a_panic_is_told_once_that_its_kernel_definitions_are_
     let session = client.create_attached(
         dir.path(),
         "kernel",
-        &kernel_story_script(&json!({
-            "panicOn": { "message": "crash now", "panic": "injected fault" },
-        })),
+        &kernel_story_script(
+            dir.path(),
+            &json!({
+                "panicOn": { "message": "crash now", "panic": "injected fault" },
+            }),
+        ),
         json!({}),
     );
     for (id, message) in [
@@ -840,7 +866,7 @@ fn a_session_rebuilt_after_a_stuck_cell_is_told_once_that_its_kernel_definitions
     let session = client.create_attached(
         dir.path(),
         "kernel",
-        &kernel_story_script(&json!({})),
+        &kernel_story_script(dir.path(), &json!({})),
         json!({ "launchEnv": {
             "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
             "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
@@ -859,12 +885,7 @@ fn a_session_rebuilt_after_a_stuck_cell_is_told_once_that_its_kernel_definitions
         &json!({ "type": "prompt", "activeSessionId": session, "message": "run the stuck cell" }),
     );
     assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
-    // The cell has printed: it is on the engine, inside its native block.
-    client.read_until("the stuck cell's output", |frame| {
-        frame["activeSessionId"] == session.as_str()
-            && frame["event"]["type"] == "tool_execution_update"
-            && frame["event"].to_string().contains("sleeping")
-    });
+    await_wedged(dir.path());
     client.send(
         "abort",
         &json!({ "type": "abort", "activeSessionId": session }),
@@ -911,7 +932,11 @@ fn a_parked_child_whose_idle_kernel_was_released_is_told_once_on_its_next_turn()
     // A parent-owned child with no attached client releases its kernel each
     // time it parks. The script never restarts here: the lifetime goes on.
     let script_path = dir.path().join("child-script.json");
-    std::fs::write(&script_path, kernel_story_script(&json!({})).to_string()).expect("script");
+    std::fs::write(
+        &script_path,
+        kernel_story_script(dir.path(), &json!({})).to_string(),
+    )
+    .expect("script");
     let sessions_dir = dir.path().join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
     let created = client.request(
@@ -968,7 +993,7 @@ fn a_turn_cut_off_by_a_daemon_restart_continues_behind_one_notice_and_its_prompt
         let session = client.create_attached(
             dir.path(),
             "kernel",
-            &kernel_story_script(&json!({})),
+            &kernel_story_script(dir.path(), &json!({})),
             json!({}),
         );
         for (id, message) in [("define", "define it"), ("probe", "probe it")] {
@@ -1116,5 +1141,65 @@ fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor
             fault["state"]
         ]),
         json!([session, "panic", "injected fault", "recovered"])
+    );
+}
+
+#[test]
+fn a_session_rebuilt_under_an_abort_stays_stopped_and_says_why() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "stopped",
+        &json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": {
+                        "code": wedged_cell(dir.path()),
+                    } },
+                ] },
+                { "text": "done" },
+            ],
+        }),
+        json!({ "launchEnv": {
+            "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+            "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+        } }),
+    );
+    let prompted = client.request(
+        "prompt",
+        &json!({ "type": "prompt", "activeSessionId": session, "message": "run the cell" }),
+    );
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    await_wedged(dir.path());
+    client.send(
+        "abort",
+        &json!({ "type": "abort", "activeSessionId": session }),
+    );
+    let recovered = client.event(&session, "session_recovered");
+    // The user's abort outlives the rebuild: a plain prompt is refused with
+    // the reason, and a prompt that names its delivery resumes the session.
+    let plain = client.request("plain", &turn(&session, "go on"));
+    let mut named = turn(&session, "go on");
+    named["streamingBehavior"] = json!("followUp");
+    let resumed = client.request("named", &named);
+    assert_eq!(
+        json!([
+            recovered["queuedInputSuspended"],
+            plain["success"],
+            plain["error"],
+            resumed["success"],
+        ]),
+        json!([
+            true,
+            false,
+            "Cannot admit a session action while queued session input is suspended. The session was rebuilt after it was stopped, and the stop still holds: resume the queue, or send the prompt with a streamingBehavior.",
+            true,
+        ]),
+        "recovered: {recovered}\nplain: {plain}\nresumed: {resumed}"
     );
 }

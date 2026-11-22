@@ -56,6 +56,11 @@ pub enum SessionFaultEvent {
     SessionRecovered {
         #[serde(default)]
         failures: u32,
+        /// The session's queued input is still suspended by the abort made
+        /// before it went down: a plain prompt is refused until the queue
+        /// is resumed.
+        #[serde(default, rename = "queuedInputSuspended")]
+        queued_input_suspended: bool,
     },
     /// The daemon gave up rebuilding the session after `failures`
     /// consecutive failures.
