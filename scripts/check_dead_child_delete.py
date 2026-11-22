@@ -2,10 +2,11 @@
 """Hosted real RLM child deletion and idempotent retry.
 
 A real kernel admits a child whose model request is held. The ordinary daemon
-kill command closes the separate child worker and removes its projection;
-rlmLedgerDelete persists the edge boundary, and a retry leaves it unchanged.
-The dead-PID and interrupted-cleanup branches are separately exercised by hosted
-Unix supervisor regressions; this fixture does not manufacture a process death.
+kill command closes the child's own session (hosted inside the daemon, beside
+its parent's) and removes its projection; rlmLedgerDelete persists the edge
+boundary, and a retry leaves it unchanged. The crashed-session and
+interrupted-cleanup branches are separately exercised by the Unix supervisor
+regressions; this fixture does not manufacture a session crash.
 """
 import argparse
 import json
@@ -20,7 +21,7 @@ import time
 from check_ledger_liveness import Provider, PARENT, NAME
 from check_agent_bounce import Client
 from lifecycle_lib import digest, env_for
-from lifecycle_lib import OwnedProcesses, TAG, finish, verify_worker, process_identity
+from lifecycle_lib import OwnedProcesses, TAG, finish, verify_session, session_serving
 
 
 def delete_contract(rows, child_id):
@@ -69,9 +70,9 @@ def observe(binary, root, observed):
         descriptors = [json.loads(p.read_text()) for p in (root / 'agent/daemon-workers').rglob('*.json')]
         child_descriptors = [d for d in descriptors if d.get('rootActiveSessionId') == child_active]
         assert len(child_descriptors) == 1, child_descriptors
-        pid, identity = verify_worker(child_descriptors[0], child_active, binary, path)
+        child_socket, generation = verify_session(child_descriptors[0], child_active, binary, path, daemon.pid)
         scope.discover()
-        observed['child_process_identity'] = {'pid': pid, 'start_id': identity}
+        observed['child_session_identity'] = {'socket': child_socket, 'generation': generation}
         payload = {'activeSessionId': child_active, 'rlmLedgerDelete': 'user', 'rlmChildId': child_id}
         observed['delete_response'] = control.call('kill', **payload)
         after_list = control.call('list', all=True)
@@ -79,17 +80,11 @@ def observe(binary, root, observed):
         assert not any(r.get('activeSessionId') == child_active for r in after_list['sessions']), after_list
         observed['child_session_closed'] = True
         deadline = time.monotonic() + 15
-        while True:
-            try:
-                current, state = process_identity(pid)
-                stopped = current != identity or state == 'Z'
-            except FileNotFoundError:
-                stopped = True
-            if stopped:
-                break
-            assert time.monotonic() < deadline, 'actual child worker did not exit after kill'
+        # The child's session is gone when nothing serves its socket.
+        while session_serving(child_socket):
+            assert time.monotonic() < deadline, 'actual child session was still served after kill'
             threading.Event().wait(0.025)
-        observed['child_worker_stopped'] = True
+        observed['child_session_stopped'] = True
         def ledger():
             return [json.loads(line) for p in (root / 'agent/rlm-ledger').glob('*.jsonl')
                     for line in p.read_text().splitlines()]
@@ -119,7 +114,7 @@ def main():
     parser.add_argument('--receipt', type=Path, required=True)
     args = parser.parse_args()
     result = {'verified': False, 'scope': __doc__, 'not_verified': [
-        'dead PID and interrupted cleanup (hosted Unix supervisor tests)',
+        'crashed session and interrupted cleanup (Unix supervisor tests)',
         'parent kernel registry removal', 'TUI']}
     try:
         assert sys.platform == 'linux'

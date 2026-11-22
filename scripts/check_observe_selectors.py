@@ -18,7 +18,7 @@ import time
 
 from check_agent_bounce import Client
 from lifecycle_lib import digest
-from lifecycle_lib import OwnedProcesses, TAG, finish, verify_worker
+from lifecycle_lib import OwnedProcesses, TAG, finish, verify_session
 from check_restore_notice import texts
 
 MARKER = 'OBSERVE_SELECTORS_PARITY='
@@ -323,16 +323,15 @@ def run_case(binary, root, observation):
                     try:
                         descriptor = json.loads(path.read_text())
                         if descriptor.get('rootActiveSessionId') == row['active']:
-                            pid, identity = verify_worker(descriptor, row['active'], binary, socket_path)
-                            assert scope.ownership(pid, identity), 'worker lacked fixture ownership'
-                            matches.append((pid, identity))
+                            # The session runs inside the fixture's own daemon.
+                            matches.append(verify_session(descriptor, row['active'], binary, socket_path, process.pid))
                     except (OSError, ValueError):
                         pass  # Atomic/transitional descriptor reads are not readiness.
                 if matches:
                     assert len(matches) == 1, 'duplicate descriptor identity'
-                    observation.setdefault('worker_identities', {})[name] = matches[0]
+                    observation.setdefault('session_identities', {})[name] = matches[0]
                     break
-                assert time.monotonic() < deadline, 'actual worker descriptor never ready'
+                assert time.monotonic() < deadline, 'actual session descriptor never ready'
                 threading.Event().wait(0.025)
             return row
         parent = create('observe-parent')
@@ -418,7 +417,7 @@ def run_case(binary, root, observation):
         ambiguous = probe('ambiguity', {'duplicate_name': 'observe-child-a'})
         contract['duplicate_name'] = rejected(ambiguous['duplicate_name'], 'ambiguous')
         # Selection is proven only for resident rows; no hydration or full summary equality.
-        assert len(observation['worker_identities']) == 2, 'missing owned root-worker proof'
+        assert len(observation['session_identities']) == 2, 'missing hosted root-session proof'
         assert set(provider.child_requests) == ALL_TASKS, 'missing live spawned-child proof'
         assert all(len(requests) == 1 for requests in provider.child_requests.values()), 'child retried/finished during selection'
         assert not provider.child_reply_timeout, 'held child completed before selector proof'

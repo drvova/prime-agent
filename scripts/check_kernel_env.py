@@ -13,7 +13,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import signal
 import subprocess
 import time
 import sys
@@ -21,7 +20,7 @@ import tempfile
 import threading
 
 from check_restore_notice import texts, Server
-from lifecycle_lib import digest, stop
+from lifecycle_lib import digest, stop, session_serving, verify_session
 from check_agent_bounce import Client as BounceClient
 
 MARKER = 'KERNEL_ENV_PARITY='
@@ -89,12 +88,6 @@ def expected(case):
             'bash_exit': 0}
 
 
-def process_identity(pid):
-    stat = Path('/proc/%d/stat' % pid).read_text()
-    fields = stat[stat.rfind(')') + 2:].split()
-    return 'proc:' + fields[19], fields[0]
-
-
 def worker_descriptor(agent, active, socket_path, deadline=None, previous=None):
     deadline = deadline or time.monotonic() + LIMIT
     while time.monotonic() < deadline:
@@ -113,42 +106,15 @@ def worker_descriptor(agent, active, socket_path, deadline=None, previous=None):
     raise AssertionError('fixture worker descriptor never reached readiness')
 
 
-def verify_worker(row, active, binary, socket_path):
-    pid = row['pid']
-    assert row.get('rootActiveSessionId') == active, 'wrong descriptor identity'
-    assert row.get('supervisorSocketPath') == str(socket_path), 'wrong supervisor descriptor'
-    command = Path('/proc/%d/cmdline' % pid).read_bytes().split(b'\0')
-    assert command[0] == str(binary).encode(), 'worker argv0 is not fixture binary'
-    env = dict(item.split(b'=', 1) for item in Path('/proc/%d/environ' % pid).read_bytes().split(b'\0') if b'=' in item)
-    for key, value in {
-        'PRIME_AGENT_INTERNAL_DAEMON_WORKER': '1',
-        'PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID': active,
-        'PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET': str(socket_path),
-    }.items():
-        assert env.get(key.encode()) == value.encode(), 'wrong fixture worker env identity'
-    worker_socket = str(row['socketPath']).encode()
-    assert (worker_socket in command or env.get(b'PRIME_AGENT_INTERNAL_DAEMON_WORKER_SOCKET') == worker_socket), 'wrong worker socket identity'
-    identity, state = process_identity(pid)
-    assert row.get('processStartId') == identity and state != 'Z', 'wrong/reused worker PID'
-    return pid, identity
-
-
-def wait_gone(identities):
+def wait_gone(sessions):
+    """Sessions die with the daemon that hosts them: nothing may still serve their sockets."""
     deadline = time.monotonic() + LIMIT
     while time.monotonic() < deadline:
-        alive = []
-        for pid, identity in identities:
-            try:
-                current, state = process_identity(pid)
-                if current == identity and state != 'Z':
-                    alive.append(pid)
-            except (FileNotFoundError, ProcessLookupError):
-                pass
-        if not alive:
+        serving = [path for path, _generation in sessions if session_serving(path)]
+        if not serving:
             return
         threading.Event().wait(0.025)
-    raise AssertionError('owned fixture processes remained after shutdown: ' + str(alive))
-
+    raise AssertionError('owned fixture sessions were still served after shutdown: ' + str(serving))
 
 
 def finish_daemon(client, process):
@@ -183,82 +149,6 @@ class KernelClient(BounceClient):
             raise TimeoutError('command never answered: ' + kind)
         finally:
             self.sock.settimeout(previous_timeout)
-
-
-def signal_owned(pid, identity, validator, signum):
-    """Pin the PID with a pidfd, then recheck exact ownership before signaling."""
-    try:
-        fd = os.pidfd_open(pid)
-    except ProcessLookupError:
-        return False
-    try:
-        current, state = process_identity(pid)
-        if current != identity or state == 'Z' or not validator():
-            return False
-        signal.pidfd_send_signal(fd, signum)
-        return True
-    except ProcessLookupError:
-        return False
-    finally:
-        os.close(fd)
-
-
-def live_identities(identities):
-    alive = set()
-    for pid, identity in identities:
-        try:
-            current, state = process_identity(pid)
-            if current == identity and state != 'Z':
-                alive.add((pid, identity))
-        except (FileNotFoundError, ProcessLookupError):
-            pass
-    return alive
-
-
-def reap_leftovers(agent, binary, socket_path, descriptor, observation):
-    """Best-effort exact-owned fallback; never clears the graceful-cleanup failure."""
-    rows = [descriptor] if descriptor is not None else []
-    for path in (agent / 'daemon-workers').rglob('*.json'):
-        try:
-            row = json.loads(path.read_text())
-            if row.get('supervisorSocketPath') == str(socket_path):
-                rows.append(row)
-        except (OSError, ValueError):
-            pass
-    targets = {}
-    errors = observation['fallback_errors'] = []
-    for row in rows:
-        try:
-            pid, identity = verify_worker(row, row['rootActiveSessionId'], binary, socket_path)
-            def valid_worker(row=row, pid=pid, identity=identity):
-                try:
-                    return verify_worker(row, row['rootActiveSessionId'], binary, socket_path) == (pid, identity)
-                except (OSError, AssertionError):
-                    return False
-            targets[(pid, identity)] = valid_worker
-        except (OSError, AssertionError, KeyError) as error:
-            errors.append('worker ownership unavailable: ' + str(error))
-    observation['fallback_signals'] = []
-    known_identities = set(targets)
-    if descriptor is not None and descriptor.get('processStartId'):
-        known_identities.add((descriptor['pid'], descriptor['processStartId']))
-    for signum in (signal.SIGTERM, signal.SIGKILL):
-        for (pid, identity), validator in targets.items():
-            try:
-                if signal_owned(pid, identity, validator, signum):
-                    observation['fallback_signals'].append({'pid': pid, 'signal': signum.name})
-            except OSError as error:
-                errors.append('owned signal failed: ' + str(error))
-        deadline = time.monotonic() + (3 if signum == signal.SIGTERM else 2)
-        remaining = live_identities(known_identities)
-        while time.monotonic() < deadline:
-            remaining = live_identities(known_identities)
-            if not remaining:
-                observation['fallback_processes_exited'] = True
-                return
-            threading.Event().wait(0.025)
-    observation['fallback_processes_exited'] = False
-    observation['fallback_remaining'] = sorted(remaining)
 
 
 def run_case(binary, name, case, root, observation):
@@ -303,8 +193,6 @@ def run_case(binary, name, case, root, observation):
     client = None
     tracked = set()
     primary_error = None
-    worker_pid = None
-    descriptor = None
     try:
         client = KernelClient(socket_path, process)
         created = client.call('create', name='kernel-env-' + name, config={
@@ -314,8 +202,8 @@ def run_case(binary, name, case, root, observation):
         active = created.get('activeSessionId') or created.get('id')
         assert active, 'create omitted active identity'
         _, descriptor = worker_descriptor(agent, active, socket_path)
-        worker_pid, worker_identity = verify_worker(descriptor, active, binary, socket_path)
-        tracked.add((worker_pid, worker_identity))
+        # The session runs inside the fixture daemon, which `stop` reaps below.
+        tracked.add(verify_session(descriptor, active, binary, socket_path, process.pid))
         client.call('prompt_and_wait', timeout_seconds=90, activeSessionId=active, message='Run the kernel environment fixture cell.')
         observation['probe'] = current_probe(server.requests[name], name)
         assert observation['probe'] == expected(case), (observation['probe'], expected(case))
@@ -342,11 +230,6 @@ def run_case(binary, name, case, root, observation):
             if client:
                 client.close()
             stop(process)
-            if cleanup_error:
-                try:
-                    reap_leftovers(agent, binary, socket_path, descriptor, observation)
-                except Exception as error:
-                    observation['fallback_error'] = str(error)
             log.close()
             observation['daemon_log'] = (root / 'daemon.log').read_text(errors='replace')[-6000:]
             server.shutdown()

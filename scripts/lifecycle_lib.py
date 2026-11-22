@@ -445,26 +445,47 @@ def process_identity(pid):
     return 'proc:' + fields[19], fields[0]
 
 
-def verify_worker(row, active, binary, socket_path):
-    pid = row['pid']
+# A session is hosted inside the daemon process: its descriptor's `pid` is an id
+# from this range (never a process id) and its `processStartId` names the hosting
+# daemon and one lifetime, `hosted:<daemon pid>:<lifetime>`.
+HOSTED_PID_BASE = 0x40000000
+
+
+def session_serving(socket_path):
+    """Whether something accepts connections on a session's socket."""
+    # Through the directory's descriptor: a session socket's full path can
+    # exceed what a socket address holds.
+    try:
+        directory = os.open(os.path.dirname(str(socket_path)), os.O_RDONLY | os.O_DIRECTORY)
+    except FileNotFoundError:
+        return False
+    probe = socket.socket(socket.AF_UNIX)
+    try:
+        probe.connect('/proc/self/fd/%d/%s' % (directory, os.path.basename(str(socket_path))))
+        return True
+    except (FileNotFoundError, ConnectionRefusedError):
+        return False
+    finally:
+        probe.close()
+        os.close(directory)
+
+
+def verify_session(row, active, binary, socket_path, daemon_pid):
+    """Prove a descriptor names a live session hosted by the fixture's own daemon.
+
+    Returns the session's socket and its lifetime's generation: a rebuilt
+    session keeps the socket and gets a new generation.
+    """
     assert row.get('rootActiveSessionId') == active, 'wrong descriptor identity'
     assert row.get('supervisorSocketPath') == str(socket_path), 'wrong supervisor descriptor'
-    command = Path('/proc/%d/cmdline' % pid).read_bytes().split(b'\0')
-    assert command[0] == str(binary).encode(), 'worker argv0 is not fixture binary'
-    env = dict(item.split(b'=', 1) for item in Path('/proc/%d/environ' % pid).read_bytes().split(b'\0') if b'=' in item)
-    for key, value in {
-        'PRIME_AGENT_INTERNAL_DAEMON_WORKER': '1',
-        'PRIME_AGENT_INTERNAL_DAEMON_WORKER_ACTIVE_SESSION_ID': active,
-        'PRIME_AGENT_INTERNAL_DAEMON_SUPERVISOR_SOCKET': str(socket_path),
-    }.items():
-        assert env.get(key.encode()) == value.encode(), 'wrong fixture worker env identity'
-    worker_socket = str(row['socketPath']).encode()
-    assert (worker_socket in command or env.get(b'PRIME_AGENT_INTERNAL_DAEMON_WORKER_SOCKET') == worker_socket), 'wrong worker socket identity'
-    identity, state = process_identity(pid)
-    assert row.get('processStartId') == identity and state != 'Z', 'wrong/reused worker PID'
-    return pid, identity
-
-
+    command = Path('/proc/%d/cmdline' % daemon_pid).read_bytes().split(b'\0')
+    assert command[0] == str(binary).encode(), 'session host argv0 is not fixture binary'
+    pid = row.get('pid')
+    assert isinstance(pid, int) and pid >= HOSTED_PID_BASE, 'session is not hosted in the daemon'
+    generation = row.get('processStartId') or ''
+    assert generation.startswith('hosted:%d:' % daemon_pid), 'session hosted by another daemon'
+    assert session_serving(row['socketPath']), 'hosted session is not serving its socket'
+    return row['socketPath'], generation
 
 
 class OwnedProcesses:
@@ -492,10 +513,8 @@ class OwnedProcesses:
             if pid in self.direct:
                 return self.direct[pid] == (identity, command)
             if command[0] == str(self.binary).encode():
-                for path in (self.root / 'agent' / 'daemon-workers').rglob('*.json'):
-                    row = json.loads(path.read_text())
-                    if row.get('pid') == pid:
-                        return verify_worker(row, row['rootActiveSessionId'], self.binary, self.socket_path) == (pid, identity)
+                # Sessions run inside the registered daemon: no other process
+                # of the fixture binary belongs to this fixture.
                 return False
             # Kernels retain the owner PID supplied by the actual launcher.
             return ('python' in Path(command[0].decode()).name
@@ -505,15 +524,6 @@ class OwnedProcesses:
             return False
 
     def discover(self):
-        # Capture verified workers before their kernels, including detached workers.
-        for path in (self.root / 'agent' / 'daemon-workers').rglob('*.json'):
-            try:
-                row = json.loads(path.read_text())
-                pid, identity = verify_worker(row, row['rootActiveSessionId'], self.binary, self.socket_path)
-                if self.ownership(pid, identity):
-                    self.targets[pid] = identity
-            except (OSError, ValueError, KeyError, AssertionError):
-                pass  # A partial/retired descriptor is not an ownership proof.
         for entry in Path('/proc').iterdir():
             if entry.name.isdigit():
                 pid = int(entry.name)
