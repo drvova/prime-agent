@@ -333,6 +333,11 @@ impl Supervisor {
         // it and contained there, and the first session to start takes an
         // engine that is already built.
         crate::session_host::install_panic_hook();
+        // No hosted session may block on whatever this process was given as
+        // standard input.
+        if let Err(error) = pa_core::platform::process::close_standard_input() {
+            self.log_line(&format!("standard input was not closed: {error}"));
+        }
         pa_core::kernel::keep_spare_scheme_kernels(HOSTED_SPARE_KERNELS);
         // Before any socket or worker exists: workers and their kernels
         // inherit the raised limit.

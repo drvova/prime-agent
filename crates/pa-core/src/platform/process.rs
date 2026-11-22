@@ -672,6 +672,35 @@ mod exit_wait_tests {
 /// of a process that has no console gets a new, visible console window, so
 /// no product spawn may detach from the console, and every other
 /// creation-flags call stays in the listed sites.
+/// Point this process's standard input at the null device, so nothing in it
+/// can block reading a terminal or a pipe it was started with. A daemon that
+/// hosts sessions calls this once at boot: a session cell's `(read-line)`
+/// then reads end-of-file, however the daemon was started.
+///
+/// # Errors
+///
+/// Returns the operating system's error when the null device cannot be
+/// opened or put in place of descriptor 0.
+#[cfg(unix)]
+pub fn close_standard_input() -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    let null = std::fs::File::open("/dev/null")?;
+    nix::unistd::dup2(null.as_raw_fd(), 0)
+        .map(|_| ())
+        .map_err(std::io::Error::from)
+}
+
+/// Windows consoles are not redirected here: a daemon there is started
+/// detached, with no console input to read.
+///
+/// # Errors
+///
+/// Never fails.
+#[cfg(not(unix))]
+pub fn close_standard_input() -> std::io::Result<()> {
+    Ok(())
+}
+
 #[cfg(test)]
 mod creation_flag_tests {
     use std::path::{Path, PathBuf};
