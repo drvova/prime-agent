@@ -179,11 +179,7 @@ fn write_models_json(agent_dir: &Path) {
 /// answered inside the turn, written to a receipt for the verifier.
 fn probe_cell(receipt: &Path) -> String {
     format!(
-        r#"(let ([port (open-output-file {receipt:?})])
-  (write-string
-    (value->jsexpr-string (hash 'model_info (model-info) 'compact_status (compact-status)))
-    port)
-  (close-output-port port))
+        r#"(fs-write {receipt:?} (value->jsexpr-string (hash 'model_info (model-info) 'compact_status (compact-status))))
 (displayln "FACTS_PROBED")
 "#,
         receipt = receipt.display().to_string(),

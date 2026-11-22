@@ -165,9 +165,7 @@ impl Sandbox {
 /// One cell that proves the kernel runs, then the closing text turn.
 fn kernel_boot_script(receipt: &Path) -> serde_json::Value {
     let cell = format!(
-        r#"(let ([port (open-output-file {receipt:?})])
-  (write-string (value->jsexpr-string (hash 'kernel_boot #t 'spawn (procedure? rlm-spawn))) port)
-  (close-output-port port))
+        r#"(fs-write {receipt:?} (value->jsexpr-string (hash 'kernel_boot #t 'spawn (procedure? rlm-spawn))))
 (displayln "KERNEL_BOOT_OK")"#,
         receipt = receipt.display().to_string(),
     );

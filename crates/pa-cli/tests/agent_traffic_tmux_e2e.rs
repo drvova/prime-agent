@@ -105,9 +105,9 @@ fn start(dir: &Path) -> Pane {
     // sibling and messages it directly.
     let code = format!(
         r#"(define marker {marker:?})
-(if (not (path-exists? marker))
+(if (not (= 0 (hash-ref (bash (string-append "test -e '" marker "'")) 'exit-code)))
     (begin
-      (close-output-port (open-output-file marker))
+      (fs-write marker "")
       (rlm-spawn "say hello to your sibling" #:name "alpha")
       (rlm-spawn "say hello to your sibling" #:name "beta"))
     (let loop ([tries 600])

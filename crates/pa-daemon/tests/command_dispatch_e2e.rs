@@ -193,7 +193,21 @@ struct Client {
 
 impl Client {
     fn connect(socket: &Path) -> Client {
-        let stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+        // The socket file appears at `bind`, before `listen`: a connect in
+        // between is refused, so it is retried until the supervisor listens.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let stream = loop {
+            match std::os::unix::net::UnixStream::connect(socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ConnectionRefused
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("connect: {error}"),
+            }
+        };
         let writer = stream.try_clone().expect("clone");
         let mut client = Client {
             reader: BufReader::new(stream),

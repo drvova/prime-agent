@@ -190,9 +190,7 @@ fn await_receipt(receipt: &Path) -> String {
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([handle (rlm-spawn "run the lane task" #:name "kid")])

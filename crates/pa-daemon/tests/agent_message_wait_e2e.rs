@@ -123,22 +123,15 @@ fn cell_turn(code: &str) -> [Value; 2] {
 /// (`.error`), with the call's wall time in ms beside the result.
 fn record(call: &str, name: &str, dir: &Path) -> String {
     let path = dir.join(format!("{name}.json")).display().to_string();
-    let pending = format!("{path}.tmp");
     let error = dir.join(format!("{name}.error")).display().to_string();
-    let publish = format!("mv '{pending}' '{path}'");
     format!(
         r"(with-handler
   (lambda (e)
-    (let ([port (open-output-file {error:?})])
-      (write-string (to-string e) port)
-      (close-output-port port))
+    (fs-write {error:?} (to-string e))
     (error (to-string e)))
   (let* ([started (current-milliseconds)]
-         [result (hash-insert {call} 'elapsedMs (- (current-milliseconds) started))]
-         [port (open-output-file {pending:?})])
-    (write-string (value->jsexpr-string result) port)
-    (close-output-port port)
-    (bash {publish:?})))
+         [result (hash-insert {call} 'elapsedMs (- (current-milliseconds) started))])
+    (fs-write {path:?} (value->jsexpr-string result))))
 "
     )
 }

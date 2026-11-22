@@ -219,10 +219,7 @@ fn record_cell(call: &str, name: &str, receipts_dir: &Path) -> String {
         .to_string();
     format!(
         r"(let ([record (lambda (path text)
-                (when (path-exists? path) (delete-file! path))
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
     (record {receipt_path:?} (value->jsexpr-string {call}))))

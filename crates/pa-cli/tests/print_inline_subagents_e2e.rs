@@ -979,7 +979,7 @@ fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
 (define child (rlm-spawn "wait until cancelled" #:name "waiting"))
 (let loop ([tries 600])
   (cond
-    [(path-exists? (string-append (session-cwd) "/cancel-child-ready")) void]
+    [(= 0 (hash-ref (bash "test -e cancel-child-ready") 'exit-code)) void]
     [(> tries 0) (bash "sleep 0.05") (loop (- tries 1))]
     [else (error "the child never started its command")]))
 (define deleted (rlm-delete-subagent child))

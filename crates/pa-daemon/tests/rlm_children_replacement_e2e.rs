@@ -230,9 +230,7 @@ fn await_receipt(receipt: &Path) -> String {
 fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([handle (rlm-spawn "run the lane task" #:name "kid")])
@@ -249,9 +247,7 @@ fn spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
 fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([roster (value->jsexpr-string (rlm-list-subagents))])
@@ -267,9 +263,7 @@ fn roster_cell(receipt: &Path, error_receipt: &Path) -> String {
 fn probe_cell(list_receipt: &Path, send_receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error:?} (to-string e)) (error (to-string e)))
     (let ([rows (map (lambda (row)
@@ -294,9 +288,7 @@ fn probe_cell(list_receipt: &Path, send_receipt: &Path, error_receipt: &Path) ->
 fn create_session_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([handle (rlm-create-session "root session task" #:name "rootkid")])

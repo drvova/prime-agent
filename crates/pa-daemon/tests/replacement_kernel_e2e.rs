@@ -143,7 +143,7 @@ fn receipt_path(dir: &Path, name: &str) -> PathBuf {
 fn receipt_cell(dir: &Path, name: &str, verdict: &str) -> Value {
     let receipt = receipt_path(dir, name);
     let code = format!(
-        "(define verdict {verdict})\n(let ([port (open-output-file {receipt:?})])\n  (write-string verdict port)\n  (close-output-port port))\n(displayln verdict)",
+        "(define verdict {verdict})\n(fs-write {receipt:?} verdict)\n(displayln verdict)",
         receipt = receipt.to_string_lossy(),
     );
     json!({ "content": [

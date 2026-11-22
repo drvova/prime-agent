@@ -147,10 +147,7 @@ fn write_faux_script(dir: &Path, name: &str, responses: &Value) -> PathBuf {
 fn send_cell(message: &str, receiver_name: &str, receipt_path: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (when (path-exists? path) (delete-file! path))
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)))
     (record {receipt_path:?}

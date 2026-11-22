@@ -144,9 +144,7 @@ fn harness_cell(receipt: &Path) -> String {
       (hash-ref (hash-ref (hash-ref (harness-state) 'entries) 'memory) 'kernel-local-memory)
       (harness-create-memory "kernel global memory" "persisted from the session kernel" #:id "kernel-global-memory" #:global #t)
       (hash 'ok #t 'error ""))))
-(let ([port (open-output-file {receipt_path:?})])
-  (write-string (value->jsexpr-string receipt) port)
-  (close-output-port port))
+(fs-write {receipt_path:?} (value->jsexpr-string receipt))
 "#,
         receipt_path = receipt.to_string_lossy(),
     )

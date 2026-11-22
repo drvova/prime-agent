@@ -1169,7 +1169,7 @@ fn background_children_open_no_console_windows() {
     // The kernel's command is a console child of the worker; its output is
     // the receipt that the cell ran.
     let cell = format!(
-        "(define ran (bash \"git --version && git status --short\"))\n(let ([port (open-output-file {receipt:?})])\n  (write-string (hash-ref ran 'output) port)\n  (close-output-port port))\n(displayln \"KERNEL_BOOTED\")",
+        "(define ran (bash \"git --version && git status --short\"))\n(fs-write {receipt:?} (hash-ref ran 'output))\n(displayln \"KERNEL_BOOTED\")",
         receipt = receipt.display().to_string(),
     );
     let script = root.join("script.json");

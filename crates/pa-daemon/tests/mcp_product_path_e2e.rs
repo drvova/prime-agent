@@ -159,9 +159,7 @@ impl Client {
 fn mcp_cell(receipt_path: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_path:?} (to-string e)) (error (to-string e)))
     (let* ([tools (mcp-list-tools "fixture-echo")]
@@ -363,9 +361,7 @@ fn begin_login_host_request_is_live_in_the_worker() {
     // Each probe keeps the host's own error message; the cell's result is both outcomes.
     let cell = format!(
         r#"(let* ([record (lambda (path text)
-                 (let ([port (open-output-file path)])
-                   (write-string text port)
-                   (close-output-port port)))]
+                 (fs-write path text))]
        [probe (lambda (payload)
                 (with-handler
                   (lambda (e) (hash 'error (trim (error-object-message e))))

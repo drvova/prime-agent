@@ -121,9 +121,7 @@ fn start(dir: &Path) -> Pane {
 (todo-update "1" #:status "done")
 (todo-update "2" #:status "in_progress")
 (define r (ask "Which database should the cache use?" (list "sqlite" "postgres")))
-(let ([port (open-output-file (string-append (session-cwd) "/answer.txt"))])
-  (write-string (string-append (hash-ref r 'status) ":" (hash-ref r 'answer)) port)
-  (close-output-port port))"#,
+(fs-write (string-append (session-cwd) "/answer.txt") (string-append (hash-ref r 'status) ":" (hash-ref r 'answer)))"#,
                 plan = plan.map(|item| format!("{item:?}")).join(" "),
             )),
             { "text": "asked" },
@@ -131,11 +129,7 @@ fn start(dir: &Path) -> Pane {
                 r#"(todo-set (map (lambda (item) (hash 'text (hash-ref item 'text) 'status "done"))
                (hash-ref (todo-get) 'items)))
 (define checks (ask "Which checks?" (list "fmt" "clippy") #:multi #t))
-(let ([port (open-output-file (string-append (session-cwd) "/checks.txt"))])
-  (write-string
-    (string-append (hash-ref checks 'status) ":" (string-join (hash-ref checks 'answer) ","))
-    port)
-  (close-output-port port))"#,
+(fs-write (string-append (session-cwd) "/checks.txt") (string-append (hash-ref checks 'status) ":" (string-join (hash-ref checks 'answer) ",")))"#,
             ),
             { "text": "finished" },
             { "text": "you are welcome" },

@@ -209,9 +209,7 @@ fn create_parent(
 fn semantic_spawn_cell(receipt: &Path, error_receipt: &Path) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {error_receipt:?} (to-string e)) (error (to-string e)))
     (let ([handle (rlm-spawn "child task text" #:name "kid")])
@@ -259,9 +257,7 @@ fn semantic_delete_cell(
 ) -> String {
     format!(
         r#"(let ([record (lambda (path text)
-                (let ([port (open-output-file path)])
-                  (write-string text port)
-                  (close-output-port port)))])
+                (fs-write path text))])
   (with-handler
     (lambda (e) (record {delete_error:?} (to-string e)) (error (to-string e)))
     (let* ([spawned (hash-ref (bash (string-append "cat " {spawn_receipt:?})) 'output)]

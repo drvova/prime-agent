@@ -180,7 +180,19 @@ async fn a_background_command_is_live_work_the_user_can_read_and_stop() {
             "persistent": listed["activities"][0]["persistent"],
         })
     };
-    let tail = engine.bash_activity("tail", Some(&id), 5).await.unwrap();
+    // The pipe says the command wrote its line, not that the kernel's reader
+    // has collected it: the tail is read until the line shows.
+    let tail = tokio::time::timeout(PATIENCE, async {
+        loop {
+            let tail = engine.bash_activity("tail", Some(&id), 5).await.unwrap();
+            if tail["tail"] != "" {
+                break tail;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the command's output never reached its tail");
     let unknown = engine
         .bash_activity("tail", Some("no-such-command"), 5)
         .await

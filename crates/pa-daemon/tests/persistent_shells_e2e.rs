@@ -252,9 +252,7 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
         &dir.path().join("faux.json"),
         &format!(
             r#"(define shell (bash "echo hi; sleep 600" (hash 'persistent #t 'background #t)))
-(let ([port (open-output-file {:?})])
-  (write-string (number->string (hash-ref shell 'pid)) port)
-  (close-output-port port))
+(fs-write {:?} (number->string (hash-ref shell 'pid)))
 "#,
             receipt.to_string_lossy()
         ),
@@ -338,14 +336,10 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
     let script = write_faux_script(
         &dir.path().join("faux-reopen.json"),
         &format!(
-            r"(let ([port (open-output-file {:?})])
-  (write-string
-    (value->jsexpr-string
+            r"(fs-write {:?} (value->jsexpr-string
       (map (lambda (shell)
              (list (hash-ref shell 'pid) (bash-running? shell) (bash-output shell)))
-           (bash-persistent-shells)))
-    port)
-  (close-output-port port))
+           (bash-persistent-shells))))
 ",
             reattached.to_string_lossy()
         ),
