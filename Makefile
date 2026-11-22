@@ -195,6 +195,19 @@ shard-gates:
 	python3 scripts/test_ci_test_shard.py
 	python3 scripts/test_ci_pr_crates.py
 
+# The frida-core devkit a `--features frida` build links (crates/pa-core/build.rs): downloaded
+# once per target into target/frida-devkit and verified against the checksums the script pins.
+frida-devkit:
+	@bash scripts/frida-devkit.sh
+
+# The Frida kernel functions against frida-core itself: the unit tests plus the live ones, which
+# attach to processes they spawn and say so when the machine forbids ptrace. Needs libclang.
+frida-test:
+	FRIDA_DEVKIT_DIR="$$(bash scripts/frida-devkit.sh)" && export FRIDA_DEVKIT_DIR && \
+	BINDGEN_EXTRA_CLANG_ARGS="-I$$FRIDA_DEVKIT_DIR" cargo test -p pa-core --features frida --lib kernel::scheme::frida
+
+.PHONY: frida-devkit frida-test
+
 .PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates perf
 
 # Offline packaging contract tests for updaters shipped since Prime Agent 0.6.

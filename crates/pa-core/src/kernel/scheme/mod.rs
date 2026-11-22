@@ -26,6 +26,7 @@ mod attach;
 mod cell;
 mod confinement;
 mod factory;
+mod frida;
 mod host_api;
 mod limits;
 
@@ -324,6 +325,9 @@ struct ProvisionerState {
     /// The session's MCP client: its connections outlive a cell and end
     /// with `kill`.
     mcp: Arc<mcp::Registry>,
+    /// The session's Frida sessions and scripts: they outlive a cell and
+    /// end with `kill` and with the session's lifetime.
+    frida: Arc<frida::Registry>,
     skill_sources: Option<skills::SkillSourcesProvider>,
     on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
     on_started: Option<KernelStartObserver>,
@@ -388,6 +392,7 @@ impl SchemeKernelProvisioner {
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 mcp,
+                frida: Arc::new(frida::registry(options.host_handlers.clone())),
                 skill_sources: options.skill_sources,
                 on_unavailable_skills: options.on_unavailable_skills,
                 on_started: options.on_started,
@@ -501,6 +506,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             );
             let native_handlers = state.handlers.clone();
             let mcp_client = Arc::clone(&state.mcp);
+            let frida_client = Arc::clone(&state.frida);
             let environment = Arc::clone(&state.environment);
             let cwd = state.environment.cwd.to_string_lossy().into_owned();
             let native_cwd = state.environment.cwd.clone();
@@ -648,6 +654,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                     &environment,
                 )?;
                 mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
+                frida::register(&mut engine, frida_client, Arc::clone(&cell))?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
                 skills.start(&mut engine)?;
                 let own_globals = engine
@@ -682,10 +689,15 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             if let Some(scope) = pa_types::session_scope::current() {
                 // Weakly: a kernel released before then is not kept for it.
                 let ending = Arc::downgrade(&session);
+                let instrumented = Arc::downgrade(&state.frida);
                 scope.at_end(Box::new(move || {
                     if let Some(ending) = ending.upgrade() {
                         ending.cells.end();
                         ending.jobs.kill_all();
+                    }
+                    // No target stays attached or suspended past the session.
+                    if let Some(instrumented) = instrumented.upgrade() {
+                        instrumented.shutdown();
                     }
                 }));
             }
@@ -708,6 +720,11 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 session.factory.shutdown();
             }
             state.mcp.shutdown().await;
+            // Detaching waits for Frida: off the runtime's own threads.
+            let instrumented = Arc::clone(&state.frida);
+            if let Err(error) = tokio::task::spawn_blocking(move || instrumented.shutdown()).await {
+                tracing::warn!("the Frida shutdown thread failed: {error}");
+            }
         })
     }
 }

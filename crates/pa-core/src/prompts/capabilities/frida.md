@@ -1,0 +1,23 @@
+# frida: dynamic instrumentation
+
+`frida-*` drives Frida, linked into Prime Agent. Instrument only processes and apps the user owns or is authorized to test. A build without Frida still has every function; each raises `not available in this build`. Attaching can need privileges (Linux ptrace scope, root or developer mode on a phone); Frida's errors surface unchanged after the function's name. `#:device` is `#f` (the local system), `"usb"`, `"remote"`, or a device id. A session or script is the hash its function returned (or the id in it); `(frida-sessions)` lists them again. Every session is detached when the kernel ends, and a target a session spawned is killed when it detaches. A stopped cell leaves its Frida call. A spawned target's own stdout and stderr are discarded. Frida runs inside Prime Agent's own process: a crash inside it restarts every session, so keep scripts small and attach to one target at a time.
+
+- `(frida-devices)`: the devices Frida sees, each `{id, name, type}`
+- `(frida-add-remote address #:certificate #:origin #:token #:keepalive-interval)`: connect a frida-server at `"host[:port]"`: its `{id, name, type}`; pass the id as `#:device`. `#:certificate` is the path of the PEM certificate the server must present
+- `(frida-ps #:device #:applications)`: running processes, each `{pid, name}`; with `#:applications #t` the installed applications, each `{identifier, name, pid}` (`pid` 0 when not running)
+- `(frida-kill target #:device)`: kill a process by pid or name
+- `(frida-attach target #:device #:spawn #:args #:pause)`: a session `{session, pid, spawned}` on a pid or process name; with `#:spawn #t`, on a program path or app identifier started suspended with `#:args` (a list of strings) and resumed after its first script loads unless `#:pause #t`
+- `(frida-sessions)`: this kernel's sessions, each `{session, pid, spawned, detached-reason, scripts}`; `detached-reason` is `#f` or why the target's side ended it (`"process-terminated"`, ...)
+- `(frida-resume session)`: let a spawned target run
+- `(frida-detach session)`: detach, unloading its scripts and killing a target it spawned
+- `(frida-script-load session source #:name #:runtime)`: create and load a script from JavaScript source: `{script, session, name}`. `#:runtime` is `"qjs"` or `"v8"`. Its `send()` messages, uncaught errors and `console.log` lines go to a bounded log (the newest 1000), never into a cell's output. A script whose top level never returns cannot be loaded or unloaded: detach its session
+- `(frida-script-messages script [n])`: `{messages, dropped}`: the buffered messages, oldest first (the newest `n` when given), and how many older ones the log dropped. A message is `{seq, type, payload}`: `type` `"send"` (the JSON `payload`; binary data adds `data-base64`, its first 4096 bytes, and `data-size`), `"error"` (`payload` the description, `stack`), or `"log"` (`payload` the text, `level`)
+- `(frida-script-tail script [n])`: the newest `n` messages (default 20) as text, one line each
+- `(frida-script-wait script #:predicate #:timeout-ms)`: the next message after the last one a wait returned that `#:predicate` (a function of the message) accepts, waiting up to `#:timeout-ms` (default 30000): the message, or `#f` on timeout or once the script is gone. Rejected messages are skipped for good. A wait past the cell's window continues as a background cell
+- `(frida-script-call script export [args] #:timeout-ms)`: call the script's `rpc.exports` function with `args` (a list) and return its result; `read-memory` and `read_memory` reach `readMemory`. An export that throws raises its message
+- `(frida-script-post script message #:data-base64)`: send a JSON message (a hash with a `type`) to the script's `recv()`
+- `(frida-script-unload script)`: unload the script
+- `(frida-trace session #:include #:exclude #:include-modules #:exclude-modules #:include-imports)`: trace calls: each option is a list of globs, `#:include`/`#:exclude` of function names (or `"module!function"`), the others of module names. Returns a script whose messages have the payload `{ms, thread-id, depth, function}`, after one `{trace: "ready", attached, failed}`. For arguments, return values, Objective-C, Swift or Java, write the `Interceptor` script yourself
+- `(frida-compile entrypoint #:project-root)`: bundle a TypeScript or JavaScript agent project with Frida's compiler: the bundle's text, for `frida-script-load`
+
+Not built in: frida-tools' console programs (`frida-discover`, `frida-ls`, `frida-pull`, `frida-push`, `frida-itrace`, ...) and `gum-graft`. When the user has them installed they run through `bash`.

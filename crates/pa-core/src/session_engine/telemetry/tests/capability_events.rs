@@ -28,6 +28,7 @@ fn drive(counters: &SessionCounters) {
     use crate::prefetch::PrefetchFact;
     use crate::session_engine::checkpoint_host::CheckpointFact;
     use crate::session_engine::decision::DecideFact;
+    use crate::session_engine::frida_usage::FridaFact;
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
     use crate::session_engine::session_search::SessionRecallFact;
@@ -317,6 +318,24 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_worktree(fact);
     }
+    for fact in [
+        FridaFact::Devices,
+        FridaFact::Ps,
+        FridaFact::Ps,
+        FridaFact::Kill,
+        FridaFact::Attach,
+        FridaFact::Spawn,
+        FridaFact::Spawn,
+        FridaFact::ScriptLoad,
+        FridaFact::ScriptLoad,
+        FridaFact::ScriptLoad,
+        FridaFact::Trace,
+        FridaFact::Compile,
+        FridaFact::Unavailable,
+        FridaFact::Unavailable,
+    ] {
+        counters.note_frida(fact);
+    }
     for (definitions, references, partial) in [(2, 5, true), (1, 0, false), (0, 7, false)] {
         counters.note_symbol_query(SymbolFact {
             definitions,
@@ -574,6 +593,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent repl decide",
         r#"{"decide_count":2,"decide_limited_count":1,"decide_failed_count":3}"#,
+    ),
+    (
+        "agent repl frida",
+        r#"{"frida_devices_count":1,"frida_ps_count":2,"frida_kill_count":1,"frida_attach_count":1,"frida_spawn_count":2,"frida_script_load_count":3,"frida_trace_count":1,"frida_compile_count":1,"frida_unavailable_count":2}"#,
     ),
     (
         "agent repl hypotheses",

@@ -1,0 +1,15 @@
+internal_host_requests = ["frida.used"]
+
+[[telemetry]]
+event = "agent repl frida"
+properties = [
+  "frida_devices_count",
+  "frida_ps_count",
+  "frida_kill_count",
+  "frida_attach_count",
+  "frida_spawn_count",
+  "frida_script_load_count",
+  "frida_trace_count",
+  "frida_compile_count",
+  "frida_unavailable_count",
+]

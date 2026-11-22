@@ -198,6 +198,19 @@ tenth read; it lives under `<agent dir>/prefetch/` and is shared by every sessio
 the process. The read waits at most 150 ms for it. Adoption counts ride the `agent prefetch` event.
 Non-goals: putting neighbour text in the context.
 
+Frida in the kernel (`kernel::scheme::frida`, `session_engine::frida_usage`): the `frida-*`
+functions drive frida-core, linked into the process through `frida-sys` behind the `frida` cargo
+feature (off by default: it needs the prebuilt devkit from `make frida-devkit` and libclang, and
+adds about 68 MB to the binary). A build without the feature defines the same functions, each
+raising "not available in this build". Each session has its own device manager and a registry of
+its sessions and scripts; a script's messages go to a bounded log filled on Frida's thread; every
+call carries a cancellable the cell's stop cancels; every session is detached and every spawned
+target killed when the kernel is killed, the lifetime ends or the registry is dropped. frida-core
+is native code in the daemon's process: a fault inside it ends the daemon and every session, and
+after such a death nothing kills the targets it had spawned. Each counted call sends one
+fire-and-forget `frida.used`, folded into `agent repl frida`. Non-goals: frida-tools' console
+programs, `frida-discover`, and `gum-graft`.
+
 Error enrichment (`kernel::error_context`): a user cell that raised, or a `bash()` command a cell
 awaited that exited non-zero (the kernel's `command-failure` display), gets an `[error context]`
 block appended to its result: the source lines (±3) around each error location the output names,

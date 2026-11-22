@@ -40,6 +40,7 @@ pub const API_DOCS: &[(&str, &str)] = &[
     topic!("worktree"),
     topic!("web"),
     topic!("mcp"),
+    topic!("frida"),
     topic!("factory"),
     topic!("user"),
     topic!("session"),

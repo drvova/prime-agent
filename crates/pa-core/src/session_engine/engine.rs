@@ -483,6 +483,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::usage_host::UsageObserver
         }),
     );
+    // `frida.used`: one count per kernel `frida-*` call (never a target or a script).
+    super::frida_usage::register_frida_usage(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_frida(fact))
+                as super::frida_usage::FridaObserver
+        }),
+    );
     // `rlm.session.search`/`rlm.session.saved_messages`: read-only recall over this project's
     // saved sessions; telemetry folds each call (never a query or a session) into the counters.
     super::session_search::register(

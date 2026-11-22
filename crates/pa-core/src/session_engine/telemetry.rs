@@ -52,6 +52,7 @@ use capability_counts::CapabilityCounts;
 
 mod edit_checks;
 mod error_enrichment;
+mod frida;
 mod hypotheses;
 mod prefetch;
 mod previews;

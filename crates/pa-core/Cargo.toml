@@ -4,6 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Session engine: tools, skills, prompts, kernel, subagents, settings."
+build = "build.rs"
+
+[features]
+# Link frida-core (the `frida-*` kernel functions). Off by default: it needs
+# the prebuilt frida-core devkit for the target (`make frida-devkit`) and
+# libclang at build time, and adds about 68 MB to the binary. A build without
+# it keeps every `frida-*` function, each raising "not available in this
+# build". See `src/kernel/scheme/frida.rs`.
+frida = ["dep:frida-sys"]
 
 [dependencies]
 anyhow.workspace = true
@@ -13,6 +22,12 @@ tokio.workspace = true
 futures.workspace = true
 thiserror.workspace = true
 steel-core.workspace = true
+# Raw bindings to frida-core's C API, generated at build time from the
+# devkit's own header. Pinned exactly: each release binds one frida-core
+# version (0.17.2 binds 17.9.5, the one `scripts/frida-devkit.sh` gets).
+# The higher-level `frida` crate is not used: its calls cannot be cancelled
+# and it discards Frida's error messages.
+frida-sys = { version = "=0.17.2", optional = true }
 tracing.workspace = true
 pa-types.workspace = true
 pa-ai.workspace = true
