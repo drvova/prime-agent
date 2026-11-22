@@ -1203,3 +1203,45 @@ fn a_session_rebuilt_under_an_abort_stays_stopped_and_says_why() {
         "recovered: {recovered}\nplain: {plain}\nresumed: {resumed}"
     );
 }
+
+#[test]
+fn a_sessions_panic_is_written_to_that_sessions_log_and_not_to_the_daemons() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "logged",
+        &crashable_script("injected fault"),
+        json!({}),
+    );
+    client.send("crash", &crashing_prompt(&session));
+    client.event(&session, "session_recovered");
+    let session_log = std::fs::read_to_string(
+        agent_dir
+            .join("logs")
+            .join(format!("worker-{session}.stderr.log")),
+    )
+    .unwrap_or_default();
+    let daemon_log =
+        std::fs::read_to_string(socket.with_extension("daemon.log")).unwrap_or_default();
+    let panic_line = session_log
+        .lines()
+        .find(|line| line.contains("panicked at"))
+        .unwrap_or_default();
+    let tag = format!("[session {session}] thread 'session-");
+    // The daemon's own log keeps its one line about the crash; the panic's
+    // text and place, which the default hook prints as `panicked at`, are in
+    // the session's log only.
+    assert_eq!(
+        (
+            panic_line.contains(&tag) && panic_line.contains("scripted.rs:"),
+            session_log.contains("\ninjected fault\n"),
+            daemon_log.contains("panicked at"),
+        ),
+        (true, true, false),
+        "session log: {session_log}\ndaemon log: {daemon_log}"
+    );
+}

@@ -19,6 +19,17 @@
 //! Public API: the tool-definition contract; subsystem internals are `pub(crate)`.
 //! `SessionEngine` (message in -> events out) is the future facade.
 
+/// The lines this crate logs with `eprintln!` belong to the session whose code logged them.
+/// Sessions hosted in one daemon share its standard error, so in this crate the macro hands
+/// each line to the calling session's log ([`pa_types::session_scope::log_line`]); outside a
+/// hosted session (the CLI's own modes, a test) it is the process's standard error as
+/// before. Declared before the modules so it is in scope in all of them.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {
+        pa_types::session_scope::log_line(format_args!($($arg)*))
+    };
+}
+
 pub(crate) mod tools;
 
 // Tool-definition contract.

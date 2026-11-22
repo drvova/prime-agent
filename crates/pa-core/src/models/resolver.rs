@@ -1044,4 +1044,31 @@ mod tests {
         assert_eq!(model.provider, "prime-inference");
         assert_eq!(model.id, "z-ai/glm-5.3");
     }
+
+    /// A line this crate logs from a hosted session's thread goes to that
+    /// session's log sink, not to the standard error its host shares with
+    /// every other session.
+    #[test]
+    fn a_warning_logged_inside_a_hosted_session_goes_to_that_sessions_log() {
+        let logged = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let scope = pa_types::session_scope::SessionScope::new(
+            "logging".to_string(),
+            std::env::temp_dir(),
+            std::collections::BTreeMap::new(),
+            std::collections::BTreeSet::new(),
+        );
+        let sink = std::sync::Arc::clone(&logged);
+        scope.set_slot(std::sync::Arc::new(pa_types::session_scope::LogSink(
+            Box::new(move |line| sink.lock().unwrap().push(line.to_string())),
+        )));
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let scoped = resolve_model_scope_from_models(&["no-such-model".to_string()], &[]);
+        assert_eq!(
+            (scoped.len(), logged.lock().unwrap().clone()),
+            (
+                0,
+                vec!["Warning: No models match pattern \"no-such-model\"".to_string()]
+            )
+        );
+    }
 }

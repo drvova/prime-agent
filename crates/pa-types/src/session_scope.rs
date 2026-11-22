@@ -219,6 +219,26 @@ pub fn ensure_live() -> std::io::Result<()> {
     }
 }
 
+/// Where the lines a hosted session's code logs go: a slot its host sets on
+/// the session's scope. Sessions hosted in one process share its standard
+/// error, so a line that belongs to one of them is handed to that session's
+/// own log instead (the host tags and stores it).
+pub struct LogSink(pub Box<dyn for<'a> Fn(std::fmt::Arguments<'a>) + Send + Sync>);
+
+/// Log one line from wherever the caller runs: to the calling session's
+/// [`LogSink`] when its scope has one, otherwise to the process's standard
+/// error, as `eprintln!` would (a closed standard error is ignored, never a
+/// panic).
+pub fn log_line(message: std::fmt::Arguments<'_>) {
+    match current().and_then(|scope| scope.slot::<LogSink>()) {
+        Some(sink) => (sink.0)(message),
+        None => {
+            use std::io::Write as _;
+            let _ = writeln!(std::io::stderr(), "{message}");
+        }
+    }
+}
+
 thread_local! {
     /// Whether a caller on this thread catches the panics raised under it.
     static PANICS_CAUGHT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

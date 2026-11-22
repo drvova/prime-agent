@@ -54,6 +54,7 @@ fn burst_runner(engine: Arc<dyn SessionEngine>) -> (tempfile::TempDir, TurnRunne
         scoped_models: Vec::new(),
         retry_abort_requested: false,
         queued_input_suspended: false,
+        suspension_carried_over: false,
         pending_next_turn: Vec::new(),
         active_action: None,
         running_tool_calls: std::collections::HashSet::new(),

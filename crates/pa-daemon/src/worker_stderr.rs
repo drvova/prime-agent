@@ -68,8 +68,9 @@ fn open_log(path: &Path) -> std::io::Result<File> {
 /// else, to the daemon's stderr. This is what `eprintln!` means in this crate.
 pub(crate) fn line(message: std::fmt::Arguments<'_>) {
     use std::io::Write as _;
+    // Never a panic for a closed standard error: the panic hook logs here.
     let Some(scope) = pa_types::session_scope::current() else {
-        std::eprintln!("{message}");
+        let _ = writeln!(std::io::stderr(), "{message}");
         return;
     };
     // Resolved before the slot is taken: the scope answers both.
@@ -94,7 +95,7 @@ pub(crate) fn line(message: std::fmt::Arguments<'_>) {
             .is_ok()
     });
     if !written {
-        std::eprint!("{tagged}");
+        let _ = std::io::stderr().write_all(tagged.as_bytes());
     }
 }
 

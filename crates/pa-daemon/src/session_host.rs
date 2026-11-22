@@ -244,9 +244,9 @@ pub fn daemon_crashes() -> Vec<SessionCrash> {
 /// raised anywhere else is the daemon's own: it is kept for
 /// [`daemon_crashes`] and appended to `crash_log` as kind `daemon`. A panic
 /// its caller catches and handles
-/// ([`session_scope::catching_panics`]) is neither. The previous hook runs
-/// after each, so the panic is printed as before. Installing again only
-/// moves the log.
+/// ([`session_scope::catching_panics`]) is neither. A session's panic is
+/// written to that session's log; for every other the previous hook runs,
+/// so it is printed as before. Installing again only moves the log.
 pub fn install_panic_hook(crash_log: PathBuf) {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     daemon_crash_record()
@@ -279,7 +279,21 @@ pub fn install_panic_hook(crash_log: PathBuf) {
                 at: crate::util::now_iso(),
             };
             match session_scope::current().and_then(|scope| scope.slot::<HostControl>()) {
-                Some(control) => control.fault(crash("panic")),
+                Some(control) => {
+                    let crash = crash("panic");
+                    // The panic's text belongs to the session it ended: its log gets
+                    // what the default hook would have printed, tagged, and the
+                    // daemon's own standard error stays free of it.
+                    crate::worker_stderr::line(format_args!(
+                        "thread '{}' panicked at {}:\n{}\n{}",
+                        crash.thread,
+                        crash.location,
+                        crash.message,
+                        std::backtrace::Backtrace::capture()
+                    ));
+                    control.fault(crash);
+                    return;
+                }
                 None if session_scope::panics_are_caught() => {}
                 None => {
                     use std::io::Write as _;
@@ -392,6 +406,11 @@ impl HostedSession {
                 let scope =
                     SessionScope::new(launch.worker_id, launch.cwd, launch.env, launch.removed_env);
                 scope.set_slot(Arc::clone(&thread_control));
+                // What the session's code logs outside this crate (the engine's own
+                // `eprintln!` lines) goes to the session's log too.
+                scope.set_slot(Arc::new(session_scope::LogSink(Box::new(
+                    crate::worker_stderr::line,
+                ))));
                 // A cell whose host call outlives its interrupt ends the
                 // session instead of wedging it.
                 let stuck_control = Arc::clone(&thread_control);
