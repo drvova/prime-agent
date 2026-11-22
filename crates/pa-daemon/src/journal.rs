@@ -749,6 +749,35 @@ impl WorkerRecoveryJournal {
         Ok(())
     }
 
+    /// Replace the rows of each turn that was running when the journal's
+    /// writer went down: `replace` is shown every snapshot that holds such
+    /// rows and answers what a restore redelivers in their place (`None`
+    /// keeps them).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be opened or appended.
+    pub(crate) fn replace_running_turns(
+        path: &Path,
+        mut replace: impl FnMut(&WorkerQueueSnapshotRecord) -> Option<Vec<WorkerQueueItemRecord>>,
+    ) -> Result<()> {
+        let mut journal = Self::open(path)?;
+        for record in journal.queue_snapshots.values_mut() {
+            if record.running.is_empty() {
+                continue;
+            }
+            if let Some(running) = replace(record) {
+                record.running = running;
+                record.recorded_at = crate::util::now_iso();
+                let line = serde_json::to_value(&*record)?;
+                journal
+                    .write_owner
+                    .write(|| append_record(&journal.path, &line))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Read the latest queue snapshot for a session straight from a journal
     /// file (worker restore on a fresh process).
     ///

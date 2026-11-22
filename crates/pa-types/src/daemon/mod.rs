@@ -112,6 +112,7 @@ pub use command::{
 };
 pub use crash::{
     DaemonDeathOutcome, DaemonDeathRecord, SessionCrashInfo, SessionFaultEvent, SessionFaultState,
+    SESSION_FAULT_CUSTOM_TYPE,
 };
 pub use outbound::{
     DaemonClosingReason, DaemonErrorInfo, DaemonEventEnvelope, DaemonOutbound,

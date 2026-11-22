@@ -93,6 +93,7 @@ pub(crate) mod queue_commands;
 pub mod registration;
 pub(crate) mod registry;
 mod revival_gate;
+pub(crate) mod revived_turn;
 pub mod rlm_child_model;
 pub mod rlm_child_usage;
 pub mod rlm_children;

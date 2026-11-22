@@ -8,6 +8,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// The custom type of the transcript rows that keep a session's faults (one
+/// row per [`SessionFaultEvent`], the event itself as the row's `details`):
+/// shown when the session is reopened, never part of the model's context.
+pub const SESSION_FAULT_CUSTOM_TYPE: &str = "session_fault";
+
 /// One session fault: the `session_crashed` event's payload and the
 /// `lastCrash` object on a `list` row (which carries more identifying fields;
 /// they are ignored here).

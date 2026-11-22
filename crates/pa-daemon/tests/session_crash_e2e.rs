@@ -644,3 +644,477 @@ fn a_command_a_cell_started_does_not_survive_the_daemons_shutdown() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+/// A session on the real engine whose scripted model defines `marker` in a
+/// kernel cell. The script starts over in every rebuilt lifetime, so its
+/// first cell is the probe: it fails exactly when `marker` is not defined.
+/// Turn one probes then defines (three responses), turn two probes (two),
+/// turn three answers in text, and the last cell never returns.
+fn kernel_story_script(extra: &Value) -> Value {
+    let cell = |code: &str| {
+        json!({ "content": [
+            { "type": "toolCall", "name": "eval", "arguments": { "code": code } },
+        ] })
+    };
+    let mut script = json!({
+        "engine": "faux",
+        "responses": [
+            cell("(displayln marker)"),
+            cell("(define marker 41)"),
+            { "text": "defined" },
+            cell("(displayln marker)"),
+            { "text": "probed" },
+            { "text": "idle", "delayMs": 1500 },
+            cell("(displayln \"sleeping\") (%test-block-ms 600000)"),
+            { "text": "done" },
+        ],
+    });
+    if let Value::Object(fields) = extra {
+        for (key, value) in fields {
+            script[key] = value.clone();
+        }
+    }
+    script
+}
+
+/// What a session's transcript under `dir` tells of its kernel, in order:
+/// each user prompt, each kernel cell's outcome, each kernel-reset notice and
+/// each crash or recovery row.
+fn kernel_story(dir: &Path) -> Vec<String> {
+    let file = std::fs::read_dir(dir.join("sessions"))
+        .expect("sessions dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .expect("the session file");
+    std::fs::read_to_string(file)
+        .expect("read the session file")
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("entry json"))
+        .filter_map(|entry| {
+            let message = &entry["message"];
+            match (entry["type"].as_str(), message["role"].as_str()) {
+                (Some("message"), Some("user")) => Some("user".to_string()),
+                (Some("message"), Some("toolResult")) if message["toolName"] == "eval" => {
+                    let text = message["content"][0]["text"].as_str().unwrap_or_default();
+                    Some(format!("cell: {}", text.lines().next().unwrap_or_default()))
+                }
+                (Some("custom_message"), _) => match entry["customType"].as_str() {
+                    Some("ipython_state_restored") => Some(format!(
+                        "kernel reset notice (restored: {})",
+                        entry["details"]["restored"]
+                    )),
+                    Some("turn_interrupted") => Some("interrupted notice".to_string()),
+                    Some("session_fault") => Some(match entry["details"]["type"].as_str() {
+                        Some("session_crashed") => format!(
+                            "crashed row ({})",
+                            entry["details"]["kind"].as_str().unwrap_or_default()
+                        ),
+                        Some("session_recovered") => "recovered row".to_string(),
+                        _ => format!("fault row: {}", entry["details"]),
+                    }),
+                    _ => None,
+                },
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// The probe cell's result when `marker` is not defined in its engine.
+const GONE: &str =
+    "cell: Error: FreeIdentifier: Cannot reference an identifier before its definition: marker";
+/// The defining cell's result (it prints nothing).
+const DEFINED: &str = "cell: ";
+/// The probe cell's result when `marker` is defined.
+const FOUND: &str = "cell: 41";
+
+fn turn(session: &str, message: &str) -> Value {
+    json!({ "type": "prompt_and_wait", "activeSessionId": session, "message": message })
+}
+
+fn story(rows: &[&str]) -> Vec<String> {
+    rows.iter().map(|row| (*row).to_string()).collect()
+}
+
+#[test]
+fn a_session_rebuilt_after_a_panic_is_told_once_that_its_kernel_definitions_are_gone() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "kernel",
+        &kernel_story_script(&json!({
+            "panicOn": { "message": "crash now", "panic": "injected fault" },
+        })),
+        json!({}),
+    );
+    for (id, message) in [
+        ("define", "define it"),
+        ("probe", "probe it"),
+        ("idle", "idle"),
+    ] {
+        let done = client.request(id, &turn(&session, message));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    client.send("crash", &crashing_prompt(&session));
+    client.event(&session, "session_recovered");
+    // The rebuilt lifetime's script starts over: its probe fails, because
+    // the definition went with the old engine.
+    for (id, message) in [("again", "define it again"), ("probe-again", "probe it")] {
+        let done = client.request(id, &turn(&session, message));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    assert_eq!(
+        kernel_story(dir.path()),
+        story(&[
+            "user",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+            "user",
+            "crashed row (panic)",
+            "recovered row",
+            "user",
+            "kernel reset notice (restored: false)",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+        ])
+    );
+}
+
+#[test]
+fn a_session_that_never_ran_a_cell_is_told_nothing_after_its_rebuild() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "plain",
+        &json!({
+            "engine": "faux",
+            "responses": [ { "text": "one" } ],
+            "repeatLastResponse": true,
+            "panicOn": { "message": "crash now", "panic": "injected fault" },
+        }),
+        json!({}),
+    );
+    let done = client.request("first", &turn(&session, "talk"));
+    assert_eq!(done["success"], true, "the first turn failed: {done}");
+    client.send("crash", &crashing_prompt(&session));
+    client.event(&session, "session_recovered");
+    for id in ["second", "third"] {
+        let done = client.request(id, &turn(&session, "talk"));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    assert_eq!(
+        kernel_story(dir.path()),
+        story(&[
+            "user",
+            "crashed row (panic)",
+            "recovered row",
+            "user",
+            "user",
+        ])
+    );
+}
+
+#[test]
+fn a_session_rebuilt_after_a_stuck_cell_is_told_once_that_its_kernel_definitions_are_gone() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let session = client.create_attached(
+        dir.path(),
+        "kernel",
+        &kernel_story_script(&json!({})),
+        json!({ "launchEnv": {
+            "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300",
+            "PRIME_AGENT_TEST_BLOCKING_CELL_SEAM": "1",
+        } }),
+    );
+    for (id, message) in [
+        ("define", "define it"),
+        ("probe", "probe it"),
+        ("idle", "idle"),
+    ] {
+        let done = client.request(id, &turn(&session, message));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    let prompted = client.request(
+        "stuck",
+        &json!({ "type": "prompt", "activeSessionId": session, "message": "run the stuck cell" }),
+    );
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    // The cell has printed: it is on the engine, inside its native block.
+    client.read_until("the stuck cell's output", |frame| {
+        frame["activeSessionId"] == session.as_str()
+            && frame["event"]["type"] == "tool_execution_update"
+            && frame["event"].to_string().contains("sleeping")
+    });
+    client.send(
+        "abort",
+        &json!({ "type": "abort", "activeSessionId": session }),
+    );
+    client.event(&session, "session_recovered");
+    // The abort's suspension outlives the rebuild; a prompt that names its
+    // delivery resumes it.
+    for (id, message) in [("again", "define it again"), ("probe-again", "probe it")] {
+        let mut prompt = turn(&session, message);
+        prompt["streamingBehavior"] = json!("followUp");
+        let done = client.request(id, &prompt);
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    assert_eq!(
+        kernel_story(dir.path()),
+        story(&[
+            "user",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+            "user",
+            "user",
+            "cell: Request was aborted",
+            "crashed row (stuck)",
+            "recovered row",
+            "user",
+            "kernel reset notice (restored: false)",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+        ])
+    );
+}
+
+#[test]
+fn a_parked_child_whose_idle_kernel_was_released_is_told_once_on_its_next_turn() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // A parent-owned child with no attached client releases its kernel each
+    // time it parks. The script never restarts here: the lifetime goes on.
+    let script_path = dir.path().join("child-script.json");
+    std::fs::write(&script_path, kernel_story_script(&json!({})).to_string()).expect("script");
+    let sessions_dir = dir.path().join("sessions");
+    std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
+    let created = client.request(
+        "create",
+        &json!({
+            "type": "create",
+            "name": "child",
+            "config": {
+                "rlmDepth": 1,
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": sessions_dir.to_string_lossy(),
+                "script": script_path.to_string_lossy(),
+            },
+        }),
+    );
+    assert_eq!(created["success"], true, "create failed: {created}");
+    let session = created["data"]["activeSessionId"]
+        .as_str()
+        .or_else(|| created["data"]["id"].as_str())
+        .expect("session id")
+        .to_string();
+    // Turn one defines `marker` and parks: the kernel is released. Turn two's
+    // probe runs on a new engine and fails; turn three answers in text.
+    for (id, message) in [
+        ("define", "define it"),
+        ("probe", "probe it"),
+        ("idle", "idle"),
+    ] {
+        let done = client.request(id, &turn(&session, message));
+        assert_eq!(done["success"], true, "{id} failed: {done}");
+    }
+    assert_eq!(
+        kernel_story(dir.path()),
+        story(&[
+            "user",
+            GONE,
+            DEFINED,
+            "user",
+            "kernel reset notice (restored: false)",
+            GONE,
+            "user",
+        ])
+    );
+}
+
+#[test]
+fn a_turn_cut_off_by_a_daemon_restart_continues_behind_one_notice_and_its_prompt_is_not_repeated() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let mut first = spawn_supervisor(&socket, &agent_dir);
+    let session = {
+        let mut client = Client::connect(&socket);
+        let session = client.create_attached(
+            dir.path(),
+            "kernel",
+            &kernel_story_script(&json!({})),
+            json!({}),
+        );
+        for (id, message) in [("define", "define it"), ("probe", "probe it")] {
+            let done = client.request(id, &turn(&session, message));
+            assert_eq!(done["success"], true, "{id} failed: {done}");
+        }
+        // The third turn's answer is held back: its prompt is saved, and
+        // the daemon dies before the model has said anything.
+        let prompted = client.request(
+            "prompt",
+            &json!({ "type": "prompt", "activeSessionId": session, "message": "idle" }),
+        );
+        assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+        client.read_until("the third turn's start", |frame| {
+            frame["activeSessionId"] == session.as_str()
+                && frame["event"]["type"] == "message_end"
+                && frame["event"]["message"]["content"][0]["text"] == "idle"
+        });
+        session
+    };
+    first.child.kill().expect("kill the daemon");
+    first.child.wait().expect("reap the daemon");
+    let _ = std::fs::remove_file(&socket);
+
+    let _second = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // The revived session continues the cut-off turn (its script starts
+    // over, so that turn probes and defines); the probe turn queues behind.
+    let probed = client.request("probe-again", &turn(&session, "probe it"));
+    assert_eq!(probed["success"], true, "the probe failed: {probed}");
+    assert_eq!(
+        kernel_story(dir.path()),
+        story(&[
+            "user",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+            "user",
+            "crashed row (daemon_restart)",
+            "recovered row",
+            "interrupted notice",
+            "kernel reset notice (restored: false)",
+            GONE,
+            DEFINED,
+            "user",
+            FOUND,
+        ])
+    );
+}
+
+#[test]
+fn a_restarted_daemon_still_marks_the_session_that_crashed_under_its_predecessor() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let mut first = spawn_supervisor(&socket, &agent_dir);
+    let session = {
+        let mut client = Client::connect(&socket);
+        let session = client.create_attached(
+            dir.path(),
+            "marked",
+            &crashable_script("injected fault"),
+            json!({}),
+        );
+        client.send("crash", &crashing_prompt(&session));
+        client.event(&session, "session_recovered");
+        let served = client.request("after", &prompt_and_wait(&session));
+        assert_eq!(served["success"], true, "the rebuilt session: {served}");
+        session
+    };
+    // The session is idle when the daemon goes (its journal's last word says
+    // so): the next daemon does not revive it, and its fault mark has only
+    // the durable record to come from.
+    let journal = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+        .join(format!("{session}.recovery.jsonl"));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let records = std::fs::read_to_string(&journal).unwrap_or_default();
+        let last_verdict = records
+            .lines()
+            .rev()
+            .find(|line| line.contains("\"busy\":"));
+        if last_verdict.is_some_and(|line| line.contains("\"busy\":false")) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the rebuilt session never settled: {records}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    first.child.kill().expect("kill the daemon");
+    first.child.wait().expect("reap the daemon");
+    let _ = std::fs::remove_file(&socket);
+    let _second = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    // Reopening the saved session makes its roster row anew.
+    let session_file = std::fs::read_dir(dir.path().join("sessions"))
+        .expect("sessions dir")
+        .flatten()
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .expect("the session file");
+    let reopened = client.request(
+        "reopen",
+        &json!({
+            "type": "create",
+            "sessionPath": session_file.to_string_lossy(),
+            "config": {
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": dir.path().join("sessions").to_string_lossy(),
+                "script": dir.path().join("marked-script.json").to_string_lossy(),
+            },
+        }),
+    );
+    assert_eq!(reopened["success"], true, "the reopen failed: {reopened}");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let fault = loop {
+        let roster = client.request("roster", &json!({ "type": "roster_subscribe" }));
+        let fault = roster["data"]["roster"].as_array().and_then(|entries| {
+            entries
+                .iter()
+                .map(|entry| &entry["summary"]["lastCrash"])
+                .find(|fault| fault.is_object())
+                .cloned()
+        });
+        if let Some(fault) = fault {
+            break fault;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the roster never marked the session: {roster}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(
+        json!([
+            fault["workerId"],
+            fault["kind"],
+            fault["message"],
+            fault["state"]
+        ]),
+        json!([session, "panic", "injected fault", "recovered"])
+    );
+}

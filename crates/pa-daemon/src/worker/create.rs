@@ -634,6 +634,55 @@ impl Worker {
                     }
                 }
             }
+            // The fault this lifetime was rebuilt after (the supervisor's create replay
+            // names it): the transcript keeps what the attached clients were shown
+            // live. The fault's own time identifies its rows, so a replayed create
+            // adds nothing.
+            if let (Some(Ok(crash)), Some(store)) = (
+                payload.get("sessionCrash").map(|crash| {
+                    serde_json::from_value::<crate::session_host::SessionCrash>(crash.clone())
+                }),
+                core.store.as_mut(),
+            ) {
+                let already_kept = store.entries().iter().any(|entry| {
+                    entry.type_ == "custom_message"
+                        && entry.fields["customType"] == pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE
+                        && entry.fields["details"]["at"] == crash.at.as_str()
+                });
+                let rows = [
+                    (
+                        json!({
+                            "type": "session_crashed",
+                            "kind": crash.kind,
+                            "message": crash.message,
+                            "location": crash.location,
+                            "thread": crash.thread,
+                            "at": crash.at,
+                        }),
+                        crash.reason(),
+                        crash.at.clone(),
+                    ),
+                    (
+                        json!({ "type": "session_recovered" }),
+                        "Session recovered: it was rebuilt from its transcript.".to_string(),
+                        crate::util::now_iso(),
+                    ),
+                ];
+                for (event, content, timestamp) in rows.into_iter().filter(|_| !already_kept) {
+                    if let Err(error) = store.persist_entry_at(
+                        "custom_message",
+                        json!({
+                            "customType": pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE,
+                            "content": content,
+                            "display": true,
+                            "details": event,
+                        }),
+                        &timestamp,
+                    ) {
+                        eprintln!("pa-daemon: the session's fault row was not saved: {error:#}");
+                    }
+                }
+            }
             core.created = true;
             core.abort_requested = false;
             core.turn_cancelled = false;

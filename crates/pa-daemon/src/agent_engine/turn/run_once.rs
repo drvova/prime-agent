@@ -212,7 +212,27 @@ impl AgentSessionEngine {
                                             let _ = tx.send(EngineEvent::UserMessage(value));
                                         }
                                     }
-                                    _ => {}
+                                    // The kernel-reset notice rides the turn's prompt
+                                    // messages from the engine's next-turn mailbox: the
+                                    // worker owns the transcript, so the row reaches it
+                                    // (and the attached clients) here. Without the durable
+                                    // row a later rebuild could not tell the model was
+                                    // already told.
+                                    pa_agent::types::AgentMessage::Custom(custom)
+                                        if custom
+                                            .payload
+                                            .get("customType")
+                                            .and_then(Value::as_str)
+                                            == Some(pa_core::session_engine::state_restore_notice::KERNEL_STATE_RESTORED_CUSTOM_TYPE) =>
+                                    {
+                                        if let Some(value) = session_wire_value(agent_message) {
+                                            let _ = tx.send(EngineEvent::CustomMessage(value));
+                                        }
+                                    }
+                                    pa_agent::types::AgentMessage::Standard(
+                                        pa_agent::types::Message::User(_),
+                                    )
+                                    | pa_agent::types::AgentMessage::Custom(_) => {}
                                 }
                             }
                             // The loop-boundary frames: the run-opening frames stay with the

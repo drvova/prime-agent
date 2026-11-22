@@ -475,6 +475,15 @@ impl Supervisor {
         let (payload, injected_compaction_abort) = {
             let descriptor = resident.descriptor.lock().await;
             let mut payload = create_command_payload(&descriptor.create_command);
+            // A fault this relaunch heals rides the create replay: the rebuilt
+            // session keeps it in its transcript, so a later reopen shows it.
+            if let Some(crash) = descriptor
+                .rest
+                .get("lastCrash")
+                .filter(|crash| crash["state"] == "rebuilding")
+            {
+                payload["sessionCrash"] = crash.clone();
+            }
             // The pending terminal record rides the create replay: the replacement
             // discloses the aborted run in the rebuilt transcript, and the record is
             // consumed by the reply.

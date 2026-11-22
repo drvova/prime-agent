@@ -265,6 +265,24 @@ impl AgentSessionEngine {
             self.retire_handles();
             return Err(error);
         }
+        // Every build starts on a new kernel engine: a session whose adopted
+        // transcript shows kernel use since it was last told (a rebuild after
+        // a crash or a stuck cell, a revival after a daemon restart, a plain
+        // resume) is told once, ahead of its next turn. The engine's own
+        // build-time check cannot see this: its session is in memory and
+        // empty until the adoption above.
+        let adopted = built
+            .session
+            .shared_persistence()
+            .lock()
+            .await
+            .active_context()
+            .messages;
+        if let Some(row) =
+            pa_core::session_engine::state_restore_notice::notice_for_resumed(&adopted)
+        {
+            built.session.queue_next_turn_row(row);
+        }
         self.session.lock().await.replace(built);
         Ok(())
     }

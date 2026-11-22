@@ -28,7 +28,17 @@ impl Supervisor {
     /// time it is run again; when the daemon dies under the same session's
     /// turn twice in a row the turn is the likeliest cause, and it is
     /// settled as failed instead of taking the daemon down a third time.
-    pub(super) async fn record_host_death(self: &Arc<Self>, resident: &Arc<ResidentWorker>) {
+    ///
+    /// `revived_turn` is how far the transcript shows the turn got (`None`
+    /// when no picked-up turn is on record): a turn whose answer was saved
+    /// is over either way, and one whose prompt was saved continues behind
+    /// a notice instead of being prompted again.
+    pub(super) async fn record_host_death(
+        self: &Arc<Self>,
+        resident: &Arc<ResidentWorker>,
+        revived_turn: Option<crate::revived_turn::RevivedTurn>,
+    ) {
+        use crate::revived_turn::RevivedTurn;
         let prior = {
             let mut descriptor = resident.descriptor.lock().await;
             let prior = descriptor
@@ -41,16 +51,23 @@ impl Supervisor {
                 .insert(UNCLEAN_REVIVALS.to_string(), json!(prior + 1));
             prior
         };
-        let (message, turn) = if prior == 0 {
-            (
+        let (message, turn) = match (revived_turn, prior) {
+            (Some(RevivedTurn::Answered), _) => (
+                "the daemon stopped as this session's turn was ending; its answer was already saved, so the session was rebuilt from its transcript and the turn was not started again",
+                InterruptedTurn::Replay,
+            ),
+            (Some(RevivedTurn::Interrupted), 0) => (
+                "the daemon stopped while this session's turn was running; the session was rebuilt from its transcript and the turn continues from what was saved",
+                InterruptedTurn::Replay,
+            ),
+            (Some(RevivedTurn::Unstarted) | None, 0) => (
                 "the daemon stopped while this session's turn was running; the session was rebuilt from its transcript and the turn was started again",
                 InterruptedTurn::Replay,
-            )
-        } else {
-            (
+            ),
+            (Some(RevivedTurn::Interrupted | RevivedTurn::Unstarted) | None, _) => (
                 "the daemon stopped again while this session's turn was running; the session was rebuilt from its transcript and the turn was not started again",
                 InterruptedTurn::Settle,
-            )
+            ),
         };
         self.record_session_crash(
             resident,

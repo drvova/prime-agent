@@ -228,6 +228,18 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
             text: content,
             kind: crate::chat::StatusKind::Warning,
         }],
+        // A fault the session's transcript kept: the row the live event drew.
+        pa_types::daemon::SESSION_FAULT_CUSTOM_TYPE => {
+            vec![
+                pa_types::daemon::SessionFaultEvent::from_event(details).map_or(
+                    ChatEntry::Status {
+                        text: content,
+                        kind: crate::chat::StatusKind::Error,
+                    },
+                    |fault| crate::crash_notice::fault_row(&fault),
+                ),
+            ]
+        }
         REFINEMENT_OUTCOME_CUSTOM_TYPE => refinement::refinement_outcome_entries(message, details),
         AGENT_MESSAGE_CUSTOM_TYPE => agent_message_entry(details).map_or_else(
             || vec![generic_panel_entry(custom_type, message)],
