@@ -1,7 +1,9 @@
-//! The stranded-worker registration heal e2e: a worker whose supervisor destroyed its
-//! descriptor is the live-box incident's leftover holder — alive, invisible, holding its
-//! runtime session lease. Its registration is refused (TS unknown-worker error); the self-heal
-//! retires it so the lease releases and the session file resumes.
+//! The stranded-session heal e2e: whatever is left holding a session after the daemon that
+//! knew it is gone must not hold it forever. A worker PROCESS no descriptor backs (the
+//! live-box incident's leftover: alive, invisible, holding its runtime session lease) has its
+//! registration refused and retires. A session hosted by a daemon that died, whose descriptor
+//! is gone, leaves only its lease, and the session file resumes. A session wedged in a call
+//! that never returns is ended by its owner's stop, and its file resumes.
 // The suite's liveness and child-discovery helpers read Linux procfs;
 // on other unixes they cannot observe processes, and the waits would
 // pass vacuously — skip the suite there instead of reporting a false
@@ -165,65 +167,6 @@ fn process_alive(pid: u32) -> bool {
     !state.starts_with('Z') && !state.starts_with('X')
 }
 
-/// SIGSTOP the worker and wait until every one of its threads is parked:
-/// `kill` returns once the stop is queued, and a runtime thread still running
-/// serves the next command before it stops.
-fn freeze(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-STOP")
-        .arg(pid.to_string())
-        .status()
-        .expect("SIGSTOP the worker");
-    assert!(status.success(), "SIGSTOP must reach the worker");
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !all_threads_stopped(pid) {
-        assert!(Instant::now() < deadline, "the worker never stopped");
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
-
-/// Whether every `/proc/<pid>/task/<tid>/stat` reads `T` (stopped).
-fn all_threads_stopped(pid: u32) -> bool {
-    let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-        return false;
-    };
-    let states: Vec<Option<char>> = tasks
-        .flatten()
-        .map(|task| {
-            let stat = std::fs::read_to_string(task.path().join("stat")).ok()?;
-            let (_, rest) = stat.rsplit_once(')')?;
-            rest.split_whitespace().next()?.chars().next()
-        })
-        .collect();
-    !states.is_empty() && states.iter().all(|state| *state == Some('T'))
-}
-
-/// Pids whose parent is `ppid` (the supervisor's worker children).
-fn child_pids_of(ppid: u32) -> Vec<u32> {
-    let mut pids = Vec::new();
-    let entries = std::fs::read_dir("/proc").expect("read /proc");
-    for entry in entries.flatten() {
-        let Ok(entry_pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{entry_pid}/stat")) else {
-            continue;
-        };
-        let Some((_, rest)) = stat.rsplit_once(')') else {
-            continue;
-        };
-        let mut fields = rest.split_whitespace();
-        fields.next();
-        let Ok(parent) = fields.next().unwrap_or_default().parse::<u32>() else {
-            continue;
-        };
-        if parent == ppid {
-            pids.push(entry_pid);
-        }
-    }
-    pids
-}
-
 /// Wait until the pid is gone or the deadline passes.
 fn wait_gone(pid: u32, deadline: Instant) -> bool {
     while process_alive(pid) {
@@ -241,20 +184,20 @@ fn force_kill(pid: u32) {
     let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
 
-/// The one worker child of `daemon_pid`, awaited within a bounded window.
-fn the_one_worker_of(daemon_pid: u32) -> u32 {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let children = child_pids_of(daemon_pid);
-        if children.len() == 1 {
-            return children[0];
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the session worker never spawned (children: {children:?})"
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
+/// The session leases held under `agent_dir` (one `.lock` directory each).
+fn held_leases(agent_dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(agent_dir.join("session-leases"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension == "lock")
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The active id a create response answered (the summary's `id`, what a pane attaches by).
@@ -384,9 +327,11 @@ fn a_refused_registration_retires_the_worker() {
     let _ = std::fs::remove_file(dir.path().join("orphan.sock"));
 }
 
-/// The box incident, end to end.
+/// The box incident under hosting: the daemon dies hard with a session in it and the
+/// session's descriptor is destroyed. Nothing on disk names the session any more except the
+/// lease its dead host left; the next daemon must not treat that as a live holder.
 #[test]
-fn a_descriptorless_leftover_dies_and_its_session_resumes() {
+fn a_descriptorless_session_of_a_dead_daemon_resumes() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
@@ -394,7 +339,6 @@ fn a_descriptorless_leftover_dies_and_its_session_resumes() {
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
 
     let mut daemon = spawn_daemon(&socket, &agent_dir);
-    let daemon_pid = daemon.child.id();
     let mut client = Client::connect(&socket);
     let script_path = write_script(dir.path(), &["first scripted", "resumed turn"]);
     let create_config = json!({
@@ -402,46 +346,25 @@ fn a_descriptorless_leftover_dies_and_its_session_resumes() {
         "sessionDir": sessions_dir.to_string_lossy(),
         "script": script_path.to_string_lossy(),
     });
-    let (worker_id, _created) = create_session(&mut client, "c1", &create_config);
+    let (worker_id, created) = create_session(&mut client, "c1", &create_config);
     run_one_turn(&mut client, &worker_id, "p1");
     let session_file = session_file_of(&mut client, &worker_id, "s1");
-    let worker_process_id = the_one_worker_of(daemon_pid);
 
-    // The supervisor dies hard; the detached worker survives it, holding its session lease.
-    // Its descriptor is then destroyed — the stranded state the incident left on disk.
+    // The daemon dies hard, the session with it, its lease still on disk. Its descriptor is
+    // then destroyed — the stranded state the incident left.
     drop(client);
     let _ = daemon.child.kill();
     let _ = daemon.child.wait();
     drop(daemon);
-    assert!(
-        process_alive(worker_process_id),
-        "the worker survived its supervisor's hard death"
-    );
-    let descriptor_dir = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket);
-    let descriptor = std::fs::read_dir(&descriptor_dir)
-        .expect("descriptor dir")
-        .flatten()
-        .map(|entry| entry.path())
-        .find(|path| {
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string());
-            matches!(&name, Some(name) if std::path::Path::new(name)
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-                && !name.ends_with(".recovery.jsonl"))
-        })
-        .expect("the worker's descriptor is on disk");
-    std::fs::remove_file(&descriptor).expect("destroy the descriptor");
+    let stranded_leases = held_leases(&agent_dir).len();
+    std::fs::remove_file(
+        pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
+            .join(format!("{worker_id}.json")),
+    )
+    .expect("destroy the descriptor");
 
-    // The next daemon cycle: the re-registration is refused (no descriptor), so it retires (or
-    // the boot reap clears it); the lease releases, the session resumes through a fresh worker.
-    let daemon2 = spawn_daemon(&socket, &agent_dir);
-    if !wait_gone(worker_process_id, Instant::now() + Duration::from_secs(20)) {
-        force_kill(worker_process_id);
-        panic!("the descriptorless leftover worker survived the next daemon cycle (the registration heal or the boot reap must clear it)");
-    }
-
+    // The next daemon cycle: the session resumes from its file (no hold refusal).
+    let _daemon2 = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
     client.send_command(
         "r1",
@@ -453,74 +376,98 @@ fn a_descriptorless_leftover_dies_and_its_session_resumes() {
     );
     let resumed = client.read_response("r1");
     assert_eq!(
-        resumed["success"], true,
-        "the resumed create must succeed (no hold refusal): {resumed}"
+        (
+            stranded_leases,
+            resumed["success"].clone(),
+            resumed["data"]["sessionId"].clone(),
+        ),
+        (1, json!(true), created["data"]["sessionId"].clone()),
+        "the dead daemon left the session's lease and the resumed create succeeds: {resumed}"
     );
     let resumed_id = resumed["data"]["id"]
         .as_str()
-        .or_else(|| resumed["data"]["sessionId"].as_str())
         .expect("resumed session id")
         .to_string();
     run_one_turn(&mut client, &resumed_id, "p2");
-
-    // Teardown: the resumed worker dies with the daemon, never leaking into later binaries.
-    let _ = client.writer.shutdown(std::net::Shutdown::Both);
-    for pid in child_pids_of(daemon2.child.id()) {
-        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
-    }
-    drop(daemon2);
 }
 
+/// A session whose cell sits in a native call no interrupt reaches cannot be unwound. Its
+/// owner's stop must still be durable before the session is told, must end the session, and
+/// must leave the session file openable.
 #[test]
-fn an_owned_stop_kills_a_worker_that_missed_the_shutdown() {
+fn an_owned_stop_ends_a_wedged_session_and_its_file_resumes() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let socket = dir.path().join("daemon.sock");
     let agent_dir = dir.path().join("agent");
     let sessions_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions_dir).expect("sessions dir");
 
-    let daemon = spawn_daemon(&socket, &agent_dir);
-    let daemon_pid = daemon.child.id();
+    let _daemon = spawn_daemon(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
-    let script_path = write_script(dir.path(), &["first scripted", "resumed turn"]);
-    let create_config = json!({
-        "cwd": dir.path().to_string_lossy(),
-        "sessionDir": sessions_dir.to_string_lossy(),
-        "script": script_path.to_string_lossy(),
-    });
-    // A client-owned session: its owner's stop must escalate past a wedged worker.
+    // The second turn's cell says it is on the engine, then never returns.
+    let on_engine = dir.path().join("cell-on-engine");
+    let cell = format!(
+        "(fs-write {} \"on the engine\") (time/sleep-ms 600000)",
+        serde_json::to_string(&on_engine.to_string_lossy()).expect("a Scheme string literal")
+    );
+    let wedging_script = dir.path().join("wedging.json");
+    std::fs::write(
+        &wedging_script,
+        json!({
+            "engine": "faux",
+            "responses": [
+                { "text": "first scripted" },
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": cell } },
+                ] },
+                { "text": "done" },
+            ],
+        })
+        .to_string(),
+    )
+    .expect("write script");
+    // A client-owned session: its owner's stop must get past the wedged cell.
     client.send_command(
         "c1",
         &json!({
             "type": "create",
             "lifecycle": "client_owned",
-            "config": create_config,
+            "config": {
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": sessions_dir.to_string_lossy(),
+                "script": wedging_script.to_string_lossy(),
+            },
         }),
     );
     let created = client.read_response("c1");
     assert_eq!(created["success"], true, "create failed: {created}");
     let worker_id = created["data"]["id"]
         .as_str()
-        .or_else(|| created["data"]["sessionId"].as_str())
         .expect("session id in create response")
         .to_string();
     run_one_turn(&mut client, &worker_id, "p1");
     let session_file = session_file_of(&mut client, &worker_id, "s1");
-    let worker_process_id = the_one_worker_of(daemon_pid);
+    client.send_command(
+        "p2",
+        &json!({ "type": "prompt", "activeSessionId": worker_id, "message": "wedge" }),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !on_engine.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "the cell never reached the engine"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
-    // The worker freezes mid-flight: it cannot process the routed shutdown (the route times
-    // out), survives SIGTERM, and only SIGKILL ends it.
-    freeze(worker_process_id);
-
-    // The owner stops its session: the stop must confirm the worker's process death
-    // (escalating to SIGKILL) before retiring its descriptor; the response waits it out.
     client.send_command(
         "k1",
         &json!({ "type": "complete_owned_session", "activeSessionId": worker_id }),
     );
-    // The stop's durable intent is observable on disk BEFORE the worker is told: the descriptor
-    // must already carry its stop tombstone while the routed shutdown waits — a supervisor that
-    // died mid-stop would adopt the tombstone, never re-adopt a stopped worker as healthy.
+    // The stop's durable intent is observable on disk BEFORE the session is told: the
+    // descriptor carries its stop tombstone while the stop is still ending the session — a
+    // daemon that died mid-stop would finish the stop at its next boot, never re-adopt a
+    // stopped session as healthy.
     let descriptor_path = pa_daemon::descriptor::descriptor_dir(&agent_dir, &socket)
         .join(format!("{worker_id}.json"));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -540,41 +487,46 @@ fn an_owned_stop_kills_a_worker_that_missed_the_shutdown() {
             Instant::now() < deadline,
             "the owned stop never persisted its tombstone (the stop must be durable before the shutdown routes): {descriptor}"
         );
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::yield_now();
     }
     let stopped = client.read_response("k1");
-    assert_eq!(stopped["success"], true, "owned stop failed: {stopped}");
-    if !wait_gone(worker_process_id, Instant::now() + Duration::from_secs(5)) {
-        force_kill(worker_process_id);
-        panic!("the stopped worker outlived its stop — the per-session stop must escalate (SIGKILL) instead of stranding a live lease holder");
-    }
+    // The stop answered: the session is retired and holds nothing.
+    assert_eq!(
+        (
+            stopped["success"].clone(),
+            descriptor_path.exists(),
+            held_leases(&agent_dir),
+        ),
+        (json!(true), false, Vec::<PathBuf>::new()),
+        "the owned stop must end the wedged session before it answers: {stopped}"
+    );
 
-    // The frozen worker's lease released with its death: the session file
-    // opens again instead of answering the hold refusal.
+    // The session file opens again instead of answering the hold refusal.
+    let resume_script = write_script(dir.path(), &["first scripted", "resumed turn"]);
     client.send_command(
         "r1",
         &json!({
             "type": "create",
             "sessionPath": session_file,
-            "config": create_config,
+            "config": {
+                "cwd": dir.path().to_string_lossy(),
+                "sessionDir": sessions_dir.to_string_lossy(),
+                "script": resume_script.to_string_lossy(),
+            },
         }),
     );
     let resumed = client.read_response("r1");
     assert_eq!(
-        resumed["success"], true,
-        "the stopped-then-killed session must resume: {resumed}"
+        (
+            resumed["success"].clone(),
+            resumed["data"]["sessionId"].clone()
+        ),
+        (json!(true), created["data"]["sessionId"].clone()),
+        "the stopped session must resume: {resumed}"
     );
     let resumed_id = resumed["data"]["id"]
         .as_str()
-        .or_else(|| resumed["data"]["sessionId"].as_str())
         .expect("resumed session id")
         .to_string();
-    run_one_turn(&mut client, &resumed_id, "p2");
-
-    // Teardown: the resumed worker dies with the daemon.
-    let _ = client.writer.shutdown(std::net::Shutdown::Both);
-    for pid in child_pids_of(daemon.child.id()) {
-        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
-    }
-    drop(daemon);
+    run_one_turn(&mut client, &resumed_id, "p3");
 }

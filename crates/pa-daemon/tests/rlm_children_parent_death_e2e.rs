@@ -1,8 +1,9 @@
-//! RLM children on a hard-killed parent worker (the #246 adjacent gap): TS hosts children
-//! IN the parent's process, so a `SIGKILLed` parent takes them down; the Rust redesign hosts
-//! each child as its own worker and the #246 close lives in the parent's teardown paths,
-//! all bypassed by SIGKILL — so the supervisor's worker-death monitoring performs the close
-//! (a plain stop; grandchildren cascade). Tests skip without a live kernel install.
+//! RLM children of a parent session that dies without running any teardown (the #246
+//! adjacent gap): each child is its own session, and the #246 close lives in the parent's
+//! teardown paths, all bypassed when the parent crashes — so the daemon's session-death
+//! monitoring performs the close (a plain stop; grandchildren cascade). The parent is made to
+//! die by wedging a cell in a native call and aborting it: the daemon ends the session as
+//! crashed, and nothing in it gets to run.
 // Stack-resident futures by design; boxing for a lint tick is a perf regression.
 #![allow(clippy::large_futures)]
 // 64-bit-only targets; narrowing casts sit at bounded OS/protocol boundaries.
@@ -307,6 +308,16 @@ fn write_parent_script(dir: &Path, first_cell: &str) -> PathBuf {
                     { "type": "toolCall", "name": "eval", "arguments": { "code": first_cell } },
                 ] },
                 { "text": "spawn turn done" },
+                // The turn [`crash_parent`] runs: the cell says it is on the engine, then
+                // sits in a native call no interrupt reaches.
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": { "code": format!(
+                        "(fs-write {} \"on the engine\") (time/sleep-ms 600000)",
+                        serde_json::to_string(&dir.join("receipts").join("wedged").to_string_lossy())
+                            .expect("a Scheme string literal")
+                    ) } },
+                ] },
+                { "text": "never reached" },
             ],
         })
         .to_string(),
@@ -331,6 +342,8 @@ fn create_parent(
         &json!({
             "type": "create",
             "name": "parent",
+            // An aborted cell still on the engine after this long ends its session.
+            "launchEnv": { "PRIME_AGENT_STUCK_CELL_GRACE_MS": "300" },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": sessions_dir.to_string_lossy(),
@@ -344,49 +357,38 @@ fn create_parent(
     created["data"].clone()
 }
 
-/// The parent worker's process id, read from its durable descriptor; the environ check
-/// guards the kill against a stale pid.
-fn parent_worker_pid(agent_dir: &Path, socket: &Path, parent_id: &str) -> u32 {
-    let descriptor_path =
-        pa_daemon::descriptor::descriptor_dir(agent_dir, socket).join(format!("{parent_id}.json"));
-    let descriptor: Value = serde_json::from_str(
-        &std::fs::read_to_string(&descriptor_path)
-            .unwrap_or_else(|_| panic!("read parent descriptor {}", descriptor_path.display())),
-    )
-    .expect("parent descriptor json");
-    let pid = descriptor["pid"].as_u64().expect("descriptor pid") as u32;
-    let environ = std::fs::read_to_string(format!("/proc/{pid}/environ"))
-        .unwrap_or_else(|_| panic!("read /proc/{pid}/environ"));
-    assert!(
-        environ.contains(&format!("={parent_id}\0"))
-            && environ.contains(pa_daemon::worker::WORKER_ACTIVE_SESSION_ID_ENV),
-        "pid {pid} is not the worker for session {parent_id}"
+/// End the parent's session with no teardown (the failure class that bypasses every
+/// session-side close path): its next turn wedges a cell in a native call, the abort that
+/// follows finds the cell still on the engine after the session's grace, and the daemon ends
+/// the session as crashed. Returns once the crash is on the parent's row.
+fn crash_parent(client: &mut Client, dir: &Path, parent_id: &str) {
+    client.send_command(
+        "wedge",
+        &json!({ "type": "prompt", "activeSessionId": parent_id, "message": "wedge" }),
     );
-    pid
+    let prompted = client.read_response("wedge");
+    assert_eq!(prompted["success"], true, "prompt failed: {prompted}");
+    await_receipt(&dir.join("receipts").join("wedged"));
+    client.send_command(
+        "abort",
+        &json!({ "type": "abort", "activeSessionId": parent_id }),
+    );
+    wait_until(client, Duration::from_mins(1), |client| {
+        roster_summaries(client, "crashed")
+            .into_iter()
+            .find(|row| row["id"] == json!(parent_id) && row["lastCrash"]["kind"] == "stuck")
+    });
 }
 
-/// SIGKILL the parent worker (the failure class that bypasses every
-/// worker-side close path).
-fn sigkill(pid: u32) {
-    let status = Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
-        .status()
-        .expect("run kill");
-    assert!(status.success(), "kill -9 {pid} failed: {status}");
-}
-
-/// A parent worker killed with SIGKILL cannot run any teardown (#246's
-/// closes all live in the worker), so the supervisor's death monitoring
-/// closes its resident children: the spawned child's worker leaves the
-/// roster, its session archives, the respawned parent relists the child
-/// as a settled row from the surviving spawn edge, and the child stays
-/// visible as a passive ledger row (the close is a plain stop - the
-/// spawn edge survives, no delete record).
-// The parent pid check reads /proc/<pid>/environ: Linux only.
-#[cfg(target_os = "linux")]
+/// A parent session that crashes cannot run any teardown (#246's closes
+/// all live in the session), so the daemon's death monitoring closes its
+/// resident children: the spawned child's session leaves the roster, its
+/// resume entry survives, the rebuilt parent relists the child as a settled
+/// row from the surviving spawn edge, and the child stays visible as a
+/// passive ledger row (the close is a plain stop - the spawn edge survives,
+/// no delete record).
 #[test]
-fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
+fn a_parent_crash_closes_the_spawned_child_and_passivates_the_row() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -445,11 +447,10 @@ fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
         .expect("child active session id")
         .to_string();
 
-    // The hard kill: SIGKILL bypasses every worker-side close path.
-    let pid = parent_worker_pid(&agent_dir, &socket, &parent_id);
-    sigkill(pid);
+    // The crash bypasses every session-side close path.
+    crash_parent(&mut client, dir.path(), &parent_id);
 
-    // The supervisor's death monitoring closes the child: its worker leaves the roster.
+    // The daemon's death monitoring closes the child: its session leaves the roster.
     wait_until(&mut client, Duration::from_mins(1), |client| {
         let summaries = roster_summaries(client, "l2");
         summaries
@@ -521,11 +522,9 @@ fn sigkill_closes_the_spawned_child_and_passivates_the_row() {
 
 /// `rlm.create_session` depth-0 roots are NOT parent-linked (TS `createRlmRootSession`
 /// carries no `parentActiveSessionId`, so `getChildActiveSessionStates` never matches
-/// them): a created root survives the parent's hard death.
-// The parent pid check reads /proc/<pid>/environ: Linux only.
-#[cfg(target_os = "linux")]
+/// them): a created root survives the parent's crash.
 #[test]
-fn sigkill_keeps_a_created_root_session_running() {
+fn a_parent_crash_keeps_a_created_root_session_running() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = dir.path().join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
@@ -576,11 +575,10 @@ fn sigkill_keeps_a_created_root_session_running() {
             })
     });
 
-    // The hard kill: the supervisor restarts the parent, and its death
-    // close touches parent-linked children only.
-    let pid = parent_worker_pid(&agent_dir, &socket, &parent_id);
-    sigkill(pid);
-    // The respawn (and with it the death close) settles before the registry reads empty.
+    // The crash: the daemon rebuilds the parent, and its death close
+    // touches parent-linked children only.
+    crash_parent(&mut client, dir.path(), &parent_id);
+    // The rebuild (and with it the death close) settles before the registry reads empty.
     wait_until(&mut client, Duration::from_mins(1), |client| {
         client.send_command(
             "g1",
