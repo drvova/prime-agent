@@ -287,36 +287,13 @@ fn persistent_shell_survives_daemon_shutdown_is_reattached_and_outlives_session_
         .expect("pid");
     let _guard = GroupGuard(pid);
 
-    // Daemon stop: the workers dispose their kernels (which end their own
-    // commands) and the orphan reaper runs. The shell must outlive both, so
-    // the workers are watched until they are gone.
-    let supervisor_pid = daemon.child.id();
-    let workers: Vec<u32> = std::fs::read_dir("/proc")
-        .expect("read /proc")
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_string_lossy().parse::<u32>().ok()?;
-            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
-            let parent = stat.rsplit_once(')')?.1.split_whitespace().nth(1)?;
-            (parent.parse() == Ok(supervisor_pid)).then_some(pid)
-        })
-        .collect();
-    assert_eq!(workers.len(), 1, "one session worker: {workers:?}");
+    // Daemon stop: the sessions it hosts dispose their kernels (which end
+    // their own commands) and the orphan reaper runs before the process
+    // exits. The shell must outlive both.
     client.request("sd", &json!({ "type": "shutdown" }));
     let deadline = Instant::now() + Duration::from_secs(90);
     while daemon.child.try_wait().expect("poll supervisor").is_none() {
         assert!(Instant::now() < deadline, "the supervisor never exited");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let deadline = Instant::now() + Duration::from_secs(90);
-    while workers
-        .iter()
-        .any(|worker| Path::new(&format!("/proc/{worker}")).exists())
-    {
-        assert!(
-            Instant::now() < deadline,
-            "the session worker outlived shutdown"
-        );
         std::thread::sleep(Duration::from_millis(100));
     }
     assert!(
