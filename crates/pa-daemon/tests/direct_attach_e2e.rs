@@ -146,6 +146,11 @@ impl Client {
 
 struct WorkerClient {
     stream: UnixStream,
+    /// Session events that arrived while a response was awaited. A turn's
+    /// first events can reach the socket before the response to the prompt
+    /// that started it, so [`Self::request`] keeps them for
+    /// [`Self::next_event`] instead of reading past them.
+    events: std::collections::VecDeque<Value>,
 }
 
 impl WorkerClient {
@@ -154,7 +159,10 @@ impl WorkerClient {
         stream
             .set_read_timeout(Some(Duration::from_millis(100)))
             .expect("set timeout");
-        let mut client = WorkerClient { stream };
+        let mut client = WorkerClient {
+            stream,
+            events: std::collections::VecDeque::new(),
+        };
         let (header, payload) = client.read_frame();
         assert_eq!(header["outboundType"], "daemon_hello", "worker hello");
         let hello: Value = serde_json::from_slice(&payload).expect("hello payload");
@@ -209,11 +217,18 @@ impl WorkerClient {
                 value["id"] = json!(request_id);
                 return value;
             }
+            if header["outboundType"].as_str() == Some("session_event") {
+                self.events
+                    .push_back(serde_json::from_slice(&body).expect("event payload"));
+            }
         }
     }
 
     /// The next session-event frame payload, or `None` once the connection closes.
     fn next_event(&mut self, timeout: Duration) -> Option<Value> {
+        if let Some(event) = self.events.pop_front() {
+            return Some(event);
+        }
         let deadline = Instant::now() + timeout;
         loop {
             assert!(Instant::now() < deadline, "timed out waiting for an event");
