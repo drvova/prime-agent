@@ -49,6 +49,12 @@ ignore = [
   { id = "RUSTSEC-2026-0248", reason = "im unmaintained; via steel-core only, no maintained path in 0.8.3 (reviewed 2026-11-22)" },
   { id = "RUSTSEC-2026-0250", reason = "im-rc unmaintained; a non-optional steel-core dependency (reviewed 2026-11-22)" },
   { id = "RUSTSEC-2026-0251", reason = "sized-chunks unmaintained; via im/im-rc under steel-core (reviewed 2026-11-22)" },
+  # Also unmaintained with no vulnerability reported, and also only under
+  # steel-core: bitmaps through im/im-rc, bincode and chrono directly.
+  # Accepted by the owner 2026-11-22.
+  { id = "RUSTSEC-2026-0247", reason = "bitmaps unmaintained; via im/im-rc under steel-core (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode unmaintained, no vulnerability; a steel-core dependency (reviewed 2026-11-22)" },
+  { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained, no vulnerability; a steel-core dependency (reviewed 2026-11-22)" },
   # The aliasing violation is in `OrdSet` insertion; steel-core 0.8.3 uses
   # im's Vector, HashMap and HashSet and never names OrdSet or OrdMap.
   { id = "RUSTSEC-2023-0126", reason = "im OrdSet insertion; steel-core never uses OrdSet/OrdMap (reviewed 2026-11-22)" },
