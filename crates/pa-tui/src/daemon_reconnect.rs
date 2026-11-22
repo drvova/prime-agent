@@ -4,6 +4,39 @@
 
 use crate::chat::StatusKind;
 use std::cmp::Ordering;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, OnceLock};
+
+/// How a window that lost its daemon gets one started when none comes back by itself.
+///
+/// A daemon launched by an interactive client runs under a restart owner, which brings it back
+/// without anyone asking; this is the fallback for a daemon that had no owner (started by hand,
+/// or on a platform without one) or whose owner gave up. The composition root implements it
+/// against the same launch path a fresh window uses: pa-tui starts no processes itself.
+///
+/// The reconnect driver calls it at most once per lost connection, off the paint path, after
+/// its first connect attempt failed. Implementations must be idempotent (a daemon that is
+/// already answering is left alone) and must never stop a running daemon. An `Err` is shown to
+/// the user as a note; the reconnect keeps polling either way.
+pub trait DaemonLauncher: Send + Sync {
+    /// Make sure a daemon is listening on this window's socket.
+    fn ensure_running(&self) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send + '_>>;
+}
+
+static DAEMON_LAUNCHER: OnceLock<Arc<dyn DaemonLauncher>> = OnceLock::new();
+
+/// Install the process's daemon launcher (the composition root, once, before the UI runs). A
+/// second install is ignored: one process drives one socket.
+pub fn install_daemon_launcher(launcher: Arc<dyn DaemonLauncher>) {
+    // The first installation stands.
+    let _ = DAEMON_LAUNCHER.set(launcher);
+}
+
+/// The installed launcher, when the composition root provided one.
+pub(crate) fn daemon_launcher() -> Option<Arc<dyn DaemonLauncher>> {
+    DAEMON_LAUNCHER.get().cloned()
+}
 
 /// The reconnect driver that owns the run: which daemon closing armed it
 /// decides the reattach banner and the expiry row.

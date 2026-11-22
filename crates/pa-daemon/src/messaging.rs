@@ -190,6 +190,9 @@ impl Supervisor {
         if !rendered.starts_with("Unknown active session:") {
             return WakeOutcome::Failed(rendered);
         }
+        // A boot still reviving the sessions its predecessor died under may be about to host
+        // this very file: the wake waits it out and then reuses the revived session.
+        self.wait_for_boot_revival().await;
         // The catalog scope: the source session's cwd and session dir when
         // agent-origin, the supervisor's defaults otherwise.
         let cwd = source

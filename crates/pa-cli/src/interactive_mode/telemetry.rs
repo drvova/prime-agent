@@ -235,6 +235,14 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn crash_notice_shown(
+        &self,
+        _kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        self.count("tui_crash_notice_count");
+        Box::pin(std::future::ready(()))
+    }
+
     fn menu_opened(
         &self,
         _menu: &'static str,

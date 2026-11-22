@@ -39,6 +39,7 @@ impl SessionUi {
             ConnectionEffect::ErrorRow(text) => self.error_row(text, view),
             ConnectionEffect::None
             | ConnectionEffect::Connect { .. }
+            | ConnectionEffect::Launch
             | ConnectionEffect::Attach(_) => {}
         }
         if let ConnectionEffect::Exit { reason, .. } = &effect {
@@ -49,12 +50,23 @@ impl SessionUi {
                 effect,
                 ConnectionEffect::None
                     | ConnectionEffect::Connect { .. }
+                    | ConnectionEffect::Launch
                     | ConnectionEffect::Attach(_)
             )
         {
             self.dirty = true;
         }
         effect
+    }
+
+    /// Count one crash notice shown to the user (`tui_crash_notice_count` on `tui exit`): the
+    /// report is spawned, so the row's paint never waits on telemetry.
+    pub(crate) fn count_crash_notice(&self, kind: &'static str) {
+        if let Some(telemetry) = self.telemetry.clone() {
+            tokio::spawn(async move {
+                telemetry.crash_notice_shown(kind).await;
+            });
+        }
     }
 
     /// Abort the active turn off the UI loop: with the schema-29 capability the daemon aborts the
@@ -494,6 +506,13 @@ impl SessionUi {
             }
             TurnUpdate::CustomRow(entry) => {
                 view.push_entry(entry);
+            }
+            // The daemon's report on this session's health lands in the transcript where it
+            // happened; the count is handed off and never awaited here.
+            TurnUpdate::SessionFault(fault) => {
+                view.push_entry(crate::crash_notice::fault_row(&fault));
+                self.count_crash_notice(crate::crash_notice::fault_kind(&fault));
+                self.dirty = true;
             }
             // A recovered episode this client watched leaves the nc-style receipt with the
             // wait it measured; a replayed or unwatched one keeps the daemon's row text.

@@ -47,6 +47,9 @@ pub enum TurnUpdate {
     },
     /// `turn_end`, with the turn error string when the turn failed.
     TurnEnded { error: Option<String> },
+    /// `session_crashed` / `session_recovered` / `session_failed`: the daemon's own report on
+    /// the hosted session's health.
+    SessionFault(pa_types::daemon::SessionFaultEvent),
     /// A `custom`-role message the transcript renders (session-command
     /// echo/result rows, or the malformed-notice fallback).
     CustomRow(ChatEntry),
@@ -221,6 +224,9 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
                 .map(str::to_string),
         }),
         "agent_end" => Some(TurnUpdate::Idle),
+        "session_crashed" | "session_recovered" | "session_failed" => {
+            pa_types::daemon::SessionFaultEvent::from_event(event).map(TurnUpdate::SessionFault)
+        }
         "message_start" | "message_update" | "message_end" => {
             let message = event.get("message")?.clone();
             let event_type = event.get("type").and_then(Value::as_str);

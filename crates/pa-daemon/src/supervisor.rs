@@ -236,6 +236,13 @@ pub struct Supervisor {
     /// path, so a client gets its hello at once; the client's first command, the worker adoption
     /// pass and the dead-owner lease reclaim wait on this gate instead.
     pub(crate) boot_reaped: tokio::sync::watch::Sender<bool>,
+    /// Whether no boot revival is pending. A plain startup lowers it before the accept loop
+    /// starts and raises it when the adoption pass has revived the sessions the previous
+    /// daemon died under. An open of a session waits on it (a create, or an attach or message
+    /// that wakes a saved session): a window that reconnects the moment the daemon is back
+    /// would otherwise open the session's file in a second, fresh session while the boot is
+    /// still rebuilding the interrupted one, and the two race its lease.
+    pub(crate) boot_revived: tokio::sync::watch::Sender<bool>,
     /// The running history import's started frame (`None` while none runs):
     /// a client that connects mid-import hears it after its hello.
     pub(crate) history_import: std::sync::Mutex<Option<Arc<Value>>>,
@@ -313,6 +320,7 @@ impl Supervisor {
             passive_catalog_epoch: std::sync::atomic::AtomicU64::new(0),
             compaction_journal: std::sync::Mutex::new(None),
             boot_reaped: tokio::sync::watch::channel(true).0,
+            boot_revived: tokio::sync::watch::channel(true).0,
             history_import: std::sync::Mutex::new(None),
         })
     }
@@ -497,7 +505,21 @@ impl Supervisor {
                 },
                 None => AdoptionBoot::PlainStartup,
             };
+            // An update boot's sessions come back under the restore contract its clients
+            // already follow (the hello's `updateResume`); only a plain startup gates launches.
+            if matches!(boot, AdoptionBoot::PlainStartup) {
+                self.boot_revived.send_replace(false);
+            }
             tokio::spawn(async move {
+                // Raised however the pass ends, a panic included: a launch must never wait
+                // on a revival that is no longer running.
+                struct Revived(Arc<Supervisor>);
+                impl Drop for Revived {
+                    fn drop(&mut self) {
+                        self.0.boot_revived.send_replace(true);
+                    }
+                }
+                let _revived = Revived(Arc::clone(&supervisor));
                 supervisor.wait_for_boot_reap().await;
                 supervisor.adopt_persisted_workers(boot).await;
                 let _ = adoption_tx.send(true);
@@ -588,6 +610,17 @@ impl Supervisor {
 }
 
 impl Supervisor {
+    /// Wait until the boot has revived the sessions its predecessor died under (see
+    /// [`Supervisor::boot_revived`]): an open that follows joins the revived session.
+    pub(crate) async fn wait_for_boot_revival(&self) {
+        // The sender lives in `self`, so the wait can only end by the flip.
+        let _ = self
+            .boot_revived
+            .subscribe()
+            .wait_for(|revived| *revived)
+            .await;
+    }
+
     /// Wait until the boot reap cleared this socket's predecessors (see
     /// [`Supervisor::boot_reaped`]).
     pub(crate) async fn wait_for_boot_reap(&self) {

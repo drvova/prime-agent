@@ -210,9 +210,9 @@ impl Client {
         let deadline = Instant::now() + WAIT;
         loop {
             let listed = self.request("list", &json!({ "type": "list" }));
-            let row = listed["data"]["sessions"].as_array().and_then(|rows| {
-                rows.iter().find(|row| row["id"] == session).cloned()
-            });
+            let row = listed["data"]["sessions"]
+                .as_array()
+                .and_then(|rows| rows.iter().find(|row| row["id"] == session).cloned());
             if let Some(row) = row.filter(&settled) {
                 return row;
             }
@@ -227,7 +227,11 @@ fn hello_pid(hello: &Value) -> u32 {
 }
 
 fn sigkill(pid: u32) {
-    kill(Pid::from_raw(i32::try_from(pid).expect("a pid")), Signal::SIGKILL).expect("SIGKILL");
+    kill(
+        Pid::from_raw(i32::try_from(pid).expect("a pid")),
+        Signal::SIGKILL,
+    )
+    .expect("SIGKILL");
 }
 
 /// The restart owner's death log for `socket`.
@@ -249,10 +253,7 @@ fn wait_exit(keeper: &mut Keeper) -> Option<i32> {
         if let Some(status) = keeper.child.try_wait().expect("poll the restart owner") {
             return status.code();
         }
-        assert!(
-            Instant::now() < deadline,
-            "the restart owner never exited"
-        );
+        assert!(Instant::now() < deadline, "the restart owner never exited");
         std::thread::sleep(Duration::from_millis(20));
     }
 }
@@ -266,7 +267,10 @@ fn transcripts(dir: &Path) -> String {
             let path: PathBuf = entry.path();
             if path.is_dir() {
                 pending.push(path);
-            } else if path.extension().is_some_and(|extension| extension == "jsonl") {
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "jsonl")
+            {
                 text.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
             }
         }
@@ -459,15 +463,16 @@ fn a_daemon_that_dies_at_every_start_is_given_up_on_and_the_next_daemon_reports_
     let summary: Vec<Value> = log
         .iter()
         .map(|record| {
-            json!([record["consecutive"], record["outcome"], record["signal"], record["exitCode"].is_number()])
+            json!([
+                record["consecutive"],
+                record["outcome"],
+                record["signal"],
+                record["exitCode"].is_number()
+            ])
         })
         .collect();
     assert_eq!(
-        (
-            gave_up_exit,
-            summary,
-            client.hello["daemonDeath"].clone(),
-        ),
+        (gave_up_exit, summary, client.hello["daemonDeath"].clone(),),
         (
             Some(1),
             vec![

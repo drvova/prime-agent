@@ -51,6 +51,7 @@ mod compaction_row;
 pub mod config_selector;
 pub mod confirm;
 pub mod context_view;
+mod crash_notice;
 pub mod custom_message;
 pub mod daemon_client;
 pub mod daemon_reconnect;

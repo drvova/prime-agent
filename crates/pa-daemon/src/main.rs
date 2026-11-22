@@ -57,8 +57,7 @@ async fn run() -> Result<()> {
                     socket_path: options.socket_path,
                     agent_dir: options.agent_dir,
                 };
-                let code =
-                    tokio::task::block_in_place(|| pa_daemon::keeper::run_keeper(&keeper))?;
+                let code = tokio::task::block_in_place(|| pa_daemon::keeper::run_keeper(&keeper))?;
                 std::process::exit(code);
             }
             pa_daemon::supervisor::run_supervisor(options).await

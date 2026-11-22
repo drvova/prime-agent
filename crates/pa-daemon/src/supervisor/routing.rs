@@ -1039,7 +1039,8 @@ impl Supervisor {
             rest: serde_json::Map::default(),
         };
         // Reuse before launching (TS `createOrReuseWorker`): a concurrent revival
-        // may already host the file.
+        // may already host the file, and a boot's revival pass is waited out first.
+        self.wait_for_boot_revival().await;
         if let Some(resident) = self.registry.find_by_session_file(&session_file).await {
             return Some(crate::messaging::WakeOutcome::Woken(resident));
         }

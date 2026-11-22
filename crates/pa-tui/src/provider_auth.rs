@@ -1243,6 +1243,13 @@ mod tests {
             Box::pin(std::future::ready(()))
         }
 
+        fn crash_notice_shown(
+            &self,
+            _kind: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            Box::pin(std::future::ready(()))
+        }
+
         fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             Box::pin(std::future::ready(()))
         }

@@ -1293,6 +1293,7 @@ const TUI_EXIT: EventRule = EventRule {
         ("tui_slash_accept_count", optional(count())),
         ("tui_menu_search_count", optional(count())),
         ("tui_activity_open_count", optional(count())),
+        ("tui_crash_notice_count", optional(count())),
         ("tui_subagents_open_count", optional(count())),
         ("tui_scoped_agent_count", optional(count())),
         ("tui_image_paste_count", optional(count())),

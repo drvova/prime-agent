@@ -15,8 +15,7 @@ use serde::Serialize;
 use super::format::{print_reap_report, print_shutdown_report};
 use super::kill::{
     force_kill_daemon, force_stop_tracked_workers, kill_daemon, mark_deliberate_stop,
-    remove_socket_file,
-    terminate_verified_residuals,
+    remove_socket_file, terminate_verified_residuals,
 };
 use super::plan::{
     plan_reap, plan_shutdown_all, plan_shutdown_confirmation, ReapActionKind,

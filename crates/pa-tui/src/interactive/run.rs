@@ -825,6 +825,16 @@ async fn run_interactive_surface(
     // screen hides any pre-TUI stderr print, so the row is the only
     // shape the user actually sees.
     session.maybe_show_telemetry_notice(&mut view);
+    // A daemon that was started after its predecessor died says so in its hello: a window
+    // opening soon after leads with it (the record is already in hand; nothing is fetched).
+    session.show_daemon_death(
+        &mut view,
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() as i64),
+        ),
+    );
     // The empty composer's self-retiring key hint (omp), until its key has been used enough.
     view.composer_hint = session.composer_hint.label(view.editor.keybindings());
     // TS `restorePromptStashOnOpen`: a draft stashed on the way out (a
@@ -1771,7 +1781,22 @@ async fn run_interactive_surface(
                         }
                     }
                     Ok(Err(_)) => {
-                        session.connection_event(ConnectionEvent::ConnectFailed, &mut view);
+                        if session.connection_event(ConnectionEvent::ConnectFailed, &mut view)
+                            == ConnectionEffect::Launch
+                        {
+                            if let Some(launcher) = crate::daemon_reconnect::daemon_launcher() {
+                                let notes_tx = notes_tx.clone();
+                                // Off the loop: the launch spawns a process and waits for its
+                                // socket; the driver's own polling finds the daemon.
+                                tokio::spawn(async move {
+                                    if let Err(error) = launcher.ensure_running().await {
+                                        let _ = notes_tx.send(format!(
+                                            "the daemon could not be started: {error}"
+                                        ));
+                                    }
+                                });
+                            }
+                        }
                     }
                     Err(_) => {
                         // The attempt leg was dropped: the next tick re-arms.

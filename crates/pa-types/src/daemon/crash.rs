@@ -125,7 +125,11 @@ mod tests {
             "location": "src/a.rs:1:2", "thread": "session-abc", "at": "2026-01-01T00:00:00.000Z",
         }));
         assert_eq!(
-            (row, event, SessionFaultEvent::from_event(&json!({ "type": "turn_end" }))),
+            (
+                row,
+                event,
+                SessionFaultEvent::from_event(&json!({ "type": "turn_end" }))
+            ),
             (
                 fault.clone(),
                 Some(SessionFaultEvent::SessionCrashed(fault)),

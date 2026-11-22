@@ -651,6 +651,7 @@ impl Supervisor {
         command: &DaemonCommand,
         client_id: String,
     ) -> Result<Value> {
+        self.wait_for_boot_revival().await;
         // The per-file open single-flight: a concurrent open waits behind this one and then
         // reuses the worker it launched (both launches would race the session lease).
         let opening_guard = self.opening_guard(command).await?;

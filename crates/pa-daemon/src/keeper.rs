@@ -266,7 +266,10 @@ async fn keep(options: &KeeperOptions) -> anyhow::Result<i32> {
                         );
                     }
                 };
-                (pid, status.map_err(|error| format!("wait for the daemon: {error}")))
+                (
+                    pid,
+                    status.map_err(|error| format!("wait for the daemon: {error}")),
+                )
             }
             Err(error) => (
                 0,
