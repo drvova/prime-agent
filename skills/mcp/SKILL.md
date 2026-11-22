@@ -76,12 +76,9 @@ exact (financial figures, generated rows), keep the payload in code:
 
 ```scheme
 ;; /tmp/updates.json was written by code, never typed by the model.
-;; open-output-file creates the result file and raises when it already exists.
 (define args (string->jsexpr (hash-ref (bash "cat /tmp/updates.json") 'output)))
 (define result (mcp-call-tool "sheets" "update_spreadsheet" args))
-(let ([port (open-output-file "/tmp/updates.result.json")])
-  (write-string (value->jsexpr-string result) port)
-  (close-output-port port))
+(fs-write "/tmp/updates.result.json" (value->jsexpr-string result))
 (displayln (length (hash-ref args 'requests)))
 ```
 
