@@ -463,7 +463,8 @@ fn same_socket_supervisor_targets(socket_path: &Path) -> Vec<ReapTarget> {
     let socket = normalize_socket_spelling(socket_path);
     let mut targets = Vec::new();
     for pid in numeric_proc_entries() {
-        if pid == std::process::id() {
+        // This daemon's restart owner runs the same command line; it is not a predecessor.
+        if pid == std::process::id() || Some(pid) == crate::keeper::keeper_pid() {
             continue;
         }
         // Identity-first capture, as the worker census.

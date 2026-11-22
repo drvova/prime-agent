@@ -39,6 +39,19 @@ pub(super) fn force_kill_daemon(pid: u32) -> bool {
     }
 }
 
+/// Tell the daemon's restart owner, before a kill, that this stop is deliberate: a killed
+/// daemon is otherwise started again. A daemon that took the shutdown request recorded the
+/// intent itself; this covers the one that never answered. The kill proceeds either way.
+pub(super) fn mark_deliberate_stop(socket_path: &Path) {
+    if let Err(error) =
+        pa_daemon::keeper::record_stop_intent(&crate::config::get_agent_dir(), socket_path)
+    {
+        eprintln!(
+            "Warning: could not record the stop for the daemon's restart owner ({error:#}); the daemon may be started again."
+        );
+    }
+}
+
 pub(super) fn kill_daemon(pid: u32) {
     if pid > 0 {
         let _ = kill_pid(pid as i32, Signal::Term);
@@ -159,6 +172,7 @@ pub(super) fn terminate_verified_residuals(
                 continue;
             }
             let already_reported = handled_pids.contains(&listener.pid);
+            mark_deliberate_stop(&listener.socket_path);
             if terminate_verified_listener(listener) && !already_reported {
                 stopped.push((
                     listener.socket_path.display().to_string(),

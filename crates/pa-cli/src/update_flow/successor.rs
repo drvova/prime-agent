@@ -59,6 +59,10 @@ pub fn spawn_supervisor(
     if let Some(roster_path) = roster_path {
         command.env(UPDATE_ROSTER_ENV, roster_path);
     }
+    // The successor runs under its own restart owner (see `pa_daemon::keeper`); a rollback
+    // binary that predates the owner ignores the variable and runs unkept.
+    #[cfg(unix)]
+    command.env(pa_daemon::keeper::KEEPER_ENV, "1");
     #[cfg(unix)]
     pa_core::platform::process::set_new_session(&mut command);
     #[cfg(not(unix))]

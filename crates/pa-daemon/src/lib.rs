@@ -59,6 +59,7 @@ mod idle_eviction;
 pub(crate) mod image_route;
 pub mod input_pause_lease;
 pub mod journal;
+pub mod keeper;
 pub mod lease;
 pub mod mcp_connections;
 pub mod mcp_login;

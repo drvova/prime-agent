@@ -14,7 +14,8 @@ use serde::Serialize;
 
 use super::format::{print_reap_report, print_shutdown_report};
 use super::kill::{
-    force_kill_daemon, force_stop_tracked_workers, kill_daemon, remove_socket_file,
+    force_kill_daemon, force_stop_tracked_workers, kill_daemon, mark_deliberate_stop,
+    remove_socket_file,
     terminate_verified_residuals,
 };
 use super::plan::{
@@ -77,6 +78,7 @@ pub(crate) fn run_reap(json: bool, root: &DaemonStateRoot) -> i32 {
                         &mut skipped,
                     );
                 } else {
+                    mark_deliberate_stop(&action.daemon.socket_path);
                     kill_daemon(pid.unwrap_or(0));
                     remove_socket_file(&action.daemon.socket_path);
                     reaped.push((
@@ -378,6 +380,7 @@ fn verified_force_kill(
     success_action: String,
     handled_pids: &mut std::collections::HashSet<u32>,
 ) -> StopOutcome {
+    mark_deliberate_stop(socket_path);
     if !force_kill_daemon(pid) {
         return StopOutcome::Skipped(format!(
             "could not safely stop daemon (pid {pid}); it survived SIGKILL"
