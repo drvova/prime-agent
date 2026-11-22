@@ -1,7 +1,14 @@
-//! Per-worker stderr capture for spawn diagnostics: each worker's stderr goes
-//! to a per-worker log under the daemon's logs dir, a bounded tail rides the
-//! not-ready launch errors, and the spawn-time prune keeps only the newest
-//! [`RETAINED_FILES`] logs.
+//! Per-session logs. When every session was a worker process its stderr went
+//! to a per-worker file; hosted sessions share the daemon's stderr, so the
+//! lines a session's code logs are routed here instead: [`line`] writes each
+//! one, tagged with the session, to that session's own log under the daemon's
+//! logs dir (the sink is a slot of the session's scope, opened on the
+//! session's first line). This crate's `eprintln!` is that function (see
+//! `lib.rs`), so session code logs exactly as it did; code outside any
+//! session still reaches the daemon's stderr.
+//!
+//! A bounded tail of the log rides a launch failure to the client, and
+//! opening a log prunes the directory to the newest [`RETAINED_FILES`].
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
@@ -20,10 +27,92 @@ const RETAINED_FILES: usize = 64;
 /// cannot unlink another launch's fresh log.
 const PRUNE_PROTECTION_SECS: u64 = 120;
 
-/// The worker's stderr log: `worker-<id>.stderr.log` under the
-/// daemon's logs dir.
+/// A session log past this size starts over when a lifetime of its session
+/// opens it.
+const MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
+
+/// The session's log: `worker-<id>.stderr.log` under the daemon's logs dir
+/// (the name per-worker logs always had).
 pub(crate) fn log_path(agent_dir: &Path, worker_id: &str) -> PathBuf {
     crate::paths::logs_dir(agent_dir).join(format!("worker-{worker_id}.stderr.log"))
+}
+
+/// One hosted session lifetime's log sink (a slot of its scope). `None` when
+/// the log could not be opened: the session's lines then go to the daemon's
+/// stderr, still tagged.
+struct SessionLog(Option<std::sync::Mutex<File>>);
+
+/// Open a session's log for appending, creating it and the logs dir, and
+/// prune the directory's older session logs.
+fn open_log(path: &Path) -> std::io::Result<File> {
+    if let Some(logs_dir) = path.parent() {
+        std::fs::create_dir_all(logs_dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).append(true);
+    pa_core::platform::perms::set_private_mode(&mut options);
+    let file = options.open(path)?;
+    if file.metadata()?.len() > MAX_LOG_BYTES {
+        file.set_len(0)?;
+    }
+    if let Some(logs_dir) = path.parent() {
+        prune_retained(logs_dir, path, |name| {
+            name.starts_with("worker-") && name.ends_with(".stderr.log")
+        });
+    }
+    Ok(file)
+}
+
+/// Log one line from wherever the caller runs: inside a hosted session, to
+/// that session's own log, tagged with the time and the session; anywhere
+/// else, to the daemon's stderr. This is what `eprintln!` means in this crate.
+pub(crate) fn line(message: std::fmt::Arguments<'_>) {
+    use std::io::Write as _;
+    let Some(scope) = pa_types::session_scope::current() else {
+        std::eprintln!("{message}");
+        return;
+    };
+    // Resolved before the slot is taken: the scope answers both.
+    let agent_dir = crate::paths::agent_dir();
+    let log = scope.slot_or_insert_with(|| {
+        SessionLog(
+            agent_dir
+                .ok()
+                .and_then(|agent_dir| open_log(&log_path(&agent_dir, scope.id())).ok())
+                .map(std::sync::Mutex::new),
+        )
+    });
+    let tagged = format!(
+        "{} [session {}] {message}\n",
+        crate::util::now_iso(),
+        scope.id()
+    );
+    let written = log.0.as_ref().is_some_and(|file| {
+        file.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .write_all(tagged.as_bytes())
+            .is_ok()
+    });
+    if !written {
+        std::eprint!("{tagged}");
+    }
+}
+
+/// Append the reason a session never came up to that session's log, from
+/// outside the session (it is gone): the launch failure's tail then carries
+/// it even when the session logged nothing itself.
+pub(crate) fn append_launch_failure(agent_dir: &Path, worker_id: &str, reason: &str) {
+    use std::io::Write as _;
+    let appended = open_log(&log_path(agent_dir, worker_id)).and_then(|mut file| {
+        writeln!(
+            file,
+            "{} [session {worker_id}] Error: {reason}",
+            crate::util::now_iso()
+        )
+    });
+    if let Err(error) = appended {
+        std::eprintln!("session {worker_id}: its log could not be written ({error}): {reason}");
+    }
 }
 
 /// Keep only the newest [`RETAINED_FILES`] matching logs: worker ids are

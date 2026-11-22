@@ -731,16 +731,31 @@ impl Supervisor {
             // configuration, a socket it could not bind).
             let ended = child.session.ended();
             let _ = child.kill().await;
-            return Err(match ended {
+            // The failure names the session first, then why, then what the session logged
+            // on its way down: the reason is appended to the session's own log so that tail
+            // always holds it.
+            let reason = match ended {
                 Some(crate::session_host::HostedExit::Ended(Some(reason))) => {
-                    error.context(format!("the session ended before it was ready: {reason}"))
+                    Some(format!("ended before it was ready: {reason}"))
                 }
-                Some(crate::session_host::HostedExit::Crashed(crash)) => error.context(format!(
-                    "the session crashed before it was ready: {} ({})",
+                Some(crate::session_host::HostedExit::Crashed(crash)) => Some(format!(
+                    "crashed before it was ready: {} ({})",
                     crash.message, crash.location
                 )),
-                Some(crate::session_host::HostedExit::Ended(None)) | None => error,
-            });
+                Some(crate::session_host::HostedExit::Ended(None)) | None => None,
+            };
+            let Some(reason) = reason else {
+                return Err(error);
+            };
+            crate::worker_stderr::append_launch_failure(
+                &self.options.agent_dir,
+                &resident.worker_id,
+                &reason,
+            );
+            return Err(crate::worker_stderr::not_ready_with_tail(
+                anyhow!("session worker {} {reason}", resident.worker_id),
+                &crate::worker_stderr::log_path(&self.options.agent_dir, &resident.worker_id),
+            ));
         }
         Ok(child)
     }
