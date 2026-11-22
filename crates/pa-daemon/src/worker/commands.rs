@@ -134,7 +134,7 @@ impl Worker {
                 response_success(None, "abort_branch_summary", None)
             }
             "export_html" => self.exports.export_html(payload).await,
-            "export_jsonl" => self.exports.export_jsonl(payload),
+            "export_jsonl" => self.exports.export_jsonl(payload).await,
             "mutate_queued_message" => self.handle_mutate_queued_message(payload),
             "resume_queue" => self.handle_resume_queue(),
             "factory_activity" => self.handle_factory_activity(payload).await,

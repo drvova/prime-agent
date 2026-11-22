@@ -246,6 +246,8 @@ fn scripted_session(
         "create-1",
         &json!({
             "type": "create",
+            // The export of these sessions holds their state: see `freeze`.
+            "launchEnv": { "PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION": "1" },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": agent_dir.join("sessions").to_string_lossy(),
@@ -927,6 +929,8 @@ fn create_scripted_session(
         format!("create-{suffix}").as_str(),
         &json!({
             "type": "create",
+            // The export of these sessions holds their state: see `freeze`.
+            "launchEnv": { "PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION": "1" },
             "config": {
                 "cwd": dir.to_string_lossy(),
                 "sessionDir": agent_dir.join("sessions").to_string_lossy(),
@@ -993,9 +997,11 @@ fn fill_transcript(client: &mut Client, session_id: &str) {
 }
 
 /// Freeze a hosted session (what SIGSTOP was to a worker process): it exports its
-/// transcript into a named pipe nobody drains. The export writes under the session's
-/// state lock, so every command that needs that state — the catalog reads among them —
-/// waits behind it until [`thaw`]. Returns the pipe's read end.
+/// transcript into a named pipe nobody drains. These sessions are created with the
+/// test seam that makes the export write under the session's state lock
+/// (`PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION`, debug builds only), so every command that
+/// needs that state — the catalog reads among them — waits behind it until [`thaw`].
+/// Returns the pipe's read end.
 fn freeze(
     client: &mut Client,
     dir: &std::path::Path,

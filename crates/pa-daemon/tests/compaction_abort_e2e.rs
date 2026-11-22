@@ -685,6 +685,8 @@ fn wedged_session_abort_acks_immediately_and_declares_terminal() {
         "c1",
         &json!({
             "type": "create",
+            // The export of this session holds its state: the wedge below.
+            "launchEnv": { "PRIME_AGENT_TEST_EXPORT_HOLDS_SESSION": "1" },
             "config": {
                 "cwd": dir.path().to_string_lossy(),
                 "sessionDir": session_dir.to_string_lossy(),
@@ -752,8 +754,9 @@ fn wedged_session_abort_acks_immediately_and_declares_terminal() {
     let attached2 = second.read_response("a2");
     assert_eq!(attached2["success"], true, "second attach: {attached2}");
     // The wedge (what SIGSTOP was to a worker process): the session exports its transcript
-    // into a named pipe nobody drains. The export writes under the session's state lock,
-    // so the compaction run cannot settle its own abort — it needs that lock to end.
+    // into a named pipe nobody drains. The session was created with the test seam that
+    // makes the export write under the session's state lock, so the compaction run
+    // cannot settle its own abort — it needs that lock to end.
     let pipe = dir.path().join("wedge.pipe");
     assert!(
         Command::new("mkfifo")
