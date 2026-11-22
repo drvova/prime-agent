@@ -350,9 +350,6 @@
 #%box
 #%closure->boxed-function
 #%const-list
-#%debug-syntax->exprkind
-#%default-error-port
-#%default-output-port
 #%display
 #%environment-length
 #%error
@@ -368,13 +365,11 @@
 #%global-will-executor
 #%iterator-finished
 #%list-sort
-#%lookup-doc
 #%macro-case-bindings
 #%match-syntax-case
 #%module
 #%module-add
 #%module-add-doc
-#%native-fn-ptr-doc
 #%native-fn-ptr-doc->string
 #%path->source-id
 #%peek-byte
@@ -384,9 +379,6 @@
 #%prim.#%box
 #%prim.#%closure->boxed-function
 #%prim.#%const-list
-#%prim.#%debug-syntax->exprkind
-#%prim.#%default-error-port
-#%prim.#%default-output-port
 #%prim.#%environment-length
 #%prim.#%expand
 #%prim.#%expand-syntax-case
@@ -398,10 +390,8 @@
 #%prim.#%gc-collect
 #%prim.#%iterator-finished
 #%prim.#%list-sort
-#%prim.#%lookup-doc
 #%prim.#%macro-case-bindings
 #%prim.#%match-syntax-case
-#%prim.#%native-fn-ptr-doc
 #%prim.#%native-fn-ptr-doc->string
 #%prim.#%path->source-id
 #%prim.#%peek-byte
@@ -548,11 +538,9 @@
 #%prim.current-module-relative
 #%prim.current-os!
 #%prim.current-thread-id
-#%prim.debug-globals
 #%prim.denominator
 #%prim.disconnected-channel-object?
 #%prim.dropping
-#%prim.dump-profiler
 #%prim.emit-expanded
 #%prim.empty-channel-object?
 #%prim.empty-stream
@@ -653,7 +641,6 @@
 #%prim.inexact?
 #%prim.infinite?
 #%prim.input-port?
-#%prim.inspect
 #%prim.int->string
 #%prim.int?
 #%prim.integer->char
@@ -778,7 +765,6 @@
 #%prim.sqrt
 #%prim.square
 #%prim.starts-with?
-#%prim.stdout-simple-displayln
 #%prim.steel-home-location
 #%prim.stream-car
 #%prim.stream-cons
@@ -916,7 +902,6 @@
 #%private/steel/primitives %proto-hash%
 #%private/steel/primitives %proto-hash-get%
 #%private/steel/primitives %proto-hash-insert%
-#%private/steel/primitives %string->render-markdown
 #%private/steel/primitives error
 #%private/steel/primitives error!
 #%private/steel/primitives std::env::args
@@ -1008,7 +993,6 @@
 %proto-hash%
 %proto-hash-get%
 %proto-hash-insert%
-%string->render-markdown
 *
 *abort
 *meta-continuation*
@@ -1204,7 +1188,6 @@ current-second
 current-thread-id
 curry
 curry2
-debug-globals
 denominator
 disconnected-channel-object?
 display
@@ -1212,7 +1195,6 @@ displayln
 drop
 drop__doc__
 dropping
-dump-profiler
 duration->micros
 duration->millis
 duration->nanos
@@ -1339,7 +1321,6 @@ inexact->exact
 inexact?
 infinite?
 input-port?
-inspect
 instant/elapsed
 instant/now
 int->string
@@ -1521,15 +1502,11 @@ sqrt
 square
 starts-with?
 std::env::args
-stdout-simple-displayln
 steel-home-location
 steel/base #%black-box
 steel/base #%box
 steel/base #%closure->boxed-function
 steel/base #%const-list
-steel/base #%debug-syntax->exprkind
-steel/base #%default-error-port
-steel/base #%default-output-port
 steel/base #%environment-length
 steel/base #%expand
 steel/base #%expand-syntax-case
@@ -1541,10 +1518,8 @@ steel/base #%function-ptr-table-get
 steel/base #%gc-collect
 steel/base #%iterator-finished
 steel/base #%list-sort
-steel/base #%lookup-doc
 steel/base #%macro-case-bindings
 steel/base #%match-syntax-case
-steel/base #%native-fn-ptr-doc
 steel/base #%native-fn-ptr-doc->string
 steel/base #%path->source-id
 steel/base #%peek-byte
@@ -1694,11 +1669,9 @@ steel/base current-module-relative
 steel/base current-os!
 steel/base current-second
 steel/base current-thread-id
-steel/base debug-globals
 steel/base denominator
 steel/base disconnected-channel-object?
 steel/base dropping
-steel/base dump-profiler
 steel/base duration->micros
 steel/base duration->millis
 steel/base duration->nanos
@@ -1796,7 +1769,6 @@ steel/base inexact->exact
 steel/base inexact?
 steel/base infinite?
 steel/base input-port?
-steel/base inspect
 steel/base instant/elapsed
 steel/base instant/now
 steel/base int->string
@@ -1929,7 +1901,6 @@ steel/base split-whitespace
 steel/base sqrt
 steel/base square
 steel/base starts-with?
-steel/base stdout-simple-displayln
 steel/base steel-home-location
 steel/base stream-car
 steel/base stream-cons
@@ -2148,7 +2119,6 @@ steel/immutable-vectors vector-append
 steel/immutable-vectors vector-copy
 steel/immutable-vectors vector-immutable
 steel/immutable-vectors vector-push-front
-steel/io stdout-simple-displayln
 steel/json string->jsexpr
 steel/json value->jsexpr-string
 steel/lists #%const-list
@@ -2200,10 +2170,8 @@ steel/meta #%function-ptr-table-add
 steel/meta #%function-ptr-table-get
 steel/meta #%gc-collect
 steel/meta #%iterator-finished
-steel/meta #%lookup-doc
 steel/meta #%macro-case-bindings
 steel/meta #%match-syntax-case
-steel/meta #%native-fn-ptr-doc
 steel/meta #%native-fn-ptr-doc->string
 steel/meta #%pop-module-context
 steel/meta #%private-cycle-collector
@@ -2234,8 +2202,6 @@ steel/meta current-function-span
 steel/meta current-module
 steel/meta current-module-relative
 steel/meta current-os!
-steel/meta debug-globals
-steel/meta dump-profiler
 steel/meta emit-expanded
 steel/meta error-object-message
 steel/meta error-with-span
@@ -2248,7 +2214,6 @@ steel/meta function-arity
 steel/meta function-name
 steel/meta get-contract-struct
 steel/meta get-test-mode
-steel/meta inspect
 steel/meta iter-next!
 steel/meta make-callstack-profiler
 steel/meta make-struct-type
@@ -2341,8 +2306,6 @@ steel/ord <
 steel/ord <=
 steel/ord >
 steel/ord >=
-steel/ports #%default-error-port
-steel/ports #%default-output-port
 steel/ports #%file-input-port?
 steel/ports #%peek-byte
 steel/ports #%peek-char
@@ -2465,7 +2428,6 @@ steel/strings utf8-length
 steel/symbols concat-symbols
 steel/symbols symbol->string
 steel/symbols symbol=?
-steel/syntax #%debug-syntax->exprkind
 steel/syntax #%path->source-id
 steel/syntax #%syntax/raw
 steel/syntax span-file-id

@@ -97,6 +97,16 @@ async fn a_cell_reaches_files_and_processes_only_through_the_kernel_functions() 
         "(maybe-get-env-var \"HOME\")".to_string(),
         "(set-env-var! \"PA_CONFINEMENT_TEST\" \"1\")".to_string(),
         "(write-string \"x\" (stdout))".to_string(),
+        "(write-string \"x\" (#%default-output-port))".to_string(),
+        "(write-string \"x\" (#%default-error-port))".to_string(),
+        "(write-string \"x\" (#%prim.#%default-output-port))".to_string(),
+        // Builtins that print with the process's own `print!`.
+        "(stdout-simple-displayln \"x\")".to_string(),
+        "(%string->render-markdown \"x\")".to_string(),
+        "(inspect car)".to_string(),
+        "(debug-globals)".to_string(),
+        "(#%lookup-doc car)".to_string(),
+        "(#%native-fn-ptr-doc car)".to_string(),
         "(read-line (stdin))".to_string(),
     ] {
         if cell(&provisioner, &attempt).await.is_ok() {

@@ -227,8 +227,12 @@ impl SkillLoader {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut unavailable: UnavailableSchemeSkills = Vec::new();
-        // What a source displays while loading belongs to no cell.
-        let captured = engine.run("(current-output-port (open-output-string))");
+        // What a source displays while loading belongs to no cell: it goes
+        // to a port nothing reads (never the process's standard output), and
+        // the next cell installs its own as every cell does.
+        if let Err(error) = engine.run("(current-output-port (open-output-string))") {
+            tracing::warn!("the skill loader's output port could not be replaced: {error}");
+        }
         for skill in sources() {
             for path in crate::skills::scheme_source_files(&skill.dir) {
                 let shown = path
@@ -292,11 +296,6 @@ impl SkillLoader {
                     break;
                 }
             }
-        }
-        if captured.is_ok() {
-            // Restored only if it was replaced; a failure here leaves the
-            // next cell to install its own port as every cell does.
-            let _restored = engine.run("(current-output-port (#%default-output-port))");
         }
         let changed = {
             let mut current = self

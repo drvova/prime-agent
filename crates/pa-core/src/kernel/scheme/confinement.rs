@@ -20,7 +20,9 @@
 //! - `(require "file.scm")` finds no file: [`NoSourceFiles`] answers for
 //!   every module name Steel does not embed.
 //!
-//! What stays open: `display` and the string ports its capture uses, `eval`
+//! What stays open: `display` and the string ports its capture uses (the
+//! builtins that print past every port, and the process's standard output
+//! and error ports, are closed), `eval`
 //! (it compiles in the same closed engine), time, and the pure library. The
 //! builtins that wait where no interrupt reaches are closed too, and
 //! `time/sleep-ms` is replaced by one that ends with its cell
@@ -52,7 +54,7 @@ const CLOSED_MODULES: [&str; 7] = [
 /// Functions closed inside modules that otherwise stay: engines without
 /// these limits, loading and running files, the process's environment, and
 /// its standard streams.
-const CLOSED_FUNCTIONS: [&str; 37] = [
+const CLOSED_FUNCTIONS: [&str; 47] = [
     // Steel's debugger stop, and the value (de)serialization its threads
     // use: a cell has no use for either, and the second reads bytes a cell
     // made up as Steel's own structures.
@@ -74,8 +76,24 @@ const CLOSED_FUNCTIONS: [&str; 37] = [
     "futures-join-all",
     "join!",
     "poll!",
-    // The process's own standard input: a cell's input port is an empty one.
+    // The process's own standard streams: a cell's input port is an empty
+    // one, and its output and error ports are its own. In a daemon these
+    // are the daemon's log, shared by every session; in the headless modes
+    // standard output is the protocol stream.
     "#%default-input-port",
+    "#%default-output-port",
+    "#%default-error-port",
+    // Each of these prints with the process's `print!`, past every port:
+    // Steel's port-less display, its documentation and markdown printers,
+    // and its debugging dumps.
+    "stdout-simple-displayln",
+    "%string->render-markdown",
+    "#%lookup-doc",
+    "#%native-fn-ptr-doc",
+    "inspect",
+    "debug-globals",
+    "dump-profiler",
+    "#%debug-syntax->exprkind",
     // Builds a native library with cargo.
     "#%build-dylib",
     // A thread a cell starts would run outside the cell's cancellation and
@@ -226,6 +244,12 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
         }
     }
     engine.register_source_module_resolver(NoSourceFiles);
+    // A new engine's current ports are the process's standard streams. Every
+    // cell installs its own, but nothing run on the engine before or between
+    // cells (a skill's source as it loads) may hold the process's either.
+    engine
+        .run("(current-output-port (open-output-string)) (current-error-port (open-output-string))")
+        .map_err(|error| anyhow::anyhow!("the engine's ports could not be replaced: {error}"))?;
     Ok(engine)
 }
 
