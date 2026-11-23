@@ -880,6 +880,15 @@ impl SessionUi {
                 .await;
             return Ok(());
         }
+        if view
+            .editor
+            .keybindings()
+            .matches(&id, "app.model.cycleRecent")
+        {
+            self.cycle_recent_model(view).await;
+            self.dirty = true;
+            return Ok(());
+        }
         // The thinking cycle (oh-my-pi's Shift+Tab): every surface that owns Shift+Tab (the
         // settings menu's tab strip, the pickers and panels) took the key above, and the
         // completion dropdown has no Shift+Tab, so the composer is the only place it lands.
@@ -1274,6 +1283,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.model.select")
         || kb.matches(id, "app.model.cycleForward")
         || kb.matches(id, "app.model.cycleBackward")
+        || kb.matches(id, "app.model.cycleRecent")
         || kb.matches(id, "app.thinking.cycle")
         || kb.matches(id, "app.tools.expand")
         || kb.matches(id, "app.subagents.focus")

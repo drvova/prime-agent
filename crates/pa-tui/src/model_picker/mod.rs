@@ -170,6 +170,8 @@ pub struct ModelPickerSummary {
 }
 
 #[cfg(test)]
+mod frame_tests;
+#[cfg(test)]
 mod tests;
 
 /// Effort-column layout for the visible window (TS `EffortLayout`).
@@ -606,6 +608,21 @@ impl ModelPicker {
             .unwrap_or(0)
     }
 
+    /// Whether the highlighted model sits in the grouped view's recent group (the `recent_pick`
+    /// adoption report).
+    #[must_use]
+    pub(crate) fn selected_in_recent_group(&self) -> bool {
+        let selected = self.selected_row();
+        self.rows[..selected.min(self.rows.len())]
+            .iter()
+            .rev()
+            .find_map(|row| match row {
+                ListRow::Header { label, .. } => Some(label == rows::RECENT_HEADER),
+                ListRow::Model(_) => None,
+            })
+            .unwrap_or(false)
+    }
+
     pub(crate) fn display_rows(&self) -> &[ListRow] {
         &self.rows
     }
@@ -629,6 +646,11 @@ impl ModelPicker {
     /// keeps the selection; a click lands the user in the list, so arrows adjust the clicked row's
     /// effort.
     pub(crate) fn select_display_row(&mut self, row: usize) {
+        // The action menu and the details view cover the list: a click there picks no list row.
+        match self.view {
+            PickerView::List => {}
+            PickerView::Actions { .. } | PickerView::Details { .. } => return,
+        }
         if let Some(ListRow::Model(position)) = self.rows.get(row) {
             self.selected = *position;
             self.navigated_into_list = true;
@@ -854,19 +876,23 @@ impl ModelPicker {
 
     /// Switch to `model` with its user-edited effort (if any).
     fn apply(&self, model: &Model) -> ModelPickerAction {
-        let key = Self::model_key_provider(&model.provider, &model.id);
-        let effort = if self.edited_effort.contains(&key) {
-            self.effort_levels
-                .get(&key)
-                .map(|level| level.wire_name().to_string())
-        } else {
-            None
-        };
         ModelPickerAction::Apply(Box::new(ModelSelectionApplied {
             provider: model.provider.clone(),
             model_id: model.id.clone(),
-            effort,
+            effort: self
+                .edited_effort(model)
+                .map(|level| level.wire_name().to_string()),
         }))
+    }
+
+    /// The effort the user set on `model` in this run (Enter applies it with the switch); `None`
+    /// while the model keeps its seeded effort.
+    pub(crate) fn edited_effort(&self, model: &Model) -> Option<ModelThinkingLevel> {
+        let key = Self::model_key_provider(&model.provider, &model.id);
+        if !self.edited_effort.contains(&key) {
+            return None;
+        }
+        self.effort_levels.get(&key).copied()
     }
 
     /// The selectable effort levels of a model; an off-only model has none.
@@ -980,8 +1006,6 @@ impl ModelPicker {
         width: usize,
         trailing_width: usize,
     ) -> EffortLayout {
-        /// Wide detail columns must fit "Cached input".
-        const EFFORT_NAME_COLUMN_MAX: usize = 30;
         const EFFORT_NAME_COLUMN_MIN: usize = 12;
         const ARROWS_AND_GAPS: usize = 6;
 
@@ -1069,6 +1093,10 @@ impl ModelPicker {
         empty
     }
 }
+
+/// The widest name column the effort cluster sits after (wide detail columns must fit "Cached
+/// input").
+pub(crate) const EFFORT_NAME_COLUMN_MAX: usize = 30;
 
 /// The current-model mark's cell before each row's name (`● `).
 pub(crate) const MARK_WIDTH: usize = 2;

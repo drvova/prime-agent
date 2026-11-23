@@ -251,7 +251,7 @@ fn favoriting_moves_a_model_to_the_top_group() {
         "  Alt+O sort: recent  Alt+1 provider: all  Alt+2 billing: any  Alt+3 caps: any  Alt+4 ctx: any".to_string(),
         "  favorites                                                                                                            \u{2588}".to_string(),
         "\u{203a} \u{2605} Claude Haiku 5                                 \u{2190} \u{25a0}     \u{2192} high                         \u{25c9}\u{25c6}\u{192}  200k  plan       5h 42% \u{2588}".to_string(),
-        "  recent                                                                                                               \u{2588}".to_string(),
+        "  recent \u{b7} F2 cycles                                                                                                   \u{2588}".to_string(),
         "  \u{25cf} Claude Fable 5                                   \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1}   medium                       \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}".to_string(),
         "    GLM 5.3                                          \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium                       \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}".to_string(),
         "  local-llm                                                                                                            \u{2502}".to_string(),

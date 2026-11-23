@@ -175,6 +175,15 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         search: TranscriptSearchReport,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A recent-model action was used, the first time in a run for each action (event `tui
+    /// model recent used`): `action` is `cycle` (the composer's recent-model key switched),
+    /// `cycle_none` (the key found no other recent model), or `recent_pick` (the picker applied
+    /// a model from its recent group). Never a model or a provider. Implementations return at
+    /// once: the key path spawns it and never waits.
+    fn model_recent_used(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The unfocused terminal was signalled that the agent stopped for the user, the first time
     /// per reason in a run (event `tui unfocused signal`): `reason` is `turn_end` / `question`,
     /// `mode` the `terminal.notifyOnTurnEnd` value that chose the signal (`bell` /

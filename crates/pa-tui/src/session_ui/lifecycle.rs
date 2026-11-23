@@ -80,6 +80,8 @@ impl SessionUi {
             model_accounts: std::collections::BTreeMap::new(),
             model_account_choices: std::collections::BTreeMap::new(),
             model_recent_models: options.model_recent_models.clone(),
+            recent_cycle: None,
+            recent_model_reported: Vec::new(),
             model_favorite_models: options
                 .client_settings
                 .as_ref()

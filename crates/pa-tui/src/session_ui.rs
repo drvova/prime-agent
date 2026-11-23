@@ -18,6 +18,7 @@ mod notes;
 mod panels;
 mod prompt;
 mod queue;
+mod recent_models;
 mod sessions_fork;
 mod settings;
 mod share;
@@ -49,6 +50,8 @@ pub(crate) use panels::ActivityUpdates;
 use prompt::PromptOrder;
 pub(crate) use prompt::PromptSubmitNote;
 pub(crate) use prompt::SubmitBehavior;
+#[cfg(test)]
+pub(crate) use recent_models::report_recent_model_used;
 use sessions_fork::{create_session, terminal_columns};
 use settings::PendingConfirm;
 pub(crate) use settings::ReloadNote;
@@ -203,6 +206,10 @@ pub(crate) struct SessionUi {
         std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
+    /// The composer's recent-model cycle run, while consecutive presses walk the list.
+    recent_cycle: Option<recent_models::RecentCycle>,
+    /// The recent-model actions already reported this run (one report per action).
+    recent_model_reported: Vec<&'static str>,
     /// The settings favorite-model list (`provider/id` keys, in the order they were added), read
     /// once when the UI starts and kept in step with each toggle the picker persists.
     model_favorite_models: Vec<String>,

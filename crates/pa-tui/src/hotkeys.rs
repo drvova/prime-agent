@@ -57,6 +57,18 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let interrupt = key_display(kb, "app.interrupt");
     let exit = key_display(kb, "app.exit");
     let select_model = key_display(kb, "app.model.select");
+    let cycle_recent_model = key_display(kb, "app.model.cycleRecent");
+    let model_actions = key_display(kb, "app.model.actions");
+    let model_sort = key_display(kb, "app.model.sort");
+    let model_filters = [
+        "app.model.filterProvider",
+        "app.model.filterBilling",
+        "app.model.filterCapability",
+        "app.model.filterContext",
+    ]
+    .map(|binding| key_display(kb, binding))
+    .join(" / ");
+    let model_scope = key_display(kb, "app.model.toggleScope");
     let cycle_thinking = key_display(kb, "app.thinking.cycle");
     let history_search = key_display(kb, "app.history.search");
     let expand_tools = key_display(kb, "app.tools.expand");
@@ -149,6 +161,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
         r"| `{exit}` | Exit (when editor is empty) |
 | `{suspend}` | Suspend to background |
 | `{select_model}` | Open model selector |
+| `{cycle_recent_model}` | Switch to the next recently used model |
 | `{cycle_thinking}` | Cycle thinking level |
 | `{history_search}` | Search prompt history |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
@@ -176,6 +189,15 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
 | mouse click on link | Open link in browser |
+
+**Model picker (`/model`)**
+| Key | Action |
+|-----|--------|
+| `{cursor_left}` / `{cursor_right}` | Change the highlighted model's effort |
+| `{model_actions}` | The highlighted model's actions (default, effort, favorite, details) |
+| `{model_sort}` | Cycle the sort (recent, name, price, context) |
+| `{model_filters}` | Cycle the provider / billing / capability / context filter |
+| `{model_scope}` | Switch between the scoped models and the catalog |
 
 **Usage page (`/usage`)**
 | Key | Action |

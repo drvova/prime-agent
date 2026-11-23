@@ -1536,6 +1536,19 @@ mod tests {
             Box::pin(std::future::pending())
         }
 
+        fn model_recent_used(
+            &self,
+            action: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([action, "model_recent", "", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
         fn unfocused_signal_sent(
             &self,
             reason: &'static str,
@@ -1594,6 +1607,25 @@ mod tests {
         assert_eq!(
             *telemetry.reports.lock().unwrap(),
             vec![["previous_prompt", "transcript_navigation", "", ""]]
+        );
+    }
+
+    /// The recent-model report is fire-and-forget: with a sink that never replies, the cycle
+    /// key's hand-off returns at once and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_recent_model_report_never_holds_the_key_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::session_ui::report_recent_model_used(Some(&hook), "cycle");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["cycle", "model_recent", "", ""]]
         );
     }
 

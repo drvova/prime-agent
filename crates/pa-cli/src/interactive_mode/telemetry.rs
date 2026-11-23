@@ -272,6 +272,23 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn model_recent_used(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui transcript navigation`: `tui exit` sits at the backend's 128-key
+        // cap. Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            client.track("tui model recent used", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.count("tui_selection_count");
         Box::pin(std::future::ready(()))
@@ -811,6 +828,30 @@ mod tests {
                     properties["history"],
                 ]),
                 serde_json::json!(["tui transcript search", "jumped", 3, true, "loaded_only"])
+            );
+        });
+    }
+
+    /// A recent-model report is a standalone event that keeps its catalogued enum.
+    #[test]
+    fn a_recent_model_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.model_recent_used("recent_pick"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![serde_json::json!([
+                    "tui model recent used",
+                    "recent_pick",
+                    null,
+                    null
+                ])]
             );
         });
     }

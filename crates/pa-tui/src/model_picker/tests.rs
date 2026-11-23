@@ -430,7 +430,7 @@ fn the_grouped_frame_at_120_columns() {
         " >  Search models",
         &rule(120),
         "  Alt+O sort: recent  Alt+1 provider: all  Alt+2 billing: any  Alt+3 caps: any  Alt+4 ctx: any",
-        "  recent                                                                                                               \u{2588}",
+        "  recent \u{b7} F2 cycles                                                                                                   \u{2588}",
         "\u{203a} \u{25cf} Claude Fable 5                                 \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium                       \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
         "    GLM 5.3                                          \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium                       \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
         "  anthropic                                                                                                            \u{2588}",
@@ -442,7 +442,7 @@ fn the_grouped_frame_at_120_columns() {
         "  Input                             Cached input                      Output                             $ / 1M tokens",
         "  $5                                $0                                $25",
         "",
-        "  enter switches to Claude Fable 5",
+        "  enter keeps Claude Fable 5 (current)",
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
@@ -457,8 +457,8 @@ fn the_grouped_frame_at_80_columns() {
         &rule(80),
         " >  Search models",
         &rule(80),
-        "  sort: recent  provider: all  billing: any  caps: any  ctx: any",
-        "  recent                                                                       \u{2588}",
+        "  Alt+O sort: recent  Alt+1 provider  Alt+2 billing  Alt+3 caps  Alt+4 ctx",
+        "  recent \u{b7} F2 cycles                                                           \u{2588}",
         "\u{203a} \u{25cf} Claude Fable 5             \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium   \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
         "    GLM 5.3                      \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium   \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
         "  anthropic                                                                    \u{2588}",
@@ -470,13 +470,14 @@ fn the_grouped_frame_at_80_columns() {
         "  Input                Cached input         Output                $ / 1M tokens",
         "  $5                   $0                   $25",
         "",
-        "  enter switches to Claude Fable 5",
+        "  enter keeps Claude Fable 5 (current)",
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
 }
 
-/// At 60 columns the effort label and the chips' tail give way; the names truncate.
+/// At 60 columns the chips' tail and the quota column give way, so the names stay whole beside
+/// the effort cluster.
 #[test]
 fn the_grouped_frame_at_60_columns() {
     let mut picker = ModelPicker::new(rich_options());
@@ -486,19 +487,19 @@ fn the_grouped_frame_at_60_columns() {
         " >  Search models",
         &rule(60),
         "  sort: recent  provider: all  billing: any  caps: any  ctx\u{2026}",
-        "  recent                                                   \u{2588}",
-        "\u{203a} \u{25cf} Claude Fable\u{2026} \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192}   \u{25c9}\u{25c6}\u{192}    1M  plan       5h 42% \u{2588}",
-        "    GLM 5.3         \u{25a0}\u{25a0}\u{25a1}\u{25a1}      \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2         \u{2588}",
+        "  recent \u{b7} F2 cycles                                       \u{2588}",
+        "\u{203a} \u{25cf} Claude Fable 5  \u{2190} \u{25a0}\u{25a0}\u{25a1}\u{25a1}\u{25a1} \u{2192} medium  \u{25c9}\u{25c6}\u{192}    1M  plan      \u{2588}",
+        "    GLM 5.3           \u{25a0}\u{25a0}\u{25a1}\u{25a1}    medium  \u{b7}\u{25c6}\u{192}  200k  $0.6/$2.2 \u{2588}",
         "  anthropic                                                \u{2588}",
-        "    Claude Haiku\u{2026}   \u{25a0}         \u{25c9}\u{25c6}\u{192}  200k  plan       5h 42% \u{2588}",
+        "    Claude Haiku 5    \u{25a0}       high    \u{25c9}\u{25c6}\u{192}  200k  plan      \u{2588}",
         "  local-llm                                                \u{2502}",
-        "    Llama 4 Local             \u{25c9}\u{b7}\u{192}  128k  free              \u{2502}",
+        "    Llama 4 Local                     \u{25c9}\u{b7}\u{192}  128k  free      \u{2502}",
         "  openrouter                                               \u{2502}",
         "",
         "  Input         Cached input  Output         $ / 1M tokens",
         "  $5            $0            $25",
         "",
-        "  enter switches to Claude Fable 5",
+        "  enter keeps Claude Fable 5 (current)",
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Esc close",
         "",
     ]);
@@ -535,7 +536,7 @@ fn the_plan_filter_and_price_sort_frame() {
         "  Input                       Cached input                Output                       $ / 1M tokens",
         "  $5                          $0                          $25",
         "",
-        "  enter switches to Claude Fable 5",
+        "  enter keeps Claude Fable 5 (current)",
         "  \u{2191}/\u{2193} model \u{b7} \u{2190}/\u{2192} effort \u{b7} Enter select \u{b7} Tab actions \u{b7} Alt+O sort \u{b7} Esc close",
         "",
     ]);
@@ -860,12 +861,9 @@ fn unconfigured_providers_head_a_sign_in_group_and_sort_last() {
     let headers: Vec<&str> = rows
         .iter()
         .map(String::as_str)
-        .filter(|row| *row == "  prime-inference" || *row == "  other \u{b7} require sign in")
+        .filter(|row| *row == "  prime-inference" || *row == "  other \u{b7} sign in")
         .collect();
-    assert_eq!(
-        headers,
-        vec!["  prime-inference", "  other \u{b7} require sign in"]
-    );
+    assert_eq!(headers, vec!["  prime-inference", "  other \u{b7} sign in"]);
 }
 
 #[test]

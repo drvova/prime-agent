@@ -166,13 +166,14 @@ pub(crate) struct RowColumns {
 }
 
 /// The sign-in column's text (and the unconfigured group header's suffix).
-pub(crate) const SIGN_IN_TEXT: &str = "require sign in";
+pub(crate) const SIGN_IN_TEXT: &str = "sign in";
 
 impl RowColumns {
     /// Size the columns for `models` at `row_width`. Columns join while they fit beside the
     /// narrowest name cell, in priority order: price, context, provider (flat views only: the
-    /// grouped view names the provider in its header), sign-in, the session's account (a
-    /// provider holding several credentials), capabilities, quota.
+    /// grouped view names the provider in its header; a flat view ranks it above the context and
+    /// the sorted-by column first), sign-in, the session's account (a provider holding several
+    /// credentials), capabilities, quota.
     pub(crate) fn fit(picker: &ModelPicker, models: &[&Model], row_width: usize) -> Self {
         let widest = |cell: &dyn Fn(&Model) -> String| {
             models
@@ -199,19 +200,41 @@ impl RowColumns {
             3,
             widest(&|model| picker.quota_label(model).unwrap_or_default().to_string()),
         ];
+        // A flat list names the provider first when two of its rows share a name (one model
+        // served by several providers lists once per provider: the rows must stay told apart),
+        // else keeps the column it is sorted by first and the provider before the context.
+        let shared_name = models
+            .iter()
+            .enumerate()
+            .any(|(index, model)| models[..index].iter().any(|other| other.name == model.name));
+        let order: [usize; 7] = match (flat, shared_name, picker.sort_key()) {
+            (true, true, SortKey::Context) => [2, 1, 0, 3, 4, 5, 6],
+            (true, true, SortKey::Recent | SortKey::Name | SortKey::Price) => [2, 0, 1, 3, 4, 5, 6],
+            (true, false, SortKey::Context) => [1, 0, 2, 3, 4, 5, 6],
+            (true, false, SortKey::Recent | SortKey::Name | SortKey::Price) => {
+                [0, 2, 1, 3, 4, 5, 6]
+            }
+            (
+                false,
+                true | false,
+                SortKey::Recent | SortKey::Name | SortKey::Price | SortKey::Context,
+            ) => [0, 1, 2, 3, 4, 5, 6],
+        };
         let budget = row_width.saturating_sub(2 + 2 + NAME_MIN_WIDTH);
         let mut kept = [0usize; 7];
         let mut used = 0usize;
-        for (slot, width) in wanted.iter().enumerate() {
-            if *width == 0 {
+        for slot in order {
+            let width = wanted[slot];
+            if width == 0 {
                 continue;
             }
+            // A column that does not fit leaves its room to the narrower ones after it.
             let cost = width + if used == 0 { 0 } else { COLUMN_GAP.len() };
             if used + cost > budget {
-                break;
+                continue;
             }
             used += cost;
-            kept[slot] = *width;
+            kept[slot] = width;
         }
         let [price_width, context_width, provider_width, sign_in_width, account_width, capabilities, quota_width] =
             kept;
@@ -224,6 +247,22 @@ impl RowColumns {
             sign_in_width,
             account_width,
         }
+    }
+
+    /// Give up the lowest-ranked extra column still shown (the quota, then the capability
+    /// glyphs, then the account), so a name the effort cluster would cut keeps its letters;
+    /// whether one was dropped.
+    pub(crate) fn drop_extra(&mut self) -> bool {
+        if self.quota_width > 0 {
+            self.quota_width = 0;
+        } else if self.capabilities {
+            self.capabilities = false;
+        } else if self.account_width > 0 {
+            self.account_width = 0;
+        } else {
+            return false;
+        }
+        true
     }
 
     /// One model's columns as one padded cell: capabilities, context (right-aligned), price,
