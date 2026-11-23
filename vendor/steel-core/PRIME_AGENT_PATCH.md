@@ -37,6 +37,24 @@ with it and `cell.rs` interrupts both.
 Drop it when upstream exposes the macro engine, or runs macro bodies with the
 outer engine's modules and controller.
 
+## `src/values/closed.rs`: backport of upstream `addcf6dd` (issue #735)
+
+"Visit shadowed globals that a live closure still calls", merged upstream on
+2026-11-11 and in no release yet. Once more than a hundred global slots are
+shadowed by redefinitions, Steel frees the ones nothing refers to. It kept a
+shadowed slot that a live closure calls, but never visited the function in
+that slot, so the globals that function calls were freed: a closure kept in
+a vector or a hash across redefinitions then called `#<void>`, or whatever
+was defined into the freed slot next. A session that redefines its functions
+cell after cell reaches this within a few dozen redefinitions (the test below
+failed from its 28th round on). The patch is the
+upstream change to this file, unmodified;
+`a_kept_closure_keeps_calling_what_it_was_compiled_against` in
+`crates/pa-core/src/kernel/scheme/cell/tests.rs` is upstream's test run
+through a session kernel.
+
+Drop it with the first steel-core release that contains `addcf6dd`.
+
 ## Not vendored
 
 `Cargo.toml` is the crate's published manifest without its `[[test]]` and

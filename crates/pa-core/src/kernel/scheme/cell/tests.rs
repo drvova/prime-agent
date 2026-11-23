@@ -1020,3 +1020,45 @@ async fn output_printed_past_what_a_cell_keeps_is_named_after_its_preview() {
         )
     );
 }
+
+/// A long session redefines its functions cell after cell, and a closure
+/// it kept in a vector goes on calling the definitions it was compiled
+/// against. Steel collects the slots of redefined globals once a hundred
+/// are shadowed, and it kept the slot such a closure calls without visiting
+/// the function in it: the globals that function calls were freed, and the
+/// kept closure called `#<void>` or whatever was defined into the slot next
+/// (steel #735, fixed in `vendor/steel-core`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kept_closure_keeps_calling_what_it_was_compiled_against() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    // The padding keeps `inner` from being inlined, so `outer` calls it
+    // through its global slot.
+    let padding = "(set! sink (+ sink 1)) ".repeat(40);
+    let definitions = |round: usize| {
+        format!(
+            "(define (inner x) (begin {padding} (+ x {round})))
+             (define (outer x) (begin {padding} (inner x)))"
+        )
+    };
+    run_to_its_end(
+        kernel.as_ref(),
+        &format!(
+            "(define sink 0) (define kept (mutable-vector #f)) {}
+             (vector-set! kept 0 (lambda (x) (outer x)))",
+            definitions(0)
+        ),
+    )
+    .await;
+    let mut wrong = Vec::new();
+    for round in 1..=300 {
+        run_to_its_end(kernel.as_ref(), &definitions(round)).await;
+        let called = run_to_its_end(kernel.as_ref(), "((vector-ref kept 0) 1)").await;
+        if called.result.as_deref() != Some("1") {
+            wrong.push((round, called.result, called.error.map(|error| error.evalue)));
+        }
+    }
+    assert_eq!(wrong, Vec::new());
+}
