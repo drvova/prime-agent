@@ -402,7 +402,7 @@ fn mcp_child_options(socket: PathBuf) -> InteractiveOptions {
 }
 
 /// One model from a provider the client does not count as signed in
-/// (the picker's "require sign in" discovery row).
+/// (the picker's "sign in" discovery row).
 fn unauthenticated_catalog_model() -> pa_types::ai::Model {
     serde_json::from_value(serde_json::json!({
         "id": "glm-5.3-fast", "name": "GLM 5.3 Fast",
@@ -601,7 +601,7 @@ fn mcp_view_enter_login_renders_inline_without_a_terminal_takeover() {
 }
 
 /// The model-picker sign-in e2e (the operator's bug report): the unsigned
-/// provider's row stays visible ("require sign in"), selecting it routes the
+/// provider's row stays visible ("sign in"), selecting it routes the
 /// sign-in flow, and a successful sign-in applies the model automatically.
 #[test]
 fn model_picker_routes_the_sign_in_flow_and_applies_after_login() {
@@ -612,7 +612,7 @@ fn model_picker_routes_the_sign_in_flow_and_applies_after_login() {
     harness.write(b"/model\r");
     harness.wait_from_start("Search models", "the model picker");
     harness.wait_from_start("GLM 5.3 Fast", "the unauthenticated provider's model row");
-    harness.wait_from_start("require sign in", "the row's sign-in marking");
+    harness.wait_from_start("sign in", "the row's sign-in marking");
 
     let mark = harness.mark();
     harness.write(b"\r");

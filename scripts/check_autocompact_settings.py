@@ -31,7 +31,7 @@ def observe(binary, root):
         result['settings_frame'] = terminal.screen.text()
         terminal.send('\r')
         terminal.wait('toggle delivered', lambda: any(c.get('type') == 'set_auto_compaction' for c in server.commands), server)
-        terminal.wait('toggle rendered', lambda: any('Auto-compact' in row and 'true' in row for row in terminal.screen.text().splitlines()), server)
+        terminal.wait('toggle rendered', lambda: any('Auto-compact' in row and row.rstrip().endswith(' on') for row in terminal.screen.text().splitlines()), server)
         result['toggle_frame'] = terminal.screen.text()
         result['toggle_rows'] = [re.sub(r'\s+', ' ', row.strip().lstrip('›> ').strip()) for row in terminal.screen.text().splitlines()
                                  if 'Auto-compact' in row and 'threshold' not in row]
