@@ -257,7 +257,8 @@ impl SkillLoader {
                         // No cell is running, so nothing else would stop a
                         // source that never returns: it is interrupted at
                         // its limit, and again until it has left the engine.
-                        let controller = engine.get_thread_state_controller();
+                        let controllers = super::confinement::controllers(engine);
+                        let interrupted = controllers.clone();
                         let limit = self.load_limit;
                         let engine_thread = std::thread::current();
                         let error = std::thread::scope(|scope| {
@@ -267,7 +268,7 @@ impl SkillLoader {
                                 while loading.recv_timeout(wait)
                                     == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                 {
-                                    super::cell::interrupt_engine(&controller, &engine_thread);
+                                    super::cell::interrupt_engine(&interrupted, &engine_thread);
                                     wait = std::time::Duration::from_millis(20);
                                 }
                             });
@@ -280,7 +281,9 @@ impl SkillLoader {
                             drop(loaded);
                             error
                         });
-                        engine.get_thread_state_controller().resume();
+                        for controller in controllers {
+                            controller.resume();
+                        }
                         let record = Evaluated {
                             path: path.clone(),
                             text,

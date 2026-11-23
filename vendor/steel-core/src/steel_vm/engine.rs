@@ -1583,6 +1583,20 @@ impl Engine {
         self.virtual_machine.synchronizer.state.clone()
     }
 
+    /// Prime Agent patch (see `PRIME_AGENT_PATCH.md`): run `with` on the
+    /// engine this engine's compiler evaluates `defmacro`, `syntax-case` and
+    /// `begin-for-syntax` bodies in, when it has one. An embedder that
+    /// restricts this engine's builtins has to restrict that one too, and
+    /// needs its `ThreadStateController` to interrupt a transformer.
+    pub fn with_macro_engine<T>(&mut self, with: impl FnOnce(&mut Engine) -> T) -> Option<T> {
+        self.virtual_machine
+            .compiler
+            .write()
+            .kernel
+            .as_mut()
+            .map(|kernel| with(&mut kernel.engine))
+    }
+
     /// Consumes the current `Engine` and emits a new `Engine` with the prelude added
     /// to the environment. The prelude won't work unless the primitives are also enabled.
     ///

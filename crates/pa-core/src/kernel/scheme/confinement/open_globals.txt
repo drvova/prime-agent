@@ -346,15 +346,18 @@
 ##mm25__%#__seed-set!
 ##mm25__%#__sort
 ##mm25__%#__uploop
+#%better-lambda
 #%black-box
 #%box
 #%closure->boxed-function
 #%const-list
+#%current-kernel-transformers
 #%display
 #%environment-length
 #%error
 #%expand
 #%expand-syntax-case
+#%fake-lambda
 #%file-input-port?
 #%for-each
 #%function-pointer?
@@ -365,6 +368,7 @@
 #%global-will-executor
 #%iterator-finished
 #%list-sort
+#%loading-current-module
 #%macro-case-bindings
 #%match-syntax-case
 #%module
@@ -875,6 +879,9 @@
 #%private-cycle-collector-values
 #%private-help
 #%private-struct?
+#%private/steel/contract
+#%private/steel/control
+#%private/steel/match
 #%private/steel/mvector make-mutable-vector
 #%private/steel/mvector mutable-vector->list
 #%private/steel/mvector mutable-vector-empty?
@@ -884,6 +891,7 @@
 #%private/steel/mvector mutable-vector-push!
 #%private/steel/mvector mutable-vector-ref
 #%private/steel/mvector mutable-vector-set!
+#%private/steel/ports
 #%private/steel/primitives ##__module-get
 #%private/steel/primitives #%error
 #%private/steel/primitives #%module
@@ -905,12 +913,16 @@
 #%private/steel/primitives error
 #%private/steel/primitives error!
 #%private/steel/primitives std::env::args
+#%private/steel/print
+#%private/steel/reader
 #%private/steel/reader #%intern
 #%private/steel/reader new-reader
 #%private/steel/reader reader-empty?
 #%private/steel/reader reader-push-string
 #%private/steel/reader reader-read-one
 #%private/steel/reader reader-read-one-syntax-object
+#%private/steel/sort
+#%private/steel/stdlib
 #%push-module-context
 #%raw-display
 #%raw-write
@@ -927,6 +939,7 @@
 #%register-struct-finalizer
 #%run-will-executor
 #%set-box!
+#%set-module
 #%snapshot-stacks
 #%start-will-executor
 #%stream-cdr
@@ -937,6 +950,8 @@
 #%syntax-bindings
 #%syntax/raw
 #%top-level-display
+#%top-level-global-map
+#%top-level-scope-map
 #%transducers->funcs
 #%unbox
 #%void
@@ -984,6 +999,7 @@
 %iterator?
 %keyword-hash
 %list-modules!
+%make-memoize
 %memo-table
 %memo-table-ref
 %memo-table-set!
@@ -995,7 +1011,9 @@
 %proto-hash-insert%
 *
 *abort
+*gensym-counter*
 *meta-continuation*
+*reader*
 *reset
 *shift
 +
@@ -1012,6 +1030,9 @@
 >/c
 >=
 >=/c
+Continuation
+Continuation-func
+Continuation?
 Err
 Err->value
 Err?
@@ -1028,10 +1049,16 @@ None?
 Ok
 Ok->value
 Ok?
+Parameter
+Parameter-getter
+Parameter-value
+Parameter?
 Some
 Some->value
 Some?
 TypeId?
+___Continuation-options___
+___Parameter-options___
 __module-##mm11__%#__
 __module-##mm13__%#__
 __module-##mm15__%#__
@@ -1044,6 +1071,7 @@ abs
 acos
 active-object-count
 add1
+all-but-last
 and/c
 and__doc__
 angle
@@ -1112,10 +1140,15 @@ cadr
 call-with-current-continuation
 call-with-exception-handler
 call-with-input-file
+call-with-input-file__doc__
 call-with-input-string
+call-with-input-string__doc__
 call-with-output-file
+call-with-output-file__doc__
 call-with-output-string
+call-with-output-string__doc__
 call-with-port
+call-with-port__doc__
 call-with-values
 call/cc
 callstack-hydrate-names
@@ -1165,6 +1198,7 @@ close-input-port
 close-output-port
 close-port
 command-line
+common-tail
 complex?
 compose
 concat-symbols
@@ -1175,10 +1209,12 @@ continuation?
 contract->string
 contract?
 cos
+current-env
 current-error-port
 current-function-span
 current-inexact-milliseconds
 current-input-port
+current-macro-transformers!
 current-milliseconds
 current-module
 current-module-relative
@@ -1188,10 +1224,13 @@ current-second
 current-thread-id
 curry
 curry2
+define-syntax
+define-values
 denominator
 disconnected-channel-object?
 display
 displayln
+do-wind
 drop
 drop__doc__
 dropping
@@ -1207,6 +1246,7 @@ empty-channel-object?
 empty-stream
 empty?
 ends-with?
+enumerate
 enumerating
 eof-object
 eof-object?
@@ -1266,6 +1306,9 @@ function-name
 function?
 future?
 gcd
+gensym
+gensym-offset
+gensym-sym
 get-contract-struct
 get-output-bytevector
 get-output-string
@@ -1304,6 +1347,7 @@ hashset-length
 hashset-subset?
 hashset-union
 id
+identifier?
 imag-part
 immutable-vector
 immutable-vector->list
@@ -1376,6 +1420,7 @@ make-rectangular
 make-string
 make-struct-type
 make-tls
+make-unreadable
 make-vector
 make-weak-box
 make-will-executor
@@ -1398,6 +1443,9 @@ modulo
 multi-arity?
 mut-vec-len
 mut-vector-ref
+mutable-keyword?
+mutable-make-getters
+mutable-make-setters
 mutable-vector
 mutable-vector->clear
 mutable-vector->list
@@ -1413,6 +1461,8 @@ naive-date-year
 naive-date-ymd
 nan?
 negative?
+new-make-getters
+new-make-predicate
 newline
 non-empty-listof
 not
@@ -1430,10 +1480,14 @@ or/c
 or__doc__
 output-port?
 pair?
+parse-def-syntax
 path-separator
 peek-byte
+peek-byte__doc__
 peek-char
+peek-char__doc__
 peek-u8
+peek-u8__doc__
 platform-dll-extension!
 platform-dll-prefix!
 plist-get
@@ -1445,7 +1499,9 @@ plist-try-get-positional-arg
 plist-validate-args
 pop-front
 port->bytes
+port->bytes__doc__
 port->string
+port->string__doc__
 port?
 positive?
 print
@@ -1463,27 +1519,48 @@ rational?
 read
 read!
 read-byte
+read-byte__doc__
 read-bytes
 read-bytes!
+read-bytes!__doc__
 read-bytes-into-buf
+read-bytes-into-buf__doc__
+read-bytes__doc__
 read-bytevector
 read-bytevector!
+read-bytevector!__doc__
+read-bytevector__doc__
 read-char
+read-char__doc__
+read-impl
 read-line
 read-line-from-port
+read-line__doc__
 read-port-to-bytes
+read-port-to-bytes__doc__
 read-port-to-string
+read-port-to-string__doc__
 read-syntax-object
 read-u8
+read-u8__doc__
+reader.#%intern
+reader.new-reader
+reader.reader-empty?
+reader.reader-push-string
+reader.reader-read-one
+reader.reader-read-one-syntax-object
 real-part
 real?
 reduce
+register-macro-transformer!
 remainder
 rest
 reverse
 round
 second
 serialized->bytes
+set-Parameter-getter!
+set-Parameter-value!
 set-box!
 set-strong-box!
 set-test-mode!
@@ -2570,8 +2647,13 @@ string=?
 string>=?
 string>?
 string?
+struct
 struct->list
+struct-impl
+struct:Continuation
+struct:Parameter
 struct?
+struct__doc__
 sub1
 substring
 sum
@@ -2593,6 +2675,7 @@ system-time<?
 system-time>=
 system-time>?
 take
+take-every-other
 taking
 tan
 target-arch!
@@ -2604,7 +2687,9 @@ thread/available-parallelism
 thread::current/id
 time/sleep-ms
 to-string
+top-level
 transduce
+transparent-keyword?
 trim
 trim-end
 trim-end-matches
@@ -2649,21 +2734,30 @@ weak-box-value
 when__doc__
 while__doc__
 will-register
+winders
 with-finalizer
 with-input-from-file
+with-input-from-file__doc__
 with-input-from-string
+with-input-from-string__doc__
 with-output-to-file
+with-output-to-file__doc__
 with-output-to-string
+with-output-to-string__doc__
 would-block
 would-block-object?
 write
 write-byte
+write-byte__doc__
 write-bytes
+write-bytes__doc__
 write-bytevector
+write-bytevector__doc__
 write-char
 write-line!
 write-string
 write-u8
+write-u8__doc__
 zero?
 zipping
 ~>>__doc__

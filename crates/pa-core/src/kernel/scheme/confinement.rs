@@ -19,6 +19,11 @@
 //!   `#%prim.` prefix, is rebound to that function too.
 //! - `(require "file.scm")` finds no file: [`NoSourceFiles`] answers for
 //!   every module name Steel does not embed.
+//! - The engine Steel's compiler keeps for macros, where the body of a
+//!   `defmacro`, of a `syntax-case` transformer and of `begin-for-syntax`
+//!   runs, is closed the same way ([`close`] runs on both), prints to its
+//!   cell's ports, and is interrupted with the session's ([`controllers`]).
+//!   Steel's own macros (`struct`, parameters) need none of what is closed.
 //!
 //! What stays open: `display` and the string ports its capture uses (the
 //! builtins that print past every port, and the process's standard output
@@ -38,6 +43,7 @@ use steel::rerrs::{ErrorKind, SteelErr};
 use steel::rvals::SteelVal;
 use steel::steel_vm::builtin::BuiltInModule;
 use steel::steel_vm::engine::Engine;
+use steel::steel_vm::ThreadStateController;
 
 /// Builtin modules no session engine keeps: processes, git, the file
 /// system, sockets, HTTP, polling, and foreign libraries.
@@ -181,14 +187,45 @@ impl SourceModuleResolver for NoSourceFiles {
 }
 
 /// A new engine for a session, closed as the module docs describe and with
-/// the builtins of [`super::limits`] guarded.
+/// the builtins of [`super::limits`] guarded, and so is the engine its
+/// macro bodies run in.
 ///
 /// # Errors
 ///
-/// A guarded builtin is not what the guard was written for: the engine is
-/// not handed out with a hole in it.
+/// A guarded builtin is not what the guard was written for, or Steel built
+/// the engine without one for its macros: the engine is not handed out with
+/// a hole in it.
 pub(super) fn engine() -> anyhow::Result<Engine> {
     let mut engine = Engine::new_sandboxed();
+    close(&mut engine)?;
+    engine.register_source_module_resolver(NoSourceFiles);
+    engine
+        .with_macro_engine(|macros| {
+            close(macros)?;
+            // There `displayln` was the builtin that prints past every port,
+            // closed above with it: a macro body's `displayln` writes to the
+            // current port, as a cell's does.
+            macros
+                .run("(set! displayln simple-displayln)")
+                .map_err(|error| anyhow::anyhow!("the macro engine's displayln: {error}"))?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .ok_or_else(|| anyhow::anyhow!("the Steel engine has no engine for its macros"))??;
+    Ok(engine)
+}
+
+/// What interrupts `engine`: its own controller, and that of the engine its
+/// macro bodies run in. A body that loops is on the second, which an
+/// interrupt of the first never reaches.
+pub(super) fn controllers(engine: &mut Engine) -> Vec<ThreadStateController> {
+    let own = engine.get_thread_state_controller();
+    std::iter::once(own)
+        .chain(engine.with_macro_engine(|macros| macros.get_thread_state_controller()))
+        .collect()
+}
+
+/// Close `engine`: one of the two Steel engines a session's code runs in.
+fn close(engine: &mut Engine) -> anyhow::Result<()> {
     let mut closed: BTreeSet<String> = CLOSED_FUNCTIONS.iter().map(ToString::to_string).collect();
     for name in CLOSED_MODULES {
         if let Some(module) = engine.builtin_modules().get(name) {
@@ -199,13 +236,17 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
         .into_iter()
         .map(|name| (name, SteelVal::FuncV(refusal)))
         .collect();
-    replaced.extend(super::limits::guards(&mut engine)?);
+    replaced.extend(super::limits::guards(engine)?);
     replaced.insert(
         "time/sleep-ms".to_string(),
         SteelVal::FuncV(super::limits::sleep),
     );
     // Each replaced name is bound to its replacement everywhere a cell could
     // find the builtin: in every module that has it, and in every global.
+    // A global may hold the builtin under another name (Steel's macro engine
+    // has `(define displayln stdout-simple-displayln)`), so the builtins are
+    // found by what they are too.
+    let mut aliased: BTreeMap<usize, SteelVal> = BTreeMap::new();
     for name in STEEL_MODULES {
         let Some(module) = engine.builtin_modules().get(name) else {
             continue;
@@ -219,8 +260,11 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
             // closed name stays bound, to the refusal.
             let mut kept = BuiltInModule::new(name);
             for (bound, value) in module.inner_map().iter() {
-                let value = replaced.get(bound.as_ref()).unwrap_or(value).clone();
-                kept.register_value(bound, value);
+                let replacement = replaced.get(bound.as_ref());
+                if let (Some(replacement), Some(builtin)) = (replacement, identity(value)) {
+                    aliased.insert(builtin, replacement.clone());
+                }
+                kept.register_value(bound, replacement.unwrap_or(value).clone());
             }
             engine.register_module(kept);
         }
@@ -231,10 +275,11 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
         .map(|name| name.resolve().to_string())
         .collect();
     for global in globals {
-        if let Some(value) = builtin_names(&global)
+        let named = builtin_names(&global)
             .into_iter()
-            .find_map(|name| replaced.get(name))
-        {
+            .find_map(|name| replaced.get(name));
+        let bound = engine.extract_value(&global).ok();
+        if let Some(value) = named.or_else(|| aliased.get(&bound.as_ref().and_then(identity)?)) {
             // In place: Steel's own Scheme code, compiled before this, reads
             // the global by its slot, and a registration under the same name
             // would give the name a new one.
@@ -243,14 +288,57 @@ pub(super) fn engine() -> anyhow::Result<Engine> {
             }
         }
     }
-    engine.register_source_module_resolver(NoSourceFiles);
     // A new engine's current ports are the process's standard streams. Every
     // cell installs its own, but nothing run on the engine before or between
     // cells (a skill's source as it loads) may hold the process's either.
     engine
         .run("(current-output-port (open-output-string)) (current-error-port (open-output-string))")
         .map_err(|error| anyhow::anyhow!("the engine's ports could not be replaced: {error}"))?;
-    Ok(engine)
+    Ok(())
+}
+
+/// What tells one builtin function from another, whatever name it is bound
+/// to: where its code or its allocation is. Nothing else is a builtin.
+fn identity(value: &SteelVal) -> Option<usize> {
+    match value {
+        SteelVal::FuncV(function) => Some(*function as usize),
+        SteelVal::MutFunc(function) => Some(*function as usize),
+        SteelVal::BuiltIn(function) => Some(*function as usize),
+        SteelVal::BoxedFunction(function) => Some(function.as_ptr() as usize),
+        SteelVal::Closure(_)
+        | SteelVal::BoolV(_)
+        | SteelVal::NumV(_)
+        | SteelVal::IntV(_)
+        | SteelVal::Rational(_)
+        | SteelVal::CharV(_)
+        | SteelVal::Void
+        | SteelVal::StringV(_)
+        | SteelVal::SymbolV(_)
+        | SteelVal::Custom(_)
+        | SteelVal::CustomStruct(_)
+        | SteelVal::PortV(_)
+        | SteelVal::IterV(_)
+        | SteelVal::ReducerV(_)
+        | SteelVal::FutureFunc(_)
+        | SteelVal::FutureV(_)
+        | SteelVal::StreamV(_)
+        | SteelVal::ContinuationFunction(_)
+        | SteelVal::BoxedIterator(_)
+        | SteelVal::SyntaxObject(_)
+        | SteelVal::Boxed(_)
+        | SteelVal::HeapAllocated(_)
+        | SteelVal::Reference(_)
+        | SteelVal::BigNum(_)
+        | SteelVal::BigRational(_)
+        | SteelVal::Complex(_)
+        | SteelVal::ByteVector(_)
+        | SteelVal::ListV(_)
+        | SteelVal::VectorV(_)
+        | SteelVal::HashSetV(_)
+        | SteelVal::HashMapV(_)
+        | SteelVal::Pair(_)
+        | SteelVal::MutableVector(_) => None,
+    }
 }
 
 /// What a closed builtin is bound to.

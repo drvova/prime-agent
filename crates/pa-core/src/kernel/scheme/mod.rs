@@ -543,11 +543,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
                 FIRST_TAKEN.store(true, std::sync::atomic::Ordering::SeqCst);
                 let mut engine = spare.map_or_else(confinement::engine, Ok)?;
-                let cells = cell::Cells::new(
-                    Arc::clone(&environment),
-                    handlers.clone(),
-                    engine.get_thread_state_controller(),
-                );
+                let controllers = confinement::controllers(&mut engine);
+                let cells =
+                    cell::Cells::new(Arc::clone(&environment), handlers.clone(), controllers);
                 engine.register_fn(
                     "%host-request-json",
                     move |request_type: String, payload: String| -> String {
