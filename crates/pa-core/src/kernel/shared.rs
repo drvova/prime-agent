@@ -62,6 +62,21 @@ pub enum BackgroundCellFact {
 /// Receives each [`BackgroundCellFact`] the kernel reports.
 pub type BackgroundCellObserver = Arc<dyn Fn(BackgroundCellFact) + Send + Sync>;
 
+/// One `wait-until` wait inside a cell, for adoption counts (never a
+/// condition, a value, or a duration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellWaitFact {
+    /// A wait started.
+    Started,
+    /// A wait ended with its condition met.
+    Met,
+    /// A wait ended at its timeout.
+    TimedOut,
+}
+
+/// Receives each [`CellWaitFact`] the kernel reports.
+pub type CellWaitObserver = Arc<dyn Fn(CellWaitFact) + Send + Sync>;
+
 /// Callback receiving an agent message sent late by the kernel.
 pub type LateSentAgentMessageCallback = Arc<dyn Fn(KernelSentAgentMessage) + Send + Sync>;
 

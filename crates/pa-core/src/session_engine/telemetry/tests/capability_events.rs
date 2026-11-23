@@ -22,7 +22,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::edit_checks::EditCheckOutcome;
     use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::hypotheses::HypothesesRun;
-    use crate::kernel::shared::BackgroundCellFact;
+    use crate::kernel::shared::{BackgroundCellFact, CellWaitFact};
     use crate::kernel::shell_runs::ShellRun;
     use crate::kernel::spill::host::CtxRead;
     use crate::kernel::spill::{PreviewFact, SpillFact};
@@ -219,6 +219,15 @@ fn drive(counters: &SessionCounters) {
         CellWindowSource::ColdDefault,
     ] {
         counters.note_cell_window(source);
+    }
+    for fact in [
+        CellWaitFact::Started,
+        CellWaitFact::Started,
+        CellWaitFact::Started,
+        CellWaitFact::Met,
+        CellWaitFact::TimedOut,
+    ] {
+        counters.note_cell_wait(fact);
     }
     for fact in [
         BetterTelemetryFact::Run,
@@ -590,6 +599,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent kernel call refusals",
         r#"{"call_refused_unknown_option_count":3,"call_refused_repeated_option_count":1,"call_refused_option_without_value_count":2,"call_refused_arity_count":4,"call_refused_tool_argument_count":2}"#,
+    ),
+    (
+        "agent kernel waits",
+        r#"{"wait_until_count":3,"wait_until_met_count":1,"wait_until_timed_out_count":1}"#,
     ),
     (
         "agent kernel login and recall",

@@ -779,6 +779,19 @@ impl SessionCounters {
         );
     }
 
+    /// One `wait-until` wait, by how far it got (counts only: never a condition or a duration).
+    pub(crate) fn note_cell_wait(&self, fact: crate::kernel::shared::CellWaitFact) {
+        use crate::kernel::shared::CellWaitFact;
+        self.note_capability(
+            match fact {
+                CellWaitFact::Started => "wait_until_count",
+                CellWaitFact::Met => "wait_until_met_count",
+                CellWaitFact::TimedOut => "wait_until_timed_out_count",
+            },
+            1,
+        );
+    }
+
     /// One cell armed with a yield window, by the window's source (a count: never a duration).
     pub(crate) fn note_cell_window(&self, source: crate::kernel::cell_window::CellWindowSource) {
         use crate::kernel::cell_window::CellWindowSource;

@@ -53,9 +53,10 @@ use steel::steel_vm::ThreadStateController;
 
 use super::{native, SessionEngine, SessionEnvironment};
 use crate::kernel::shared::{
-    parse_sent_agent_message, BackgroundCellFact, HostRequestHandlers, HostRequestPayload,
-    KernelBashCommands, KernelCommandFailure, KernelDiffDisplay, KernelSentAgentMessage,
-    LateSentAgentMessageCallback, DEFAULT_MAX_OUTPUT_CHARS, MAX_ATTACHMENT_DATA_CHARS,
+    parse_sent_agent_message, BackgroundCellFact, CellWaitFact, HostRequestHandlers,
+    HostRequestPayload, KernelBashCommands, KernelCommandFailure, KernelDiffDisplay,
+    KernelSentAgentMessage, LateSentAgentMessageCallback, DEFAULT_MAX_OUTPUT_CHARS,
+    MAX_ATTACHMENT_DATA_CHARS,
 };
 use crate::tools::kernel_cell::{
     ExecuteResult, ExecuteStatus, KernelAttachment, KernelErrorInfo, KernelExecuteOptions,
@@ -190,6 +191,27 @@ struct Cell {
     /// Set when the cell was reported as not leaving the engine
     /// ([`StuckCellSink`]): its session's end does not wait for it.
     stuck: AtomicBool,
+    /// The cell's waits inside its turn, which its yield window does not count.
+    hold: Mutex<Hold>,
+    /// Told when a wait starts or ends.
+    hold_changed: tokio::sync::Notify,
+}
+
+/// A cell's waits inside its turn: for the user's answer (`ask`) or for a
+/// condition (`wait-until`). The yield window does not run while the cell
+/// waits, so a cell that waits ends inside its call instead of moving to the
+/// background while the user is still being asked.
+#[derive(Default)]
+struct Hold {
+    /// How many waits are open.
+    open: usize,
+    /// When the first open wait started.
+    since: Option<Instant>,
+    /// The latest time an open wait ends by itself; `None` while one waits
+    /// with no bound (a question).
+    bound: Option<Instant>,
+    /// What the waits that ended took.
+    total: Duration,
 }
 
 /// Which of a cell's two ports a piece of text was printed to.
@@ -241,6 +263,49 @@ impl CellHandle {
     /// kernel is killed. A host function that blocks must return when it is.
     pub(crate) fn signal(&self) -> AbortSignal {
         self.0.signal.clone()
+    }
+
+    /// Start a wait inside the turn that ends by itself at `bound` (`None`:
+    /// when [`Self::release`] ends it): the cell's yield window stops
+    /// running until the wait ends. Each call needs one [`Self::release`].
+    pub(crate) fn hold(&self, bound: Option<Instant>) {
+        let mut hold = self.0.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        hold.bound = match (hold.open, hold.bound, bound) {
+            (0, _, bound) => bound,
+            (_, Some(open), Some(bound)) => Some(open.max(bound)),
+            (_, None, _) | (_, _, None) => None,
+        };
+        hold.open += 1;
+        hold.since.get_or_insert_with(Instant::now);
+        drop(hold);
+        self.0.hold_changed.notify_one();
+    }
+
+    /// End a wait [`Self::hold`] started.
+    pub(crate) fn release(&self) {
+        let mut hold = self.0.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        hold.open = hold.open.saturating_sub(1);
+        if hold.open == 0 {
+            if let Some(since) = hold.since.take() {
+                hold.total += since.elapsed();
+            }
+            hold.bound = None;
+        }
+        drop(hold);
+        self.0.hold_changed.notify_one();
+    }
+
+    /// When the yield window that would end at `window_end` without waits
+    /// ends now: later by what the cell's waits took, and by an open wait
+    /// up to its bound. `None` while a wait with no bound is open.
+    fn window_end(&self, window_end: Instant) -> Option<Instant> {
+        let hold = self.0.hold.lock().unwrap_or_else(PoisonError::into_inner);
+        let window_end = window_end + hold.total;
+        match (hold.since, hold.bound) {
+            (None, _) => Some(window_end),
+            (Some(_), None) => None,
+            (Some(since), Some(bound)) => Some(window_end + bound.saturating_duration_since(since)),
+        }
     }
 
     /// The settings of the session the cell belongs to.
@@ -708,6 +773,29 @@ impl Cells {
                 Ok(Value::Null)
             }
             ("attach-images", [Value::Array(paths)]) => super::attach::attach(&cell, paths),
+            ("hold", [seconds]) => {
+                let seconds = seconds
+                    .as_f64()
+                    .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+                    .ok_or_else(|| anyhow!("%cell: hold takes a number of seconds"))?;
+                cell.hold(Some(Instant::now() + Duration::from_secs_f64(seconds)));
+                if let Some(observer) = &self.session.on_cell_wait {
+                    observer(CellWaitFact::Started);
+                }
+                Ok(Value::Null)
+            }
+            ("release", [Value::String(status)]) => {
+                cell.release();
+                let fact = match status.as_str() {
+                    "met" => CellWaitFact::Met,
+                    "timed_out" => CellWaitFact::TimedOut,
+                    other => bail!("%cell: a wait ends met or timed_out, not {other}"),
+                };
+                if let Some(observer) = &self.session.on_cell_wait {
+                    observer(fact);
+                }
+                Ok(Value::Null)
+            }
             ("status" | "wait", [Value::String(id), ..]) => {
                 self.control(&Control::Status(id.clone()))
             }
@@ -1035,6 +1123,8 @@ pub(super) async fn execute(
         state: Mutex::new(CellState::default()),
         thread: std::sync::OnceLock::new(),
         stuck: AtomicBool::new(false),
+        hold: Mutex::new(Hold::default()),
+        hold_changed: tokio::sync::Notify::new(),
     }));
     let running = Arc::clone(&session);
     let run = cell.clone();
@@ -1143,6 +1233,9 @@ pub(super) async fn execute(
     // Printed but not yet reported, and when the last report went out.
     let mut unsent: Vec<(Stream, String)> = Vec::new();
     let mut reported: Option<tokio::time::Instant> = None;
+    // The window's first end has passed: from then on it ends when the
+    // cell's waits inside the turn let it.
+    let mut window_passed = false;
     let waited = loop {
         let due = match (unsent.is_empty(), reported) {
             (true, _) => None,
@@ -1165,9 +1258,26 @@ pub(super) async fn execute(
                 reported = Some(tokio::time::Instant::now());
             }
             () = &mut aborted => break Waited::Stopped(Stop::Aborted),
-            () = &mut deadline => break match window {
-                Some(_) => Waited::Outlived,
-                None => Waited::Stopped(Stop::TimedOut),
+            () = &mut deadline, if !window_passed => match window {
+                Some(_) => window_passed = true,
+                None => break Waited::Stopped(Stop::TimedOut),
+            },
+            // Whether the window ended, or a wait started or ended first.
+            ended = async {
+                let changed = cell.0.hold_changed.notified();
+                match limit.and_then(|limit| cell.window_end(started + limit)) {
+                    Some(end) if end <= Instant::now() => true,
+                    Some(end) => tokio::select! {
+                        () = tokio::time::sleep_until(end.into()) => true,
+                        () = changed => false,
+                    },
+                    None => {
+                        changed.await;
+                        false
+                    }
+                }
+            }, if window_passed => if ended {
+                break Waited::Outlived;
             },
         }
     };

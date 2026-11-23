@@ -45,7 +45,8 @@ use steel::steel_vm::register_fn::RegisterFn;
 
 use crate::kernel::cell_window::CellWindow;
 use crate::kernel::shared::{
-    BackgroundCellObserver, HostRequestHandlers, HostRequestPayload, END_TURN_REQUEST_TYPE,
+    BackgroundCellObserver, CellWaitObserver, HostRequestHandlers, HostRequestPayload,
+    END_TURN_REQUEST_TYPE,
 };
 use crate::tools::kernel_cell::{
     BootstrapProgressHandler, ExecuteResult, KernelExecuteOptions, KernelExecutor,
@@ -263,6 +264,8 @@ pub struct SchemeKernelOptions {
     pub cell_window: CellWindow,
     /// Hears each cell that moves to the background, and how it ends.
     pub on_background_cell: Option<BackgroundCellObserver>,
+    /// Hears each `wait-until` wait a cell makes, and how it ends.
+    pub on_cell_wait: Option<CellWaitObserver>,
     /// The source lines a failed command a cell waited for gets on the
     /// cell's result. The default attaches none.
     pub error_context: crate::kernel::error_context::ErrorContext,
@@ -310,6 +313,7 @@ pub(crate) struct SessionEnvironment {
     pub(crate) artifact_dir: Option<PathBuf>,
     pub(crate) cell_window: CellWindow,
     pub(crate) on_background_cell: Option<BackgroundCellObserver>,
+    pub(crate) on_cell_wait: Option<CellWaitObserver>,
     pub(crate) agent_dir: Option<PathBuf>,
     pub(crate) error_context: crate::kernel::error_context::ErrorContext,
     pub(crate) background: session::BackgroundWork,
@@ -437,6 +441,7 @@ impl SchemeKernelProvisioner {
             artifact_dir: options.artifact_dir,
             cell_window: options.cell_window,
             on_background_cell: options.on_background_cell,
+            on_cell_wait: options.on_cell_wait,
             agent_dir: options.agent_dir,
             error_context: options.error_context,
             background: session::BackgroundWork::new(options.on_background_work_settled),
@@ -599,10 +604,15 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                                 // The engine cannot interrupt this wait: it
                                 // ends with the cell's signal instead, and
                                 // dropping the request withdraws it.
-                                let stopped = running.map(|cell| cell.signal());
+                                let stopped = running.as_ref().map(cell::CellHandle::signal);
                                 let question = (request_type == "question.ask")
                                     .then(|| data.get("id").cloned())
                                     .flatten();
+                                // A question waits for the user inside the
+                                // turn: the cell's yield window stops meanwhile.
+                                if let (Some(_), Some(cell)) = (&question, &running) {
+                                    cell.hold(None);
+                                }
                                 let answered = runtime.block_on(async {
                                     let request = handler(HostRequestPayload { data });
                                     match &stopped {
@@ -613,6 +623,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                                         None => Some(request.await),
                                     }
                                 });
+                                if let (Some(_), Some(cell)) = (&question, &running) {
+                                    cell.release();
+                                }
                                 match answered {
                                     Some(Ok(value)) => json!({ "value": value }),
                                     Some(Err(error)) => json!({ "error": format!("{error:#}") }),

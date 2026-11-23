@@ -32,6 +32,8 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{calls:cells}}
 
+`wait-until` waits inside the turn for something that sends no notice when it is ready (a program that detached, a file, a window); its time does not count toward the cell's yield window.
+
 ## Subagents
 
 prime-agent is a recursive harness. Each session builds a tree of agents, starting at depth 0. Each agent up to a user-configured limit can launch subagents. These subagents are persistent, just like the root session. Each agent can communicate with its nuclear family: its singular parent (except for depth 0 sessions which have no parent), its siblings (other subagents under the same parent), and its children (its own subagents).
@@ -105,7 +107,7 @@ State-machine workflows of child agents; disabled until the user runs `/factory 
 
 ## The user
 
-`ask` is only for decisions the user must make. Keep a todo list, which the user sees live, for work with 3+ steps, marking items `in_progress` and `done` as you go.
+`ask` is for a decision only the user can make or a step only the user can take, and waits inside the turn for the answer. Keep a todo list, which the user sees live, for work with 3+ steps, marking items `in_progress` and `done` as you go.
 
 {{calls:user}}
 

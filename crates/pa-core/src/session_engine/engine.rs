@@ -898,6 +898,11 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 }
             }) as crate::kernel::shared::BackgroundCellObserver
         }),
+        on_cell_wait: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_cell_wait(fact))
+                as crate::kernel::shared::CellWaitObserver
+        }),
         // The skills' Scheme source loads at kernel start and after each
         // reload; a skill that fails to load is named on the next turn.
         // Only the skills the model sees: one whose host request never

@@ -41,3 +41,18 @@ pub(in crate::catalog) const AGENT_KERNEL_CALL_REFUSALS: EventRule = EventRule {
         ("call_refused_tool_argument_count", required(count())),
     ],
 };
+
+/// `wait-until` waits inside the turn (v2), emitted at session end beside `agent session ended`
+/// (which sits near the backend's 128-key cap) only when a cell waited: waits started, and how
+/// many ended with their condition met or at their timeout (the rest were stopped with their
+/// cell). Counts only: never a condition, a command, a label, a value, or a duration.
+pub(in crate::catalog) const AGENT_KERNEL_WAITS: EventRule = EventRule {
+    name: "agent kernel waits",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("wait_until_count", required(count())),
+        ("wait_until_met_count", required(count())),
+        ("wait_until_timed_out_count", required(count())),
+    ],
+};
