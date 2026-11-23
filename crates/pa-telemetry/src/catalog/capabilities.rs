@@ -58,4 +58,5 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &bash::AGENT_TEST_SUMMARIES,
     &rizin::AGENT_REPL_RIZIN,
     &bash::AGENT_BUILTIN_SHELL,
+    &cells::AGENT_KERNEL_CALL_REFUSALS,
 ];

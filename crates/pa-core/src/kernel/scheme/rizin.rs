@@ -132,8 +132,7 @@ pub(super) fn register(
             })
         },
     );
-    engine
-        .run(API)
+    super::contracts::load(engine, API)
         .map_err(|error| anyhow!("the Scheme rizin API failed to load: {error}"))?;
     Ok(())
 }

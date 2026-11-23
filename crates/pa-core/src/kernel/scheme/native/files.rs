@@ -49,6 +49,7 @@ use super::edit_check::EditChecks;
 use super::edit_replace;
 use crate::fs_edit::FsEditHost;
 use crate::fs_search::FsSearchHost;
+use crate::kernel::scheme::contracts::{self, Spelling};
 use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload, KernelDiffDisplay};
 use crate::symbol_index::{register_symbol_handler, SymbolIndex};
 use crate::tools::path_utils::resolve_to_cwd;
@@ -57,11 +58,9 @@ use crate::tools::tool_definition::AbortSignal;
 /// The Scheme side of the file tools, defined in every session engine after
 /// the native tools' `%native`.
 pub(super) const TOOLS: &str = r#"
-(define (%fs-options rest) (if (null? rest) (hash) (car rest)))
-
-(define (fs-symbol name . rest) (%native "fs-symbol" (hash-insert (%fs-options rest) 'name name)))
-(define (fs-edit path edits . rest)
-  (%native "fs-edit" (hash-insert (hash-insert (%fs-options rest) 'path path) 'edits edits)))
+(define (fs-symbol name [options (hash)]) (%native "fs-symbol" (hash-insert options 'name name)))
+(define (fs-edit path edits [options (hash)])
+  (%native "fs-edit" (hash-insert (hash-insert options 'path path) 'edits edits)))
 (define (fs-write path text) (%native "fs-write" (hash 'path path 'text text)))
 (define (edit path old-str new-str)
   (%native "edit" (hash 'path path 'old-str old-str 'new-str new-str)))
@@ -128,9 +127,11 @@ const EDIT_OPERATIONS: [&str; 5] = [
     "append",
 ];
 
-/// Turn a call's options into the payload its tool parses: accepted options
-/// under their payload keys, the absolute target under `path_key`, and `cwd`.
+/// Turn the options of a call to `tool` into the payload it parses: accepted
+/// options under their payload keys, the absolute target under `path_key`,
+/// and `cwd`.
 fn payload(
+    tool: &str,
     options: &Value,
     accepted: Accepted,
     path_key: &str,
@@ -151,11 +152,10 @@ fn payload(
         } else if let Some((_, key)) = accepted.iter().find(|(option, _)| option == name) {
             payload.insert((*key).to_string(), value.clone());
         } else {
-            let names: Vec<&str> = accepted.iter().map(|(option, _)| *option).collect();
-            bail!(
-                "unknown option '{name}' (accepted: path, {})",
-                names.join(", ")
-            );
+            let names: Vec<&str> = std::iter::once("path")
+                .chain(accepted.iter().map(|(option, _)| *option))
+                .collect();
+            return Err(contracts::undeclared(tool, Spelling::HashKey, name, &names).into());
         }
     }
     payload.insert(path_key.to_string(), json!(resolve_to_cwd(path, &cwd)));
@@ -284,11 +284,11 @@ impl Files {
         match operation {
             "fs-read" => self.request(
                 "fs.read",
-                Value::Object(payload(options, READ, "path", &self.cwd)?),
+                Value::Object(payload("fs-read", options, READ, "path", &self.cwd)?),
                 cell,
             ),
             "fs-grep" => {
-                let mut payload = payload(options, GREP, "root", &self.cwd)?;
+                let mut payload = payload("fs-grep", options, GREP, "root", &self.cwd)?;
                 // `context` is both sides' default, as in `rg -C`.
                 if let Some(context) = payload.remove("context") {
                     for side in ["before", "after"] {
@@ -301,18 +301,18 @@ impl Files {
             }
             "fs-glob" => self.request(
                 "fs.glob",
-                Value::Object(payload(options, GLOB, "root", &self.cwd)?),
+                Value::Object(payload("fs-glob", options, GLOB, "root", &self.cwd)?),
                 cell,
             ),
             "fs-find" => self.request(
                 "fs.find",
-                Value::Object(payload(options, FIND, "root", &self.cwd)?),
+                Value::Object(payload("fs-find", options, FIND, "root", &self.cwd)?),
                 cell,
             ),
             "fs-symbol" => self.symbol(cell, options),
             "fs-edit" => self.edit(cell, options),
             "fs-write" => {
-                let payload = payload(options, WRITE, "path", &self.cwd)?;
+                let payload = payload("fs-write", options, WRITE, "path", &self.cwd)?;
                 let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
                 let mut reply = self.request("fs.write", Value::Object(payload), cell)?;
                 self.attach_check(&mut reply, &file, cell);
@@ -362,7 +362,13 @@ impl Files {
             .keys()
             .find(|key| !matches!(key.as_str(), "name" | "max-references"))
         {
-            bail!("unknown option '{unknown}' (accepted: max-references)");
+            return Err(contracts::undeclared(
+                "fs-symbol",
+                Spelling::HashKey,
+                unknown,
+                &["max-references"],
+            )
+            .into());
         }
         let name = fields
             .get("name")
@@ -426,7 +432,7 @@ impl Files {
     /// `(fs-edit path edits [options])`: one atomic patch of anchored edits,
     /// then the edited file's check.
     fn edit(&self, cell: &AbortSignal, options: &Value) -> anyhow::Result<Value> {
-        let mut payload = payload(options, EDIT, "path", &self.cwd)?;
+        let mut payload = payload("fs-edit", options, EDIT, "path", &self.cwd)?;
         let return_stale = match payload.remove("onStale") {
             None => false,
             Some(Value::String(choice)) if choice == "raise" => false,

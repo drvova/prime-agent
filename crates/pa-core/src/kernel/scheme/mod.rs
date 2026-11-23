@@ -25,6 +25,7 @@ mod api_help;
 mod attach;
 mod cell;
 mod confinement;
+mod contracts;
 mod factory;
 mod host_api;
 mod limits;
@@ -647,8 +648,8 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                         value.map_or(SteelVal::BoolV(false), |text| SteelVal::StringV(text.into())),
                     );
                 }
-                engine
-                    .run(HOST_BRIDGE)
+                let refusals = contracts::register(&mut engine, &native_handlers)?;
+                contracts::load(&mut engine, HOST_BRIDGE)
                     .map_err(|error| anyhow!("the Scheme host bridge failed to load: {error}"))?;
                 cell::register(&mut engine, &cells)?;
                 native::register_session_tools(&mut engine, &native_handlers, &environment);
@@ -662,8 +663,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                     native_handlers,
                     environment.agent_dir.clone(),
                     &environment,
+                    refusals.clone(),
                 )?;
-                mcp::register(&mut engine, mcp_client, Arc::clone(&cell))?;
+                mcp::register(&mut engine, mcp_client, Arc::clone(&cell), refusals)?;
                 rizin::register(&mut engine, rizin_sessions, Arc::clone(&cell))?;
                 factory::register(&mut engine, factory.clone(), Arc::clone(&cell))?;
                 skills.start(&mut engine)?;

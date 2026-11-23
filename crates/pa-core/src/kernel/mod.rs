@@ -3,6 +3,7 @@
 //! windows, error context, session-boot admission).
 
 pub mod boot_admission;
+pub(crate) mod call_refusals;
 pub mod cancellation;
 #[cfg(test)]
 mod capabilities;

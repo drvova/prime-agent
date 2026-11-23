@@ -197,13 +197,15 @@ impl SkillLoader {
                 .collect();
             json!(rows).to_string()
         });
-        engine
-            .run(
-                ";; The skills whose Scheme source failed to load, each {skill, error};\n\
-                 ;; empty when every skill loaded.\n\
-                 (define (skills-unavailable) (string->jsexpr (%skills-unavailable-json)))",
-            )
-            .map_err(|error| anyhow!("the Scheme skill loader failed to load: {error}"))?;
+        super::contracts::load(
+            engine,
+            "
+;; The skills whose Scheme source failed to load, each {skill, error};
+;; empty when every skill loaded.
+(define (skills-unavailable) (string->jsexpr (%skills-unavailable-json)))
+",
+        )
+        .map_err(|error| anyhow!("the Scheme skill loader failed to load: {error}"))?;
         self.load(engine);
         Ok(())
     }
@@ -270,8 +272,7 @@ impl SkillLoader {
                             });
                             let error = match super::limits::source_refusal(&text) {
                                 Some(refusal) => Some(refusal),
-                                None => engine
-                                    .run(text.clone())
+                                None => super::contracts::load(engine, &text)
                                     .err()
                                     .map(|error| error.to_string()),
                             };

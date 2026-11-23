@@ -16,6 +16,7 @@ use super::*;
 fn drive(counters: &SessionCounters) {
     use crate::fs_edit::{EditFact, FsEditOperation, RereadFact};
     use crate::fs_search::{FsOperation, SearchFact};
+    use crate::kernel::call_refusals::CallRefusal;
     use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::command_cache::CacheLookup;
     use crate::kernel::edit_checks::EditCheckOutcome;
@@ -343,6 +344,22 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_rizin(fact);
     }
+    for refusal in [
+        CallRefusal::UnknownOption,
+        CallRefusal::UnknownOption,
+        CallRefusal::UnknownOption,
+        CallRefusal::RepeatedOption,
+        CallRefusal::OptionWithoutValue,
+        CallRefusal::OptionWithoutValue,
+        CallRefusal::Arity,
+        CallRefusal::Arity,
+        CallRefusal::Arity,
+        CallRefusal::Arity,
+        CallRefusal::ToolArgument,
+        CallRefusal::ToolArgument,
+    ] {
+        counters.note_call_refusal(refusal);
+    }
     for (definitions, references, partial) in [(2, 5, true), (1, 0, false), (0, 7, false)] {
         counters.note_symbol_query(SymbolFact {
             definitions,
@@ -568,6 +585,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent goal verification",
         r#"{"goal_check_run_count":3,"goal_check_failed_count":1,"goal_check_skipped_count":1,"goal_judge_call_count":2,"goal_judge_not_met_count":1,"goal_token_budget_stop_count":1,"goal_cost_budget_stop_count":1}"#,
+    ),
+    (
+        "agent kernel call refusals",
+        r#"{"call_refused_unknown_option_count":3,"call_refused_repeated_option_count":1,"call_refused_option_without_value_count":2,"call_refused_arity_count":4,"call_refused_tool_argument_count":2}"#,
     ),
     (
         "agent kernel login and recall",

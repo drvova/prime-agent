@@ -761,6 +761,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::shell_runs::ShellObserver
         }),
     );
+    // `call.refused`: kernel calls refused before they ran (telemetry counts).
+    crate::kernel::call_refusals::register_call_refusal_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |refusal| counters.note_call_refusal(refusal))
+                as crate::kernel::call_refusals::RefusalObserver
+        }),
+    );
     super::better::register_better_handler(&mut handlers, &better);
     // A delegation brief's depth follows the levels its subagent may still delegate.
     if let Some(depth) = config

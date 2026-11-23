@@ -51,6 +51,7 @@ use steel::steel_vm::engine::Engine;
 use steel::steel_vm::register_fn::RegisterFn;
 
 use super::native::CellSignal;
+use crate::kernel::call_refusals::CallRefusal;
 
 mod connection;
 mod credentials;
@@ -90,6 +91,8 @@ enum FailureKind {
     Protocol,
     /// The call's own arguments or the server's configuration are malformed.
     Invalid,
+    /// The call names an argument the tool's schema does not declare.
+    UndeclaredArgument,
     /// A host request failed.
     Host,
     /// The session's connections were shut down while the call ran.
@@ -107,7 +110,7 @@ impl FailureKind {
             FailureKind::TimedOut => "Timeout",
             FailureKind::Tool => "ToolError",
             FailureKind::Protocol => "ProtocolError",
-            FailureKind::Invalid => "InvalidRequest",
+            FailureKind::Invalid | FailureKind::UndeclaredArgument => "InvalidRequest",
             FailureKind::Host => "HostError",
             FailureKind::Stopped => "Stopped",
         }
@@ -178,6 +181,7 @@ pub(super) fn register(
     engine: &mut Engine,
     registry: Arc<Registry>,
     cell: CellSignal,
+    refusals: super::contracts::Refusals,
 ) -> anyhow::Result<()> {
     let runtime = tokio::runtime::Handle::current();
     engine.register_fn(
@@ -195,7 +199,12 @@ pub(super) fn register(
                             Err("the call was abandoned: its cell was stopped".to_string())
                         }
                         outcome = registry.dispatch(&operation, &payload) => {
-                            outcome.map_err(|failure| failure.message)
+                            outcome.map_err(|failure| {
+                                if failure.kind == FailureKind::UndeclaredArgument {
+                                    refusals.count(CallRefusal::ToolArgument);
+                                }
+                                failure.message
+                            })
                         }
                     }
                 }),
@@ -221,8 +230,7 @@ pub(super) fn register(
             )),
         }),
     );
-    engine
-        .run(API)
+    super::contracts::load(engine, API)
         .map_err(|error| anyhow!("the Scheme MCP API failed to load: {error}"))?;
     Ok(())
 }
