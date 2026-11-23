@@ -387,7 +387,6 @@ async fn jq_fails_as_a_command_with_its_reason_and_jqs_exit_code() {
          echo '[1] {\"a\":' | jq -c .; echo \"input rc=$?\"\n\
          jq '.a.b' f.json; echo \"filter rc=$?\"\n\
          jq -c '.a[] | if . == 1 then error({code: .}) else . end' f.json; echo \"thrown rc=$?\"\n\
-         jq '.b.c = 1' f.json; echo \"assignment rc=$?\"\n\
          printf '[%.0s' {1..10001} | jq .; echo \"depth rc=$?\"\n\
          jq -n '\"[\" * 10001 | fromjson'; echo \"fromjson rc=$?\"\n\
          jq 'def walk_all: .[]? | walk_all; walk_all' f.json; echo \"recursion rc=$?\"\n\
@@ -416,10 +415,6 @@ async fn jq_fails_as_a_command_with_its_reason_and_jqs_exit_code() {
              filter rc=5\n\
              jq: error (not a string): {\"code\":1}\n\
              thrown rc=5\n\
-             jq: error: cannot use null as iterable (array or object) (the built-in jq does \
-             not create a missing object or array on assignment: set the parent first, as in \
-             `.a //= {} | .a.b = 1`)\n\
-             assignment rc=5\n\
              jq: parse error: JSON nested deeper than 10000 levels\n\
              depth rc=5\n\
              jq: error: cannot parse JSON nested deeper than 10000 levels\n\

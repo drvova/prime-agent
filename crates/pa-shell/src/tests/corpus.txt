@@ -1554,3 +1554,51 @@ e rc=1
 3
 "ok: caught"
 variable rc=3
+### jq edits objects as jq does
+echo '{"name":"app","version":"1.0.0","scripts":{"build":"make"},"keywords":["a"],"private":true}' > package.json
+jq -c 'del(.version)' package.json; jq -c 'del(.name, .private)' package.json; jq -c 'del(.scripts.build) | .keywords |= map(select(. != "a"))' package.json; jq -c '.name |= empty' package.json; jq -c 'delpaths([["version"],["keywords",0]])' package.json; jq -c 'with_entries(select(.key != "version"))' package.json; jq -c 'to_entries | map(.key)' package.json
+jq -c '.scripts.test = "cargo test"' package.json; jq -c '.config.paths.out = "dist" | .config' package.json; jq -c '.engines.node |= ">=20" | .engines' package.json; jq -c '.keywords[3] = "d" | .keywords' package.json; jq -c '.files[1] = "src" | .files' package.json; jq -c '.a.b.c += 1 | .a' package.json; jq -c '.x.y //= "set" | .x' package.json; jq -nc '{} | .a.b.c = 1'; jq -nc 'null | .a = 1, .[2] = 1, (.a[1].b = 2)'; jq -nc '{"a":null} | .a.b = 1'; jq -nc '[1] | .[3] = 9, (.[2] |= empty), (.[-1] = 5)'; jq -nc '{} | setpath(["a","b"]; 1), (setpath(["l",1]; true)), (getpath(["a","b"]))'; jq -nc 'reduce ("a","b","c") as $k ({}; .[$k].count += 1)'; jq -nc '[{"k":"x","v":1},{"k":"y","v":2},{"k":"x","v":3}] | reduce .[] as $e ({}; .[$e.k].sum += $e.v | .[$e.k].n += 1)'
+jq -nr '"\(4/2) \(1/2) \(10/4) \(2*3) \(1e3 + 0) \(7 % 2)", (4/2 | tostring), (1.5 * 2 | tostring), ([2/2, 1/4] | map(tostring) | join(",")), ("total: " + (6 / 3 | tostring)), (nan | tostring), (infinite | tostring), ([4/2, nan, 0.5] | tojson), (1e17 + 0 | tostring), (1e-5 + 0 | tostring), ({"a": (9/3)} | tostring), ([4/2] | @csv), ([1/2, 8/2] | @tsv), (@json "\(6/2)"), (10 / 5 | tostring | length)'
+--- 0
+{"name":"app","scripts":{"build":"make"},"keywords":["a"],"private":true}
+{"version":"1.0.0","scripts":{"build":"make"},"keywords":["a"]}
+{"name":"app","version":"1.0.0","scripts":{},"keywords":[],"private":true}
+{"version":"1.0.0","scripts":{"build":"make"},"keywords":["a"],"private":true}
+{"name":"app","scripts":{"build":"make"},"keywords":[],"private":true}
+{"name":"app","scripts":{"build":"make"},"keywords":["a"],"private":true}
+["name","version","scripts","keywords","private"]
+{"name":"app","version":"1.0.0","scripts":{"build":"make","test":"cargo test"},"keywords":["a"],"private":true}
+{"paths":{"out":"dist"}}
+{"node":">=20"}
+["a",null,null,"d"]
+[null,"src"]
+{"b":{"c":1}}
+{"y":"set"}
+{"a":{"b":{"c":1}}}
+{"a":1}
+[null,null,1]
+{"a":[null,{"b":2}]}
+{"a":{"b":1}}
+[1,null,null,9]
+[1]
+[5]
+{"a":{"b":1}}
+{"l":[null,true]}
+null
+{"a":{"count":1},"b":{"count":1},"c":{"count":1}}
+{"x":{"sum":4,"n":2},"y":{"sum":2,"n":1}}
+2 0.5 2.5 6 1000 1
+2
+3
+1,0.25
+total: 2
+null
+1.7976931348623157e+308
+[2,null,0.5]
+1e+17
+1e-05
+{"a":3}
+2
+0.5	4
+3
+1

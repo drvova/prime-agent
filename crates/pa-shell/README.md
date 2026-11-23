@@ -22,8 +22,9 @@ whole process.
   anything, it hands the command to the program of the same name; on a machine without that
   program the command fails and says so. A device or `/proc` path as an argument always goes to
   the program, since in this process the path would mean the embedder.
-- **`jq`** runs filters on the `jaq` interpreter (`jaq-core`, `jaq-std`, `jaq-json`), with the
-  command line, the printed form of values and the exit codes of jq 1.7 (`util/jq.rs`). The
+- **`jq`** runs filters on the `jaq` interpreter (`jaq-core`, `jaq-std`, and the vendored
+  `jaq-json`, see `vendor/jaq-json/PRIME_AGENT_PATCH.md`), with the command line, the printed
+  form of values and the exit codes of jq 1.7 (`util/jq.rs`). The
   interpreter bounds nothing itself and recurses on the stack with the nesting of its data and
   of a filter's own recursion, so: JSON nested deeper than 10,000 levels is refused wherever it
   is parsed (jq's own limit); a filter longer than 16 KiB, nested deeper than 256 brackets, or
@@ -76,19 +77,15 @@ Known differences from bash 5.2, beside the shell being one of many in its proce
 Known differences of the built-in `jq` from jq 1.7 (the interpreter's own, where this crate
 does not cover them):
 
-- Assigning through a missing parent fails instead of creating it (`{} | .a.b = 1`,
-  `null | .[1] = 1`); the message says to set the parent first. Deleting a key moves the
-  object's last key into its place (`del(.a)` of `{a,b,c}` prints `c` before `b`).
-- Integers are exact beyond 2^53 where jq rounds to a double. A division always gives a
-  float: printed as a value it is jq's (`4/2` is `2`), but `tostring` and `"\(4/2)"` give
-  `2.0`, and `nan | tostring` is `NaN`. A number in the input keeps its spelling (`1e2`
-  stays `1e2`; jq prints `1E+2`).
+- Integers are exact beyond 2^53 where jq rounds to a double (`9007199254740993 + 0` stays
+  odd). A number in the input keeps its spelling (`1e2` stays `1e2`; jq prints `1E+2`).
 - Regular expressions are the `regex-bites` crate's: no look-around and no back-references;
   an optional group that did not match is left out of `match`'s captures.
 - `(1,2) * (3,4)` and `{a: (1,2), b: (3,4)}` vary their left side first; `.[] |= (1,2)`
   takes both values where jq takes the first; `limit(-1; f)` is empty; `ltrimstr`/`rtrimstr`
   with a non-string fail; `from_entries` reads `key` and `value` only; `todate` keeps
-  fractions of a second; `pick` with an array index makes an object.
+  fractions of a second and takes a number only (jq also takes the array `gmtime` gives);
+  `pick` with an array index makes an object.
 - Not there: `input_line_number`, `$__loc__`, `$__prog_args`, `builtins`, `fromstream`,
   `truncate_stream`, `JOIN`, `format`, `get_search_list`, `modulemeta`, `localtime` and
   `strflocaltime` (they would read the process's time zone), modules (`import`, `include`,

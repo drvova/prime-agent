@@ -29,6 +29,10 @@ steel-core = { path = "vendor/steel-core" }
 # command in a pipeline to its end before the next stage starts. The vendored copy gives an
 # embedding process a hook for each (vendor/brush-core/PRIME_AGENT_PATCH.md).
 brush-core = { path = "vendor/brush-core" }
+# jaq-json 2.0.3 (the built-in `jq`'s values) moves an object's last key into the place of a
+# deleted one, fails an assignment through a missing parent, and prints floats as `1.0` and
+# `NaN`; the vendored copy does each as jq does (vendor/jaq-json/PRIME_AGENT_PATCH.md).
+jaq-json = { path = "vendor/jaq-json" }
 
 [workspace.package]
 version = "0.10.3"

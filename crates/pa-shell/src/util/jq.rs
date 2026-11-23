@@ -7,9 +7,9 @@
 //! is the program's.
 //!
 //! The interpreter is not jq, and where the two differ this command sides
-//! with jq where it can: values are printed, and `tojson` formats, the way
-//! jq 1.7 does (a computed `1.0` prints as `1`, `nan` as `null`, and
-//! infinity as the largest double); several input files are one stream, and
+//! with jq where it can: values are laid out the way jq 1.7 lays them out,
+//! and the vendored `jaq-json` prints numbers, assigns through a missing
+//! parent and deletes keys as jq does; several input files are one stream, and
 //! `-s` makes one array of all of them; `env` and `$ENV` are the shell's
 //! exported variables; `debug` and `stderr` write to the command's standard
 //! error; `halt` ends the command, not the process. What stays jaq's is
@@ -42,7 +42,7 @@ use jaq_core::load::{self, lex::StrPart, Arena, File, Loader};
 use jaq_core::native::{bome, run, v, Filter};
 use jaq_core::path::Part;
 use jaq_core::{Compiler, Ctx, DataT, Lut, RunPtr, Vars};
-use jaq_json::{Map, Num, Val};
+use jaq_json::{Map, Val};
 use jaq_std::input::{HasInputs, Inputs, RcIter};
 
 use super::{reason, Failure, Invocation, Outcome};
@@ -161,7 +161,7 @@ struct Layout {
     sort_keys: bool,
 }
 
-/// Write `value` as jq 1.7 prints it.
+/// Write `value` as jq 1.7 lays it out.
 fn write_json(
     out: &mut dyn Write,
     value: &Val,
@@ -197,55 +197,7 @@ fn write_json(
     match value {
         Val::Null => out.write_all(b"null"),
         Val::Bool(truth) => write!(out, "{truth}"),
-        Val::Num(Num::Float(float)) if float.is_nan() => out.write_all(b"null"),
-        Val::Num(Num::Float(float)) => {
-            // jq prints the shortest digits that read back as the same
-            // double, as an integer or a decimal while that stays short
-            // and with an exponent otherwise.
-            let finite = float.clamp(f64::MIN, f64::MAX);
-            let shortest = format!("{:e}", finite.abs());
-            let (mantissa, exponent) = shortest.split_once('e').unwrap_or((&shortest, "0"));
-            let digits = mantissa.replace('.', "");
-            let point = exponent.parse::<i64>().unwrap_or(0) + 1;
-            let count = digits.len() as i64;
-            let sign = if finite.is_sign_negative() && finite != 0.0 {
-                "-"
-            } else {
-                ""
-            };
-            if finite == 0.0 {
-                out.write_all(if finite.is_sign_negative() {
-                    b"-0"
-                } else {
-                    b"0"
-                })
-            } else if point <= -4 || point > count + 15 {
-                let (first, rest) = digits.split_at(1);
-                let fraction = if rest.is_empty() {
-                    String::new()
-                } else {
-                    format!(".{rest}")
-                };
-                let power = point - 1;
-                let direction = if power < 0 { '-' } else { '+' };
-                write!(out, "{sign}{first}{fraction}e{direction}{:02}", power.abs())
-            } else if point <= 0 {
-                write!(
-                    out,
-                    "{sign}0.{}{digits}",
-                    "0".repeat(point.unsigned_abs() as usize)
-                )
-            } else if point >= count {
-                write!(
-                    out,
-                    "{sign}{digits}{}",
-                    "0".repeat((point - count).unsigned_abs() as usize)
-                )
-            } else {
-                let (whole, fraction) = digits.split_at(point.unsigned_abs() as usize);
-                write!(out, "{sign}{whole}.{fraction}")
-            }
-        }
+        // Floats as jq prints them: the vendored `jaq-json` does that.
         Val::Num(number) => write!(out, "{number}"),
         Val::TStr(bytes) | Val::BStr(bytes) => text(out, bytes),
         Val::Arr(items) if items.is_empty() => out.write_all(b"[]"),
@@ -666,253 +618,266 @@ pub(crate) fn jq(invocation: &mut Invocation<'_>) -> Outcome {
         .name("pa-shell-jq".to_string())
         .stack_size(STACK_BYTES)
         .spawn(move || {
-            let outcome = pa_types::session_scope::catching_panics(AssertUnwindSafe(|| -> Outcome {
-                let stderr = RefCell::new(diagnostics);
-                let mut stdout = std::io::BufWriter::with_capacity(64 * 1024, output);
-                // A fault-injection seam for the tests: a filter that panics.
-                #[cfg(test)]
-                assert!(filter != "pa-test-panic", "a filter panicked");
-                let misuse = |message: String| -> Outcome {
-                    writeln!(stderr.borrow_mut(), "jq: error: {message}")?;
-                    Ok(2)
-                };
-                // One JSON text as its value, or why it is none.
-                let parse_one = |json: &[u8]| -> Result<Val, String> {
-                    if !Nesting::default().admits(json) {
-                        return Err(format!("JSON nested deeper than {DATA_DEPTH} levels"));
-                    }
-                    jaq_json::read::parse_single(json).map_err(|error| error.to_string())
-                };
-
-                // The variables every filter may name, after the named
-                // arguments.
-                let mut bound: Vec<(String, Val)> = Vec::new();
-                for (kind, name, bytes) in arguments {
-                    let bind = match kind {
-                        Named::Text | Named::TextFile => Ok(Val::utf8_str(bytes)),
-                        Named::Json => parse_one(&bytes).map_err(|error| {
-                            format!("Invalid JSON text passed to --argjson: {error}")
-                        }),
-                        Named::JsonFile if !Nesting::default().admits(&bytes) => Err(format!(
-                            "--slurpfile {name}: JSON nested deeper than {DATA_DEPTH} levels"
-                        )),
-                        Named::JsonFile => jaq_json::read::parse_many(&bytes)
-                            .collect::<Result<Val, _>>()
-                            .map_err(|error| format!("--slurpfile {name}: {error}")),
+            let outcome =
+                pa_types::session_scope::catching_panics(AssertUnwindSafe(|| -> Outcome {
+                    let stderr = RefCell::new(diagnostics);
+                    let mut stdout = std::io::BufWriter::with_capacity(64 * 1024, output);
+                    // A fault-injection seam for the tests: a filter that panics.
+                    #[cfg(test)]
+                    assert!(filter != "pa-test-panic", "a filter panicked");
+                    let misuse = |message: String| -> Outcome {
+                        writeln!(stderr.borrow_mut(), "jq: error: {message}")?;
+                        Ok(2)
                     };
-                    match bind {
-                        Ok(bind) => bound.push((format!("${name}"), bind)),
-                        Err(message) => return misuse(message),
-                    }
-                }
-                let mut positionals: Vec<Val> = strings.into_iter().map(Val::from).collect();
-                for json in json_texts {
-                    match parse_one(json.as_bytes()) {
-                        Ok(value) => positionals.push(value),
-                        Err(error) => {
-                            return misuse(format!(
-                                "Invalid JSON text passed to --jsonargs: {error}"
-                            ));
+                    // One JSON text as its value, or why it is none.
+                    let parse_one = |json: &[u8]| -> Result<Val, String> {
+                        if !Nesting::default().admits(json) {
+                            return Err(format!("JSON nested deeper than {DATA_DEPTH} levels"));
                         }
-                    }
-                }
-                let key = |name: &str| Val::from(name.to_string());
-                let environment = Val::obj(
-                    environment
-                        .into_iter()
-                        .map(|(name, value)| (Val::from(name), Val::from(value)))
-                        .collect(),
-                );
-                let given_arguments = Val::obj(Map::from_iter([
-                    (key("positional"), positionals.into_iter().collect()),
-                    (
-                        key("named"),
-                        Val::obj(
-                            bound
-                                .iter()
-                                .map(|(name, value)| (key(&name[1..]), value.clone()))
-                                .collect(),
-                        ),
-                    ),
-                ]));
-                bound.push(("$ARGS".to_string(), given_arguments));
-                bound.push(("$ENV".to_string(), environment.clone()));
+                        jaq_json::read::parse_single(json).map_err(|error| error.to_string())
+                    };
 
-                // The interpreter's functions, with the ones that would
-                // reach the process (its environment, its standard error,
-                // its time zone) or parse JSON of any depth replaced by
-                // ones that act on this command.
-                let own: [Filter<RunPtr<Kind>>; 6] = [
-                    ("env", v(0), |cv| box_once(Ok(cv.0.data().env.clone()))),
-                    ("input_filename", v(0), |cv| {
-                        box_once(Ok(cv.0.data().filename.borrow().clone()))
-                    }),
-                    ("debug_empty", v(0), |cv| {
-                        let mut line = b"[\"DEBUG:\",".to_vec();
-                        // Writing to a vector cannot fail, and a closed
-                        // standard error has no reader left to tell.
-                        let _ = write_json(&mut line, &cv.1, &Layout::default(), 0);
-                        line.extend_from_slice(b"]\n");
-                        let _ = cv.0.data().stderr.borrow_mut().write_all(&line);
-                        Box::new(std::iter::empty())
-                    }),
-                    ("stderr_empty", v(0), |cv| {
-                        let mut text = Vec::new();
-                        match &cv.1 {
-                            Val::TStr(bytes) | Val::BStr(bytes) => text.extend_from_slice(bytes),
-                            Val::Null | Val::Bool(_) | Val::Num(_) | Val::Arr(_) | Val::Obj(_) => {
-                                // As above: neither write has anyone to
-                                // report to.
-                                let _ = write_json(&mut text, &cv.1, &Layout::default(), 0);
-                                text.push(b'\n');
+                    // The variables every filter may name, after the named
+                    // arguments.
+                    let mut bound: Vec<(String, Val)> = Vec::new();
+                    for (kind, name, bytes) in arguments {
+                        let bind = match kind {
+                            Named::Text | Named::TextFile => Ok(Val::utf8_str(bytes)),
+                            Named::Json => parse_one(&bytes).map_err(|error| {
+                                format!("Invalid JSON text passed to --argjson: {error}")
+                            }),
+                            Named::JsonFile if !Nesting::default().admits(&bytes) => Err(format!(
+                                "--slurpfile {name}: JSON nested deeper than {DATA_DEPTH} levels"
+                            )),
+                            Named::JsonFile => jaq_json::read::parse_many(&bytes)
+                                .collect::<Result<Val, _>>()
+                                .map_err(|error| format!("--slurpfile {name}: {error}")),
+                        };
+                        match bind {
+                            Ok(bind) => bound.push((format!("${name}"), bind)),
+                            Err(message) => return misuse(message),
+                        }
+                    }
+                    let mut positionals: Vec<Val> = strings.into_iter().map(Val::from).collect();
+                    for json in json_texts {
+                        match parse_one(json.as_bytes()) {
+                            Ok(value) => positionals.push(value),
+                            Err(error) => {
+                                return misuse(format!(
+                                    "Invalid JSON text passed to --jsonargs: {error}"
+                                ));
                             }
                         }
-                        let _ = cv.0.data().stderr.borrow_mut().write_all(&text);
-                        Box::new(std::iter::empty())
-                    }),
-                    ("tojson", v(0), |cv| {
-                        let mut json = Vec::new();
-                        bome(
-                            write_json(&mut json, &cv.1, &Layout::default(), 0)
-                                .map(|()| Val::utf8_str(json))
-                                .map_err(jaq_json::Error::str),
-                        )
-                    }),
-                    ("fromjson", v(0), |cv| {
-                        bome(cv.1.try_as_utf8_bytes_owned().and_then(|json| {
-                            if !Nesting::default().admits(&json) {
-                                return Err(jaq_json::Error::str(format_args!(
-                                    "cannot parse JSON nested deeper than {DATA_DEPTH} levels"
-                                )));
+                    }
+                    let key = |name: &str| Val::from(name.to_string());
+                    let environment = Val::obj(
+                        environment
+                            .into_iter()
+                            .map(|(name, value)| (Val::from(name), Val::from(value)))
+                            .collect(),
+                    );
+                    let given_arguments = Val::obj(Map::from_iter([
+                        (key("positional"), positionals.into_iter().collect()),
+                        (
+                            key("named"),
+                            Val::obj(
+                                bound
+                                    .iter()
+                                    .map(|(name, value)| (key(&name[1..]), value.clone()))
+                                    .collect(),
+                            ),
+                        ),
+                    ]));
+                    bound.push(("$ARGS".to_string(), given_arguments));
+                    bound.push(("$ENV".to_string(), environment.clone()));
+
+                    // The interpreter's functions, with the ones that would
+                    // reach the process (its environment, its standard error,
+                    // its time zone) or parse JSON of any depth replaced by
+                    // ones that act on this command.
+                    let own: [Filter<RunPtr<Kind>>; 6] = [
+                        ("env", v(0), |cv| box_once(Ok(cv.0.data().env.clone()))),
+                        ("input_filename", v(0), |cv| {
+                            box_once(Ok(cv.0.data().filename.borrow().clone()))
+                        }),
+                        ("debug_empty", v(0), |cv| {
+                            let mut line = b"[\"DEBUG:\",".to_vec();
+                            // Writing to a vector cannot fail, and a closed
+                            // standard error has no reader left to tell.
+                            let _ = write_json(&mut line, &cv.1, &Layout::default(), 0);
+                            line.extend_from_slice(b"]\n");
+                            let _ = cv.0.data().stderr.borrow_mut().write_all(&line);
+                            Box::new(std::iter::empty())
+                        }),
+                        ("stderr_empty", v(0), |cv| {
+                            let mut text = Vec::new();
+                            match &cv.1 {
+                                Val::TStr(bytes) | Val::BStr(bytes) => {
+                                    text.extend_from_slice(bytes);
+                                }
+                                Val::Null
+                                | Val::Bool(_)
+                                | Val::Num(_)
+                                | Val::Arr(_)
+                                | Val::Obj(_) => {
+                                    // As above: neither write has anyone to
+                                    // report to.
+                                    let _ = write_json(&mut text, &cv.1, &Layout::default(), 0);
+                                    text.push(b'\n');
+                                }
                             }
-                            jaq_json::read::parse_single(&json).map_err(|error| {
-                                jaq_json::Error::str(format_args!(
-                                    "cannot parse {} as JSON: {error}",
-                                    cv.1
-                                ))
-                            })
-                        }))
-                    }),
-                ];
-                let functions = jaq_core::funs::<Kind>()
-                    .chain(jaq_std::funs::<Kind>())
-                    .chain(jaq_json::funs::<Kind>())
-                    .filter(|(name, _, _)| {
-                        !own.iter().any(|(mine, _, _)| mine == name)
+                            let _ = cv.0.data().stderr.borrow_mut().write_all(&text);
+                            Box::new(std::iter::empty())
+                        }),
+                        ("tojson", v(0), |cv| {
+                            let mut json = Vec::new();
+                            bome(
+                                write_json(&mut json, &cv.1, &Layout::default(), 0)
+                                    .map(|()| Val::utf8_str(json))
+                                    .map_err(jaq_json::Error::str),
+                            )
+                        }),
+                        ("fromjson", v(0), |cv| {
+                            bome(cv.1.try_as_utf8_bytes_owned().and_then(|json| {
+                                if !Nesting::default().admits(&json) {
+                                    return Err(jaq_json::Error::str(format_args!(
+                                        "cannot parse JSON nested deeper than {DATA_DEPTH} levels"
+                                    )));
+                                }
+                                jaq_json::read::parse_single(&json).map_err(|error| {
+                                    jaq_json::Error::str(format_args!(
+                                        "cannot parse {} as JSON: {error}",
+                                        cv.1
+                                    ))
+                                })
+                            }))
+                        }),
+                    ];
+                    let functions = jaq_core::funs::<Kind>()
+                        .chain(jaq_std::funs::<Kind>())
+                        .chain(jaq_json::funs::<Kind>())
+                        .filter(|(name, _, _)| {
+                            !own.iter().any(|(mine, _, _)| mine == name)
                             // The process's time zone, not the shell's.
                             && !["localtime", "strflocaltime"].contains(name)
-                    })
-                    .chain(
-                        jaq_std::input::funs::<Kind>()
-                            .into_vec()
-                            .into_iter()
-                            .map(run::<Kind>),
-                    )
-                    .chain(own.clone().into_iter().map(run::<Kind>));
+                        })
+                        .chain(
+                            jaq_std::input::funs::<Kind>()
+                                .into_vec()
+                                .into_iter()
+                                .map(run::<Kind>),
+                        )
+                        .chain(own.clone().into_iter().map(run::<Kind>));
 
-                let arena = Arena::default();
-                let loader = Loader::new(
-                    jaq_core::defs()
-                        .chain(jaq_std::defs())
-                        .chain(jaq_json::defs())
-                        .chain(load::parse(JQ_DEFINITIONS, |parser| parser.defs()).unwrap_or_default()),
-                );
-                // Why the filter cannot run here, one line per reason.
-                let mut faults: Vec<String> = Vec::new();
-                let near = |found: &str| {
-                    if found.is_empty() {
-                        "at the end of the filter".to_string()
-                    } else {
-                        format!("at {:?}", found.chars().take(20).collect::<String>())
-                    }
-                };
-                let compiled = match loader.load(
-                    &arena,
-                    File {
-                        path: (),
-                        code: filter.as_str(),
-                    },
-                ) {
-                    Ok(modules) => Compiler::default()
-                        .with_funs(functions)
-                        .with_global_vars(bound.iter().map(|(name, _)| name.as_str()))
-                        .compile(modules)
-                        .map_err(|errors| {
-                            for (found, undefined) in
-                                errors.into_iter().flat_map(|(_, errors)| errors)
-                            {
-                                faults.push(match undefined {
-                                    jaq_core::compile::Undefined::Filter(arity) => {
-                                        format!("{found}/{arity} is not defined")
-                                    }
-                                    // The enum is open to new kinds of names.
-                                    other => {
-                                        format!("{} {found} is not defined", other.as_str())
-                                    }
-                                });
-                            }
-                        }),
-                    Err(errors) => {
-                        for (_, error) in errors {
-                            match error {
-                                load::Error::Io(errors) => {
-                                    faults.extend(errors.into_iter().map(|(path, error)| {
-                                        format!("could not load {path}: {error}")
-                                    }));
-                                }
-                                load::Error::Lex(errors) => {
-                                    faults.extend(errors.into_iter().map(|(expected, found)| {
-                                        format!(
-                                            "syntax error: expected {} {}",
-                                            expected.as_str(),
-                                            near(found)
-                                        )
-                                    }));
-                                }
-                                load::Error::Parse(errors) => {
-                                    faults.extend(errors.into_iter().map(|(expected, found)| {
-                                        format!(
-                                            "syntax error: expected {} {}",
-                                            expected.as_str(),
-                                            near(found)
-                                        )
-                                    }));
-                                }
-                            }
+                    let arena = Arena::default();
+                    let loader = Loader::new(
+                        jaq_core::defs()
+                            .chain(jaq_std::defs())
+                            .chain(jaq_json::defs())
+                            .chain(
+                                load::parse(JQ_DEFINITIONS, |parser| parser.defs())
+                                    .unwrap_or_default(),
+                            ),
+                    );
+                    // Why the filter cannot run here, one line per reason.
+                    let mut faults: Vec<String> = Vec::new();
+                    let near = |found: &str| {
+                        if found.is_empty() {
+                            "at the end of the filter".to_string()
+                        } else {
+                            format!("at {:?}", found.chars().take(20).collect::<String>())
                         }
-                        Err(())
-                    }
-                };
-                let Ok(compiled) = compiled else {
-                    // jq itself knows whether the filter is wrong or only
-                    // beyond this interpreter, and says so in its own words.
-                    if has_program {
-                        return Err(Failure::Unsupported("this filter".to_string()));
-                    }
-                    let mut stderr = stderr.borrow_mut();
-                    for fault in &faults {
-                        writeln!(stderr, "jq: error: {fault}")?;
-                    }
-                    writeln!(stderr, "jq: {} compile error(s)", faults.len().max(1))?;
-                    return Ok(3);
-                };
+                    };
+                    let compiled = match loader.load(
+                        &arena,
+                        File {
+                            path: (),
+                            code: filter.as_str(),
+                        },
+                    ) {
+                        Ok(modules) => Compiler::default()
+                            .with_funs(functions)
+                            .with_global_vars(bound.iter().map(|(name, _)| name.as_str()))
+                            .compile(modules)
+                            .map_err(|errors| {
+                                for (found, undefined) in
+                                    errors.into_iter().flat_map(|(_, errors)| errors)
+                                {
+                                    faults.push(match undefined {
+                                        jaq_core::compile::Undefined::Filter(arity) => {
+                                            format!("{found}/{arity} is not defined")
+                                        }
+                                        // The enum is open to new kinds of names.
+                                        other => {
+                                            format!("{} {found} is not defined", other.as_str())
+                                        }
+                                    });
+                                }
+                            }),
+                        Err(errors) => {
+                            for (_, error) in errors {
+                                match error {
+                                    load::Error::Io(errors) => {
+                                        faults.extend(errors.into_iter().map(|(path, error)| {
+                                            format!("could not load {path}: {error}")
+                                        }));
+                                    }
+                                    load::Error::Lex(errors) => {
+                                        faults.extend(errors.into_iter().map(
+                                            |(expected, found)| {
+                                                format!(
+                                                    "syntax error: expected {} {}",
+                                                    expected.as_str(),
+                                                    near(found)
+                                                )
+                                            },
+                                        ));
+                                    }
+                                    load::Error::Parse(errors) => {
+                                        faults.extend(errors.into_iter().map(
+                                            |(expected, found)| {
+                                                format!(
+                                                    "syntax error: expected {} {}",
+                                                    expected.as_str(),
+                                                    near(found)
+                                                )
+                                            },
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(())
+                        }
+                    };
+                    let Ok(compiled) = compiled else {
+                        // jq itself knows whether the filter is wrong or only
+                        // beyond this interpreter, and says so in its own words.
+                        if has_program {
+                            return Err(Failure::Unsupported("this filter".to_string()));
+                        }
+                        let mut stderr = stderr.borrow_mut();
+                        for fault in &faults {
+                            writeln!(stderr, "jq: error: {fault}")?;
+                        }
+                        writeln!(stderr, "jq: {} compile error(s)", faults.len().max(1))?;
+                        return Ok(3);
+                    };
 
-                let filename = RefCell::new(Val::Null);
-                let mut failed = false;
-                let mut values: Box<dyn Iterator<Item = Result<Val, String>> + '_> = if slurp
-                    && raw_input
-                {
-                    let mut text = Vec::new();
-                    let mut read = Ok(());
-                    for (_, mut reader) in sources {
-                        read = read.and(reader.read_to_end(&mut text).map(|_| ()));
-                    }
-                    Box::new(std::iter::once(
-                        read.map(|()| Val::utf8_str(text))
-                            .map_err(|error| reason(&error)),
-                    ))
-                } else {
-                    Box::new(
+                    let filename = RefCell::new(Val::Null);
+                    let mut failed = false;
+                    let mut values: Box<dyn Iterator<Item = Result<Val, String>> + '_> =
+                        if slurp && raw_input {
+                            let mut text = Vec::new();
+                            let mut read = Ok(());
+                            for (_, mut reader) in sources {
+                                read = read.and(reader.read_to_end(&mut text).map(|_| ()));
+                            }
+                            Box::new(std::iter::once(
+                                read.map(|()| Val::utf8_str(text))
+                                    .map_err(|error| reason(&error)),
+                            ))
+                        } else {
+                            Box::new(
                         sources
                             .into_iter()
                             .flat_map(
@@ -951,115 +916,115 @@ pub(crate) fn jq(invocation: &mut Invocation<'_>) -> Outcome {
                                 go_on
                             }),
                     )
-                };
-                if slurp && !raw_input {
-                    let all = values.by_ref().collect::<Result<Val, String>>();
-                    values = Box::new(std::iter::once(all));
-                }
-                let inputs = RcIter::new(values);
-                let nothing = RcIter::new(std::iter::once(Ok(Val::Null)));
-                let data = Data {
-                    lut: &compiled.lut,
-                    inputs: &inputs,
-                    stderr: &stderr,
-                    env: &environment,
-                    filename: &filename,
-                };
-                let context = Ctx::<Kind>::new(
-                    &data,
-                    Vars::new(bound.into_iter().map(|(_, value)| value)),
-                );
-
-                // What the command exits with besides `-e`'s verdict on the
-                // last value: 5 when input could not be parsed or the filter
-                // failed on the last input, or what `halt` gave.
-                let mut failure = None;
-                let mut last: Option<bool> = None;
-                let mains: Inputs<'_, Val> = if null_input { &nothing } else { &inputs };
-                'inputs: for input in mains {
-                    let input = match input {
-                        Ok(input) => input,
-                        Err(message) => {
-                            stdout.flush()?;
-                            writeln!(stderr.borrow_mut(), "jq: parse error: {message}")?;
-                            failure = Some(5);
-                            break;
-                        }
+                        };
+                    if slurp && !raw_input {
+                        let all = values.by_ref().collect::<Result<Val, String>>();
+                        values = Box::new(std::iter::once(all));
+                    }
+                    let inputs = RcIter::new(values);
+                    let nothing = RcIter::new(std::iter::once(Ok(Val::Null)));
+                    let data = Data {
+                        lut: &compiled.lut,
+                        inputs: &inputs,
+                        stderr: &stderr,
+                        env: &environment,
+                        filename: &filename,
                     };
-                    failure = None;
-                    for output in compiled.id.run::<Kind>((context.clone(), input)) {
-                        if stop.requested() {
-                            return Err(Failure::Stopped);
-                        }
-                        match output.map_err(jaq_core::Exn::get_err) {
-                            Ok(value) => {
-                                last = Some(!matches!(value, Val::Null | Val::Bool(false)));
-                                match &value {
-                                    Val::TStr(bytes) | Val::BStr(bytes) if raw => {
-                                        stdout.write_all(bytes)?;
-                                    }
-                                    Val::Null
-                                    | Val::Bool(_)
-                                    | Val::Num(_)
-                                    | Val::TStr(_)
-                                    | Val::BStr(_)
-                                    | Val::Arr(_)
-                                    | Val::Obj(_) => write_json(&mut stdout, &value, &layout, 0)?,
-                                }
-                                if !join {
-                                    stdout.write_all(b"\n")?;
-                                }
-                            }
-                            // The filter failed on this input; the next one
-                            // is still run.
-                            Err(Ok(error)) => {
+                    let context = Ctx::<Kind>::new(
+                        &data,
+                        Vars::new(bound.into_iter().map(|(_, value)| value)),
+                    );
+
+                    // What the command exits with besides `-e`'s verdict on the
+                    // last value: 5 when input could not be parsed or the filter
+                    // failed on the last input, or what `halt` gave.
+                    let mut failure = None;
+                    let mut last: Option<bool> = None;
+                    let mains: Inputs<'_, Val> = if null_input { &nothing } else { &inputs };
+                    'inputs: for input in mains {
+                        let input = match input {
+                            Ok(input) => input,
+                            Err(message) => {
                                 stdout.flush()?;
-                                let mut stderr = stderr.borrow_mut();
-                                match error.into_val() {
-                                    Val::TStr(text) | Val::BStr(text) => {
-                                        let text = String::from_utf8_lossy(&text);
-                                        // What jq does here and this
-                                        // interpreter does not.
-                                        let hint = if text.starts_with("cannot use null as iterable") {
-                                            " (the built-in jq does not create a missing object or array on assignment: set the parent first, as in `.a //= {} | .a.b = 1`)"
-                                        } else {
-                                            ""
-                                        };
-                                        writeln!(stderr, "jq: error: {text}{hint}")?;
-                                    }
-                                    thrown @ (Val::Null
-                                    | Val::Bool(_)
-                                    | Val::Num(_)
-                                    | Val::Arr(_)
-                                    | Val::Obj(_)) => {
-                                        stderr.write_all(b"jq: error (not a string): ")?;
-                                        write_json(&mut **stderr, &thrown, &Layout::default(), 0)?;
-                                        stderr.write_all(b"\n")?;
-                                    }
-                                }
+                                writeln!(stderr.borrow_mut(), "jq: parse error: {message}")?;
                                 failure = Some(5);
                                 break;
                             }
-                            // `halt`: the command ends here with the code
-                            // it gave.
-                            Err(Err(halt)) => {
-                                failure = Some(halt.get_halt().unwrap_or(5));
-                                break 'inputs;
+                        };
+                        failure = None;
+                        for output in compiled.id.run::<Kind>((context.clone(), input)) {
+                            if stop.requested() {
+                                return Err(Failure::Stopped);
+                            }
+                            match output.map_err(jaq_core::Exn::get_err) {
+                                Ok(value) => {
+                                    last = Some(!matches!(value, Val::Null | Val::Bool(false)));
+                                    match &value {
+                                        Val::TStr(bytes) | Val::BStr(bytes) if raw => {
+                                            stdout.write_all(bytes)?;
+                                        }
+                                        Val::Null
+                                        | Val::Bool(_)
+                                        | Val::Num(_)
+                                        | Val::TStr(_)
+                                        | Val::BStr(_)
+                                        | Val::Arr(_)
+                                        | Val::Obj(_) => {
+                                            write_json(&mut stdout, &value, &layout, 0)?;
+                                        }
+                                    }
+                                    if !join {
+                                        stdout.write_all(b"\n")?;
+                                    }
+                                }
+                                // The filter failed on this input; the next one
+                                // is still run.
+                                Err(Ok(error)) => {
+                                    stdout.flush()?;
+                                    let mut stderr = stderr.borrow_mut();
+                                    match error.into_val() {
+                                        Val::TStr(text) | Val::BStr(text) => {
+                                            let text = String::from_utf8_lossy(&text);
+                                            writeln!(stderr, "jq: error: {text}")?;
+                                        }
+                                        thrown @ (Val::Null
+                                        | Val::Bool(_)
+                                        | Val::Num(_)
+                                        | Val::Arr(_)
+                                        | Val::Obj(_)) => {
+                                            stderr.write_all(b"jq: error (not a string): ")?;
+                                            write_json(
+                                                &mut **stderr,
+                                                &thrown,
+                                                &Layout::default(),
+                                                0,
+                                            )?;
+                                            stderr.write_all(b"\n")?;
+                                        }
+                                    }
+                                    failure = Some(5);
+                                    break;
+                                }
+                                // `halt`: the command ends here with the code
+                                // it gave.
+                                Err(Err(halt)) => {
+                                    failure = Some(halt.get_halt().unwrap_or(5));
+                                    break 'inputs;
+                                }
                             }
                         }
+                        if stop.requested() {
+                            return Err(Failure::Stopped);
+                        }
                     }
-                    if stop.requested() {
-                        return Err(Failure::Stopped);
-                    }
-                }
-                stdout.flush()?;
-                Ok(match (failure, exit_status, last) {
-                    (Some(code), _, _) => code,
-                    (None, false, _) | (None, true, Some(true)) => 0,
-                    (None, true, Some(false)) => 1,
-                    (None, true, None) => 4,
-                })
-            }));
+                    stdout.flush()?;
+                    Ok(match (failure, exit_status, last) {
+                        (Some(code), _, _) => code,
+                        (None, false, _) | (None, true, Some(true)) => 0,
+                        (None, true, Some(false)) => 1,
+                        (None, true, None) => 4,
+                    })
+                }));
             // Unheard when the command was stopped and has gone.
             let _ = finished.send(outcome);
         });
