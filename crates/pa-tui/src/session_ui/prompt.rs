@@ -941,8 +941,9 @@ impl SessionUi {
                 // The daemon can stream the complete turn before the ACK reaches this channel:
                 // turn_end already owns the idle state, and re-arming it would strand WaitIdle
                 // until timeout. The per-submit end watermark also keeps a prior turn's end from
-                // settling a queued later prompt.
-                if self.turn_ends_seen < note.expected_turn_end {
+                // settling a queued later prompt. A run already open (its `agent_start` came
+                // first, or this submit steers it) keeps its clock and tallies.
+                if self.turn_ends_seen < note.expected_turn_end && !self.turn_active {
                     self.turn_active = true;
                     self.start_loader(view);
                     self.dirty = true;
