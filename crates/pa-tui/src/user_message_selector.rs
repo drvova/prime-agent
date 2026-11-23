@@ -140,7 +140,7 @@ impl UserMessageSelector {
                     ),
                 ],
                 width,
-                "",
+                crate::menu_chrome::ELLIPSIS,
             ),
         ];
         lines.extend(search_field_lines(
@@ -191,12 +191,7 @@ impl UserMessageSelector {
                     kb,
                     (!self.filtered.is_empty()).then_some("forks from this message"),
                 )
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "fork", HintRank::Core)
                 .esc(kb, EscVerb::Close)
                 .rows(theme, width),

@@ -502,12 +502,7 @@ impl ConfigSelector {
     /// The footer: Space toggles a resource, Enter applies a level; an unbound action is
     /// omitted, never advertised with a default key.
     fn footer(&self, kb: &KeybindingsManager) -> Footer {
-        let footer = Footer::new().bound(
-            kb,
-            &["tui.select.up", "tui.select.down"],
-            "navigate",
-            HintRank::Useful,
-        );
+        let footer = Footer::new().navigate(kb);
         let footer = match self.kind {
             SelectorKind::ResourceConfig => footer.keys(["space"], "toggle", HintRank::Core),
             SelectorKind::Effort => {

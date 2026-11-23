@@ -375,28 +375,18 @@ impl QuestionPrompt {
                 .bound(kb, &["tui.select.confirm"], "answer", HintRank::Core)
                 .bound(kb, &["tui.select.cancel"], "back", HintRank::Core),
             (Entry::Choosing, QuestionKind::Multi) => Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "move",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .keys(
                     kb.get_keys("app.question.toggle")
                         .into_iter()
                         .chain([format!("1-{digits}")]),
                     "toggle",
-                    HintRank::Core,
+                    HintRank::Useful,
                 )
                 .bound(kb, &["tui.select.confirm"], "answer", HintRank::Core)
                 .bound(kb, &["tui.select.cancel"], "decline", HintRank::Core),
             (Entry::Choosing, QuestionKind::Single | QuestionKind::Text) => Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "choose",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .keys([format!("1-{digits}")], "pick", HintRank::Extra)
                 .bound(kb, &["tui.select.confirm"], "answer", HintRank::Core)
                 .bound(kb, &["tui.select.cancel"], "decline", HintRank::Core),
@@ -482,7 +472,7 @@ mod tests {
                 pad("\u{203a} (\u{2022}) 1. sqlite"),
                 pad("  ( ) 2. redis"),
                 String::new(),
-                "  \u{2191}/\u{2193} choose \u{b7} 1-2 pick \u{b7} Enter answer \u{b7} Esc decline"
+                "  \u{2191}/\u{2193} navigate \u{b7} 1-2 pick \u{b7} Enter answer \u{b7} Esc decline"
                     .to_string(),
             ]
         );
@@ -534,7 +524,7 @@ mod tests {
                 pad("  [ ] 3. c"),
                 "  Continues with b in 24s".to_string(),
                 String::new(),
-                "  \u{2191}/\u{2193} move \u{b7} Space/1-3 toggle \u{b7} Enter answer \u{b7} Esc decline"
+                "  \u{2191}/\u{2193} navigate \u{b7} Space/1-3 toggle \u{b7} Enter answer \u{b7} Esc decline"
                     .to_string(),
             ]
         );

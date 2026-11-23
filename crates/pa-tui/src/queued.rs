@@ -303,7 +303,11 @@ pub fn render_queue(
         crate::Span::styled(hint, theme.fg_style(ThemeColor::Dim)),
     ];
     rows.push(pad_line(
-        truncate_line(&hint_line, width.saturating_sub(1), "..."),
+        truncate_line(
+            &hint_line,
+            width.saturating_sub(1),
+            crate::menu_chrome::ELLIPSIS,
+        ),
         width,
     ));
     rows
@@ -362,7 +366,7 @@ fn preview_row(
     // The right pad keeps the row at the full width like TS, so 1 left pad +
     // content cut to `width - 1` leaves the trailing space.
     let budget = width.saturating_sub(1 + crate::width::str_width(clause));
-    let mut line = truncate_line(&line, budget, "...");
+    let mut line = truncate_line(&line, budget, crate::menu_chrome::ELLIPSIS);
     if !clause.is_empty() {
         line.push(crate::Span::styled(clause.to_string(), dim));
     }
@@ -376,7 +380,10 @@ fn condensed_row(theme: &Theme, counts: &CondensedCounts, width: usize) -> Line 
         crate::Span::raw(" ".repeat(width.min(1))),
         crate::Span::styled(counts.row_text(), theme.fg_style(ThemeColor::Dim)),
     ];
-    pad_line(truncate_line(&line, width.saturating_sub(1), "..."), width)
+    pad_line(
+        truncate_line(&line, width.saturating_sub(1), crate::menu_chrome::ELLIPSIS),
+        width,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

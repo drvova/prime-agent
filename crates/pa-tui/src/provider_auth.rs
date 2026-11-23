@@ -667,12 +667,7 @@ impl ProviderAuthSelector {
                 lines.push(Vec::new());
                 lines.push(
                     Footer::new()
-                        .bound(
-                            kb,
-                            &["tui.select.up", "tui.select.down"],
-                            "navigate",
-                            HintRank::Useful,
-                        )
+                        .navigate(kb)
                         .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                         .esc(kb, EscVerb::Back)
                         .line(theme, width),
@@ -763,12 +758,7 @@ impl ProviderAuthSelector {
         }
         lines.push(
             Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Close)
                 .line(theme, width),

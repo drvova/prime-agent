@@ -177,7 +177,10 @@ fn prompt_header(row: &InjectedPromptRow, theme: &Theme) -> Line {
             if !skills.is_empty() {
                 // The names are cut at the 62 columns the row was laid out with.
                 spans.push(Span::styled(
-                    format!(" \u{b7} {}", truncate_text(&skills.join(", "), 62, "...")),
+                    format!(
+                        " \u{b7} {}",
+                        truncate_text(&skills.join(", "), 62, crate::menu_chrome::ELLIPSIS)
+                    ),
                     dim,
                 ));
             }
@@ -245,7 +248,10 @@ fn goal_label(kind: Option<&str>) -> String {
 /// the default `...` ellipsis.
 fn goal_meta(objective: &str) -> String {
     let collapsed: String = objective.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!(" \u{b7} {}", truncate_text(&collapsed, 70, "..."))
+    format!(
+        " \u{b7} {}",
+        truncate_text(&collapsed, 70, crate::menu_chrome::ELLIPSIS)
+    )
 }
 
 #[cfg(test)]
@@ -338,13 +344,11 @@ mod tests {
         let rows = render_injected_prompt(&row, Detail::Overview, &theme(), 120);
         let rendered = flat(&rows[1]);
         let meta = rendered.trim_end();
-        assert!(meta.ends_with("..."), "ellipsized meta: {meta:?}");
-        let visible: String = meta.trim_end_matches('.').to_string();
-        let preview = visible.trim_end();
-        assert_eq!(str_width(preview) + 3, 91, "meta {meta:?}");
+        assert!(meta.ends_with('\u{2026}'), "ellipsized meta: {meta:?}");
+        assert_eq!(str_width(meta), 91, "meta {meta:?}");
         let prefix = " Goal continuation \u{b7} ";
         assert_eq!(
-            str_width(preview.trim_start_matches(prefix)) + 3,
+            str_width(meta.trim_start_matches(prefix)),
             70,
             "objective {meta:?}"
         );
@@ -384,7 +388,7 @@ mod tests {
         let meta = row_text.trim_end();
         let names = meta.trim_start_matches(" Skills unavailable \u{b7} ");
         assert_eq!(str_width(names), 62, "names width: {names}");
-        assert!(names.ends_with("..."), "ellipsized names: {names}");
+        assert!(names.ends_with('\u{2026}'), "ellipsized names: {names}");
         // No skills details: the label alone.
         let row = InjectedPromptRow {
             kind: InjectedPromptKind::SkillsUnavailable { skills: Vec::new() },

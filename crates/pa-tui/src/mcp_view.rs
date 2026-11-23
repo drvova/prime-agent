@@ -470,7 +470,7 @@ impl McpView {
                         width,
                         kb,
                         query,
-                        "No external services available",
+                        "No MCP connections available",
                     ));
                     lines.push(Vec::new());
                 }
@@ -488,7 +488,11 @@ impl McpView {
                     let text = flatten_to_single_line(
                         &row.detail_text().unwrap_or_else(|| row.status_text().1),
                     );
-                    let line = vec![theme.fg_span(ThemeColor::Muted, format!(" {text}"))];
+                    // The detail shares the title's and the footer's column.
+                    let line = vec![
+                        Span::raw(crate::menu_chrome::CHROME_INDENT),
+                        theme.fg_span(ThemeColor::Muted, text),
+                    ];
                     lines.push(crate::menu_panel::detail_row(theme, width, &line));
                 }
             }
@@ -499,13 +503,13 @@ impl McpView {
             .get(self.selected)
             .and_then(|index| self.rows.get(*index))
             .map(McpRow::action_text);
-        let mut footer = Footer::new().bound(
-            kb,
-            &["tui.select.up", "tui.select.down"],
-            "navigate",
-            HintRank::Useful,
-        );
-        // The action hint appears only when a row is selected (no `Enter select` filler).
+        // The navigation and action hints appear only over rows (no `Enter select` filler, no
+        // arrows over an empty list).
+        let mut footer = if action.is_some() {
+            Footer::new().navigate(kb)
+        } else {
+            Footer::new()
+        };
         if let Some(action) = action {
             footer = footer.bound(kb, &["tui.select.confirm"], action, HintRank::Core);
         }

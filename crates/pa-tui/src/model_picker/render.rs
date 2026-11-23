@@ -388,7 +388,7 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
         }
         let rounded = (value * 1000.0).round() / 1000.0;
         if rounded == 0.0 {
-            return "<0.001".to_string();
+            return "<$0.001".to_string();
         }
         format!("${rounded}")
     };
@@ -416,22 +416,27 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
                     output
                 })
         };
-        let mut labels = vec![Span::raw(" "), theme.fg_span(ThemeColor::Muted, row(0))];
+        // The block shares the title's, the rows' and the footer's text column.
+        let mut labels = vec![
+            Span::raw(CHROME_INDENT),
+            theme.fg_span(ThemeColor::Muted, row(0)),
+        ];
         labels.push(Span::raw(" "));
         labels.push(unit);
         lines.push(vec![Span::raw(" ")]);
         lines.push(labels);
-        lines.push(vec![Span::raw(" "), Span::raw(row(1))]);
+        lines.push(vec![Span::raw(CHROME_INDENT), Span::raw(row(1))]);
         lines.push(vec![Span::raw(" ")]);
     } else {
         for (position, (label, value)) in entries.iter().enumerate() {
             let mut line = vec![
+                Span::raw(CHROME_INDENT),
                 theme.fg_span(ThemeColor::Muted, format!("{label}:")),
                 Span::raw(format!(" {value}")),
             ];
+            // The unit reads as a note on the last price, not as a second price.
             if position == entries.len() - 1 {
-                line.push(Span::raw(" "));
-                line.push(unit.clone());
+                line.push(theme.fg_span(ThemeColor::Muted, format!("  ({PRICE_UNIT_TEXT})")));
             }
             lines.push(line);
         }

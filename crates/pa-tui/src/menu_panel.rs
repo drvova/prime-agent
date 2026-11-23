@@ -186,7 +186,7 @@ pub(crate) fn scrollbar_cells(theme: &Theme, rows: usize, total: usize, start: u
 /// the soft selection background. Surfaces that compose their own row cells (the session tree)
 /// finish through here so every list shares the menus' selection.
 pub(crate) fn finish_menu_row(theme: &Theme, row: &Line, width: usize, selected: bool) -> Line {
-    let mut row = truncate_line(row, width, "");
+    let mut row = truncate_line(row, width, crate::menu_chrome::ELLIPSIS);
     let used = crate::width::spans_width(&row);
     if used < width {
         row.push(Span::raw(" ".repeat(width - used)));
@@ -205,9 +205,13 @@ pub(crate) fn finish_menu_row(theme: &Theme, row: &Line, width: usize, selected:
 }
 
 /// One plain-text cell truncated and padded to its column budget by display width: wide glyphs
-/// never overflow into the next column; no ellipsis — the tables stay aligned.
+/// never overflow into the next column, and a cut value ends in `…` inside the budget, so the
+/// tables stay aligned and a cut never reads as the whole value.
 pub(crate) fn plain_cell(text: &str, width: usize) -> String {
-    crate::width::pad_cell(text, width)
+    crate::width::pad_cell(
+        &crate::width::truncate_to_width(text, width, crate::menu_chrome::ELLIPSIS),
+        width,
+    )
 }
 
 /// Non-newline control characters become spaces, so ANSI/OSC sequences in daemon- or
@@ -251,7 +255,7 @@ pub(crate) fn hug_row(
     width: usize,
     style: Style,
 ) -> Line {
-    let mut row = truncate_line(row, width, "");
+    let mut row = truncate_line(row, width, crate::menu_chrome::ELLIPSIS);
     if !selected {
         return row;
     }
@@ -266,6 +270,36 @@ pub(crate) fn hug_row(
             span
         })
         .collect()
+}
+
+/// One action row under a detail pane (the bash and heartbeat drill-ins): the `›`-marked label
+/// padded to `label_width`, so a pane's descriptions share one column, with the dim description
+/// trailing and the selected row washed over its hug. A row too wide for the pane ends in `…`.
+pub(crate) fn action_row(
+    theme: &Theme,
+    width: usize,
+    label: &str,
+    label_width: usize,
+    description: &str,
+    selected: bool,
+) -> Line {
+    let label = crate::width::pad_cell(label, label_width.max(str_width(label)));
+    let row = vec![
+        Span::raw(if selected { "\u{203a} " } else { "  " }),
+        if selected {
+            theme.bold(Span::raw(label.clone()))
+        } else {
+            theme.fg_span(ThemeColor::Text, label.clone())
+        },
+        theme.fg_span(ThemeColor::Dim, format!("  {description}")),
+    ];
+    hug_row(
+        &row,
+        str_width(&label) + 2 + 2 + str_width(description),
+        selected,
+        width,
+        theme.selection_row_style(),
+    )
 }
 
 /// The selected row's wash spans the full frame width (the agents-view treatment, the operator's
@@ -546,6 +580,44 @@ mod tests {
 
     fn row_text(line: &Line) -> String {
         line.iter().map(|span| span.content.as_str()).collect()
+    }
+
+    /// A cut cell ends in `…` inside its budget, and a pane's action rows share one description
+    /// column.
+    #[test]
+    fn cut_cells_are_marked_and_action_rows_align() {
+        assert_eq!(
+            [
+                plain_cell("cargo build --release", 9),
+                plain_cell("echo hi", 9),
+                plain_cell("\u{4fee}\u{590d}\u{89e3}\u{6790}\u{5668}", 6),
+            ],
+            ["cargo bu\u{2026}", "echo hi  ", "\u{4fee}\u{590d}\u{2026} "].map(str::to_string)
+        );
+        let theme = theme();
+        let action = |label: &str, description: &str, width: usize| {
+            row_text(&action_row(
+                &theme,
+                width,
+                label,
+                16,
+                description,
+                /*selected*/ false,
+            ))
+        };
+        assert_eq!(
+            [
+                action("Resume heartbeat", "Continue scheduled deliveries", 80),
+                action("Stop heartbeat", "Permanently remove this heartbeat", 80),
+                action("Stop heartbeat", "Permanently remove this heartbeat", 40),
+            ],
+            [
+                "  Resume heartbeat  Continue scheduled deliveries",
+                "  Stop heartbeat    Permanently remove this heartbeat",
+                "  Stop heartbeat    Permanently remove \u{2026}",
+            ]
+            .map(str::to_string)
+        );
     }
 
     /// The table cell pads by GRAPHEME width: a multi-codepoint cluster (the family emoji renders

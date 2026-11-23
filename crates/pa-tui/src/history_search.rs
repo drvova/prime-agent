@@ -7,10 +7,8 @@
 
 use crate::editor::HistoryEntry;
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank};
-use crate::menu_panel::{
-    menu_row, no_match_row, scroll_row, scrub_controls, search_field_lines, MenuSegment,
-};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank};
+use crate::menu_panel::{menu_row, scroll_row, scrub_controls, search_field_lines, MenuSegment};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
@@ -221,25 +219,24 @@ impl HistorySearch {
             ));
         }
         if self.filtered.is_empty() {
-            let message = if self.entries.is_empty() {
-                "No history yet"
-            } else {
-                "No matching history"
-            };
-            lines.push(no_match_row(theme, width, message));
+            lines.push(empty_state_row(
+                theme,
+                width,
+                kb,
+                self.search.value(),
+                "No prompts sent in this session yet",
+            ));
         }
-        lines.push(
+        lines.push(Vec::new());
+        // No row, no arrows and no select: an empty list offers only its way out.
+        let footer = if self.filtered.is_empty() {
             Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+        } else {
+            Footer::new()
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-                .esc(kb, EscVerb::Close)
-                .line(theme, width),
-        );
+        };
+        lines.push(footer.esc(kb, EscVerb::Close).line(theme, width));
         lines
     }
 }
@@ -275,10 +272,11 @@ mod tests {
         let rows = search.render(&theme, 44, &kb, now);
         let text = |row: &Line| row.iter().map(|span| &*span.content).collect::<String>();
         assert_eq!(
-            rows[4..7].iter().map(text).collect::<Vec<_>>(),
+            rows[4..].iter().map(text).collect::<Vec<_>>(),
             vec![
                 "\u{203a} fix the parser tests                   now".to_string(),
                 "  Parser refactor plan                    3d".to_string(),
+                String::new(),
                 "  \u{2191}/\u{2193} navigate \u{b7} Enter select \u{b7} Esc close".to_string(),
             ]
         );

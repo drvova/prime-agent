@@ -418,6 +418,12 @@ pub fn truncate_line(line: &Line, max_width: usize, ellipsis: &str) -> Line {
     if line_width(line) <= max_width {
         return line.clone();
     }
+    // A budget too small for the cut mark carries none: the result never exceeds `max_width`.
+    let ellipsis = if str_width(ellipsis) > max_width {
+        ""
+    } else {
+        ellipsis
+    };
     let ellipsis_width = str_width(ellipsis);
     let budget = max_width.saturating_sub(ellipsis_width);
     let mut out: Line = Vec::new();

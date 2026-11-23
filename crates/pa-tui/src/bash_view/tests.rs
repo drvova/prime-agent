@@ -107,8 +107,9 @@ fn the_list_renders_columned_rows_and_one_hint() {
         1,
         "the close hint appears once: {text:?}"
     );
-    assert!(text.iter().any(|row| row
-        .contains("\u{2191}/\u{2193} move \u{b7} Enter/\u{2192} open \u{b7} \u{2190}/Esc close")));
+    assert!(text.iter().any(|row| row.contains(
+        "\u{2191}/\u{2193} navigate \u{b7} Enter/\u{2192} open \u{b7} \u{2190}/Esc close"
+    )));
     for line in &frame {
         assert!(crate::width::spans_width(line) <= 70);
     }
@@ -124,8 +125,9 @@ fn the_list_hint_drops_unbound_keys() {
     let frame = view.render(&theme(), 70, &kb);
     let text = frame_text(&frame);
     assert!(
-        text.iter()
-            .any(|row| row.contains("\u{2191}/\u{2193} move \u{b7} Enter open \u{b7} Esc close")),
+        text.iter().any(
+            |row| row.contains("\u{2191}/\u{2193} navigate \u{b7} Enter open \u{b7} Esc close")
+        ),
         "the emptied open and back bindings drop their arrows: {text:?}"
     );
 }

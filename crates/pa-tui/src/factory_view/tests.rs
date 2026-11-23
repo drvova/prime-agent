@@ -300,7 +300,7 @@ fn the_diagram_renders_states_edges_and_the_fired_marker() {
         "the max_parallel stat: {joined}"
     );
     assert!(
-        joined.contains("1 transitions"),
+        joined.contains("1 transition \u{b7}"),
         "the transitions_fired stat: {joined}"
     );
 }
@@ -649,11 +649,11 @@ fn the_empty_state_names_the_surface() {
     let joined = rows.join("\n");
     assert!(joined.contains("No live factory runs."), "{joined}");
     assert!(joined.contains("(factory-run"), "{joined}");
-    assert!(
-        joined.contains("move"),
-        "the hint names the arrows: {joined}"
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("  \u{2190} back \u{b7} Esc close"),
+        "an empty page offers only its way out: {joined}"
     );
-    assert!(joined.contains("open"), "{joined}");
     assert!(joined.contains("back"), "{joined}");
 }
 

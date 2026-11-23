@@ -175,7 +175,7 @@ pub(crate) fn render_background_completion(
     let header = truncate_line(
         &vec![Span::styled(format!(" {mark} {label}"), color)],
         width,
-        "",
+        crate::menu_chrome::ELLIPSIS,
     );
     let mut out = Vec::new();
     if leading {
