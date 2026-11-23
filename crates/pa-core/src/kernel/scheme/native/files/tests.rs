@@ -10,7 +10,9 @@ use serde_json::{json, Value};
 use crate::fs_edit::{ContextMark, EditFact, FsEditHost, RereadFact, SeenFiles};
 use crate::fs_search::{FsOperation, FsSearchHost, SearchFact};
 use crate::kernel::scheme::SchemeKernelProvisioner;
-use crate::kernel::shared::{host_handler, HostRequestHandlers, HostRequestPayload};
+use crate::kernel::shared::{
+    host_handler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,
+};
 use crate::kernel::spill::SpillStore;
 use crate::symbol_index::{register_symbol_handler, SymbolFact, SymbolIndex};
 use crate::tools::kernel_cell::{
@@ -625,5 +627,72 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
                 },
             ],
         )
+    );
+}
+
+/// A cell's `fs-write` and `fs-edit` show what they changed on its card the
+/// way `edit` does (the canonical path, the file's text before and after
+/// from line 1), and the reply the cell sees does not carry it. A refused or
+/// stale edit shows nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn fs_write_and_fs_edit_show_their_change_on_the_card_as_edit_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    let path = dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("new.txt")
+        .to_string_lossy()
+        .into_owned();
+    let diff = |old_str: &str, new_str: &str, start_line| KernelDiffDisplay {
+        path: path.clone(),
+        old_str: old_str.to_string(),
+        new_str: new_str.to_string(),
+        start_line: Some(start_line),
+    };
+    let mut cards = Vec::new();
+    for code in [
+        r#"(hash-contains? (fs-write "new.txt" "a\nb\n") 'rewrite)"#,
+        r#"(hash-ref (fs-write "new.txt" "a\nc\n") 'created)"#,
+        r#"(hash-ref (fs-write "new.txt" "a\nc\n") 'created)"#,
+        r#"(let ([view (fs-read "new.txt")])
+             (hash-contains?
+               (fs-edit "new.txt" (list (hash 'replace (fs-anchor view 1) 'text "A")
+                                        (hash 'append "d")))
+               'rewrite))"#,
+        r#"(fs-edit "new.txt" (hash 'replace "1:aaa" 'text "x"))"#,
+        r#"(hash-ref (fs-edit "new.txt" (hash 'replace "1:aaa" 'text "x") (hash 'on-stale 'return))
+                     'applied)"#,
+        r#"(fs-write "." "x")"#,
+        r#"(hash-ref (edit "new.txt" "c" "C") 'start-line)"#,
+    ] {
+        let result = kernel
+            .execute(
+                code,
+                KernelExecuteOptions {
+                    signal: None,
+                    timeout_ms: None,
+                    on_stream: None,
+                    on_late_sent_agent_message: None,
+                },
+            )
+            .await
+            .unwrap();
+        cards.push((result.result, result.error.is_some(), result.diffs));
+    }
+    let shown = |value: &str| Some(value.to_string());
+    assert_eq!(
+        cards,
+        vec![
+            (shown("#false"), false, vec![diff("", "a\nb\n", 1)]),
+            (shown("#false"), false, vec![diff("a\nb\n", "a\nc\n", 1)]),
+            (shown("#false"), false, vec![diff("a\nc\n", "a\nc\n", 1)]),
+            (shown("#false"), false, vec![diff("a\nc\n", "A\nc\nd\n", 1)]),
+            (None, true, vec![]),
+            (shown("#false"), false, vec![]),
+            (None, true, vec![]),
+            (shown("2"), false, vec![diff("c", "C", 2)]),
+        ]
     );
 }

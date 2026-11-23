@@ -35,6 +35,8 @@
 //! - `(fs-write path text)` creates the file, or replaces all of it, with
 //!   `text` (missing directories are created): `'path`, `'created`,
 //!   `'total-lines`, `'bytes`, `'check`, `'text`.
+//! - An `fs-edit` or `fs-write` that changed a text file shows the change
+//!   on the cell's card, as `edit` does.
 //! - `(fs-anchor view line)` is the anchor of a 1-based line of an `fs-read`
 //!   view.
 //! - `(edit path old-str new-str)` replaces one exact, unique occurrence of a
@@ -47,7 +49,7 @@ use serde_json::{json, Map, Value};
 
 use super::edit_check::EditChecks;
 use super::edit_replace;
-use crate::fs_edit::FsEditHost;
+use crate::fs_edit::{FsEditHost, REWRITE_KEY};
 use crate::fs_search::FsSearchHost;
 use crate::kernel::scheme::contracts::{self, Spelling};
 use crate::kernel::shared::{HostRequestHandlers, HostRequestPayload, KernelDiffDisplay};
@@ -315,6 +317,7 @@ impl Files {
                 let payload = payload("fs-write", options, WRITE, "path", &self.cwd)?;
                 let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
                 let mut reply = self.request("fs.write", Value::Object(payload), cell)?;
+                show_rewrite(&mut reply, &file);
                 self.attach_check(&mut reply, &file, cell);
                 Ok(reply)
             }
@@ -508,6 +511,7 @@ impl Files {
         payload.insert("edits".to_string(), Value::Array(wire));
         let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
         let mut reply = self.request("fs.edit", Value::Object(payload), cell)?;
+        show_rewrite(&mut reply, &file);
         if reply["applied"] == json!(false) {
             if return_stale {
                 return Ok(reply);
@@ -521,6 +525,30 @@ impl Files {
         }
         self.attach_check(&mut reply, &file, cell);
         Ok(reply)
+    }
+}
+
+/// Take the text before and after off the reply of an `fs.edit` or
+/// `fs.write` that changed `file`, and show the change on the running cell's
+/// card as `edit` shows its own: under the canonical path, from line 1.
+fn show_rewrite(reply: &mut Value, file: &Path) {
+    let Some(rewrite) = reply
+        .as_object_mut()
+        .and_then(|fields| fields.remove(REWRITE_KEY))
+    else {
+        return;
+    };
+    if let Some(kernel) = crate::kernel::scheme::cell::current() {
+        let text = |side: &str| rewrite[side].as_str().unwrap_or_default().to_string();
+        let path = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+        kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
+            KernelDiffDisplay {
+                path: path.to_string_lossy().into_owned(),
+                old_str: text("before"),
+                new_str: text("after"),
+                start_line: Some(1),
+            },
+        ));
     }
 }
 

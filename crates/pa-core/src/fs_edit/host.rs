@@ -5,15 +5,17 @@
 //! Payloads carry the absolute `path` and the REPL's `cwd` (the client
 //! resolves both). A stale-anchor rejection is a normal reply
 //! (`applied: false`); every other failure is an error, and none writes.
+//! A reply that changed a text file also carries [`REWRITE_KEY`]: the file's
+//! text before and after, LF-terminated, for the cell's card.
 
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::seen::SeenFiles;
 use super::write::{parse_write, write};
-use super::{edit, parse_edit, parse_read, read, EditFact, FsEditOperation, Rewrite};
+use super::{edit, parse_edit, parse_read, read, EditFact, FsEditOperation, Rewrite, REWRITE_KEY};
 use crate::kernel::shared::{host_handler, HostRequestHandlers};
 
 /// Observes each finished call (adoption telemetry); never sees a path or
@@ -56,6 +58,18 @@ impl FsEditHost {
         let mut outcome = tokio::task::spawn_blocking(move || run(operation, &data))
             .await
             .context("fs edit thread")?;
+        // The change, for the kernel's file tools to show on the cell's card
+        // (they take it off the reply before the cell sees it).
+        if let Ok((reply, _, Some(Rewrite { before, after }))) = outcome.as_mut() {
+            let text = |lines: &[String]| {
+                let mut text = lines.join("\n");
+                if !lines.is_empty() {
+                    text.push('\n');
+                }
+                text
+            };
+            reply[REWRITE_KEY] = json!({ "before": text(before), "after": text(after) });
+        }
         if let (Some(seen), Some(path), Ok((reply, _, rewrite))) =
             (&self.seen, path.as_ref(), outcome.as_mut())
         {

@@ -45,6 +45,11 @@ const HASH_LETTERS: usize = 3;
 const READ_DEFAULT_LINES: usize = 2_000;
 const READ_MAX_LINES: usize = 20_000;
 
+/// The reply key of an applied `fs.edit` or `fs.write`'s text before and
+/// after (`{before, after}`), which the kernel takes off the reply and shows
+/// on the cell's card.
+pub(crate) const REWRITE_KEY: &str = "rewrite";
+
 /// Which kernel operation ran (the telemetry bucket).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FsEditOperation {
