@@ -758,8 +758,7 @@ impl ProviderAuthSelector {
         }
         lines.push(
             Footer::new()
-                .navigate(kb)
-                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                .list(kb, count, kb.first_key("tui.select.confirm"), "select")
                 .esc(kb, EscVerb::Close)
                 .line(theme, width),
         );

@@ -1251,3 +1251,26 @@ fn running_shell_counts_skip_finished_shells() {
         }
     );
 }
+
+/// A pane too narrow for the whole hint row gives up the open key first: how to move and how to
+/// leave stand longest, the arrows last of all.
+#[test]
+fn a_narrow_pane_footer_keeps_the_arrows_and_the_way_out() {
+    let view = BashView::new(activities(), 24);
+    let footers: Vec<String> = [40, 16]
+        .into_iter()
+        .map(|width| {
+            frame_text(&view.render(&theme(), width, &kb()))
+                .into_iter()
+                .rfind(|row| !row.trim().is_empty())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert_eq!(
+        footers,
+        [
+            "  \u{2191}/\u{2193} navigate \u{b7} \u{2190}/Esc close",
+            "  \u{2191}/\u{2193} navigate",
+        ]
+    );
+}

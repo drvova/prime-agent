@@ -1278,25 +1278,31 @@ impl SettingsMenu {
         if let Some((_, applies)) = self.saved_notice() {
             footer = footer.notice(ThemeColor::Success, applies.hint());
         }
-        let selected_changed = self
+        let selected = self
             .tabs
             .get(self.tab)
-            .and_then(|tab| tab.filtered.get(tab.selected))
-            .is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some());
-        footer = footer
-            .navigate(kb)
-            .keys(["left", "right"], "change", HintRank::Useful);
-        if selected_changed {
+            .and_then(|tab| tab.filtered.get(tab.selected));
+        // A search that hides every row leaves nothing to move to, change, or select: the
+        // footer keeps the tabs and the way out.
+        if selected.is_some() {
+            footer = footer
+                .navigate(kb)
+                .keys(["left", "right"], "change", HintRank::Useful);
+        }
+        if selected.is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some())
+        {
             footer = footer.keys(["delete"], "reset", HintRank::Useful);
         }
-        footer
-            .keys(
-                ["tab".to_string(), format!("1-{tabs}")],
-                "tabs",
-                HintRank::Extra,
-            )
-            .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-            .esc(kb, EscVerb::Close)
+        let footer = footer.keys(
+            ["tab".to_string(), format!("1-{tabs}")],
+            "tabs",
+            HintRank::Extra,
+        );
+        match selected {
+            Some(_) => footer.bound(kb, &["tui.select.confirm"], "select", HintRank::Core),
+            None => footer,
+        }
+        .esc(kb, EscVerb::Close)
     }
 
     /// The submenu render: accent title, muted description, the shared menu

@@ -145,8 +145,16 @@ pub fn overlay_toasts(
         let Some(row) = frame.get_mut(start + offset) else {
             break;
         };
-        // A pill wider than the frame truncates to the frame edge.
-        let pill = format!(" {text} ");
+        // A pill wider than the frame cuts its own text to the frame, ending in the shared cut
+        // mark: the covered row's zone markers ahead of it are never cut through.
+        let pill = format!(
+            " {} ",
+            crate::width::truncate_to_width(
+                text,
+                width.saturating_sub(2),
+                crate::menu_chrome::ELLIPSIS
+            )
+        );
         let pill_width = crate::width::str_width(&pill).min(width);
         let col = width.saturating_sub(pill_width);
         let (markers, rest) = crate::osc133::split_leading_markers(row);

@@ -171,3 +171,25 @@ fn a_subtree_scope_composes_with_the_folder_scope() {
         (vec![row(RowKind::Agent, "worker one")], 0)
     );
 }
+
+/// A narrow view cuts its scope line and search query with the shared mark: neither stops
+/// mid-word as if it were the whole text (the section headings share the same cut).
+#[test]
+fn a_narrow_scope_line_and_query_end_in_the_cut_mark() {
+    let mut mode = two_folder_mode(picker("/a"));
+    mode.query = "saved in a long query that runs past the frame".to_string();
+    let (frame, _) = mode.render_frame(18, 24);
+    let rows: Vec<String> = frame
+        .iter()
+        .map(flat)
+        .map(|row| row.trim_end().to_string())
+        .filter(|row| row.starts_with("Sessions") || row.starts_with(" >"))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            "Sessions \u{b7} / \u{b7} +2\u{2026}",
+            " >  saved in a l\u{2026}",
+        ]
+    );
+}

@@ -289,12 +289,13 @@ impl OnboardingScreen {
             None => lines.push(Vec::new()),
             Some(panel) => lines.extend(panel.render(theme, width, kb)),
         }
-        // A long sign-in link can wrap through the splash's fixed logo rows. Yield the logo
-        // first so the full auth block fits whenever the pane can hold it. On a shorter terminal,
-        // keep the block's final input and action rows visible like the session dock does.
-        if auth_panel_open && lines.len() > height {
+        // A pane too short for the logo and the block yields the logo first, so the question and
+        // its choices (or the welcome's login action) stay on screen. A long sign-in link can
+        // wrap through the logo rows the same way; on a still shorter terminal the auth block
+        // keeps its final input and action rows visible like the session dock does.
+        if lines.len() > height {
             lines.drain(..(LOGO_LINES.len() + 2));
-            if lines.len() > height {
+            if auth_panel_open && lines.len() > height {
                 lines.drain(..lines.len() - height);
             }
         }
@@ -867,6 +868,45 @@ mod tests {
             PrimeTeamPick::Team(team) => assert_eq!(team.team_id, "team-beta"),
             other => panic!("the seeded team answered, got {other:?}"),
         }
+    }
+
+    /// A 40x16 pane wraps the question and its note at the edge and yields the logo, so the
+    /// choices stay on screen and no row runs past the frame.
+    #[test]
+    fn a_small_pane_wraps_the_question_and_keeps_its_choices() {
+        let theme = Theme::builtin("prime", ColorMode::TrueColor);
+        let rows: Vec<String> = OnboardingScreen::new()
+            .render(&theme, 40, 16, &kb())
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|span| span.content.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                " Welcome to PRIME Agent",
+                "",
+                " Share agent traces with Prime",
+                " Intellect?",
+                "",
+                " Trace sharing helps us train better",
+                " open-source models and improve the",
+                " open agent ecosystem for everyone.",
+                "",
+                " > Share",
+                "   Not now",
+                "",
+                " You can change this anytime with",
+                " /traces.",
+                "",
+                "",
+            ]
+        );
     }
 
     /// The installer's banner (install-rust.sh's awk port of this splash)

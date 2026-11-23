@@ -198,3 +198,95 @@ fn every_panel_footer_is_the_shared_hint_row() {
         "every panel here is a list: {footers:?}"
     );
 }
+
+/// A list with no rows (nothing to log out of, nothing to fork, a query or filter that hides
+/// every row) offers only its way out: no arrows and no confirm key over an empty list.
+#[test]
+fn an_emptied_list_offers_only_its_way_out() {
+    use crate::provider_auth::{AuthSelectorKind, ProviderAuthSelector};
+    let kb = KeybindingsManager::new();
+    let theme = theme();
+    let tree = json!({
+        "flatNodes": [{"entry": {
+            "type": "message", "id": "n0", "parentId": null,
+            "timestamp": "2024-01-01T00:00:00.000Z",
+            "message": {"role": "user", "content": "hello", "timestamp": 0},
+        }}],
+        "leafId": "n0",
+    });
+    let mut settings = crate::settings_menu::SettingsMenu::new(
+        crate::settings_menu::settings_menu_rows(&crate::settings_menu::SettingsCurrentValues {
+            available_themes: vec!["prime".to_string()],
+            theme: "prime".to_string(),
+            ..Default::default()
+        }),
+    );
+    for key in ["z", "q", "x"] {
+        settings.handle_key(key, &kb);
+    }
+    let footers = vec![
+        (
+            "login",
+            footer(
+                &ProviderAuthSelector::new(AuthSelectorKind::Login, Vec::new())
+                    .render(&theme, WIDTH, &kb),
+            ),
+        ),
+        (
+            "logout",
+            footer(
+                &ProviderAuthSelector::new(AuthSelectorKind::Logout, Vec::new())
+                    .render(&theme, WIDTH, &kb),
+            ),
+        ),
+        (
+            "fork",
+            footer(
+                &crate::user_message_selector::UserMessageSelector::new(Vec::new())
+                    .render(&theme, WIDTH, &kb),
+            ),
+        ),
+        (
+            "resources",
+            footer(
+                &crate::config_selector::ConfigSelector::new(Vec::new()).render(&theme, WIDTH, &kb),
+            ),
+        ),
+        ("settings", footer(&settings.render(&theme, WIDTH, &kb))),
+        (
+            "tree",
+            footer(
+                &crate::tree_selector::TreeSelector::new(
+                    &tree,
+                    24,
+                    /*skip_summarize_prompt*/ false,
+                    crate::tree_list::FilterMode::LabeledOnly,
+                )
+                .expect("a selector over one node")
+                .render(&theme, WIDTH, &kb),
+            ),
+        ),
+    ];
+    let close = format!("{CHROME_INDENT}Esc close");
+    assert_eq!(
+        footers,
+        vec![
+            ("login", close.clone()),
+            ("logout", close.clone()),
+            ("fork", close.clone()),
+            ("resources", close),
+            (
+                "settings",
+                format!("{CHROME_INDENT}Tab/1-5 tabs \u{b7} Esc close")
+            ),
+            (
+                "tree",
+                format!(
+                    "{CHROME_INDENT}Ctrl+O/Shift+Ctrl+O filter \u{b7} \
+                     Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A filters \u{b7} Shift+T label time \u{b7} \
+                     Esc close"
+                ),
+            ),
+        ]
+    );
+}

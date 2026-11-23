@@ -213,20 +213,51 @@ impl Footer {
         )
     }
 
+    /// A list's arrows and confirm hint, offered only while the list has rows: an empty list
+    /// advertises neither, so it offers only the way out the caller adds after. `confirm` is the
+    /// raw key set the confirm hint shows (a binding's first key, or a literal key the list
+    /// matches, like a checkbox list's Space); an empty set drops the hint.
+    #[must_use]
+    pub(crate) fn list<I>(
+        self,
+        kb: &KeybindingsManager,
+        rows: usize,
+        confirm: I,
+        verb: &str,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        if rows == 0 {
+            return self;
+        }
+        self.navigate(kb).keys(confirm, verb, HintRank::Core)
+    }
+
     /// A dock pane's list footer (the bash and heartbeat panes): navigate and open while the
     /// list has rows, the close keys always. An empty list advertises no key that does nothing,
-    /// and an override that empties a binding drops its key.
+    /// and an override that empties a binding drops its key. The arrows outrank the open key here
+    /// (rightmost drops first among the last two), so a narrow pane keeps how to move and how to
+    /// leave: `Enter/→ open` is the hint a narrow row gives up first.
     #[must_use]
     pub(crate) fn pane_list(kb: &KeybindingsManager, rows: usize) -> Self {
         let footer = if rows == 0 {
             Self::new()
         } else {
-            Self::new().navigate(kb).bound(
-                kb,
-                &["tui.select.confirm", "app.modal.open"],
-                "open",
-                HintRank::Core,
-            )
+            Self::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Core,
+                )
+                .bound(
+                    kb,
+                    &["tui.select.confirm", "app.modal.open"],
+                    "open",
+                    HintRank::Useful,
+                )
         };
         footer.bound(
             kb,

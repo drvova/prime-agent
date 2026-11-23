@@ -25,7 +25,7 @@ impl AuthPanel {
             ]);
             lines.push(title_row(theme, width, &self.title));
             if let Some(subtitle) = &self.subtitle {
-                lines.push(content_row(theme, width, ThemeColor::Muted, subtitle));
+                lines.extend(content_rows(theme, width, ThemeColor::Muted, subtitle));
             }
         }
         // The team picker is its own panel: the rule, the title, the subtitle, the bordered
@@ -81,8 +81,7 @@ impl AuthPanel {
             }
             lines.push(
                 Footer::new()
-                    .navigate(kb)
-                    .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                    .list(kb, count, kb.first_key("tui.select.confirm"), "select")
                     .esc(kb, EscVerb::Close)
                     .line(theme, width),
             );
@@ -96,7 +95,7 @@ impl AuthPanel {
         lines.push(Vec::new());
         // The section title rides the first progress line (text colour).
         if self.progress_open {
-            lines.push(content_row(
+            lines.extend(content_rows(
                 theme,
                 width,
                 ThemeColor::Text,
@@ -104,7 +103,7 @@ impl AuthPanel {
             ));
         }
         for message in &self.progress {
-            lines.push(content_row(theme, width, ThemeColor::Muted, message));
+            lines.extend(content_rows(theme, width, ThemeColor::Muted, message));
         }
         if let Some(url) = &self.auth_url {
             // The URL and the instructions are provider-supplied: control characters can never
@@ -151,7 +150,7 @@ impl AuthPanel {
             if let Some(code) = verification_code(&instructions) {
                 // A blank row separates the sign-in link from the code below it.
                 lines.push(Vec::new());
-                lines.push(content_row(
+                lines.extend(content_rows(
                     theme,
                     width,
                     ThemeColor::Muted,
@@ -169,9 +168,9 @@ impl AuthPanel {
                 lines.push(crate::width::truncate_line(&bold_code, width, ""));
             } else if self.auth_instructions.is_some() {
                 // Provider instructions already describe the browser step.
-                lines.push(content_row(theme, width, ThemeColor::Text, &instructions));
+                lines.extend(content_rows(theme, width, ThemeColor::Text, &instructions));
             } else {
-                lines.push(content_row(theme, width, ThemeColor::Muted, &instructions));
+                lines.extend(content_rows(theme, width, ThemeColor::Muted, &instructions));
             }
         }
         match &mut self.input {
@@ -192,7 +191,7 @@ impl AuthPanel {
                     PastePromptTone::Muted => ThemeColor::Muted,
                     PastePromptTone::Text => ThemeColor::Text,
                 };
-                lines.push(content_row(theme, width, prompt_tone, prompt));
+                lines.extend(content_rows(theme, width, prompt_tone, prompt));
                 let placeholder = match style {
                     PasteStyle::Visible => PASTE_PLACEHOLDER,
                     PasteStyle::Masked => TOKEN_PLACEHOLDER,
@@ -220,7 +219,7 @@ impl AuthPanel {
                     )),
                 }
                 if let Some(notice) = &self.notice {
-                    lines.push(content_row(theme, width, ThemeColor::Warning, notice));
+                    lines.extend(content_rows(theme, width, ThemeColor::Warning, notice));
                 }
                 // The blank row between the field and the actions (the actions row rides last
                 // while the URL block shows; a paste-only panel keeps its own hint row).
@@ -247,7 +246,7 @@ impl AuthPanel {
             {
                 lines.push(Vec::new());
             }
-            lines.push(content_row(theme, width, ThemeColor::Accent, waiting));
+            lines.extend(content_rows(theme, width, ThemeColor::Accent, waiting));
         }
         // The URL block's actions row rides last — the copy-key hint with the copy status,
         // the submit hint while the paste field is mounted, and the cancel hint.
@@ -328,15 +327,22 @@ pub(crate) fn auth_actions_row(
 
 /// One content row at the panel's single-column indent: `" {text}"` in `tone`, truncated to
 /// the frame width.
-fn content_row(theme: &Theme, width: usize, tone: ThemeColor, text: &str) -> Line {
-    crate::width::truncate_line(
-        &vec![
-            Span::raw(" ".to_string()),
-            theme.fg_span(tone, text.to_string()),
-        ],
-        width,
-        "",
-    )
+/// One content line at the panel's one-cell indent, in its tone: a line wider than the panel
+/// wraps under that indent (a sign-in step, an instruction, or a prompt the user must read is
+/// never cut off at the edge).
+fn content_rows(theme: &Theme, width: usize, tone: ThemeColor, text: &str) -> Vec<Line> {
+    crate::width::wrap_text(text, width.saturating_sub(1).max(1))
+        .into_iter()
+        .map(|row| {
+            let mut line: Line = vec![Span::raw(" ".to_string())];
+            line.extend(
+                row.into_iter()
+                    .map(|span| theme.fg_span(tone, span.content)),
+            );
+            // A pane narrower than the indent and one cell keeps the indent only.
+            crate::width::truncate_line(&line, width, "")
+        })
+        .collect()
 }
 
 /// TS `addInstructions`' code arm (`/^(?:Code|Enter code):\s*(.+)$/i`): the verification

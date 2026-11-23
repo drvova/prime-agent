@@ -252,11 +252,16 @@ pub fn render_goal_panel(
     let facts: Vec<(&str, String)> = vec![
         ("status", goal_status_word(goal.status).to_string()),
         ("elapsed", format_goal_elapsed(goal.time_used_seconds)),
+        // The label names the unit; the counts read like the tray's and the context window's.
         (
             "tokens",
             match (goal.tokens_used, goal.token_budget) {
-                (used, Some(budget)) => format!("{used} / {budget} tokens"),
-                (used, None) => format!("{used} tokens"),
+                (used, Some(budget)) => format!(
+                    "{} / {}",
+                    crate::chrome::format_token_count(used),
+                    crate::chrome::format_token_count(budget)
+                ),
+                (used, None) => crate::chrome::format_token_count(used),
             },
         ),
     ];
@@ -273,7 +278,7 @@ pub fn render_goal_panel(
                 theme.fg_span(ThemeColor::Muted, value.clone()),
             ],
             width,
-            "",
+            crate::menu_chrome::ELLIPSIS,
         ));
     }
     lines.push(Vec::new());
@@ -470,7 +475,11 @@ mod tests {
         assert!(joined.contains("status"), "{joined}");
         assert!(joined.contains("active"), "{joined}");
         assert!(joined.contains("2m 05s"), "{joined}");
-        assert!(joined.contains("18000 / 40000 tokens"), "{joined}");
+        assert!(
+            text.iter()
+                .any(|row| row.trim_end() == "  tokens   18k / 40k"),
+            "{joined}"
+        );
         let hint = text
             .iter()
             .position(|row| row.contains("close"))

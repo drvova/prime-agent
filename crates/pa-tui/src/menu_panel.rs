@@ -554,7 +554,7 @@ pub(crate) fn no_match_row(theme: &Theme, width: usize, message: &str) -> Line {
         Span::raw("  "),
         theme.fg_span(ThemeColor::Muted, message.to_string()),
     ];
-    truncate_line(&line, width, "")
+    truncate_line(&line, width, crate::menu_chrome::ELLIPSIS)
 }
 
 /// One detail-block row: the selected item's metadata under the list,

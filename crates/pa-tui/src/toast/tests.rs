@@ -176,6 +176,31 @@ fn an_overlong_pill_truncates_to_the_frame_width() {
     );
 }
 
+/// A pill wider than the frame over a zone-marked row cuts its own text, ending in the shared
+/// mark; the row's zone marker stays whole instead of printing as text.
+#[test]
+fn an_overlong_pill_over_a_marked_row_cuts_its_text_not_the_marker() {
+    let mut frame = vec![line_of("row")];
+    crate::osc133::mark_start(&mut frame[0]);
+    overlay_toasts(
+        &mut frame,
+        0,
+        1,
+        &["a very long toast label that cannot fit".to_string()],
+        20,
+        Style::default(),
+    );
+    let rendered: String = frame[0].iter().map(|span| span.content.as_str()).collect();
+    assert_eq!(
+        rendered,
+        format!(
+            "{}{} a very long toast\u{2026} ",
+            crate::osc133::ZONE_START,
+            crate::hyperlinks::OSC8_CLOSE
+        )
+    );
+}
+
 #[test]
 fn a_tall_stack_overlays_only_what_fits() {
     let mut frame = vec![line_of("row"); 2];

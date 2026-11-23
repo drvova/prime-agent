@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::keybindings::KeybindingsManager;
 use crate::keys::key_event_to_id;
-use crate::menu_chrome::{EscVerb, Footer, HintRank};
+use crate::menu_chrome::{EscVerb, Footer};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
@@ -508,13 +508,18 @@ impl ConfigSelector {
     }
 
     /// The footer: Space toggles a resource, Enter applies a level; an unbound action is
-    /// omitted, never advertised with a default key.
+    /// omitted, never advertised with a default key, and a list the query emptied offers only
+    /// its way out.
     fn footer(&self, kb: &KeybindingsManager) -> Footer {
-        let footer = Footer::new().navigate(kb);
+        let items = self
+            .filtered
+            .iter()
+            .filter(|row_index| matches!(self.rows[**row_index], SelectorRow::Item { .. }))
+            .count();
         let footer = match self.kind {
-            SelectorKind::ResourceConfig => footer.keys(["space"], "toggle", HintRank::Core),
+            SelectorKind::ResourceConfig => Footer::new().list(kb, items, ["space"], "toggle"),
             SelectorKind::Effort => {
-                footer.bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
+                Footer::new().list(kb, items, kb.first_key("tui.select.confirm"), "select")
             }
         };
         footer.esc(kb, EscVerb::Close)
