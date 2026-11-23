@@ -34,7 +34,7 @@ const TOOL_RESULT_MAX_CHARS: usize = 2_000;
 const TOOL_RESULT_TAIL_CHARS: usize = 500;
 
 /// Extract file ops from an assistant tool call (edit paths) or a tool
-/// result (kernel edit-skill diffs in `details`).
+/// result (a kernel cell's edit diffs and `fs-read` reads in `details`).
 pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut FileOperations) {
     match message {
         AgentMessage::ToolResult(result) => {
@@ -44,6 +44,16 @@ pub fn extract_file_ops_from_message(message: &AgentMessage, file_ops: &mut File
             let Some(details) = result.details.as_ref().and_then(|d| d.as_object()) else {
                 return;
             };
+            for path in details
+                .get("fileReads")
+                .and_then(|reads| reads.as_array())
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|path| !path.is_empty())
+            {
+                file_ops.read.insert(path.to_string());
+            }
             let Some(diffs) = details.get("diffs").and_then(|d| d.as_array()) else {
                 return;
             };
@@ -363,25 +373,32 @@ mod tests {
         assert!(format_file_operations(&read, &modified).contains("<modified-files>"));
     }
 
+    /// A cell's edits and reads both count; a file it also edited is listed
+    /// as modified only.
     #[test]
-    fn file_ops_from_kernel_diffs() {
+    fn file_ops_from_kernel_diffs_and_reads() {
         let mut ops = FileOperations::default();
         ops.read.insert("/tmp/other.rs".to_string());
         let result = AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
             tool_call_id: "c".to_string(),
-            tool_name: "python_repl".to_string(),
+            tool_name: "eval".to_string(),
             content: vec![],
             details: Some(serde_json::json!({
-                "diffs": [{ "path": "/pkg/lib.rs", "oldStr": "a", "newStr": "b" }]
+                "diffs": [{ "path": "/pkg/lib.rs", "oldStr": "a", "newStr": "b" }],
+                "fileReads": ["/pkg/read.rs", "/pkg/lib.rs"],
             })),
             is_error: false,
             timestamp: 0,
             rest: serde_json::Map::default(),
         });
         extract_file_ops_from_message(&result, &mut ops);
-        assert!(ops.edited.contains("/pkg/lib.rs"));
-        let (read, modified) = compute_file_lists(&ops);
-        assert!(read.iter().all(|path| !modified.contains(path)));
+        assert_eq!(
+            compute_file_lists(&ops),
+            (
+                vec!["/pkg/read.rs".to_string(), "/tmp/other.rs".to_string()],
+                vec!["/pkg/lib.rs".to_string()]
+            )
+        );
     }
 
     #[test]

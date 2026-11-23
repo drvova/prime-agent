@@ -17,6 +17,7 @@ pub mod compact_session;
 pub mod compaction;
 pub mod compaction_carry;
 pub mod compaction_exec;
+pub(crate) mod compaction_files;
 pub mod compaction_trace;
 pub mod compaction_utils;
 pub mod context_breakdown;

@@ -113,6 +113,7 @@ fn get_message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
                 || payload.custom_type == super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
+                || payload.custom_type == super::compaction_files::RECENT_FILES_CUSTOM_TYPE
             {
                 return None;
             }

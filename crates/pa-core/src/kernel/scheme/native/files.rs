@@ -286,11 +286,20 @@ impl Files {
         options: &Value,
     ) -> anyhow::Result<Value> {
         match operation {
-            "fs-read" => self.request(
-                "fs.read",
-                Value::Object(payload("fs-read", options, READ, "path", &self.cwd)?),
-                cell,
-            ),
+            "fs-read" => {
+                let payload = payload("fs-read", options, READ, "path", &self.cwd)?;
+                let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
+                let reply = self.request("fs.read", Value::Object(payload), cell)?;
+                // The read rides the cell's result, as an edit's diff does:
+                // a compaction reads the session's latest files from them.
+                if let Some(kernel) = crate::kernel::scheme::cell::current() {
+                    let path = file.canonicalize().unwrap_or(file);
+                    kernel.record(crate::kernel::scheme::cell::CellRecord::FileRead {
+                        path: path.to_string_lossy().into_owned(),
+                    });
+                }
+                Ok(reply)
+            }
             "fs-grep" => {
                 let mut payload = payload("fs-grep", options, GREP, "root", &self.cwd)?;
                 // `context` is both sides' default, as in `rg -C`.

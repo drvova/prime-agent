@@ -171,11 +171,15 @@ pub fn compaction_threshold(
     // Retained history and both summary passes must fit below the trigger,
     // otherwise a low percentage re-summarizes the same retained context on
     // every tool turn. Two reserves cover both summary completion budgets;
-    // the user messages a compaction carries ride above them.
+    // the user messages a compaction carries and the files it reads again
+    // ride above them.
     let retention_floor = settings
         .keep_recent_tokens
         .saturating_add(settings.reserve_tokens.saturating_mul(2))
         .saturating_add(super::compaction_carry::carried_user_budget_tokens(
+            context_window,
+        ))
+        .saturating_add(super::compaction_files::recent_files_budget_tokens(
             context_window,
         ))
         .saturating_add(1);
