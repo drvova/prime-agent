@@ -1,4 +1,4 @@
-internal_host_requests = ["bash.completed", "bash.consumed", "tests.summary", "command_cache.fact", "shell.fact"]
+internal_host_requests = ["bash.completed", "bash.consumed", "bash.quiet", "tests.summary", "command_cache.fact", "shell.fact"]
 
 [[telemetry]]
 event = "agent test summaries"

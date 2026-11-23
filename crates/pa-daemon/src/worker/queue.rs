@@ -538,7 +538,8 @@ pub(crate) fn admit_goal_follow_up(
 /// Admit one kernel notice (a detached bash completion or a factory run
 /// milestone): the row queues on the steering lane (busy sessions keep a
 /// visible steer row, idle sessions wake into it); a crash before the
-/// delivery revives with the row replaying.
+/// delivery revives with the row replaying. A notice that only wakes an
+/// idle session (a quiet background command) is dropped by a busy one.
 pub(crate) fn admit_kernel_notice(
     recovery: &std::sync::Mutex<Option<WorkerRecoveryJournal>>,
     core: &Arc<Mutex<SessionCore>>,
@@ -552,8 +553,9 @@ pub(crate) fn admit_kernel_notice(
         preview_label,
         delivery,
     } = notice;
-    match delivery {
-        pa_core::session_engine::bash_notices::NoticeDelivery::Steer => {}
+    let idle_only = match delivery {
+        pa_core::session_engine::bash_notices::NoticeDelivery::Steer => false,
+        pa_core::session_engine::bash_notices::NoticeDelivery::WakeIdle => true,
         // A recorded row persists and shows in the transcript; no turn runs behind it.
         pa_core::session_engine::bash_notices::NoticeDelivery::Record => {
             let Ok(message) = serde_json::to_value(pa_types::session::AgentMessage::Custom(row))
@@ -578,7 +580,7 @@ pub(crate) fn admit_kernel_notice(
             super::broadcast_custom_row_locked(&mut core, events, &message);
             return;
         }
-    }
+    };
     let content = match &row.content {
         pa_types::ai::UserContent::Text(text) => text.clone(),
         pa_types::ai::UserContent::Blocks(_) => String::new(),
@@ -588,7 +590,7 @@ pub(crate) fn admit_kernel_notice(
     let mut core_guard = core.lock().unwrap();
     // A notice that raced past the sink's first check is refused here or wiped
     // by the close's clear — never a completion turn for a closed session.
-    if session_is_closed() {
+    if session_is_closed() || (idle_only && core_guard.busy) {
         return;
     }
     let (policy, queue_visible) = if core_guard.busy {

@@ -6,8 +6,10 @@
 //! `(bash "sleep 5; echo ..." (hash 'wait-ms 1000))`. The wait ends at its
 //! 1s window: the tool result carries the still-running snapshot, and the
 //! turn settles while the command keeps running. Its `[bash-done ...]`
-//! notice then wakes the idle session. Everything is asserted by transcript
-//! event ORDER, not wall-clock caps.
+//! notice then wakes the idle session. A second session starts a command
+//! that never writes anything: its `[bash-quiet ...]` notice wakes the idle
+//! session after the (shortened) quiet period. Everything is asserted by
+//! transcript event ORDER, not wall-clock caps.
 
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
@@ -52,8 +54,9 @@ impl Drop for Daemon {
     }
 }
 
-/// The sequential mock: one SSE answer per request in order.
-fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
+/// The sequential mock: one SSE answer per request in order, the first
+/// calling `eval` with `code`.
+fn spawn_mock(next: &'static AtomicUsize, code: &'static str) -> PathBuf {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let url = format!(
         "http://127.0.0.1:{}/v1",
@@ -63,7 +66,7 @@ fn spawn_mock(next: &'static AtomicUsize) -> PathBuf {
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
             std::thread::spawn(move || {
-                let _ = serve(stream, next);
+                let _ = serve(stream, next, code);
             });
         }
     });
@@ -81,7 +84,7 @@ fn chunk(delta: &Value, finish_reason: Option<&str>) -> String {
     .to_string()
 }
 
-fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
+fn serve(mut stream: TcpStream, next: &AtomicUsize, code: &str) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut content_length = 0usize;
     loop {
@@ -101,9 +104,8 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
     if content_length > 0 {
         reader.read_exact(&mut body)?;
     }
-    // The scripted sequence: request 1 answers the eval tool call that
-    // runs the bounded wait, request 2 ends the turn, every later
-    // request the woken reply.
+    // The scripted sequence: request 1 answers the eval tool call, request 2
+    // ends the turn, every later request the woken reply.
     let request = next.fetch_add(1, Ordering::SeqCst);
     let mut payload = String::new();
     let data = match request {
@@ -118,10 +120,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
                         "type": "function",
                         "function": {
                             "name": "eval",
-                            "arguments": json!({
-                                "code": "(bash \"sleep 5; echo BOUNDED_AWAIT_E2E_DONE\" (hash 'wait-ms 1000))",
-                            })
-                            .to_string(),
+                            "arguments": json!({ "code": code }).to_string(),
                         }
                     }]
                 }),
@@ -138,7 +137,7 @@ fn serve(mut stream: TcpStream, next: &AtomicUsize) -> std::io::Result<()> {
         ],
         _ => [
             chunk(
-                &json!({"role": "assistant", "content": "woken by the bash-done notice"}),
+                &json!({"role": "assistant", "content": "woken by the notice"}),
                 None,
             ),
             chunk(&json!({}), Some("stop")),
@@ -240,7 +239,7 @@ fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T 
 }
 
 #[allow(clippy::zombie_processes)]
-fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
+fn spawn_daemon(socket: &Path, agent_dir: &Path, env: &[(&str, &str)]) -> Daemon {
     std::fs::create_dir_all(agent_dir).expect("agent dir");
     let mut command = Command::new(env!("CARGO_BIN_EXE_pa-daemon"));
     command
@@ -258,7 +257,8 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
         .env(
             pa_daemon::worker::WORKER_SUPERVISOR_LOST_EXIT_MS_ENV,
             "20000",
-        );
+        )
+        .envs(env.iter().copied());
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -272,15 +272,19 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     }
 }
 
-#[test]
-fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let root = tempfile::TempDir::new().expect("temp dir");
+/// A daemon whose model is the mock calling `eval` with `code`, a session on
+/// it, and its id. The temp dir must outlive the daemon.
+fn session_on_mock(
+    root: &tempfile::TempDir,
+    next: &'static AtomicUsize,
+    code: &'static str,
+    env: &[(&str, &str)],
+) -> (Daemon, Client, String) {
     let dir = root.path().to_path_buf();
     let agent_dir = dir.join("agent");
     std::fs::create_dir_all(&agent_dir).expect("agent dir");
     let socket = dir.join("daemon.sock");
-    let url = spawn_mock(&NEXT);
+    let url = spawn_mock(next, code);
     std::fs::write(
         agent_dir.join("models.json"),
         json!({
@@ -305,7 +309,7 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     )
     .expect("write models.json");
 
-    let supervisor = spawn_daemon(&socket, &agent_dir);
+    let supervisor = spawn_daemon(&socket, &agent_dir, env);
     let mut client = Client::connect(&socket);
     let sessions = agent_dir.join("sessions");
     std::fs::create_dir_all(&sessions).expect("sessions dir");
@@ -328,6 +332,19 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
         .or_else(|| created["data"]["activeSessionId"].as_str())
         .expect("active session id")
         .to_string();
+    (supervisor, client, active_id)
+}
+
+#[test]
+fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let (supervisor, mut client, active_id) = session_on_mock(
+        &root,
+        &NEXT,
+        "(bash \"sleep 5; echo BOUNDED_AWAIT_E2E_DONE\" (hash 'wait-ms 1000))",
+        &[],
+    );
 
     // THE TURN: the tool call waits on a 5s command; the wait must end at
     // its window and the turn settle while the command is still running.
@@ -382,13 +399,61 @@ fn a_bounded_bash_await_degrades_and_the_notice_wakes_the_session() {
     wait_until(Duration::from_mins(1), || {
         let messages = client.messages(&active_id);
         let woken_after_notice = messages
-            .find("woken by the bash-done notice")
+            .find("woken by the notice")
             .is_some_and(|at| at > notice);
         woken_after_notice.then_some(messages)
     });
 
     // Teardown: stop the session through the live supervisor so the worker
     // (and its kernel + the 5s sleeper) do not leak past the test.
+    client.request(
+        "k1",
+        &json!({ "type": "kill", "activeSessionId": active_id }),
+    );
+    drop(client);
+    drop(supervisor);
+}
+
+#[test]
+fn a_background_command_that_writes_nothing_wakes_the_idle_session() {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let root = tempfile::TempDir::new().expect("temp dir");
+    let (supervisor, mut client, active_id) = session_on_mock(
+        &root,
+        &NEXT,
+        "(hash-ref (bash \"/bin/sleep 600\" (hash 'background #t)) 'job)",
+        &[("PRIME_AGENT_BASH_QUIET_MS", "1500")],
+    );
+    let turn = client.request(
+        "p1",
+        &json!({
+            "type": "prompt_and_wait",
+            "activeSessionId": active_id,
+            "message": "start the command and finish",
+        }),
+    );
+    assert_eq!(turn["success"], true, "turn failed: {turn}");
+    let turn_end = client
+        .messages(&active_id)
+        .find("turn complete")
+        .expect("the turn never ended");
+
+    // The command never writes: its quiet notice lands after the turn, names
+    // its job, and wakes the idle session into the reply that follows it.
+    let woken = wait_until(Duration::from_mins(1), || {
+        let messages = client.messages(&active_id);
+        let notice = messages.find("[bash-quiet]")?;
+        messages
+            .find("woken by the notice")
+            .is_some_and(|reply| reply > notice)
+            .then_some((messages, notice))
+    });
+    let (messages, notice) = woken;
+    assert!(
+        notice > turn_end && messages[notice..].contains("/bin/sleep 600"),
+        "the quiet notice must follow the turn and name the command: {messages}"
+    );
+
     client.request(
         "k1",
         &json!({ "type": "kill", "activeSessionId": active_id }),

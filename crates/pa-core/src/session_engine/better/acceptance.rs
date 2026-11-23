@@ -230,7 +230,7 @@ impl BetterHost {
         let ending = match delivery {
             NoticeDelivery::Steer if round >= MAX_ROUNDS => Some(LAST_ROUND_NOTE),
             NoticeDelivery::Steer => Some(RETRY_NOTE),
-            NoticeDelivery::Record => None,
+            NoticeDelivery::Record | NoticeDelivery::WakeIdle => None,
         };
         sink(KernelNotice {
             row: notice_row(&evidence, ending),

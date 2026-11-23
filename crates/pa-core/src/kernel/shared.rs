@@ -31,6 +31,11 @@ pub const MAX_ATTACHMENT_DATA_CHARS: usize = 10_000_000;
 /// default on its presence.
 pub const BASH_COMPLETED_REQUEST_TYPE: &str = "bash.completed";
 
+/// The kernel host request that reports background commands that have
+/// written nothing for a while (the `[bash-quiet]` notice). Without a
+/// handler for it the kernel does not watch for quiet commands.
+pub(crate) const BASH_QUIET_REQUEST_TYPE: &str = "bash.quiet";
+
 /// The kernel host request that ends the turn from inside a cell
 /// (`rlm.end_turn()`). The host-request dispatch answers it by marking
 /// the executing cell's result, so the turn ends once the batch settles.

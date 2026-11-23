@@ -1,6 +1,7 @@
 //! The kernel notice seam (the TS async-bash-completion wake): the
 //! background-job notices (`bash.completed`/`bash.consumed` for a detached
-//! command, `cell.completed`/`cell.consumed` for a backgrounded cell) plus
+//! command, `bash.quiet` for detached commands that have written nothing for
+//! a while, `cell.completed`/`cell.consumed` for a backgrounded cell) plus
 //! the `factory.progress` run-milestone notice that rides the same steering
 //! delivery. Here live
 //! the shared notice types, the TS payload validation, and the
@@ -12,12 +13,15 @@ use std::sync::{Arc, Mutex, Weak};
 
 use serde_json::Value;
 
-use crate::kernel::shared::{host_handler, HostRequestHandlers, BASH_COMPLETED_REQUEST_TYPE};
+use crate::kernel::shared::{
+    host_handler, HostRequestHandlers, BASH_COMPLETED_REQUEST_TYPE, BASH_QUIET_REQUEST_TYPE,
+};
 use pa_agent::types::AgentMessage;
 use pa_types::session::CustomMessage;
 
 use super::messages::{
-    self, CellEnd, ASYNC_BASH_COMPLETION_CUSTOM_TYPE, ASYNC_BASH_COMPLETION_PREVIEW_LABEL,
+    self, CellEnd, QuietJob, ASYNC_BASH_COMPLETION_CUSTOM_TYPE,
+    ASYNC_BASH_COMPLETION_PREVIEW_LABEL, ASYNC_BASH_QUIET_PREVIEW_LABEL,
     ASYNC_CELL_COMPLETION_CUSTOM_TYPE, ASYNC_CELL_COMPLETION_PREVIEW_LABEL,
     FACTORY_PROGRESS_PREVIEW_LABEL,
 };
@@ -41,6 +45,10 @@ pub struct KernelNotice {
 pub enum NoticeDelivery {
     /// The row steers onto the session: a busy turn takes it next, an idle session wakes into it.
     Steer,
+    /// The row wakes an idle session as [`NoticeDelivery::Steer`] does; a session in a turn
+    /// does not take it, since its model is at work and reaches what the row reports itself.
+    /// A daemonless embedding, which has no turn state at its sink, steers it.
+    WakeIdle,
     /// The row is only recorded: persisted and shown in the transcript, with no turn behind it.
     /// A daemonless embedding has no transcript to show it in and drops it.
     Record,
@@ -193,6 +201,17 @@ pub fn register_kernel_notice_host_handlers(
             })
         }),
     );
+    let quiet = Arc::clone(&notice);
+    handlers.register(
+        BASH_QUIET_REQUEST_TYPE,
+        host_handler(move |payload| {
+            let quiet = quiet.clone();
+            Box::pin(async move {
+                quiet(validate_quiet(&payload.data)?);
+                Ok(serde_json::json!({}))
+            })
+        }),
+    );
     let cell_completion = Arc::clone(&notice);
     handlers.register(
         "cell.completed",
@@ -245,6 +264,51 @@ fn validate_completion(data: &Value) -> anyhow::Result<KernelNotice> {
     Ok(KernelNotice::bash_completion(
         pid, &command, exit_code, output,
     ))
+}
+
+/// The `bash.quiet` payload: a non-empty `jobs` array, each entry a
+/// non-empty job id, a positive pid, a non-empty command, its run and quiet
+/// times in milliseconds, and its bounded output tail.
+fn validate_quiet(data: &Value) -> anyhow::Result<KernelNotice> {
+    let jobs = data
+        .get("jobs")
+        .and_then(Value::as_array)
+        .filter(|jobs| !jobs.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("bash.quiet jobs must be a non-empty array"))?
+        .iter()
+        .map(|entry| {
+            let (pid, command) = bash_job(entry)?;
+            let millis = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow::anyhow!("bash.quiet {key} must be a whole number"))
+            };
+            let (output, output_truncated) = match output_tail("bash.quiet", entry)? {
+                messages::BackgroundOutputTail::Complete(tail) => (tail.to_string(), false),
+                messages::BackgroundOutputTail::Truncated(tail) => (tail.to_string(), true),
+            };
+            Ok(QuietJob {
+                job: entry
+                    .get("job")
+                    .and_then(Value::as_str)
+                    .filter(|job| !job.is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("bash.quiet job must be a non-empty string"))?
+                    .to_string(),
+                pid,
+                command,
+                elapsed_ms: millis("elapsedMs")?,
+                quiet_ms: millis("quietMs")?,
+                output,
+                output_truncated,
+            })
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(KernelNotice {
+        row: messages::create_async_bash_quiet_message(&jobs, crate::autonomous::now_millis()),
+        preview_label: ASYNC_BASH_QUIET_PREVIEW_LABEL,
+        delivery: NoticeDelivery::WakeIdle,
+    })
 }
 
 /// The kernel's bounded output tail: a string and its `outputTruncated` flag.
@@ -361,7 +425,7 @@ pub fn in_process_notice_sink(
     let notice_slot = Arc::clone(agent_slot);
     Arc::new(move |notice| {
         match notice.delivery {
-            NoticeDelivery::Steer => {}
+            NoticeDelivery::Steer | NoticeDelivery::WakeIdle => {}
             NoticeDelivery::Record => return,
         }
         let Some(agent) = bound_agent(&notice_slot) else {

@@ -1193,3 +1193,136 @@ fn a_command_gets_quiet_defaults_under_the_sessions_own_values(shell) {
     );
 }
 }
+
+on_each_shell! {
+/// A background command that has gone quiet is reported once its silence
+/// passes the quiet period, again after four times that, and never while it
+/// prints; a cell waiting on it still stops at once, and once it is killed
+/// only its `[bash-done]` follows, while a new quiet command is reported
+/// alone.
+async fn a_background_command_that_goes_quiet_is_reported_on_a_backoff(shell) {
+    const FIRST: u64 = 1000;
+    let dir = tempfile::tempdir().unwrap();
+    let (waiting, gate) = (pipe_in(dir.path(), "waiting"), pipe_in(dir.path(), "gate"));
+    let (handlers, mut received) =
+        recording(&[("bash.quiet", json!({})), ("bash.completed", json!({}))]);
+    let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        shell,
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PRIME_AGENT_BASH_QUIET_MS".to_string(), FIRST.to_string())],
+        ..SchemeKernelOptions::default()
+    })
+    .await;
+    let command = "for i in $(seq 1 30); do echo tick $i; sleep 0.05; done; echo going quiet; /bin/sleep 600";
+    let started = value(
+        kernel.as_ref(),
+        &format!(
+            "(define loud (bash \"{command}\" (hash 'background #t)))
+             (list (hash-ref loud 'job) (hash-ref loud 'pid))"
+        ),
+    )
+    .await;
+    // A printed `(job pid)` list.
+    let handle = |printed: &str| {
+        printed
+            .trim_matches(['(', ')'])
+            .split_once(' ')
+            .map(|(job, pid)| (job.trim_matches('"').to_string(), pid.parse::<u32>().unwrap()))
+            .unwrap()
+    };
+    // A notice as compared: its quiet time only as long enough or not.
+    let shape = |(request, mut data): (String, Value), at_least: u64| {
+        for named in data["jobs"].as_array_mut().unwrap() {
+            let quiet = named["quietMs"].as_u64().unwrap();
+            named["quietMs"] = json!(quiet >= at_least);
+            named.as_object_mut().unwrap().remove("elapsedMs");
+        }
+        (request, data)
+    };
+    let first = shape(next(&mut received).await, FIRST);
+    let second = shape(next(&mut received).await, FIRST * 4);
+    // A cell that waits on the quiet command stops when it is stopped.
+    let signal = crate::tools::tool_definition::AbortSignal::new();
+    let stopped = kernel.execute(
+        "(bash \"echo up > waiting\") (bash-wait loud 600)",
+        KernelExecuteOptions {
+            signal: Some(signal.clone()),
+            timeout_ms: None,
+            on_stream: None,
+            on_late_sent_agent_message: None,
+        },
+    );
+    let stop = async {
+        read(&waiting).await;
+        signal.cancel();
+        Instant::now()
+    };
+    let (stopped, stopped_at) = tokio::join!(stopped, stop);
+    let stopped_within = stopped_at.elapsed();
+    let killed = value(kernel.as_ref(), "(bash-kill loud)").await;
+    let done = next(&mut received).await;
+    let still = value(
+        kernel.as_ref(),
+        "(define still (bash \"read -r line < gate\" (hash 'background #t)))
+         (list (hash-ref still 'job) (hash-ref still 'pid))",
+    )
+    .await;
+    let after_kill = shape(next(&mut received).await, FIRST);
+    write(&gate, "go\n").await;
+    let (job, pid) = handle(&started);
+    let (still_job, still_pid) = handle(&still);
+    let tail = (12..=30)
+        .map(|tick| format!("tick {tick}"))
+        .chain(["going quiet".to_string()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let loud = json!({
+        "job": job,
+        "pid": pid,
+        "command": command,
+        "quietMs": true,
+        "output": tail,
+        "outputTruncated": true,
+    });
+    assert_eq!(
+        (
+            first,
+            second,
+            stopped.unwrap().status,
+            stopped_within < Duration::from_secs(10),
+            killed.as_str(),
+            done,
+            after_kill,
+        ),
+        (
+            ("bash.quiet".to_string(), json!({ "jobs": [loud] })),
+            ("bash.quiet".to_string(), json!({ "jobs": [loud] })),
+            crate::tools::kernel_cell::ExecuteStatus::Aborted,
+            true,
+            "#true",
+            (
+                "bash.completed".to_string(),
+                json!({
+                    "pid": pid,
+                    "command": command,
+                    "exitCode": 143,
+                    "output": tail,
+                    "outputTruncated": true,
+                })
+            ),
+            (
+                "bash.quiet".to_string(),
+                json!({ "jobs": [{
+                    "job": still_job,
+                    "pid": still_pid,
+                    "command": "read -r line < gate",
+                    "quietMs": true,
+                    "output": "",
+                    "outputTruncated": false,
+                }] })
+            ),
+        )
+    );
+}
+}

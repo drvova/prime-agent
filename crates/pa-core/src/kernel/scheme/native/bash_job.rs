@@ -246,6 +246,8 @@ pub(super) struct Capture {
     pub(super) settled: bool,
     /// The pipe closed: every process that held it has ended.
     eof: bool,
+    /// When the command last wrote anything, for its `[bash-quiet]` notice.
+    pub(super) last_output: Option<Instant>,
     /// The output up to its settling, for the session's spill store (only
     /// when the session has one), and the bytes of a character split across
     /// two reads.
@@ -274,6 +276,7 @@ impl Capture {
     /// Take one read of the pipe, watching for `fence`. True when this read
     /// settled the output.
     fn consume(&mut self, fence: &[u8], chunk: &[u8]) -> bool {
+        self.last_output = Some(Instant::now());
         if self.settled {
             // Written after the fence (a background job, an EXIT trap): kept
             // for `bash-output`, outside the result.
@@ -335,6 +338,21 @@ pub(super) enum Notice {
     Sent,
 }
 
+/// Where a job stands with its `[bash-quiet]` notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Quiet {
+    /// Named in this many so far.
+    Named(u32),
+    /// Someone asked for it to be killed: it is named in no more.
+    KillRequested,
+}
+
+impl Default for Quiet {
+    fn default() -> Self {
+        Self::Named(0)
+    }
+}
+
 /// What changes about a job while it lives.
 #[derive(Default)]
 pub(super) struct State {
@@ -350,6 +368,7 @@ pub(super) struct State {
     pub(super) tests: Option<serde_json::Value>,
     /// Why a persistent shell's result could not be read.
     pub(super) failure: Option<String>,
+    pub(super) quiet: Quiet,
 }
 
 /// One command the kernel started.
@@ -509,6 +528,7 @@ impl Job {
         if lock(&self.state).reaped || !identified {
             return;
         }
+        lock(&self.state).quiet = Quiet::KillRequested;
         if let Some(programs) = &self.engine {
             // The script stops at its next command either way; its programs
             // get the signal, and what a `Term` leaves is killed after `grace`.

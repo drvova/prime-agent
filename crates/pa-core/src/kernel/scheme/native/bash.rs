@@ -58,6 +58,8 @@
 //! killed, or the process hosting the session died) is announced by the
 //! session's next kernel, once, through the same request with `lost` set
 //! (the `[bash-lost]` notice); only a saved session keeps the list for it.
+//! Background commands that have all written nothing for a while are
+//! reported through `bash.quiet` (the `[bash-quiet]` notice, `bash_quiet.rs`).
 
 #[path = "bash_cache.rs"]
 mod cache;
@@ -67,6 +69,8 @@ mod engine;
 mod job;
 #[path = "bash_persistent.rs"]
 mod persistent;
+#[path = "bash_quiet.rs"]
+mod quiet;
 #[path = "bash_summary.rs"]
 mod summary;
 #[cfg(test)]
@@ -218,6 +222,8 @@ struct BashSettings {
     max_jobs: usize,
     /// `PRIME_AGENT_BASH_WAIT_MS`: the default wait window.
     wait: Option<Duration>,
+    /// `PRIME_AGENT_BASH_QUIET_MS`: the first `[bash-quiet]` period.
+    quiet: Duration,
     /// `RLM_SESSION_ID`: the saved session persistent shells are assigned to.
     session_id: Option<String>,
     /// Where persistent shells live.
@@ -611,6 +617,10 @@ pub(super) fn open(
                 wait: set("PRIME_AGENT_BASH_WAIT_MS")
                     .and_then(|window| window.parse().ok())
                     .map(Duration::from_millis),
+                quiet: set("PRIME_AGENT_BASH_QUIET_MS")
+                    .and_then(|period| period.parse().ok())
+                    .filter(|period| *period > 0)
+                    .map_or(quiet::QUIET_AFTER, Duration::from_millis),
                 // Only the session's own: one found in the process's
                 // environment was inherited from another session.
                 session_id: environment
@@ -671,6 +681,10 @@ pub(super) fn open(
             });
         }
     }
+    session.runtime.spawn(quiet::watch(
+        Arc::clone(&session),
+        session.host.settings.quiet,
+    ));
     for job in persistent::rehydrate(&session) {
         let live = session.background.enter();
         session

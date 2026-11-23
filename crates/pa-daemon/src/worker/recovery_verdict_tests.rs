@@ -221,6 +221,51 @@ async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row()
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }
 
+/// A notice that only wakes an idle session (`[bash-quiet]`) never lands in a
+/// turn in progress; an idle session wakes into it as into a completion.
+#[tokio::test]
+async fn a_wake_idle_notice_is_dropped_by_a_busy_session_and_wakes_an_idle_one() {
+    let worker = created_worker_with_journal().await;
+    worker.dispatch("clear_queue", &json!({})).await;
+    let quiet = || crate::engine::KernelNotice {
+        row: pa_core::session_engine::messages::create_async_bash_quiet_message(
+            &[pa_core::session_engine::messages::QuietJob {
+                job: "a1".to_string(),
+                pid: 77,
+                command: "sleep 600".to_string(),
+                elapsed_ms: 200_000,
+                quiet_ms: 180_000,
+                output: String::new(),
+                output_truncated: false,
+            }],
+            7,
+        ),
+        preview_label: "Background command quiet",
+        delivery: pa_core::session_engine::bash_notices::NoticeDelivery::WakeIdle,
+    };
+    let admit = |busy: bool| {
+        worker.core.lock().unwrap().busy = busy;
+        admit_kernel_notice(
+            &worker.recovery,
+            &worker.core,
+            &worker.events,
+            &Arc::new(Notify::new()),
+            quiet(),
+            || false,
+        );
+        let core = worker.core.lock().unwrap();
+        core.steering
+            .iter()
+            .map(|item| (item.policy, item.queue_visible))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (admit(true), admit(false)),
+        (Vec::new(), vec![(TurnPolicy::Injected, false)])
+    );
+    let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
+}
+
 /// The withdrawal settles the busy evidence so the journal never promises a replay.
 #[tokio::test]
 async fn bash_consumed_withdraws_the_undelivered_notice_and_settles() {
