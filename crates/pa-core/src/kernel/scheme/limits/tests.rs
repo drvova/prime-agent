@@ -151,3 +151,69 @@ async fn a_runaway_cell_fails_alone_and_another_session_keeps_working() {
     }
     assert_eq!(seen, expected);
 }
+
+/// A count a builtin allocates by, or would take as an unsigned number, and
+/// a number JSON has no form for: each is refused as its cell's error. When
+/// measured, the negative counts and the numbers panicked inside Steel, and
+/// the large ones allocated without a limit (`read-bytes` of 100 GB ended
+/// the process). The counts here are just over the limit, so one that got
+/// through would be seen as a value, not by the process dying.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_count_or_number_steel_cannot_take_is_its_cells_error() {
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register(
+        "echo",
+        host_handler(|payload: HostRequestPayload| async move { Ok(payload.data) }),
+    );
+    let provisioner = SchemeKernelProvisioner::new(handlers, "/");
+    let too_many = Err("the count is over 16777216, the most ele".to_string());
+    let negative = Err("the count is negative: a builtin that bu".to_string());
+    let not_finite = Err("the value holds a number that is not fin".to_string());
+    let shapes = [
+        ("(make-string -1 #\\a)", negative.clone()),
+        ("(make-bytes -1 0)", negative.clone()),
+        ("(make-bytevector -1 0)", negative.clone()),
+        ("(make-immutable-vector -1 0)", negative.clone()),
+        ("(range-vec -3 0)", negative.clone()),
+        ("(make-string (- (expt 2 80)) #\\a)", negative.clone()),
+        ("(make-string (expt 2 80) #\\a)", too_many.clone()),
+        (
+            "(read-bytes -1 (open-input-bytevector (bytes 1 2 3)))",
+            negative.clone(),
+        ),
+        ("(vector-length (range-vec 0 20000000))", too_many.clone()),
+        (
+            "(vector-length (make-immutable-vector 20000000 0))",
+            too_many.clone(),
+        ),
+        (
+            "(bytes-length (read-bytes 20000000 (open-input-bytevector (bytes 1 2 3))))",
+            too_many.clone(),
+        ),
+        (
+            "(bytes-length (read-bytevector 20000000 (open-input-bytevector (bytes 1 2 3))))",
+            too_many.clone(),
+        ),
+        ("(value->jsexpr-string (/ 0. 0.))", not_finite.clone()),
+        (
+            "(host-request \"echo\" (hash 'a (list 1 (/ 1. 0.))))",
+            not_finite.clone(),
+        ),
+        ("(%cell \"todo\" (- (/ 1. 0.)))", not_finite.clone()),
+        // What the same builtins are for still works: a fill value, an
+        // exponent and a shift are not counts.
+        (
+            "(list (make-vector 2 -1) (make-vector 1 100000000) (expt 2 -1) (arithmetic-shift 8 -1)
+                   (range-vec 1 4) (make-string 2 #\\a) (value->jsexpr-string 1.5)
+                   (read-bytes 2 (open-input-bytevector (bytes 1 2 3))))",
+            Ok("(#(-1 -1) #(100000000) 1/2 4 #(1 2 3) \"aa\" \"1.5\" #u8(#x01 #x02))".to_string()),
+        ),
+    ];
+    let mut seen = Vec::new();
+    let mut expected = Vec::new();
+    for (code, outcome) in shapes {
+        seen.push((code, cell(&provisioner, code).await));
+        expected.push((code, outcome));
+    }
+    assert_eq!(seen, expected);
+}
