@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::abort::AbortSignal;
 use crate::types::{
-    AgentContext, AgentEvent, AgentTool, AgentToolResult, AssistantMessage, ToolCall,
+    AgentContext, AgentEvent, AgentTool, AgentToolResult, AssistantMessage, StopReason, ToolCall,
     ToolExecutionMode, ToolResultMessage,
 };
 
@@ -51,6 +51,38 @@ pub(crate) async fn execute_tool_calls(
         .into_iter()
         .cloned()
         .collect::<Vec<ToolCall>>();
+    // A reply cut off at the output limit may carry any of its tool calls
+    // with truncated arguments: none runs, and each result says to issue it
+    // again whole.
+    if assistant_message.stop_reason == StopReason::Length {
+        let mut messages = Vec::new();
+        for tool_call in tool_calls {
+            emit(AgentEvent::ToolExecutionStart {
+                tool_call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                args: tool_call.arguments.clone(),
+            })
+            .await?;
+            let finalized = FinalizedToolCallOutcome {
+                result: AgentToolResult::error(format!(
+                    "Tool call \"{}\" was not run: the reply was cut off at the output limit, so its \
+arguments may be incomplete. Issue it again with complete arguments; split a long cell or write \
+long text to a file in several calls.",
+                    tool_call.name
+                )),
+                tool_call,
+                is_error: true,
+            };
+            emit_tool_execution_end(&finalized, emit).await?;
+            let tool_result_message = create_tool_result_message(&finalized);
+            emit_tool_result_message(&tool_result_message, emit).await?;
+            messages.push(tool_result_message);
+        }
+        return Ok(ExecutedToolCallBatch {
+            messages,
+            terminate: false,
+        });
+    }
     let has_sequential_tool_call = tool_calls.iter().any(|tc| {
         find_tool(&current_context.tools, &tc.name).and_then(|tool| tool.execution_mode())
             == Some(ToolExecutionMode::Sequential)
