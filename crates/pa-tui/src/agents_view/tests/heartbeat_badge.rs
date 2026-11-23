@@ -119,7 +119,10 @@ fn a_rows_heartbeat_count_renders_before_its_title() {
                 .add_modifier(ratatui::style::Modifier::BOLD),
         ),
         crate::Span::styled(" ".to_string(), ratatui::style::Style::default()),
-        crate::Span::styled("wor".to_string(), mode.theme.fg_style(ThemeColor::Text)),
+        crate::Span::styled(
+            "wo\u{2026}".to_string(),
+            mode.theme.fg_style(ThemeColor::Text),
+        ),
         crate::Span::styled(String::new(), ratatui::style::Style::default()),
         crate::Span::styled("  ".to_string(), ratatui::style::Style::default()),
         mode.theme

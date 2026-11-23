@@ -250,9 +250,12 @@ fn long_session_names_clip_to_the_name_column() {
     assert_eq!(layout.model_width, 12);
     let line = mode.render_row(&mode.rows[index], &layout, 120, false);
     let text = flat(&line);
-    // The name cell clips with an empty ellipsis marker: it keeps the icon and space plus 26
-    // name characters.
-    assert_eq!(text, expected_row(&"a".repeat(26), &layout));
+    // The name cell clips behind the shared cut mark: it keeps the icon and space, 25 name
+    // characters, and `…`.
+    assert_eq!(
+        text,
+        expected_row(&format!("{}\u{2026}", "a".repeat(25)), &layout)
+    );
     let model_at = text.find("mock-1").expect("model column present");
     assert_eq!(str_width(&text[..model_at]), 28 + 2);
     assert!(text.ends_with("$0.00   1s"));
@@ -416,7 +419,7 @@ fn shell_rows_render_in_the_session_table_columns() {
         shell.chars().take(model_at).collect::<String>(),
         format!(
             "$ {}  ",
-            crate::agents_view_state::truncate_text(command, layout.name_width - 2)
+            crate::width::truncate_to_width(command, layout.name_width - 2, "\u{2026}")
         ),
         "the command clips to the Session column:\n{}",
         texts.join("\n")

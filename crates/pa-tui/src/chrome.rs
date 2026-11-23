@@ -1,7 +1,7 @@
 //! Chat chrome: the pinned top bar, brand splash header, prompt context
 //! line, and the tray line under the editor.
 
-use crate::width::{line_width, str_width, truncate_line};
+use crate::width::{line_width, str_width, truncate_line, truncate_to_width};
 use crate::{Line, Span};
 use ratatui::style::Style;
 use serde::Deserialize;
@@ -19,25 +19,6 @@ pub const PRIME_COMPACT_BUTTERFLY_LOGO: &str = concat!(
     "\u{259f}\u{2588}\u{2588}\u{2588}\u{2584}  \u{2584}\u{2584}\u{259f}\u{2588}\u{2588}\u{2588}\u{2580}\n",
     "\u{259c}\u{2588}\u{259b}\u{2580}\u{2598}  \u{259c}\u{2588}\u{259b}\u{2580}\u{2598}",
 );
-
-/// Truncate a plain string to a visible width (cut on grapheme
-/// boundaries, appending the ellipsis).
-fn truncate_to_width(value: &str, max_width: usize, ellipsis: &str) -> String {
-    if str_width(value) <= max_width {
-        return value.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    for ch in value.chars() {
-        if str_width(&out) + crate::width::char_width(ch) > max_width {
-            break;
-        }
-        out.push(ch);
-    }
-    format!("{out}{ellipsis}")
-}
 
 /// Where the active model runs, read from its configuration alone (no network): the tray marks
 /// a local or private endpoint.
@@ -530,15 +511,11 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
     if name.is_empty() {
         return Vec::new();
     }
-    let mut line: Line = Vec::new();
-    let name_width = str_width(&name);
     let text = theme.fg_style(ThemeColor::Text);
     let dim = theme.fg_style(ThemeColor::Dim);
-    let start = (width.saturating_sub(name_width)) / 2;
-    line.push(Span::styled(" ".repeat(start), Style::default()));
-    line.push(Span::styled(name, text));
+    let mut tail: Line = Vec::new();
     if let Some(profile) = &state.profile {
-        line.push(Span::styled(format!("  [{profile}]"), dim));
+        tail.push(Span::styled(format!("  [{profile}]"), dim));
     }
     let spend = match &state.billing {
         // A plan's calls are never billed: they show the plan (its quota when cached), not a `$`.
@@ -571,10 +548,22 @@ pub fn render_top_bar(state: &ChromeState, theme: &Theme, width: usize) -> Line 
             .map(|cost| format!("${cost:.2}")),
     };
     if let Some(spend) = spend {
-        line.push(Span::styled("  ".to_string(), Style::default()));
-        line.push(Span::styled(spend, dim));
+        tail.push(Span::styled("  ".to_string(), Style::default()));
+        tail.push(Span::styled(spend, dim));
     }
-    line
+    // The bar is one row: a name longer than the room beside the profile and the spend ends in
+    // `…`, and the centering gives way before the tail is pushed off the row.
+    let tail_width = line_width(&tail);
+    let name = truncate_to_width(&name, width.saturating_sub(tail_width).max(1), "\u{2026}");
+    let name_width = str_width(&name);
+    let start =
+        (width.saturating_sub(name_width) / 2).min(width.saturating_sub(name_width + tail_width));
+    let mut line: Line = vec![
+        Span::styled(" ".repeat(start), Style::default()),
+        Span::styled(name, text),
+    ];
+    line.extend(tail);
+    truncate_line(&line, width, "\u{2026}")
 }
 
 /// The brand splash: butterfly logo beside the version/model/cwd metadata
@@ -650,7 +639,12 @@ pub fn render_splash(state: &ChromeState, theme: &Theme, width: usize) -> Vec<Li
     }
 
     let mut lines: Vec<Line> = vec![Vec::new()];
-    let row_count = logo_raw.len().max(meta_lines.len());
+    // A pane too narrow for the logo is as tall as its text: the logo's rows are not held blank.
+    let row_count = if show_logo {
+        logo_raw.len().max(meta_lines.len())
+    } else {
+        meta_lines.len()
+    };
     let meta_start = if show_logo {
         (row_count - meta_lines.len()) / 2
     } else {

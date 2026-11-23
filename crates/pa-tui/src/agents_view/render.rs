@@ -9,6 +9,10 @@ use super::{
     FolderFilter, Line, Result, RowKind, RowLayout, Section, Theme, ThemeColor, UiInput, Value,
 };
 
+/// The rows a frame keeps for the search prompt, a usable list, the preview and the hints: a
+/// terminal shorter than the splash plus these folds the splash to one row.
+const SHORT_FRAME_RESERVE_ROWS: usize = 12;
+
 impl AgentsViewMode {
     pub(super) fn render_frame(
         &mut self,
@@ -58,7 +62,28 @@ impl AgentsViewMode {
         };
         // `render_splash` already trails one blank row, so the incident notice rides directly
         // under it: the warning line and its pointer stay above the scope label and the prompt.
-        lines.extend(crate::chrome::render_splash(&chrome, theme, width));
+        // A terminal too short to show the splash and a usable list keeps the list: the header
+        // folds to one identity row carrying the same counts.
+        let splash = crate::chrome::render_splash(&chrome, theme, width);
+        if height < splash.len() + SHORT_FRAME_RESERVE_ROWS {
+            lines.push(pad_line(
+                vec![theme.fg(
+                    ThemeColor::Muted,
+                    crate::width::truncate_to_width(
+                        &format!(
+                            " prime agent v{} \u{b7} {running} running, {idle} idle, {inactive} inactive",
+                            self.options.version
+                        ),
+                        width,
+                        crate::menu_chrome::ELLIPSIS,
+                    ),
+                )],
+                width,
+            ));
+            lines.push(vec![]);
+        } else {
+            lines.extend(splash);
+        }
         lines.extend(self.render_incident_notice(width));
         // The resume picker's scope line, dim under the splash on the unscoped list: which
         // folder the list (and the counts above) covers, what the filter leaves out, and the
@@ -595,11 +620,13 @@ impl AgentsViewMode {
                 }
             }
         }
+        // The clip markers are the shared cut mark: rows continue above or below the window.
+        let clip = format!("  {}", crate::menu_chrome::ELLIPSIS);
         if show_leading {
-            lines.insert(0, vec![self.theme.fg(ThemeColor::Dim, "  ...".to_string())]);
+            lines.insert(0, vec![self.theme.fg(ThemeColor::Dim, clip.clone())]);
         }
         if show_trailing {
-            lines.push(vec![self.theme.fg(ThemeColor::Dim, "  ...".to_string())]);
+            lines.push(vec![self.theme.fg(ThemeColor::Dim, clip)]);
         }
         if header_rows > 1 {
             lines.insert(0, Vec::new());
@@ -809,11 +836,13 @@ impl AgentsViewMode {
                     >= 2 + indent_width + badge_width + str_width(&row.title) + str_width(label)
             });
         let matches_width = matches.as_deref().map_or(0, str_width);
-        let title = truncate_text(
+        // A title cut to its column ends in `…`: a clipped name never reads as the whole name.
+        let title = crate::width::truncate_to_width(
             &row.title,
             layout
                 .name_width
                 .saturating_sub(2 + indent_width + badge_width + matches_width),
+            crate::menu_chrome::ELLIPSIS,
         );
         // Session titles render uniformly (no bold for named sessions): deliberate divergence
         // from TS `styleRowTitle`, which bolds explicit session names.
@@ -1070,20 +1099,21 @@ impl AgentsViewMode {
             } else {
                 &[]
             };
-        let mut footer = Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "navigate",
-                HintRank::Useful,
-            )
-            .bound(kb, jump, "first/last", HintRank::Extra)
-            .bound(
-                kb,
-                &["tui.select.confirm", "app.agents.open"],
-                right_action,
-                HintRank::Core,
-            );
+        // An empty list advertises no key that does nothing: the navigation and open slots show
+        // only over rows, so `new` and the folder toggle are what an empty view offers.
+        let mut footer = if self.rows.is_empty() {
+            Footer::new()
+        } else {
+            Footer::new()
+                .navigate(kb)
+                .bound(kb, jump, "first/last", HintRank::Extra)
+                .bound(
+                    kb,
+                    &["tui.select.confirm", "app.agents.open"],
+                    right_action,
+                    HintRank::Core,
+                )
+        };
         // The rename, stop-or-delete, program, and parent hints only show with an empty search
         // and a target; the multi-key slots render every configured key (dispatch takes the
         // whole set).
@@ -1183,11 +1213,7 @@ fn depth_indent(depth: usize) -> String {
 }
 
 pub(super) fn cell(value: &str, width: usize) -> String {
-    let truncated = truncate_text(value, width);
-    format!(
-        "{truncated}{}",
-        " ".repeat(width.saturating_sub(str_width(&truncated)))
-    )
+    crate::menu_panel::plain_cell(value, width)
 }
 
 pub(super) fn truncate_line(line: &Line, width: usize) -> Line {
