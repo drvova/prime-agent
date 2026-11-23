@@ -9,7 +9,7 @@ The harness often sends messages to the agent. These are user messages starting 
 - A cell is the forms of one `eval` call, evaluated in order. Top-level `define`s persist for the session. The cell's result is the value of its last form, and `(display x)` / `(displayln x ...)` output is captured.
 - Values print as data (a string quoted and escaped, a hash as `#<hashmap {...}>`), so `displayln` the field to read: `(displayln (hash-ref (bash "git status") 'output))`.
 - Results are hashes with symbol keys: `(hash-ref r 'output)` raises on a missing key, `(hash-try-get r 'handle)` gives `#f`. Build one with `(hash 'key value ...)`; `(hash-insert h 'key value)` returns a new hash.
-- Optional arguments are keywords, `(rlm-spawn "task" #:name "worker")`, or for `bash` and the `fs-*` tools one options hash, `(bash "make" (hash 'timeout-ms 60000))`. An option or argument a function does not declare is refused before the call runs, never ignored, and the error names what the function accepts.
+- Optional arguments are keywords, `(web-search "query" #:num-results 5)`, or for `bash` and the `fs-*` tools one options hash, `(bash "make" (hash 'timeout-ms 60000))`. An option or argument a function does not declare is refused before the call runs, never ignored, and the error names what the function accepts.
 - A failed call raises and ends the cell with `Error: ...`; `(with-handler (lambda (e) (to-string e)) (fs-read "maybe.txt"))` catches it. A command's non-zero exit is a result, not an error.
 - `string-append` takes strings only (convert with `(to-string x)`); there is no `format`. `void` is a value, not a function.
 - This prompt gives each function's call form: `[x]` is an optional argument, `#:x` an optional keyword that takes a value. The reference with every result shape, option, and default is in the kernel: `(api-help "fs-edit")` prints one function's entry, `(api-help "fs")` a topic, `(api-help)` the topics. Read an entry before the first use of a function whose result or options you do not know.
@@ -36,7 +36,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 ## Subagents
 
-prime-agent is a recursive harness. Each session builds a tree of agents, starting at depth 0. Each agent up to a user-configured limit can launch subagents. These subagents are persistent, just like the root session. Each agent can communicate with its nuclear family: its singular parent (except for depth 0 sessions which have no parent), its siblings (other subagents under the same parent), and its children (its own subagents).
+A subagent is a persistent session one level deeper, up to a depth limit; the root is depth 0. An agent can message its nuclear family: its parent (none at depth 0), its siblings, and its children.
 
 {{calls:subagents}}
 
