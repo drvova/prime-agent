@@ -220,7 +220,11 @@ below. A change that weakens one of them needs the same scrutiny as a change to 
   `pa_types::session_scope`; session code never calls `std::env::var`, `std::env::current_dir`
   or `Command::new` directly, and a thread or runtime started on a session's behalf
   propagates the scope. Process-wide by design, and therefore not per session:
-  `SSL_CERT_FILE`/`SSL_CERT_DIR`, `TMPDIR`, `STEEL_HOME`, the telemetry origin.
+  `SSL_CERT_FILE`/`SSL_CERT_DIR`, `TMPDIR`, `STEEL_HOME`, the telemetry origin. The
+  switches Steel's compiler reads from the environment (`STEEL_DEBUG_AST`, `STEEL_INLINE`,
+  `STEEL_INLINE_RECURSIVE`, `STEEL_MODULE_INLINE`, `STEEL_CLOSURE_LIFTING`,
+  `STEEL_SEARCH_PATHS`) are removed from the process at start (`pin_scheme_home`): no
+  environment changes how a session's cells compile.
 - Containment: a panic on a session's thread ends that session only. Every panic is either
   attributed to a session or recorded as a daemon-level crash; none goes to the default hook
   unrecorded. Locks shared between sessions tolerate poisoning.

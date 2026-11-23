@@ -95,7 +95,21 @@ const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// pays this.
 const CELL_LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
-/// Keep Steel's own state inside the agent directory. Unless `STEEL_HOME` is
+/// The switches Steel's compiler reads from the process's environment: the
+/// first five on every compile (inlining, closure lifting, a dump of each
+/// syntax tree to standard output), the last once, as directories to find
+/// modules in.
+const STEEL_COMPILER_SWITCHES: [&str; 6] = [
+    "STEEL_DEBUG_AST",
+    "STEEL_INLINE",
+    "STEEL_INLINE_RECURSIVE",
+    "STEEL_MODULE_INLINE",
+    "STEEL_CLOSURE_LIFTING",
+    "STEEL_SEARCH_PATHS",
+];
+
+/// Keep Steel's own state inside the agent directory, and its compiler as
+/// it was built. Unless `STEEL_HOME` is
 /// set, the first engine built in a process creates a `steel` directory in
 /// the user's data home and prints to stderr when it cannot, which breaks
 /// every mode whose stderr is part of its output. Sets `STEEL_HOME` to
@@ -106,7 +120,15 @@ const CELL_LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 /// The directory is named, never created: with the variable set Steel only
 /// reads it, and a distribution build's first-run import takes an agent
 /// directory that already exists to mean the first run is over.
+///
+/// [`STEEL_COMPILER_SWITCHES`] are removed from the process's environment:
+/// set in the environment the agent was started from (for a Steel of the
+/// user's own), they would change how every session's cells compile, or
+/// print each cell's syntax tree into a stream that is a protocol.
 pub fn pin_scheme_home() {
+    for switch in STEEL_COMPILER_SWITCHES {
+        std::env::remove_var(switch);
+    }
     if pa_types::session_scope::var_os("STEEL_HOME").is_some() {
         return;
     }
@@ -787,6 +809,51 @@ mod tests {
             result.result,
             result.error.map(|error| error.ename),
         )
+    }
+
+    /// Set in the child process of the test below.
+    const SWITCHES_CHILD_ENV: &str = "PRIME_AGENT_TEST_STEEL_SWITCHES_CHILD";
+
+    /// A process started with every switch Steel's compiler reads from the
+    /// environment compiles as one started with none: with
+    /// `STEEL_DEBUG_AST` it printed the syntax tree of everything an engine
+    /// compiled to standard output. The switches are set for a child
+    /// process, so nothing else in this one compiles under them.
+    #[test]
+    fn steels_compiler_switches_in_the_environment_do_not_reach_the_kernel() {
+        if std::env::var_os(SWITCHES_CHILD_ENV).is_some() {
+            pin_scheme_home();
+            confinement::engine()
+                .unwrap()
+                .run("(define (compiled-in-the-child x) (+ x 1))")
+                .unwrap();
+            let left: Vec<&str> = STEEL_COMPILER_SWITCHES
+                .into_iter()
+                .filter(|switch| std::env::var_os(switch).is_some())
+                .collect();
+            println!("switches left: {left:?}");
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "kernel::scheme::tests::steels_compiler_switches_in_the_environment_do_not_reach_the_kernel",
+                "--nocapture",
+            ])
+            .env(SWITCHES_CHILD_ENV, "1")
+            .envs(STEEL_COMPILER_SWITCHES.map(|switch| (switch, "1")))
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&child.stdout);
+        assert_eq!(
+            (
+                child.status.success(),
+                printed.contains("switches left: []"),
+                printed.contains("compiled-in-the-child"),
+            ),
+            (true, true, false),
+            "the child printed: {printed}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

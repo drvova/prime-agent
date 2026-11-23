@@ -39,6 +39,7 @@ either changes.
 Sessions are hosted inside the daemon process, with their Scheme kernel in the same process (AGENTS.md "Reliability model" and "Surface contract").
 
 - Flag session code that reads process state on a session's behalf: `std::env::var`/`var_os`/`vars`, `std::env::current_dir`, `Command::new`, or a `std::thread::spawn`/runtime builder that does not propagate `pa_types::session_scope`. One session's environment or working directory must never reach another.
+- Flag a Steel compiler switch from the environment (`STEEL_DEBUG_AST`, `STEEL_INLINE`, `STEEL_INLINE_RECURSIVE`, `STEEL_MODULE_INLINE`, `STEEL_CLOSURE_LIFTING`, `STEEL_SEARCH_PATHS`) that can still reach an engine: `pin_scheme_home` removes them at process start, before any engine is built.
 - Flag a new Scheme-callable host function that can block without observing the cell's cancellation, and any durable write reachable from an ended session lifetime that skips `session_scope::ensure_live`.
 - Flag `.lock().unwrap()` on a lock shared between sessions: one session's panic must not poison the others.
 - Flag a Steel builtin that allocates by a count, and a path from a Scheme value to JSON, that does not pass `crates/pa-core/src/kernel/scheme/limits.rs` (`GUARDED`, `plain_data`): a count over the limit, a negative count (Steel reads it as unsigned) and a non-finite number are the cell's error, where Steel itself panics or allocates until the process dies.
