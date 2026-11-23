@@ -56,6 +56,18 @@ fn serve(listener: &UnixListener, switches: &Arc<Mutex<Vec<String>>>) {
                 write_json(writer, &response);
             }
             "get_state" | "get_connection_state" => write_json(writer, &state(id, kind)),
+            // The client refreshes its catalog in the background: answer with the catalog the
+            // run starts with, so a refresh that lands before the key does not empty it.
+            "get_model_catalog" => write_json(
+                writer,
+                &json!({
+                    "type": "response", "id": id, "command": "get_model_catalog", "success": true,
+                    "data": {
+                        "models": [model("prime-inference"), model("openrouter")],
+                        "configuredProviders": ["prime-inference", "openrouter"],
+                    },
+                }),
+            ),
             "set_model" => {
                 switches.lock().unwrap().push(format!(
                     "{}/{}",
