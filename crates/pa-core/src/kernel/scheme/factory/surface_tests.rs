@@ -1017,6 +1017,9 @@ async fn killing_the_kernel_ends_its_control_loops_and_leaves_the_children_to_th
     let fixture = Fixture::new();
     fixture.host.set_node("a", Outcome::running());
     fixture.store("sw", "dag", json!({"nodes": [worker("a")]}));
+    // The loop's first collect is held, so the kill finds it in flight
+    // whenever it comes: a loop ended before it had asked abandons nothing.
+    let (_held, collecting) = fixture.host.gate("rlm.collect", 1);
     let provisioner = fixture.provisioner();
     let kernel = provisioner.ensure(None, None).await.unwrap();
     let started = displayed(kernel.as_ref(), r#"(factory-run "sw")"#)
@@ -1024,6 +1027,7 @@ async fn killing_the_kernel_ends_its_control_loops_and_leaves_the_children_to_th
         .unwrap();
     let request = json!({"id": "f1", "action": "status", "runId": started["run_id"]});
     let while_alive = provisioner.factory_activity(&request).await.unwrap();
+    collecting.acquire().await.unwrap().forget();
     provisioner.kill().await;
     fixture
         .host
