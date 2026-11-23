@@ -172,6 +172,15 @@ perf:
 	./target/release/pa-perf report --baseline crates/pa-perf/baseline.json \
 		--results target/perf/results/*.json
 
+# The compaction retention verifier
+# (crates/pa-core/src/session_engine/compact_session/tests/retention.rs): the
+# per-class table of what a compaction keeps of the fixtures' constraints,
+# decisions, files, open tasks, failures and goal. `cargo test --workspace`
+# runs the same tests; the model-backed half runs only with
+# PRIME_AGENT_RETENTION_MODEL=<provider>/<model-id> and that provider's key set.
+compaction-retention:
+	cargo test --locked -p pa-core --lib compaction_retention -- --nocapture --test-threads=1
+
 
 # The changelog fold's contract battery (RELEASE-FLOW-PROPOSAL.md §8): the
 # fold is the release-PR's changelog half, and the pathspec security case is
@@ -195,7 +204,7 @@ shard-gates:
 	python3 scripts/test_ci_test_shard.py
 	python3 scripts/test_ci_pr_crates.py
 
-.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates perf
+.PHONY: check deny windows-cross actionlint glibc-gate release-dry-run continuous-dry-run audit-build package catalog-assets catalog-assets-fixture catalog-assets-gates fold-gates restamp-gates shard-gates perf compaction-retention
 
 # Offline packaging contract tests for updaters shipped since Prime Agent 0.6.
 legacy-upgrade-gates:

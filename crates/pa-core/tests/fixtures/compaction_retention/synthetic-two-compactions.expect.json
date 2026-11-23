@@ -1,0 +1,47 @@
+{
+  "provenance": "synthetic",
+  "description": "Generated session compacted twice: a constraint from before the first compaction must survive the second, and a repeated constraint appears once.",
+  "keepRecentTokens": 2500,
+  "items": [
+    {
+      "class": "constraint",
+      "text": "Never print secrets from the environment, even in dry-run output."
+    },
+    {
+      "class": "constraint",
+      "text": "Keep the exit code 0 for a dry run, even when the plan has warnings."
+    },
+    {
+      "class": "decision",
+      "text": "PlanPrinter"
+    },
+    {
+      "class": "file",
+      "text": "crates/cli/src/deploy.rs"
+    },
+    {
+      "class": "file",
+      "text": "crates/cli/src/dry_run.rs"
+    }
+  ],
+  "followUps": [
+    {
+      "question": "May dry-run output include environment secrets?",
+      "expectAll": [
+        "no"
+      ]
+    },
+    {
+      "question": "What exit code must a dry run return when the plan has warnings?",
+      "expectAll": [
+        "0"
+      ]
+    },
+    {
+      "question": "Which component renders the dry-run plan?",
+      "expectAll": [
+        "PlanPrinter"
+      ]
+    }
+  ]
+}

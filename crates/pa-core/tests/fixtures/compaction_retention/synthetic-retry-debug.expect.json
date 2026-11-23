@@ -1,0 +1,78 @@
+{
+  "provenance": "synthetic",
+  "description": "Generated debugging session: bulleted user constraints, a decision, a user `!` test command that failed, and a todo list.",
+  "keepRecentTokens": 2500,
+  "items": [
+    {
+      "class": "constraint",
+      "text": "Do not add new dependencies."
+    },
+    {
+      "class": "constraint",
+      "text": "You must keep the retry budget at 3 attempts."
+    },
+    {
+      "class": "constraint",
+      "text": "Prefer `tracing` over `println!` for any logging you add."
+    },
+    {
+      "class": "decision",
+      "text": "saturating_mul"
+    },
+    {
+      "class": "decision",
+      "text": "MAX_BACKOFF_MS"
+    },
+    {
+      "class": "file",
+      "text": "crates/net/src/retry.rs"
+    },
+    {
+      "class": "openTask",
+      "text": "Make retry_backoff_never_zero pass"
+    },
+    {
+      "class": "openTask",
+      "text": "Add a tracing span around each retry attempt"
+    },
+    {
+      "class": "failure",
+      "text": "cargo test -p net retry_backoff"
+    },
+    {
+      "class": "failure",
+      "text": "delay was 0ms on attempt 3"
+    },
+    {
+      "class": "goal",
+      "text": "sometimes sleeps for zero milliseconds"
+    }
+  ],
+  "followUps": [
+    {
+      "question": "How many retry attempts must the loop keep?",
+      "expectAll": [
+        "3"
+      ]
+    },
+    {
+      "question": "May you add a crate dependency to fix this?",
+      "expectAll": [
+        "no"
+      ]
+    },
+    {
+      "question": "Which logging facility should new logging use?",
+      "expectAll": [
+        "tracing"
+      ]
+    },
+    {
+      "question": "Which command failed last, and what did it report?",
+      "expectAll": [
+        "retry_backoff",
+        "0ms"
+      ]
+    }
+  ]
+}

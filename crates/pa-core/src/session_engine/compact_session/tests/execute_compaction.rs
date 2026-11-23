@@ -732,3 +732,59 @@ async fn durable_compaction_row_carries_the_ts_record() {
         .expect("compaction entry persisted");
     assert_eq!(persisted, run.entry);
 }
+
+/// A constraint the user stated at the start of a long session reaches the
+/// post-compaction context verbatim, whatever the summary says (the faux
+/// summary never mentions it).
+#[tokio::test]
+async fn an_early_user_constraint_survives_compaction_verbatim() {
+    let registration = faux_registration();
+    let model = registration.get_model();
+    let tmp = tempfile::tempdir().unwrap();
+    let mut session = SessionManager::in_memory(tmp.path());
+    session
+        .append_message(AgentMessage::User(pa_types::ai::UserMessage {
+            content: UserContent::Text(
+                "Port the parser. Never push to the release branch; it deploys on push."
+                    .to_string(),
+            ),
+            timestamp: 0,
+            rest: Map::default(),
+        }))
+        .unwrap();
+    for entry in session_with_turns(tmp.path(), 6).get_entries() {
+        if let FileEntry::Message { message, .. } = entry {
+            session.append_message(message.clone()).unwrap();
+        }
+    }
+    let outcome = execute_compaction(
+        &mut session,
+        CompactOptions {
+            model,
+            api_key: None,
+            custom_instructions: None,
+            settings: super::super::compaction::CompactionSettings {
+                keep_recent_tokens: 20,
+                ..Default::default()
+            },
+            abort: None,
+            harness_digest: None,
+            auxiliary: None,
+            semantic_edges: None,
+            summary_delta: None,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(matches!(outcome, CompactOutcome::Ran(_)));
+    let provider_messages =
+        super::super::messages::convert_to_llm(&rebuilt_context_after_compaction(&session));
+    let AgentMessage::User(summary) = &provider_messages[0] else {
+        panic!("the compaction summary leads the context");
+    };
+    assert!(summary
+        .content
+        .text()
+        .contains("- \"Never push to the release branch; it deploys on push.\"\n"));
+    registration.unregister();
+}

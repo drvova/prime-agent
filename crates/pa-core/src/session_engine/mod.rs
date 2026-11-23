@@ -14,6 +14,7 @@ mod cache_warming;
 pub mod checkpoint_host;
 pub mod compact_session;
 pub mod compaction;
+pub mod compaction_carry;
 pub mod compaction_exec;
 pub mod compaction_trace;
 pub mod compaction_utils;
