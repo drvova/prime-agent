@@ -168,6 +168,15 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The unfocused terminal was signalled that the agent stopped for the user, the first time
+    /// per reason in a run (event `tui unfocused signal`): `reason` is `turn_end` / `question`,
+    /// `mode` the `terminal.notifyOnTurnEnd` value that chose the signal (`bell` /
+    /// `notification`). Implementations return at once: the event path spawns it and never waits.
+    fn unfocused_signal_sent(
+        &self,
+        reason: &'static str,
+        mode: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first selection copy (`tui selection used`): `lines` is the copy's line count.
     fn selection_used(&self, lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first click-driven interaction (`tui click used`): `surface` is `transcript` /
@@ -625,6 +634,9 @@ pub struct InteractiveOutcome {
     /// OSC 52 clipboard sequences emitted during the run (headless capture only; terminal
     /// runs write them to stdout directly).
     pub clipboard_emissions: Vec<String>,
+    /// Terminal attention signals (BEL, OSC 9) the run queued, as the bytes a terminal frame
+    /// would have carried (headless capture only; a terminal run writes them with its frames).
+    pub attention_signals: Vec<String>,
     /// `/resume` requested the agents view next (return-to-session flow).
     pub return_to_agents_view: bool,
     /// The subagent summary line opened the agents view scoped to this session's subtree;
@@ -700,6 +712,8 @@ enum UiInput {
     Paste(String),
     /// A decoded mouse report (wheel turns; other reports are consumed at the source).
     Mouse(crate::mouse::MouseEvent),
+    /// The terminal reported gaining (`true`) or losing focus.
+    Focus(bool),
     Submit(String),
     /// The headless `SubmitAndSettle` step (see [`HeadlessStep`]).
     SubmitAndSettle {

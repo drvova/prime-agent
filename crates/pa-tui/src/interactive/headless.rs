@@ -69,6 +69,8 @@ pub enum HeadlessStep {
     /// witnesses renders that the frame capture's plain-text dedupe cannot express (a
     /// selection restyle changes styles, not text).
     Timestamp(std::sync::mpsc::Sender<(std::time::Instant, usize)>),
+    /// A terminal focus report: gained (`true`) or lost.
+    Focus(bool),
     /// One raw key event: the verifier's window into the selector/picker surfaces (arrows, escape),
     /// which typed text cannot express.
     Key(crossterm::event::KeyEvent),

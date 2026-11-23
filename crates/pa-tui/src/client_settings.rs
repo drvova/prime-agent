@@ -91,6 +91,19 @@ pub trait ClientSettings: Send + Sync {
     ///
     /// Returns `Err` when the settings store fails.
     fn set_show_terminal_progress(&self, enabled: bool) -> Result<()>;
+    /// `terminal.notifyOnTurnEnd` (`off`/`bell`/`notification`; default `off`): what an
+    /// unfocused terminal is sent when a run ends or a question opens.
+    fn notify_on_turn_end(&self) -> String {
+        "off".to_string()
+    }
+    /// Persists `terminal.notifyOnTurnEnd` to the global scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` for an unknown value or a failed or unavailable store.
+    fn set_notify_on_turn_end(&self, _signal: &str) -> Result<()> {
+        anyhow::bail!("Turn-end notification settings are unavailable")
+    }
     /// `images.autoResize` (TS default true).
     fn image_auto_resize(&self) -> bool;
     /// Persists `images.autoResize` to the global scope.

@@ -73,6 +73,7 @@ pub(crate) fn restore_terminal() {
     if out.is_terminal() {
         crate::enhanced_keys::drain_for_exit(&mut out);
         let _ = crate::mouse_tracking::disable(&mut out);
+        let _ = crate::terminal_attention::release_focus_reports(&mut out);
         let _ = crate::enhanced_keys::disable(&mut out);
         // The unconditional leave: the restore must not trust the ownership flag
         // — a desynced flag would keep the alt buffer up past the process death.

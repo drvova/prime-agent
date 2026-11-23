@@ -172,6 +172,33 @@ impl SessionUi {
         crate::view::navigation::report_used(self.telemetry.as_ref(), action);
     }
 
+    /// The agent stopped for the user: an unfocused terminal gets the signal the
+    /// `terminal.notifyOnTurnEnd` setting names (as the view holds it: no settings read on the
+    /// event path), queued into the next frame's write. The report is fire-and-forget and sent
+    /// once per reason in a run.
+    fn signal_waiting(
+        &mut self,
+        waiting: crate::terminal_attention::Waiting,
+        view: &mut AgentView,
+    ) {
+        let signal = view.turn_end_signal;
+        let Some(attention) = crate::terminal_attention::Attention::for_waiting(
+            waiting,
+            signal,
+            self.terminal_focused,
+        ) else {
+            return;
+        };
+        view.pending_attention = Some(attention);
+        self.dirty = true;
+        let reason = waiting.wire_name();
+        if self.unfocused_signal_reported.contains(&reason) {
+            return;
+        }
+        self.unfocused_signal_reported.push(reason);
+        crate::terminal_attention::report_signal(self.telemetry.as_ref(), waiting, signal);
+    }
+
     /// Report the run's first selection copy (`tui selection used`),
     /// fire-and-forget. `lines` is the copied text's line count.
     pub(super) fn track_selection(&mut self, lines: usize) {
@@ -795,6 +822,7 @@ impl SessionUi {
                 if let Some(working) = view.working.as_mut() {
                     working.message = Some("Waiting for your answer".to_string());
                 }
+                self.signal_waiting(crate::terminal_attention::Waiting::Question, view);
                 self.dirty = true;
             }
             TurnUpdate::Notification(notification) => {
@@ -908,6 +936,10 @@ impl SessionUi {
     /// The agent run ended: the busy state clears and the held bash cards stream into the
     /// transcript.
     fn end_run(&mut self, view: &mut AgentView) {
+        // Only a run this client saw running: a replayed or repeated `agent_end` says nothing new.
+        if self.turn_active {
+            self.signal_waiting(crate::terminal_attention::Waiting::TurnEnded, view);
+        }
         self.turn_active = false;
         view.working = None;
         // An interrupt that lands on a running tool ends the run with no aborted assistant

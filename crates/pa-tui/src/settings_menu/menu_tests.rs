@@ -64,6 +64,7 @@ fn tabs_partition_the_settings_rows() {
                 "Display",
                 vec![
                     "theme",
+                    "notify-on-turn-end",
                     "terminal-progress",
                     "clear-on-shrink",
                     "show-images",

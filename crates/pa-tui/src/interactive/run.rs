@@ -37,6 +37,7 @@ fn burst_continues(next: Option<&UiInput>) -> bool {
             UiInput::Key(_)
             | UiInput::Paste(_)
             | UiInput::Mouse(_)
+            | UiInput::Focus(_)
             | UiInput::Resize
             | UiInput::InputChunkEnd,
         ) => true,
@@ -310,6 +311,9 @@ async fn run_interactive_surface(
             usize::try_from(settings.autocomplete_max_visible()).unwrap_or(usize::MAX),
         );
         view.show_hardware_cursor = settings.show_hardware_cursor();
+        view.turn_end_signal = crate::terminal_attention::TurnEndSignal::from_wire_name(
+            &settings.notify_on_turn_end(),
+        );
         // A chat opens at the persisted `chatDetail` level; an unset store reads as the collapsed
         // `overview` startup level (operator directive 2026-09-28).
         view.detail = crate::chat::Detail::from_wire_name(&settings.chat_detail());
@@ -654,6 +658,9 @@ async fn run_interactive_surface(
                         // A write boundary carries no input: the echo continues, and queued
                         // typed-ahead materializes on the run loop's tick after the open.
                         UiInput::InputChunkEnd => {}
+                        // A focus report is not typed input: it waits for the session without
+                        // ending the echo.
+                        focus @ UiInput::Focus(_) => pending.push_back(focus),
                         other => {
                             echoing = false;
                             pending.push_back(other);
@@ -885,6 +892,7 @@ async fn run_interactive_surface(
                 last_assistant_text: None,
                 frames: Vec::new(),
                 clipboard_emissions: Vec::new(),
+                attention_signals: Vec::new(),
                 agents_view_scope: None,
                 agents_view_folder: None,
                 return_to_agents_view: false,
@@ -1265,6 +1273,7 @@ async fn run_interactive_surface(
                     UiInput::Mouse(event) => {
                         session.handle_mouse(event, &mut view);
                     }
+                    UiInput::Focus(focused) => session.terminal_focused = focused,
                     // The headless plan's pause step or the end of a terminal write: the queued
                     // keystroke batch ahead of this barrier is fully handled, so the parked
                     // suggestions materialize now (into this input's inline paint on a terminal).
@@ -2141,6 +2150,7 @@ async fn run_interactive_surface(
         // The headless OSC 52 capture (terminal runs wrote the sequences to stdout as they
         // happened).
         clipboard_emissions: session.take_osc_emissions(),
+        attention_signals: std::mem::take(&mut session.attention_signals),
         return_to_agents_view: preserve_alt_screen,
         agents_view_scope: session.scoped_agents_view.take(),
         agents_view_folder: session.resume_folder.take(),

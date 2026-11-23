@@ -1520,6 +1520,20 @@ mod tests {
             // The delivery never completes: a hung sink.
             Box::pin(std::future::pending())
         }
+
+        fn unfocused_signal_sent(
+            &self,
+            reason: &'static str,
+            mode: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([reason, mode, "unfocused_signal", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
     }
 
     /// The transcript navigation report is fire-and-forget: with a sink that never replies, the
@@ -1538,6 +1552,30 @@ mod tests {
         assert_eq!(
             *telemetry.reports.lock().unwrap(),
             vec![["previous_prompt", "transcript_navigation", "", ""]]
+        );
+    }
+
+    /// The unfocused signal's report is fire-and-forget as well: with a sink that never replies,
+    /// the hand-off on the event path that queued the signal returns at once and the report
+    /// still starts.
+    #[tokio::test]
+    async fn a_hanging_signal_report_never_holds_the_event_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::terminal_attention::report_signal(
+            Some(&hook),
+            crate::terminal_attention::Waiting::Question,
+            crate::terminal_attention::TurnEndSignal::Notification,
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["question", "notification", "unfocused_signal", ""]]
         );
     }
 

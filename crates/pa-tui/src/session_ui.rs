@@ -462,6 +462,13 @@ pub(crate) struct SessionUi {
     scroll_adoption_emitted: bool,
     /// The transcript navigation actions already reported this run (one report per action).
     navigation_reported: Vec<&'static str>,
+    /// What the terminal last reported about its focus; focused until it reports otherwise, so
+    /// a terminal that never reports is never signalled.
+    pub(crate) terminal_focused: bool,
+    /// The reasons an unfocused signal was already reported for this run.
+    unfocused_signal_reported: Vec<&'static str>,
+    /// The attention signals a headless run captured in place of a terminal write.
+    pub(crate) attention_signals: Vec<String>,
     pub(crate) exit_reason: &'static str,
     /// The daemon connection's recovery state, written only through its transition
     /// ([`crate::interactive::reconnect::Connection::on`]).

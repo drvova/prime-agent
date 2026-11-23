@@ -35,6 +35,7 @@ const TAB_LAYOUT: &[TabLayout] = &[
         name: "Display",
         ids: &[
             "theme",
+            "notify-on-turn-end",
             "terminal-progress",
             "clear-on-shrink",
             "show-images",

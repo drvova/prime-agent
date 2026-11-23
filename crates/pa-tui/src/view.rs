@@ -80,6 +80,11 @@ pub struct AgentView {
     pub(crate) terminal_title: Option<String>,
     /// A kernel `notify(...)` ping's terminal attention signal, written with the next frame.
     pub(crate) pending_attention: Option<crate::terminal_attention::Attention>,
+    /// The `terminal.notifyOnTurnEnd` setting as read at startup and at each change in
+    /// `/settings`: what an unfocused terminal is sent when the agent stops for the user. While
+    /// it is not `off` the terminal is asked to report focus; the next frame's write sets or
+    /// clears that mode to match.
+    pub(crate) turn_end_signal: crate::terminal_attention::TurnEndSignal,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
     /// When the session last sent anything while working (the loader's stall timer).
@@ -390,6 +395,7 @@ impl AgentView {
             pulse_frame: 0,
             terminal_title: None,
             pending_attention: None,
+            turn_end_signal: crate::terminal_attention::TurnEndSignal::Off,
             working_since: None,
             working_heard: None,
             stall_shown: false,

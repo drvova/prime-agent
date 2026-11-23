@@ -27,6 +27,7 @@ pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
 mod tui_navigation;
+mod tui_unfocused_signal;
 pub use capabilities::{CAPABILITY_EVENTS_AFTER_SESSION_END, CAPABILITY_EVENTS_BEFORE_SESSION_END};
 
 // ---------------------------------------------------------------------------
@@ -1879,6 +1880,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_IMAGE_PASTE,
         &TUI_CRASH_NOTICE,
         &tui_navigation::TUI_TRANSCRIPT_NAVIGATION,
+        &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

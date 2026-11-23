@@ -57,6 +57,15 @@ ping (`kernel_notification`) renders as one notice row with its level's mark and
 terminal for attention on the next frame's write (`terminal_attention`: OSC 9 where the user
 turned terminal indicators on with `showTerminalProgress`, else the bell).
 
+Turn-end signal (`terminal_attention`): when a run ends or a question opens while the terminal is
+unfocused, the next frame's write carries the signal `terminal.notifyOnTurnEnd` names (`/settings`,
+Display, `When a turn ends unfocused`): `off` (the default), `bell` (BEL), or `notification` (OSC 9
+with a fixed text, never session content). Focus is what the terminal reports: mode `?1004` is
+requested in the frame write only while the setting is not `off`, and released on suspend,
+teardown and the exit restore. A terminal that never reports focus (the mode unsupported, tmux
+without `focus-events on`) reads as focused and is never signalled. The first signal per reason
+in a run reports `tui unfocused signal` (`reason`, `mode`).
+
 Transcript navigation (`view/navigation.rs`): a window scrolled up from the bottom pins the user
 prompt it reads under over its first row (the prompt's first line on the user-message band, cut
 with `menu_chrome::ELLIPSIS`, the jump keys flush right in the columns the prompt leaves) and
