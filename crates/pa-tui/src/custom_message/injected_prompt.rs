@@ -161,9 +161,9 @@ fn prompt_header(row: &InjectedPromptRow, theme: &Theme) -> Line {
             Span::raw(" "),
             Span::styled(
                 if *restored {
-                    "Restored Python kernel state"
+                    "Restored kernel state"
                 } else {
-                    "Started fresh Python kernel"
+                    "Started a fresh kernel"
                 }
                 .to_string(),
                 muted,
@@ -395,8 +395,8 @@ mod tests {
     #[test]
     fn kernel_state_labels() {
         for (restored, label) in [
-            (true, "Restored Python kernel state"),
-            (false, "Started fresh Python kernel"),
+            (true, "Restored kernel state"),
+            (false, "Started a fresh kernel"),
         ] {
             let row = InjectedPromptRow {
                 kind: InjectedPromptKind::KernelRestored { restored },
