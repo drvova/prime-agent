@@ -58,6 +58,30 @@ terminal for attention on the next frame's write (`terminal_attention`: OSC 9 wh
 turned terminal indicators on with `showTerminalProgress`, else the bell).
 
 
+Panel conventions (`menu_chrome.rs`, `menu_panel.rs`, `duration_text.rs`): the pieces every picker,
+pane and prompt shares, so the panels read alike and stay alike. The footer is the one hint row
+(`Footer`: `key verb` hints joined by ` · ` at the chrome indent, keys from the effective
+bindings, the lowest-ranked hint dropped whole on a narrow row; the confirm and close keys stand
+last); a list names its arrows `↑/↓ navigate` through `Footer::navigate` (the `/model` picker's
+`model`/`action` wording and the scrolling pages' `scroll` are the stated exceptions), and a list
+with no rows advertises neither the arrows nor its confirm key (`Footer::pane_list` for the bash
+and heartbeat panes; the agents view, the factory page, `/mcp` and the history search do the
+same). Chrome text cut to fit ends in the one cut mark `…` (`menu_chrome::ELLIPSIS`: titles,
+subtitles, empty states, table cells through `plain_cell`, action rows, session names in the
+agents view and the top bar, the list clip markers, queued previews), and `width::truncate_line`
+drops the mark when the budget is narrower than it, so no row is wider than its frame. A question
+the user must answer wraps instead (the confirm panel). A failure is `menu_chrome::error_row`
+(`Error: <message>` in the error tone). Detail-pane actions are `menu_panel::action_row`, their
+descriptions in one column. Durations are `duration_text` (`780ms`, `3.4s`, `2m 05s`, `1h 07m`,
+`2d 03h`: two units at most, the larger rolling over) in the bash view, the factory page and the
+goal panel; the working loader keeps its ticking `1h 07m 05s`. Notices that name a key
+(`/better`, the side-question pane) read it from the effective binding and say nothing once it is
+unbound. The `/settings` tab strip windows whole tabs around the active one on a narrow pane and
+marks each hidden side with `…`. The splash is as tall as its text when the pane is too narrow for
+the logo, and the agents view folds it to one identity row on a terminal too short to show it and
+a usable list (fewer than the splash plus 12 rows).
+
+
 ## Non-goals
 No session logic, no providers, no loop policy. The interactive UI renders daemon events and sends user intents (prompts, abort, switch) as daemon commands; the session loop itself lives in the pa-daemon worker. It never computes agent behavior and never spawns the supervisor (launch semantics live in pa-cli).
 
