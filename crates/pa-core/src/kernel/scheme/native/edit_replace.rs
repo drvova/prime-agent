@@ -1,30 +1,104 @@
-//! `(edit path old-str new-str)`: replace one exact, unique occurrence of a
-//! string in an existing file, the `edit` skill of the Python kernel.
+//! `(edit path old-str new-str)`: replace one unique occurrence of a string
+//! in an existing file, the `edit` skill of the Python kernel.
 //!
-//! The file is read and written as UTF-8, byte for byte: its line endings
-//! stay its own, so `old-str` must spell them as the file does. A miss says
-//! where `old-str` stops matching, so the next call can fix it without
-//! another read.
+//! The file is read and written as UTF-8, byte for byte. An exact match is
+//! tried first. Only when it finds nothing, and `old-str` is not text pasted
+//! from `fs-read` with its `LINE:abc|` anchors still on, does a ladder of
+//! normalizations try in turn, each on its own: trailing whitespace ignored
+//! per line, then leading and trailing whitespace ignored per line (the
+//! replacement re-indented by the difference), then Unicode punctuation
+//! folded to ASCII, then the literal `\n`/`\t`/`\"`/`\\` escapes a model
+//! wrote into a Scheme string by mistake read as what they stand for. The
+//! first step that finds anything must find exactly one match, or the edit
+//! fails as ambiguous; the reply's `matchedBy` names the step. Whatever step
+//! matched, only the matched text is replaced (whole lines for the two
+//! whitespace steps). A miss says where `old-str` stops matching, so the
+//! next call can fix it without another read.
 
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
 
+use crate::fs_edit::Anchor;
 use crate::tools::path_utils::resolve_to_cwd;
 
 /// Characters of the file and of `old-str` shown at the divergence point.
 const SPLIT_CONTEXT: usize = 60;
 
+/// How `old-str` was found in the file: the ladder's steps, in the order they
+/// are tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Matched {
+    Exact,
+    TrailingWhitespace,
+    Indentation,
+    UnicodePunctuation,
+    Unescaped,
+}
+
+const LADDER: [Matched; 5] = [
+    Matched::Exact,
+    Matched::TrailingWhitespace,
+    Matched::Indentation,
+    Matched::UnicodePunctuation,
+    Matched::Unescaped,
+];
+
+impl Matched {
+    /// The reply's `matchedBy` word and the phrase errors and the reply's
+    /// text use for the step.
+    fn words(self) -> (&'static str, &'static str) {
+        match self {
+            Matched::Exact => ("exact", "exactly"),
+            Matched::TrailingWhitespace => (
+                "trailing-whitespace",
+                "ignoring trailing whitespace on each line",
+            ),
+            Matched::Indentation => (
+                "indentation",
+                "ignoring indentation (new-str re-indented to match)",
+            ),
+            Matched::UnicodePunctuation => (
+                "unicode-punctuation",
+                "with curly quotes, dashes and non-breaking spaces read as ASCII",
+            ),
+            Matched::Unescaped => (
+                "unescaped",
+                "with old-str's literal \\n, \\t, \\\" and \\\\ escapes unescaped (new-str too)",
+            ),
+        }
+    }
+}
+
+/// One place `old-str` matched: the file's bytes it covers and what replaces
+/// them.
+struct Candidate {
+    range: Range<usize>,
+    new: String,
+}
+
+/// An applied edit: the edited file, the reply, and the text that was
+/// actually replaced and put in its place (what the cell's card shows).
+pub(super) struct Replaced {
+    pub(super) file: PathBuf,
+    pub(super) reply: Value,
+    pub(super) old: String,
+    pub(super) new: String,
+}
+
 /// Replace the one occurrence of `old-str` in the file at `path` (relative to
-/// `cwd`, absolute, or `~`-prefixed): the edited file and the reply (`path`,
-/// `startLine`, the 1-based line the match starts on, and `text`).
+/// `cwd`, absolute, or `~`-prefixed). The reply carries `path`, `startLine`
+/// (the 1-based line the match starts on), `matchedBy`, and `text`.
 ///
 /// # Errors
 ///
-/// Bad options, a file that is missing or not UTF-8, or an `old-str` that is
-/// absent or matches more than once; nothing is written then.
-pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<(PathBuf, Value)> {
+/// Bad options, a file that is missing or not UTF-8, an `old-str` carrying
+/// `fs-read` anchors, or an `old-str` that no step of the ladder finds or
+/// that the first step to find it finds more than once; nothing is written
+/// then.
+pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<Replaced> {
     let text = |name: &str| {
         options
             .get(name)
@@ -41,25 +115,216 @@ pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<(PathBuf, V
     }
     let content = std::fs::read_to_string(&file)
         .with_context(|| format!("{path} is not readable as UTF-8"))?;
-    let Some(at) = content.find(old) else {
+    let mut found = None;
+    for step in LADDER {
+        let candidates = match step {
+            Matched::Exact => substring_matches(&content, old, new),
+            Matched::TrailingWhitespace => line_matches(&content, old, new, str::trim_end),
+            Matched::Indentation => line_matches(&content, old, new, str::trim),
+            Matched::UnicodePunctuation => {
+                let fold = |ch: char| match ch {
+                    '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}' | '\u{2032}' => '\'',
+                    '\u{201C}' | '\u{201D}' | '\u{201E}' | '\u{201F}' | '\u{2033}' => '"',
+                    '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+                    '\u{00A0}' | '\u{2002}'..='\u{200A}' | '\u{202F}' | '\u{205F}' | '\u{3000}' => {
+                        ' '
+                    }
+                    other => other,
+                };
+                // The folded file, and for each of its bytes the file's byte
+                // it came from (one past the end too).
+                let mut folded = String::with_capacity(content.len());
+                let mut origin = Vec::with_capacity(content.len() + 1);
+                for (at, ch) in content.char_indices() {
+                    let ch = fold(ch);
+                    origin.extend(std::iter::repeat_n(at, ch.len_utf8()));
+                    folded.push(ch);
+                }
+                origin.push(content.len());
+                let needle: String = old.chars().map(fold).collect();
+                folded
+                    .match_indices(needle.as_str())
+                    .map(|(at, _)| Candidate {
+                        range: origin[at]..origin[at + needle.len()],
+                        new: new.to_string(),
+                    })
+                    .collect()
+            }
+            Matched::Unescaped => {
+                let escapes = ["\\n", "\\t", "\\\"", "\\\\"];
+                let unescape = |text: &str| {
+                    let mut out = String::with_capacity(text.len());
+                    let mut chars = text.chars().peekable();
+                    while let Some(ch) = chars.next() {
+                        let follower = if ch == '\\' {
+                            chars.next_if(|next| matches!(next, 'n' | 't' | '"' | '\\'))
+                        } else {
+                            None
+                        };
+                        out.push(match follower {
+                            Some('n') => '\n',
+                            Some('t') => '\t',
+                            Some(other) => other,
+                            None => ch,
+                        });
+                    }
+                    out
+                };
+                // Only when old-str spells an escape the file never does:
+                // a file that has `\n` in it may be what old-str means.
+                let mistaken = escapes.iter().any(|escape| old.contains(escape))
+                    && !escapes
+                        .iter()
+                        .any(|escape| old.contains(escape) && content.contains(escape));
+                if mistaken {
+                    substring_matches(&content, &unescape(old), &unescape(new))
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+        match candidates.len() {
+            0 => {}
+            1 => {
+                found = candidates.into_iter().next().map(|found| (step, found));
+                break;
+            }
+            count => {
+                let (_, how) = step.words();
+                let how = match step {
+                    Matched::Exact => String::new(),
+                    Matched::TrailingWhitespace
+                    | Matched::Indentation
+                    | Matched::UnicodePunctuation
+                    | Matched::Unescaped => format!(" {how}"),
+                };
+                bail!(
+                    "found {count} occurrences in {path}{how}, need exactly 1 — widen the snippet to make it unique"
+                );
+            }
+        }
+        if step == Matched::Exact {
+            let mut lines = old.strip_suffix('\n').unwrap_or(old).split('\n');
+            if lines.all(|line| line.contains('|') && Anchor::parse(line).is_ok()) {
+                bail!(
+                    "old-str carries fs-read anchor prefixes (`LINE:abc|`), which are not in {path}: \
+                     drop them and pass the file's text alone, or edit those lines with fs-edit and their anchors"
+                );
+            }
+        }
+    }
+    let Some((matched, Candidate { range, new })) = found else {
         bail!("{}", miss_diagnostic(path, &content, old));
     };
-    let count = content.matches(old).count();
-    if count > 1 {
-        bail!(
-            "found {count} occurrences in {path}, need exactly 1 — widen the snippet to make it unique"
-        );
-    }
-    let start_line = content[..at].matches('\n').count() + 1;
-    std::fs::write(&file, content.replacen(old, new, 1))
-        .with_context(|| format!("{path} could not be written"))?;
+    let start_line = content[..range.start].matches('\n').count() + 1;
+    let replaced = content[range.clone()].to_string();
+    let mut edited = content;
+    edited.replace_range(range, &new);
+    std::fs::write(&file, edited).with_context(|| format!("{path} could not be written"))?;
     let file = file.canonicalize().unwrap_or(file);
+    let (matched_by, how) = matched.words();
+    let text = match matched {
+        Matched::Exact => format!("Edited {}", file.display()),
+        Matched::TrailingWhitespace
+        | Matched::Indentation
+        | Matched::UnicodePunctuation
+        | Matched::Unescaped => format!(
+            "Edited {} (old-str matched {how}; check the result)",
+            file.display()
+        ),
+    };
     let reply = json!({
         "path": file.to_string_lossy(),
         "startLine": start_line,
-        "text": format!("Edited {}", file.display()),
+        "matchedBy": matched_by,
+        "text": text,
     });
-    Ok((file, reply))
+    Ok(Replaced {
+        file,
+        reply,
+        old: replaced,
+        new,
+    })
+}
+
+/// Every occurrence of `needle` in `content`, each replaced by `new`.
+fn substring_matches(content: &str, needle: &str, new: &str) -> Vec<Candidate> {
+    content
+        .match_indices(needle)
+        .map(|(at, _)| Candidate {
+            range: at..at + needle.len(),
+            new: new.to_string(),
+        })
+        .collect()
+}
+
+/// Every run of whole lines of `content` whose lines equal `old`'s lines
+/// once each side is put through `normalize`. The matched block is those
+/// lines (and the last one's line ending when `old` ends in one); `new`
+/// replaces it, re-indented by the difference between the first non-blank
+/// line's indentation in the file and in `old`, and with CRLF line endings
+/// when the block has them and `new` has none. An `old` with no visible
+/// text matches nothing.
+fn line_matches(
+    content: &str,
+    old: &str,
+    new: &str,
+    normalize: fn(&str) -> &str,
+) -> Vec<Candidate> {
+    let (body, ends_line) = old
+        .strip_suffix('\n')
+        .map_or((old, false), |body| (body, true));
+    let wanted: Vec<&str> = body.split('\n').collect();
+    let Some(anchor) = wanted.iter().position(|line| !normalize(line).is_empty()) else {
+        return Vec::new();
+    };
+    // Each line's start and the end of its text (before its `\n`, if any).
+    let mut lines = Vec::new();
+    let mut start = 0;
+    for piece in content.split('\n') {
+        lines.push(start..start + piece.len());
+        start += piece.len() + 1;
+    }
+    let indentation = |line: &str| line.len() - line.trim_start().len();
+    let mut candidates = Vec::new();
+    for window in lines.windows(wanted.len()) {
+        let equal = window
+            .iter()
+            .zip(&wanted)
+            .all(|(line, old_line)| normalize(&content[line.clone()]) == normalize(old_line));
+        if !equal {
+            continue;
+        }
+        let last = &content[window[wanted.len() - 1].clone()];
+        let end = window[wanted.len() - 1].end;
+        let end = if ends_line {
+            (end + 1).min(content.len())
+        } else {
+            end - usize::from(last.ends_with('\r'))
+        };
+        let file_line = &content[window[anchor].clone()];
+        let file_indent = &file_line[..indentation(file_line)];
+        let old_indent = &wanted[anchor][..indentation(wanted[anchor])];
+        let mut replacement = if file_indent == old_indent {
+            new.to_string()
+        } else {
+            new.split('\n')
+                .map(|line| match line.strip_prefix(old_indent) {
+                    Some(rest) if !line.trim().is_empty() => format!("{file_indent}{rest}"),
+                    Some(_) | None => line.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        if content[window[0].clone()].ends_with('\r') && !replacement.contains('\r') {
+            replacement = replacement.replace('\n', "\r\n");
+        }
+        candidates.push(Candidate {
+            range: window[0].start..end,
+            new: replacement,
+        });
+    }
+    candidates
 }
 
 /// Say where `old` stops matching: the longest leading piece of it the file

@@ -39,8 +39,10 @@
 //!   on the cell's card, as `edit` does.
 //! - `(fs-anchor view line)` is the anchor of a 1-based line of an `fs-read`
 //!   view.
-//! - `(edit path old-str new-str)` replaces one exact, unique occurrence of a
-//!   string: `'path`, `'start-line`, `'check`, `'text`.
+//! - `(edit path old-str new-str)` replaces one unique occurrence of a
+//!   string, found exactly or, failing that, by the first normalization that
+//!   finds it (`edit_replace`): `'path`, `'start-line`, `'matched-by`,
+//!   `'check`, `'text`.
 
 use std::path::{Path, PathBuf};
 
@@ -322,16 +324,22 @@ impl Files {
                 Ok(reply)
             }
             "edit" => {
-                let (file, mut reply) = edit_replace::replace(&self.cwd, options)?;
+                let edit_replace::Replaced {
+                    file,
+                    mut reply,
+                    old,
+                    new,
+                } = edit_replace::replace(&self.cwd, options)?;
                 // The edit shows on the running cell's card, as the Python
-                // kernel's `edit` skill displayed it.
+                // kernel's `edit` skill displayed it: the text that was
+                // replaced, which a normalized match spells differently from
+                // `old-str`.
                 if let Some(kernel) = crate::kernel::scheme::cell::current() {
-                    let text = |name: &str| options[name].as_str().unwrap_or_default().to_string();
                     kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
                         KernelDiffDisplay {
                             path: file.to_string_lossy().into_owned(),
-                            old_str: text("old-str"),
-                            new_str: text("new-str"),
+                            old_str: old,
+                            new_str: new,
                             start_line: reply["startLine"].as_u64(),
                         },
                     ));

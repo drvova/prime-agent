@@ -306,6 +306,7 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
             Ok(json!({
                 "path": shown.to_string_lossy(),
                 "start-line": 2,
+                "matched-by": "exact",
                 "check": false,
                 "text": format!("Edited {}", shown.display()),
             })),
@@ -316,6 +317,125 @@ async fn a_unique_string_is_replaced_and_a_miss_says_where_it_diverges() {
             Err("Error: Generic: edit: found 4 occurrences in words.txt, need exactly 1 — widen the snippet to make it unique".to_string()),
             "alpha\r\nBETA\r\ngamma\r\n".to_string(),
         )
+    );
+}
+
+/// Near misses an exact `edit` refuses: each normalization of the ladder
+/// finds its one place and says so, a normalized match found twice fails as
+/// ambiguous, and text pasted with `fs-read`'s anchors is refused with the
+/// way out. Refused edits write nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = kernel_over(HostRequestHandlers::new(), dir.path()).await;
+    // (file, its text, the cell)
+    let cases = [
+        (
+            "trailing.txt",
+            "def f():\n    return 1\n",
+            r#"(edit "trailing.txt" "def f():  \n    return 1  " "def f():\n    return 2")"#,
+        ),
+        (
+            "crlf.txt",
+            "alpha\r\nbeta\r\ngamma\r\n",
+            r#"(edit "crlf.txt" "alpha\nbeta" "ALPHA\nBETA")"#,
+        ),
+        (
+            "indented.txt",
+            "class A:\n    def f(self):\n        return 1\n\nx = 1\n",
+            r#"(edit "indented.txt" "def f(self):\n    return 1" "def f(self):\n    return 2")"#,
+        ),
+        (
+            "quotes.txt",
+            "msg = \u{201C}it\u{2019}s done\u{201D} \u{2014} ok\n",
+            r#"(edit "quotes.txt" "msg = \"it's done\" - ok" "msg = \"it is done\"")"#,
+        ),
+        (
+            "escaped.txt",
+            "a = 1\nb = \"x\"\n",
+            r#"(edit "escaped.txt" "a = 1\\nb = \\\"x\\\"" "a = 2\\nb = \\\"y\\\"")"#,
+        ),
+        (
+            "twice.txt",
+            "if a:\n    go()\nif b:\n    go()\n",
+            r#"(edit "twice.txt" "go()  " "stop()")"#,
+        ),
+        (
+            "anchored.txt",
+            "one\ntwo\n",
+            r#"(edit "anchored.txt" "1:abc|one\n2:xyz|two" "uno\ndos")"#,
+        ),
+    ];
+    let mut outcomes = Vec::new();
+    for (name, text, cell) in cases {
+        let file = dir.path().join(name);
+        std::fs::write(&file, text).unwrap();
+        let outcome = value(kernel.as_ref(), cell).await;
+        outcomes.push((outcome, std::fs::read_to_string(&file).unwrap()));
+    }
+    let edited = |name: &str, line: u64, by: &str, how: &str| {
+        let shown = dir.path().join(name).canonicalize().unwrap();
+        Ok(json!({
+            "path": shown.to_string_lossy(),
+            "start-line": line,
+            "matched-by": by,
+            "check": false,
+            "text": format!("Edited {} (old-str matched {how}; check the result)", shown.display()),
+        }))
+    };
+    let trailing = "ignoring trailing whitespace on each line";
+    assert_eq!(
+        outcomes,
+        vec![
+            (
+                edited("trailing.txt", 1, "trailing-whitespace", trailing),
+                "def f():\n    return 2\n".to_string(),
+            ),
+            (
+                edited("crlf.txt", 1, "trailing-whitespace", trailing),
+                "ALPHA\r\nBETA\r\ngamma\r\n".to_string(),
+            ),
+            (
+                edited(
+                    "indented.txt",
+                    2,
+                    "indentation",
+                    "ignoring indentation (new-str re-indented to match)",
+                ),
+                "class A:\n    def f(self):\n        return 2\n\nx = 1\n".to_string(),
+            ),
+            (
+                edited(
+                    "quotes.txt",
+                    1,
+                    "unicode-punctuation",
+                    "with curly quotes, dashes and non-breaking spaces read as ASCII",
+                ),
+                "msg = \"it is done\"\n".to_string(),
+            ),
+            (
+                edited(
+                    "escaped.txt",
+                    1,
+                    "unescaped",
+                    "with old-str's literal \\n, \\t, \\\" and \\\\ escapes unescaped (new-str too)",
+                ),
+                "a = 2\nb = \"y\"\n".to_string(),
+            ),
+            (
+                Err("Error: Generic: edit: found 2 occurrences in twice.txt ignoring indentation \
+                     (new-str re-indented to match), need exactly 1 — widen the snippet to make it unique"
+                    .to_string()),
+                "if a:\n    go()\nif b:\n    go()\n".to_string(),
+            ),
+            (
+                Err("Error: Generic: edit: old-str carries fs-read anchor prefixes (`LINE:abc|`), which are \
+                     not in anchored.txt: drop them and pass the file's text alone, or edit those lines with \
+                     fs-edit and their anchors"
+                    .to_string()),
+                "one\ntwo\n".to_string(),
+            ),
+        ]
     );
 }
 
