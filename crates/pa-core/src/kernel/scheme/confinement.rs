@@ -25,6 +25,13 @@
 //!   cell's ports, and is interrupted with the session's ([`controllers`]).
 //!   Steel's own macros (`struct`, parameters) need none of what is closed.
 //!
+//! - Steel builds every engine from one image, and the image's modules,
+//!   documentation and memo tables, will executor and its flag are one
+//!   object in all of them. Each engine gets its own, and the builtins that
+//!   write into a module, force a collection or return the process's
+//!   arguments are closed: nothing a cell sets in Steel's own state is read
+//!   in another session.
+//!
 //! What stays open: `display` and the string ports its capture uses (the
 //! builtins that print past every port, and the process's standard output
 //! and error ports, are closed), `eval`
@@ -32,7 +39,10 @@
 //! builtins that wait where no interrupt reaches are closed too, and
 //! `time/sleep-ms` is replaced by one that ends with its cell
 //! ([`super::limits::sleep`]). Each cell reads from an empty input port, not
-//! the process's standard input. `confinement/open_globals.txt` lists every
+//! the process's standard input. `will-register` stays: no will ever runs
+//! (`will-execute` and the thread that would call it are closed), and what
+//! is registered is held by the engine's own executor and goes with it.
+//! `confinement/open_globals.txt` lists every
 //! name a cell can reach, and the test beside it fails on one it does not
 //! list.
 
@@ -40,10 +50,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use steel::compiler::modules::SourceModuleResolver;
 use steel::rerrs::{ErrorKind, SteelErr};
-use steel::rvals::SteelVal;
+use steel::rvals::{IntoSteelVal as _, SteelVal};
 use steel::steel_vm::builtin::BuiltInModule;
+use steel::steel_vm::cache::WeakMemoizationTable;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::ThreadStateController;
+use steel::LambdaMetadataTable;
 
 /// Builtin modules no session engine keeps: processes, git, the file
 /// system, sockets, HTTP, polling, and foreign libraries.
@@ -60,7 +72,7 @@ const CLOSED_MODULES: [&str; 7] = [
 /// Functions closed inside modules that otherwise stay: engines without
 /// these limits, loading and running files, the process's environment, and
 /// its standard streams.
-const CLOSED_FUNCTIONS: [&str; 47] = [
+const CLOSED_FUNCTIONS: [&str; 52] = [
     // Steel's debugger stop, and the value (de)serialization its threads
     // use: a cell has no use for either, and the second reads bytes a cell
     // made up as Steel's own structures.
@@ -126,6 +138,18 @@ const CLOSED_FUNCTIONS: [&str; 47] = [
     "#%get-dylib",
     "#%require-dylib",
     "current-directory",
+    // The arguments the agent process was started with.
+    "command-line",
+    // These act on what every engine of the process shares. A module is
+    // the same object in each engine Steel builds, so a name added to one
+    // was read in every session. A collection is the engine's own business:
+    // asked for, it doubles the heap's free list about every tenth call.
+    "#%module-add",
+    "#%module-add-doc",
+    "#%gc-collect",
+    // Steel never finished it: the first value kept for a function is a
+    // `todo!()`, which would take the session down.
+    "%memo-table-set!",
 ];
 
 /// Every builtin module name a Steel engine may hold. A module container
@@ -241,33 +265,61 @@ fn close(engine: &mut Engine) -> anyhow::Result<()> {
         "time/sleep-ms".to_string(),
         SteelVal::FuncV(super::limits::sleep),
     );
+    // Steel builds every engine from one image, so what its library made
+    // as the image was built is one object in all of them. Each engine gets
+    // its own of the ones a cell can change: the two tables here, and below
+    // the modules, the will executor, and the box that says it runs.
+    for (name, own) in [
+        (
+            "#%function-ptr-table",
+            LambdaMetadataTable::new().into_steelval(),
+        ),
+        ("%memo-table", WeakMemoizationTable::new().into_steelval()),
+    ] {
+        let own = own.map_err(|error| anyhow::anyhow!("the engine's own {name}: {error}"))?;
+        replaced.insert(name.to_string(), own);
+    }
     // Each replaced name is bound to its replacement everywhere a cell could
     // find the builtin: in every module that has it, and in every global.
     // A global may hold the builtin under another name (Steel's macro engine
     // has `(define displayln stdout-simple-displayln)`), so the builtins are
     // found by what they are too.
     let mut aliased: BTreeMap<usize, SteelVal> = BTreeMap::new();
+    for (global, own) in [
+        ("#%will-executor-running", "(box #f)"),
+        ("#%global-will-executor", "(#%prim.make-will-executor)"),
+    ] {
+        if let Some(shared) = engine
+            .extract_value(global)
+            .ok()
+            .as_ref()
+            .and_then(identity)
+        {
+            let own = engine
+                .run(own)
+                .map_err(|error| anyhow::anyhow!("the engine's own {global}: {error}"))?
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("the engine's own {global} is no value"))?;
+            aliased.insert(shared, own);
+        }
+    }
     for name in STEEL_MODULES {
         let Some(module) = engine.builtin_modules().get(name) else {
             continue;
         };
-        if module
-            .names()
-            .iter()
-            .any(|bound| replaced.contains_key(bound))
-        {
-            // A lookup of a name its module lacks panics inside Steel, so a
-            // closed name stays bound, to the refusal.
-            let mut kept = BuiltInModule::new(name);
-            for (bound, value) in module.inner_map().iter() {
-                let replacement = replaced.get(bound.as_ref());
-                if let (Some(replacement), Some(builtin)) = (replacement, identity(value)) {
-                    aliased.insert(builtin, replacement.clone());
-                }
-                kept.register_value(bound, replacement.unwrap_or(value).clone());
+        // Every module is rebuilt, replaced names or not: the image's module
+        // is the same object in every engine. A lookup of a name its module
+        // lacks panics inside Steel, so a closed name stays bound, to the
+        // refusal.
+        let mut kept = BuiltInModule::new(name);
+        for (bound, value) in module.inner_map().iter() {
+            let replacement = replaced.get(bound.as_ref());
+            if let (Some(replacement), Some(builtin)) = (replacement, identity(value)) {
+                aliased.insert(builtin, replacement.clone());
             }
-            engine.register_module(kept);
+            kept.register_value(bound, replacement.unwrap_or(value).clone());
         }
+        engine.register_module(kept);
     }
     let globals: Vec<String> = engine
         .globals()
@@ -297,14 +349,16 @@ fn close(engine: &mut Engine) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What tells one builtin function from another, whatever name it is bound
-/// to: where its code or its allocation is. Nothing else is a builtin.
+/// What tells one of Steel's own functions, native objects or boxes from
+/// another, whatever name it is bound to: where its code or its allocation
+/// is. Nothing else is rebound by what it is.
 fn identity(value: &SteelVal) -> Option<usize> {
     match value {
         SteelVal::FuncV(function) => Some(*function as usize),
         SteelVal::MutFunc(function) => Some(*function as usize),
         SteelVal::BuiltIn(function) => Some(*function as usize),
         SteelVal::BoxedFunction(function) => Some(function.as_ptr() as usize),
+        SteelVal::Custom(_) | SteelVal::HeapAllocated(_) => value.as_ptr_usize(),
         SteelVal::Closure(_)
         | SteelVal::BoolV(_)
         | SteelVal::NumV(_)
@@ -314,7 +368,6 @@ fn identity(value: &SteelVal) -> Option<usize> {
         | SteelVal::Void
         | SteelVal::StringV(_)
         | SteelVal::SymbolV(_)
-        | SteelVal::Custom(_)
         | SteelVal::CustomStruct(_)
         | SteelVal::PortV(_)
         | SteelVal::IterV(_)
@@ -326,7 +379,6 @@ fn identity(value: &SteelVal) -> Option<usize> {
         | SteelVal::BoxedIterator(_)
         | SteelVal::SyntaxObject(_)
         | SteelVal::Boxed(_)
-        | SteelVal::HeapAllocated(_)
         | SteelVal::Reference(_)
         | SteelVal::BigNum(_)
         | SteelVal::BigRational(_)

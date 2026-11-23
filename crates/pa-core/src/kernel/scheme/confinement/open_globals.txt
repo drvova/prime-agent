@@ -364,7 +364,6 @@
 #%function-ptr-table
 #%function-ptr-table-add
 #%function-ptr-table-get
-#%gc-collect
 #%global-will-executor
 #%iterator-finished
 #%list-sort
@@ -372,8 +371,6 @@
 #%macro-case-bindings
 #%match-syntax-case
 #%module
-#%module-add
-#%module-add-doc
 #%native-fn-ptr-doc->string
 #%path->source-id
 #%peek-byte
@@ -391,7 +388,6 @@
 #%prim.#%function-ptr-table
 #%prim.#%function-ptr-table-add
 #%prim.#%function-ptr-table-get
-#%prim.#%gc-collect
 #%prim.#%iterator-finished
 #%prim.#%list-sort
 #%prim.#%macro-case-bindings
@@ -530,7 +526,6 @@
 #%prim.close-input-port
 #%prim.close-output-port
 #%prim.close-port
-#%prim.command-line
 #%prim.complex?
 #%prim.compose
 #%prim.concat-symbols
@@ -895,15 +890,12 @@
 #%private/steel/primitives ##__module-get
 #%private/steel/primitives #%error
 #%private/steel/primitives #%module
-#%private/steel/primitives #%module-add
-#%private/steel/primitives #%module-add-doc
 #%private/steel/primitives #%void
 #%private/steel/primitives %#maybe-module-get
 #%private/steel/primitives %doc?
 #%private/steel/primitives %list-modules!
 #%private/steel/primitives %memo-table
 #%private/steel/primitives %memo-table-ref
-#%private/steel/primitives %memo-table-set!
 #%private/steel/primitives %module-bound-identifiers->list
 #%private/steel/primitives %module-get%
 #%private/steel/primitives %module/lookup-function
@@ -1002,7 +994,6 @@
 %make-memoize
 %memo-table
 %memo-table-ref
-%memo-table-set!
 %module-bound-identifiers->list
 %module-get%
 %module/lookup-function
@@ -1197,7 +1188,6 @@ char?
 close-input-port
 close-output-port
 close-port
-command-line
 common-tail
 complex?
 compose
@@ -1592,7 +1582,6 @@ steel/base #%function-pointer?
 steel/base #%function-ptr-table
 steel/base #%function-ptr-table-add
 steel/base #%function-ptr-table-get
-steel/base #%gc-collect
 steel/base #%iterator-finished
 steel/base #%list-sort
 steel/base #%macro-case-bindings
@@ -1731,7 +1720,6 @@ steel/base char?
 steel/base close-input-port
 steel/base close-output-port
 steel/base close-port
-steel/base command-line
 steel/base complex?
 steel/base compose
 steel/base concat-symbols
@@ -2245,7 +2233,6 @@ steel/meta #%expand-syntax-case
 steel/meta #%function-ptr-table
 steel/meta #%function-ptr-table-add
 steel/meta #%function-ptr-table-get
-steel/meta #%gc-collect
 steel/meta #%iterator-finished
 steel/meta #%macro-case-bindings
 steel/meta #%match-syntax-case
@@ -2274,7 +2261,6 @@ steel/meta call-with-current-continuation
 steel/meta call-with-exception-handler
 steel/meta call/cc
 steel/meta callstack-hydrate-names
-steel/meta command-line
 steel/meta current-function-span
 steel/meta current-module
 steel/meta current-module-relative

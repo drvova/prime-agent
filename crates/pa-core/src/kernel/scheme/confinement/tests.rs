@@ -260,6 +260,128 @@ async fn a_looping_macro_body_stops_with_its_cell() {
     );
 }
 
+/// The modules a session's engine closes or guards nothing in.
+const UNTOUCHED_MODULES: [&str; 4] = [
+    "steel/identity",
+    "steel/symbols",
+    "steel/ord",
+    "steel/equality",
+];
+
+/// Steel builds every engine from one image, and the image's modules, boxes
+/// and tables stay one object in all of them. What a session's cell or
+/// macro body writes into Steel's own state, no other session reads; the
+/// builtins that only act on the whole process are refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_one_session_writes_into_steels_state_no_other_session_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let writer = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path());
+    let reader = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path());
+    let modules = UNTOUCHED_MODULES.map(|module| format!("%-builtin-module-{module}"));
+    let mut attempts = vec![
+        "(set-box! #%will-executor-running 'written)".to_string(),
+        "(#%function-ptr-table-add #%function-ptr-table foldl \"written\")".to_string(),
+        "(defmacro (write stx) (set-box! #%will-executor-running 'written-by-a-macro) ''1)
+         (write 1)"
+            .to_string(),
+    ];
+    attempts.extend(
+        modules
+            .iter()
+            .map(|module| format!("(#%module-add {module} \"written\" 1)")),
+    );
+    for attempt in attempts {
+        // Refused or not: what counts is what the other session then reads.
+        let _ = cell(&writer, &attempt).await;
+    }
+    let read = cell(
+        &reader,
+        &format!(
+            "(display (list (unbox #%will-executor-running)
+                            (#%function-ptr-table-get #%function-ptr-table foldl)
+                            (filter (lambda (module)
+                                      (member \"written\" (%module-bound-identifiers->list module)))
+                                    (list {}))))
+             (defmacro (read-it stx) (list 'quote (unbox #%will-executor-running)))
+             (display (read-it 1))",
+            modules.join(" ")
+        ),
+    )
+    .await;
+    let mut open = Vec::new();
+    for whole_process in [
+        "(#%gc-collect)",
+        "(command-line)",
+        "(%memo-table-set! %memo-table (lambda (x) x) (list 1) 2)",
+        "(defmacro (collect stx) (#%gc-collect) ''1) (collect 1)",
+    ] {
+        if cell(&reader, whole_process).await.is_ok() {
+            open.push(whole_process);
+        }
+    }
+    // Steel's `@doc` keeps a function's documentation in one of those
+    // tables: each session still reads its own.
+    let documented = cell(
+        &writer,
+        ";;@doc\n;; its own\n(define (documented x) x)
+         (display (#%function-ptr-table-get #%function-ptr-table documented))",
+    )
+    .await;
+    assert_eq!(
+        (read, open, documented),
+        (
+            Ok("(#false #false ())#false".to_string()),
+            Vec::new(),
+            Ok("its own".to_string())
+        )
+    );
+}
+
+/// No box, vector, struct or native object a cell can name is the same
+/// object in two engines, the engines of their macro bodies included.
+#[test]
+fn no_two_engines_share_an_object_a_cell_can_change() {
+    let mut engines = [super::engine().unwrap(), super::engine().unwrap()];
+    // Where each such object is, and the first name it was found under.
+    let mut found: std::collections::BTreeMap<usize, (usize, String)> =
+        std::collections::BTreeMap::new();
+    let mut shared = std::collections::BTreeSet::new();
+    let mut scan = |engine: &Engine, number: usize| {
+        for global in engine.globals().iter() {
+            let global = global.resolve().to_string();
+            let object = engine.extract_value(&global).ok().and_then(|value| {
+                matches!(
+                    value,
+                    steel::rvals::SteelVal::HeapAllocated(_)
+                        | steel::rvals::SteelVal::MutableVector(_)
+                        | steel::rvals::SteelVal::Custom(_)
+                        | steel::rvals::SteelVal::CustomStruct(_)
+                )
+                .then(|| value.as_ptr_usize())
+                .flatten()
+            });
+            if let Some(object) = object {
+                let (first, name) = found
+                    .entry(object)
+                    .or_insert_with(|| (number, global.clone()));
+                if *first != number {
+                    shared.insert(name.clone());
+                }
+            }
+        }
+    };
+    for (number, engine) in engines.iter_mut().enumerate() {
+        scan(engine, 2 * number);
+        engine.with_macro_engine(|macros| scan(macros, 2 * number + 1));
+    }
+    // The one left is the number of a thread-local slot Steel's library
+    // keeps for `reset` and `shift`: the slot itself is each engine's own.
+    assert_eq!(
+        shared,
+        std::collections::BTreeSet::from(["*meta-continuation*".to_string()])
+    );
+}
+
 /// Everything a cell can name in a fresh session engine or in the engine
 /// its macro bodies run in: each global, and each function of each builtin
 /// module (reached through `require-builtin` or a module lookup), leaving
