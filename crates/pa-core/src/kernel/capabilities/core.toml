@@ -5,3 +5,7 @@ properties = ["rlm_abort_aborted_count", "rlm_abort_idle_count", "rlm_abort_fail
 [[telemetry]]
 event = "agent rlm delegation depth"
 properties = ["rlm_depth_raised_count", "rlm_depth_lowered_count", "rlm_depth_scaled_brief_count"]
+
+[[telemetry]]
+event = "agent rlm collect waits"
+properties = ["rlm_collect_waiting_on_you_count"]

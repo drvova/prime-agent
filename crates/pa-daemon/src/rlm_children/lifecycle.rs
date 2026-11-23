@@ -409,11 +409,15 @@ impl SupervisorChildSessionsInner {
             return;
         }
         // The child's own descendants keep it busy (`child_busy`), so the
-        // wait holds until they settle too.
+        // wait holds until they settle too. The child ends the wait itself
+        // at the budget: a wait this side gave up on would otherwise stay
+        // in flight on the child's route until the child went idle, and a
+        // long-running child's route fills with them.
         let command = DaemonCommand::WaitForIdle {
             id: None,
             active_session_id: active_session_id.to_string(),
             wait_for_rlm_quiescence: Some(true),
+            timeout_ms: Some(budget.as_millis() as u64),
             rest: Map::default(),
         };
         let _ = self
@@ -518,7 +522,9 @@ impl SupervisorChildSessionsInner {
         // capture can miss (the settle raced the worker's answer hand-off),
         // so every refresh fills a row that has no answer yet, and a
         // settled preview is never overwritten with a later miss.
-        record.run.apply(RunEvent::IdleRead { final_turn_error });
+        if record.run.apply(RunEvent::IdleRead { final_turn_error }) {
+            self.record_changed.notify_waiters();
+        }
         if (!record.answer_captured || record.answer_preview.is_none()) && answer.is_some() {
             record.answer_preview = answer;
             record.answer_text = answer_text;
@@ -848,6 +854,7 @@ impl SupervisorChildSessionsInner {
             record.run.apply(RunEvent::Failed(error));
             message
         };
+        self.record_changed.notify_waiters();
         self.emit_child_update(record).await;
         // TS records a failed child's return too (`recordChildReturned` in
         // the thrown-run arm): a child that committed requests before

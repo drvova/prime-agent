@@ -378,6 +378,7 @@ fn drive(counters: &SessionCounters) {
     for _ in 0..3 {
         counters.note_scaled_brief();
     }
+    counters.note_capability("rlm_collect_waiting_on_you_count", 2);
     for (approaches, passed, winner) in [(3, 2, true), (2, 0, false), (4, 1, true)] {
         counters.note_hypotheses(HypothesesRun {
             approaches,
@@ -653,6 +654,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent rlm child abort",
         r#"{"rlm_abort_aborted_count":1,"rlm_abort_idle_count":2,"rlm_abort_failed_count":1}"#,
+    ),
+    (
+        "agent rlm collect waits",
+        r#"{"rlm_collect_waiting_on_you_count":2}"#,
     ),
     (
         "agent rlm delegation depth",

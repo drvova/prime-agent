@@ -1,5 +1,5 @@
-//! The `core` capability owns two events: aborting a child's turn, and the adaptive delegation
-//! depth bound.
+//! The `core` capability owns three events: aborting a child's turn, the adaptive delegation
+//! depth bound, and collects that met a child waiting on its parent.
 
 use super::super::{count, required, uuid, EventRule};
 
@@ -31,5 +31,18 @@ pub(in crate::catalog) const AGENT_RLM_DELEGATION_DEPTH: EventRule = EventRule {
         ("rlm_depth_raised_count", required(count())),
         ("rlm_depth_lowered_count", required(count())),
         ("rlm_depth_scaled_brief_count", required(count())),
+    ],
+};
+
+/// `rlm.collect` rows that reported a child waiting on the collecting session (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// a collect returned such a row: the child was parked in an `agent_message.wait` for its
+/// parent's message, so the collect did not wait for it. Counts only: never a child id or name.
+pub(in crate::catalog) const AGENT_RLM_COLLECT_WAITS: EventRule = EventRule {
+    name: "agent rlm collect waits",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("rlm_collect_waiting_on_you_count", required(count())),
     ],
 };

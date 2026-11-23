@@ -2,17 +2,20 @@
 //! (`spawn`, `create_session`, `list_subagents`, `abort_child`, `delete_subagent`,
 //! `collect`, `rename`) over the supervisor's child-sessions registry,
 //! with the spawn-admission helpers only this surface uses.
+use super::lifecycle::last_assistant_text_from_file;
 use super::retirement::{Retirement, RetirementEvent, RetirementIntent};
-use super::run_state::RunState;
+use super::run_state::{RunState, RunVerdict};
 use super::{
-    assert_thinking_supported, bail, create_default_rlm_subagent_session_name, json, now_ms,
-    resolve_child_cwd, resolve_child_model, rlm_child_label, rlm_depth_limit_error,
-    spawn_name_unavailable_error, Arc, ChildCloseReason, ChildObservationSource, ChildRecord,
-    Context, DaemonCommand, Duration, Instant, Kickoff, Mutex, Path, Result, RlmAbortChildResult,
-    RlmAbortOutcome, RlmChildResult, RlmCreateSessionHandle, RlmCreateSessionRequest,
-    RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle, RlmSpawnRequest, RlmSubagentEntry,
-    RlmSubagentHost, SpawnNameReservationGuard, SupervisorChildSessions,
-    SupervisorChildSessionsInner, Value, KILL_TIMEOUT_MS, RENAME_TIMEOUT_MS, STATE_TIMEOUT_MS,
+    assert_thinking_supported, bail, cap_text, compact_rlm_text,
+    create_default_rlm_subagent_session_name, json, now_ms, resolve_child_cwd, resolve_child_model,
+    rlm_child_label, rlm_depth_limit_error, spawn_name_unavailable_error, Arc, ChildCloseReason,
+    ChildRecord, Context, DaemonCommand, Duration, Instant, Kickoff, Mutex, Path, Result,
+    RlmAbortChildResult, RlmAbortOutcome, RlmChildResult, RlmCreateSessionHandle,
+    RlmCreateSessionRequest, RlmDeleteSubagentResult, RlmHostFuture, RlmSpawnHandle,
+    RlmSpawnRequest, RlmSubagentEntry, RlmSubagentHost, SpawnNameReservationGuard,
+    SupervisorChildSessions, SupervisorChildSessionsInner, Value, ANSWER_TEXT_MAX_CHARS,
+    COLLECT_ROSTER_INTERVAL_MS, COLLECT_ROSTER_READ_MS, KILL_TIMEOUT_MS, RENAME_TIMEOUT_MS,
+    STATE_TIMEOUT_MS,
 };
 
 /// Resolve the child model with the daemon `allowedModels` allowlist enforced, refusing loudly with
@@ -191,6 +194,8 @@ impl RlmSubagentHost for SupervisorChildSessions {
                     notice_delivered: false,
                     factory: request.factory.is_some(),
                     prompt_admitted: false,
+                    waiting_on_parent: false,
+                    streaming: false,
                     kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Held)),
                     retirement: Retirement::live(),
                     usage_registration_forgotten: false,
@@ -419,41 +424,7 @@ impl RlmSubagentHost for SupervisorChildSessions {
             // supervisor's pushed roster: one in-memory read, never a busy
             // child worker round trip. A failed read keeps the last values
             // each record observed; the settle watcher owns worker refreshes.
-            let request_order = this
-                .observation_requests
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if let Some(peers) = this.child_roster_rows(&records).await {
-                for record in &records {
-                    let (rlm_child_id, active_session_id) = {
-                        let record = record.lock().await;
-                        (
-                            record.rlm_child_id.clone(),
-                            record.active_session_id.clone(),
-                        )
-                    };
-                    let live = peers
-                        .iter()
-                        .find(|row| {
-                            row.get("rlmChildId").and_then(Value::as_str)
-                                == Some(rlm_child_id.as_str())
-                        })
-                        .or_else(|| {
-                            peers.iter().find(|row| {
-                                row.get("activeSessionId").and_then(Value::as_str)
-                                    == Some(active_session_id.as_str())
-                            })
-                        });
-                    if let Some(live) = live {
-                        this.observe_live_state(
-                            record,
-                            live,
-                            request_order,
-                            ChildObservationSource::Roster,
-                        )
-                        .await;
-                    }
-                }
-            }
+            this.observe_roster(&records, Duration::from_secs(5)).await;
             let mut entries = Vec::with_capacity(records.len());
             for record in &records {
                 // A roster read is a snapshot: the rows serve the records'
@@ -684,75 +655,110 @@ impl RlmSubagentHost for SupervisorChildSessions {
                 };
                 records.push(record);
             }
-            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-            let mut results = Vec::with_capacity(records.len());
-            for record in &records {
-                if timeout_ms > 0 {
-                    // A task prompt still held for the spawning turn reads
-                    // as an idle pre-prompt worker, so the idle wait below
-                    // would return at once: release the prompt and wait for
-                    // its admission inside the shared budget first.
-                    let kickoff = Arc::clone(&record.lock().await.kickoff);
-                    kickoff.send_if_modified(|kickoff| match kickoff {
-                        Kickoff::Held => {
-                            *kickoff = Kickoff::Released;
-                            true
-                        }
-                        Kickoff::Released | Kickoff::Finished => false,
-                    });
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let mut finished = kickoff.subscribe();
-                    // A timeout yields the current snapshot, never an error.
-                    let _ = tokio::time::timeout(
-                        remaining,
-                        finished.wait_for(|kickoff| *kickoff == Kickoff::Finished),
-                    )
-                    .await;
+            if timeout_ms > 0 {
+                // A task prompt still held for the spawning turn would never
+                // start its child while this cell keeps that turn open: a
+                // waiting collect releases it.
+                for record in &records {
+                    record
+                        .lock()
+                        .await
+                        .kickoff
+                        .send_if_modified(|kickoff| match kickoff {
+                            Kickoff::Held => {
+                                *kickoff = Kickoff::Released;
+                                true
+                            }
+                            Kickoff::Released | Kickoff::Finished => false,
+                        });
                 }
-                this.refresh_record(record).await;
-                // A settled child that is busy again runs a follow-up turn:
-                // re-arm usage observation (the task-run watcher retired at
-                // its settle).
-                if !record.lock().await.run.is_running() {
-                    let active_session_id = record.lock().await.active_session_id.clone();
-                    if matches!(this.child_busy(&active_session_id).await, Ok(true)) {
-                        SupervisorChildSessionsInner::arm_usage_watch(&this, record).await;
+            }
+            // A collect reads the records and asks no child: each child's
+            // settle watcher lands its verdict and answer on its record, and
+            // the supervisor's roster carries the live values. So a snapshot
+            // costs one roster read however many children there are, and a
+            // wait is a wait for a record to change.
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            loop {
+                // Registered before the read: a record that changes between
+                // the read and the wait still wakes this pass.
+                let changed = this.record_changed.notified();
+                tokio::pin!(changed);
+                changed.as_mut().enable();
+                this.observe_roster(&records, Duration::from_millis(COLLECT_ROSTER_READ_MS))
+                    .await;
+                let mut unsettled = false;
+                let mut waiting_on_parent = false;
+                for record in &records {
+                    let record = record.lock().await;
+                    if record.run.is_running() {
+                        unsettled = true;
+                        waiting_on_parent |= record.waiting_on_parent;
                     }
                 }
-                let still_running = record.lock().await.run.is_running();
-                if still_running {
-                    // Wait inside the shared budget, then re-read the child:
-                    // a timeout yields the current snapshot, never an error.
-                    let remaining = deadline.saturating_duration_since(Instant::now());
-                    let active_session_id = record.lock().await.active_session_id.clone();
-                    this.wait_for_child(&active_session_id, remaining).await;
-                    this.refresh_record(record).await;
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                // A child parked on this session's message cannot go on until
+                // this cell returns and the session answers: waiting for it
+                // would only run out the timeout on both sides.
+                if !unsettled || waiting_on_parent || remaining.is_zero() {
+                    break;
                 }
-                // The child's acceptance checks, from its durable rows (the child runs in its
-                // own worker process); the read stays off the async workers.
-                let session_file = record
-                    .lock()
-                    .await
-                    .session_file
-                    .clone()
-                    .filter(|path| !path.is_empty());
-                let check_status = match session_file {
-                    Some(path) => tokio::task::spawn_blocking(move || {
-                        pa_core::session_engine::better::check_status_from_session_file(Path::new(
-                            &path,
-                        ))
-                    })
-                    .await
-                    .ok()
-                    .map(pa_core::session_engine::better::CheckStatus::as_str),
-                    None => None,
-                };
-                let result = {
-                    let record = record.lock().await;
-                    SupervisorChildSessions::collect_result(&record, check_status)
-                };
-                results.push(result);
+                tokio::select! {
+                    () = &mut changed => {}
+                    () = tokio::time::sleep(
+                        remaining.min(Duration::from_millis(COLLECT_ROSTER_INTERVAL_MS)),
+                    ) => {}
+                }
             }
+            let rows = records.iter().map(|record| {
+                let this = &this;
+                async move {
+                    let (session_file, follow_up_turn, answer_missing) = {
+                        let record = record.lock().await;
+                        (
+                            record.session_file.clone().filter(|path| !path.is_empty()),
+                            !record.run.is_running() && record.streaming,
+                            matches!(record.run.verdict(), Some(RunVerdict::Done))
+                                && record.answer_preview.is_none(),
+                        )
+                    };
+                    // A settled child that is mid-turn again runs a follow-up
+                    // turn: re-arm usage observation (the task-run watcher
+                    // retired at its settle).
+                    if follow_up_turn {
+                        SupervisorChildSessionsInner::arm_usage_watch(this, record).await;
+                    }
+                    // The child's acceptance checks, and the answer of a settle
+                    // whose capture raced the worker's hand-off, from its
+                    // durable rows; the read stays off the async workers.
+                    let durable = match session_file {
+                        Some(path) => tokio::task::spawn_blocking(move || {
+                            (
+                                pa_core::session_engine::better::check_status_from_session_file(
+                                    Path::new(&path),
+                                ),
+                                answer_missing
+                                    .then(|| last_assistant_text_from_file(&path))
+                                    .flatten(),
+                            )
+                        })
+                        .await
+                        .ok(),
+                        None => None,
+                    };
+                    let mut record = record.lock().await;
+                    let check_status = durable.map(|(check_status, answer)| {
+                        if let (Some(answer), None) = (answer, &record.answer_preview) {
+                            record.answer_preview = Some(compact_rlm_text(&answer));
+                            record.answer_text = Some(cap_text(&answer, ANSWER_TEXT_MAX_CHARS));
+                            record.answer_captured = true;
+                        }
+                        check_status.as_str()
+                    });
+                    SupervisorChildSessions::collect_result(&record, check_status)
+                }
+            });
+            let mut results = futures::future::join_all(rows).await;
             // Live entries first, the deleted generations' envelopes after.
             results.extend(deleted_results);
             Ok(results)
