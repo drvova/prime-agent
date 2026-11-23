@@ -163,6 +163,8 @@ fn registry() -> &'static Mutex<HashMap<PathBuf, Weak<Project>>> {
 #[derive(Clone)]
 pub(crate) struct Prefetcher {
     inner: Arc<Inner>,
+    /// How long a read waits for its prefetch: [`PREFETCH_BUDGET`].
+    budget: Duration,
 }
 
 struct Inner {
@@ -265,6 +267,18 @@ impl Prefetcher {
                 }),
                 observer,
             }),
+            budget: PREFETCH_BUDGET,
+        }
+    }
+
+    /// This prefetcher with a read that waits for its prefetch however long
+    /// the machine takes: for a test of what a prefetch returns, where the
+    /// budget would make the result depend on the machine's load.
+    #[cfg(test)]
+    pub(crate) fn without_budget(self) -> Self {
+        Self {
+            budget: Duration::from_secs(60),
+            ..self
         }
     }
 
@@ -285,10 +299,7 @@ impl Prefetcher {
         let work = tokio::task::spawn_blocking(pa_types::session_scope::propagate(move || {
             inner.run(&file)
         }));
-        let batch = tokio::time::timeout(PREFETCH_BUDGET, work)
-            .await
-            .ok()?
-            .ok()?;
+        let batch = tokio::time::timeout(self.budget, work).await.ok()?.ok()?;
         // Only handles the read actually returns are waited on for their use.
         lock(&self.inner.waiting).outstanding.extend(batch.handles);
         (!batch.related.is_empty()).then(|| {

@@ -764,7 +764,6 @@ impl KernelProvisioner for SchemeKernelProvisioner {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
     use crate::kernel::shared::host_handler;
@@ -897,17 +896,32 @@ mod tests {
         let spin = "(define (spin n) (spin (+ n 1))) (displayln \"spinning\") (spin 0)";
         let signal = AbortSignal::new();
         let abort = signal.clone();
-        let aborting = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            abort.cancel();
-        });
+        // Aborted once the cell's whole line has reached its stream: the
+        // cell is spinning by then, however slow the machine is.
+        let printed = Mutex::new(String::new());
+        let on_stream = move |text: &str, _stream: &'static str| {
+            let mut printed = printed.lock().unwrap();
+            printed.push_str(text);
+            if printed.ends_with('\n') {
+                abort.cancel();
+            }
+        };
         let aborted = kernel
-            .execute(spin, options(Some(signal), None))
+            .execute(
+                spin,
+                KernelExecuteOptions {
+                    signal: Some(signal),
+                    timeout_ms: None,
+                    on_stream: Some(&on_stream),
+                    on_late_sent_agent_message: None,
+                },
+            )
             .await
             .unwrap();
-        aborting.await.unwrap();
+        // This one prints nothing: what a cell printed before its limit
+        // depends on how far it got in that time.
         let timed_out = kernel
-            .execute(spin, options(None, Some(100)))
+            .execute("(spin 0)", options(None, Some(100)))
             .await
             .unwrap();
         let after = kernel
@@ -920,7 +934,7 @@ mod tests {
                 (ExecuteStatus::Aborted, "spinning\n".to_string(), None, None),
                 (
                     ExecuteStatus::Error,
-                    "spinning\n".to_string(),
+                    String::new(),
                     None,
                     Some("Timeout".to_string())
                 ),

@@ -563,7 +563,8 @@ async fn a_read_carries_related_handles_that_ctx_page_reads() {
             let facts = Arc::clone(&facts);
             Arc::new(move |fact| facts.lock().unwrap().push(fact))
         }),
-    );
+    )
+    .without_budget();
     let mut handlers = HostRequestHandlers::new();
     FsEditHost {
         observer: None,

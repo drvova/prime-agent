@@ -41,6 +41,25 @@ async fn run(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
         .unwrap()
 }
 
+/// Run one cell with a limit of its own. A session with a window reads the
+/// limit as that cell's window, so the cell waits for the engine and runs to
+/// its end, however slow the machine is, where [`run`] would move it to the
+/// background or give up on the engine after the session's 100 ms.
+async fn run_to_its_end(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
+    kernel
+        .execute(
+            code,
+            KernelExecuteOptions {
+                signal: None,
+                timeout_ms: Some(PATIENCE.as_millis() as u64),
+                on_stream: None,
+                on_late_sent_agent_message: None,
+            },
+        )
+        .await
+        .unwrap()
+}
+
 /// A handler that answers once `release` is notified.
 fn held(release: &Arc<tokio::sync::Notify>) -> crate::kernel::shared::HostHandlerFn {
     let release = Arc::clone(release);
@@ -352,8 +371,8 @@ async fn a_cell_that_outlives_its_window_goes_on_in_the_background_and_holds_the
     let running = run(kernel.as_ref(), &format!("(cell-status \"{id}\")")).await;
     release.notify_one();
     let completion = completions.recv().await;
-    let after = run(kernel.as_ref(), "(+ 1 2)").await;
-    let read = run(
+    let after = run_to_its_end(kernel.as_ref(), "(+ 1 2)").await;
+    let read = run_to_its_end(
         kernel.as_ref(),
         &format!(
             "(let ([state (cell-status \"{id}\")])
@@ -408,8 +427,8 @@ async fn cancelling_a_background_cell_stops_it_and_frees_the_engine() {
     let (kernel, facts) = windowed_kernel(handlers, dir.path()).await;
     let long = run(kernel.as_ref(), r#"(host-request "never.answers" (hash))"#).await;
     let id = long.backgrounded_cell.unwrap();
-    let cancelled = run(kernel.as_ref(), &format!("(cell-cancel \"{id}\")")).await;
-    let after = run(kernel.as_ref(), "(+ 1 2)").await;
+    let cancelled = run_to_its_end(kernel.as_ref(), &format!("(cell-cancel \"{id}\")")).await;
+    let after = run_to_its_end(kernel.as_ref(), "(+ 1 2)").await;
     assert_eq!(
         (
             cancelled
