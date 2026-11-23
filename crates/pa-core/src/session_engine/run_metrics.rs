@@ -47,6 +47,16 @@ pub use transcript::transcript_run_metrics;
 /// normal append; every break that matters for cost is far larger.
 pub const CACHE_BREAK_TOLERANCE_TOKENS: u64 = 1024;
 
+/// The tool result details key (`true`) with which the repeated-call loop
+/// guard (`session_engine::loop_guard`) marks the result whose turn it ended.
+pub(crate) const LOOP_GUARD_STOP_DETAIL: &str = "loopGuardStop";
+
+/// Whether a tool result's `details` say the loop guard ended the turn
+/// there ([`LOOP_GUARD_STOP_DETAIL`]).
+fn loop_guard_stopped(details: &Value) -> bool {
+    details.get(LOOP_GUARD_STOP_DETAIL).and_then(Value::as_bool) == Some(true)
+}
+
 /// How a run ended: the `stop_reason` vocabulary of its last model request,
 /// plus the two endings that vocabulary folds away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +78,8 @@ pub enum TurnEndReason {
     #[serde(rename = "empty")]
     Empty,
     /// The stream loop guard cut the reply for repeating itself (an error
-    /// of kind `repetition_loop`).
+    /// of kind `repetition_loop`), or the repeated-call guard ended the
+    /// turn after the same `eval` cell kept returning the same result.
     #[serde(rename = "loop_guard")]
     LoopGuard,
 }
@@ -285,6 +296,9 @@ impl MetricsMeter {
         let run = &mut self.run;
         run.tool_calls += 1;
         run.tool_errors += u64::from(is_error);
+        if loop_guard_stopped(details) {
+            run.end_reason = Some(TurnEndReason::LoopGuard);
+        }
         if pa_types::ai::kernel_tool_language(tool_name).is_some() {
             run.eval_cells += 1;
             run.eval_cell_ms += details

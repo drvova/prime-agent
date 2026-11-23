@@ -1381,7 +1381,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         },
         should_stop_before_turn: config.queued_steering_probe.clone(),
         after_tool_call: (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(
-            || super::loop_guard::repeat_call_nudge(std::sync::Arc::clone(&repeat_nudge_telemetry)),
+            || super::loop_guard::repeat_call_guard(std::sync::Arc::clone(&repeat_nudge_telemetry)),
         ),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,

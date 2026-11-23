@@ -432,3 +432,110 @@ async fn the_users_mcp_servers_open_at_session_start_and_end_with_the_session() 
         )
     );
 }
+
+/// The repeated-call loop guard over a real session and kernel: a run whose
+/// model issues the same cell six times, each returning the same result, is
+/// ended at the sixth with a row saying the loop was cut and the end reason
+/// `loop_guard` (no seventh request is made). A run repeating one cell whose
+/// result changes each time is nudged from the third round on and never
+/// stopped.
+#[tokio::test(flavor = "multi_thread")]
+async fn six_identical_cells_with_identical_results_end_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().join("project");
+    let sessions = dir.path().join("sessions");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let provider = Arc::new(ScriptedProvider::new(model()));
+    let manager = crate::session::manager::SessionManager::persisted(&cwd, &sessions);
+    let engine = session(&provider, dir.path(), |config| {
+        config.session_manager = Some(manager);
+    })
+    .await;
+    let mut requests = Vec::new();
+    for _ in 0..6 {
+        provider.push_tool_call_turn(
+            None,
+            vec![("cell", "eval", json!({ "code": "(define n 0) (+ 1 1)" }))],
+        );
+    }
+    engine.prompt("go", PromptOptions::default()).await.unwrap();
+    engine.session.agent().wait_for_idle().await;
+    requests.push(provider.calls().len());
+    for _ in 0..7 {
+        provider.push_tool_call_turn(
+            None,
+            vec![("cell", "eval", json!({ "code": "(set! n (+ n 1)) n" }))],
+        );
+    }
+    provider.push_text_turn("done");
+    engine
+        .prompt("again", PromptOptions::default())
+        .await
+        .unwrap();
+    engine.session.agent().wait_for_idle().await;
+    requests.push(provider.calls().len());
+    let file = engine
+        .session
+        .session_handle()
+        .lock()
+        .await
+        .get_session_file()
+        .expect("a persisted session has a file")
+        .to_path_buf();
+    engine.dispose_kernel().await;
+    let transcript = std::fs::read_to_string(file).unwrap();
+    let results: Vec<Vec<String>> = transcript
+        .lines()
+        .filter_map(|line| {
+            let entry: Value = serde_json::from_str(line).ok()?;
+            match serde_json::from_value(entry.get("message")?.clone()).ok()? {
+                pa_agent::types::Message::ToolResult(result) => Some(
+                    result
+                        .content
+                        .iter()
+                        .map(|block| match block {
+                            pa_agent::types::ToolResultContent::Text(text) => text.text.clone(),
+                            pa_agent::types::ToolResultContent::Image(_) => String::new(),
+                        })
+                        .collect(),
+                ),
+                pa_agent::types::Message::User(_) | pa_agent::types::Message::Assistant(_) => None,
+            }
+        })
+        .collect();
+    let end_reasons: Vec<_> =
+        crate::session_engine::run_metrics::transcript_run_metrics(&transcript)
+            .into_iter()
+            .map(|run| run.end_reason)
+            .collect();
+
+    let nudge = |round: usize| {
+        format!(
+            "[loop guard] This is round {round} in a row calling `eval` with identical arguments. If its result is not changing, do not run it again unchanged: change the input or take a different approach."
+        )
+    };
+    let result = |value: &str, round: usize| {
+        let mut blocks = vec![value.to_string()];
+        if round >= 3 {
+            blocks.push(nudge(round));
+        }
+        blocks
+    };
+    let mut expected: Vec<Vec<String>> = (1..=6).map(|round| result("2", round)).collect();
+    expected[5].push(
+        "[loop guard] Turn stopped: this run has issued this same cell 6 times and it returned the same result every time, so the loop was cut here. Do not run it again unchanged: say what is blocking you, or take a different approach."
+            .to_string(),
+    );
+    expected.extend((1..=7).map(|round| result(&round.to_string(), round)));
+    assert_eq!(
+        (requests, end_reasons, results),
+        (
+            vec![6, 6 + 8],
+            vec![
+                crate::session_engine::run_metrics::TurnEndReason::LoopGuard,
+                crate::session_engine::run_metrics::TurnEndReason::Stop,
+            ],
+            expected,
+        )
+    );
+}

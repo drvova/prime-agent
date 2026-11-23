@@ -8,7 +8,8 @@
 //! this session's), so each request's tokens are the ones it reported.
 //!
 //! A run opens at a user message that follows a finished turn (no turn yet,
-//! or a last assistant message that did not end in tool use): a message
+//! a last assistant message that did not end in tool use, or a tool result
+//! with which the loop guard ended the turn): a message
 //! typed while a turn runs is steering inside that run, and a retried
 //! attempt adds no user message. User messages before the run's first
 //! request (a harness digest ahead of the prompt) open no run of their own.
@@ -18,7 +19,7 @@
 use pa_agent::types::{Message, StopReason};
 use serde_json::Value;
 
-use super::{MetricsMeter, RunMetrics, SpawnVisibility};
+use super::{loop_guard_stopped, MetricsMeter, RunMetrics, SpawnVisibility};
 
 /// The open run's first and last entry timestamps (epoch ms, 0 while none
 /// was readable), and whether it made a model request yet.
@@ -94,11 +95,15 @@ pub fn transcript_run_metrics(content: &str) -> Vec<RunMetrics> {
                 turn_open = assistant.stop_reason == StopReason::ToolUse;
                 meter.request(assistant);
             }
-            Message::ToolResult(result) => meter.tool_result(
-                &result.tool_name,
-                result.is_error,
-                result.details.as_ref().unwrap_or(&Value::Null),
-            ),
+            Message::ToolResult(result) => {
+                let details = result.details.as_ref().unwrap_or(&Value::Null);
+                meter.tool_result(&result.tool_name, result.is_error, details);
+                // A turn the loop guard ended has no further request: the
+                // next user message opens a run.
+                if loop_guard_stopped(details) {
+                    turn_open = false;
+                }
+            }
         }
     }
     if let Some(run) = open {
