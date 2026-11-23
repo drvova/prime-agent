@@ -10,6 +10,7 @@ pub mod bash_notices;
 pub mod better;
 pub mod billing;
 pub mod branch_summarization;
+mod cache_prefix;
 mod cache_warming;
 pub mod checkpoint_host;
 pub mod compact_session;

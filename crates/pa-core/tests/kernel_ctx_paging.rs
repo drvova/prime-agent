@@ -218,9 +218,16 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
     std::fs::create_dir_all(&cwd).expect("project dir");
     let mut session = SessionManager::in_memory(&cwd);
     session.materialize_session_file(Some(sessions_dir));
+    // Thinning is off by default.
+    std::fs::write(
+        agent_dir.join("settings.json"),
+        r#"{"contextThinning": {"enabled": true}}"#,
+    )
+    .expect("settings");
 
-    // 16 rounds of ~7.5k chars each in a 40k-token window: past the 65%
-    // thinning threshold, so the request after them thins rounds 0..8.
+    // 16 rounds of ~7.5k chars each in a 40k-token window: the view passes
+    // the 65% thinning threshold during them, so later requests thin the
+    // oldest rounds.
     let mut model = scripted_model();
     model.context_window = 40_000;
     let provider = std::sync::Arc::new(ScriptedProvider::new(model.clone()));

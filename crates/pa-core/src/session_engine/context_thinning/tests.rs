@@ -116,6 +116,32 @@ fn result_text(message: &AgentMessage) -> String {
         .collect()
 }
 
+/// Thinning switched on, at its default threshold and protections.
+fn on() -> ThinningSettings {
+    ThinningSettings {
+        enabled: true,
+        ..ThinningSettings::default()
+    }
+}
+
+/// The 0-based indexes of the requests that changed bytes inside the
+/// request before them (the prompt-cache prefix breaks).
+fn prefix_breaks(requests: &[Vec<Message>]) -> Vec<usize> {
+    let prefixes: Vec<_> = requests
+        .iter()
+        .map(|messages| {
+            crate::session_engine::cache_prefix::RequestPrefix::of(&pa_agent::stream::LlmContext {
+                system_prompt: None,
+                messages: messages.clone(),
+                tools: Vec::new(),
+            })
+        })
+        .collect();
+    (1..prefixes.len())
+        .filter(|at| prefixes[at - 1].broken_bytes(&prefixes[*at]).is_some())
+        .collect()
+}
+
 fn request_bytes(messages: &[AgentMessage]) -> Vec<u8> {
     serde_json::to_vec(messages).expect("serializable view")
 }
@@ -127,7 +153,7 @@ fn below_the_threshold_the_view_is_unchanged() {
     let view = thin_context(
         messages.clone(),
         1_000_000,
-        &ThinningSettings::default(),
+        &on(),
         &ThinnedRecall::ToolResult,
     );
 
@@ -140,13 +166,18 @@ fn below_the_threshold_the_view_is_unchanged() {
     );
 }
 
+/// At the crossing every round but the newest 8 thins, whatever a later row
+/// says about it: an error result and a result the latest reply names thin
+/// like the rest (exempting them would rewrite them once that row changes).
 #[test]
-fn above_the_threshold_old_big_results_thin_and_protected_ones_stay() {
-    // 20 rounds: the newest 8 stay whole, and the boundary snaps to round 8.
+fn at_a_crossing_every_round_but_the_newest_thins() {
+    // 20 rounds of ~4k chars in a 20k-token window: the view first reaches
+    // 65% (52k chars) after 14 rounds (rounds 0..6 thin), again after 19
+    // (rounds 6..11 thin), and not after 20.
     let mut messages = vec![user("fix the failing build")];
     for index in 0..20 {
         match index {
-            // An edit failure no later edit superseded: the active fix.
+            // An edit failure no later edit superseded.
             2 => messages.extend([
                 assistant(None, Some("call-2"), "edit"),
                 result("call-2", "edit", &cell_output(2, 4_000), true),
@@ -163,16 +194,11 @@ fn above_the_threshold_old_big_results_thin_and_protected_ones_stay() {
         "python_repl",
     ));
 
-    let view = thin_context(
-        messages.clone(),
-        20_000,
-        &ThinningSettings::default(),
-        &ThinnedRecall::ToolResult,
-    );
+    let view = thin_context(messages.clone(), 20_000, &on(), &ThinnedRecall::ToolResult);
 
     let mut expected = messages.clone();
     let mut chars_saved = 0;
-    for index in [0usize, 1, 5, 6, 7] {
+    for index in [0usize, 1, 2, 3, 5, 6, 7, 8, 9, 10] {
         let at = 2 + 2 * index;
         let original = result_text(&messages[at]);
         let thinned = thinned_text(&original, &format!("call-{index}"));
@@ -184,50 +210,58 @@ fn above_the_threshold_old_big_results_thin_and_protected_ones_stay() {
         ThinnedView {
             messages: expected,
             stats: ThinningStats {
-                thinned_results: 5,
+                thinned_results: 10,
                 chars_saved,
             },
         }
     );
 }
 
+/// The prompt cache's view of a long thinning session: request by request,
+/// the 0-based indexes of the requests that changed bytes the request
+/// before them had sent. They are exactly the crossings, where the view
+/// reached the threshold; every other request only appends. (A boundary
+/// that stepped every 8 rounds and an exemption for the result the latest
+/// reply names rewrote the prefix of nearly every request past the first
+/// crossing.)
 #[test]
-fn the_prefix_holds_byte_identical_until_the_boundary_advances() {
-    let settings = ThinningSettings::default();
-    let mut previous: Option<Vec<AgentMessage>> = None;
-    // 17..=23 rounds: thinnable 9..=15, so the boundary stays at round 8.
-    for rounds in 17..=23 {
-        let messages = history(rounds, 4_000);
-        let view = thin_context(
-            messages.clone(),
-            20_000,
-            &settings,
-            &ThinnedRecall::ToolResult,
-        );
-        assert_eq!(
-            view,
-            thin_context(messages, 20_000, &settings, &ThinnedRecall::ToolResult),
-            "the view is a pure function of the history"
-        );
-        assert_eq!(view.stats.thinned_results, 8);
-        if let Some(previous) = previous {
-            let prefix = request_bytes(&previous);
-            let next = request_bytes(&view.messages[..previous.len()]);
-            assert_eq!(next, prefix, "round {rounds} moved the cached prefix");
+fn a_long_session_rewrites_already_sent_results_only_at_a_crossing() {
+    let sizes = [1_800, 9_000, 400, 24_000, 3_500, 65_536, 700, 12_000];
+    let mut messages = vec![user("port the parser and make the suite pass")];
+    let mut requests = Vec::new();
+    // The requests whose view thins more results than the one before.
+    let (mut crossings, mut thinned) = (Vec::new(), 0);
+    for index in 0..120usize {
+        let call = format!("call-{index}");
+        // Each reply names a result from 20 rounds back.
+        let text = format!("as call-{} showed, next", index.saturating_sub(20));
+        messages.push(assistant(Some(&text), Some(&call), "eval"));
+        messages.push(result(
+            &call,
+            "eval",
+            &cell_output(index, sizes[index % sizes.len()]),
+            false,
+        ));
+        let view = thin_context(messages.clone(), 200_000, &on(), &ThinnedRecall::ToolResult);
+        if view.stats.thinned_results > thinned {
+            crossings.push(index);
         }
-        previous = Some(view.messages);
+        thinned = view.stats.thinned_results;
+        requests.push(
+            view.messages
+                .into_iter()
+                .filter_map(|message| match message {
+                    AgentMessage::Standard(message) => Some(message),
+                    AgentMessage::Custom(_) => None,
+                })
+                .collect::<Vec<_>>(),
+        );
     }
-    // Round 24 advances the boundary by a whole block: rounds 8..16 thin.
-    let advanced = thin_context(
-        history(24, 4_000),
-        20_000,
-        &settings,
-        &ThinnedRecall::ToolResult,
+
+    assert_eq!(
+        (prefix_breaks(&requests), crossings),
+        (vec![37, 67, 93, 117], vec![37, 67, 93, 117])
     );
-    let previous = previous.expect("prior view");
-    assert_eq!(advanced.stats.thinned_results, 16);
-    assert_eq!(advanced.messages[..18], previous[..18]);
-    assert_ne!(advanced.messages[18], previous[18]);
 }
 
 #[tokio::test]
@@ -246,12 +280,7 @@ async fn the_pointer_resolves_to_the_full_result_through_the_recall_path() {
     register_tool_result_recall(&mut handlers, &session);
     let recall = handlers.get("rlm.session.tool_result").expect("registered");
 
-    let view = thin_context(
-        messages.clone(),
-        20_000,
-        &ThinningSettings::default(),
-        &ThinnedRecall::ToolResult,
-    );
+    let view = thin_context(messages.clone(), 20_000, &on(), &ThinnedRecall::ToolResult);
     let pointer = result_text(&view.messages[2]);
     let call = pointer
         .split("(rlm-session-tool-result \"")
@@ -293,6 +322,12 @@ async fn the_engine_sends_the_thinned_view_and_keeps_the_transcript_whole() {
             .append_message(serde_json::from_value(serde_json::to_value(message).unwrap()).unwrap())
             .unwrap();
     }
+    std::fs::create_dir_all(tmp.path().join("agent")).unwrap();
+    std::fs::write(
+        tmp.path().join("agent").join("settings.json"),
+        r#"{"contextThinning": {"enabled": true}}"#,
+    )
+    .unwrap();
     let provider = Arc::new(pa_agent::scripted::ScriptedProvider::new(model.clone()));
     provider.push_text_turn("done");
     let engine = super::super::engine::create_session(super::super::engine::SessionEngineConfig {
@@ -341,12 +376,110 @@ async fn the_engine_sends_the_thinned_view_and_keeps_the_transcript_whole() {
     assert_eq!(result_text(&stored), original);
 }
 
+/// With the default settings a session's requests only append, past the
+/// point thinning used to start (65% of the window), and compaction is the
+/// one request that rewrites what the request before it sent.
+#[tokio::test]
+async fn with_the_defaults_only_compaction_rewrites_the_request_prefix() {
+    let tmp = tempfile::tempdir().unwrap();
+    let model: pa_agent::types::Model = serde_json::from_value(json!({
+        "id": "m", "name": "m", "api": "test", "provider": "test", "baseUrl": "http://localhost",
+        "reasoning": false, "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+        "contextWindow": 20_000, "maxTokens": 100
+    }))
+    .unwrap();
+    // 17 rounds of ~4k chars: past 65% of the 20k-token window.
+    let mut manager = SessionManager::in_memory(tmp.path());
+    for message in &history(17, 4_000) {
+        manager
+            .append_message(serde_json::from_value(serde_json::to_value(message).unwrap()).unwrap())
+            .unwrap();
+    }
+    let provider = Arc::new(pa_agent::scripted::ScriptedProvider::new(model.clone()));
+    // Eight more tool rounds (a tool no session has: each answers with an
+    // error at once), then the reply: requests 0..=8.
+    for index in 0..8 {
+        provider.push_tool_call_turn(
+            None,
+            vec![(&format!("more-{index}"), "absent_tool", json!({}))],
+        );
+    }
+    provider.push_text_turn("done");
+    // After the compaction, one more request: request 9.
+    provider.push_text_turn("after");
+    let engine = super::super::engine::create_session(super::super::engine::SessionEngineConfig {
+        cwd: tmp.path().to_path_buf(),
+        agent_dir: tmp.path().join("agent"),
+        model: Some(model),
+        stream_fn: Some(provider.stream_fn()),
+        session_manager: Some(manager),
+        daemonless: true,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    engine
+        .session
+        .prompt("continue", super::super::PromptOptions::default())
+        .await
+        .unwrap();
+    engine.session.agent().wait_for_idle().await;
+
+    // The summarizer is its own provider (its request is no loop request).
+    let summarizer =
+        pa_ai::faux::register_faux_provider(pa_ai::faux::RegisterFauxProviderOptions {
+            api: Some(format!("faux-thinning-{:?}", std::time::SystemTime::now())),
+            provider: Some("faux-thinning".to_string()),
+            ..Default::default()
+        });
+    summarizer.set_responses(vec![
+        pa_ai::faux::FauxResponseStep::Message(
+            pa_ai::faux::faux_assistant_text_message(
+                "## Goal\nport the parser",
+                pa_ai::faux::FauxAssistantMessageOptions::default(),
+            )
+        );
+        3
+    ]);
+    engine
+        .session
+        .set_compaction_settings(super::super::compaction::CompactionSettings {
+            keep_recent_tokens: 2_000,
+            ..Default::default()
+        });
+    let outcome = engine
+        .session
+        .compact(None, &summarizer.get_model(), None, None)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            outcome,
+            super::super::compact_session::CompactOutcome::Ran(_)
+        ),
+        "the compaction ran"
+    );
+    engine
+        .session
+        .prompt("go on", super::super::PromptOptions::default())
+        .await
+        .unwrap();
+    engine.session.agent().wait_for_idle().await;
+
+    let requests: Vec<Vec<Message>> = provider
+        .calls()
+        .into_iter()
+        .map(|context| context.messages)
+        .collect();
+    assert_eq!((requests.len(), prefix_breaks(&requests)), (10, vec![9]));
+}
+
 /// The measured before/after: a synthesized 60-round session with realistic
 /// cell sizes, replayed request by request under a 200k window. Prints the
 /// per-turn request size; `--nocapture` shows the table.
 #[test]
 fn a_long_session_sends_fewer_request_bytes_per_turn() {
-    let settings = ThinningSettings::default();
+    let settings = on();
     // Cell sizes cycle like a working session: listings, test runs, a few
     // capped dumps, and short probes.
     let sizes = [1_800, 9_000, 400, 24_000, 3_500, 65_536, 700, 12_000];
@@ -393,16 +526,9 @@ fn a_long_session_sends_fewer_request_bytes_per_turn() {
     println!(
         "compaction trigger crossed at turn: before {compacts_before:?}, after {compacts_after:?}"
     );
-    // The last turn carries the whole history; thinning must cut it hard.
-    let last_before = request_bytes(&messages).len();
-    let last_after = request_bytes(
-        &thin_context(messages, 200_000, &settings, &ThinnedRecall::ToolResult).messages,
-    )
-    .len();
-    assert!(
-        last_after * 3 < last_before,
-        "thinning kept {last_after} of {last_before} bytes"
-    );
+    // The whole history reaches the compaction trigger; the thinned view
+    // never does.
+    assert_eq!((compacts_before, compacts_after), (Some(50), None));
     assert!(after_total < before_total);
 }
 
@@ -420,14 +546,14 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
     let view = thin_context(
         messages.clone(),
         20_000,
-        &ThinningSettings::default(),
+        &on(),
         &ThinnedRecall::Spill(store.clone()),
     );
 
     let mut expected = messages.clone();
     let mut chars_saved = 0;
     let mut originals = Vec::new();
-    for index in 0..8 {
+    for index in 0..10 {
         let at = 2 + 2 * index;
         let original = result_text(&messages[at]);
         let chars: Vec<char> = original.chars().collect();
@@ -455,7 +581,7 @@ async fn with_a_spill_store_thinned_results_page_out_behind_their_handle() {
         ThinnedView {
             messages: expected,
             stats: ThinningStats {
-                thinned_results: 8,
+                thinned_results: 10,
                 chars_saved,
             },
         }
@@ -483,7 +609,7 @@ fn a_hanging_spill_writer_never_delays_the_thinned_view() {
     let expected = thin_context(
         messages.clone(),
         20_000,
-        &ThinningSettings::default(),
+        &on(),
         &ThinnedRecall::Spill(SpillStore::for_session_dir(working.path())),
     );
     let hung = tempfile::TempDir::new().expect("temp dir");
@@ -503,12 +629,7 @@ fn a_hanging_spill_writer_never_delays_the_thinned_view() {
     // test instead of hanging it.
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let view = thin_context(
-            messages,
-            20_000,
-            &ThinningSettings::default(),
-            &ThinnedRecall::Spill(store),
-        );
+        let view = thin_context(messages, 20_000, &on(), &ThinnedRecall::Spill(store));
         let _ = sender.send(view);
     });
     let view = receiver

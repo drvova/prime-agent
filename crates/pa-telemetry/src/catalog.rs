@@ -589,6 +589,10 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("loop_guard_trip_count", optional(count())),
         ("loop_guard_retry_count", optional(count())),
         ("loop_guard_tool_repeat_nudge_count", optional(count())),
+        // Loop requests that changed bytes inside the previous request's
+        // prefix (compaction included), and the bytes they did not keep.
+        ("cache_prefix_break_count", optional(count())),
+        ("cache_prefix_break_bytes", optional(tokens())),
         (
             "provider_category",
             optional(enum_rule(PROVIDER_CATEGORIES, "custom")),

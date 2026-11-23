@@ -683,6 +683,51 @@ async fn context_thinning_folds_into_session_ended() {
     );
 }
 
+/// Prompt-cache prefix breaks ride `agent run completed` (beside its cache
+/// read and write tokens) as a count and the bytes the breaking requests
+/// did not keep.
+#[tokio::test]
+async fn cache_prefix_breaks_ride_the_run() {
+    let fixture = fixture();
+    let telemetry = SessionTelemetry::detached(
+        fixture.client.clone(),
+        fixture.state.clone(),
+        "interactive".to_string(),
+    );
+    emit(
+        &fixture,
+        AgentEvent::MessageStart {
+            message: user_message(),
+        },
+    );
+    // The run's requests go out between its start and its reply.
+    emit(&fixture, AgentEvent::AgentStart);
+    emit(&fixture, AgentEvent::TurnStart);
+    telemetry.note_cache_prefix_break(40_001);
+    telemetry.note_cache_prefix_break(9_999);
+    emit(&fixture, message_end_event(assistant_message()));
+    emit(
+        &fixture,
+        AgentEvent::AgentEnd {
+            messages: Vec::new(),
+        },
+    );
+    telemetry.end().await.unwrap();
+    let run = &event_properties(&fixture.mock, "agent run completed").await[0];
+    let breaks: serde_json::Map<String, serde_json::Value> = run
+        .iter()
+        .filter(|(key, _)| key.starts_with("cache_prefix"))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    assert_eq!(
+        serde_json::Value::Object(breaks),
+        serde_json::json!({
+            "cache_prefix_break_count": 2,
+            "cache_prefix_break_bytes": 50_000,
+        })
+    );
+}
+
 /// `build_client` reuses the installation id a TS install wrote to
 /// `telemetry.json` (one user across both products) and mirrors events to
 /// the local JSONL file under that id.

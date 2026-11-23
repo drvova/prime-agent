@@ -1220,6 +1220,25 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // it is installed (after the agent exists).
     let repeat_nudge_telemetry = std::sync::Arc::new(std::sync::OnceLock::new());
     let side_question_stream_fn = std::sync::Arc::clone(&timing_stream_fn);
+    // The loop's own requests (not the side questions or the judge, which
+    // fork its prefix) count the prompt-cache prefix breaks into the
+    // session's telemetry run once it is installed.
+    let prefix_break_telemetry: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<super::telemetry::SessionTelemetry>>,
+    > = std::sync::Arc::default();
+    let timing_stream_fn = if config.telemetry.is_some() {
+        let telemetry = std::sync::Arc::clone(&prefix_break_telemetry);
+        super::cache_prefix::track_prefix_breaks(
+            timing_stream_fn,
+            std::sync::Arc::new(move |bytes| {
+                if let Some(telemetry) = telemetry.get() {
+                    telemetry.note_cache_prefix_break(bytes);
+                }
+            }),
+        )
+    } else {
+        timing_stream_fn
+    };
     let semantic_recorder = config.semantic_edges.take().map(|identity| {
         std::sync::Arc::new(super::semantic_edges::SemanticEdgeRecorder::open(identity))
     });
@@ -1612,6 +1631,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // whether this session reports at all).
     if let Some(telemetry) = telemetry.as_ref() {
         let _ = repeat_nudge_telemetry.set(telemetry.clone());
+        let _ = prefix_break_telemetry.set(telemetry.clone());
         session.set_skill_telemetry(telemetry.clone());
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.

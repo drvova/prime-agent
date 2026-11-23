@@ -302,7 +302,8 @@ handles survive resume and daemon restart; past 64 MiB per session the oldest sp
 and answer "evicted". The `ctx.page`/`ctx.grep`/`ctx.tail`/`ctx.info` host requests
 (`kernel::spill::host`) the kernel's `rlm.ctx` client reaches read a handle back in slices capped
 at 16k characters, so a read never spills again; a handle without text answers its state. The request view's context
-thinning (`session_engine::context_thinning`) pages each thinned result out the same way
+thinning (`session_engine::context_thinning`; off unless `contextThinning.enabled`, and then it
+rewrites already-sent results only when the view reaches its threshold) pages each thinned result out the same way
 (`ThinnedRecall::Spill`; the handle is a content hash, so the view stays a pure function of the
 history), and `OutputBudget` scales a cell's output cap to the context left (an eighth of the
 remaining tokens in characters, 8k..64k), published by the request path and read by the cell
