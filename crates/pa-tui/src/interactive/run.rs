@@ -1507,6 +1507,10 @@ async fn run_interactive_surface(
         } else {
             None
         };
+        // An open transcript search builds its index a slice per tick, without the idle wait.
+        if view.transcript_search_pending() {
+            quiet_tick_deadline = Some(Instant::now());
+        }
         // The reconnect driver's next attempt, parked while one is in flight (its armed instant is in
         // the past, so an unparked tick would busy-spin the loop for the attempt's duration).
         let reconnect_tick_at = match (&session.connection, &reconnect_connect) {
@@ -1881,6 +1885,7 @@ async fn run_interactive_surface(
                 quiet_tick_deadline = None;
                 session.materialize_editor_autocomplete(&mut view);
                 session.selection_auto_scroll_tick(&mut view);
+                session.continue_transcript_search(&mut view);
             }
             () = async {
                 // The 2s bash-activity poll, on its own absolute deadline and only on daemons that

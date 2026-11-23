@@ -23,6 +23,8 @@ pub(crate) mod navigation;
 mod panels;
 mod restyle;
 mod rows;
+pub(crate) mod search;
+mod search_text;
 
 use layout::EntryLayout;
 
@@ -124,6 +126,8 @@ pub struct AgentView {
     pub heartbeats_picker: Option<crate::heartbeats_picker::HeartbeatsPicker>,
     /// The ctrl+r prompt-history search, mounted in the editor dock.
     pub(crate) history_search: Option<crate::history_search::HistorySearch>,
+    /// The transcript search bar (`app.transcript.search`), mounted in the editor dock.
+    pub(crate) transcript_search: Option<search::TranscriptSearch>,
     pub goal_panel: Option<crate::goal_surface::GoalPanel>,
     pub bash_view: Option<crate::bash_view::BashView>,
     pub share_loader: Option<ShareLoader>,
@@ -298,6 +302,10 @@ impl AgentView {
             search.paste(text);
             return true;
         }
+        if self.transcript_search.is_some() {
+            self.transcript_search_paste(text);
+            return true;
+        }
         if let Some(mcp) = self.mcp_view.as_mut() {
             mcp.paste(text);
             return true;
@@ -415,6 +423,7 @@ impl AgentView {
             factory_view: None,
             heartbeats_picker: None,
             history_search: None,
+            transcript_search: None,
             goal_panel: None,
             bash_view: None,
             share_loader: None,
@@ -478,6 +487,7 @@ impl AgentView {
     /// folds the append into its tail bookkeeping, never a geometry resolve.
     pub fn push_entry(&mut self, entry: ChatEntry) {
         self.pending_handoff = None;
+        self.search_note_splice(self.chat.len()..self.chat.len(), 1);
         self.chat.push(entry);
         self.entry_layout.push([None, None, None]);
         self.sparse_note_append();
@@ -508,6 +518,7 @@ impl AgentView {
         self.entry_heights.pop();
         self.entry_layout.pop();
         self.unseen_entries = self.unseen_entries.saturating_sub(1);
+        self.search_note_splice(index..index + 1, 0);
         self.chat.pop()
     }
 
@@ -698,6 +709,7 @@ impl AgentView {
             range.clone(),
             std::iter::repeat_n([None, None, None], inserted),
         );
+        self.search_note_splice(range.clone(), inserted);
         self.chat.splice(range, entries);
     }
 
@@ -719,6 +731,7 @@ impl AgentView {
         self.sparse_entries.clear();
         self.toggled_cards.clear();
         self.sparse_window = None;
+        self.search_note_splice(0..self.chat.len(), 0);
         self.chat.clear();
         self.entry_layout.clear();
         self.entry_heights.clear();
@@ -742,6 +755,28 @@ impl AgentView {
     /// Mark one chat entry's cached rows stale: the next frame lays it out again. A mutated
     /// entry changes every LATER spacing-driven row, so those go stale too.
     pub fn mark_entry_stale(&mut self, index: usize) {
+        self.mark_entry_rows_stale(index);
+        for offset in index + 1..self.chat.len() {
+            if matches!(
+                self.chat[offset],
+                ChatEntry::AgentMessage(_)
+                    | ChatEntry::BackgroundCompletion(_)
+                    | ChatEntry::Tool(_)
+            ) {
+                if let Some(slot) = self.entry_layout.get_mut(offset) {
+                    *slot = [None, None, None];
+                }
+                if let Some(slot) = self.entry_heights.get_mut(offset) {
+                    *slot = [None, None, None];
+                }
+                self.search_note_stale(offset);
+            }
+        }
+    }
+
+    /// Mark only this entry's cached rows stale: a change no other entry's rows read (its own
+    /// expansion), folded into the paused window's bookkeeping like any in-place mutation.
+    fn mark_entry_rows_stale(&mut self, index: usize) {
         self.pending_handoff = None;
         if let Some((pending, before)) = self.sparse_mutation.take() {
             if pending == index && self.layout_width > 0 {
@@ -755,21 +790,7 @@ impl AgentView {
         if let Some(slot) = self.entry_heights.get_mut(index) {
             *slot = [None, None, None];
         }
-        for (offset, entry) in self.chat.iter().enumerate().skip(index + 1) {
-            if matches!(
-                entry,
-                ChatEntry::AgentMessage(_)
-                    | ChatEntry::BackgroundCompletion(_)
-                    | ChatEntry::Tool(_)
-            ) {
-                if let Some(slot) = self.entry_layout.get_mut(offset) {
-                    *slot = [None, None, None];
-                }
-                if let Some(slot) = self.entry_heights.get_mut(offset) {
-                    *slot = [None, None, None];
-                }
-            }
-        }
+        self.search_note_stale(index);
     }
 
     /// The conversation-detail label for the prompt-context row.

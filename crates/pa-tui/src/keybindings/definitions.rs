@@ -389,6 +389,23 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["ctrl+r"], "Search prompt history"),
     ),
     (
+        "app.transcript.search",
+        // `/` is the search key of less, vim and transcript pagers; Alt keeps a bare `/` for
+        // the composer's slash commands. No other binding claims `alt+/`, and `ctrl+/` is the
+        // same byte as the undo key `ctrl+-` on a legacy terminal.
+        def!(&["alt+/"], "Search the conversation (fullscreen)"),
+    ),
+    (
+        "app.transcript.searchNext",
+        // The bar owns the keyboard while open: the arrows have no other use there, and
+        // `ctrl+n`/`ctrl+p` are the readline next/previous keys.
+        def!(&["down", "ctrl+n"], "Transcript search: next match"),
+    ),
+    (
+        "app.transcript.searchPrevious",
+        def!(&["up", "ctrl+p"], "Transcript search: previous match"),
+    ),
+    (
         "app.message.followUp",
         def!(&["alt+enter"], "Queue follow-up message"),
     ),

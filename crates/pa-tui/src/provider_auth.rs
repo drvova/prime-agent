@@ -1521,6 +1521,21 @@ mod tests {
             Box::pin(std::future::pending())
         }
 
+        fn transcript_searched(
+            &self,
+            search: crate::interactive::TranscriptSearchReport,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports.lock().unwrap().push([
+                search.outcome,
+                "transcript_search",
+                search.history,
+                if search.revealed { "revealed" } else { "" },
+            ]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
         fn unfocused_signal_sent(
             &self,
             reason: &'static str,
@@ -1534,6 +1549,33 @@ mod tests {
             // The delivery never completes: a hung sink.
             Box::pin(std::future::pending())
         }
+    }
+
+    /// The transcript search report is fire-and-forget: with a sink that never replies, the
+    /// hand-off on the closing key's path returns at once and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_search_report_never_holds_the_key_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::view::search::report_closed(
+            Some(&hook),
+            crate::view::search::SearchSummary {
+                outcome: crate::view::search::SearchOutcome::Jumped,
+                steps: 2,
+                revealed: true,
+                history: crate::view::search::HistoryScope::LoadedOnly,
+            },
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["jumped", "transcript_search", "loaded_only", "revealed"]]
+        );
     }
 
     /// The transcript navigation report is fire-and-forget: with a sink that never replies, the

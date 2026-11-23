@@ -22,6 +22,7 @@ mod sessions_fork;
 mod settings;
 mod share;
 mod stream;
+mod transcript_search;
 mod usage;
 mod window;
 pub(crate) use window::TranscriptPageNote;
@@ -462,6 +463,8 @@ pub(crate) struct SessionUi {
     scroll_adoption_emitted: bool,
     /// The transcript navigation actions already reported this run (one report per action).
     navigation_reported: Vec<&'static str>,
+    /// The transcript search outcomes already reported this run (one report per outcome).
+    search_reported: Vec<crate::view::search::SearchOutcome>,
     /// What the terminal last reported about its focus; focused until it reports otherwise, so
     /// a terminal that never reports is never signalled.
     pub(crate) terminal_focused: bool,

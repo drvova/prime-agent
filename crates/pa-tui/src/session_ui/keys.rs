@@ -489,6 +489,9 @@ impl SessionUi {
         if view.history_search.is_some() {
             return self.handle_history_search_key(key, view);
         }
+        if view.transcript_search.is_some() {
+            return self.handle_transcript_search_key(key, view);
+        }
         if view.mcp_view.is_some() {
             return self.handle_mcp_view_key(key, view);
         }
@@ -592,6 +595,14 @@ impl SessionUi {
             view.scroll_to_bottom();
             self.track_scroll("follow", view.is_following());
             self.dirty = true;
+            return Ok(());
+        }
+        if view
+            .editor
+            .keybindings()
+            .matches(&id, "app.transcript.search")
+        {
+            self.open_transcript_search(view);
             return Ok(());
         }
         if let Some(jump) = prompt_jump {
@@ -1254,6 +1265,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "tui.viewport.pageDown")
         || kb.matches(id, "tui.viewport.top")
         || kb.matches(id, "tui.viewport.follow")
+        || kb.matches(id, "app.transcript.search")
         || kb.matches(id, "app.clipboard.pasteImage")
         || kb.matches(id, "app.input.clear")
         || kb.matches(id, "app.interrupt")

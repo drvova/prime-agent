@@ -234,6 +234,26 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn transcript_searched(
+        &self,
+        search: pa_tui::interactive::TranscriptSearchReport,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui transcript navigation`: `tui exit` sits at the backend's 128-key
+        // cap. Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("outcome", serde_json::Value::from(search.outcome));
+            properties.set("steps", serde_json::Value::from(search.steps));
+            properties.set("revealed", serde_json::Value::from(search.revealed));
+            properties.set("history", serde_json::Value::from(search.history));
+            client.track("tui transcript search", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn unfocused_signal_sent(
         &self,
         reason: &'static str,
@@ -751,6 +771,46 @@ mod tests {
                     null,
                     null
                 ])]
+            );
+        });
+    }
+
+    /// A transcript search report is a standalone event carrying only its catalogued enums,
+    /// count and flag.
+    #[test]
+    fn a_search_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.transcript_searched(
+                    pa_tui::interactive::TranscriptSearchReport {
+                        outcome: "jumped",
+                        steps: 3,
+                        revealed: true,
+                        history: "loaded_only",
+                    },
+                ));
+            let event: serde_json::Value = serde_json::from_str(
+                std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            let properties = &event["properties"];
+            assert_eq!(
+                serde_json::json!([
+                    event["name"],
+                    properties["outcome"],
+                    properties["steps"],
+                    properties["revealed"],
+                    properties["history"],
+                ]),
+                serde_json::json!(["tui transcript search", "jumped", 3, true, "loaded_only"])
             );
         });
     }

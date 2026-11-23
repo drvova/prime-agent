@@ -226,6 +226,7 @@ impl SessionUi {
             telemetry: options.telemetry.clone(),
             scroll_adoption_emitted: false,
             navigation_reported: Vec::new(),
+            search_reported: Vec::new(),
             terminal_focused: true,
             unfocused_signal_reported: Vec::new(),
             attention_signals: Vec::new(),

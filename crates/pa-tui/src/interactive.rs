@@ -168,6 +168,13 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A transcript search closed, the first time per outcome in a run (event `tui transcript
+    /// search`): counts and enums only, never the query or a matched row. Implementations return
+    /// at once: the key path spawns it and never waits.
+    fn transcript_searched(
+        &self,
+        search: TranscriptSearchReport,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The unfocused terminal was signalled that the agent stopped for the user, the first time
     /// per reason in a run (event `tui unfocused signal`): `reason` is `turn_end` / `question`,
     /// `mode` the `terminal.notifyOnTurnEnd` value that chose the signal (`bell` /
@@ -681,6 +688,21 @@ pub struct InlineImageCounts {
     pub iterm2: u64,
     pub sixel: u64,
     pub half_block: u64,
+}
+
+/// One closed transcript search (`tui transcript search`), as
+/// `InteractionTelemetry::transcript_searched` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptSearchReport {
+    /// How it closed: `jumped` (Enter at a match), `cancelled` (Esc, the view put back), or
+    /// `no_match` (closed while the query matched nothing).
+    pub outcome: &'static str,
+    /// Next and previous match presses.
+    pub steps: u64,
+    /// Whether a match inside a collapsed card or folded thinking opened it.
+    pub revealed: bool,
+    /// `complete`, or `loaded_only` when older history lived only in the daemon.
+    pub history: &'static str,
 }
 
 /// One run's todo-tray and question-panel adoption counts (`tui todos and questions`).

@@ -77,6 +77,9 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let viewport_follow = key_display(kb, "tui.viewport.follow");
     let viewport_previous_prompt = key_display(kb, "tui.viewport.previousPrompt");
     let viewport_next_prompt = key_display(kb, "tui.viewport.nextPrompt");
+    let transcript_search = key_display(kb, "app.transcript.search");
+    let search_next = key_display(kb, "app.transcript.searchNext");
+    let search_previous = key_display(kb, "app.transcript.searchPrevious");
     let suspend = key_display(kb, "app.suspend");
     let select_paragraph_up = key_display(kb, "tui.editor.selectParagraphUp");
     let select_paragraph_down = key_display(kb, "tui.editor.selectParagraphDown");
@@ -168,6 +171,8 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{viewport_top}` | Scroll to top |
 | `{viewport_follow}` | Scroll to bottom and follow output |
 | `{viewport_previous_prompt}` / `{viewport_next_prompt}` | Jump to the previous / next prompt |
+| `{transcript_search}` | Search the conversation: Enter stays at the match, Esc goes back |
+| `{search_next}` / `{search_previous}` | Next / previous match while searching |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
 | mouse click on link | Open link in browser |

@@ -18,6 +18,7 @@ impl AgentView {
         self.onboarding.is_none()
             && self.model_picker.is_none()
             && self.history_search.is_none()
+            && self.transcript_search.is_none()
             && self.choice_picker.is_none()
             && self.mcp_view.is_none()
             && self.question.is_none()
@@ -116,6 +117,9 @@ impl AgentView {
                 std::time::SystemTime::now(),
             ));
             Some(dock)
+        } else if let Some(search) = &self.transcript_search {
+            // The bar is the whole dock: the transcript keeps every row above it.
+            Some(vec![self.render_search_bar(search, width)])
         } else if let Some(mcp_view) = self.mcp_view.as_mut() {
             let mut dock = prompt_context;
             dock.extend(mcp_view.render(&self.theme, width, self.editor.keybindings()));
@@ -291,6 +295,7 @@ impl AgentView {
         // The selection restyle diff: only the rows the selection change
         // touched re-style.
         let window_rows = self.selection_styled_window(window_rows, start);
+        let window_rows = self.search_highlighted(window_rows);
         let mut frame: Vec<Line> = Vec::with_capacity(height);
         frame.push(pad_row(top, width));
         for line in window_rows {
@@ -470,6 +475,7 @@ impl AgentView {
             || self.model_picker.is_some()
             || self.choice_picker.is_some()
             || self.history_search.is_some()
+            || self.transcript_search.is_some()
             || self.heartbeats_picker.is_some()
             || self.goal_panel.is_some()
             || self.bash_view.is_some()
