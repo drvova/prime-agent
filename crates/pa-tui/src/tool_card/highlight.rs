@@ -4,13 +4,17 @@
 //! backslash escapes keep the string color (cli-highlight renders those
 //! scopes with the identity function).
 
+mod scheme;
+
+pub(crate) use scheme::highlight_scheme;
+
 use crate::theme::{Theme, ThemeColor};
 use crate::{Line, Span};
 use ratatui::style::Style;
 
 /// The resolved `syntax*` theme colors the scopes render with, shared
 /// by every surface that renders highlighted code.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SyntaxPalette {
     pub keyword: Style,
     pub type_: Style,

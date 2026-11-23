@@ -1,6 +1,8 @@
 //! Edit diffs in the cell card: one `╰─ <path> +N -M` summary line per edited file, always
 //! shown, and the numbered diff rows when edit diffs are expanded. Each `details.diffs` entry
-//! carries pa-core's edit-tool diff text, so the card only splits it into rows.
+//! carries pa-core's edit-tool diff text, so the card only splits it into rows. What a changed
+//! row changes is always visible: its trailing whitespace is drawn (`·` for a space, `→` for a
+//! tab), and a carriage return is drawn (`␍`) where an edit changes line endings.
 
 use std::path::Path;
 
@@ -55,21 +57,29 @@ fn render_file(
     theme: &Theme,
     width: usize,
 ) {
+    // Counted as the rows are labelled: a line the rows show as context is not a change.
     let (mut added, mut removed) = (0usize, 0usize);
-    for line in edits.iter().flat_map(|diff| diff.split('\n')) {
-        if line.starts_with('+') {
-            added += 1;
-        } else if line.starts_with('-') {
-            removed += 1;
+    for line in edits.iter().flat_map(|diff| diff_lines(diff)) {
+        match split_row(line).0 {
+            RowKind::Added => added += 1,
+            RowKind::Removed => removed += 1,
+            RowKind::Context => {}
         }
     }
     lines.push(|| summary_line(path, added, removed, theme, width));
     if !expanded {
         return;
     }
-    let python = Path::new(path)
+    let syntax = match Path::new(path)
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("py"));
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("py") => Syntax::Python,
+        Some("scm" | "ss" | "sld" | "rkt") => Syntax::Scheme,
+        Some(_) | None => Syntax::Plain,
+    };
     let indent = if width > 1 { DIFF_INDENT } else { "" };
     let content_width = width.saturating_sub(indent.len()).max(1);
     for (index, diff) in edits.iter().enumerate() {
@@ -80,7 +90,7 @@ fn render_file(
                 truncate_line(&row, width, "")
             });
         }
-        diff_rows(lines, diff, indent, content_width, python, theme);
+        diff_rows(lines, diff, indent, content_width, syntax, theme);
     }
 }
 
@@ -118,6 +128,20 @@ fn diff_separator(theme: &Theme, width: usize) -> Line {
         ),
         Span::styled(" ".repeat(width.saturating_sub(str_width(marker))), bg),
     ]
+}
+
+/// The highlighter a file's rows get, by its extension.
+#[derive(Clone, Copy)]
+enum Syntax {
+    Python,
+    Scheme,
+    Plain,
+}
+
+/// A diff's rows. The edit tool numbers every row, so an empty line is the text's own end (a
+/// trailing newline, an edit that changed nothing), never a row.
+fn diff_lines(diff: &str) -> impl Iterator<Item = &str> {
+    diff.split('\n').filter(|line| !line.is_empty())
 }
 
 #[derive(Clone, Copy)]
@@ -178,25 +202,63 @@ fn diff_rows(
     diff: &str,
     indent: &'static str,
     width: usize,
-    python: bool,
+    syntax: Syntax,
     theme: &Theme,
 ) {
     let truecolor = theme.mode == ColorMode::TrueColor;
-    for raw_line in diff.split('\n') {
+    let palette = highlight::SyntaxPalette::from_theme(theme);
+    let changed = |kind: RowKind| matches!(kind, RowKind::Added | RowKind::Removed);
+    // Line endings are part of the change when the changed rows disagree on them.
+    let mut carriage_returns = diff_lines(diff)
+        .map(split_row)
+        .filter(|(kind, _, _)| changed(*kind))
+        .map(|(_, _, text)| text.ends_with('\r'));
+    let line_endings_change = carriage_returns
+        .next()
+        .is_some_and(|first| carriage_returns.any(|other| other != first));
+    for raw_line in diff_lines(diff) {
         let (kind, gutter, text) = split_row(raw_line);
         let (bg, gutter_color, text_color) = row_colors(kind, truecolor);
-        let text = text.replace('\t', "   ");
-        let content: Line = match text_color {
-            Some(color) => vec![Span::styled(text, theme.fg_style(color))],
-            None if text.is_empty() => Vec::new(),
-            None if python => {
-                highlight::highlight_python(&text, &highlight::SyntaxPalette::from_theme(theme))
-                    .into_iter()
-                    .next()
-                    .unwrap_or_else(|| vec![Span::raw(text)])
-            }
-            None => vec![Span::styled(text, theme.fg_style(ThemeColor::MdCodeBlock))],
+        // A changed row shows the whitespace it ends in, which the row's
+        // background would hide, and its carriage return when that changed.
+        let line = text.strip_suffix('\r').unwrap_or(text);
+        let body = if changed(kind) {
+            line.trim_end_matches([' ', '\t'])
+        } else {
+            line
         };
+        let mut marks: String = line[body.len()..]
+            .chars()
+            .map(|space| {
+                if space == '\t' {
+                    "\u{2192}  "
+                } else {
+                    "\u{b7}"
+                }
+            })
+            .collect();
+        if changed(kind) && line_endings_change && line.len() < text.len() {
+            marks.push('\u{240d}');
+        }
+        let text = body.replace('\t', "   ");
+        let mut content: Line = match (text_color, syntax) {
+            (Some(color), _) => vec![Span::styled(text, theme.fg_style(color))],
+            (None, _) if text.is_empty() => Vec::new(),
+            (None, Syntax::Python) => highlight::highlight_python(&text, &palette)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| vec![Span::raw(text)]),
+            (None, Syntax::Scheme) => highlight::highlight_scheme(&text, &palette)
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| vec![Span::raw(text)]),
+            (None, Syntax::Plain) => {
+                vec![Span::styled(text, theme.fg_style(ThemeColor::MdCodeBlock))]
+            }
+        };
+        if !marks.is_empty() {
+            content.push(Span::styled(marks, theme.fg_style(gutter_color)));
+        }
         let gutter_width = str_width(&gutter);
         let content_width = width.saturating_sub(gutter_width).max(1);
         if lines.is_counting() {

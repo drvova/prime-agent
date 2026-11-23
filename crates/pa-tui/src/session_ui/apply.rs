@@ -549,12 +549,18 @@ impl SessionUi {
                 // reticks the settled id on this run's paints, so it lands
                 // on nothing too.
                 if !self.aborted_tools.contains(&tool_call_id) && self.turn_active {
-                    // The live label is the call's title: a kernel cell's preview (a Python
-                    // `%%bash` cell previews its command), else the tool's name.
+                    // The live label is the call's title: a kernel cell's preview (a Scheme
+                    // cell's kernel call and its main argument, as its card is titled; a
+                    // Python `%%bash` cell previews its command), else the tool's name.
                     let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
                     let preview = match pa_types::ai::kernel_tool_language(&tool_name) {
                         Some(pa_types::ai::KernelLanguage::Scheme) => {
-                            crate::code_preview::preview_scheme_code(code)
+                            let preview = crate::code_preview::scheme_outline(code).preview();
+                            [preview.head, preview.text]
+                                .into_iter()
+                                .filter(|part| !part.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         }
                         Some(pa_types::ai::KernelLanguage::Python) => {
                             crate::code_preview::preview_ipython_code(code).text

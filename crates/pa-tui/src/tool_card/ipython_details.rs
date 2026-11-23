@@ -180,6 +180,55 @@ pub(crate) fn read_error_details(value: &Value) -> Option<IpythonError> {
 }
 
 impl IpythonDetails {
+    /// What the card shows for the cell's value: `None` when it is blank or
+    /// a row above already says it (the diff of an edit, the receipt of a
+    /// sent message). A Scheme cell's value is printed as data, so a kernel
+    /// function's reply arrives as a printed hash: its readable field (a
+    /// command's `output`, a file view's `text`) is shown in its place, and
+    /// any other value as it was printed.
+    pub(crate) fn shown_result(
+        &self,
+        language: Option<pa_types::ai::KernelLanguage>,
+    ) -> Option<std::borrow::Cow<'_, str>> {
+        use std::borrow::Cow;
+        let result = self.result.as_deref().filter(|s| !s.trim().is_empty())?;
+        let hash = match language {
+            Some(pa_types::ai::KernelLanguage::Scheme) => {
+                super::scheme_value::PrintedHash::parse(result)
+            }
+            Some(pa_types::ai::KernelLanguage::Python) | None => {
+                let said = is_edit_confirmation(Some(result), &self.diffs)
+                    || is_agent_message_receipt(Some(result), &self.sent_agent_messages);
+                return (!said).then_some(Cow::Borrowed(result));
+            }
+        };
+        let Some(hash) = hash else {
+            return Some(Cow::Borrowed(result));
+        };
+        let text = hash.string("text");
+        let edited = !self.diffs.is_empty()
+            && text
+                .as_deref()
+                .is_some_and(|text| text.starts_with("Edited "));
+        let receipt = hash.string("id").is_some_and(|id| {
+            self.sent_agent_messages
+                .iter()
+                .any(|sent| sent.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        });
+        if edited || receipt {
+            return None;
+        }
+        let readable = match hash.bash_outcome() {
+            Some(_) => Some(hash.string("output").unwrap_or_default()),
+            None => text,
+        };
+        match readable {
+            Some(text) if text.trim().is_empty() => None,
+            Some(text) => Some(Cow::Owned(text)),
+            None => Some(Cow::Borrowed(result)),
+        }
+    }
+
     pub(crate) fn parse(details: &Value) -> IpythonDetails {
         let empty = IpythonDetails {
             duration_ms: None,

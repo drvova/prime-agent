@@ -8,6 +8,7 @@ pub mod highlight;
 pub mod ipython;
 pub mod ipython_details;
 mod layout;
+mod scheme_value;
 
 use std::time::Instant;
 
