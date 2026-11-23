@@ -19,6 +19,7 @@ mod geometry;
 mod handoff;
 mod layout;
 pub(crate) mod lazy;
+pub(crate) mod navigation;
 mod panels;
 mod restyle;
 mod rows;
@@ -146,6 +147,8 @@ pub struct AgentView {
     pub(crate) older_history_loading: bool,
     pub(crate) scroll_top: usize,
     following: bool,
+    /// Chat entries appended since the window paused: the follow pill's count.
+    unseen_entries: usize,
     /// The transcript-tail offset of the last composed frame: scroll
     /// deltas page from here, not from zero.
     pub(crate) last_max_scroll: usize,
@@ -420,6 +423,7 @@ impl AgentView {
             splash_suppressed: false,
             older_history_loading: false,
             scroll_top: 0,
+            unseen_entries: 0,
             following: true,
             last_max_scroll: 0,
             terminal_rows: 24,
@@ -471,6 +475,11 @@ impl AgentView {
         self.chat.push(entry);
         self.entry_layout.push([None, None, None]);
         self.sparse_note_append();
+        self.unseen_entries = if self.following {
+            0
+        } else {
+            self.unseen_entries + 1
+        };
     }
 
     pub fn chat_len(&self) -> usize {
@@ -492,6 +501,7 @@ impl AgentView {
         self.toggled_cards.remove(&index);
         self.entry_heights.pop();
         self.entry_layout.pop();
+        self.unseen_entries = self.unseen_entries.saturating_sub(1);
         self.chat.pop()
     }
 
@@ -710,6 +720,7 @@ impl AgentView {
         self.streaming_rows.borrow_mut().take();
         self.pending_bash.clear();
         self.older_history_loading = false;
+        self.unseen_entries = 0;
     }
 
     /// Prepare an in-place mutation of one entry: capture its current
@@ -773,6 +784,9 @@ impl AgentView {
     /// Scroll the transcript window: scrolling up pauses following and
     /// reaching the bottom resumes it.
     pub fn scroll_by(&mut self, delta: isize) {
+        if self.following {
+            self.unseen_entries = 0;
+        }
         if let Some(window) = &mut self.sparse_window {
             window.scroll_by(delta);
             self.following = window.at_tail();
@@ -794,6 +808,9 @@ impl AgentView {
     pub fn scroll_to_top(&mut self) {
         if self.has_selection() {
             self.resolve_sparse_geometry();
+        }
+        if self.following {
+            self.unseen_entries = 0;
         }
         self.sparse_window = Some(lazy::SparseWindow::top(self.detail, self.layout_width));
         self.scroll_top = 0;
@@ -822,6 +839,11 @@ impl AgentView {
 
     pub fn is_following(&self) -> bool {
         self.following
+    }
+
+    /// Chat entries appended since the window paused (the follow pill's count).
+    pub(crate) fn unseen_entries(&self) -> usize {
+        self.unseen_entries
     }
 
     pub fn scroll_info(&mut self) -> ScrollInfo {

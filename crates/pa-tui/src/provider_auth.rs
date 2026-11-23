@@ -1507,6 +1507,38 @@ mod tests {
         fn draft_recalled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
             Box::pin(std::future::ready(()))
         }
+
+        fn transcript_navigated(
+            &self,
+            action: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([action, "transcript_navigation", "", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// The transcript navigation report is fire-and-forget: with a sink that never replies, the
+    /// hand-off on the key path returns at once and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_navigation_report_never_holds_the_key_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::view::navigation::report_used(Some(&hook), "previous_prompt");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["previous_prompt", "transcript_navigation", "", ""]]
+        );
     }
 
     /// The credential report is fire-and-forget: with a sink that never replies, the login path's

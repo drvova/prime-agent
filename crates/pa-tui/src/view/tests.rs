@@ -831,9 +831,11 @@ fn follow_hint_shows_when_paused_and_hides_when_following() {
         .any(|l| row_text(l).contains("to follow")));
     v.scroll_by(-(v.page_size() as isize));
     let paused_frame = v.render_frame(80, 24);
-    assert!(paused_frame
-        .iter()
-        .any(|l| row_text(l).contains("ctrl+shift+down to follow")));
+    let hint = format!(
+        "{} to follow",
+        crate::keybindings::format_key_text("ctrl+shift+down")
+    );
+    assert!(paused_frame.iter().any(|l| row_text(l).contains(&hint)));
     v.scroll_to_bottom();
     let resumed_frame = v.render_frame(80, 24);
     assert!(v.is_following());
@@ -923,9 +925,10 @@ fn collapse_keeps_the_hint_when_rows_remain_below() {
     let collapsed = v.render_frame(80, 24);
     assert!(!v.is_following());
     assert!(
-        collapsed
-            .iter()
-            .any(|l| row_text(l).contains("ctrl+shift+down to follow")),
+        collapsed.iter().any(|l| row_text(l).contains(&format!(
+            "{} to follow",
+            crate::keybindings::format_key_text("ctrl+shift+down")
+        ))),
         "the paused window with rows below keeps the hint"
     );
 }

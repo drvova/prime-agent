@@ -57,6 +57,18 @@ ping (`kernel_notification`) renders as one notice row with its level's mark and
 terminal for attention on the next frame's write (`terminal_attention`: OSC 9 where the user
 turned terminal indicators on with `showTerminalProgress`, else the bell).
 
+Transcript navigation (`view/navigation.rs`): a window scrolled up from the bottom pins the user
+prompt it reads under over its first row (the prompt's first line on the user-message band, cut
+with `menu_chrome::ELLIPSIS`, the jump keys flush right in the columns the prompt leaves) and
+carries the follow pill over its last (`↓ 4 new · Ctrl+Shift+↓ to follow`: the entries appended
+since the window paused and the `tui.viewport.follow` key, shortened to fit, with no key named
+once it is unbound). Both are overlays, so the layout, the selection and the click rows under
+them do not move, and both go when the window shows the tail. `tui.viewport.previousPrompt` and
+`tui.viewport.nextPrompt` (`Alt+PageUp` / `Alt+PageDown`) move the window to the nearest user
+prompt above or below its first row among the loaded rows; next past the last prompt returns to
+the bottom and follows. The first use of each jump, and of the follow key while the pill counts,
+reports `tui transcript navigation` (`action`).
+
 
 Panel conventions (`menu_chrome.rs`, `menu_panel.rs`, `duration_text.rs`): the pieces every picker,
 pane and prompt shares, so the panels read alike and stay alike. The footer is the one hint row

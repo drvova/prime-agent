@@ -259,6 +259,23 @@ pub const TUI_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
             "Scroll to bottom and follow output (fullscreen)"
         ),
     ),
+    (
+        "tui.viewport.previousPrompt",
+        // `alt+pageUp`/`alt+pageDown` sit beside the page keys and no other binding claims
+        // them; `alt+up`/`alt+down` browse the queued messages and `ctrl+up`/`ctrl+down` move
+        // the editor by paragraph.
+        def!(
+            &["alt+pageUp"],
+            "Jump to the previous prompt in the transcript (fullscreen)"
+        ),
+    ),
+    (
+        "tui.viewport.nextPrompt",
+        def!(
+            &["alt+pageDown"],
+            "Jump to the next prompt in the transcript (fullscreen)"
+        ),
+    ),
     ("tui.select.up", def!(&["up"], "Move selection up")),
     ("tui.select.down", def!(&["down"], "Move selection down")),
     ("tui.select.pageUp", def!(&["pageUp"], "Selection page up")),

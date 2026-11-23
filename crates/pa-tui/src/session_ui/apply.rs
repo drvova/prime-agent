@@ -162,6 +162,16 @@ impl SessionUi {
         }
     }
 
+    /// Report a transcript navigation action the first time it happens in the run (`tui
+    /// transcript navigation`), fire-and-forget so the keypress never waits on the delivery.
+    pub(super) fn track_navigation(&mut self, action: &'static str) {
+        if self.navigation_reported.contains(&action) {
+            return;
+        }
+        self.navigation_reported.push(action);
+        crate::view::navigation::report_used(self.telemetry.as_ref(), action);
+    }
+
     /// Report the run's first selection copy (`tui selection used`),
     /// fire-and-forget. `lines` is the copied text's line count.
     pub(super) fn track_selection(&mut self, lines: usize) {

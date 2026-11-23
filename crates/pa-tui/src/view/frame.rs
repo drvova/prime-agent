@@ -3,6 +3,7 @@
 //! cursor query, and the compose free helpers.
 
 use super::click::{self, PickerClickSurface, PickerKind, CHOICE_PICKER_CHROME_ROWS};
+use super::navigation;
 use super::AgentView;
 use super::FULLSCREEN_MIN_TRANSCRIPT_ROWS;
 use crate::chrome::{render_prompt_context, render_top_bar};
@@ -330,20 +331,54 @@ impl AgentView {
                 _ => self.hover_pos = None,
             }
         }
-        // A paused viewport carries the follow hint over the last window row — only when
-        // following would actually scroll (operator directive 2026-09-26).
-        if !self.following && !self.window_shows_tail {
-            if let Some(row) = frame.get_mut(window_height) {
-                let key = self
-                    .editor
-                    .keybindings()
+        // A paused viewport carries the follow pill over the last window row and the prompt it
+        // reads under over the first — only when following would actually scroll (operator
+        // directive 2026-09-26).
+        let paused = !self.following && !self.window_shows_tail;
+        let pill = paused
+            .then(|| {
+                let kb = self.editor.keybindings();
+                let key = kb
                     .first_key("tui.viewport.follow")
-                    .unwrap_or_else(|| "ctrl+shift+down".to_string());
-                let label = format!(" {key} to follow ");
-                *row = composite_follow_hint(row, &label, width);
-                // The hint's row never reads as the content beneath it.
-                self.click.mask_rows(window_height, window_height + 1);
-            }
+                    .map(|key| crate::keybindings::format_key_text(&key));
+                navigation::follow_pill_label(self.unseen_entries, key.as_deref(), width)
+            })
+            .flatten();
+        let hint_row = pill.as_ref().map(|_| window_height);
+        if let Some((label, row)) = pill.zip(frame.get_mut(window_height)) {
+            *row = composite_follow_hint(row, &label, width);
+            // The pill's row never reads as the content beneath it.
+            self.click.mask_rows(window_height, window_height + 1);
+        }
+        // The pinned prompt needs a row of its own between the top bar and the pill.
+        let pinned = (paused && window_height > 1)
+            .then(|| self.pinned_prompt())
+            .flatten()
+            .map(|prompt| {
+                let kb = self.editor.keybindings();
+                let jumps = crate::menu_chrome::Footer::new()
+                    .bound(
+                        kb,
+                        &["tui.viewport.previousPrompt"],
+                        "prev",
+                        crate::menu_chrome::HintRank::Extra,
+                    )
+                    .bound(
+                        kb,
+                        &["tui.viewport.nextPrompt"],
+                        "next",
+                        crate::menu_chrome::HintRank::Extra,
+                    );
+                navigation::pinned_prompt_row(prompt, &jumps, &self.theme, width)
+            });
+        let pinned_row = pinned.as_ref().map(|_| top_rows);
+        if let Some((pinned, row)) = pinned.zip(frame.get_mut(top_rows)) {
+            // Leading OSC-133 zone markers stay at the row head so the marker plan keeps
+            // flagging.
+            let (mut markers, _) = crate::osc133::split_leading_markers(row);
+            markers.extend(pinned);
+            *row = markers;
+            self.click.mask_rows(top_rows, top_rows + 1);
         }
         self.frame_rows = frame.len();
         self.apply_frame_selection(
@@ -361,7 +396,7 @@ impl AgentView {
             self.toasts.active(now)
         };
         // The transcript window may scroll as a terminal region only while it follows the tail
-        // with nothing composited over it (no selection, toast, or follow hint).
+        // with nothing composited over it (no selection, toast, follow pill, or pinned prompt).
         self.scroll_region =
             (self.following && !self.has_selection() && toasts.is_empty()).then(|| {
                 crate::scroll_region::ScrollRegion {
@@ -370,9 +405,9 @@ impl AgentView {
                 }
             });
         // The pixel overlay draws only what the frame shows unobstructed: no selection wash
-        // (the highlight must stay visible), no toast or follow hint over the image's rows.
+        // (the highlight must stay visible), no toast, follow pill, or pinned prompt over the
+        // image's rows.
         let toast_rows = top_rows..top_rows + toasts.len().min(window_height);
-        let hint_row = (!self.following && !self.window_shows_tail).then_some(window_height);
         self.image_placements = if self.has_selection() {
             Vec::new()
         } else {
@@ -382,7 +417,8 @@ impl AgentView {
                     let top = top_rows + image.top;
                     let rows = top..top + usize::from(image.key.geometry.rows);
                     let covered = rows.clone().any(|row| toast_rows.contains(&row))
-                        || hint_row.is_some_and(|hint| rows.contains(&hint));
+                        || hint_row.is_some_and(|hint| rows.contains(&hint))
+                        || pinned_row.is_some_and(|pinned| rows.contains(&pinned));
                     (!covered).then(|| crate::inline_image::overlay::Placement {
                         key: image.key,
                         row: u16::try_from(top).unwrap_or(u16::MAX),

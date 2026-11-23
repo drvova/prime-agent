@@ -11,7 +11,7 @@ use crate::{Line, Span};
 /// the title, the rows' labels, and the footer share one left edge.
 pub(crate) const CHROME_INDENT: &str = "  ";
 
-const SEPARATOR: &str = " \u{b7} ";
+pub(crate) const SEPARATOR: &str = " \u{b7} ";
 
 /// The mark a row that was cut to fit ends with: chrome text never stops mid-word unmarked.
 pub(crate) const ELLIPSIS: &str = "\u{2026}";

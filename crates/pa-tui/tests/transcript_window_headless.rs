@@ -210,11 +210,14 @@ fn key(code: crossterm::event::KeyCode) -> HeadlessStep {
     ))
 }
 
-/// `(row, message index)` for every marker line of a frame, top to bottom.
+/// `(row, message index)` for every marker line of a frame, top to bottom. The prompt row pinned
+/// over a scrolled-up window's first row repeats a prompt from above the window: it is not a
+/// transcript row.
 fn marker_rows(frame: &str) -> Vec<(usize, usize)> {
     frame
         .lines()
         .enumerate()
+        .filter(|(_, line)| !line.starts_with('\u{276f}'))
         .filter_map(|(row, line)| {
             let at = line.find("msg-")?;
             Some((row, line[at + 4..at + 9].parse().ok()?))

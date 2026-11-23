@@ -160,6 +160,14 @@ pub trait InteractionTelemetry: Send + Sync {
         action: &'static str,
         resumed_following: bool,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A transcript navigation action, the first of each kind in a run (event `tui transcript
+    /// navigation`): `action` is `previous_prompt` / `next_prompt` (a prompt jump key) or
+    /// `follow_new_output` (the follow key while the pill counted new entries). Never prompt
+    /// text. Implementations return at once: the key path spawns it and never waits.
+    fn transcript_navigated(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first selection copy (`tui selection used`): `lines` is the copy's line count.
     fn selection_used(&self, lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first click-driven interaction (`tui click used`): `surface` is `transcript` /

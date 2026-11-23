@@ -545,13 +545,20 @@ impl SessionUi {
         // Dispatch order: the transcript viewport keys, then the focused subagent summary line,
         // then the editor, then the app actions in registration order. Every match goes through the
         // effective bindings, so a `keybindings.json` override moves both handler and hint.
-        let (page_up, page_down, to_top, follow) = {
+        let (page_up, page_down, to_top, follow, prompt_jump) = {
             let kb = view.editor.keybindings();
             (
                 kb.matches(&id, "tui.viewport.pageUp"),
                 kb.matches(&id, "tui.viewport.pageDown"),
                 kb.matches(&id, "tui.viewport.top"),
                 kb.matches(&id, "tui.viewport.follow"),
+                if kb.matches(&id, "tui.viewport.previousPrompt") {
+                    Some(crate::view::navigation::PromptJump::Previous)
+                } else if kb.matches(&id, "tui.viewport.nextPrompt") {
+                    Some(crate::view::navigation::PromptJump::Next)
+                } else {
+                    None
+                },
             )
         };
         if page_up {
@@ -578,9 +585,27 @@ impl SessionUi {
             return Ok(());
         }
         if follow {
+            if !view.is_following() && view.unseen_entries() > 0 {
+                self.track_navigation("follow_new_output");
+            }
             self.collapse_transcript_window(view);
             view.scroll_to_bottom();
             self.track_scroll("follow", view.is_following());
+            self.dirty = true;
+            return Ok(());
+        }
+        if let Some(jump) = prompt_jump {
+            // The viewport consumes the key before the editor, like the page keys.
+            view.editor.clear_selection();
+            // Scroll-up rows still owed to an older page are dropped: the jump chose the row.
+            self.window.scroll(0, view);
+            if view.jump_to_prompt(jump) && view.is_following() {
+                self.collapse_transcript_window(view);
+            }
+            self.track_navigation(match jump {
+                crate::view::navigation::PromptJump::Previous => "previous_prompt",
+                crate::view::navigation::PromptJump::Next => "next_prompt",
+            });
             self.dirty = true;
             return Ok(());
         }

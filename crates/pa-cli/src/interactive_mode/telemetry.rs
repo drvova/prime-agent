@@ -217,6 +217,23 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn transcript_navigated(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui crash notice`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            client.track("tui transcript navigation", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.count("tui_selection_count");
         Box::pin(std::future::ready(()))
@@ -678,6 +695,48 @@ mod tests {
 
     /// The agents view shares one telemetry handle across the sessions it
     /// opens: each `tui exit` reports only its own run's interactions.
+    /// The mirrored events as `[name, action, reason, mode]` rows.
+    fn mirrored(agent_dir: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .map(|event| {
+                let properties = &event["properties"];
+                serde_json::json!([
+                    event["name"],
+                    properties["action"],
+                    properties["reason"],
+                    properties["mode"],
+                ])
+            })
+            .collect()
+    }
+
+    /// A transcript navigation report is a standalone event that keeps its catalogued enum.
+    #[test]
+    fn a_navigation_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.transcript_navigated("next_prompt"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![serde_json::json!([
+                    "tui transcript navigation",
+                    "next_prompt",
+                    null,
+                    null
+                ])]
+            );
+        });
+    }
+
     #[test]
     fn each_tui_exit_reports_only_its_own_run() {
         crate::mode::tests::with_clean_telemetry_env(|| {

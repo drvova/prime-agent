@@ -75,6 +75,8 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let viewport_page_down = key_display(kb, "tui.viewport.pageDown");
     let viewport_top = key_display(kb, "tui.viewport.top");
     let viewport_follow = key_display(kb, "tui.viewport.follow");
+    let viewport_previous_prompt = key_display(kb, "tui.viewport.previousPrompt");
+    let viewport_next_prompt = key_display(kb, "tui.viewport.nextPrompt");
     let suspend = key_display(kb, "app.suspend");
     let select_paragraph_up = key_display(kb, "tui.editor.selectParagraphUp");
     let select_paragraph_down = key_display(kb, "tui.editor.selectParagraphDown");
@@ -165,6 +167,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{viewport_page_up}` / `{viewport_page_down}` | Scroll transcript by page |
 | `{viewport_top}` | Scroll to top |
 | `{viewport_follow}` | Scroll to bottom and follow output |
+| `{viewport_previous_prompt}` / `{viewport_next_prompt}` | Jump to the previous / next prompt |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
 | mouse click on link | Open link in browser |

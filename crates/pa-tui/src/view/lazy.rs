@@ -243,6 +243,9 @@ impl AgentView {
         let sparse = self.sparse_enabled;
         let offset = self.layout_pass(self.layout_width).entry_start(index) + row;
         self.sparse_enabled = sparse;
+        if self.following {
+            self.unseen_entries = 0;
+        }
         self.sparse_window = None;
         self.scroll_top = offset;
         self.following = false;
