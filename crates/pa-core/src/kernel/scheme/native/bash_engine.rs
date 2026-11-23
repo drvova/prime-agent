@@ -9,7 +9,10 @@
 //! - Each program the script starts is its own session and process group
 //!   (on Windows all of them share one kill-on-close job object).
 //!   [`Programs`] holds them: stopping the job signals every group, and so
-//!   does the job's end, whatever ended it.
+//!   does the job's end, whatever ended it. On Windows an elevated program
+//!   the user consented to through UAC is the exception: it lands in the
+//!   job but is beyond this process's reach, so the job spares it
+//!   (`bash_winjob.rs`).
 //! - A program is listed in the orphan journal as it starts, so the next
 //!   host reaps one that a dying process leaves behind, and taken out within
 //!   [`JOURNAL_SWEEP`] of its end. Its records are not synced to disk, as a

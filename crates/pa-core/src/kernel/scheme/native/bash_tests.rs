@@ -375,6 +375,23 @@ async fn a_command_returns_at_its_own_end_while_what_it_started_runs_on(shell) {
 }
 
 on_each_shell! {
+/// A program's standard error and exit code are in the result, in order
+/// with its output: how a failed program says why (a refused elevation's
+/// `Start-Process` error is one).
+async fn a_programs_standard_error_and_exit_code_are_in_its_result(shell) {
+    let dir = tempfile::tempdir().unwrap();
+    let (_provisioner, kernel) = kernel_in(shell, HostRequestHandlers::new(), dir.path()).await;
+    let returned = value(
+        kernel.as_ref(),
+        "(define result (bash \"/bin/sh -c 'echo out; echo refused >&2; exit 7'\"))
+         (list (hash-ref result 'output) (hash-ref result 'exit-code))",
+    )
+    .await;
+    assert_eq!(returned, "(\"out\\nrefused\\n\" 7)");
+}
+}
+
+on_each_shell! {
 /// Killing a kernel, and dropping one, each end every job it has: a
 /// background job with its children and a command that yielded.
 async fn a_killed_or_dropped_kernel_leaves_no_job_running(shell) {
