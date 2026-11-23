@@ -498,6 +498,8 @@ fn no_kernel_function_replaces_a_steel_builtin() {
 }
 
 /// The session's shell, command prefix and environment reach every command.
+/// A shell process is asked for, as a `shellPath` setting asks for one: the
+/// program a command runs under (`$0`) is what the setting is for.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn commands_run_under_the_sessions_shell_prefix_and_environment() {
@@ -505,6 +507,7 @@ async fn commands_run_under_the_sessions_shell_prefix_and_environment() {
     let artifacts = dir.path().join("session-7");
     let kernel = SchemeKernelProvisioner::with_options(SchemeKernelOptions {
         cwd: dir.path().to_path_buf(),
+        shell: crate::platform::KernelShell::System,
         shell_path: Some("/bin/sh".into()),
         command_prefix: Some("greeting=hello".to_string()),
         agent_dir: Some(dir.path().join("agent")),

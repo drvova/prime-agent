@@ -10,10 +10,11 @@
 //!   (on Windows all of them share one kill-on-close job object).
 //!   [`Programs`] holds them: stopping the job signals every group, and so
 //!   does the job's end, whatever ended it.
-//! - A program is listed in the orphan journal once it has run for
-//!   [`JOURNAL_AFTER`], not when it starts: a script may start thousands,
-//!   and the journal is synced with every line. One that a dying process
-//!   leaves behind inside that window is not reaped by the next host.
+//! - A program is listed in the orphan journal as it starts, so the next
+//!   host reaps one that a dying process leaves behind, and taken out within
+//!   [`JOURNAL_SWEEP`] of its end. Its records are not synced to disk, as a
+//!   shell process's are: a script may start thousands, and a record only
+//!   has to outlive this process, not the machine.
 //! - The script's result is its shell's exit code, reported when the script
 //!   ends; this side then writes the fence into the output itself, so the
 //!   result is the output up to there, as for a shell process. The job stays
@@ -27,38 +28,30 @@
 use std::io::Write;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use serde_json::json;
 
 use super::job::{self, lock, FinishHook, GroupHold, Job, CHILD_ENV};
 use super::Session;
-use crate::kernel::orphan_journal::record_orphan_process_state;
+use crate::kernel::orphan_journal::{note_orphan_process_state, OrphanState};
 use crate::kernel::shared::HostRequestPayload;
 use crate::platform::{self, Signal};
 
 /// Where the job numbers of the built-in shell's commands start: above
 /// every process id, below the ids of hosted sessions.
 const NUMBER_BASE: u32 = 0x2000_0000;
-/// How long a program runs before it is listed in the orphan journal, and
-/// how often the list is brought up to date.
-const JOURNAL_AFTER: Duration = Duration::from_millis(250);
+/// How often the orphan journal is told which programs have ended.
+const JOURNAL_SWEEP: Duration = Duration::from_millis(250);
 /// How long a stopped script has to end before its thread is abandoned.
 const ABANDON_AFTER: Duration = Duration::from_secs(1);
 
-/// One program a script started.
-struct Program {
-    /// Its pid, which is also its process group.
-    pid: u32,
-    started: Instant,
-    /// It is in the orphan journal.
-    journaled: bool,
-}
-
 #[derive(Default)]
 struct Running {
-    programs: Vec<Program>,
+    /// The pid of each program the script has running, which is also its
+    /// process group. Each is in the orphan journal.
+    programs: Vec<u32>,
     /// The job has ended: nothing more may start.
     ended: bool,
 }
@@ -110,11 +103,10 @@ impl pa_shell::Children for Programs {
                 "the command was stopped",
             ));
         }
-        running.programs.push(Program {
-            pid,
-            started: Instant::now(),
-            journaled: false,
-        });
+        running.programs.push(pid);
+        drop(running);
+        let _scope = pa_types::session_scope::enter(self.scope.clone());
+        note_orphan_process_state(pid as i32, OrphanState::Active);
         Ok(child)
     }
 }
@@ -131,23 +123,17 @@ impl Programs {
         return pa_types::platform::process::is_process_alive(pid).unwrap_or(true);
     }
 
-    /// Bring the orphan journal up to date: list what has run long enough,
-    /// and take out (and forget) what has ended.
+    /// Bring the orphan journal up to date: take out (and forget) the
+    /// programs that have ended.
     fn journal(&self) {
         let _scope = pa_types::session_scope::enter(self.scope.clone());
         let mut running = lock(&self.running);
-        running.programs.retain_mut(|program| {
-            if !Self::alive(program.pid) {
-                if program.journaled {
-                    record_orphan_process_state(program.pid as i32, false);
-                }
-                return false;
+        running.programs.retain(|pid| {
+            let alive = Self::alive(*pid);
+            if !alive {
+                note_orphan_process_state(*pid as i32, OrphanState::Ended);
             }
-            if !program.journaled && program.started.elapsed() >= JOURNAL_AFTER {
-                record_orphan_process_state(program.pid as i32, true);
-                program.journaled = true;
-            }
-            true
+            alive
         });
     }
 
@@ -159,9 +145,9 @@ impl Programs {
         });
         self.stop.request();
         #[cfg(unix)]
-        for program in &lock(&self.running).programs {
+        for pid in &lock(&self.running).programs {
             // Undelivered means the group is already gone.
-            let _ = platform::process::signal_process_group(program.pid as i32, signal);
+            let _ = platform::process::signal_process_group(*pid as i32, signal);
         }
         #[cfg(windows)]
         {
@@ -180,12 +166,12 @@ impl Programs {
         running.ended = true;
         // What could not be confirmed gone stays in the journal for the
         // host to reap.
-        running.programs.retain(|program| {
-            let gone = !Self::alive(program.pid)
+        running.programs.retain(|pid| {
+            let gone = !Self::alive(*pid)
                 || cfg!(windows)
-                || platform::process::signal_process_group(program.pid as i32, Signal::Kill);
-            if gone && program.journaled {
-                record_orphan_process_state(program.pid as i32, false);
+                || platform::process::signal_process_group(*pid as i32, Signal::Kill);
+            if gone {
+                note_orphan_process_state(*pid as i32, OrphanState::Ended);
             }
             !gone
         });
@@ -335,7 +321,7 @@ async fn supervise(
         }
         None => None,
     };
-    let mut journal = tokio::time::interval(JOURNAL_AFTER);
+    let mut journal = tokio::time::interval(JOURNAL_SWEEP);
     let ended = match &mut running {
         Some(running) => loop {
             tokio::select! {

@@ -244,7 +244,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     )?;
     let kernel_shell = crate::platform::shell::resolve_kernel_shell(
         settings.settings().shell.as_deref(),
-        kernel_shell_path.as_deref(),
+        settings.settings().shell_path.as_deref(),
     )?;
     let kernel_shell_path = kernel_shell_path.map(std::path::PathBuf::from);
     // TS injects the prefix only when truthy (an empty string stays unset).

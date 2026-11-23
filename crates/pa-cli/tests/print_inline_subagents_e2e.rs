@@ -992,7 +992,7 @@ fn print_inline_delete_cancels_an_executing_child_and_removes_it() {
 (bash "touch cancel-verified")
 "#;
     let child_cell = r#"
-(bash "printf %s $$ > cancel-child-pid; touch cancel-child-ready; sleep 600" (hash 'wait-ms #f))
+(bash "/bin/sleep 600 & printf %s $! > cancel-child-pid; touch cancel-child-ready; wait" (hash 'wait-ms #f))
 (bash "touch cancel-child-finished")
 "#;
     let script = serde_json::json!({

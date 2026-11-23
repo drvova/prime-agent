@@ -445,7 +445,7 @@ async fn the_built_in_shell_runs_utilities_itself_and_counts_them() {
 }
 
 /// A program that a command on the built-in shell leaves running is listed
-/// in the orphan journal once it has run a moment, so the next host reaps it
+/// in the orphan journal as it starts, so the next host reaps it
 /// if this process dies, and is taken out again when its job ends.
 #[test]
 fn a_program_of_the_built_in_shell_is_journaled_while_it_runs() {
@@ -490,17 +490,8 @@ fn a_program_of_the_built_in_shell_is_journaled_while_it_runs() {
             .trim()
             .parse()
             .unwrap();
-        let listed = tokio::time::timeout(STEP, async {
-            loop {
-                let listed = journaled(&journal);
-                if !listed.is_empty() {
-                    break listed;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        // No wait: the program was listed before the script went on.
+        let listed = journaled(&journal);
         value(
             kernel.as_ref(),
             "(bash-kill job (hash 'signal 'kill))

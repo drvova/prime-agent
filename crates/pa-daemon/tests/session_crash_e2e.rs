@@ -624,8 +624,10 @@ fn a_command_a_cell_started_does_not_survive_the_daemons_shutdown() {
     let agent_dir = dir.path().join("agent");
     let mut daemon = spawn_supervisor(&socket, &agent_dir);
     let mut client = Client::connect(&socket);
-    // The command replaces its shell with a long sleep under a name only
-    // this test uses.
+    // The command is a long sleep under a name only this test uses. Naming a
+    // process is `exec -a`, an option of the program `bash`: the built-in
+    // shell has no process of its own to rename, so the command starts that
+    // program.
     let marker = format!("pa-shutdown-{}", uuid::Uuid::new_v4().simple());
     let session = client.create_attached(
         dir.path(),
@@ -635,7 +637,7 @@ fn a_command_a_cell_started_does_not_survive_the_daemons_shutdown() {
             "responses": [
                 { "content": [
                     { "type": "toolCall", "name": "eval", "arguments": {
-                        "code": format!("(bash \"exec -a {marker} sleep 600\")"),
+                        "code": format!("(bash \"bash -c 'exec -a {marker} sleep 600'\")"),
                     } },
                 ] },
                 { "text": "done" },

@@ -158,13 +158,18 @@ impl Client {
 }
 
 /// A faux script whose single turn runs one cell that starts a long command in the
-/// background. The command writes its own pid as a receipt first: proof that the session
-/// built, its kernel ran the cell, and the process to watch.
+/// background. The command starts the program `/bin/sleep` and writes its pid as a receipt:
+/// proof that the session built, its kernel ran the cell, and the process to watch. A
+/// program, by its path: under the built-in shell `$$` is a job number and a bare `sleep`
+/// the shell's own, so neither names a process.
 fn write_faux_script(dir: &Path) -> PathBuf {
     let receipts_dir = dir.join("receipts");
     std::fs::create_dir_all(&receipts_dir).expect("receipts dir");
     let receipt = receipts_dir.join("command.pid");
-    let command = format!("echo $$ > '{}'; exec sleep 3600", receipt.to_string_lossy());
+    let command = format!(
+        "/bin/sleep 3600 & echo $! > '{}'; wait",
+        receipt.to_string_lossy()
+    );
     let cell = format!(
         "(bash {} (hash 'background #t))",
         serde_json::to_string(&command).expect("a Scheme string literal")

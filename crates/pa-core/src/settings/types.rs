@@ -378,13 +378,15 @@ pub struct Settings {
     /// Custom shell that runs every kernel `bash()` and user-bash command as
     /// `<shell> -c <command>`: an absolute path to an existing executable,
     /// validated once at session start (a bad value fails session creation
-    /// naming this setting). Only global settings can select this executable.
+    /// naming this setting). Setting it selects a shell process for the
+    /// kernel's `bash` unless `shell` says `"builtin"`. Only global settings
+    /// can select this executable.
     pub shell_path: Option<String>,
     /// What runs the kernel's `bash` commands: `"builtin"` (Prime Agent's
     /// own shell and utilities, inside the process) or `"system"` (a shell
     /// process per command: `shellPath`, or the platform's default shell).
-    /// Unset, a shell process is used where the machine has one and the
-    /// built-in shell where it has none. Only global settings select it.
+    /// Unset, the built-in shell is used on every platform, unless
+    /// `shellPath` is set. Only global settings select it.
     pub shell: Option<String>,
     pub quiet_startup: Option<bool>,
     pub shell_command_prefix: Option<String>,

@@ -248,19 +248,21 @@ queues the write, so the reply never waits on disk. Adoption counts ride the `ag
 event. Non-goals: running tests, and parsing in the host.
 
 The shell behind `bash()` (`platform::shell`, `kernel::scheme::native::bash_engine`): a session's
-commands run on a shell process (`shellPath`, else the platform's default shell) or on the built-in
-shell (`pa-shell`), which runs the script and its utilities inside this process and starts only the
-programs the script names. The `shell` setting (`builtin` or `system`, global settings only)
-chooses; without it a shell process is used where the machine has one and the built-in shell where
-it has none (`resolve_kernel_shell`); `PRIME_AGENT_BASH_SHELL` overrides it for one session. A
-built-in command's programs are each their own process group (one Windows job object for all of
-them), killed with their job; its `pid` is a job number; and it is listed in the orphan journal
-only once a program has run for 250 ms. Each command's counts (utilities run in the process,
-programs started, utilities handed to their program, utilities with no program to hand to) are
-reported through the fire-and-forget `shell.fact` host request (`kernel::shell_runs`) and ride the
-`agent builtin shell` event. Persistent shells are always shell processes: they outlive the
-daemon. Non-goals: the interpreter and the utilities themselves (`pa-shell`), and the user's `!`
-commands, which run on a shell process.
+commands run on the built-in shell (`pa-shell`), which runs the script and its utilities inside this
+process and starts only the programs the script names, on every platform. A shell process per
+command (`shellPath`, else the platform's default shell) is used instead when the `shell` setting
+says `system`, or when `shellPath` is set and `shell` does not say `builtin`: a named program is a
+request for that program (`resolve_kernel_shell`; global settings only). `PRIME_AGENT_BASH_SHELL`
+(`builtin` or `system`) overrides both for one session. A built-in command's programs are each their
+own process group (one Windows job object for all of them), killed with their job; its `pid` is a
+job number; and each program is listed in the orphan journal as it starts, without the sync to disk
+a shell process's record gets (`orphan_journal::note_orphan_process_state`), and taken out within
+250 ms of its end. Each command's counts (utilities run in the process, programs started, utilities
+handed to their program, utilities with no program to hand to) are reported through the
+fire-and-forget `shell.fact` host request (`kernel::shell_runs`) and ride the `agent builtin shell`
+event. Always on a shell process: persistent shells (they outlive the daemon), the user's `!`
+commands, and a hypothesis's check command. Non-goals: the interpreter and the utilities
+themselves (`pa-shell`).
 
 Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
 session boot (a kernel's interpreter start here; the daemon's child worker spawns and
