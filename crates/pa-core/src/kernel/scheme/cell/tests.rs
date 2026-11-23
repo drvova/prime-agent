@@ -1062,3 +1062,56 @@ async fn a_kept_closure_keeps_calling_what_it_was_compiled_against() {
     }
     assert_eq!(wrong, Vec::new());
 }
+
+/// What the reference tells the model about redefinition (`scheme.md`),
+/// cell by cell: a later `define` is a new binding that functions compiled
+/// earlier do not see, until they are defined again; `set!` reaches them
+/// only where the compiler had not inlined the old value into its caller;
+/// what sits in a box changes for every reader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_definition_does_not_change_what_earlier_functions_call() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let mut answers = Vec::new();
+    for code in [
+        "(define (helper x) (list 'old x))
+         (define (caller x) (helper x))
+         (define settings (hash 'mode 'old))
+         (define (mode) (hash-ref settings 'mode))
+         (define handler (box helper))
+         (define (handle x) ((unbox handler) x))
+         (define (small x) (list 'old x))
+         (define (uses-small x) (small x))
+         (list (caller 1) (mode) (handle 1))",
+        "(define (helper x) (list 'new x))
+         (define settings (hash 'mode 'new))
+         (list (helper 1) (caller 1) (mode))",
+        "(define (caller x) (helper x))
+         (define (mode) (hash-ref settings 'mode))
+         (list (caller 1) (mode))",
+        // A small function is inlined into a caller of its own cell. The
+        // caller defined in a later cell, and the reader of a hash built at
+        // run time, read the global.
+        "(set! helper (lambda (x) (list 'set x)))
+         (set! small (lambda (x) (list 'set x)))
+         (set! settings (hash 'mode 'set))
+         (list (caller 1) (uses-small 1) (mode))",
+        "(set-box! handler (lambda (x) (list 'boxed x)))
+         (handle 1)",
+    ] {
+        answers.push(run_to_its_end(kernel.as_ref(), code).await.result);
+    }
+    assert_eq!(
+        answers,
+        [
+            "((old 1) old (old 1))",
+            "((new 1) (old 1) old)",
+            "((new 1) new)",
+            "((set 1) (old 1) set)",
+            "(boxed 1)",
+        ]
+        .map(|answer| Some(answer.to_string()))
+    );
+}
