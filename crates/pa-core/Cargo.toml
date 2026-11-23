@@ -58,6 +58,10 @@ proptest = { workspace = true }
 # The traces rate-gate test runs on paused tokio time (the 12s platform
 # interval auto-advances).
 tokio = { workspace = true, features = ["test-util"] }
+# Model-checks the kernel's thread hand-offs over the interleavings of
+# their threads (`src/kernel/scheme/interleavings.rs`). Tests only: it never
+# ships.
+loom = "0.7"
 
 [lints.clippy]
 # pa-core keeps its OWN lints table (not `workspace = true`): the

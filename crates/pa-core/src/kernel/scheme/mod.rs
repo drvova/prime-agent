@@ -28,6 +28,8 @@ mod confinement;
 mod contracts;
 mod factory;
 mod host_api;
+#[cfg(test)]
+mod interleavings;
 mod limits;
 
 use std::future::Future;
