@@ -14,14 +14,24 @@ whole process.
   environment or standard streams; the shell's environment is the list the embedder passes, and
   its output goes to the pipe the embedder passes. `$$` is a number the embedder gives, never
   the process's id.
-- **Utilities** (`UTILITIES`): `basename cat chmod cp cut date dirname env find grep head ls
-  mkdir mv printenv realpath rm rmdir sed seq sleep sort tac tail tee touch tr uname uniq wc
-  which whoami yes xargs`. Each is a function of its arguments, the command's streams and a
+- **Utilities** (`UTILITIES`): `basename cat chmod cp cut date dirname env find grep head jq
+  ls mkdir mv printenv realpath rm rmdir sed seq sleep sort tac tail tee touch tr uname uniq
+  wc which whoami yes xargs`. Each is a function of its arguments, the command's streams and a
   view of the shell (`util::Invocation`), words its output as the GNU tool does, and implements
   a stated subset of that tool's options. Asked for anything else, before it has written
   anything, it hands the command to the program of the same name; on a machine without that
   program the command fails and says so. A device or `/proc` path as an argument always goes to
   the program, since in this process the path would mean the embedder.
+- **`jq`** runs filters on the `jaq` interpreter (`jaq-core`, `jaq-std`, `jaq-json`), with the
+  command line, the printed form of values and the exit codes of jq 1.7 (`util/jq.rs`). The
+  interpreter bounds nothing itself and recurses on the stack with the nesting of its data and
+  of a filter's own recursion, so: JSON nested deeper than 10,000 levels is refused wherever it
+  is parsed (jq's own limit); a filter longer than 16 KiB, nested deeper than 256 brackets, or
+  defining a function that calls itself goes to the `jq` program, as does one that does not
+  compile here; and a filter runs on a thread of its own with a 1 GiB stack, which holds a
+  value a filter has built two million levels deep. A stopped command ends within 50 ms;
+  a filter that computes without reading or printing then runs on, on its thread, to its own
+  end. Nothing bounds the memory a filter takes.
 - **Programs** are started by the embedder (`Children::spawn`), never by the shell.
 - **Stopping** (`Stop`): the interpreter starts no further command, a utility ends at its next
   line or file, and the run reports exit code 130.
@@ -42,7 +52,7 @@ No session state, settings, or telemetry (pa-core). No process containment: proc
 Windows job objects, the orphan journal and killing are the embedder's, behind `Children`. No
 interactive shell: no prompt, history, line editing, completion, or job control through a
 terminal. Not every coreutils option: the subset each utility's doc comment names. No `awk`,
-`jq`, `diff`, `tar`, `curl`: those are programs. Beyond the bounds under Memory, a script's
+`diff`, `tar`, `curl`: those are programs. Beyond the bounds under Memory, a script's
 memory is the process's: nothing bounds how many variables and array elements a script keeps,
 what `read`, `mapfile` and `printf` build, or what a utility that holds its whole input
 (`sort`, `tac`, `sed` with `-z` or `N`, `xargs`) is given.
@@ -62,6 +72,31 @@ Known differences from bash 5.2, beside the shell being one of many in its proce
 - `grep` and `sed` match with the `regex` crate: no back-references (such a pattern goes to the
   program), and alternation is leftmost-first, not leftmost-longest.
 - `find` and `grep -r` visit a directory's entries in name order.
+
+Known differences of the built-in `jq` from jq 1.7 (the interpreter's own, where this crate
+does not cover them):
+
+- Assigning through a missing parent fails instead of creating it (`{} | .a.b = 1`,
+  `null | .[1] = 1`); the message says to set the parent first. Deleting a key moves the
+  object's last key into its place (`del(.a)` of `{a,b,c}` prints `c` before `b`).
+- Integers are exact beyond 2^53 where jq rounds to a double. A division always gives a
+  float: printed as a value it is jq's (`4/2` is `2`), but `tostring` and `"\(4/2)"` give
+  `2.0`, and `nan | tostring` is `NaN`. A number in the input keeps its spelling (`1e2`
+  stays `1e2`; jq prints `1E+2`).
+- Regular expressions are the `regex-bites` crate's: no look-around and no back-references;
+  an optional group that did not match is left out of `match`'s captures.
+- `(1,2) * (3,4)` and `{a: (1,2), b: (3,4)}` vary their left side first; `.[] |= (1,2)`
+  takes both values where jq takes the first; `limit(-1; f)` is empty; `ltrimstr`/`rtrimstr`
+  with a non-string fail; `from_entries` reads `key` and `value` only; `todate` keeps
+  fractions of a second; `pick` with an array index makes an object.
+- Not there: `input_line_number`, `$__loc__`, `$__prog_args`, `builtins`, `fromstream`,
+  `truncate_stream`, `JOIN`, `format`, `get_search_list`, `modulemeta`, `localtime` and
+  `strflocaltime` (they would read the process's time zone), modules (`import`, `include`,
+  `-L`), and the options `--stream`, `--seq`, `-a`, `-C`. On a machine with a `jq` program
+  each of these runs there.
+- The reader takes `#` comments, `NaN`, `Infinity` and non-string keys that jq rejects.
+- Errors are worded by the interpreter (`jq: error: cannot index 1 with "a"`), without a
+  line number.
 
 ## Public API
 `start(Script, Stop, Arc<dyn Children>) -> Running`, with `Running::ended()` (the script's

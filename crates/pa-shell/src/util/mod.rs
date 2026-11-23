@@ -14,6 +14,7 @@
 mod files;
 mod find;
 mod grep;
+mod jq;
 mod ls;
 mod pattern;
 mod sed;
@@ -78,8 +79,11 @@ pub(crate) struct View<'a> {
     pub(crate) environment: &'a dyn Fn() -> Vec<(String, String)>,
     /// A program of this name on the shell's `PATH`.
     pub(crate) program: &'a dyn Fn(&str) -> Option<PathBuf>,
-    /// One of the command's open descriptors, for reading.
-    descriptor: &'a dyn Fn(i32) -> Option<Box<dyn std::io::Read>>,
+    /// One of the command's open descriptors, for reading. Its own handle:
+    /// it may be read on another thread.
+    descriptor: &'a dyn Fn(i32) -> Option<Box<dyn std::io::Read + Send>>,
+    /// One of the command's open descriptors, for writing, likewise.
+    output: &'a dyn Fn(i32) -> Option<Box<dyn Write + Send>>,
 }
 
 /// The descriptor of the command that `path` names: `/dev/stdin` and
@@ -152,14 +156,14 @@ impl View<'_> {
         if path == "-" {
             Ok(Box::new(stdin))
         } else {
-            self.file(path)
+            self.file(path).map(|file| file as Box<dyn BufRead + 'r>)
         }
     }
 
     /// Open the file at `path` for reading. Only regular files are opened
     /// here: a read of a FIFO or a device cannot be stopped, so those go to
     /// the program instead.
-    pub(crate) fn file<'r>(&self, path: &str) -> Result<Box<dyn BufRead + 'r>, Failure> {
+    pub(crate) fn file<'r>(&self, path: &str) -> Result<Box<dyn BufRead + Send + 'r>, Failure> {
         if path == "/dev/null" {
             return Ok(Box::new(std::io::empty()));
         }
@@ -432,7 +436,12 @@ async fn dispatch(
                 descriptor: &|descriptor| {
                     context
                         .try_fd(descriptor)
-                        .map(|file| Box::new(file) as Box<dyn std::io::Read>)
+                        .map(|file| Box::new(file) as Box<dyn std::io::Read + Send>)
+                },
+                output: &|descriptor| {
+                    context
+                        .try_fd(descriptor)
+                        .map(|file| Box::new(file) as Box<dyn Write + Send>)
                 },
             },
         };
@@ -549,6 +558,7 @@ utilities! {
     "find" => find::find,
     "grep" => grep::grep,
     "head" => files::head,
+    "jq" => jq::jq,
     "ls" => ls::ls,
     "mkdir" => files::mkdir,
     "mv" => files::mv,

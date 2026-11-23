@@ -1119,3 +1119,438 @@ a
 b
 to-err
 to-out
+### jq prints a value pretty, compact, raw and joined
+echo '{"name":"a b","tags":["x","y"],"n":{"deep":[1,{"k":null}],"empty":[],"none":{}},"ok":true}' > f.json
+jq . f.json; jq -c . f.json; jq .name f.json; jq -r .name f.json; jq -j '.tags[]' f.json; echo; jq -r '.tags[], .n.deep[0], .ok' f.json; jq '.tags | length' < f.json; cat f.json | jq -c '{name, first: .tags[0], count: (.tags | length)}'; jq --compact-output --raw-output '.tags' f.json
+--- 0
+{
+  "name": "a b",
+  "tags": [
+    "x",
+    "y"
+  ],
+  "n": {
+    "deep": [
+      1,
+      {
+        "k": null
+      }
+    ],
+    "empty": [],
+    "none": {}
+  },
+  "ok": true
+}
+{"name":"a b","tags":["x","y"],"n":{"deep":[1,{"k":null}],"empty":[],"none":{}},"ok":true}
+"a b"
+a b
+xy
+x
+y
+1
+true
+2
+{"name":"a b","first":"x","count":2}
+["x","y"]
+### jq -n, -s, -e, -S, --tab and --indent
+echo '{"b":1,"a":{"d":[3,{"z":1,"y":2}],"c":2}}' > f.json; printf '1 2\n3\n' > nums
+jq -n '1 + 2'; jq -n '[1,2,3] | map(. * 2)'; jq -s . nums; jq -sc 'add' nums; jq -S . f.json; jq -S -c . f.json; jq --tab .a f.json; jq --indent 1 .a f.json; jq --indent 0 .a f.json; jq --indent 7 '.a.d[1]' f.json
+jq -e .b f.json; echo "rc=$?"; jq -e '.missing' f.json; echo "rc=$?"; jq -e '.b == 2' f.json; echo "rc=$?"; jq -e 'empty' f.json; echo "rc=$?"; jq -e '1, null' f.json; echo "rc=$?"; jq -n -e 'false, 1'; echo "rc=$?"
+--- 0
+3
+[
+  2,
+  4,
+  6
+]
+[
+  1,
+  2,
+  3
+]
+6
+{
+  "a": {
+    "c": 2,
+    "d": [
+      3,
+      {
+        "y": 2,
+        "z": 1
+      }
+    ]
+  },
+  "b": 1
+}
+{"a":{"c":2,"d":[3,{"y":2,"z":1}]},"b":1}
+{
+	"d": [
+		3,
+		{
+			"z": 1,
+			"y": 2
+		}
+	],
+	"c": 2
+}
+{
+ "d": [
+  3,
+  {
+   "z": 1,
+   "y": 2
+  }
+ ],
+ "c": 2
+}
+{"d":[3,{"z":1,"y":2}],"c":2}
+{
+       "z": 1,
+       "y": 2
+}
+1
+rc=0
+null
+rc=1
+false
+rc=1
+rc=4
+1
+null
+rc=1
+false
+1
+rc=0
+### jq binds --arg, --argjson, --slurpfile, --rawfile, --args and --jsonargs
+printf '{"a":1}\n[2]\n' > values.json; printf 'two\nlines\n' > text; echo '.x | . + $n' > prog.jq
+jq -n --arg who 'a "quoted" b' '"hello \($who)"'; jq -nc --arg a 1 --argjson b '{"k":[1,2]}' '[$a, $b, ($a | type), ($b.k | add)]'; jq -nc --slurpfile v values.json --rawfile t text '[$v, $t]'; jq -nc --arg a 1 --argjson b 2 '$ARGS'; jq -nc '$ARGS.positional' --args one 'two words' 3; jq -nc '$ARGS.positional' --jsonargs 1 '"s"' '{"a":null}' '[true]'; jq -nc --arg x y '$ARGS' --args p q
+echo '{"x":40}' | jq --argjson n 2 -f prog.jq; echo '{"x":40}' | jq --from-file prog.jq --argjson n 0.5; jq -n --arg v "$HOME" '$v == env.HOME, ($ENV.HOME == $v), ($ENV | has("PATH")), (env | type)'
+--- 0
+"hello a \"quoted\" b"
+["1",{"k":[1,2]},"string",3]
+[[{"a":1},[2]],"two\nlines\n"]
+{"positional":[],"named":{"a":"1","b":2}}
+["one","two words","3"]
+[1,"s",{"a":null},[true]]
+{"positional":["p","q"],"named":{"x":"y"}}
+42
+40.5
+true
+true
+true
+"object"
+### jq reads standard input, files in turn, and raw lines
+printf '{"id":1}\n{"id":2}\n' > a.jsonl; printf '{"id":3}' > b.json; printf 'first line\nsecond "line"\n\nlast' > lines.txt
+jq -c . a.jsonl b.json; jq .id a.jsonl b.json; cat a.jsonl | jq -c '.id * 10'; jq -c -s 'map(.id)' a.jsonl b.json; jq -n '[inputs.id]' -c a.jsonl b.json; jq -n 'input.id, input.id' a.jsonl; jq -c '[., input]' a.jsonl; jq -r 'input_filename' a.jsonl b.json; jq -n 'input_filename'
+jq -R . lines.txt; jq -R 'length' lines.txt; jq -Rs . lines.txt; jq -Rn '[inputs] | length' lines.txt; jq -rR 'ascii_upcase' < lines.txt; jq -R 'split(" ")' -c lines.txt; printf '' | jq .; printf '' | jq -s -c .; printf '\n\n' | jq -R .; printf '1' | jq -c '[.]'; jq -c . - < b.json
+--- 0
+{"id":1}
+{"id":2}
+{"id":3}
+1
+2
+3
+10
+20
+[1,2,3]
+[1,2,3]
+1
+2
+[{"id":1},{"id":2}]
+a.jsonl
+a.jsonl
+b.json
+null
+"first line"
+"second \"line\""
+""
+"last"
+10
+13
+0
+4
+"first line\nsecond \"line\"\n\nlast"
+4
+FIRST LINE
+SECOND "LINE"
+
+LAST
+["first","line"]
+["second","\"line\""]
+[]
+["last"]
+[]
+""
+""
+[1]
+{"id":3}
+### jq selects, maps and reshapes
+echo '[{"name":"api","port":8080,"tags":["web","prod"],"up":true},{"name":"db","port":5432,"tags":["prod"],"up":false},{"name":"cache","port":6379,"tags":[],"up":true}]' > s.json
+jq -c '.[] | select(.up)' s.json; jq -r '.[] | select(.port > 6000) | .name' s.json; jq -c 'map(.name)' s.json; jq -c 'map(select(.tags | index("prod"))) | map(.name)' s.json; jq -c '[.[] | {(.name): .port}] | add' s.json; jq -c 'map({name, n: (.tags | length)})' s.json; jq -c 'sort_by(.port) | map(.port)' s.json; jq -c 'group_by(.up) | map({up: .[0].up, names: map(.name)})' s.json; jq -c 'map(.tags[]) | unique' s.json; jq -c 'unique_by(.up) | map(.name)' s.json; jq -c 'min_by(.port).name, max_by(.port).name' s.json; jq -c 'map(.port) | add, min, max, length' s.json; jq -c 'any(.[]; .up), all(.[]; .up), (map(.up) | any, all)' s.json; jq -c 'first, last | .name' s.json; jq -c '.[0] | keys, to_entries[0], (with_entries(.value |= tostring) | .port), has("up"), has("x")' s.json; jq -c '.[1:], .[:1][0].name, .[-1].name, .[5], (.[0].tags | .[1:])' s.json; jq -c 'map(del(.tags, .up))' s.json; jq -c '.[0] | del(.tags) | . + {new: 1} | .port += 1 | .name |= ascii_upcase | .extra //= "d"' s.json; jq -c 'map(select(.name | test("^[ad]")) | .name)' s.json; jq -c '[.[] | .tags | length] | indices(1), index(0)' s.json; jq -c 'to_entries | map("\(.key)=\(.value.name)") | join(",")' s.json; jq -c 'INDEX(.name) | map_values(.port)' s.json; jq -c '[limit(2; .[] | .name)], [.[] | .name] == map(.name), ([.[].port] | sort | reverse)' s.json; jq -c 'map(.tags) | flatten, (. | flatten | unique | length)' s.json; jq -c '[paths(type == "boolean")]' s.json; jq -c '[.. | strings]' s.json; jq -c '[.[] | getpath(["tags", 0])], (path(.[0].name)), ([paths] | length)' s.json; jq -c 'map(if .up then "up" elif .port == 5432 then "db down" else "down" end)' s.json; jq -c 'reduce .[] as $s ({}; .[$s.name] = $s.port)' s.json; jq -c '[foreach .[] as $s (0; . + $s.port; .)]' s.json; jq -c '. as [$first, $second] | [$second.name, $first.name]' s.json; jq -c '.[] as {name: $n, port: $p} | "\($n):\($p)"' s.json; jq -c 'map(.missing // "none"), (.[0].a.b.c // 1), ([.[] | .tags[0]?]), (map(try error("x") catch .))' s.json; jq -c 'walk(if type == "array" then length else . end)' s.json; jq -c '[recurse(.[]?; type != "string") | numbers]' s.json; jq -c 'map(.name) | contains(["db"]), inside(["api","db","cache","x"]), (.[0] | startswith("a"), endswith("i"), ltrimstr("a"), rtrimstr("i"))' s.json; jq -c 'map(.port) | map(tostring) | map(tonumber) | [.[] | . % 100], (map(type) | unique)' s.json; jq -c '[range(3)], [range(1;4)], [range(0;10;3)], ([range(5)] | .[2:4]), (isempty(empty)), ([.[] | select(.up | not) | .name])' s.json; jq -c '.[0] | to_entries | from_entries == ., ([{"key":"a","value":1},{"key":"b","value":[2]}] | from_entries)' s.json; jq -c '{a:1} * {a:{b:2}} , ({a:{b:1}} * {a:{c:2}}), ([1,2,3] - [2]), ({} | .a = {b: 1} | .a.c = 2), ([3,1,2] | sort, (sort_by(-.))), ("abc" | explode | implode), (["a","b"] | join("-"))' s.json
+--- 0
+{"name":"api","port":8080,"tags":["web","prod"],"up":true}
+{"name":"cache","port":6379,"tags":[],"up":true}
+api
+cache
+["api","db","cache"]
+["api","db"]
+{"api":8080,"db":5432,"cache":6379}
+[{"name":"api","n":2},{"name":"db","n":1},{"name":"cache","n":0}]
+[5432,6379,8080]
+[{"up":false,"names":["db"]},{"up":true,"names":["api","cache"]}]
+["prod","web"]
+["db","api"]
+"db"
+"api"
+19891
+5432
+8080
+3
+true
+false
+true
+false
+"api"
+"cache"
+["name","port","tags","up"]
+{"key":"name","value":"api"}
+"8080"
+true
+false
+[{"name":"db","port":5432,"tags":["prod"],"up":false},{"name":"cache","port":6379,"tags":[],"up":true}]
+"api"
+"cache"
+null
+["prod"]
+[{"name":"api","port":8080},{"name":"db","port":5432},{"name":"cache","port":6379}]
+{"name":"API","port":8081,"up":true,"new":1,"extra":"d"}
+["api","db"]
+[1]
+2
+"0=api,1=db,2=cache"
+{"api":8080,"db":5432,"cache":6379}
+["api","db"]
+true
+[8080,6379,5432]
+["web","prod","prod"]
+2
+[[0,"up"],[1,"up"],[2,"up"]]
+["api","web","prod","db","prod","cache"]
+["web","prod",null]
+[0,"name"]
+18
+["up","db down","up"]
+{"api":8080,"db":5432,"cache":6379}
+[8080,13512,19891]
+["db","api"]
+"api:8080"
+"db:5432"
+"cache:6379"
+["none","none","none"]
+1
+["web","prod",null]
+["x","x","x"]
+3
+[8080,5432,6379]
+true
+true
+true
+true
+"pi"
+"ap"
+[80,32,79]
+["number"]
+[0,1,2]
+[1,2,3]
+[0,3,6,9]
+[2,3]
+true
+["db"]
+false
+{"a":1,"b":[2]}
+{"a":{"b":2}}
+{"a":{"b":1,"c":2}}
+[1,3]
+{"a":{"b":1,"c":2}}
+[1,2,3]
+[3,2,1]
+"abc"
+"a-b"
+### jq works on strings
+echo '{"s":"Hello, World","csv":"a,b,,c","path":"/usr/local/bin/tool.tar.gz","b64":"aGk=","url":"a b&c=d/é","html":"<a href=\"x\">&</a>","sh":"it'"'"'s $HOME","n":"42","json":"{\"k\":[1,2]}"}' > t.json
+jq -r '.s | length, ascii_downcase, ascii_upcase, (split(", ") | reverse | join(" ")), .[0:5], .[-5:], (index("o")), (indices("o") | tostring), (test("world"; "i")), (sub("World"; "jq")), (gsub("o"; "0")), (gsub("(?<c>[A-Z])"; "<\(.c)>")), (ltrimstr("Hello, ")), (rtrimstr("World")), (explode | length), ([match("o"; "g").offset] | tostring), (capture("(?<first>\\w+), (?<second>\\w+)") | .second), ([scan("[A-Z]")] | join("")), (splits(", *") ), (ascii_downcase | contains("world")), (. * 2), (tojson), (@json), (@text), (. + "!" | @base64), (utf8bytelength)' t.json
+jq -r '.csv | split(",") | @csv, @tsv, @json, (map(select(length > 0)) | join("|")), length' t.json; jq -r '.path | split("/") | last, (.[1:-1] | join("/")), (last | split(".") | first)' t.json; jq -r '(.b64 | @base64d), (.url | @uri), (.html | @html), (.sh | @sh), ([.s, .n] | @sh), ("x \(.n) y" ), (.n | tonumber + 1), (.json | fromjson | .k | add), ({a: .n} | tojson), ([1, "a", null, true] | @csv), ([1, "a\tb", null] | @tsv), (@base64 "v=\(.n)"), (@uri "q=\(.url)"), (@json "j=\(.csv)")' t.json; jq -r '.s | "\(.) has \(length) chars", (ascii | type)?, (tostring), ([.[] ]? // "no iteration" )' t.json 2>/dev/null; jq -n -r '"a\tb\nc", ("x" | ascii_downcase), ("é😀" | length, utf8bytelength, (explode | map(. > 127) | all)), ("1,2" | split(",") | map(tonumber) | add), ("  pad " | ltrimstr(" ") | length), ("a.b.c" | split(".") | .[1]), ("abc" | test("B"), test("B"; "i")), ([ "b", "a", "C" ] | sort | join("")), ("%41" | @text)'
+--- 0
+12
+hello, world
+HELLO, WORLD
+World Hello
+Hello
+World
+4
+[4,8]
+true
+Hello, jq
+Hell0, W0rld
+<H>ello, <W>orld
+World
+Hello, 
+12
+[4,8]
+World
+HW
+Hello
+World
+true
+Hello, WorldHello, World
+"Hello, World"
+"Hello, World"
+Hello, World
+SGVsbG8sIFdvcmxkIQ==
+12
+"a","b","","c"
+a	b		c
+["a","b","","c"]
+a|b|c
+4
+tool.tar.gz
+usr/local/bin
+tool
+hi
+a%20b%26c%3Dd%2F%C3%A9
+&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;
+'it'\''s $HOME'
+'Hello, World' '42'
+x 42 y
+43
+3
+{"a":"42"}
+1,"a",,true
+1	a\tb	
+v=NDI=
+q=a%20b%26c%3Dd%2F%C3%A9
+j="a,b,,c"
+a	b
+c
+x
+2
+6
+true
+3
+5
+b
+false
+true
+Cab
+%41
+### jq computes numbers and prints them as jq does
+jq -n -c '[1, 1.5, 1.0, 1.50, 100000000000000000000, 0.1, -3, 3.14159, 1.000]'; jq -n -c '[1 + 1, 3 - 5, 2 * 3.5, 7 / 2, 6 / 3, 7 % 3, -7 % 3, 1 / 3, 0.1 + 0.2, 10 / 4, 2 / 2, 1e3 + 0, 1e17 + 0, 1e16 + 0, 1e15 + 0, 1.5e300 * 1, 1e-5 + 0, 1e-4 + 0, 0.0001234 * 1, 123456789012345680000 + 0, 1e-7 + 0, 1.5e-7 * 1, 5e-324 + 0]'; jq -n -c '[nan, infinite, -infinite, (nan | isnan), (1 | isinfinite), (infinite | isinfinite), (nan < 1), ([nan] | sort), (null + 1), (1 | tostring), (1.5 | tostring), ("1.50" | tonumber), ("3" | tonumber + 1)]'; jq -n -c '[(3.7 | floor, ceil, round, fabs), (-3.2 | floor, ceil, round, fabs), (16 | sqrt), (2 | pow(.; 10)), (100 | log10), (1 | exp | floor), (10 | . / 3 | . * 3), ([1,2,3,4] | add / length), (5 | [., . * 2] | max), (17 | tostring | length), (1000000 | . * 1000000), (9007199254740992 | . + 0), (255 | tojson), ([3, 1.5, 2] | sort), (3 == 3.0), (1 < 2), ("a" < "b"), ([1,2] < [1,3]), (null < false), ({} > [])]'; echo '[1.0, 2.50, 100, 0.10, 1234567890123456, 3]' | jq -c '., map(. + 0), map(type), (.[0] == 1), (.[1] * 2), (map(tostring)), (map(tojson) | join(" ")), (.[5] / 3 | . * 3), (.[2] | floor)' 2>&1 | sed -n '2,$p'
+--- 0
+[1,1.5,1.0,1.50,100000000000000000000,0.1,-3,3.14159,1.000]
+[2,-2,7,3.5,2,1,-1,0.3333333333333333,0.30000000000000004,2.5,1,1000,1e+17,1e+16,1000000000000000,1.5e+300,1e-05,0.0001,0.0001234,123456789012345680000,1e-07,1.5e-07,5e-324]
+[null,1.7976931348623157e+308,-1.7976931348623157e+308,true,false,true,true,[null],1,"1","1.5",1.50,4]
+[3,4,4,3.7,-4,-3,-3,3.2,4,1024,2,2,10,2.5,10,2,1000000000000,9007199254740992,"255",[1.5,2,3],true,true,true,true,true,true]
+[1,2.5,100,0.1,1234567890123456,3]
+["number","number","number","number","number","number"]
+true
+5
+["1.0","2.50","100","0.10","1234567890123456","3"]
+"1.0 2.50 100 0.10 1234567890123456 3"
+3
+100
+### jq dates, types, paths and assignments
+jq -n -c '[0 | todate], [1700000000 | todate, (strftime("%Y-%m-%d %H:%M:%S")), (gmtime | mktime), (gmtime | .[0])], ["2023-11-14T22:13:20Z" | fromdate, fromdateiso8601], ("2024-02-29T00:00:00Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime), (now | type), (1700000000 | strftime("%A %B %d %j %Z"))'; jq -n -c '[null, true, 1, "s", [], {}] | map(type), map(length?), (map(select(. != null)) | length), (.[2:4] | map(tostring)), map(arrays, objects), [.[] | scalars], [.[] | iterables], [.[] | booleans, nulls, numbers, strings], (map(not)), (map(. // "alt"))'; jq -n -c '{"a":{"b":[1,{"c":2}]},"d":null} | [paths], [paths(type == "number")], (getpath(["a","b",1,"c"])), (setpath(["a","b",0]; 9) | .a.b), (delpaths([["a","b",0],["d"]])), (to_entries | map(.key)), (path(.a.b[1].c)), ([path(..)] | length), (.a.b[1].c |= . + 1 | .a.b[1]), (.a.b |= map(numbers)), (.d //= 5 | .d), (.a.b[0] += 10 | .a.b[0]), (.x = {} | .x.y = 1 | .x), (del(.a.b[0]) | .a.b), (del(.a, .d)), (.a.b | .[1:] = [] ), ([.a.b[] | numbers] | length), (. as {a: {b: [$n, {$c}]}} | [$n, $c]), (with_entries(select(.value != null)) | keys), (.a | has("b"), (.b | has(1), has(5))), (.a.b | map(objects | .c)), (.. |= (numbers |= . + 1)? // "x" | .a.b[0]), (to_entries | map(select(.value == null) | .key)), ([limit(3; repeat(1))]), ([.a.b[]] | first, (last | type)), (try (1 | error("custom")) catch .), (try error({"code": 3}) catch .code), ([.[] | try keys catch "nokeys"]), (label $done | 1, 2, break $done, 3), ([splits("x")?] | length), (.a.b | until(length > 3; . + [0]) | length), ([1 | while(. < 20; . * 2)]), (reduce range(5) as $i ([]; . + [$i * $i])), ([foreach (1,2,3) as $x (0; . + $x; [$x, .])])' 2>&1
+--- 0
+["1970-01-01T00:00:00Z"]
+["2023-11-14T22:13:20Z","2023-11-14 22:13:20",1700000000,2023]
+[1700000000,1700000000]
+1709164800
+"number"
+"Tuesday November 14 318 UTC"
+["null","boolean","number","string","array","object"]
+[0,1,1,0,0]
+5
+["1","s"]
+[[],{}]
+[null,true,1,"s"]
+[[],{}]
+[null,true,1,"s"]
+[true,false,false,false,false,false]
+["alt",true,1,"s",[],{}]
+[["a"],["a","b"],["a","b",0],["a","b",1],["a","b",1,"c"],["d"]]
+[["a","b",0],["a","b",1,"c"]]
+2
+[9,{"c":2}]
+{"a":{"b":[{"c":2}]}}
+["a","d"]
+["a","b",1,"c"]
+7
+{"c":3}
+{"a":{"b":[1]},"d":null}
+5
+11
+{"y":1}
+[{"c":2}]
+{}
+[1]
+1
+[1,2]
+["a"]
+true
+true
+false
+[2]
+2
+["d"]
+[1,1,1]
+1
+"object"
+"custom"
+3
+[["b"],"nokeys"]
+1
+2
+0
+4
+[1,2,4,8,16]
+[0,1,4,9,16]
+[[1,1],[2,3],[3,6]]
+### jq exit codes for errors, missing files and halts
+echo '{"a":1}' > ok.json; echo '{"a":' > bad.json
+jq '.a | .b' ok.json 2>/dev/null; echo "index rc=$?"; jq '.[' ok.json 2>/dev/null; echo "syntax rc=$?"; jq 'nosuchfunction' ok.json 2>/dev/null; echo "undefined rc=$?"; jq . bad.json 2>/dev/null; echo "json rc=$?"; printf '1 2 [' | jq -c . 2>/dev/null; echo "partial rc=$?"; jq .a ok.json missing.json 2>/dev/null; echo "missing rc=$?"; jq .a missing.json 2>/dev/null; echo "only missing rc=$?"; jq -n 'error("x")' 2>/dev/null; echo "error rc=$?"; jq -n '1, error("x"), 2' 2>/dev/null; echo "after rc=$?"; printf '1 "a" 3' | jq '. + 1' 2>/dev/null; echo "continues rc=$?"; jq -n 'halt' ; echo "halt rc=$?"; jq -n '1, halt_error' 2>/dev/null; echo "halt_error rc=$?"; jq -n '"bye\n" | halt_error(3)' 2>&1; echo "halt_error(3) rc=$?"; jq -n '{"a":1} | halt_error(2)' 2>&1; echo "object rc=$?"; jq -n '1 | debug | . + 1' 2>&1; jq -n '"to stderr" | stderr | length' 2>/dev/null; jq 2>/dev/null; echo "usage rc=$?"; jq --indent 8 . ok.json 2>/dev/null; echo "indent rc=$?"; jq -n --argjson v '{' '$v' 2>/dev/null; echo "argjson rc=$?"; jq -n --arg v 2>/dev/null; echo "arg rc=$?"; jq -e '.a > 5' ok.json; echo "e rc=$?"; jq -n '[limit(3; range(10))] | length' ; jq -n 'try error("caught") catch "ok: \(.)"'; jq '.a as $x | $y' ok.json 2>/dev/null; echo "variable rc=$?"
+--- 0
+index rc=5
+syntax rc=3
+undefined rc=3
+json rc=5
+1
+2
+partial rc=5
+1
+missing rc=2
+only missing rc=2
+error rc=5
+1
+after rc=5
+2
+4
+continues rc=0
+halt rc=0
+1
+halt_error rc=5
+bye
+halt_error(3) rc=3
+{"a":1}
+object rc=2
+["DEBUG:",1]
+2
+9
+usage rc=0
+indent rc=2
+argjson rc=2
+arg rc=2
+false
+e rc=1
+3
+"ok: caught"
+variable rc=3

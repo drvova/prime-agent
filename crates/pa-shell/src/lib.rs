@@ -23,6 +23,9 @@
 //! for something it does not implement hands the command to the program of
 //! the same name when the machine has one, and fails with a message that
 //! says so when it has none.
+//!
+//! `jq` is one of the utilities: its filters run on the `jaq` interpreter,
+//! on a thread of their own (`util/jq.rs`).
 
 mod engine;
 mod shims;

@@ -54,6 +54,12 @@ brush-builtins = { version = "0.2.0", default-features = false, features = [
     "builtin.unset",
 ] }
 regex = "1"
+# jq's language for the `jq` utility: the interpreter, its standard library and its JSON
+# values (`util/jq.rs`). The `jaq` command itself is not linked: it reads the process's
+# arguments, environment and standard streams.
+jaq-core = "3.1.2"
+jaq-std = "3.0.4"
+jaq-json = "2.0.3"
 globset = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 

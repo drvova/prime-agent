@@ -784,7 +784,7 @@ pub(super) fn sed(invocation: &mut Invocation<'_>) -> Outcome {
                 .map(|stdin| Box::new(stdin) as Box<dyn BufRead + '_>)
                 .ok_or_else(|| Failure::Unsupported("standard input named twice".to_string()))
         } else {
-            shell.file(file)
+            shell.file(file).map(|file| file as Box<dyn BufRead + '_>)
         };
         match opened {
             Ok(reader) => readers.push(reader),

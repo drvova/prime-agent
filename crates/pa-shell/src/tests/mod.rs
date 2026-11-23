@@ -98,9 +98,9 @@ impl Started {
 /// The corpus holds, per case, a `### name` line, the script, a `--- N` line
 /// with the exit code, and the exact output (a final line ending in `\`
 /// stands for output without a trailing newline). The expectations are what
-/// GNU bash 5.2 with coreutils 9.4, grep 3.11, sed 4.9 and findutils 4.9
-/// printed for the same script in an empty directory, under `LC_ALL=C` and
-/// `TZ=UTC`.
+/// GNU bash 5.2 with coreutils 9.4, grep 3.11, sed 4.9, findutils 4.9 and
+/// jq 1.7 printed for the same script in an empty directory, under
+/// `LC_ALL=C` and `TZ=UTC`.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn every_corpus_script_prints_what_bash_and_the_gnu_tools_print() {
@@ -196,6 +196,7 @@ async fn two_scripts_in_one_process_share_no_directory_and_no_environment() {
 
 /// A stopped script ends at once wherever it is: in the interpreter's own
 /// loop, in a utility that would run on, in a utility that waits for one,
+/// in a `jq` filter that prints without end or computes without printing,
 /// or waiting for a program, which is ended with it.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
@@ -206,6 +207,8 @@ async fn a_stopped_script_ends_in_the_interpreter_in_a_utility_and_in_a_program(
         "echo started; while :; do :; done; echo not-reached",
         "echo started; sleep 1000; echo not-reached",
         "echo started; sleep 1000 | cat; echo not-reached",
+        "echo started; jq -n 'repeat(1)' > /dev/null; echo not-reached",
+        "echo started; jq -n 'last(range(100000000))'; echo not-reached",
         "/bin/sh -c 'echo started; exec /bin/sleep 1000'; echo not-reached",
     ] {
         let started = begin(script, dir.path(), &[("PATH", "/nonexistent-bin")]);
@@ -227,7 +230,7 @@ async fn a_stopped_script_ends_in_the_interpreter_in_a_utility_and_in_a_program(
                 crate::STOPPED_EXIT_CODE,
                 String::new()
             );
-            4
+            6
         ]
     );
 }
@@ -367,6 +370,115 @@ async fn an_expansion_past_the_limits_fails_its_line_and_the_script_goes_on() {
              (at most 33554432 bytes)\n\
              rc=1 length 0\n\
              rc=0 length 999999\n"
+        )
+    );
+}
+
+/// What the built-in `jq` says when a filter or its input is wrong, or is
+/// more than it runs, on a machine with no `jq` program: each is that
+/// command's failure with jq's exit code, and the script goes on.
+#[tokio::test(flavor = "multi_thread")]
+async fn jq_fails_as_a_command_with_its_reason_and_jqs_exit_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ended, printed) = begin(
+        "echo '{\"a\":[1,2]}' > f.json\n\
+         jq '.a | .[' f.json; echo \"syntax rc=$?\"\n\
+         jq 'nosuch(1), $undefined' f.json; echo \"undefined rc=$?\"\n\
+         echo '[1] {\"a\":' | jq -c .; echo \"input rc=$?\"\n\
+         jq '.a.b' f.json; echo \"filter rc=$?\"\n\
+         jq -c '.a[] | if . == 1 then error({code: .}) else . end' f.json; echo \"thrown rc=$?\"\n\
+         jq '.b.c = 1' f.json; echo \"assignment rc=$?\"\n\
+         printf '[%.0s' {1..10001} | jq .; echo \"depth rc=$?\"\n\
+         jq -n '\"[\" * 10001 | fromjson'; echo \"fromjson rc=$?\"\n\
+         jq 'def walk_all: .[]? | walk_all; walk_all' f.json; echo \"recursion rc=$?\"\n\
+         jq --stream . f.json; echo \"option rc=$?\"\n\
+         jq pa-test-panic f.json; echo \"panic rc=$?\"",
+        dir.path(),
+        &[("PATH", "/nonexistent-bin")],
+    )
+    .finish()
+    .await;
+    assert_eq!(
+        (ended.exit_code, printed.as_str()),
+        (
+            0,
+            "jq: error: syntax error: expected closing bracket at the end of the filter\n\
+             jq: 1 compile error(s)\n\
+             syntax rc=3\n\
+             jq: error: nosuch/1 is not defined\n\
+             jq: error: variable $undefined is not defined\n\
+             jq: 2 compile error(s)\n\
+             undefined rc=3\n\
+             [1]\n\
+             jq: parse error: value expected\n\
+             input rc=5\n\
+             jq: error: cannot index [1,2] with \"b\"\n\
+             filter rc=5\n\
+             jq: error (not a string): {\"code\":1}\n\
+             thrown rc=5\n\
+             jq: error: cannot use null as iterable (array or object) (the built-in jq does \
+             not create a missing object or array on assignment: set the parent first, as in \
+             `.a //= {} | .a.b = 1`)\n\
+             assignment rc=5\n\
+             jq: parse error: JSON nested deeper than 10000 levels\n\
+             depth rc=5\n\
+             jq: error: cannot parse JSON nested deeper than 10000 levels\n\
+             fromjson rc=5\n\
+             jq: a filter that defines a recursive function is not supported by Prime \
+             Agent's built-in jq, and no jq program is installed on this machine\n\
+             recursion rc=2\n\
+             jq: option --stream is not supported by Prime Agent's built-in jq, and no jq \
+             program is installed on this machine\n\
+             option rc=2\n\
+             jq: Prime Agent's built-in jq failed on an internal error: a filter panicked\n\
+             panic rc=70\n"
+        )
+    );
+}
+
+/// A filter the built-in `jq` does not run goes to the `jq` program when
+/// the machine has one, with the command's input unread: an option it does
+/// not implement, a function the interpreter lacks, and a function that
+/// calls itself.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn jq_hands_what_it_does_not_run_to_the_program_with_its_input() {
+    use crate::Counts;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let programs = dir.path().join("bin");
+    std::fs::create_dir(&programs).unwrap();
+    let program = programs.join("jq");
+    std::fs::write(
+        &program,
+        "#!/bin/sh\nread -r input\necho \"the program got: $* < $input\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (ended, printed) = begin(
+        "echo '[1]' | jq --stream -c .\n\
+         echo '[2]' | jq -c 'input_line_number'\n\
+         echo '[3]' | jq -c 'def depth: 1 + (.[]? | depth); depth'\n\
+         echo '[4]' | jq -c 'map(. + 1)'",
+        dir.path(),
+        &[("PATH", &programs.to_string_lossy())],
+    )
+    .finish()
+    .await;
+    assert_eq!(
+        (ended.exit_code, printed.as_str(), ended.counts),
+        (
+            0,
+            "the program got: --stream -c . < [1]\n\
+             the program got: -c input_line_number < [2]\n\
+             the program got: -c def depth: 1 + (.[]? | depth); depth < [3]\n\
+             [5]\n",
+            Counts {
+                in_process: 1,
+                spawned: 3,
+                handed_over: 3,
+                unavailable: 0,
+            },
         )
     );
 }
