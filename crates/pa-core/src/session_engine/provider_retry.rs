@@ -193,9 +193,20 @@ pub fn incomplete_reply_reason(
     }
 }
 
-/// `message` as a retryable provider failure carrying `reason`.
+/// A turn's final reply as the retry driver must see it: `message` itself,
+/// or, when it cannot end its turn ([`incomplete_reply_reason`]), `message`
+/// as a retryable provider failure carrying the reason. Every host that
+/// drives a turn through the retry driver settles its reply here: the
+/// daemon's model turn and the daemonless `AgentSession::prompt_with_auto_retry`.
 #[must_use]
-pub fn incomplete_reply_failure(mut message: AssistantMessage, reason: &str) -> AssistantMessage {
+pub fn settle_final_reply(
+    mut message: AssistantMessage,
+    owes_answer: bool,
+    context_window: u64,
+) -> AssistantMessage {
+    let Some(reason) = incomplete_reply_reason(&message, owes_answer, context_window) else {
+        return message;
+    };
     message.stop_reason = StopReason::Error;
     message.error_message = Some(reason.to_string());
     message
@@ -647,7 +658,7 @@ mod tests {
     fn an_incomplete_reply_failure_is_a_retryable_non_overflow_failure() {
         let message = reply(StopReason::Length, vec![thinking("t")]);
         let reason = incomplete_reply_reason(&message, true, WINDOW).expect("incomplete");
-        let failure = incomplete_reply_failure(message, reason);
+        let failure = settle_final_reply(message, true, WINDOW);
         assert_eq!(failure.stop_reason, StopReason::Error);
         assert_eq!(failure.error_message.as_deref(), Some(reason));
         assert_eq!(
@@ -657,9 +668,8 @@ mod tests {
         assert!(has_provider_stream_failure(&failure));
         assert!(!is_context_overflow_failure(&failure, 128_000));
         let silent = reply(StopReason::Stop, Vec::new());
-        let reason = incomplete_reply_reason(&silent, true, WINDOW).expect("incomplete");
         assert!(!is_context_overflow_failure(
-            &incomplete_reply_failure(silent, reason),
+            &settle_final_reply(silent, true, WINDOW),
             128_000
         ));
     }

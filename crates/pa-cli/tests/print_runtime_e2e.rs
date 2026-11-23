@@ -196,7 +196,9 @@ fn read_entries(path: &std::path::Path) -> Vec<serde_json::Value> {
 #[test]
 fn print_mode_goal_cap_reports_the_reason_and_exits_one() {
     let home = isolated_home();
-    let script = serde_json::json!({ "responses": [{}, {}, {}] });
+    // The prompt's own turn answers (an empty answer to a prompt is retried
+    // as an incomplete reply); the three continuations make no progress.
+    let script = serde_json::json!({ "responses": ["Starting the work.", {}, {}, {}] });
     let (stdout, stderr, code) = run_in_home(
         home.path(),
         &["--goal", "finish the work", "-p", "work"],
@@ -1144,5 +1146,148 @@ fn print_mode_fork_rejects_empty_sources_and_conflicting_flags() {
             let files = session_files(home.path());
             files.iter().all(|path| *path == empty)
         }
+    );
+}
+
+// The daemon's retry contract in print mode: provider failures and a final
+// reply that cannot end its turn retry under the shared driver.
+
+/// A 1 ms retry backoff, so the retried runs stay fast.
+fn write_fast_retry_settings(home: &std::path::Path) {
+    let agent = home.join(".prime/agent");
+    std::fs::create_dir_all(&agent).unwrap();
+    std::fs::write(
+        agent.join("settings.json"),
+        serde_json::json!({ "retry": { "baseDelayMs": 1 } }).to_string(),
+    )
+    .unwrap();
+}
+
+/// A reply cut off at the output limit, with no tool call.
+fn cut_off_reply() -> serde_json::Value {
+    serde_json::json!({
+        "content": [{ "type": "text", "text": "The first half of the ans" }],
+        "stopReason": "length",
+    })
+}
+
+const CUT_OFF: &str = "The model's reply was cut off at its output limit before it finished";
+
+/// The assistant rows the run's session file holds.
+fn persisted_assistant_rows(home: &std::path::Path) -> usize {
+    read_entries(&session_files(home)[0])
+        .iter()
+        .filter(|entry| entry["type"] == "message" && entry["message"]["role"] == "assistant")
+        .count()
+}
+
+/// Runs `script` for one prompt in a fresh home with fast retries: the
+/// output plus the persisted assistant-row count.
+fn run_retried(args: &[&str], script: &serde_json::Value) -> (String, String, i32, usize) {
+    let home = isolated_home();
+    write_fast_retry_settings(home.path());
+    let (stdout, stderr, code) = run_in_home(home.path(), args, script);
+    let rows = persisted_assistant_rows(home.path());
+    (stdout, stderr, code, rows)
+}
+
+#[test]
+fn print_mode_a_reply_cut_off_twice_fails_after_one_retry() {
+    let script =
+        serde_json::json!({ "responses": [cut_off_reply(), cut_off_reply(), "never reached"] });
+    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
+    assert_eq!(
+        (stdout.as_str(), stderr.as_str(), code, rows),
+        ("", &*format!("{CUT_OFF}\n"), 1, 2)
+    );
+}
+
+#[test]
+fn print_mode_an_empty_reply_twice_fails_after_one_retry() {
+    let script =
+        serde_json::json!({ "responses": [{ "text": "" }, { "text": "" }, "never reached"] });
+    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
+    assert_eq!(
+        (stdout.as_str(), stderr.as_str(), code, rows),
+        (
+            "",
+            "The model ended its reply with no visible answer\n",
+            1,
+            2
+        )
+    );
+}
+
+#[test]
+fn print_mode_a_cut_off_reply_recovers_on_its_retry() {
+    let script = serde_json::json!({ "responses": [cut_off_reply(), "The whole answer."] });
+    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
+    assert_eq!(
+        (stdout.as_str(), stderr.as_str(), code, rows),
+        ("The whole answer.\n", "", 0, 2)
+    );
+}
+
+#[test]
+fn print_mode_a_transient_provider_failure_retries_and_recovers() {
+    let script = serde_json::json!({ "responses": [
+        {
+            "content": [{ "type": "text", "text": "" }],
+            "stopReason": "error",
+            "errorMessage": "503 upstream unavailable",
+        },
+        "Recovered answer.",
+    ] });
+    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
+    assert_eq!(
+        (stdout.as_str(), stderr.as_str(), code, rows),
+        ("Recovered answer.\n", "", 0, 2)
+    );
+}
+
+/// json mode streams the retry and its failed end as session events; its
+/// exit code stays the json contract's (only the autonomous gates fail it).
+#[test]
+fn print_mode_json_streams_the_cut_off_retry_and_its_failure() {
+    let script =
+        serde_json::json!({ "responses": [cut_off_reply(), cut_off_reply(), "never reached"] });
+    let (stdout, stderr, code, rows) = run_retried(&["--mode", "json", "-p", "explain"], &script);
+    assert_eq!((stderr.as_str(), code, rows), ("", 0, 2));
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()
+        .unwrap();
+    let retry_events: Vec<serde_json::Value> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("auto_retry_start" | "auto_retry_end")
+            )
+        })
+        .map(|event| {
+            let mut event = event.clone();
+            // The jittered wait is not deterministic.
+            event.as_object_mut().unwrap().remove("delayMs");
+            event
+        })
+        .collect();
+    assert_eq!(
+        retry_events,
+        vec![
+            serde_json::json!({
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "errorMessage": CUT_OFF,
+            }),
+            serde_json::json!({
+                "type": "auto_retry_end",
+                "success": false,
+                "attempt": 1,
+                "finalError": CUT_OFF,
+            }),
+        ]
     );
 }

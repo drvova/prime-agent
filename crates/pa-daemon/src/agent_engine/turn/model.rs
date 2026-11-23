@@ -166,13 +166,11 @@ impl AgentSessionEngine {
         // notices, agent messages) owe no answer: silence acknowledges them.
         let owes_answer = matches!(prompt, TurnPrompt::User { .. });
         let settle = move |assistant: pa_agent::types::AssistantMessage| {
-            use pa_core::session_engine::provider_retry::{
-                incomplete_reply_failure, incomplete_reply_reason,
-            };
-            match incomplete_reply_reason(&assistant, owes_answer, overflow_window) {
-                Some(reason) => incomplete_reply_failure(assistant, reason),
-                None => assistant,
-            }
+            pa_core::session_engine::provider_retry::settle_final_reply(
+                assistant,
+                owes_answer,
+                overflow_window,
+            )
         };
         let result = self.runtime.block_on(
             pa_core::session_engine::auto_retry::run_turn_with_auto_retry(
