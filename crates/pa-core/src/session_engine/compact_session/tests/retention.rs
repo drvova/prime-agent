@@ -290,7 +290,7 @@ async fn compaction_retention_report() {
             (ItemClass::Decision, (5, 5, 0)),
             (ItemClass::File, (5, 5, 5)),
             (ItemClass::OpenTask, (5, 0, 5)),
-            (ItemClass::Failure, (5, 2, 3)),
+            (ItemClass::Failure, (5, 4, 3)),
             (ItemClass::Goal, (2, 1, 1)),
         ])
     );

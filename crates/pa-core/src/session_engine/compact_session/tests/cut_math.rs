@@ -14,7 +14,7 @@ fn cut_and_tokens_computed_from_entries() {
 }
 
 #[test]
-fn message_extraction_skips_compaction_and_tool_results() {
+fn message_extraction_skips_compactions_and_keeps_tool_results() {
     let mut compaction = FileEntry::Compaction {
         payload: pa_types::session::CompactionEntry {
             summary: "s".to_string(),
@@ -36,16 +36,17 @@ fn message_extraction_skips_compaction_and_tool_results() {
     };
     let _ = &mut compaction;
     assert!(message_from_entry(&compaction).is_none());
+    let result = AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
+        tool_call_id: "c".to_string(),
+        tool_name: "bash".to_string(),
+        content: vec![],
+        details: None,
+        is_error: false,
+        timestamp: 0,
+        rest: serde_json::Map::default(),
+    });
     let tool_result = FileEntry::Message {
-        message: AgentMessage::ToolResult(pa_types::ai::ToolResultMessage {
-            tool_call_id: "c".to_string(),
-            tool_name: "bash".to_string(),
-            content: vec![],
-            details: None,
-            is_error: false,
-            timestamp: 0,
-            rest: serde_json::Map::default(),
-        }),
+        message: result.clone(),
         base: EntryBase {
             id: Some("t".to_string()),
             parent_id: None,
@@ -53,7 +54,8 @@ fn message_extraction_skips_compaction_and_tool_results() {
             rest: serde_json::Map::default(),
         },
     };
-    assert!(message_from_entry(&tool_result).is_none());
+    // A tool result is summarizer input: it carries the test outcomes and errors.
+    assert_eq!(message_from_entry(&tool_result), Some(result));
 }
 
 /// A usage-less error turn never anchors `tokensBefore`: the estimate uses
