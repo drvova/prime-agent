@@ -259,6 +259,7 @@ impl SkillLoader {
                         // its limit, and again until it has left the engine.
                         let controller = engine.get_thread_state_controller();
                         let limit = self.load_limit;
+                        let engine_thread = std::thread::current();
                         let error = std::thread::scope(|scope| {
                             let (loaded, loading) = std::sync::mpsc::channel::<()>();
                             scope.spawn(move || {
@@ -266,7 +267,7 @@ impl SkillLoader {
                                 while loading.recv_timeout(wait)
                                     == Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                 {
-                                    controller.interrupt();
+                                    super::cell::interrupt_engine(&controller, &engine_thread);
                                     wait = std::time::Duration::from_millis(20);
                                 }
                             });

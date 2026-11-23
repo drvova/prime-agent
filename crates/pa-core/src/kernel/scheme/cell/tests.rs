@@ -426,6 +426,52 @@ async fn cancelling_a_background_cell_stops_it_and_frees_the_engine() {
     );
 }
 
+/// Steel parks the engine's thread when a host function returns to an
+/// engine it reads as paused but not interrupted (an interrupt is two
+/// writes), and never unparks it: a stop that only raised the interrupt left
+/// such a cell on the engine for good. The host call here parks the cell's
+/// thread as that safepoint does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_wakes_a_cell_whose_thread_is_parked() {
+    let (parking, mut parked) = tokio::sync::mpsc::unbounded_channel();
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register(
+        "thread.park",
+        host_handler(move |_payload: HostRequestPayload| {
+            // The test may have stopped listening.
+            let _ = parking.send(std::thread::current());
+            std::thread::park();
+            async move { Ok(json!({})) }
+        }),
+    );
+    let kernel = SchemeKernelProvisioner::new(handlers, "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let signal = AbortSignal::new();
+    let stop = signal.clone();
+    let cell = kernel.execute(
+        r#"(host-request "thread.park" (hash))"#,
+        KernelExecuteOptions {
+            signal: Some(signal),
+            timeout_ms: None,
+            on_stream: None,
+            on_late_sent_agent_message: None,
+        },
+    );
+    let (stopped, thread) = tokio::join!(tokio::time::timeout(PATIENCE, cell), async {
+        let thread = parked.recv().await.unwrap();
+        stop.cancel();
+        thread
+    });
+    // Let go of a thread the stop left parked, so that failure ends.
+    thread.unpark();
+    assert_eq!(
+        stopped.ok().map(|result| result.unwrap().status),
+        Some(ExecuteStatus::Aborted)
+    );
+}
+
 /// A message a cell sends after its call returned cannot ride that call's
 /// result: it goes to the call's late-message handler.
 #[tokio::test(flavor = "multi_thread")]
