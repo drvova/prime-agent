@@ -15,8 +15,24 @@ use crate::width::{
 const SUMMARY_PREFIX: &str = "    \u{2570}\u{2500} ";
 const DIFF_INDENT: &str = " ";
 
-/// Edits grouped by path in first-seen order, after a spacer row when code is shown.
-pub(super) fn render_diffs(
+/// One edit's added and removed rows, counted as the rows are labelled: a line the rows show
+/// as context is not a change. The card's summary line and the session changes panel count
+/// alike.
+pub(crate) fn count_changes(diff: &str) -> (usize, usize) {
+    let (mut added, mut removed) = (0usize, 0usize);
+    for line in diff_lines(diff) {
+        match split_row(line).0 {
+            RowKind::Added => added += 1,
+            RowKind::Removed => removed += 1,
+            RowKind::Context => {}
+        }
+    }
+    (added, removed)
+}
+
+/// Edits grouped by path in first-seen order, after a spacer row when code is shown. The
+/// session changes panel renders one file's combined diff through it too.
+pub(crate) fn render_diffs(
     lines: &mut RowOutput,
     diffs: &[Value],
     has_code: bool,
@@ -57,15 +73,12 @@ fn render_file(
     theme: &Theme,
     width: usize,
 ) {
-    // Counted as the rows are labelled: a line the rows show as context is not a change.
-    let (mut added, mut removed) = (0usize, 0usize);
-    for line in edits.iter().flat_map(|diff| diff_lines(diff)) {
-        match split_row(line).0 {
-            RowKind::Added => added += 1,
-            RowKind::Removed => removed += 1,
-            RowKind::Context => {}
-        }
-    }
+    let (added, removed) = edits
+        .iter()
+        .map(|diff| count_changes(diff))
+        .fold((0, 0), |(added, removed), (more, fewer)| {
+            (added + more, removed + fewer)
+        });
     lines.push(|| summary_line(path, added, removed, theme, width));
     if !expanded {
         return;

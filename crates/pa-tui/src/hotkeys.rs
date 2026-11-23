@@ -99,6 +99,9 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let select_doc_start = key_display(kb, "tui.editor.selectDocStart");
     let select_doc_end = key_display(kb, "tui.editor.selectDocEnd");
     let browse_queue_newer = key_display(kb, "app.message.navigateNewer");
+    let changes_open = key_display(kb, crate::session_changes::OPEN_BINDING);
+    let changes_scope = key_display(kb, crate::session_changes::SCOPE_BINDING);
+    let changes_attach = key_display(kb, crate::session_changes::ATTACH_BINDING);
     let usage_refresh = key_display(kb, "app.usage.refresh");
     let usage_overview = key_display(kb, "app.usage.overview");
     let select_confirm = key_display(kb, "tui.select.confirm");
@@ -201,6 +204,15 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{model_sort}` | Cycle the sort (recent, name, price, context) |
 | `{model_filters}` | Cycle the provider / billing / capability / context filter |
 | `{model_scope}` | Switch between the scoped models and the catalog |
+
+**Session changes (`/diff`)**
+| Key | Action |
+|-----|--------|
+| `{changes_open}` | Open the files changed this turn, and whether a test ran after each |
+| `{changes_scope}` | Switch between this turn and the whole session |
+| `{select_confirm}` | Show the selected file's diff |
+| `{changes_attach}` | Attach the selected file's diff to the next message |
+| `{select_cancel}` | Close the panel |
 
 **Usage page (`/usage`)**
 | Key | Action |

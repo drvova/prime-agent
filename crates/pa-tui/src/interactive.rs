@@ -184,6 +184,16 @@ pub trait InteractionTelemetry: Send + Sync {
         &self,
         action: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A session changes panel action, the first of each kind in a run (event `tui session
+    /// changes`): `action` is `open` / `scope` / `diff` / `attach`; `files` is how many files the
+    /// open scope lists and `untested` how many of them no test or build ran after. Never a path
+    /// or a diff. Implementations return at once: the key path spawns it and never waits.
+    fn session_changes_used(
+        &self,
+        action: &'static str,
+        files: u64,
+        untested: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The unfocused terminal was signalled that the agent stopped for the user, the first time
     /// per reason in a run (event `tui unfocused signal`): `reason` is `turn_end` / `question`,
     /// `mode` the `terminal.notifyOnTurnEnd` value that chose the signal (`bell` /

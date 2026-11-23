@@ -7,8 +7,8 @@ pub mod generic;
 pub mod highlight;
 pub mod ipython;
 pub mod ipython_details;
-mod layout;
-mod scheme_value;
+pub(crate) mod layout;
+pub(crate) mod scheme_value;
 
 use std::time::Instant;
 

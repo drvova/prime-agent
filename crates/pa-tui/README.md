@@ -101,6 +101,33 @@ cache as it goes; a landing waits for those heights instead of measuring the tra
 key path, so a long transcript never holds a frame. The first close per outcome in a run reports
 `tui transcript search` (`outcome`, `steps`, `revealed`, `history`; never the query).
 
+Session changes (`session_changes/`): `/diff` and `app.changes.open` (`Alt+G`, claimed by no
+other binding) open a panel over the editor dock listing the files the agent changed in this turn
+or, after `app.changes.scope` (`t`), the whole session: one row per file, the most recently
+changed first, with its path (relative to the session's directory, cut from the left with
+`menu_chrome::ELLIPSIS` so the file name stays), its added and removed rows, its number of edits
+and its evidence: `tests ran after ✓`, `tests failed after ✗`, `built after ✓`, `build failed
+after ✗` or `no test after` (the edits column drops first on a narrow pane, then the evidence
+shortens). Enter shows the file's combined diff through the cell cards' own renderer
+(`tool_card::ipython::diffs::render_diffs`); `app.changes.attach` (`a`) puts the diff, in a `diff`
+fence, in the composer through the editor's paste path, so a long one is a `[paste #N]` marker. It
+reads only the transcript the view holds, so the session scope says `from loaded history` while
+the transcript window has not loaded the session's start. The rows are the edits the cell cards
+show (`details.diffs`: the kernel's `edit`; an `fs-edit` or `fs-write` records no diff on its
+card, so it is not listed). A file's evidence is the latest test run in a later entry than its
+last edit, else the latest build there (a cell that edits and tests at once does not say which
+came first, and a build after a failed test does not hide the failure). A check is a kernel cell
+whose stdout carries the kernel's `[tests: … · N failed]` summary, a cell that ran exactly one
+matching `bash` command and returned its result (its exit code; a timeout fails), a matching
+`[bash-done]` row, or the user's own matching `!` command. A command matches when one of its
+simple commands, after `NAME=value`, `time`, `env`, `command`, `exec`, `nice`, `npx`, `bunx` and
+`timeout [options] DURATION`, is a test run (`cargo test`/`nextest`, `make test`/`tests`/`check`,
+`npm`/`pnpm`/`yarn`/`bun [run] test`, `pytest`, `py.test`, `python… -m pytest`/`unittest`, `go
+test`, `jest`, `vitest`) or a build (`cargo build`/`check`/`clippy`, `npm`/`pnpm`/`yarn`/`bun [run]
+build`, `go build`/`vet`). The view keeps a ledger in step with its entries (each read once, the
+settled prefix folded once), so a frame reads nothing and an append reads one entry. The first use
+of each action in a run reports `tui session changes` (`action`, `files`, `untested`).
+
 
 Panel conventions (`menu_chrome.rs`, `menu_panel.rs`, `duration_text.rs`): the pieces every picker,
 pane and prompt shares, so the panels read alike and stay alike. The footer is the one hint row

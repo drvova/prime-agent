@@ -7,6 +7,7 @@ mod apply;
 mod auth;
 mod bash;
 mod better;
+mod changes;
 mod commands;
 mod context;
 mod factory;
@@ -483,6 +484,8 @@ pub(crate) struct SessionUi {
     selection_kinds_reported: Vec<crate::selection_gesture::SelectionKind>,
     /// The wheel's acceleration across a fast spin.
     wheel: crate::mouse::WheelAcceleration,
+    /// The session changes panel actions already reported this run (one report per action).
+    changes_reported: Vec<&'static str>,
     /// What the terminal last reported about its focus; focused until it reports otherwise, so
     /// a terminal that never reports is never signalled.
     pub(crate) terminal_focused: bool,

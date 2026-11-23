@@ -4,7 +4,7 @@
 //! mode the full cell source and output. The top line never changes with
 //! expansion, so toggling detail never shifts the layout.
 
-mod diffs;
+pub(crate) mod diffs;
 mod output;
 
 use std::cell::RefCell;

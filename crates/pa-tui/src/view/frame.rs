@@ -26,6 +26,7 @@ impl AgentView {
             && self.heartbeats_picker.is_none()
             && self.goal_panel.is_none()
             && self.bash_view.is_none()
+            && self.changes_panel.is_none()
             && self.info_panel.is_none()
             && self.usage_page.is_none()
             && self.context_view.is_none()
@@ -144,6 +145,18 @@ impl AgentView {
         } else if let Some(view) = self.bash_view.as_ref() {
             let mut dock = prompt_context;
             dock.extend(view.render(&self.theme, width, self.editor.keybindings()));
+            Some(dock)
+        } else if let Some(panel) = self.changes_panel.as_mut() {
+            let mut dock = prompt_context;
+            dock.extend(panel.render(
+                &mut self.change_ledger,
+                &self.chat,
+                &self.theme,
+                width,
+                self.editor.keybindings(),
+                &self.chrome.cwd,
+                info_viewport_rows,
+            ));
             Some(dock)
         } else if let Some(panel) = self.info_panel.as_mut() {
             // The shortcut overview takes the frame down to the transcript's minimum rows, like
@@ -488,6 +501,7 @@ impl AgentView {
             || self.heartbeats_picker.is_some()
             || self.goal_panel.is_some()
             || self.bash_view.is_some()
+            || self.changes_panel.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
             || self.context_view.is_some()

@@ -11,13 +11,13 @@ pub(super) fn panel_content_width(width: usize) -> usize {
     width.saturating_sub(4).max(1)
 }
 
-pub(super) enum RowOutput {
+pub(crate) enum RowOutput {
     Paint(Vec<Line>),
     Count(usize),
 }
 
 impl RowOutput {
-    pub(super) fn paint() -> Self {
+    pub(crate) fn paint() -> Self {
         Self::Paint(Vec::new())
     }
     pub(super) fn count() -> Self {
@@ -96,7 +96,7 @@ impl RowOutput {
             }
         }
     }
-    pub(super) fn into_lines(self) -> Vec<Line> {
+    pub(crate) fn into_lines(self) -> Vec<Line> {
         match self {
             Self::Paint(rows) => rows,
             Self::Count(_) => panic!("count sink has no painted rows"),

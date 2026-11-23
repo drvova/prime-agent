@@ -234,6 +234,7 @@ impl SessionUi {
             selection_kind: crate::selection_gesture::SelectionKind::Drag,
             selection_kinds_reported: Vec::new(),
             wheel: crate::mouse::WheelAcceleration::default(),
+            changes_reported: Vec::new(),
             terminal_focused: true,
             unfocused_signal_reported: Vec::new(),
             attention_signals: Vec::new(),
@@ -730,6 +731,8 @@ impl SessionUi {
         // dies with its transcript, and the tok/sec stats restart per session.
         if matches!(kind, RebuildKind::Rebind) {
             view.bash_view = None;
+            // The changes panel reads the transcript the rebind replaces.
+            view.changes_panel = None;
             // The factory view dies the same death — it snapshots the
             // previous session's kernel runs, and its refresh lane must
             // not keep polling the new session's kernel for a view

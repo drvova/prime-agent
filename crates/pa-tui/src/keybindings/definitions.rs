@@ -381,6 +381,27 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["alt+x"], "Open the context window"),
     ),
     (
+        "app.changes.open",
+        // `alt+g` is claimed by no other binding, editor motions included (`alt+b`/`alt+f`/
+        // `alt+d`/`alt+y` are the editor's); the panel's own keys are plain letters while it
+        // owns the frame.
+        def!(&["alt+g"], "Open the session changes panel"),
+    ),
+    (
+        "app.changes.scope",
+        def!(
+            &["t"],
+            "Changes panel: switch between this turn and the whole session"
+        ),
+    ),
+    (
+        "app.changes.attach",
+        def!(
+            &["a"],
+            "Changes panel: attach the selected file's diff to the next message"
+        ),
+    ),
+    (
         "app.editor.external",
         def!(&["ctrl+g"], "Open external editor"),
     ),

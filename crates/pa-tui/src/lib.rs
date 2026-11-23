@@ -111,6 +111,7 @@ pub mod selection;
 mod selection_gesture;
 mod sequence_guard;
 pub mod session;
+mod session_changes;
 pub mod session_open_error;
 pub mod session_ui;
 pub mod settings_menu;

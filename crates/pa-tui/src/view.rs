@@ -143,6 +143,11 @@ pub struct AgentView {
     /// The context window: what fills the model's context, mounted over the editor dock like
     /// the `/usage` page.
     pub context_view: Option<crate::context_view::ContextView>,
+    /// The session changes panel (`/diff`), over the editor dock.
+    pub(crate) changes_panel: Option<crate::session_changes::ChangesPanel>,
+    /// What the entries say about the files changed and the checks after: kept in step with
+    /// `chat` by the entry mutators below, read only while the changes panel is open.
+    pub(crate) change_ledger: crate::session_changes::ChangeLedger,
     /// The `terminal.showImages` setting (default true): image blocks render inline (their
     /// metadata row plus the picture) when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
@@ -331,6 +336,7 @@ impl AgentView {
         if self.factory_view.is_some()
             || self.heartbeats_picker.is_some()
             || self.bash_view.is_some()
+            || self.changes_panel.is_some()
             || self.goal_panel.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
@@ -433,6 +439,8 @@ impl AgentView {
             info_panel: None,
             usage_page: None,
             context_view: None,
+            changes_panel: None,
+            change_ledger: crate::session_changes::ChangeLedger::default(),
             show_images: true,
             show_hardware_cursor: false,
             splash_suppressed: false,
@@ -489,6 +497,7 @@ impl AgentView {
         self.pending_handoff = None;
         self.search_note_splice(self.chat.len()..self.chat.len(), 1);
         self.chat.push(entry);
+        self.change_ledger.pushed();
         self.entry_layout.push([None, None, None]);
         self.sparse_note_append();
         self.unseen_entries = if self.following {
@@ -519,6 +528,7 @@ impl AgentView {
         self.entry_layout.pop();
         self.unseen_entries = self.unseen_entries.saturating_sub(1);
         self.search_note_splice(index..index + 1, 0);
+        self.change_ledger.popped();
         self.chat.pop()
     }
 
@@ -710,6 +720,7 @@ impl AgentView {
             std::iter::repeat_n([None, None, None], inserted),
         );
         self.search_note_splice(range.clone(), inserted);
+        self.change_ledger.spliced(range.clone(), inserted);
         self.chat.splice(range, entries);
     }
 
@@ -733,6 +744,7 @@ impl AgentView {
         self.sparse_window = None;
         self.search_note_splice(0..self.chat.len(), 0);
         self.chat.clear();
+        self.change_ledger.cleared();
         self.entry_layout.clear();
         self.entry_heights.clear();
         self.md_caches.borrow_mut().clear();
@@ -756,6 +768,8 @@ impl AgentView {
     /// entry changes every LATER spacing-driven row, so those go stale too.
     pub fn mark_entry_stale(&mut self, index: usize) {
         self.mark_entry_rows_stale(index);
+        // The entry's content changed (an expansion goes through the rows alone).
+        self.change_ledger.stale(index);
         for offset in index + 1..self.chat.len() {
             if matches!(
                 self.chat[offset],

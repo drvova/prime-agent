@@ -1584,6 +1584,21 @@ mod tests {
             // The delivery never completes: a hung sink.
             Box::pin(std::future::pending())
         }
+
+        fn session_changes_used(
+            &self,
+            action: &'static str,
+            _files: u64,
+            _untested: u64,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([action, "session_changes", "", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
     }
 
     /// The shortcut overview's report is fire-and-forget: with a sink that never replies, the
@@ -1624,6 +1639,25 @@ mod tests {
         assert_eq!(
             *telemetry.reports.lock().unwrap(),
             vec![["word", "", "mouse_selection", ""]]
+        );
+    }
+
+    /// The session changes report is fire-and-forget: with a sink that never replies, the
+    /// panel's key path hands it off and returns at once, and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_changes_report_never_holds_the_key_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::session_changes::report_used(Some(&hook), "attach", 3, 1);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["attach", "session_changes", "", ""]]
         );
     }
 

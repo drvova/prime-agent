@@ -139,6 +139,7 @@ impl SessionUi {
             || view.heartbeats_picker.is_some()
             || view.goal_panel.is_some()
             || view.bash_view.is_some()
+            || view.changes_panel.is_some()
             || view.info_panel.is_some()
             || view.usage_page.is_some()
             || view.context_view.is_some()
@@ -521,6 +522,10 @@ impl SessionUi {
         }
         if view.bash_view.is_some() {
             return self.handle_bash_view_key(key, view);
+        }
+        if view.changes_panel.is_some() {
+            self.handle_changes_panel_key(key, view);
+            return Ok(());
         }
         if view.goal_panel.is_some() {
             return self.handle_goal_panel_key(key, view);
@@ -991,6 +996,14 @@ impl SessionUi {
         if view
             .editor
             .keybindings()
+            .matches(&id, crate::session_changes::OPEN_BINDING)
+        {
+            self.open_changes_panel(view);
+            return Ok(());
+        }
+        if view
+            .editor
+            .keybindings()
             .matches(&id, "app.subagents.focus")
         {
             self.focus_subagents_summary(&DockFocusSource::Shortcut, view);
@@ -1335,6 +1348,7 @@ pub(crate) fn opening_echo_key_claimed(
         || kb.matches(id, "app.tools.expand")
         || kb.matches(id, "app.subagents.focus")
         || kb.matches(id, "app.context.open")
+        || kb.matches(id, crate::session_changes::OPEN_BINDING)
         || kb.matches(id, "app.editor.external")
         || kb.matches(id, "app.prompt.stash")
         || kb.matches(id, "app.history.search")

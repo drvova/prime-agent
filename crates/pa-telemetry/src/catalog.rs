@@ -30,6 +30,7 @@ mod tui_discovery;
 mod tui_model_recent;
 mod tui_navigation;
 mod tui_search;
+mod tui_session_changes;
 mod tui_unfocused_signal;
 pub use capabilities::{CAPABILITY_EVENTS_AFTER_SESSION_END, CAPABILITY_EVENTS_BEFORE_SESSION_END};
 
@@ -1888,6 +1889,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &tui_discovery::TUI_SHORTCUT_OVERLAY_OPENED,
         &tui_discovery::TUI_MOUSE_SELECTION,
         &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
+        &tui_session_changes::TUI_SESSION_CHANGES,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

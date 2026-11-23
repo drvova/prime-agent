@@ -254,6 +254,26 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn session_changes_used(
+        &self,
+        action: &'static str,
+        files: u64,
+        untested: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            properties.set("files", serde_json::Value::from(files));
+            properties.set("untested", serde_json::Value::from(untested));
+            client.track("tui session changes", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn unfocused_signal_sent(
         &self,
         reason: &'static str,
@@ -933,6 +953,40 @@ mod tests {
                     serde_json::json!(["tui shortcut overlay opened", null, null, null, null]),
                     serde_json::json!(["tui mouse selection", null, null, null, "word"]),
                 ]
+            );
+        });
+    }
+
+    /// A session changes report is a standalone event that keeps its action and its counts.
+    #[test]
+    fn a_session_changes_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.session_changes_used("attach", 3, 1));
+            let events: Vec<serde_json::Value> =
+                std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .map(|event| {
+                        let properties = &event["properties"];
+                        serde_json::json!([
+                            event["name"],
+                            properties["action"],
+                            properties["files"],
+                            properties["untested"],
+                        ])
+                    })
+                    .collect();
+            assert_eq!(
+                events,
+                vec![serde_json::json!(["tui session changes", "attach", 3, 1])]
             );
         });
     }
