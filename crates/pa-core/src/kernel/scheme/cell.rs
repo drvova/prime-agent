@@ -182,6 +182,9 @@ struct Cell {
     /// The thread the cell runs on, set before the cell is on the engine: an
     /// interrupt wakes it ([`interrupt_engine`]).
     thread: std::sync::OnceLock<std::thread::Thread>,
+    /// Set when the cell was reported as not leaving the engine
+    /// ([`StuckCellSink`]): its session's end does not wait for it.
+    stuck: AtomicBool,
 }
 
 /// Which of a cell's two ports a piece of text was printed to.
@@ -581,6 +584,7 @@ impl Cells {
                         .map_or(STUCK_CELL_GRACE, Duration::from_millis);
                     (sink, grace, tokio::time::Instant::now() + grace)
                 });
+            let reported = cell.clone();
             self.runtime.spawn(async move {
                 let mut again = tokio::time::interval(Duration::from_millis(20));
                 again.tick().await;
@@ -593,6 +597,7 @@ impl Cells {
                         .as_ref()
                         .filter(|(_, _, due)| tokio::time::Instant::now() >= *due)
                     {
+                        reported.0.stuck.store(true, Ordering::SeqCst);
                         (sink.0)(&format!(
                             "a kernel cell did not stop within {} ms of its interrupt: a host call is not observing the cell's cancellation",
                             grace.as_millis()
@@ -620,13 +625,15 @@ impl Cells {
 
     /// The session's lifetime ended under its kernel (its host stopped
     /// serving it: a crash, a forced stop). The runtime the kernel worked on
-    /// is gone, and with it everything that would have stopped the cell on
-    /// the engine, so it is stopped from a thread of its own: its signal is
-    /// cancelled, and the engine is interrupted until the cell has left it
-    /// or [`END_WATCH`] has passed (a native call that never returns keeps
-    /// its thread; that thread writes nothing, see
-    /// [`pa_types::session_scope::ensure_live`]).
-    pub(super) fn end(self: &Arc<Self>) {
+    /// is going away, and with it everything that would have stopped the
+    /// cell on the engine, so it is stopped from a thread of its own: its
+    /// signal is cancelled, and the engine is interrupted until the cell has
+    /// left it or [`END_WATCH`] has passed (a native call that never returns
+    /// keeps its thread; that thread writes nothing, see
+    /// [`pa_types::session_scope::ensure_live`]). Returns whether a cell is
+    /// now leaving the engine: `false` when none is on it, or the one on it
+    /// was already reported as stuck.
+    pub(super) fn end(self: &Arc<Self>) -> bool {
         self.killed.store(true, Ordering::SeqCst);
         let running = self
             .running
@@ -634,12 +641,13 @@ impl Cells {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let Some(cell) = running else {
-            return;
+            return false;
         };
         cell.0.signal.cancel();
         if !interrupt_on_engine(&self.running, &self.controller, &cell) {
-            return;
+            return false;
         }
+        let leaving = !cell.0.stuck.load(Ordering::SeqCst);
         let cells = Arc::clone(self);
         let watching = std::thread::Builder::new()
             .name("scheme-cell-end".to_string())
@@ -656,6 +664,7 @@ impl Cells {
         if let Err(error) = watching {
             tracing::warn!("an ended session's cell is interrupted once only: {error}");
         }
+        leaving
     }
 
     /// Answer one `(%cell operation argument ...)` call from the running cell.
@@ -1009,6 +1018,7 @@ pub(super) async fn execute(
         stream,
         state: Mutex::new(CellState::default()),
         thread: std::sync::OnceLock::new(),
+        stuck: AtomicBool::new(false),
     }));
     let running = Arc::clone(&session);
     let run = cell.clone();

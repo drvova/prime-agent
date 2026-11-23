@@ -87,6 +87,14 @@ const HOST_BRIDGE: &str = r"
 /// had open.
 const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long the end of a session's lifetime waits for the cell on the engine
+/// to leave it, before the host shuts the session's runtime down. Longer than
+/// every bounded wait a stopped cell may still make on that runtime (a
+/// command's kill, a withdrawn question), so only a cell inside a call that
+/// does not observe its stop is given up on, and every end of such a session
+/// pays this.
+const CELL_LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
 /// Keep Steel's own state inside the agent directory. Unless `STEEL_HOME` is
 /// set, the first engine built in a process creates a `steel` directory in
 /// the user's data home and prints to stderr when it cannot, which breaks
@@ -698,20 +706,35 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             }
             let session = started?;
             // A hosted session's lifetime can end without `kill` (its host
-            // drops the runtime): the cell on the engine and the session's
-            // commands stop with it all the same.
+            // stops serving it and shuts its runtime down): the cell on the
+            // engine and the session's commands stop with it all the same.
             if let Some(scope) = pa_types::session_scope::current() {
-                // Weakly: a kernel released before then is not kept for it.
+                // Weakly: a kernel released before then is not kept for it
+                // (a cell still on its engine keeps it, and is waited for).
                 let ending = Arc::downgrade(&session);
                 let disassembling = Arc::downgrade(&state.rizin);
                 scope.at_end(Box::new(move || {
-                    if let Some(ending) = ending.upgrade() {
-                        ending.cells.end();
+                    let ending = ending.upgrade();
+                    let leaving = ending.as_ref().is_some_and(|ending| {
+                        let leaving = ending.cells.end();
                         ending.jobs.kill_all();
-                    }
+                        leaving
+                    });
                     // No rizin, and nothing it debugs, outlives the session.
                     if let Some(disassembling) = disassembling.upgrade() {
                         disassembling.shutdown();
+                    }
+                    // The stopped cell's thread still waits on the session's
+                    // runtime (for the command it kills, for a question it
+                    // withdraws), and a wait on a runtime that is shut down
+                    // under it panics. The host shuts the runtime down when
+                    // this returns: not before the cell's thread is done with
+                    // it. The engine's turn is held by exactly that thread.
+                    if let (true, Some(ending)) = (leaving, ending) {
+                        let until = std::time::Instant::now() + CELL_LEAVE_WAIT;
+                        while ending.turn.try_lock().is_err() && std::time::Instant::now() < until {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
                     }
                 }));
             }

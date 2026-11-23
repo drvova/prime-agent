@@ -448,16 +448,25 @@ impl HostedSession {
                                 () = thread_control.end.notified() => None,
                             }
                         });
+                        // The lifetime ends while its runtimes still run
+                        // (this one, and the engine's own, which is dropped
+                        // with the worker's tasks by the shutdown below):
+                        // whatever of it is left is cut off from the
+                        // session's durable state before the next lifetime
+                        // can exist, and a thread that waits on a runtime
+                        // from outside it (the kernel's cell) is stopped and
+                        // has left before that runtime goes. Shut down first,
+                        // the runtime's timers fail under that thread's wait
+                        // and it panics: a crash of a session that only ended.
+                        scope.end();
                         runtime.shutdown_timeout(RUNTIME_SHUTDOWN);
                         ended
                     }
-                    Err(error) => Some(format!("build the session runtime: {error}")),
+                    Err(error) => {
+                        scope.end();
+                        Some(format!("build the session runtime: {error}"))
+                    }
                 };
-                // Whatever of this lifetime is still running (a stuck call,
-                // a blocking thread the shutdown did not wait for) is cut
-                // off from the session's durable state before the next
-                // lifetime can exist.
-                scope.end();
                 live()
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
