@@ -787,6 +787,6 @@ async fn an_early_user_constraint_survives_compaction_verbatim() {
     assert!(summary
         .content
         .text()
-        .contains("- \"Never push to the release branch; it deploys on push.\"\n"));
+        .contains("[1] \"Never push to the release branch; it deploys on push.\"\n"));
     registration.unregister();
 }

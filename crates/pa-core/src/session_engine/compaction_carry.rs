@@ -163,9 +163,12 @@ impl CarriedState {
     pub fn render(&self) -> String {
         let mut out = String::new();
         if !self.user_constraints.is_empty() {
-            out.push_str("\n\n<user-constraints>\nThe user's own words from the compacted conversation, quoted verbatim, oldest first. They still apply unless the user withdrew them later.\n");
-            for constraint in &self.user_constraints {
-                let _ = writeln!(out, "- \"{constraint}\"");
+            // Newest first and numbered: the harness cannot tell when a
+            // later sentence overrides an earlier one on the same subject,
+            // so it keeps both and says which is newer.
+            out.push_str("\n\n<user-constraints>\nThe user's own words from the compacted conversation, quoted verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n");
+            for (rank, constraint) in self.user_constraints.iter().rev().enumerate() {
+                let _ = writeln!(out, "[{}] \"{constraint}\"", rank + 1);
             }
             out.push_str("</user-constraints>");
         }
