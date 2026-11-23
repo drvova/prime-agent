@@ -745,7 +745,7 @@ fn refused_saved_session_create_names_the_holder_and_next_steps() {
         "the notice keeps the daemon's refusal line verbatim: {notice}"
     );
     assert!(
-        notice.contains("Holder: session 245ddb974b6d (no worker on this daemon serves it"),
+        notice.contains("Holder: session 245ddb974b6d (this daemon does not host it"),
         "the notice names the unreachable holder: {notice}"
     );
     assert!(

@@ -404,7 +404,7 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
     steps.push(HeadlessStep::WaitMs(100));
     steps.push(HeadlessStep::Key(key(KeyCode::Enter)));
     steps.push(HeadlessStep::WaitMs(100));
-    // 5 jumps to the Agents tab; down x2 lands on Idle worker eviction (a multi-option row:
+    // 5 jumps to the Agents tab; down x2 lands on Idle session eviction (a multi-option row:
     // off/30/60/90/180/360).
     steps.push(HeadlessStep::Key(key(KeyCode::Char('5'))));
     steps.push(HeadlessStep::WaitMs(100));

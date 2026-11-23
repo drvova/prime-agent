@@ -1372,4 +1372,30 @@ mod backfill_tests {
         server.abort();
         }).await.expect("mock session open, warning rebuild complete within ten seconds");
     }
+
+    /// A notice that names the key leaving a side run names the effective `app.input.clear`
+    /// key, and nothing once the user unbound it.
+    #[tokio::test]
+    async fn side_run_notices_name_the_effective_clear_key() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("clear-key.sock");
+            let (mut session, server) = mock_session(&socket, mpsc::unbounded_channel().0).await;
+            let mut tails = Vec::new();
+            for keys in [None, Some(vec!["ctrl+g".to_string()]), Some(Vec::new())] {
+                let mut bindings = crate::keybindings::KeybindingsConfig::new();
+                if let Some(keys) = keys {
+                    bindings.insert("app.input.clear".to_string(), keys);
+                }
+                session.keybindings =
+                    crate::keybindings::KeybindingsManager::with_user_bindings(bindings);
+                tails.push(session.clear_key_tail(|key| format!(" ({key} cancels)")));
+            }
+            assert_eq!(tails, [" (Esc cancels)", " (Ctrl+G cancels)", ""]);
+            drop(session);
+            server.abort();
+        })
+        .await
+        .expect("the mock session opens within ten seconds");
+    }
 }

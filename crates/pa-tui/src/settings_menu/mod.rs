@@ -415,7 +415,7 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
         },
         SettingsMenuRow {
             id: "idle-eviction-minutes",
-            label: "Idle worker eviction",
+            label: "Idle session eviction",
             description: "Stop fully idle agent trees after this many minutes (global daemon policy)",
             current: current.idle_eviction_minutes.clone(),
             values: Some(idle_values),
@@ -1260,12 +1260,7 @@ impl SettingsMenu {
             .and_then(|tab| tab.filtered.get(tab.selected))
             .is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some());
         footer = footer
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "navigate",
-                HintRank::Useful,
-            )
+            .navigate(kb)
             .keys(["left", "right"], "change", HintRank::Useful);
         if selected_changed {
             footer = footer.keys(["delete"], "reset", HintRank::Useful);
@@ -1391,12 +1386,7 @@ impl SettingsMenu {
         lines.extend(
             Footer::new()
                 .enter(kb, enter.as_deref())
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Back)
                 .rows(theme, width),

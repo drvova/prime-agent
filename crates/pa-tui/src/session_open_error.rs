@@ -207,7 +207,7 @@ pub fn decorate_interactive_refusal(
         // worker on THIS daemon will ever answer that id — so the guidance names what the holder
         // can be and the two real ways around it.
         None => format!(
-            "Holder: session {owner} (no worker on this daemon serves it - another daemon's worker or a leftover process holds the file) \u{b7} Restarting this daemon reaps same-socket leftovers \u{b7} The file unlocks when that process exits"
+            "Holder: session {owner} (this daemon does not host it - another daemon or a leftover process holds the file) \u{b7} Restarting this daemon reaps same-socket leftovers \u{b7} The file unlocks when that process exits"
         ),
     };
     format!("{first} \u{b7} {guidance}")
@@ -397,7 +397,7 @@ mod decorate_tests {
         let original = "Session is already active in 4be64bca6a0a: /tmp/s.jsonl";
         let text = decorate_interactive_refusal(original, None, "4be64bca6a0a");
         assert!(
-            text.contains("Holder: session 4be64bca6a0a (no worker on this daemon serves it"),
+            text.contains("Holder: session 4be64bca6a0a (this daemon does not host it"),
             "{text}"
         );
         assert!(

@@ -3,8 +3,9 @@
 //! 2026-09-28 selection ruling).
 
 use super::SettingsMenuRow;
+use crate::menu_chrome::ELLIPSIS;
 use crate::theme::{Theme, ThemeColor};
-use crate::width::truncate_line;
+use crate::width::{line_width, truncate_line};
 use crate::{Line, Span};
 
 struct TabLayout {
@@ -117,33 +118,72 @@ pub(crate) fn strip_row(
     active: usize,
     counts: StripCounts<'_>,
 ) -> Line {
+    let tabs: Vec<Line> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let mut tab = vec![
+                theme.fg_span(ThemeColor::Dim, (index + 1).to_string()),
+                Span::raw(" "),
+                if index == active {
+                    theme.bold(theme.fg_span(ThemeColor::Text, name.to_string()))
+                } else {
+                    theme.fg_span(ThemeColor::Muted, name.to_string())
+                },
+            ];
+            match counts {
+                StripCounts::Hidden => {}
+                StripCounts::Matches(counts) => {
+                    let count = counts.get(index).copied().unwrap_or(0);
+                    let color = if count > 0 {
+                        ThemeColor::Accent
+                    } else {
+                        ThemeColor::Dim
+                    };
+                    tab.push(Span::raw(" "));
+                    tab.push(theme.fg_span(color, count.to_string()));
+                }
+            }
+            tab
+        })
+        .collect();
+    // A strip wider than the pane windows over whole tabs around the active one, and a dim `…`
+    // marks each side that hides tabs, so a narrow pane never reads as if the tabs it shows were
+    // all there are.
+    let Some(newest) = tabs.len().checked_sub(1) else {
+        return vec![Span::raw("  ")];
+    };
+    let active = active.min(newest);
+    let window_width = |first: usize, last: usize| -> usize {
+        2 + if first > 0 { 2 } else { 0 }
+            + tabs[first..=last]
+                .iter()
+                .map(|tab| line_width(tab) + 4)
+                .sum::<usize>()
+            - 4
+            + if last < newest { 2 } else { 0 }
+    };
+    let first = (0..=active)
+        .find(|first| window_width(*first, active) <= width)
+        .unwrap_or(active);
+    let last = (active..=newest)
+        .rev()
+        .find(|last| window_width(first, *last) <= width)
+        .unwrap_or(active);
     let mut line: Line = vec![Span::raw("  ")];
-    for (index, name) in names.iter().enumerate() {
-        if index > 0 {
+    if first > 0 {
+        line.push(theme.fg_span(ThemeColor::Dim, format!("{ELLIPSIS} ")));
+    }
+    for (index, tab) in tabs.iter().enumerate().take(last + 1).skip(first) {
+        if index > first {
             line.push(Span::raw("    "));
         }
-        line.push(theme.fg_span(ThemeColor::Dim, (index + 1).to_string()));
-        line.push(Span::raw(" "));
-        line.push(if index == active {
-            theme.bold(theme.fg_span(ThemeColor::Text, name.to_string()))
-        } else {
-            theme.fg_span(ThemeColor::Muted, name.to_string())
-        });
-        match counts {
-            StripCounts::Hidden => {}
-            StripCounts::Matches(counts) => {
-                let count = counts.get(index).copied().unwrap_or(0);
-                let color = if count > 0 {
-                    ThemeColor::Accent
-                } else {
-                    ThemeColor::Dim
-                };
-                line.push(Span::raw(" "));
-                line.push(theme.fg_span(color, count.to_string()));
-            }
-        }
+        line.extend(tab.iter().cloned());
     }
-    truncate_line(&line, width, "")
+    if last < newest {
+        line.push(theme.fg_span(ThemeColor::Dim, format!(" {ELLIPSIS}")));
+    }
+    truncate_line(&line, width, ELLIPSIS)
 }
 
 #[cfg(test)]
@@ -198,8 +238,45 @@ mod tabs_tests {
             StripCounts::Hidden,
         );
         let text: String = line.iter().map(|span| span.content.as_str()).collect();
-        assert!(crate::width::str_width(&text) <= 12);
-        assert!(text.contains("General"));
-        assert!(!text.contains("Models"));
+        assert_eq!(text, "  1 General\u{2026}");
+    }
+
+    /// A pane too narrow for every tab keeps the active tab on the strip and marks each side
+    /// that hides tabs.
+    #[test]
+    fn a_narrow_strip_keeps_the_active_tab_and_marks_the_hidden_ones() {
+        let names = ["General", "Models", "Display", "Editor", "Agents"];
+        let strip = |active: usize| -> String {
+            strip_row(&theme(), 40, &names, active, StripCounts::Hidden)
+                .iter()
+                .map(|span| span.content.as_str())
+                .collect()
+        };
+        assert_eq!(
+            [strip(0), strip(3), strip(4)],
+            [
+                "  1 General    2 Models    3 Display \u{2026}",
+                "  \u{2026} 2 Models    3 Display    4 Editor \u{2026}",
+                "  \u{2026} 3 Display    4 Editor    5 Agents",
+            ]
+            .map(str::to_string)
+        );
+    }
+
+    proptest::proptest! {
+        // The strip fits every pane width and, given room for one tab between two marks, always
+        // shows the active tab.
+        #[test]
+        fn the_strip_fits_the_pane_and_keeps_the_active_tab(width in 0usize..120, active in 0usize..5) {
+            let names = ["General", "Models", "Display", "Editor", "Agents"];
+            let line = strip_row(&theme(), width, &names, active, StripCounts::Hidden);
+            proptest::prop_assert!(line_width(&line) <= width, "{line:?}");
+            if width >= 15 {
+                proptest::prop_assert!(
+                    line.iter().any(|span| span.content == names[active]),
+                    "{line:?}"
+                );
+            }
+        }
     }
 }
