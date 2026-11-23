@@ -182,7 +182,7 @@ fn a_short_pane_keeps_the_row_and_the_fitting_note_lines() {
     );
     assert_eq!(
         lines.last().expect("a trailing line").trim(),
-        "...",
+        "\u{2026}",
         "the trailing ellipsis covers the clip: {lines:?}"
     );
     assert!(
@@ -193,7 +193,7 @@ fn a_short_pane_keeps_the_row_and_the_fitting_note_lines() {
 
 /// A top-section selection with a note taller than the viewport shifts
 /// the slice past the section heading; the clipped heading still gets
-/// its leading `...`.
+/// its leading `…`.
 #[test]
 fn a_top_row_with_a_tall_note_keeps_the_leading_ellipsis() {
     let (mut mode, index) = mode_with_row("worker", "mock-1");
@@ -214,7 +214,7 @@ fn a_top_row_with_a_tall_note_keeps_the_leading_ellipsis() {
     );
     assert_eq!(
         lines[worker_row - 1].trim(),
-        "...",
+        "\u{2026}",
         "the leading ellipsis marks the clipped heading: {lines:?}"
     );
 }

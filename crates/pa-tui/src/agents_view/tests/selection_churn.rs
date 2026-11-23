@@ -142,7 +142,7 @@ fn list_window_follows_the_selection_below_the_fold() {
     assert!(texts[0].contains("Session"), "legend: {texts:?}");
     assert!(texts[2].contains("Idle (12)"));
     assert!(texts[3].contains("session 1"));
-    assert_eq!(texts[7].trim(), "...");
+    assert_eq!(texts[7].trim(), "\u{2026}");
     assert!(!texts.iter().any(|t| t.contains("session 5")));
     for _ in 0..11 {
         mode.handle_key("down");
@@ -150,13 +150,13 @@ fn list_window_follows_the_selection_below_the_fold() {
     assert_eq!(mode.rows[mode.selected].title, "session 12");
     let texts = frame_texts(&mut mode);
     assert_eq!(texts.len(), 8);
-    assert_eq!(texts[2].trim(), "...");
+    assert_eq!(texts[2].trim(), "\u{2026}");
     assert!(
         texts.iter().any(|t| t.contains("session 12")),
         "the selected row must render inside the window: {texts:?}"
     );
     assert!(!texts.iter().any(|t| t.contains("session 7")));
-    assert_ne!(texts.last().map(|t| t.trim()), Some("..."));
+    assert_ne!(texts.last().map(|t| t.trim()), Some("\u{2026}"));
     // The selected row carries the ONE shared selection style (the operator's 2026-09-29
     // one-color ruling: `Theme::selection_row_style`, one constant).
     let selected_line = mode.render_list(120, 8, 0);
@@ -184,5 +184,5 @@ fn list_window_follows_the_selection_below_the_fold() {
     assert_eq!(mode.rows[mode.selected].title, "session 1");
     let texts = frame_texts(&mut mode);
     assert!(texts[3].contains("session 1"));
-    assert_eq!(texts[7].trim(), "...");
+    assert_eq!(texts[7].trim(), "\u{2026}");
 }

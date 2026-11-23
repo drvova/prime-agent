@@ -11,7 +11,10 @@ use crate::{Line, Span};
 /// the title, the rows' labels, and the footer share one left edge.
 pub(crate) const CHROME_INDENT: &str = "  ";
 
-const SEPARATOR: &str = " \u{b7} ";
+pub(crate) const SEPARATOR: &str = " \u{b7} ";
+
+/// The mark a row that was cut to fit ends with: chrome text never stops mid-word unmarked.
+pub(crate) const ELLIPSIS: &str = "\u{2026}";
 
 /// The title row: the surface's name in the accent colour at the chrome indent (`Model`,
 /// `Settings › Theme`, `Session tree`), truncated to the frame width.
@@ -20,7 +23,36 @@ pub(crate) fn title_row(theme: &Theme, width: usize, title: &str) -> Line {
         Span::raw(CHROME_INDENT),
         theme.fg_span(ThemeColor::Accent, title.to_string()),
     ];
-    truncate_line(&line, width, "")
+    truncate_line(&line, width, ELLIPSIS)
+}
+
+/// A pane's title row with its counts flush right (`  Factory          3 running · 1 paused`),
+/// two columns short of the edge; a row too narrow for both cuts the counts with the ellipsis.
+pub(crate) fn title_counts_row(
+    theme: &Theme,
+    width: usize,
+    title: &str,
+    counts: &[(ThemeColor, String)],
+) -> Line {
+    let mut row = title_row(theme, usize::MAX, title);
+    if !counts.is_empty() {
+        let joined_width = counts
+            .iter()
+            .map(|(_, text)| str_width(text) + str_width(SEPARATOR))
+            .sum::<usize>()
+            .saturating_sub(str_width(SEPARATOR));
+        let gap = width
+            .saturating_sub(str_width(CHROME_INDENT) + str_width(title) + 2 + joined_width)
+            .max(2);
+        row.push(Span::raw(" ".repeat(gap)));
+        for (index, (color, text)) in counts.iter().enumerate() {
+            if index > 0 {
+                row.push(theme.fg_span(ThemeColor::Muted, SEPARATOR.to_string()));
+            }
+            row.push(theme.fg_span(*color, text.clone()));
+        }
+    }
+    truncate_line(&row, width, ELLIPSIS)
 }
 
 /// Hold a searchable list's height while a query is active: the rows pushed since `list_start`
@@ -57,7 +89,17 @@ pub(crate) fn empty_state_row(
         Span::raw(CHROME_INDENT),
         theme.fg_span(ThemeColor::Muted, text),
     ];
-    truncate_line(&line, width, "")
+    truncate_line(&line, width, ELLIPSIS)
+}
+
+/// A surface's failure row: `Error: <message>` in the error tone at the chrome indent, ending in
+/// `…` when the frame is too narrow for it, so a cut message never reads as the whole one.
+pub(crate) fn error_row(theme: &Theme, width: usize, message: &str) -> Line {
+    let line = vec![
+        Span::raw(CHROME_INDENT),
+        theme.fg_span(ThemeColor::Error, format!("Error: {message}")),
+    ];
+    truncate_line(&line, width, ELLIPSIS)
 }
 
 /// How much a footer hint matters when the row is too narrow: the lowest rank drops first, and
@@ -159,6 +201,72 @@ impl Footer {
         self
     }
 
+    /// The list-navigation hint every picker shares: `↑/↓ navigate` over the effective
+    /// `tui.select.up`/`tui.select.down` keys, at the rank navigation drops at.
+    #[must_use]
+    pub(crate) fn navigate(self, kb: &KeybindingsManager) -> Self {
+        self.bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "navigate",
+            HintRank::Useful,
+        )
+    }
+
+    /// A list's arrows and confirm hint, offered only while the list has rows: an empty list
+    /// advertises neither, so it offers only the way out the caller adds after. `confirm` is the
+    /// raw key set the confirm hint shows (a binding's first key, or a literal key the list
+    /// matches, like a checkbox list's Space); an empty set drops the hint.
+    #[must_use]
+    pub(crate) fn list<I>(
+        self,
+        kb: &KeybindingsManager,
+        rows: usize,
+        confirm: I,
+        verb: &str,
+    ) -> Self
+    where
+        I: IntoIterator,
+        I::Item: AsRef<str>,
+    {
+        if rows == 0 {
+            return self;
+        }
+        self.navigate(kb).keys(confirm, verb, HintRank::Core)
+    }
+
+    /// A dock pane's list footer (the bash and heartbeat panes): navigate and open while the
+    /// list has rows, the close keys always. An empty list advertises no key that does nothing,
+    /// and an override that empties a binding drops its key. The arrows outrank the open key here
+    /// (rightmost drops first among the last two), so a narrow pane keeps how to move and how to
+    /// leave: `Enter/→ open` is the hint a narrow row gives up first.
+    #[must_use]
+    pub(crate) fn pane_list(kb: &KeybindingsManager, rows: usize) -> Self {
+        let footer = if rows == 0 {
+            Self::new()
+        } else {
+            Self::new()
+                .bound(
+                    kb,
+                    &["tui.select.up", "tui.select.down"],
+                    "navigate",
+                    HintRank::Core,
+                )
+                .bound(
+                    kb,
+                    &["tui.select.confirm", "app.modal.open"],
+                    "open",
+                    HintRank::Useful,
+                )
+        };
+        footer.bound(
+            kb,
+            &["app.modal.back", "tui.select.cancel"],
+            "close",
+            HintRank::Core,
+        )
+    }
+
     /// The Esc hint over `tui.select.cancel`: `close` on a top-level surface, `back` in a
     /// submenu.
     #[must_use]
@@ -248,6 +356,9 @@ impl Footer {
 }
 
 #[cfg(test)]
+mod panel_footers_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::keybindings::{KeybindingsConfig, KeybindingsManager};
@@ -271,12 +382,7 @@ mod tests {
 
     fn picker_footer(kb: &KeybindingsManager) -> Footer {
         Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "navigate",
-                HintRank::Useful,
-            )
+            .navigate(kb)
             .bound(
                 kb,
                 &["tui.select.top", "tui.select.bottom"],
@@ -383,6 +489,52 @@ mod tests {
             vec!["  enter forks from this message", "  Esc close"]
         );
         assert_eq!(footer.enter(&kb, None).rows(&theme(), 80).len(), 1);
+    }
+
+    /// Chrome text cut to the frame ends in the shared mark: a title, an empty state and an
+    /// error never stop mid-word unmarked, and none is wider than the frame.
+    #[test]
+    fn cut_chrome_rows_end_in_the_shared_mark() {
+        let kb = KeybindingsManager::new();
+        assert_eq!(
+            [
+                text(&title_row(&theme(), 14, "Settings \u{203a} Theme")),
+                text(&empty_state_row(
+                    &theme(),
+                    14,
+                    &kb,
+                    "",
+                    "No user messages found"
+                )),
+                text(&error_row(&theme(), 14, "kill failed: no such process")),
+                text(&error_row(&theme(), 80, "kill failed")),
+            ],
+            [
+                "  Settings \u{203a} \u{2026}",
+                "  No user mes\u{2026}",
+                "  Error: kill\u{2026}",
+                "  Error: kill failed",
+            ]
+            .map(str::to_string)
+        );
+    }
+
+    /// A dock pane's list offers its arrows and open key only over rows; an empty list keeps
+    /// the close keys alone.
+    #[test]
+    fn an_empty_pane_list_offers_only_its_way_out() {
+        let kb = KeybindingsManager::new();
+        assert_eq!(
+            [
+                text(&Footer::pane_list(&kb, 3).line(&theme(), 80)),
+                text(&Footer::pane_list(&kb, 0).line(&theme(), 80)),
+            ],
+            [
+                "  \u{2191}/\u{2193} navigate \u{b7} Enter/\u{2192} open \u{b7} \u{2190}/Esc close",
+                "  \u{2190}/Esc close",
+            ]
+            .map(str::to_string)
+        );
     }
 
     /// Esc reads `close` on a top-level surface and `back` in a submenu.

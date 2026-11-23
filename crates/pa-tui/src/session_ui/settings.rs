@@ -245,6 +245,7 @@ impl SessionUi {
             values.autocomplete_max_visible = settings.autocomplete_max_visible();
             values.clear_on_shrink = settings.clear_on_shrink();
             values.terminal_progress = settings.show_terminal_progress();
+            values.notify_on_turn_end = settings.notify_on_turn_end();
             values.idle_eviction_minutes = settings.idle_eviction_minutes();
             values.mermaid = settings.mermaid_rendering_mode();
             values.quiet_startup = settings.quiet_startup();
@@ -460,6 +461,16 @@ impl SessionUi {
                     |settings, enabled| settings.set_show_terminal_progress(enabled),
                     value,
                 )?;
+            }
+            "notify-on-turn-end" => {
+                if let Some(settings) = &self.client_settings {
+                    if let Err(error) = settings.set_notify_on_turn_end(value) {
+                        return Err(format!("{error:#}"));
+                    }
+                }
+                // The next frame's write asks the terminal for focus reports, or stops them.
+                view.turn_end_signal =
+                    crate::terminal_attention::TurnEndSignal::from_wire_name(value);
             }
             "idle-eviction-minutes" => {
                 if let Some(settings) = &self.client_settings {

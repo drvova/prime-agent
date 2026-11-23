@@ -64,6 +64,7 @@ fn tabs_partition_the_settings_rows() {
                 "Display",
                 vec![
                     "theme",
+                    "notify-on-turn-end",
                     "terminal-progress",
                     "clear-on-shrink",
                     "show-images",
@@ -554,14 +555,14 @@ fn render_shows_value_and_selected_description() {
         .find(|row| row.starts_with("\u{203a}"))
         .expect("the selected row carries the marker");
     assert!(selected.contains("Auto-compact"));
-    assert!(selected.contains("true"));
+    assert!(selected.trim_end().ends_with(" on"), "{selected}");
     // The separator rule rides between the description and the hint row (the operator's 2026-09-28
     // directive), and the hint row carries the description's two-space padding-x.
     let hint_index = text
         .iter()
         .position(|row| row.starts_with("  \u{2191}/\u{2193} navigate"))
         .expect("the hint row renders with its padding");
-    assert_eq!(text[hint_index - 1], "  enter sets auto-compact to false");
+    assert_eq!(text[hint_index - 1], "  enter sets auto-compact to off");
     assert_eq!(text[hint_index - 2], "\u{2500}".repeat(100));
     let description_index = text
         .iter()
@@ -854,7 +855,7 @@ fn a_refused_change_shows_its_reason_under_the_row() {
         .find(|line| line.contains("Auto-compact") && !line.contains("threshold"))
         .expect("the row renders");
     assert!(
-        row.trim_end().ends_with("true"),
+        row.trim_end().ends_with(" on"),
         "the value is put back: {row}"
     );
     assert!(

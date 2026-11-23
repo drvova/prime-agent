@@ -251,6 +251,16 @@ struct SettingsTab {
     selected: usize,
 }
 
+/// How a stored value reads on screen: a boolean setting is `on`/`off` (the `/fast` status's
+/// words); the stored `true`/`false` and every other value are unchanged.
+fn shown_value(value: &str) -> &str {
+    match value {
+        "true" => "on",
+        "false" => "off",
+        other => other,
+    }
+}
+
 /// The TS settings-menu rows in the TS order, with the caller-assembled
 /// current values.
 pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRow> {
@@ -414,8 +424,17 @@ pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRo
             applies: Applies::Now,
         },
         SettingsMenuRow {
+            id: "notify-on-turn-end",
+            label: "When a turn ends unfocused",
+            description: "Ring the terminal bell or send a desktop notification (OSC 9) when a turn ends or a question is waiting while the terminal is unfocused; needs a terminal that reports focus",
+            current: current.notify_on_turn_end.clone(),
+            values: Some(vec!["off".into(), "bell".into(), "notification".into()]),
+            submenu: None,
+            applies: Applies::Now,
+        },
+        SettingsMenuRow {
             id: "idle-eviction-minutes",
-            label: "Idle worker eviction",
+            label: "Idle session eviction",
             description: "Stop fully idle agent trees after this many minutes (global daemon policy)",
             current: current.idle_eviction_minutes.clone(),
             values: Some(idle_values),
@@ -538,6 +557,7 @@ pub struct SettingsCurrentValues {
     pub autocomplete_max_visible: u64,
     pub clear_on_shrink: bool,
     pub terminal_progress: bool,
+    pub notify_on_turn_end: String,
     pub idle_eviction_minutes: String,
     pub steering_mode: String,
     pub follow_up_mode: String,
@@ -575,6 +595,7 @@ impl SettingsCurrentValues {
             autocomplete_max_visible: 5,
             clear_on_shrink: false,
             terminal_progress: false,
+            notify_on_turn_end: "off".to_string(),
             idle_eviction_minutes: "90".to_string(),
             steering_mode: "all".to_string(),
             follow_up_mode: "one-at-a-time".to_string(),
@@ -1158,12 +1179,15 @@ impl SettingsMenu {
             let (label, value) = if self.changed_default(row).is_some() {
                 (
                     theme.fg_span(ThemeColor::Warning, row.label),
-                    crate::menu_panel::MenuSegment::themed(ThemeColor::Warning, &row.current),
+                    crate::menu_panel::MenuSegment::themed(
+                        ThemeColor::Warning,
+                        shown_value(&row.current),
+                    ),
                 )
             } else {
                 (
                     crate::Span::raw(row.label),
-                    crate::menu_panel::MenuSegment::muted(&row.current),
+                    crate::menu_panel::MenuSegment::muted(shown_value(&row.current)),
                 )
             };
             lines.push(crate::menu_panel::menu_row(
@@ -1234,7 +1258,7 @@ impl SettingsMenu {
                     format!(
                         "sets {} to {}",
                         row.label.to_lowercase(),
-                        values.get(next).map_or("", String::as_str)
+                        values.get(next).map_or("", |value| shown_value(value))
                     )
                 }
                 None => format!("opens {}", row.label),
@@ -1254,30 +1278,31 @@ impl SettingsMenu {
         if let Some((_, applies)) = self.saved_notice() {
             footer = footer.notice(ThemeColor::Success, applies.hint());
         }
-        let selected_changed = self
+        let selected = self
             .tabs
             .get(self.tab)
-            .and_then(|tab| tab.filtered.get(tab.selected))
-            .is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some());
-        footer = footer
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "navigate",
-                HintRank::Useful,
-            )
-            .keys(["left", "right"], "change", HintRank::Useful);
-        if selected_changed {
+            .and_then(|tab| tab.filtered.get(tab.selected));
+        // A search that hides every row leaves nothing to move to, change, or select: the
+        // footer keeps the tabs and the way out.
+        if selected.is_some() {
+            footer = footer
+                .navigate(kb)
+                .keys(["left", "right"], "change", HintRank::Useful);
+        }
+        if selected.is_some_and(|&row_index| self.changed_default(&self.rows[row_index]).is_some())
+        {
             footer = footer.keys(["delete"], "reset", HintRank::Useful);
         }
-        footer
-            .keys(
-                ["tab".to_string(), format!("1-{tabs}")],
-                "tabs",
-                HintRank::Extra,
-            )
-            .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-            .esc(kb, EscVerb::Close)
+        let footer = footer.keys(
+            ["tab".to_string(), format!("1-{tabs}")],
+            "tabs",
+            HintRank::Extra,
+        );
+        match selected {
+            Some(_) => footer.bound(kb, &["tui.select.confirm"], "select", HintRank::Core),
+            None => footer,
+        }
+        .esc(kb, EscVerb::Close)
     }
 
     /// The submenu render: accent title, muted description, the shared menu
@@ -1391,12 +1416,7 @@ impl SettingsMenu {
         lines.extend(
             Footer::new()
                 .enter(kb, enter.as_deref())
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Back)
                 .rows(theme, width),

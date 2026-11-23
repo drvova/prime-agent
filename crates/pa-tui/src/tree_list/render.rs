@@ -153,7 +153,7 @@ impl TreeList {
                 // the row's own colours.
                 lines.push(crate::menu_panel::finish_menu_row(theme, &row, width, true));
             } else {
-                lines.push(truncate_line(&row, width, ""));
+                lines.push(truncate_line(&row, width, crate::menu_chrome::ELLIPSIS));
             }
         }
         lines.push(truncate_line(

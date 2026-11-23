@@ -150,8 +150,10 @@ pub(crate) fn daemon_death_row(
         (None, None, None) => "ended without a status".to_string(),
     };
     let sessions = match (record.live_sessions, record.busy_sessions) {
-        (Some(live), Some(busy)) => format!(" with {live} live session(s), {busy} mid-turn"),
-        (Some(live), None) => format!(" with {live} live session(s)"),
+        (Some(1), Some(busy)) => format!(" with 1 live session, {busy} mid-turn"),
+        (Some(live), Some(busy)) => format!(" with {live} live sessions, {busy} mid-turn"),
+        (Some(1), None) => " with 1 live session".to_string(),
+        (Some(live), None) => format!(" with {live} live sessions"),
         (None, _) => String::new(),
     };
     let after = match record.outcome {
@@ -255,11 +257,11 @@ mod tests {
             ),
             (
                 Some(status(
-                    "The Prime Agent daemon was killed by signal 9 (SIGKILL) at 2026-01-02T00:00:00.000Z with 3 live session(s), 1 mid-turn. It was restarted automatically; a turn that was running is reported in its session.",
+                    "The Prime Agent daemon was killed by signal 9 (SIGKILL) at 2026-01-02T00:00:00.000Z with 3 live sessions, 1 mid-turn. It was restarted automatically; a turn that was running is reported in its session.",
                     StatusKind::Warning
                 )),
                 Some(status(
-                    "The Prime Agent daemon was killed by signal 9 (SIGKILL) at 2026-01-02T00:00:00.000Z with 3 live session(s), 1 mid-turn. That was 5 deaths in a row, so automatic restarts stopped until this daemon was started.",
+                    "The Prime Agent daemon was killed by signal 9 (SIGKILL) at 2026-01-02T00:00:00.000Z with 3 live sessions, 1 mid-turn. That was 5 deaths in a row, so automatic restarts stopped until this daemon was started.",
                     StatusKind::Warning
                 )),
                 None,

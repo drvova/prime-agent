@@ -148,25 +148,17 @@ pub(super) fn render_output(
                 width,
             );
         }
-        let result_text = details.result.as_deref().filter(|s| !s.trim().is_empty());
-        if let Some(result) = result_text {
-            if !is_edit_confirmation(details.result.as_deref(), &details.diffs)
-                && !is_agent_message_receipt(
-                    details.result.as_deref(),
-                    &details.sent_agent_messages,
-                )
-            {
-                start_output(&mut output_started, lines);
-                rendered_text_output = true;
-                render_output_text(
-                    lines,
-                    &normalize_error_details(result),
-                    &OutputLabel::Out,
-                    &mut output_marker_pending,
-                    theme,
-                    width,
-                );
-            }
+        if let Some(result) = details.shown_result(pa_types::ai::kernel_tool_language(&card.name)) {
+            start_output(&mut output_started, lines);
+            rendered_text_output = true;
+            render_output_text(
+                lines,
+                &normalize_error_details(&result),
+                &OutputLabel::Out,
+                &mut output_marker_pending,
+                theme,
+                width,
+            );
         }
     } else if let Some((output, _)) = &traceback {
         if !output.is_empty() {

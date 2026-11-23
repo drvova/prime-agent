@@ -366,7 +366,19 @@ impl ModelPicker {
         ));
         lines.push(Vec::new());
         if let Some(selected) = selected {
-            for (index, row) in self.action_rows(entry).into_iter().enumerate() {
+            let rows = self.action_rows(entry);
+            // The arrows step the effort and account rows' values: the footer says so there.
+            let steps = match rows.get(selected) {
+                Some(ModelAction::Effort | ModelAction::Account) => true,
+                Some(
+                    ModelAction::Switch
+                    | ModelAction::SetDefault
+                    | ModelAction::Favorite
+                    | ModelAction::Details,
+                )
+                | None => false,
+            };
+            for (index, row) in rows.into_iter().enumerate() {
                 let is_selected = index == selected;
                 let marker = if is_selected { "\u{203a} " } else { "  " };
                 let line: Line = vec![
@@ -376,14 +388,22 @@ impl ModelPicker {
                 lines.push(finish_menu_row(theme, &line, width, is_selected));
             }
             lines.push(Vec::new());
+            let mut footer = Footer::new().bound(
+                kb,
+                &["tui.select.up", "tui.select.down"],
+                "action",
+                HintRank::Useful,
+            );
+            if steps {
+                footer = footer.bound(
+                    kb,
+                    &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
+                    "change",
+                    HintRank::Useful,
+                );
+            }
             lines.extend(
-                Footer::new()
-                    .bound(
-                        kb,
-                        &["tui.select.up", "tui.select.down"],
-                        "action",
-                        HintRank::Useful,
-                    )
+                footer
                     .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                     .esc(kb, EscVerb::Back)
                     .rows(theme, width),
@@ -399,6 +419,16 @@ impl ModelPicker {
             }
             lines.push(Vec::new());
             lines.extend(Footer::new().esc(kb, EscVerb::Back).rows(theme, width));
+        }
+        // A short terminal gives up the spacer rows, then the subtitle, before the dock crops the
+        // title off the top: the frame holds what the list frame holds (the viewport plus the
+        // trailing blank).
+        let budget = self.viewport_rows + 1;
+        if lines.len() >= budget {
+            lines.retain(|line| !line.is_empty());
+        }
+        if lines.len() >= budget && lines.len() > 2 {
+            lines.remove(1);
         }
         lines.push(Vec::new());
         Some(lines)

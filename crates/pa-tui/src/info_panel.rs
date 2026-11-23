@@ -69,6 +69,9 @@ pub struct InfoPanel {
     search: SearchInput,
     /// The laid-out rows the filter keeps, refreshed every render.
     matches: Vec<usize>,
+    /// The shortcut overview `?` opens: its sheet lays the content out instead of `content`, and
+    /// a printable key closes it and types into the prompt.
+    shortcuts: Option<crate::shortcut_overlay::ShortcutSheet>,
 }
 
 impl InfoPanel {
@@ -85,7 +88,24 @@ impl InfoPanel {
             },
             search: SearchInput::new(),
             matches: Vec::new(),
+            shortcuts: None,
         }
+    }
+
+    /// The shortcut overview: the sheet's rows under the `Shortcuts` title, in the panel's frame.
+    #[must_use]
+    pub(crate) fn shortcuts(sheet: crate::shortcut_overlay::ShortcutSheet) -> Self {
+        Self {
+            shortcuts: Some(sheet),
+            ..Self::new(Some("Shortcuts".to_string()), InfoContent::Rows(Vec::new()))
+        }
+    }
+
+    /// Whether a printable key closes the panel and types into the prompt (the shortcut
+    /// overview); the other panels consume every key.
+    #[must_use]
+    pub(crate) fn closes_on_typing(&self) -> bool {
+        self.shortcuts.is_some()
     }
 
     /// Markdown documents (the hotkeys guide, the changelog) carry the line filter; the short
@@ -133,6 +153,13 @@ impl InfoPanel {
     /// markdown re-flows exactly like the chat display.
     fn ensure_layout(&mut self, theme: &Theme, width: usize, code_block_indent: &str) {
         if self.layout.width == width {
+            return;
+        }
+        if let Some(sheet) = &self.shortcuts {
+            self.layout = InfoLayout {
+                width,
+                rows: sheet.layout(theme, width),
+            };
             return;
         }
         let rows = match &self.content {

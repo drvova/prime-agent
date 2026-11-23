@@ -6,7 +6,7 @@ use crate::keybindings::KeybindingsManager;
 use crate::menu_chrome::{title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
 use crate::menu_panel::menu_row;
 use crate::theme::{Theme, ThemeColor};
-use crate::width::truncate_line;
+use crate::width::wrap_text;
 use crate::Line;
 
 /// One answer to the pending question.
@@ -92,12 +92,18 @@ impl ConfirmPanel {
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Vec::new());
         lines.push(title_row(theme, width, &self.title));
+        // The question wraps: a confirm the user cannot read to its end cannot be answered.
+        let muted = theme.fg_style(ThemeColor::Muted);
         for line in &self.message {
-            lines.push(truncate_line(
-                &vec![theme.fg_span(ThemeColor::Muted, format!("{CHROME_INDENT}{line}"))],
-                width,
-                "",
-            ));
+            for wrapped in wrap_text(line, width.saturating_sub(CHROME_INDENT.len())) {
+                let mut row = vec![crate::Span::raw(CHROME_INDENT)];
+                row.extend(
+                    wrapped
+                        .into_iter()
+                        .map(|span| crate::Span::styled(span.content, muted)),
+                );
+                lines.push(row);
+            }
         }
         lines.push(Vec::new());
         for (index, option) in self.options.iter().enumerate() {
@@ -112,12 +118,7 @@ impl ConfirmPanel {
         lines.push(Vec::new());
         lines.push(
             Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Close)
                 .line(theme, width),
@@ -132,6 +133,31 @@ mod tests {
 
     fn kb() -> KeybindingsManager {
         KeybindingsManager::new()
+    }
+
+    /// A question longer than the pane wraps under the title: every word of what the user is
+    /// asked to confirm stays readable, at the chrome indent.
+    #[test]
+    fn a_long_question_wraps_instead_of_being_cut() {
+        let panel = ConfirmPanel::yes_no(
+            "Import session",
+            "Replace the current session with the imported one?",
+        );
+        let theme = Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+        let rows: Vec<String> = panel
+            .render(&theme, 30, &kb())
+            .iter()
+            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+            .collect();
+        assert_eq!(
+            rows[1..4],
+            [
+                "  Import session",
+                "  Replace the current session",
+                "  with the imported one?",
+            ]
+            .map(str::to_string)
+        );
     }
 
     /// The confirm opens on `No`: Enter straight away declines.

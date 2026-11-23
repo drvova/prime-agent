@@ -26,6 +26,12 @@ use crate::properties::Properties;
 pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
+mod tui_discovery;
+mod tui_model_recent;
+mod tui_navigation;
+mod tui_search;
+mod tui_session_changes;
+mod tui_unfocused_signal;
 pub use capabilities::{CAPABILITY_EVENTS_AFTER_SESSION_END, CAPABILITY_EVENTS_BEFORE_SESSION_END};
 
 // ---------------------------------------------------------------------------
@@ -1877,6 +1883,13 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &TUI_USAGE_PAGE_CLOSED,
         &TUI_IMAGE_PASTE,
         &TUI_CRASH_NOTICE,
+        &tui_navigation::TUI_TRANSCRIPT_NAVIGATION,
+        &tui_search::TUI_TRANSCRIPT_SEARCH,
+        &tui_model_recent::TUI_MODEL_RECENT_USED,
+        &tui_discovery::TUI_SHORTCUT_OVERLAY_OPENED,
+        &tui_discovery::TUI_MOUSE_SELECTION,
+        &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
+        &tui_session_changes::TUI_SESSION_CHANGES,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

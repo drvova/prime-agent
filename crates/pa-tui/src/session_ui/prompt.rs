@@ -478,9 +478,11 @@ impl SessionUi {
             let is_command = pa_types::slash_commands::parse_slash_command(text)
                 .is_some_and(|(name, _)| registry.is_builtin(&name));
             if is_command {
+                let leave = self
+                    .clear_key_tail(|key| format!(" Press {key} to return to the main thread."));
                 self.add_side_notice(
                     text,
-                    "Slash commands are not available in side conversations. Press esc to return to the main thread.",
+                    &format!("Slash commands are not available in side conversations.{leave}"),
                     view,
                 );
                 return Ok(());
@@ -492,9 +494,11 @@ impl SessionUi {
             }
             if !collect_marked_images(&self.pasted_images, text).is_empty() {
                 view.editor.set_text(text);
+                let leave = self
+                    .clear_key_tail(|key| format!(" Press {key} to return to the main thread."));
                 self.add_side_notice(
                     text,
-                    "Images are not supported in side conversations. Press esc to return to the main thread.",
+                    &format!("Images are not supported in side conversations.{leave}"),
                     view,
                 );
                 return Ok(());

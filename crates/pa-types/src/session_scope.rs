@@ -73,10 +73,13 @@ impl SessionScope {
     }
 
     /// End this lifetime of the session: its host calls this once it has
-    /// stopped serving it. Threads of the session that are still running (a
-    /// call that never returned, a thread the host could not wait for) keep
-    /// this scope, and from now on [`ensure_live`] refuses their durable
-    /// writes; whatever was registered with [`SessionScope::at_end`] runs.
+    /// stopped serving it, and before it shuts down the runtime the session
+    /// ran on. Threads of the session that are still running (a call that
+    /// never returned, a thread the host could not wait for) keep this
+    /// scope, and from now on [`ensure_live`] refuses their durable writes;
+    /// whatever was registered with [`SessionScope::at_end`] runs, and each
+    /// hook returns when the work it stops is done with that runtime, or it
+    /// has given up on it (a hook's wait is bounded).
     pub fn end(&self) {
         self.ended.store(true, std::sync::atomic::Ordering::SeqCst);
         let hooks =
@@ -94,7 +97,10 @@ impl SessionScope {
 
     /// Run `hook` when this lifetime ends ([`SessionScope::end`]): at once
     /// if it already has. For work of the session that lives on threads its
-    /// host does not own and must stop with it.
+    /// host does not own and must stop with it. A thread that waits on the
+    /// session's runtime from outside it (a kernel cell's) panics when the
+    /// runtime is shut down under its wait, so its hook stops it and waits,
+    /// for a bounded time, until it has left.
     pub fn at_end(&self, hook: Box<dyn FnOnce() + Send>) {
         let mut hooks = self.at_end.lock().unwrap_or_else(PoisonError::into_inner);
         if self.has_ended() {

@@ -135,3 +135,62 @@ fn hints_drop_the_query_gated_actions_while_searching() {
     let hints = flat(&mode.render_hints(120, None));
     assert!(hints.contains("parent"), "{hints}");
 }
+
+/// A terminal too short for the splash and a usable list folds the splash to its identity row:
+/// the sessions stay on screen.
+#[test]
+fn a_short_terminal_folds_the_splash_and_keeps_the_list() {
+    let mut mode = mode_with_parent_and_child();
+    let (lines, _) = mode.render_frame(100, 12);
+    let rows: Vec<String> = lines
+        .iter()
+        .map(|line| flat(line).trim_end().to_string())
+        .collect();
+    assert_eq!(rows.len(), 12);
+    assert_eq!(
+        rows[0],
+        " prime agent v0.0.0 \u{b7} 0 running, 1 idle, 0 inactive"
+    );
+    assert!(
+        rows.iter().any(|row| row.starts_with("\u{2022} p name")),
+        "the session row renders: {rows:?}"
+    );
+    assert!(
+        rows[11].starts_with("  \u{2191}/\u{2193} navigate"),
+        "the hints keep the last row: {rows:?}"
+    );
+}
+
+/// The fold threshold: the default 24-row terminal (and 29 rows) folds the logo to its identity
+/// row; the full logo returns at 30 rows.
+#[test]
+fn the_logo_folds_below_thirty_rows() {
+    let identity = " prime agent v0.0.0 \u{b7} 0 running, 1 idle, 0 inactive";
+    let first_rows = |height: usize| -> Vec<String> {
+        let mut mode = mode_with_parent_and_child();
+        let (lines, _) = mode.render_frame(100, height);
+        lines
+            .iter()
+            .take(2)
+            .map(|line| flat(line).trim_end().to_string())
+            .collect()
+    };
+    assert_eq!(first_rows(24), vec![identity.to_string(), String::new()]);
+    assert_eq!(first_rows(29), vec![identity.to_string(), String::new()]);
+    // The splash opens with its top padding row, then the logo's first row.
+    let logo_top = crate::chrome::PRIME_COMPACT_BUTTERFLY_LOGO
+        .split('\n')
+        .next()
+        .unwrap_or_default();
+    assert_eq!(
+        first_rows(30),
+        vec![String::new(), format!(" {logo_top}").trim_end().to_string()]
+    );
+}
+
+/// An empty view advertises no key that does nothing: no arrows, no open.
+#[test]
+fn an_empty_view_offers_only_what_works() {
+    let mode = fresh_mode(Vec::new());
+    assert_eq!(flat(&mode.render_hints(120, None)), "  Ctrl+N new");
+}

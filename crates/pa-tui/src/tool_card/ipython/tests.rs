@@ -810,7 +810,7 @@ fn the_summary_title_carries_the_cell_state_by_colour() {
 }
 
 /// A Scheme kernel cell (`eval`) gets the kernel card with its own label and
-/// its first line as the preview, and its code renders as written: the
+/// its first form as the preview, and its code is highlighted as Scheme: the
 /// Python reader would take `#t` for the start of a comment.
 #[test]
 fn a_scheme_cell_renders_on_the_kernel_card_as_scheme() {
@@ -826,10 +826,12 @@ fn a_scheme_cell_renders_on_the_kernel_card_as_scheme() {
     let rows =
         super::super::render_tool_card(&card, 0, Detail::All, Detail::All, &theme(), 100, true);
     let flat: Vec<String> = rows.iter().map(text_of).collect();
-    // Each line of code is one span: nothing split it into tokens.
-    let code_spans: Vec<Option<&str>> = rows[1..3]
+    // The first line's tokens, after the card's margin and gutter.
+    let palette = highlight::SyntaxPalette::from_theme(&theme());
+    let plain = ratatui::style::Style::default();
+    let code_spans: Vec<(&str, ratatui::style::Style)> = rows[1][2..]
         .iter()
-        .map(|row| row.last().map(|span| span.content.as_str()))
+        .map(|span| (span.content.as_str(), span.style))
         .collect();
     assert_eq!(
         (
@@ -842,7 +844,13 @@ fn a_scheme_cell_renders_on_the_kernel_card_as_scheme() {
             true,
             " \u{2570}\u{2500} (define ok #t)",
             "    (displayln ok)",
-            vec![Some("(define ok #t)"), Some("(displayln ok)")]
+            vec![
+                ("(", plain),
+                ("define", palette.keyword),
+                (" ok ", plain),
+                ("#t", palette.number),
+                (")", plain),
+            ]
         ),
         "{flat:?}"
     );

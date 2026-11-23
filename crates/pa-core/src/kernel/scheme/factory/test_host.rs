@@ -96,7 +96,8 @@ struct HostState {
 }
 
 /// Gives `abandoned` a permit when a collect is dropped before it answered:
-/// the task waiting on it was aborted.
+/// the task waiting on it was aborted. A collect is in flight from its
+/// arrival, so one held at a gate counts.
 struct CollectInFlight {
     abandoned: Arc<tokio::sync::Semaphore>,
     answered: bool,
@@ -321,6 +322,10 @@ impl FakeHost {
             }
             (state.gates.remove(&key), state.spawn_takes)
         };
+        let mut in_flight = (request_type == "rlm.collect").then(|| CollectInFlight {
+            abandoned: Arc::clone(&self.abandoned_collects),
+            answered: false,
+        });
         if let Some(gate) = gate {
             gate.acquire().await.unwrap().forget();
         }
@@ -368,13 +373,11 @@ impl FakeHost {
                         .push((request_type.to_string(), payload.clone()));
                     state.failing.contains("rlm.collect")
                 };
+                let in_flight = in_flight.as_mut().unwrap();
                 if fails {
+                    in_flight.answered = true;
                     return Err(anyhow!("collect: the bridge is gone"));
                 }
-                let mut in_flight = CollectInFlight {
-                    abandoned: Arc::clone(&self.abandoned_collects),
-                    answered: false,
-                };
                 let targets = payload["targets"].as_array().unwrap().clone();
                 let deadline = tokio::time::Instant::now()
                     + Duration::from_millis(payload["timeout_ms"].as_u64().unwrap());

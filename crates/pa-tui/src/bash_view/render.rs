@@ -2,8 +2,8 @@
 //! row/line shapers the pane's render methods assemble over.
 
 use super::{
-    fill_row, hug_row, plain_cell, scrub_controls, status_dot, str_width, truncate_line,
-    BashActivity, Line, Span, Theme, ThemeColor,
+    fill_row, plain_cell, scrub_controls, status_dot, str_width, truncate_line, BashActivity, Line,
+    Span, Theme, ThemeColor,
 };
 
 /// The table's column geometry: the command, duration, pid, and status
@@ -117,32 +117,6 @@ impl Columns {
     }
 }
 
-/// One action row: the `›`-marker label with its dim description trailing,
-/// the selected row washed over its hug.
-pub(super) fn action_row(
-    theme: &Theme,
-    width: usize,
-    label: &str,
-    description: &str,
-    selected: bool,
-) -> Line {
-    let mut row = vec![Span::raw(if selected { "\u{203a}" } else { " " })];
-    row.push(Span::raw(" "));
-    if selected {
-        row.push(theme.bold(Span::raw(label.to_string())));
-    } else {
-        row.push(theme.fg_span(ThemeColor::Text, label.to_string()));
-    }
-    row.push(theme.fg_span(ThemeColor::Dim, format!("  {description}")));
-    hug_row(
-        &row,
-        str_width(label) + 2 + 2 + str_width(description),
-        selected,
-        width,
-        theme.selection_row_style(),
-    )
-}
-
 /// The status state's color: running green, a settled nonzero exit red,
 /// everything else dim.
 fn status_state_color(activity: &BashActivity) -> ThemeColor {
@@ -218,22 +192,10 @@ pub(super) fn clean_line(value: &str) -> String {
     scrub_controls(value)
 }
 
-/// The duration cell: whole milliseconds read as a compact human word
-/// (`780ms`, `3.4s`, `2m 05s`), `—` when the wire carries none.
+/// The duration cell: the shared compact duration (`780ms`, `3.4s`, `2m 05s`, `1h 07m`), `—`
+/// when the wire carries none.
 pub(crate) fn format_duration(duration_ms: Option<u64>) -> String {
-    let Some(ms) = duration_ms else {
-        return "\u{2014}".to_string();
-    };
-    if ms < 1_000 {
-        return format!("{ms}ms");
-    }
-    let total_seconds = ms / 1_000;
-    if total_seconds < 60 {
-        return format!("{total_seconds}.{}s", (ms % 1_000) / 100);
-    }
-    let minutes = total_seconds / 60;
-    let seconds = total_seconds % 60;
-    format!("{minutes}m {seconds:02}s")
+    duration_ms.map_or_else(|| "\u{2014}".to_string(), crate::duration_text::millis)
 }
 
 /// The pane's header block: a muted separator rule, then the title row with the status
@@ -245,27 +207,9 @@ pub(super) fn pane_header_lines(
     counts: &[(ThemeColor, String)],
     subtitle: Option<&str>,
 ) -> Vec<Line> {
-    let mut title_row = crate::menu_chrome::title_row(theme, usize::MAX, title);
-    if !counts.is_empty() {
-        let joined_width = counts
-            .iter()
-            .map(|(_, text)| str_width(text) + 3)
-            .sum::<usize>()
-            .saturating_sub(3);
-        let gap = width
-            .saturating_sub(2 + title.chars().count() + 2 + joined_width)
-            .max(2);
-        title_row.push(Span::raw(" ".repeat(gap)));
-        for (index, (color, text)) in counts.iter().enumerate() {
-            if index > 0 {
-                title_row.push(theme.fg_span(ThemeColor::Muted, " \u{b7} ".to_string()));
-            }
-            title_row.push(theme.fg_span(*color, text.clone()));
-        }
-    }
     let mut lines = vec![
         vec![theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width.max(1)))],
-        truncate_line(&title_row, width, ""),
+        crate::menu_chrome::title_counts_row(theme, width, title, counts),
     ];
     if let Some(subtitle) = subtitle {
         if !subtitle.is_empty() {
@@ -278,13 +222,4 @@ pub(super) fn pane_header_lines(
     }
     lines.push(Vec::new());
     lines
-}
-
-/// An error line (`Error: <message>` in the error color).
-pub(super) fn error_line(theme: &Theme, width: usize, message: &str) -> Line {
-    let line = vec![
-        Span::raw("  "),
-        theme.fg_span(ThemeColor::Error, format!("Error: {message}")),
-    ];
-    truncate_line(&line, width, "")
 }

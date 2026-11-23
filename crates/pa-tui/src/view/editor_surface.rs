@@ -134,7 +134,11 @@ pub(crate) fn render(
     // the click regions shift with it.
     if let Some(header) = header {
         let mut row: Line = vec![Span::styled(" ".repeat(padding_x), bg)];
-        row.extend(crate::width::truncate_line(&header, content_width, "..."));
+        row.extend(crate::width::truncate_line(
+            &header,
+            content_width,
+            crate::menu_chrome::ELLIPSIS,
+        ));
         let used = crate::width::line_width(&row);
         row.push(Span::styled(" ".repeat(width.saturating_sub(used)), bg));
         rows.push(row);

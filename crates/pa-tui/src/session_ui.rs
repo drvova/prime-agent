@@ -7,6 +7,7 @@ mod apply;
 mod auth;
 mod bash;
 mod better;
+mod changes;
 mod commands;
 mod context;
 mod factory;
@@ -18,10 +19,12 @@ mod notes;
 mod panels;
 mod prompt;
 mod queue;
+mod recent_models;
 mod sessions_fork;
 mod settings;
 mod share;
 mod stream;
+mod transcript_search;
 mod usage;
 mod window;
 pub(crate) use window::TranscriptPageNote;
@@ -48,6 +51,8 @@ pub(crate) use panels::ActivityUpdates;
 use prompt::PromptOrder;
 pub(crate) use prompt::PromptSubmitNote;
 pub(crate) use prompt::SubmitBehavior;
+#[cfg(test)]
+pub(crate) use recent_models::report_recent_model_used;
 use sessions_fork::{create_session, terminal_columns};
 use settings::PendingConfirm;
 pub(crate) use settings::ReloadNote;
@@ -202,6 +207,10 @@ pub(crate) struct SessionUi {
         std::collections::BTreeMap<String, Vec<crate::model_picker::AccountChoice>>,
     /// The settings recent-model list (`provider/id` keys, newest first).
     model_recent_models: Vec<String>,
+    /// The composer's recent-model cycle run, while consecutive presses walk the list.
+    recent_cycle: Option<recent_models::RecentCycle>,
+    /// The recent-model actions already reported this run (one report per action).
+    recent_model_reported: Vec<&'static str>,
     /// The settings favorite-model list (`provider/id` keys, in the order they were added), read
     /// once when the UI starts and kept in step with each toggle the picker persists.
     model_favorite_models: Vec<String>,
@@ -460,6 +469,30 @@ pub(crate) struct SessionUi {
     /// Adoption telemetry (counted into `tui exit`); `None` drops events.
     pub(crate) telemetry: Option<std::sync::Arc<dyn crate::interactive::InteractionTelemetry>>,
     scroll_adoption_emitted: bool,
+    /// The transcript navigation actions already reported this run (one report per action).
+    navigation_reported: Vec<&'static str>,
+    /// The transcript search outcomes already reported this run (one report per outcome).
+    search_reported: Vec<crate::view::search::SearchOutcome>,
+    /// The shortcut overview's open was reported this run (one report per run).
+    shortcuts_reported: bool,
+    /// The left-press gesture counter: a second and third press on one cell select a word and
+    /// a row.
+    clicks: crate::selection_gesture::ClickTracker,
+    /// What the current press selects; its copy reports this kind.
+    selection_kind: crate::selection_gesture::SelectionKind,
+    /// The selection kinds whose copy was already reported this run (one report per kind).
+    selection_kinds_reported: Vec<crate::selection_gesture::SelectionKind>,
+    /// The wheel's acceleration across a fast spin.
+    wheel: crate::mouse::WheelAcceleration,
+    /// The session changes panel actions already reported this run (one report per action).
+    changes_reported: Vec<&'static str>,
+    /// What the terminal last reported about its focus; focused until it reports otherwise, so
+    /// a terminal that never reports is never signalled.
+    pub(crate) terminal_focused: bool,
+    /// The reasons an unfocused signal was already reported for this run.
+    unfocused_signal_reported: Vec<&'static str>,
+    /// The attention signals a headless run captured in place of a terminal write.
+    pub(crate) attention_signals: Vec<String>,
     pub(crate) exit_reason: &'static str,
     /// The daemon connection's recovery state, written only through its transition
     /// ([`crate::interactive::reconnect::Connection::on`]).

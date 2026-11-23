@@ -4,6 +4,7 @@
 use crate::kernel::scheme::SchemeKernelProvisioner;
 use crate::kernel::shared::HostRequestHandlers;
 use crate::tools::kernel_cell::{KernelExecuteOptions, KernelProvisioner as _};
+use steel::steel_vm::engine::Engine;
 
 /// What `code` did as one cell: what it printed, or the error it raised.
 async fn cell(provisioner: &SchemeKernelProvisioner, code: &str) -> Result<String, String> {
@@ -141,45 +142,294 @@ async fn a_cell_reaches_files_and_processes_only_through_the_kernel_functions() 
     );
 }
 
-/// Everything a cell can name in a fresh session engine: each global, and
-/// each function of each builtin module (reached through `require-builtin`
-/// or a module lookup), leaving out the ones bound to the refusal. Names
-/// Steel numbers as it compiles its own library are listed without the
-/// number.
+/// Steel runs the body of a `defmacro`, of a `syntax-case` transformer and
+/// of `begin-for-syntax` in a second engine its compiler keeps. That engine
+/// is closed like the session's own: the same attempts fail there and leave
+/// no trace, what a body prints is the cell's output, and macros (Steel's
+/// own `struct` among them) still expand.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_macro_body_reaches_no_more_than_its_cell_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret.txt");
+    std::fs::write(&secret, "the secret\n").unwrap();
+    let code = dir.path().join("code.scm");
+    std::fs::write(&code, "(define loaded-from-a-file 1)\n").unwrap();
+    let made = dir.path().join("made");
+    let (secret, code, made) = (
+        secret.to_string_lossy().into_owned(),
+        code.to_string_lossy().into_owned(),
+        made.to_string_lossy().into_owned(),
+    );
+    let provisioner = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path());
+    let mut open = Vec::new();
+    for (number, attempt) in [
+        format!("(spawn-process (command \"touch\" (list {made:?})))"),
+        format!(
+            "((%module-get% %-builtin-module-steel/process \"spawn-process\")
+              ((%module-get% %-builtin-module-steel/process \"command\") \"touch\" (list {made:?})))"
+        ),
+        format!("(read-port-to-string (open-input-file {secret:?}))"),
+        format!("(run! (Engine::new) \"(read-dir \\\"{}\\\")\")", dir.path().display()),
+        "(env-var \"HOME\")".to_string(),
+        "(set-env-var! \"PA_CONFINEMENT_MACRO_TEST\" \"1\")".to_string(),
+        "(write-string \"x\" (#%default-output-port))".to_string(),
+        "(stdout-simple-displayln \"x\")".to_string(),
+        "(spawn-native-thread (lambda () 1))".to_string(),
+        "(eval '(env-var \"HOME\"))".to_string(),
+        format!("(eval '(require {code:?}))"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for form in [
+            format!("(defmacro (escape-{number} stx) {attempt} ''1) (escape-{number} 1)"),
+            format!(
+                "(define-syntax (escape-case-{number} stx)
+                   (syntax-case stx () [(_ x) (begin {attempt} #'x)]))
+                 (escape-case-{number} 1)"
+            ),
+            format!(
+                "(begin-for-syntax (define (escape-helper-{number}) {attempt}))
+                 (defmacro (escape-for-syntax-{number} stx) (escape-helper-{number}) ''1)
+                 (escape-for-syntax-{number} 1)"
+            ),
+        ] {
+            if cell(&provisioner, &form).await.is_ok() {
+                open.push(form);
+            }
+        }
+    }
+    let expanding = cell(
+        &provisioner,
+        "(defmacro (twice stx)
+           (displayln \"expanding\")
+           (let ([form (cadr (syntax->datum stx))]) `(begin ,form ,form)))
+         (define-syntax (plus-one stx) (syntax-case stx () [(_ x) #'(+ x 1)]))
+         (struct point (x y))
+         (twice (display (plus-one (point-y (point 1 2)))))",
+    )
+    .await;
+    assert_eq!(
+        (
+            open,
+            std::path::Path::new(&made).exists(),
+            std::env::var_os("PA_CONFINEMENT_MACRO_TEST"),
+            expanding,
+        ),
+        (Vec::new(), false, None, Ok("expanding\n33".to_string()))
+    );
+}
+
+/// A macro body that loops is stopped with its cell: the stop reaches the
+/// engine the body runs in, not only the session's own.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_looping_macro_body_stops_with_its_cell() {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path())
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    // The loop ends by itself after a minute, so a stop that does not reach
+    // it fails this test instead of hanging it.
+    let result = kernel
+        .execute(
+            "(defmacro (spin stx)
+               (let ([until (+ (current-milliseconds) 60000)])
+                 (let loop () (when (< (current-milliseconds) until) (loop))))
+               ''done)
+             (spin 1)",
+            KernelExecuteOptions {
+                signal: None,
+                timeout_ms: Some(200),
+                on_stream: None,
+                on_late_sent_agent_message: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            result.error.map(|error| error.evalue),
+            started.elapsed() < std::time::Duration::from_secs(20),
+        ),
+        (
+            Some("the cell was interrupted after 200 ms".to_string()),
+            true
+        )
+    );
+}
+
+/// The modules a session's engine closes or guards nothing in.
+const UNTOUCHED_MODULES: [&str; 4] = [
+    "steel/identity",
+    "steel/symbols",
+    "steel/ord",
+    "steel/equality",
+];
+
+/// Steel builds every engine from one image, and the image's modules, boxes
+/// and tables stay one object in all of them. What a session's cell or
+/// macro body writes into Steel's own state, no other session reads; the
+/// builtins that only act on the whole process are refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn what_one_session_writes_into_steels_state_no_other_session_reads() {
+    let dir = tempfile::tempdir().unwrap();
+    let writer = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path());
+    let reader = SchemeKernelProvisioner::new(HostRequestHandlers::new(), dir.path());
+    let modules = UNTOUCHED_MODULES.map(|module| format!("%-builtin-module-{module}"));
+    let mut attempts = vec![
+        "(set-box! #%will-executor-running 'written)".to_string(),
+        "(#%function-ptr-table-add #%function-ptr-table foldl \"written\")".to_string(),
+        "(defmacro (write stx) (set-box! #%will-executor-running 'written-by-a-macro) ''1)
+         (write 1)"
+            .to_string(),
+    ];
+    attempts.extend(
+        modules
+            .iter()
+            .map(|module| format!("(#%module-add {module} \"written\" 1)")),
+    );
+    for attempt in attempts {
+        // Refused or not: what counts is what the other session then reads.
+        let _ = cell(&writer, &attempt).await;
+    }
+    let read = cell(
+        &reader,
+        &format!(
+            "(display (list (unbox #%will-executor-running)
+                            (#%function-ptr-table-get #%function-ptr-table foldl)
+                            (filter (lambda (module)
+                                      (member \"written\" (%module-bound-identifiers->list module)))
+                                    (list {}))))
+             (defmacro (read-it stx) (list 'quote (unbox #%will-executor-running)))
+             (display (read-it 1))",
+            modules.join(" ")
+        ),
+    )
+    .await;
+    let mut open = Vec::new();
+    for whole_process in [
+        "(#%gc-collect)",
+        "(command-line)",
+        "(%memo-table-set! %memo-table (lambda (x) x) (list 1) 2)",
+        "(defmacro (collect stx) (#%gc-collect) ''1) (collect 1)",
+    ] {
+        if cell(&reader, whole_process).await.is_ok() {
+            open.push(whole_process);
+        }
+    }
+    // Steel's `@doc` keeps a function's documentation in one of those
+    // tables: each session still reads its own.
+    let documented = cell(
+        &writer,
+        ";;@doc\n;; its own\n(define (documented x) x)
+         (display (#%function-ptr-table-get #%function-ptr-table documented))",
+    )
+    .await;
+    assert_eq!(
+        (read, open, documented),
+        (
+            Ok("(#false #false ())#false".to_string()),
+            Vec::new(),
+            Ok("its own".to_string())
+        )
+    );
+}
+
+/// No box, vector, struct or native object a cell can name is the same
+/// object in two engines, the engines of their macro bodies included.
+#[test]
+fn no_two_engines_share_an_object_a_cell_can_change() {
+    let mut engines = [super::engine().unwrap(), super::engine().unwrap()];
+    // Where each such object is, and the first name it was found under.
+    let mut found: std::collections::BTreeMap<usize, (usize, String)> =
+        std::collections::BTreeMap::new();
+    let mut shared = std::collections::BTreeSet::new();
+    let mut scan = |engine: &Engine, number: usize| {
+        for global in engine.globals().iter() {
+            let global = global.resolve().to_string();
+            let object = engine.extract_value(&global).ok().and_then(|value| {
+                matches!(
+                    value,
+                    steel::rvals::SteelVal::HeapAllocated(_)
+                        | steel::rvals::SteelVal::MutableVector(_)
+                        | steel::rvals::SteelVal::Custom(_)
+                        | steel::rvals::SteelVal::CustomStruct(_)
+                )
+                .then(|| value.as_ptr_usize())
+                .flatten()
+            });
+            if let Some(object) = object {
+                let (first, name) = found
+                    .entry(object)
+                    .or_insert_with(|| (number, global.clone()));
+                if *first != number {
+                    shared.insert(name.clone());
+                }
+            }
+        }
+    };
+    for (number, engine) in engines.iter_mut().enumerate() {
+        scan(engine, 2 * number);
+        engine.with_macro_engine(|macros| scan(macros, 2 * number + 1));
+    }
+    // The one left is the number of a thread-local slot Steel's library
+    // keeps for `reset` and `shift`: the slot itself is each engine's own.
+    assert_eq!(
+        shared,
+        std::collections::BTreeSet::from(["*meta-continuation*".to_string()])
+    );
+}
+
+/// Everything a cell can name in a fresh session engine or in the engine
+/// its macro bodies run in: each global, and each function of each builtin
+/// module (reached through `require-builtin` or a module lookup), leaving
+/// out the ones bound to the refusal. Names Steel numbers as it compiles its
+/// own library are listed without the number.
 fn reachable() -> std::collections::BTreeSet<String> {
-    let engine = super::engine().unwrap();
+    let mut engine = super::engine().unwrap();
     let open = |value: &steel::rvals::SteelVal| match value {
         steel::rvals::SteelVal::FuncV(function) => {
             !std::ptr::fn_addr_eq(*function, super::refusal as steel::rvals::FunctionSignature)
         }
         _ => true,
     };
-    let mut names = std::collections::BTreeSet::new();
-    for global in engine.globals().iter() {
-        let global = global.resolve().to_string();
-        if engine
-            .extract_value(&global)
-            .is_ok_and(|value| open(&value))
-        {
-            let numbered = ["##gensym", "##__lifted_pure_function"]
-                .into_iter()
-                .find_map(|prefix| global.find(prefix).map(|at| at + prefix.len()))
-                .filter(|at| global[*at..].chars().all(|digit| digit.is_ascii_digit()));
-            names.insert(match numbered {
-                Some(at) => format!("{}N", &global[..at]),
-                None => global,
-            });
+    let reachable_in = |engine: &Engine| {
+        let mut names = std::collections::BTreeSet::new();
+        for global in engine.globals().iter() {
+            let global = global.resolve().to_string();
+            if engine
+                .extract_value(&global)
+                .is_ok_and(|value| open(&value))
+            {
+                let numbered = ["##gensym", "##__lifted_pure_function"]
+                    .into_iter()
+                    .find_map(|prefix| global.find(prefix).map(|at| at + prefix.len()))
+                    .filter(|at| global[*at..].chars().all(|digit| digit.is_ascii_digit()));
+                names.insert(match numbered {
+                    Some(at) => format!("{}N", &global[..at]),
+                    None => global,
+                });
+            }
         }
-    }
-    for module in super::STEEL_MODULES {
-        if let Some(functions) = engine.builtin_modules().get(module) {
-            for (name, value) in functions.inner_map().iter() {
-                if open(value) {
-                    names.insert(format!("{module} {name}"));
+        for module in super::STEEL_MODULES {
+            if let Some(functions) = engine.builtin_modules().get(module) {
+                for (name, value) in functions.inner_map().iter() {
+                    if open(value) {
+                        names.insert(format!("{module} {name}"));
+                    }
                 }
             }
         }
-    }
+        names
+    };
+    let mut names = reachable_in(&engine);
+    names.extend(
+        engine
+            .with_macro_engine(|macros| reachable_in(macros))
+            .unwrap(),
+    );
     names
 }
 

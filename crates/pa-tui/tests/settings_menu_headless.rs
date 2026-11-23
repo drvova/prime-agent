@@ -363,7 +363,7 @@ fn the_settings_page_renders_the_spacing_and_the_new_keys() {
         .expect("the hint row renders");
     assert_eq!(
         rows[hint_index - 1],
-        "  enter sets auto-compact to false",
+        "  enter sets auto-compact to off",
         "the Enter line rides directly above the footer"
     );
     assert_eq!(
@@ -404,7 +404,7 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
     steps.push(HeadlessStep::WaitMs(100));
     steps.push(HeadlessStep::Key(key(KeyCode::Enter)));
     steps.push(HeadlessStep::WaitMs(100));
-    // 5 jumps to the Agents tab; down x2 lands on Idle worker eviction (a multi-option row:
+    // 5 jumps to the Agents tab; down x2 lands on Idle session eviction (a multi-option row:
     // off/30/60/90/180/360).
     steps.push(HeadlessStep::Key(key(KeyCode::Char('5'))));
     steps.push(HeadlessStep::WaitMs(100));
@@ -421,14 +421,17 @@ fn the_arrows_cycle_values_and_the_writes_persist() {
     steps.push(HeadlessStep::Key(key(KeyCode::Right)));
     steps.push(HeadlessStep::WaitMs(150));
     let (frames, settings) = run_plan(steps);
-    // The row shows true (Enter's cycle landed last), and the seam recorded the exact write
+    // The row shows on (Enter's cycle landed last), and the seam recorded the exact write
     // sequence the arrows drove.
     let rows = frame_with(&frames, "Quiet startup");
     let row = rows
         .iter()
         .find(|row| row.contains("Quiet startup"))
         .expect("the quiet-startup row renders");
-    assert!(row.contains("true"), "the cycled value shows: {row}");
+    assert!(
+        row.trim_end().ends_with(" on"),
+        "the cycled value shows: {row}"
+    );
     assert_eq!(
         settings.log(),
         vec![
@@ -601,7 +604,7 @@ fn a_no_match_query_backspaces_away_and_space_still_cycles() {
         .find(|row| row.contains("Auto-compact"))
         .expect("the settings rows return once the query is backspaced away");
     assert!(
-        row.contains("false"),
+        row.trim_end().ends_with(" off"),
         "Space still cycles the selected row: {row}"
     );
 }

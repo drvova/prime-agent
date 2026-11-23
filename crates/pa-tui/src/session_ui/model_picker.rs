@@ -201,6 +201,13 @@ impl SessionUi {
                 self.dirty = true;
             }
             Some(ModelPickerAction::Apply(applied)) => {
+                if view
+                    .model_picker
+                    .as_ref()
+                    .is_some_and(ModelPicker::selected_in_recent_group)
+                {
+                    self.track_recent_model("recent_pick");
+                }
                 self.report_model_picker_closed(view, ModelPickerOutcome::Switched);
                 view.model_picker = None;
                 // Applying fulfills the command either way, so the editor clears (a Cancel keeps

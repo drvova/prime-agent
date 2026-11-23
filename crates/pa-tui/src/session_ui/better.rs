@@ -20,6 +20,17 @@ pub(super) struct InsertedRewrite {
 }
 
 impl SessionUi {
+    /// A notice's tail naming the key that leaves the current side run, from the effective
+    /// `app.input.clear` binding (` Press Esc to return to the main thread.`, ` (Esc cancels)`):
+    /// `wording` receives the key's display text. Empty when the user unbound the key, so a
+    /// notice never names a key that does nothing.
+    pub(super) fn clear_key_tail(&self, wording: impl Fn(&str) -> String) -> String {
+        self.keybindings
+            .first_key("app.input.clear")
+            .map(|key| wording(&crate::keybindings::format_key_text(&key)))
+            .unwrap_or_default()
+    }
+
     /// Start one run; the composer stays usable while it runs.
     pub(super) async fn start_better(&mut self, prompt: &str, view: &mut AgentView) -> Result<()> {
         let prompt = prompt.trim();
@@ -28,8 +39,9 @@ impl SessionUi {
             return Ok(());
         }
         if self.better_run.is_some() {
+            let cancel = self.clear_key_tail(|key| format!("; press {key} to cancel it"));
             self.note_as(
-                "A /better run is already improving a prompt; press Esc to cancel it.",
+                &format!("A /better run is already improving a prompt{cancel}."),
                 StatusKind::Warning,
                 view,
             );
@@ -53,8 +65,9 @@ impl SessionUi {
             self.side_question_counter
         );
         self.better_run = Some(id.clone());
+        let cancel = self.clear_key_tail(|key| format!(" ({key} cancels)"));
         self.note(
-            "Improving your prompt: reading the code (Esc cancels)",
+            &format!("Improving your prompt: reading the code{cancel}"),
             view,
         );
         let started = self
@@ -95,10 +108,8 @@ impl SessionUi {
             "running" => {
                 let reading = text("answer");
                 if !reading.is_empty() {
-                    self.note(
-                        &format!("Improving your prompt: {reading} (Esc cancels)"),
-                        view,
-                    );
+                    let cancel = self.clear_key_tail(|key| format!(" ({key} cancels)"));
+                    self.note(&format!("Improving your prompt: {reading}{cancel}"), view);
                 }
             }
             "complete" => {

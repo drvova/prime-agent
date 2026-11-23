@@ -31,12 +31,15 @@ impl AgentView {
 
     /// Toggle the clicked card's own expansion; the invalidation rides the in-place-mutation
     /// path, so a paused window keeps its absolute row while the clicked card grows or shrinks.
+    /// Only the card's own rows go stale: no other entry's spacing or rows read its expansion
+    /// (`conversation_leading` reads the level and the neighbours' kinds), so the heights of
+    /// the cards below stay cached.
     pub(crate) fn toggle_card_expansion(&mut self, index: usize) {
         self.prepare_entry_mutation(index);
         if !self.toggled_cards.remove(&index) {
             self.toggled_cards.insert(index);
         }
-        self.mark_entry_stale(index);
+        self.mark_entry_rows_stale(index);
     }
 
     /// The Ctrl+O cycle (`app.tools.expand`, TS `toggleToolOutputExpansion` +
@@ -89,6 +92,27 @@ pub(super) mod tests {
             .map(|line| line.iter().map(|span| span.content.as_str()).collect())
             .collect::<Vec<String>>()
             .join("\n")
+    }
+
+    /// A toggle re-measures the toggled card alone: the cards below keep their cached heights,
+    /// so opening one card in a long run never re-measures the rest.
+    #[test]
+    fn a_toggle_remeasures_only_the_toggled_card() {
+        let mut view = AgentView::new(Theme::builtin("prime", ColorMode::TrueColor));
+        for id in ["c0", "c1", "c2", "c3"] {
+            view.push_entry(finished_tool_card(id, "line"));
+        }
+        let before = view.layout_pass(80).total;
+        view.toggle_card_expansion(0);
+        crate::view::layout::ENTRY_VISITS.with(|count| count.set(0));
+        let after = view.layout_pass(80).total;
+        assert_eq!(
+            (
+                after > before,
+                crate::view::layout::ENTRY_VISITS.with(std::cell::Cell::get)
+            ),
+            (true, 1)
+        );
     }
 
     /// The Ctrl+O cycle resets a toggled card (TS `applyChatExpansion` overwrites every

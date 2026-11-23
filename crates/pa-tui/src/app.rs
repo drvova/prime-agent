@@ -222,6 +222,18 @@ fn handle_key(
         view.scroll_to_bottom();
         return;
     }
+    let kb = view.editor.keybindings();
+    let prompt_jump = if kb.matches(&id, "tui.viewport.previousPrompt") {
+        Some(crate::view::navigation::PromptJump::Previous)
+    } else if kb.matches(&id, "tui.viewport.nextPrompt") {
+        Some(crate::view::navigation::PromptJump::Next)
+    } else {
+        None
+    };
+    if let Some(jump) = prompt_jump {
+        view.jump_to_prompt(jump);
+        return;
+    }
     let is_paste_marker_key = false;
     let _ = is_paste_marker_key;
     view.editor.handle_input(&id);

@@ -19,9 +19,12 @@ mod geometry;
 mod handoff;
 mod layout;
 pub(crate) mod lazy;
+pub(crate) mod navigation;
 mod panels;
 mod restyle;
 mod rows;
+pub(crate) mod search;
+mod search_text;
 
 use layout::EntryLayout;
 
@@ -79,6 +82,11 @@ pub struct AgentView {
     pub(crate) terminal_title: Option<String>,
     /// A kernel `notify(...)` ping's terminal attention signal, written with the next frame.
     pub(crate) pending_attention: Option<crate::terminal_attention::Attention>,
+    /// The `terminal.notifyOnTurnEnd` setting as read at startup and at each change in
+    /// `/settings`: what an unfocused terminal is sent when the agent stops for the user. While
+    /// it is not `off` the terminal is asked to report focus; the next frame's write sets or
+    /// clears that mode to match.
+    pub(crate) turn_end_signal: crate::terminal_attention::TurnEndSignal,
     /// When the current working loader started (elapsed label).
     pub working_since: Option<std::time::Instant>,
     /// When the session last sent anything while working (the loader's stall timer).
@@ -118,6 +126,8 @@ pub struct AgentView {
     pub heartbeats_picker: Option<crate::heartbeats_picker::HeartbeatsPicker>,
     /// The ctrl+r prompt-history search, mounted in the editor dock.
     pub(crate) history_search: Option<crate::history_search::HistorySearch>,
+    /// The transcript search bar (`app.transcript.search`), mounted in the editor dock.
+    pub(crate) transcript_search: Option<search::TranscriptSearch>,
     pub goal_panel: Option<crate::goal_surface::GoalPanel>,
     pub bash_view: Option<crate::bash_view::BashView>,
     pub share_loader: Option<ShareLoader>,
@@ -133,6 +143,11 @@ pub struct AgentView {
     /// The context window: what fills the model's context, mounted over the editor dock like
     /// the `/usage` page.
     pub context_view: Option<crate::context_view::ContextView>,
+    /// The session changes panel (`/diff`), over the editor dock.
+    pub(crate) changes_panel: Option<crate::session_changes::ChangesPanel>,
+    /// What the entries say about the files changed and the checks after: kept in step with
+    /// `chat` by the entry mutators below, read only while the changes panel is open.
+    pub(crate) change_ledger: crate::session_changes::ChangeLedger,
     /// The `terminal.showImages` setting (default true): image blocks render inline (their
     /// metadata row plus the picture) when set, `[Image: ...]` placeholders otherwise.
     pub show_images: bool,
@@ -146,6 +161,8 @@ pub struct AgentView {
     pub(crate) older_history_loading: bool,
     pub(crate) scroll_top: usize,
     following: bool,
+    /// Chat entries appended since the window paused: the follow pill's count.
+    unseen_entries: usize,
     /// The transcript-tail offset of the last composed frame: scroll
     /// deltas page from here, not from zero.
     pub(crate) last_max_scroll: usize,
@@ -290,6 +307,10 @@ impl AgentView {
             search.paste(text);
             return true;
         }
+        if self.transcript_search.is_some() {
+            self.transcript_search_paste(text);
+            return true;
+        }
         if let Some(mcp) = self.mcp_view.as_mut() {
             mcp.paste(text);
             return true;
@@ -315,6 +336,7 @@ impl AgentView {
         if self.factory_view.is_some()
             || self.heartbeats_picker.is_some()
             || self.bash_view.is_some()
+            || self.changes_panel.is_some()
             || self.goal_panel.is_some()
             || self.info_panel.is_some()
             || self.usage_page.is_some()
@@ -387,6 +409,7 @@ impl AgentView {
             pulse_frame: 0,
             terminal_title: None,
             pending_attention: None,
+            turn_end_signal: crate::terminal_attention::TurnEndSignal::Off,
             working_since: None,
             working_heard: None,
             stall_shown: false,
@@ -406,6 +429,7 @@ impl AgentView {
             factory_view: None,
             heartbeats_picker: None,
             history_search: None,
+            transcript_search: None,
             goal_panel: None,
             bash_view: None,
             share_loader: None,
@@ -415,11 +439,14 @@ impl AgentView {
             info_panel: None,
             usage_page: None,
             context_view: None,
+            changes_panel: None,
+            change_ledger: crate::session_changes::ChangeLedger::default(),
             show_images: true,
             show_hardware_cursor: false,
             splash_suppressed: false,
             older_history_loading: false,
             scroll_top: 0,
+            unseen_entries: 0,
             following: true,
             last_max_scroll: 0,
             terminal_rows: 24,
@@ -468,9 +495,16 @@ impl AgentView {
     /// folds the append into its tail bookkeeping, never a geometry resolve.
     pub fn push_entry(&mut self, entry: ChatEntry) {
         self.pending_handoff = None;
+        self.search_note_splice(self.chat.len()..self.chat.len(), 1);
         self.chat.push(entry);
+        self.change_ledger.pushed();
         self.entry_layout.push([None, None, None]);
         self.sparse_note_append();
+        self.unseen_entries = if self.following {
+            0
+        } else {
+            self.unseen_entries + 1
+        };
     }
 
     pub fn chat_len(&self) -> usize {
@@ -492,6 +526,9 @@ impl AgentView {
         self.toggled_cards.remove(&index);
         self.entry_heights.pop();
         self.entry_layout.pop();
+        self.unseen_entries = self.unseen_entries.saturating_sub(1);
+        self.search_note_splice(index..index + 1, 0);
+        self.change_ledger.popped();
         self.chat.pop()
     }
 
@@ -682,6 +719,8 @@ impl AgentView {
             range.clone(),
             std::iter::repeat_n([None, None, None], inserted),
         );
+        self.search_note_splice(range.clone(), inserted);
+        self.change_ledger.spliced(range.clone(), inserted);
         self.chat.splice(range, entries);
     }
 
@@ -703,13 +742,16 @@ impl AgentView {
         self.sparse_entries.clear();
         self.toggled_cards.clear();
         self.sparse_window = None;
+        self.search_note_splice(0..self.chat.len(), 0);
         self.chat.clear();
+        self.change_ledger.cleared();
         self.entry_layout.clear();
         self.entry_heights.clear();
         self.md_caches.borrow_mut().clear();
         self.streaming_rows.borrow_mut().take();
         self.pending_bash.clear();
         self.older_history_loading = false;
+        self.unseen_entries = 0;
     }
 
     /// Prepare an in-place mutation of one entry: capture its current
@@ -725,6 +767,30 @@ impl AgentView {
     /// Mark one chat entry's cached rows stale: the next frame lays it out again. A mutated
     /// entry changes every LATER spacing-driven row, so those go stale too.
     pub fn mark_entry_stale(&mut self, index: usize) {
+        self.mark_entry_rows_stale(index);
+        // The entry's content changed (an expansion goes through the rows alone).
+        self.change_ledger.stale(index);
+        for offset in index + 1..self.chat.len() {
+            if matches!(
+                self.chat[offset],
+                ChatEntry::AgentMessage(_)
+                    | ChatEntry::BackgroundCompletion(_)
+                    | ChatEntry::Tool(_)
+            ) {
+                if let Some(slot) = self.entry_layout.get_mut(offset) {
+                    *slot = [None, None, None];
+                }
+                if let Some(slot) = self.entry_heights.get_mut(offset) {
+                    *slot = [None, None, None];
+                }
+                self.search_note_stale(offset);
+            }
+        }
+    }
+
+    /// Mark only this entry's cached rows stale: a change no other entry's rows read (its own
+    /// expansion), folded into the paused window's bookkeeping like any in-place mutation.
+    fn mark_entry_rows_stale(&mut self, index: usize) {
         self.pending_handoff = None;
         if let Some((pending, before)) = self.sparse_mutation.take() {
             if pending == index && self.layout_width > 0 {
@@ -738,21 +804,7 @@ impl AgentView {
         if let Some(slot) = self.entry_heights.get_mut(index) {
             *slot = [None, None, None];
         }
-        for (offset, entry) in self.chat.iter().enumerate().skip(index + 1) {
-            if matches!(
-                entry,
-                ChatEntry::AgentMessage(_)
-                    | ChatEntry::BackgroundCompletion(_)
-                    | ChatEntry::Tool(_)
-            ) {
-                if let Some(slot) = self.entry_layout.get_mut(offset) {
-                    *slot = [None, None, None];
-                }
-                if let Some(slot) = self.entry_heights.get_mut(offset) {
-                    *slot = [None, None, None];
-                }
-            }
-        }
+        self.search_note_stale(index);
     }
 
     /// The conversation-detail label for the prompt-context row.
@@ -773,6 +825,9 @@ impl AgentView {
     /// Scroll the transcript window: scrolling up pauses following and
     /// reaching the bottom resumes it.
     pub fn scroll_by(&mut self, delta: isize) {
+        if self.following {
+            self.unseen_entries = 0;
+        }
         if let Some(window) = &mut self.sparse_window {
             window.scroll_by(delta);
             self.following = window.at_tail();
@@ -794,6 +849,9 @@ impl AgentView {
     pub fn scroll_to_top(&mut self) {
         if self.has_selection() {
             self.resolve_sparse_geometry();
+        }
+        if self.following {
+            self.unseen_entries = 0;
         }
         self.sparse_window = Some(lazy::SparseWindow::top(self.detail, self.layout_width));
         self.scroll_top = 0;
@@ -822,6 +880,11 @@ impl AgentView {
 
     pub fn is_following(&self) -> bool {
         self.following
+    }
+
+    /// Chat entries appended since the window paused (the follow pill's count).
+    pub(crate) fn unseen_entries(&self) -> usize {
+        self.unseen_entries
     }
 
     pub fn scroll_info(&mut self) -> ScrollInfo {

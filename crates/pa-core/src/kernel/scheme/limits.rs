@@ -20,7 +20,11 @@
 //!   `eval` (the same limit); a value that crosses to the host as JSON
 //!   ([`DATA_DEPTH`], which is also the deepest JSON the host can send back).
 //! - **Size is refused first** for the builtins that allocate by a count
-//!   ([`COUNT_LIMIT`]), and for a cell's source ([`SOURCE_BYTES`]).
+//!   ([`COUNT_LIMIT`]; a negative count too, which Steel reads as an
+//!   unsigned one), and for a cell's source ([`SOURCE_BYTES`]).
+//! - **A number JSON has no form for** (an infinity, not-a-number) is
+//!   refused where a value crosses to the host: Steel's conversion panics
+//!   on one.
 //!
 //! What stays unbounded is stated in [`guards`]' table and the tests beside
 //! it: a value nested millions deep can still be built one level at a time,
@@ -50,7 +54,8 @@ pub(super) const SOURCE_BYTES: usize = 1 << 20;
 pub(super) const DATA_DEPTH: usize = 128;
 
 /// The largest count a builtin that allocates by its argument is given
-/// (`make-string`, `make-vector`, `range`, `expt`): 16,777,216 elements,
+/// (`make-string`, `make-vector`, `range`, `read-bytes`, `expt`):
+/// 16,777,216 elements,
 /// at most a few hundred megabytes, where an unchecked count is a request
 /// the allocator answers by ending the process.
 pub(super) const COUNT_LIMIT: isize = 1 << 24;
@@ -188,6 +193,73 @@ fn nests_deeper_than(value: &SteelVal, levels: usize) -> bool {
     }
 }
 
+/// Whether `value`, which nests no deeper than [`DATA_DEPTH`], holds a
+/// float JSON has no form for. Steel's conversion to JSON panics on one.
+fn holds_non_finite(value: &SteelVal) -> bool {
+    match value {
+        SteelVal::NumV(number) => !number.is_finite(),
+        SteelVal::ListV(items) => items.iter().any(holds_non_finite),
+        SteelVal::VectorV(items) => items.iter().any(holds_non_finite),
+        SteelVal::HashSetV(items) => items.iter().any(holds_non_finite),
+        SteelVal::HashMapV(fields) => fields
+            .iter()
+            .any(|(key, value)| holds_non_finite(key) || holds_non_finite(value)),
+        // Nothing below is walked by the JSON conversion: each is a leaf or
+        // refused there.
+        SteelVal::Pair(_)
+        | SteelVal::Closure(_)
+        | SteelVal::BoolV(_)
+        | SteelVal::IntV(_)
+        | SteelVal::Rational(_)
+        | SteelVal::CharV(_)
+        | SteelVal::Void
+        | SteelVal::StringV(_)
+        | SteelVal::FuncV(_)
+        | SteelVal::SymbolV(_)
+        | SteelVal::Custom(_)
+        | SteelVal::CustomStruct(_)
+        | SteelVal::PortV(_)
+        | SteelVal::IterV(_)
+        | SteelVal::ReducerV(_)
+        | SteelVal::FutureFunc(_)
+        | SteelVal::FutureV(_)
+        | SteelVal::StreamV(_)
+        | SteelVal::BoxedFunction(_)
+        | SteelVal::ContinuationFunction(_)
+        | SteelVal::MutFunc(_)
+        | SteelVal::BuiltIn(_)
+        | SteelVal::MutableVector(_)
+        | SteelVal::BoxedIterator(_)
+        | SteelVal::SyntaxObject(_)
+        | SteelVal::Boxed(_)
+        | SteelVal::HeapAllocated(_)
+        | SteelVal::Reference(_)
+        | SteelVal::BigNum(_)
+        | SteelVal::BigRational(_)
+        | SteelVal::Complex(_)
+        | SteelVal::ByteVector(_) => false,
+    }
+}
+
+/// `value` as a count, when it is a number a builtin could take as one. An
+/// integer too large for a machine word is an infinity of its sign.
+fn count_of(value: &SteelVal) -> Option<f64> {
+    if let SteelVal::IntV(count) = value {
+        Some(*count as f64)
+    } else if let SteelVal::NumV(count) = value {
+        Some(*count)
+    } else if let SteelVal::BigNum(count) = value {
+        // Only a negative number is below its own negation.
+        Some(if **count < -(**count).clone() {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        })
+    } else {
+        None
+    }
+}
+
 /// `value` as the JSON it crosses to the host as.
 ///
 /// # Errors
@@ -201,28 +273,43 @@ pub(super) fn plain_data(value: SteelVal) -> Result<Value, SteelErr> {
 /// What a guarded builtin's arguments are checked for before it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Check {
-    /// Values that become JSON: at most [`DATA_DEPTH`] deep.
+    /// Values that become JSON: at most [`DATA_DEPTH`] deep, and every
+    /// float finite.
     Data,
     /// Values read as code: at most [`SOURCE_DEPTH`] deep.
     Code,
     /// Strings read as source: at most [`SOURCE_DEPTH`] deep.
     Source,
-    /// A count to allocate by: every integer at most [`COUNT_LIMIT`].
+    /// Numbers the result grows with (an exponent, a shift): each at most
+    /// [`COUNT_LIMIT`]. A negative one is the builtin's own business.
     Count,
+    /// Counts to allocate by, which Steel reads as unsigned: each of the
+    /// first arguments, as many as given here, is from zero to
+    /// [`COUNT_LIMIT`]. What follows them is not a count (a fill value, a
+    /// port).
+    Size(usize),
 }
 
 impl Check {
     fn run(self, arguments: &[SteelVal]) -> Result<(), SteelErr> {
         let refusal = match self {
-            Check::Data => arguments
-                .iter()
-                .any(|value| nests_deeper_than(value, DATA_DEPTH))
-                .then(|| {
-                    format!(
+            Check::Data => {
+                if arguments
+                    .iter()
+                    .any(|value| nests_deeper_than(value, DATA_DEPTH))
+                {
+                    Some(format!(
                         "the value is nested deeper than {DATA_DEPTH} levels, which JSON between \
                          the kernel and its host does not carry"
-                    )
-                }),
+                    ))
+                } else {
+                    arguments.iter().any(holds_non_finite).then(|| {
+                        "the value holds a number that is not finite (an infinity or \
+                         not-a-number), which JSON between the kernel and its host does not carry"
+                            .to_string()
+                    })
+                }
+            }
             Check::Code => arguments
                 .iter()
                 .any(|value| nests_deeper_than(value, SOURCE_DEPTH))
@@ -238,18 +325,26 @@ impl Check {
             }),
             Check::Count => arguments
                 .iter()
-                .any(|value| match value {
-                    SteelVal::IntV(count) => *count > COUNT_LIMIT,
-                    SteelVal::NumV(count) => *count > COUNT_LIMIT as f64,
-                    SteelVal::BigNum(_) => true,
-                    _ => false,
-                })
-                .then(|| {
-                    format!(
-                        "the count is over {COUNT_LIMIT}, the most elements the kernel builds in \
-                         one call: build it in pieces, or keep the data in a file"
-                    )
-                }),
+                .filter_map(count_of)
+                .any(|count| count > COUNT_LIMIT as f64)
+                .then(too_many),
+            Check::Size(counts) => {
+                arguments
+                    .iter()
+                    .take(counts)
+                    .filter_map(count_of)
+                    .find_map(|count| {
+                        if count < 0.0 {
+                            Some(
+                                "the count is negative: a builtin that builds by a count takes \
+                             zero or more"
+                                    .to_string(),
+                            )
+                        } else {
+                            (count > COUNT_LIMIT as f64).then(too_many)
+                        }
+                    })
+            }
         };
         refusal.map_or(Ok(()), |reason| {
             Err(SteelErr::new(ErrorKind::Generic, reason))
@@ -257,10 +352,18 @@ impl Check {
     }
 }
 
+/// What a count over [`COUNT_LIMIT`] is refused with.
+fn too_many() -> String {
+    format!(
+        "the count is over {COUNT_LIMIT}, the most elements the kernel builds in one call: build \
+         it in pieces, or keep the data in a file"
+    )
+}
+
 /// The Steel builtins that recurse or allocate by what they are given, and
 /// what each is checked for. Everything else a cell can reach either does
 /// neither, or is listed as unbounded in the module docs.
-pub(super) const GUARDED: [(&str, Check); 15] = [
+pub(super) const GUARDED: [(&str, Check); 18] = [
     ("emit-expanded", Check::Code),
     ("#%expand", Check::Code),
     ("value->jsexpr-string", Check::Data),
@@ -269,11 +372,16 @@ pub(super) const GUARDED: [(&str, Check); 15] = [
     ("expand!", Check::Code),
     ("eval-string", Check::Source),
     ("reader-push-string", Check::Source),
-    ("make-string", Check::Count),
-    ("make-vector", Check::Count),
-    ("make-bytes", Check::Count),
-    ("make-bytevector", Check::Count),
-    ("range", Check::Count),
+    ("make-string", Check::Size(1)),
+    ("make-vector", Check::Size(1)),
+    ("make-immutable-vector", Check::Size(1)),
+    ("make-bytes", Check::Size(1)),
+    ("make-bytevector", Check::Size(1)),
+    ("range", Check::Size(2)),
+    ("range-vec", Check::Size(2)),
+    // What `read-bytes` and `read-bytevector` call: it allocates the count
+    // before it reads a byte.
+    ("#%read-bytes", Check::Size(1)),
     ("expt", Check::Count),
     ("arithmetic-shift", Check::Count),
 ];

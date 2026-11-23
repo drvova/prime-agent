@@ -276,8 +276,15 @@ fn the_diagram_renders_states_edges_and_the_fired_marker() {
     let mut view = FactoryView::new(parse_factory_runs(&runs_response(&scripted_snapshot())), 40);
     let rows = frame_text(&mut view);
     let joined = rows.join("\n");
-    assert!(
-        joined.contains("factory: review-loop — running"),
+    // The page opens with the panes' `Title    counts` row, the count two columns short of the
+    // 110-column edge, over a blank.
+    assert_eq!(
+        rows[..3],
+        [
+            format!("  Factory{}1 running", " ".repeat(90)),
+            String::new(),
+            "\u{25b8} review-loop  running".to_string(),
+        ],
         "{joined}"
     );
     assert!(joined.contains("✓ collect"), "the done row: {joined}");
@@ -300,7 +307,7 @@ fn the_diagram_renders_states_edges_and_the_fired_marker() {
         "the max_parallel stat: {joined}"
     );
     assert!(
-        joined.contains("1 transitions"),
+        joined.contains("1 transition \u{b7}"),
         "the transitions_fired stat: {joined}"
     );
 }
@@ -590,7 +597,7 @@ fn a_malformed_cached_reply_mounts_with_the_error_not_a_silent_empty() {
     let mut view = FactoryView::from_reply(&two_run_response(), 40);
     let joined = frame_text(&mut view).join("\n");
     assert!(
-        joined.contains("factory: second-run"),
+        joined.contains("second-run  running"),
         "the cached runs mount newest-first: {joined}"
     );
     assert!(
@@ -649,11 +656,11 @@ fn the_empty_state_names_the_surface() {
     let joined = rows.join("\n");
     assert!(joined.contains("No live factory runs."), "{joined}");
     assert!(joined.contains("(factory-run"), "{joined}");
-    assert!(
-        joined.contains("move"),
-        "the hint names the arrows: {joined}"
+    assert_eq!(
+        rows.last().map(String::as_str),
+        Some("  \u{2190} back \u{b7} Esc close"),
+        "an empty page offers only its way out: {joined}"
     );
-    assert!(joined.contains("open"), "{joined}");
     assert!(joined.contains("back"), "{joined}");
 }
 
@@ -969,7 +976,7 @@ fn the_runs_list_reads_newest_first_and_opens_on_the_newest_run() {
     let joined = rows.join("\n");
     let first_header = rows
         .iter()
-        .find(|row| row.contains("factory: "))
+        .find(|row| row.contains("second-run  ") || row.contains("review-loop  "))
         .expect("the panels render");
     assert!(
         first_header.contains("second-run"),
@@ -977,11 +984,11 @@ fn the_runs_list_reads_newest_first_and_opens_on_the_newest_run() {
     );
     let newest = rows
         .iter()
-        .position(|row| row.contains("factory: second-run"))
+        .position(|row| row.contains("second-run  "))
         .expect("the newest run's header renders");
     let older = rows
         .iter()
-        .position(|row| row.contains("factory: review-loop"))
+        .position(|row| row.contains("review-loop  "))
         .expect("the older run's header renders");
     assert!(
         newest < older,
@@ -1077,11 +1084,11 @@ fn the_budget_window_keeps_the_hint_and_the_selected_panel() {
     // The default selection is the newest run: its header stays visible
     // with its marker, and the older panel drops first.
     assert!(
-        joined.contains("▸ factory: second-run — running"),
+        joined.contains("▸ second-run  running"),
         "the newest (selected) run's header stays visible: {joined}"
     );
     assert!(
-        !joined.contains("factory: review-loop"),
+        !joined.contains("review-loop  "),
         "the older panel drops instead of the chrome: {joined}"
     );
 
@@ -1101,11 +1108,11 @@ fn the_budget_window_keeps_the_hint_and_the_selected_panel() {
         "the key hint stays painted: {joined}"
     );
     assert!(
-        joined.contains("▸ factory: review-loop — running"),
+        joined.contains("▸ review-loop  running"),
         "the selected run's header stays visible: {joined}"
     );
     assert!(
-        !joined.contains("factory: second-run"),
+        !joined.contains("second-run  running"),
         "the unselected newest panel drops instead of the chrome: {joined}"
     );
 }
@@ -1482,15 +1489,16 @@ fn world_churn_tick() -> serde_json::Value {
 }
 
 /// One run's panel rows from the rendered frame: its header through the
-/// row before the next run's header (the frame's own reading order).
+/// row before the next run's header (the frame's own reading order). A
+/// header is the row above a panel's stats line.
 fn panel_rows<'a>(rows: &'a [String], name: &str) -> &'a [String] {
     let start = rows
         .iter()
         .position(|row| row.contains(name))
         .unwrap_or_else(|| panic!("the panel for {name} renders"));
-    let end = rows[start + 1..]
+    let end = rows[start + 2..]
         .iter()
-        .position(|row| row.contains("factory: "))
+        .position(|row| row.starts_with("  budget ") || row.starts_with("  elapsed "))
         .map_or(rows.len(), |offset| start + 1 + offset);
     &rows[start..end]
 }
@@ -1509,7 +1517,7 @@ fn a_complex_machine_renders_its_whole_shape() {
     let rows = frame_text(&mut view);
     let joined = rows.join("\n");
     assert!(
-        joined.contains("factory: pr run — running"),
+        joined.contains("pr run  running"),
         "the run header: {joined}"
     );
     // The declared order's rows, the entry and resident markers.
@@ -1520,7 +1528,7 @@ fn a_complex_machine_renders_its_whole_shape() {
     );
     assert!(joined.contains("watchdog"), "{joined}");
     assert!(
-        panel_rows(&rows, "factory: pr run")
+        panel_rows(&rows, "pr run  ")
             .iter()
             .any(|row| row.contains("✓ triage")),
         "the settled entry state: {joined}"
@@ -1536,7 +1544,7 @@ fn a_complex_machine_renders_its_whole_shape() {
     );
     // The loop's back edge renders with the return marker; the fan-in
     // join renders ONCE with its join label (not once per source).
-    let panel = panel_rows(&rows, "factory: pr run");
+    let panel = panel_rows(&rows, "pr run  ");
     let back_edge = panel
         .iter()
         .find(|row| row.contains("↩"))
@@ -1693,7 +1701,7 @@ fn fifteen_panels_window_to_the_focus_on_a_small_viewport() {
     // The leading window keeps the feed's head: the newest panel
     // renders first.
     assert!(
-        rows.iter().any(|row| row.contains("factory: world-run-14")),
+        rows.iter().any(|row| row.contains("world-run-14  ")),
         "the newest panel renders first: {}",
         rows.join("\n")
     );
@@ -1704,11 +1712,11 @@ fn fifteen_panels_window_to_the_focus_on_a_small_viewport() {
     let joined = rows.join("\n");
     assert!(rows.len() <= 26, "the windowed frame stays in budget");
     assert!(
-        joined.contains("▸ factory: world-run-7 — running"),
+        joined.contains("▸ world-run-7  running"),
         "the focused panel's header paints after the slide: {joined}"
     );
     assert!(
-        !joined.contains("factory: world-run-14"),
+        !joined.contains("world-run-14  "),
         "the head panel dropped instead of the chrome: {joined}"
     );
     assert!(
@@ -1773,7 +1781,7 @@ fn the_refresh_tick_lights_only_notice_worthy_changes_across_many_runs() {
     assert!(view.apply_runs(parse_factory_runs(&w02_settled(2))));
     let rows = frame_text(&mut view);
     assert_eq!(changed_headers(&mut view), 1, "exactly one run changed");
-    let panel = panel_rows(&rows, "factory: world-run-2");
+    let panel = panel_rows(&rows, "world-run-2  ");
     assert!(
         panel.iter().any(|row| row.contains("● changed")),
         "the changed run is w02: {}",
@@ -1790,7 +1798,7 @@ fn the_refresh_tick_lights_only_notice_worthy_changes_across_many_runs() {
     let rows = frame_text(&mut view);
     assert_eq!(changed_headers(&mut view), 1);
     assert!(
-        panel_rows(&rows, "factory: world-run-2")
+        panel_rows(&rows, "world-run-2  ")
             .iter()
             .any(|row| row.contains("review (1 run · 0 queued)")),
         "the occupancy label drops to 1 run"
@@ -1801,7 +1809,7 @@ fn the_refresh_tick_lights_only_notice_worthy_changes_across_many_runs() {
     assert!(view.apply_runs(parse_factory_runs(&w02_entry_fired())));
     let rows = frame_text(&mut view);
     assert_eq!(changed_headers(&mut view), 1, "still exactly one run");
-    let panel = panel_rows(&rows, "factory: world-run-2");
+    let panel = panel_rows(&rows, "world-run-2  ");
     let fired_edge = panel
         .iter()
         .find(|row| row.contains("»") && row.contains("fix"))
@@ -1831,10 +1839,10 @@ fn the_refresh_tick_lights_only_notice_worthy_changes_across_many_runs() {
         "the entered fix stage paints accent: {accent_ids:?}"
     );
     let rows = frame_text(&mut view);
-    let panel = panel_rows(&rows, "factory: world-run-2");
+    let panel = panel_rows(&rows, "world-run-2  ");
     let panel_start = rows
         .iter()
-        .position(|row| row.contains("factory: world-run-2"))
+        .position(|row| row.contains("world-run-2  "))
         .expect("the panel renders");
     let panel_end = panel_start + panel.len();
     let review_accent = spans[panel_start..panel_end].iter().any(|row| {
@@ -1868,9 +1876,9 @@ fn orchestration_targets_the_focused_run_among_many() {
     assert_eq!(selected_row(&view), row("run-w07", None));
     let rows = frame_text(&mut view);
     assert!(
-        panel_rows(&rows, "factory: world-run-7")
+        panel_rows(&rows, "world-run-7  ")
             .iter()
-            .any(|row| row.contains("— stopping")),
+            .any(|row| row.contains("world-run-7  stopping")),
         "the stopped run's panel reads stopping"
     );
     // A paused run resumes.
@@ -1942,11 +1950,8 @@ fn rapid_churn_keeps_the_folded_page_coherent() {
     // The page stays coherent: the burst's panels render, the focused
     // panel paints, the hint paints.
     let joined = rows.join("\n");
-    assert!(joined.contains("factory: world-run-19"), "{joined}");
-    assert!(
-        joined.contains("▸ factory: world-run-7 — running"),
-        "{joined}"
-    );
+    assert!(joined.contains("world-run-19  "), "{joined}");
+    assert!(joined.contains("▸ world-run-7  running"), "{joined}");
     assert!(joined.contains("Enter/→ open"), "{joined}");
     // The focused run vanishes mid-orchestration: the selection hands
     // back to the head, and the very next keypress resolves against

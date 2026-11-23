@@ -37,7 +37,8 @@ pub(crate) fn parse_write(data: &Value) -> anyhow::Result<WriteRequest> {
 }
 
 /// Run one `fs.write`: the reply, its telemetry fact, and, when a text file
-/// was replaced, its lines before and after (the seen-files record).
+/// was replaced or created, its lines before (none for a new file) and after
+/// (the seen-files record and the cell's card).
 ///
 /// # Errors
 ///
@@ -50,6 +51,7 @@ pub(crate) fn write(request: &WriteRequest) -> anyhow::Result<(Value, EditFact, 
     let after = Document::decode(bytes)
         .map_err(|_| anyhow!("text holds a NUL character; {shown} was not written"))?;
     let lines = after.lines.len();
+    let after: Vec<String> = after.lines.into_iter().map(|line| line.text).collect();
     let existing = match std::fs::metadata(path) {
         Ok(metadata) if metadata.is_dir() => bail!("{shown} is a directory"),
         Ok(metadata) if !metadata.is_file() => bail!("{shown} is not a regular file"),
@@ -62,7 +64,7 @@ pub(crate) fn write(request: &WriteRequest) -> anyhow::Result<(Value, EditFact, 
         // A file that was not text had no seen version to bring forward.
         Document::decode(before).ok().map(|before| Rewrite {
             before: before.lines.into_iter().map(|line| line.text).collect(),
-            after: after.lines.into_iter().map(|line| line.text).collect(),
+            after,
         })
     } else {
         let parent = path
@@ -101,7 +103,12 @@ pub(crate) fn write(request: &WriteRequest) -> anyhow::Result<(Value, EditFact, 
             let _ = std::fs::remove_file(&temp);
         }
         written?;
-        None
+        // From no lines: only a seen version of an empty file, since
+        // deleted, matches that and moves forward to what was written.
+        Some(Rewrite {
+            before: Vec::new(),
+            after,
+        })
     };
     let created = existing.is_none();
     let text = format!(

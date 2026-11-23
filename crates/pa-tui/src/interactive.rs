@@ -160,6 +160,60 @@ pub trait InteractionTelemetry: Send + Sync {
         action: &'static str,
         resumed_following: bool,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A transcript navigation action, the first of each kind in a run (event `tui transcript
+    /// navigation`): `action` is `previous_prompt` / `next_prompt` (a prompt jump key) or
+    /// `follow_new_output` (the follow key while the pill counted new entries). Never prompt
+    /// text. Implementations return at once: the key path spawns it and never waits.
+    fn transcript_navigated(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A transcript search closed, the first time per outcome in a run (event `tui transcript
+    /// search`): counts and enums only, never the query or a matched row. Implementations return
+    /// at once: the key path spawns it and never waits.
+    fn transcript_searched(
+        &self,
+        search: TranscriptSearchReport,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A recent-model action was used, the first time in a run for each action (event `tui
+    /// model recent used`): `action` is `cycle` (the composer's recent-model key switched),
+    /// `cycle_none` (the key found no other recent model), or `recent_pick` (the picker applied
+    /// a model from its recent group). Never a model or a provider. Implementations return at
+    /// once: the key path spawns it and never waits.
+    fn model_recent_used(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A session changes panel action, the first of each kind in a run (event `tui session
+    /// changes`): `action` is `open` / `scope` / `diff` / `attach`; `files` is how many files the
+    /// open scope lists and `untested` how many of them no test or build ran after. Never a path
+    /// or a diff. Implementations return at once: the key path spawns it and never waits.
+    fn session_changes_used(
+        &self,
+        action: &'static str,
+        files: u64,
+        untested: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The unfocused terminal was signalled that the agent stopped for the user, the first time
+    /// per reason in a run (event `tui unfocused signal`): `reason` is `turn_end` / `question`,
+    /// `mode` the `terminal.notifyOnTurnEnd` value that chose the signal (`bell` /
+    /// `notification`). Implementations return at once: the event path spawns it and never waits.
+    fn unfocused_signal_sent(
+        &self,
+        reason: &'static str,
+        mode: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The shortcut overview opened, the first time in a run (event `tui shortcut overlay
+    /// opened`). Implementations return at once: the key path spawns it and never waits.
+    fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A mouse selection was copied, the first time per kind in a run (event `tui mouse
+    /// selection`): `kind` is `drag` / `word` (a double click) / `line` (a triple click). Never
+    /// the copied text. Implementations return at once: the mouse path spawns it and never
+    /// waits.
+    fn mouse_selection_copied(
+        &self,
+        kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first selection copy (`tui selection used`): `lines` is the copy's line count.
     fn selection_used(&self, lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first click-driven interaction (`tui click used`): `surface` is `transcript` /
@@ -617,6 +671,9 @@ pub struct InteractiveOutcome {
     /// OSC 52 clipboard sequences emitted during the run (headless capture only; terminal
     /// runs write them to stdout directly).
     pub clipboard_emissions: Vec<String>,
+    /// Terminal attention signals (BEL, OSC 9) the run queued, as the bytes a terminal frame
+    /// would have carried (headless capture only; a terminal run writes them with its frames).
+    pub attention_signals: Vec<String>,
     /// `/resume` requested the agents view next (return-to-session flow).
     pub return_to_agents_view: bool,
     /// The subagent summary line opened the agents view scoped to this session's subtree;
@@ -663,6 +720,21 @@ pub struct InlineImageCounts {
     pub half_block: u64,
 }
 
+/// One closed transcript search (`tui transcript search`), as
+/// `InteractionTelemetry::transcript_searched` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptSearchReport {
+    /// How it closed: `jumped` (Enter at a match), `cancelled` (Esc, the view put back), or
+    /// `no_match` (closed while the query matched nothing).
+    pub outcome: &'static str,
+    /// Next and previous match presses.
+    pub steps: u64,
+    /// Whether a match inside a collapsed card or folded thinking opened it.
+    pub revealed: bool,
+    /// `complete`, or `loaded_only` when older history lived only in the daemon.
+    pub history: &'static str,
+}
+
 /// One run's todo-tray and question-panel adoption counts (`tui todos and questions`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TodoQuestionCounts {
@@ -692,6 +764,8 @@ enum UiInput {
     Paste(String),
     /// A decoded mouse report (wheel turns; other reports are consumed at the source).
     Mouse(crate::mouse::MouseEvent),
+    /// The terminal reported gaining (`true`) or losing focus.
+    Focus(bool),
     Submit(String),
     /// The headless `SubmitAndSettle` step (see [`HeadlessStep`]).
     SubmitAndSettle {

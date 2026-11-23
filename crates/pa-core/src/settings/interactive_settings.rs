@@ -123,6 +123,40 @@ impl SettingsManager {
         self.save_global_scope(&["terminal.showTerminalProgress"])
     }
 
+    /// `terminal.notifyOnTurnEnd` (default `off`).
+    #[must_use]
+    pub fn get_notify_on_turn_end(&self) -> &'static str {
+        match self
+            .settings()
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.notify_on_turn_end)
+        {
+            Some(super::types::TurnEndNotification::Bell) => "bell",
+            Some(super::types::TurnEndNotification::Notification) => "notification",
+            Some(super::types::TurnEndNotification::Off) | None => "off",
+        }
+    }
+
+    /// `terminal.notifyOnTurnEnd` setter (`off`, `bell`, or `notification`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown value, or when the global settings scope cannot be saved.
+    pub fn set_notify_on_turn_end(&mut self, signal: &str) -> Result<()> {
+        let parsed = match signal {
+            "off" => super::types::TurnEndNotification::Off,
+            "bell" => super::types::TurnEndNotification::Bell,
+            "notification" => super::types::TurnEndNotification::Notification,
+            other => return Err(anyhow!("Unknown turn-end notification: {other}")),
+        };
+        self.global_mut()
+            .terminal
+            .get_or_insert_with(Default::default)
+            .notify_on_turn_end = Some(parsed);
+        self.save_global_scope(&["terminal.notifyOnTurnEnd"])
+    }
+
     /// # Errors
     ///
     /// Returns an error when the global settings scope cannot be saved.

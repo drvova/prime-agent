@@ -1139,7 +1139,10 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
         "the welcome screen's action rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("Login with Prime Intellect"),
+        outcome.frames.iter().any(|frame| {
+            frame.contains("Log in with Prime Intellect")
+                && frame.contains("Paste a Prime API key below:")
+        }),
         "the login dialog's heading replaced the brand line:\n{rendered}"
     );
     assert!(
@@ -3422,7 +3425,7 @@ async fn tui_side_question_pane_flow() {
     );
     assert!(
         rendered.contains(
-            "Slash commands are not available in side conversations. Press esc to return to the main thread."
+            "Slash commands are not available in side conversations. Press Esc to return to the main thread."
         ),
         "the in-pane slash notice rendered:\n{rendered}"
     );
@@ -3731,10 +3734,11 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
     // `app.session.resume` has no default key, so the fixture binds it to a
-    // plain key (both products fire the action with text in the editor).
+    // plain key no other action has by default (both products fire the action
+    // with text in the editor). F2 is `app.model.cycleRecent`'s default.
     std::fs::write(
         agent_dir.join("keybindings.json"),
-        r#"{ "app.session.resume": "f2" }"#,
+        r#"{ "app.session.resume": "f9" }"#,
     )
     .expect("write keybindings.json");
     let supervisor = spawn_supervisor(dir.path());
@@ -3805,7 +3809,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
             pa_tui::interactive::HeadlessStep::WaitMs(300),
             pa_tui::interactive::HeadlessStep::Type(" f24 handoff draft".to_string()),
             pa_tui::interactive::HeadlessStep::Key(KeyEvent::new(
-                KeyCode::F(2),
+                KeyCode::F(9),
                 KeyModifiers::NONE,
             )),
         ],

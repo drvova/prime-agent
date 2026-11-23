@@ -907,14 +907,15 @@ async fn a_backgrounded_cell_keeps_the_command_it_waits_for(shell) {
     let cell = moved.backgrounded_cell.unwrap();
     read(&started).await;
     write(&gate, "go\n").await;
-    run_within(kernel.as_ref(), &format!("(cell-wait \"{cell}\" 60)"), None).await;
-    let ended = run_within(
+    // With their own limit, not the session's 100 ms window: the wait lasts
+    // until the cell has ended, and the read is not itself moved away.
+    run(kernel.as_ref(), &format!("(cell-wait \"{cell}\" 60)")).await;
+    let ended = run(
         kernel.as_ref(),
         &format!(
             "(let ([state (cell-status \"{cell}\")])
                (list (hash-ref state 'status) (hash-ref state 'text)))"
         ),
-        None,
     )
     .await;
     assert_eq!(
@@ -941,18 +942,20 @@ async fn cancelling_a_background_cell_kills_its_command_and_keeps_its_jobs(shell
     let cell = moved.backgrounded_cell.unwrap();
     read(&started).await;
     let waited = numbers(&std::fs::read_to_string(dir.path().join("waited.pids")).unwrap());
-    run_within(kernel.as_ref(), &format!("(cell-cancel \"{cell}\")"), None).await;
+    // With their own limit, not the session's 100 ms window: the cancel's
+    // wait for the cell is not cut short, and the cell that reads the state
+    // waits for the engine the cancelled cell gives up when it has ended.
+    run(kernel.as_ref(), &format!("(cell-cancel \"{cell}\")")).await;
     let mut gone = Vec::new();
     for pid in &waited {
         gone.push(exited(*pid).await);
     }
-    let after = run_within(
+    let after = run(
         kernel.as_ref(),
         &format!(
             "(list (hash-ref (cell-status \"{cell}\") 'status) (bash-running? kept)
                    (bash-kill kept (hash 'signal 'kill)))"
         ),
-        None,
     )
     .await;
     assert_eq!(

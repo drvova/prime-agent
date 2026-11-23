@@ -427,6 +427,42 @@ impl AgentView {
         true
     }
 
+    /// Select the word (`Word`) or the whole row (`Line`) under a transcript screen position, read
+    /// from the last composed frame's text; the release copies it like a drag. `false` — nothing
+    /// selected — outside the transcript window, over blank cells, or for a `Drag` press.
+    pub(crate) fn select_transcript_span(
+        &mut self,
+        screen_row: usize,
+        screen_col: usize,
+        kind: crate::selection_gesture::SelectionKind,
+    ) -> bool {
+        let Some(line) = self.transcript_line_for_screen_row(screen_row, false) else {
+            return false;
+        };
+        let text = self
+            .selection
+            .frame_text
+            .get(screen_row)
+            .map_or("", String::as_str);
+        let span = match kind {
+            crate::selection_gesture::SelectionKind::Word => {
+                crate::selection_gesture::word_span(text, screen_col)
+            }
+            crate::selection_gesture::SelectionKind::Line => {
+                crate::selection_gesture::line_span(text)
+            }
+            crate::selection_gesture::SelectionKind::Drag => None,
+        };
+        let Some((from, to)) = span else {
+            return false;
+        };
+        self.selection.anchor = Some(SelectionPoint { line, col: from });
+        self.selection.head = Some(SelectionPoint { line, col: to });
+        self.selection.mode = Some(SelectionMode::Transcript);
+        self.selection.frame = None;
+        true
+    }
+
     /// Extend the active selection to a screen position, clamping into the window like the drag
     /// path.
     fn extend_selection(&mut self, screen_row: usize, screen_col: usize) {

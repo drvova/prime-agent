@@ -273,10 +273,11 @@ fn pipe_to(program: &str, args: &[&str], text: &str) -> bool {
 }
 
 /// The Linux tool chain: Termux, then Wayland (`wl-copy` when it
-/// exists), then the X11 pair (`xclip` with `xsel` fallback).
-fn copy_on_linux(text: &str, env: &Env) -> bool {
+/// exists), then the X11 pair (`xclip` with `xsel` fallback). The tool
+/// that took the text, if one did.
+fn copy_on_linux(text: &str, env: &Env) -> Option<&'static str> {
     if env.has("TERMUX_VERSION") && pipe_to("termux-clipboard-set", &[], text) {
-        return true;
+        return Some("termux-clipboard-set");
     }
     let has_wayland = env.has("WAYLAND_DISPLAY");
     let has_x11 = env.has("DISPLAY");
@@ -291,32 +292,61 @@ fn copy_on_linux(text: &str, env: &Env) -> bool {
             .status()
             .is_ok_and(|status| status.success());
         if wl_copy_exists && pipe_to("wl-copy", &[], text) {
-            return true;
+            return Some("wl-copy");
         }
         if has_x11 {
             return copy_to_x11(text);
         }
-        return false;
+        return None;
     }
     if has_x11 {
         return copy_to_x11(text);
     }
-    false
+    None
 }
 
 /// `xclip -selection clipboard`, falling back to `xsel --clipboard
 /// --input`.
-fn copy_to_x11(text: &str) -> bool {
-    pipe_to("xclip", &["-selection", "clipboard"], text)
-        || pipe_to("xsel", &["--clipboard", "--input"], text)
+fn copy_to_x11(text: &str) -> Option<&'static str> {
+    if pipe_to("xclip", &["-selection", "clipboard"], text) {
+        return Some("xclip");
+    }
+    pipe_to("xsel", &["--clipboard", "--input"], text).then_some("xsel")
 }
 
 /// Copy text using a local platform tool or request delivery via the terminal.
 /// A terminal request has no acknowledgement from the local clipboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CopyOutcome {
-    Confirmed,
-    Requested,
+    /// A local clipboard tool took the text: its name (`pbcopy`, `wl-copy`, ...).
+    Confirmed(&'static str),
+    /// The text was handed on to a channel that cannot confirm delivery.
+    Requested(CopyChannel),
+}
+
+/// Where an unconfirmed copy was handed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyChannel {
+    /// tmux originated the clipboard write for its attached client.
+    Tmux,
+    /// The terminal itself, through an OSC 52 request.
+    Osc52,
+}
+
+impl CopyOutcome {
+    /// The toast a selection copy shows: that it was copied and by which path, and for a path
+    /// that cannot confirm delivery, that a paste checks it.
+    pub(crate) fn selection_toast(self) -> String {
+        match self {
+            CopyOutcome::Confirmed(tool) => format!("Copied selection to clipboard via {tool}"),
+            CopyOutcome::Requested(CopyChannel::Tmux) => {
+                "Copied selection via tmux; paste to verify".to_string()
+            }
+            CopyOutcome::Requested(CopyChannel::Osc52) => {
+                "Copied selection via OSC 52; paste to verify".to_string()
+            }
+        }
+    }
 }
 
 /// A platform helper's success: a local session's helper wrote the user's
@@ -324,11 +354,11 @@ pub(crate) enum CopyOutcome {
 /// TUI runs on — the user's local terminal cannot paste from it, and the
 /// payload is too large for OSC 52 — so the copy reports where the text
 /// landed instead of confirming delivery.
-fn helper_outcome(remote: bool) -> Result<CopyOutcome, String> {
+fn helper_outcome(remote: bool, tool: &'static str) -> Result<CopyOutcome, String> {
     if remote {
         Err(OVERSIZED_REMOTE_COPIED.to_string())
     } else {
-        Ok(CopyOutcome::Confirmed)
+        Ok(CopyOutcome::Confirmed(tool))
     }
 }
 
@@ -353,22 +383,22 @@ fn copy_with_env(text: &str, sink: &mut OscSink, env: &Env) -> Result<CopyOutcom
     // Remote tools target the wrong machine and can stall the input loop
     // before terminal forwarding. Keep them for payloads too large for OSC 52.
     let copied = if matches!(sink, OscSink::Buffer(_)) || (remote && carriable) {
-        false
+        None
     } else {
         match std::env::consts::OS {
-            "macos" => pipe_to("pbcopy", &[], text),
-            "windows" => pipe_to("clip", &[], text),
+            "macos" => pipe_to("pbcopy", &[], text).then_some("pbcopy"),
+            "windows" => pipe_to("clip", &[], text).then_some("clip"),
             _ => copy_on_linux(text, env),
         }
     };
-    if copied {
-        return helper_outcome(remote);
+    if let Some(tool) = copied {
+        return helper_outcome(remote, tool);
     }
     if matches!(sink, OscSink::Stdout) && std::env::var_os("TMUX").is_some() {
         // The containing tmux originates this copy even with its default
         // `set-clipboard external`; raw application OSC 52 is rejected there.
         if carriable && copy_via_tmux(text) {
-            return Ok(CopyOutcome::Requested);
+            return Ok(CopyOutcome::Requested(CopyChannel::Tmux));
         }
         if let Some(error) = tmux_clipboard_blocked(carriable, tmux_blocks_osc52) {
             return Err(error);
@@ -377,7 +407,7 @@ fn copy_with_env(text: &str, sink: &mut OscSink, env: &Env) -> Result<CopyOutcom
     if let Some(sequence) = crate::osc52::sequence(text) {
         sink.write_sequence(&sequence)
             .map_err(|error| format!("Failed to write clipboard request: {error}"))?;
-        return Ok(CopyOutcome::Requested);
+        return Ok(CopyOutcome::Requested(CopyChannel::Osc52));
     }
     Err("Failed to copy to clipboard".to_string())
 }
@@ -419,7 +449,7 @@ mod tests {
         let mut sink = OscSink::Buffer(Vec::new());
         assert_eq!(
             copy_with_env("parity text", &mut sink, &plain_env()),
-            Ok(CopyOutcome::Requested)
+            Ok(CopyOutcome::Requested(CopyChannel::Osc52))
         );
         match sink {
             OscSink::Buffer(buffer) => {
@@ -475,10 +505,13 @@ mod tests {
     #[test]
     fn a_remote_helper_success_never_confirms_local_delivery() {
         assert_eq!(
-            helper_outcome(true),
+            helper_outcome(true, "xclip"),
             Err(OVERSIZED_REMOTE_COPIED.to_string())
         );
-        assert_eq!(helper_outcome(false), Ok(CopyOutcome::Confirmed));
+        assert_eq!(
+            helper_outcome(false, "xclip"),
+            Ok(CopyOutcome::Confirmed("xclip"))
+        );
     }
 
     #[test]

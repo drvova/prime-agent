@@ -929,6 +929,16 @@ impl SessionUi {
                 }
                 self.open_usage_page(view);
             }
+            // `/diff`: the session changes panel over the loaded transcript.
+            "diff" => {
+                if !resolved.args.is_empty() {
+                    view.editor
+                        .set_text(&format!("/{} {}", resolved.original_name, resolved.args));
+                    self.error_row("Usage: /diff", view);
+                    return Ok(());
+                }
+                self.open_changes_panel(view);
+            }
             other => {
                 self.note(
                     &format!("/{other} is not available in this client yet"),

@@ -11,7 +11,7 @@ use super::filters::{BillingFilter, CapabilityFilter, ContextFilter, SortKey};
 use super::rows::{ListRow, RowColumns, SignIn};
 use super::{EffortLayout, ModelPicker};
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank, CHROME_INDENT, ELLIPSIS};
 use crate::menu_panel::{finish_menu_row, menu_row, search_field_lines, MenuSegment};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::str_width;
@@ -38,7 +38,7 @@ pub(super) fn render(
 
     // The scope row renders ABOVE the search field (TS v0.9.7's headerHelpContainer mounts before
     // the search input): one leading space, the active side accented, then the dim toggle key and
-    // muted description, truncated with "...".
+    // muted description, cut with the shared mark.
     let mut lines = vec![crate::menu_chrome::title_row(theme, width, "Model")];
     if picker.has_scoped_models() {
         let muted = |text: &str| theme.fg_span(ThemeColor::Muted, text.to_string());
@@ -62,7 +62,7 @@ pub(super) fn render(
             line.push(theme.fg_span(ThemeColor::Dim, key));
             line.push(muted(" scope (all/scoped)"));
         }
-        lines.push(crate::width::truncate_line(&line, width, "..."));
+        lines.push(crate::width::truncate_line(&line, width, ELLIPSIS));
     }
     lines.extend(search_field_lines(
         theme,
@@ -100,8 +100,22 @@ pub(super) fn render(
     let scrollbar = (start > 0 || end < total_rows)
         .then(|| crate::menu_panel::scrollbar_cells(theme, end - start, total_rows, start));
     let row_width = width.saturating_sub(2 * usize::from(scrollbar.is_some()));
-    let columns = RowColumns::fit(picker, &window_models, row_width);
-    let effort_layout = ModelPicker::effort_layout(&window_models, row_width, columns.width());
+    let mut columns = RowColumns::fit(picker, &window_models, row_width);
+    let mut effort_layout = ModelPicker::effort_layout(&window_models, row_width, columns.width());
+    // A name the cluster would cut wins over the extra columns.
+    let longest_reasoning_name = window_models
+        .iter()
+        .filter(|model| !ModelPicker::selectable_levels(model).is_empty())
+        .map(|model| str_width(&model.name))
+        .max()
+        .unwrap_or(0)
+        .min(super::EFFORT_NAME_COLUMN_MAX);
+    while effort_layout.show_cluster
+        && effort_layout.name_column < longest_reasoning_name
+        && columns.drop_extra()
+    {
+        effort_layout = ModelPicker::effort_layout(&window_models, row_width, columns.width());
+    }
     let selected_position = picker.selected_index();
     for (offset, display_row) in rows.iter().enumerate() {
         let mut row = match display_row {
@@ -116,6 +130,18 @@ pub(super) fn render(
                         header.push(theme.fg_span(
                             ThemeColor::Dim,
                             format!(" \u{b7} {}", super::rows::SIGN_IN_TEXT),
+                        ));
+                    }
+                }
+                // The recent group names the key that walks it from the prompt.
+                if label == super::rows::RECENT_HEADER {
+                    if let Some(key) = kb.first_key("app.model.cycleRecent") {
+                        header.push(theme.fg_span(
+                            ThemeColor::Dim,
+                            format!(
+                                " \u{b7} {} cycles",
+                                crate::keybindings::format_key_text(&key)
+                            ),
                         ));
                     }
                 }
@@ -161,13 +187,13 @@ pub(super) fn render(
     }
 
     if filtered_len == 0 {
-        lines.push(empty_state_row(
-            theme,
-            width,
-            kb,
-            picker.query(),
-            "No models available",
-        ));
+        // A chip that hides every model says so: the catalog is not empty.
+        let empty = if *picker.filters() == super::filters::PickerFilters::default() {
+            "No models available"
+        } else {
+            "No model matches the filters"
+        };
+        lines.push(empty_state_row(theme, width, kb, picker.query(), empty));
     }
     crate::menu_chrome::hold_list_height(&mut lines, list_start, held);
     if let Some(model) = picker.selected_model().cloned() {
@@ -176,26 +202,44 @@ pub(super) fn render(
         }
     }
 
-    let enter = picker
-        .selected_model()
-        .map(|model| format!("switches to {}", model.name));
-    lines.extend(
-        Footer::new()
-            .enter(kb, enter.as_deref())
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "model",
-                HintRank::Useful,
-            )
-            .bound(
+    // The Enter line says what Enter does to the session: keep the current model, set its
+    // edited effort, or switch (at the edited effort).
+    let selected = picker.selected_model();
+    let enter = selected.map(|model| {
+        let edited = picker
+            .edited_effort(model)
+            .map(ModelThinkingLevel::wire_name);
+        match (picker.is_current(model), edited) {
+            (true, None) => format!("keeps {} (current)", model.name),
+            (true, Some(level)) => format!("sets {} to {level} effort", model.name),
+            (false, None) => format!("switches to {}", model.name),
+            (false, Some(level)) => format!("switches to {} at {level} effort", model.name),
+        }
+    });
+    // An empty list offers only what still works: the sort and Esc. The effort keys show only
+    // for a model with effort levels.
+    let mut footer = Footer::new().enter(kb, enter.as_deref());
+    if let Some(model) = selected {
+        footer = footer.bound(
+            kb,
+            &["tui.select.up", "tui.select.down"],
+            "model",
+            HintRank::Useful,
+        );
+        if !ModelPicker::selectable_levels(model).is_empty() {
+            footer = footer.bound(
                 kb,
                 &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
                 "effort",
                 HintRank::Useful,
-            )
+            );
+        }
+        footer = footer
             .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-            .bound(kb, &["app.model.actions"], "actions", HintRank::Useful)
+            .bound(kb, &["app.model.actions"], "actions", HintRank::Useful);
+    }
+    lines.extend(
+        footer
             .bound(kb, &["app.model.sort"], "sort", HintRank::Extra)
             .esc(kb, EscVerb::Close)
             .rows(theme, width),
@@ -206,7 +250,9 @@ pub(super) fn render(
 }
 
 /// The chip row under the search field: the sort and each filter chip, a non-default value in
-/// the accent. The chips carry their keys when the whole row fits, else the bare chips.
+/// the accent. The chips carry their keys when the whole row fits; else the keyed row names a
+/// filter left at its default by its name alone (`Alt+2 billing`), so the keys stay on screen at
+/// 80 columns; else the bare chips, cut with the shared mark.
 fn chip_row(picker: &ModelPicker, theme: &Theme, width: usize, kb: &KeybindingsManager) -> Line {
     let filters = picker.filters();
     let provider = filters.provider.as_deref().unwrap_or("all");
@@ -242,7 +288,7 @@ fn chip_row(picker: &ModelPicker, theme: &Theme, width: usize, kb: &KeybindingsM
             filters.context != ContextFilter::Any,
         ),
     ];
-    let build = |keyed: bool| -> Line {
+    let build = |keyed: bool, compact: bool| -> Line {
         let mut line: Line = vec![Span::raw(CHROME_INDENT)];
         for (index, (binding, name, value, active)) in chips.iter().enumerate() {
             if index > 0 {
@@ -256,6 +302,11 @@ fn chip_row(picker: &ModelPicker, theme: &Theme, width: usize, kb: &KeybindingsM
                     ));
                 }
             }
+            // The sort always names its order: it is never "off".
+            if compact && !*active && index > 0 {
+                line.push(theme.fg_span(ThemeColor::Muted, (*name).to_string()));
+                continue;
+            }
             line.push(theme.fg_span(ThemeColor::Muted, format!("{name}: ")));
             let color = if *active {
                 ThemeColor::Accent
@@ -266,11 +317,13 @@ fn chip_row(picker: &ModelPicker, theme: &Theme, width: usize, kb: &KeybindingsM
         }
         line
     };
-    let keyed = build(true);
-    if crate::width::spans_width(&keyed) <= width {
-        return keyed;
+    for (keyed, compact) in [(true, false), (true, true)] {
+        let line = build(keyed, compact);
+        if crate::width::spans_width(&line) <= width {
+            return line;
+        }
     }
-    crate::width::truncate_line(&build(false), width, "\u{2026}")
+    crate::width::truncate_line(&build(false, false), width, ELLIPSIS)
 }
 
 /// The primary cell of one row: the model name, or the name with the inline
@@ -293,10 +346,10 @@ fn row_primary(
     if levels.is_empty() {
         return vec![Span::raw(name)];
     }
-    let mut primary: Line = vec![Span::raw(truncate_pad(
-        &name,
+    // Grapheme-aware, so a joined emoji or a combining mark never shifts the cluster.
+    let mut primary: Line = vec![Span::raw(crate::width::pad_cell(
+        &crate::width::truncate_to_width(&name, layout.name_column, ELLIPSIS),
         layout.name_column,
-        "\u{2026}",
     ))];
     primary.push(Span::raw(" ".repeat(layout.gap)));
     if selected {
@@ -388,7 +441,7 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
         }
         let rounded = (value * 1000.0).round() / 1000.0;
         if rounded == 0.0 {
-            return "<0.001".to_string();
+            return "<$0.001".to_string();
         }
         format!("${rounded}")
     };
@@ -416,22 +469,27 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
                     output
                 })
         };
-        let mut labels = vec![Span::raw(" "), theme.fg_span(ThemeColor::Muted, row(0))];
+        // The block shares the title's, the rows' and the footer's text column.
+        let mut labels = vec![
+            Span::raw(CHROME_INDENT),
+            theme.fg_span(ThemeColor::Muted, row(0)),
+        ];
         labels.push(Span::raw(" "));
         labels.push(unit);
         lines.push(vec![Span::raw(" ")]);
         lines.push(labels);
-        lines.push(vec![Span::raw(" "), Span::raw(row(1))]);
+        lines.push(vec![Span::raw(CHROME_INDENT), Span::raw(row(1))]);
         lines.push(vec![Span::raw(" ")]);
     } else {
         for (position, (label, value)) in entries.iter().enumerate() {
             let mut line = vec![
+                Span::raw(CHROME_INDENT),
                 theme.fg_span(ThemeColor::Muted, format!("{label}:")),
                 Span::raw(format!(" {value}")),
             ];
+            // The unit reads as a note on the last price, not as a second price.
             if position == entries.len() - 1 {
-                line.push(Span::raw(" "));
-                line.push(unit.clone());
+                line.push(theme.fg_span(ThemeColor::Muted, format!("  ({PRICE_UNIT_TEXT})")));
             }
             lines.push(line);
         }
@@ -447,34 +505,4 @@ fn detail_lines(theme: &Theme, width: usize, model: &Model) -> Vec<Line> {
             crate::width::truncate_line(&line, width, "\u{2026}")
         })
         .collect()
-}
-
-/// Truncate to a width and pad to it.
-fn truncate_pad(text: &str, width: usize, ellipsis: &str) -> String {
-    if width == 0 {
-        return String::new();
-    }
-    let ellipsis_width = str_width(ellipsis);
-    if str_width(text) <= width {
-        let mut out = text.to_string();
-        let pad = width.saturating_sub(str_width(text));
-        out.push_str(&" ".repeat(pad));
-        return out;
-    }
-    if ellipsis_width >= width {
-        return " ".repeat(width);
-    }
-    let mut out = String::new();
-    let mut used = 0;
-    let target = width - ellipsis_width;
-    for character in text.chars() {
-        let character_width = crate::width::char_width(character);
-        if used + character_width > target {
-            break;
-        }
-        out.push(character);
-        used += character_width;
-    }
-    out.push_str(ellipsis);
-    out
 }

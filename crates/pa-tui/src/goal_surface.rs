@@ -129,10 +129,10 @@ fn goal_detail_suffix(value: &str, prefix_width: usize, columns: usize) -> Strin
     format!(": {}", truncate_plain(&detail, available_width))
 }
 
-/// `truncateToWidth` over unstyled text with the default `...` ellipsis.
+/// `truncateToWidth` over unstyled text, the cut marked with the shared `…`.
 fn truncate_plain(text: &str, width: usize) -> String {
     let line: crate::Line = vec![crate::Span::raw(text.to_string())];
-    crate::width::truncate_line(&line, width, "...")
+    crate::width::truncate_line(&line, width, crate::menu_chrome::ELLIPSIS)
         .iter()
         .map(|span| span.content.as_str())
         .collect::<String>()
@@ -159,20 +159,10 @@ pub fn tray_goal_label(goal: &GoalState) -> Option<String> {
     }
 }
 
-/// `45s`, `12m 05s`, `1h 07m`.
+/// `45s`, `12m 05s`, `1h 07m`: the shared compact duration.
 #[must_use]
 pub fn format_goal_elapsed(seconds: u64) -> String {
-    if seconds < 60 {
-        return format!("{seconds}s");
-    }
-    let minutes = seconds / 60;
-    let remaining_seconds = seconds % 60;
-    if minutes < 60 {
-        return format!("{minutes}m {remaining_seconds:02}s");
-    }
-    let hours = minutes / 60;
-    let remaining_minutes = minutes % 60;
-    format!("{hours}h {remaining_minutes:02}m")
+    crate::duration_text::seconds(seconds)
 }
 
 /// The read-only goal panel (the operator's 2026-09-24 directive): the
@@ -262,11 +252,16 @@ pub fn render_goal_panel(
     let facts: Vec<(&str, String)> = vec![
         ("status", goal_status_word(goal.status).to_string()),
         ("elapsed", format_goal_elapsed(goal.time_used_seconds)),
+        // The label names the unit; the counts read like the tray's and the context window's.
         (
             "tokens",
             match (goal.tokens_used, goal.token_budget) {
-                (used, Some(budget)) => format!("{used} / {budget} tokens"),
-                (used, None) => format!("{used} tokens"),
+                (used, Some(budget)) => format!(
+                    "{} / {}",
+                    crate::chrome::format_token_count(used),
+                    crate::chrome::format_token_count(budget)
+                ),
+                (used, None) => crate::chrome::format_token_count(used),
             },
         ),
     ];
@@ -283,7 +278,7 @@ pub fn render_goal_panel(
                 theme.fg_span(ThemeColor::Muted, value.clone()),
             ],
             width,
-            "",
+            crate::menu_chrome::ELLIPSIS,
         ));
     }
     lines.push(Vec::new());
@@ -480,7 +475,11 @@ mod tests {
         assert!(joined.contains("status"), "{joined}");
         assert!(joined.contains("active"), "{joined}");
         assert!(joined.contains("2m 05s"), "{joined}");
-        assert!(joined.contains("18000 / 40000 tokens"), "{joined}");
+        assert!(
+            text.iter()
+                .any(|row| row.trim_end() == "  tokens   18k / 40k"),
+            "{joined}"
+        );
         let hint = text
             .iter()
             .position(|row| row.contains("close"))

@@ -85,6 +85,11 @@ const END_WATCH: Duration = Duration::from_secs(60);
 /// The longest `(cell-wait id seconds)`.
 const MAX_WAIT_SECONDS: f64 = 600.0;
 
+/// Run before each cell in the session's engine and in the one its macro
+/// bodies run in: the cell's own ports, whatever the last cell left there.
+const CELL_PORTS: &str = "(current-output-port %cell-output) (current-error-port %cell-errors) \
+                          (current-input-port (open-input-string \"\"))";
+
 /// The Scheme side of the cell API, defined in every session engine after
 /// its `%cell` primitive is registered and the host bridge is loaded.
 const CELL_API: &str = r#"
@@ -179,6 +184,12 @@ struct Cell {
     /// What the cell prints, for the call's stream, in pieces of whole characters.
     stream: tokio::sync::mpsc::UnboundedSender<(Stream, String)>,
     state: Mutex<CellState>,
+    /// The thread the cell runs on, set before the cell is on the engine: an
+    /// interrupt wakes it ([`interrupt_engine`]).
+    thread: std::sync::OnceLock<std::thread::Thread>,
+    /// Set when the cell was reported as not leaving the engine
+    /// ([`StuckCellSink`]): its session's end does not wait for it.
+    stuck: AtomicBool,
 }
 
 /// Which of a cell's two ports a piece of text was printed to.
@@ -431,7 +442,8 @@ impl Drop for StopOnDrop {
 pub(super) struct Cells {
     session: Arc<SessionEnvironment>,
     handlers: HostRequestHandlers,
-    controller: ThreadStateController,
+    /// The engine's controller and its macro engine's ([`super::confinement::controllers`]).
+    controllers: Vec<ThreadStateController>,
     runtime: tokio::runtime::Handle,
     /// The cell on the engine; cleared, with the engine's interrupt, when it ends.
     running: Arc<Mutex<Option<CellHandle>>>,
@@ -495,16 +507,55 @@ impl std::io::Write for CellOutput {
     }
 }
 
+/// Interrupt the engine `controllers` belong to, which `thread` is running:
+/// its own, and the one its macro bodies run in.
+///
+/// Steel's interrupt is two separate writes (`paused`, then the state), and
+/// its own collections write the same two from the engine's thread. A thread
+/// that returns from a host function between them finds the engine paused
+/// but not interrupted, and parks; Steel never unparks the thread that runs
+/// the engine, so without the unpark here it would stay parked whatever was
+/// raised afterwards. Woken, it reads both again. The unpark comes after the
+/// writes: a thread that parks later finds the token and does not wait.
+pub(super) fn interrupt_engine(
+    controllers: &[ThreadStateController],
+    thread: &std::thread::Thread,
+) {
+    for controller in controllers {
+        controller.interrupt();
+    }
+    thread.unpark();
+}
+
+/// Interrupt the engine if `cell` is the one on it; whether it was. Under the
+/// lock the cell's end takes to clear the interrupt: none is raised for a
+/// cell that has left the engine, where it would stop the next one.
+fn interrupt_on_engine(
+    running: &Mutex<Option<CellHandle>>,
+    controllers: &[ThreadStateController],
+    cell: &CellHandle,
+) -> bool {
+    let running = running.lock().unwrap_or_else(PoisonError::into_inner);
+    let thread = running
+        .as_ref()
+        .filter(|running| Arc::ptr_eq(&running.0, &cell.0))
+        .and_then(|running| running.0.thread.get());
+    if let Some(thread) = thread {
+        interrupt_engine(controllers, thread);
+    }
+    thread.is_some()
+}
+
 impl Cells {
     pub(super) fn new(
         session: Arc<SessionEnvironment>,
         handlers: HostRequestHandlers,
-        controller: ThreadStateController,
+        controllers: Vec<ThreadStateController>,
     ) -> Arc<Self> {
         Arc::new(Cells {
             session,
             handlers,
-            controller,
+            controllers,
             runtime: tokio::runtime::Handle::current(),
             running: Arc::new(Mutex::new(None)),
             background: Mutex::new(VecDeque::new()),
@@ -519,22 +570,13 @@ impl Cells {
         // it there and never starts.
         cell.0.signal.cancel();
         let raise = {
-            let (running, controller, cell) = (
+            let (running, controllers, cell) = (
                 Arc::clone(&self.running),
-                self.controller.clone(),
+                self.controllers.clone(),
                 cell.clone(),
             );
             // Whether the cell is still on the engine, where it was interrupted.
-            move || {
-                let running = running.lock().unwrap_or_else(PoisonError::into_inner);
-                let on_engine = running
-                    .as_ref()
-                    .is_some_and(|running| Arc::ptr_eq(&running.0, &cell.0));
-                if on_engine {
-                    controller.interrupt();
-                }
-                on_engine
-            }
+            move || interrupt_on_engine(&running, &controllers, &cell)
         };
         if raise() {
             // Steel resumes its threads after a collection, which drops an
@@ -554,6 +596,7 @@ impl Cells {
                         .map_or(STUCK_CELL_GRACE, Duration::from_millis);
                     (sink, grace, tokio::time::Instant::now() + grace)
                 });
+            let reported = cell.clone();
             self.runtime.spawn(async move {
                 let mut again = tokio::time::interval(Duration::from_millis(20));
                 again.tick().await;
@@ -566,6 +609,7 @@ impl Cells {
                         .as_ref()
                         .filter(|(_, _, due)| tokio::time::Instant::now() >= *due)
                     {
+                        reported.0.stuck.store(true, Ordering::SeqCst);
                         (sink.0)(&format!(
                             "a kernel cell did not stop within {} ms of its interrupt: a host call is not observing the cell's cancellation",
                             grace.as_millis()
@@ -593,13 +637,15 @@ impl Cells {
 
     /// The session's lifetime ended under its kernel (its host stopped
     /// serving it: a crash, a forced stop). The runtime the kernel worked on
-    /// is gone, and with it everything that would have stopped the cell on
-    /// the engine, so it is stopped from a thread of its own: its signal is
-    /// cancelled, and the engine is interrupted until the cell has left it
-    /// or [`END_WATCH`] has passed (a native call that never returns keeps
-    /// its thread; that thread writes nothing, see
-    /// [`pa_types::session_scope::ensure_live`]).
-    pub(super) fn end(self: &Arc<Self>) {
+    /// is going away, and with it everything that would have stopped the
+    /// cell on the engine, so it is stopped from a thread of its own: its
+    /// signal is cancelled, and the engine is interrupted until the cell has
+    /// left it or [`END_WATCH`] has passed (a native call that never returns
+    /// keeps its thread; that thread writes nothing, see
+    /// [`pa_types::session_scope::ensure_live`]). Returns whether a cell is
+    /// now leaving the engine: `false` when none is on it, or the one on it
+    /// was already reported as stuck.
+    pub(super) fn end(self: &Arc<Self>) -> bool {
         self.killed.store(true, Ordering::SeqCst);
         let running = self
             .running
@@ -607,10 +653,13 @@ impl Cells {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let Some(cell) = running else {
-            return;
+            return false;
         };
         cell.0.signal.cancel();
-        self.controller.interrupt();
+        if !interrupt_on_engine(&self.running, &self.controllers, &cell) {
+            return false;
+        }
+        let leaving = !cell.0.stuck.load(Ordering::SeqCst);
         let cells = Arc::clone(self);
         let watching = std::thread::Builder::new()
             .name("scheme-cell-end".to_string())
@@ -618,20 +667,16 @@ impl Cells {
                 let until = Instant::now() + END_WATCH;
                 while Instant::now() < until {
                     std::thread::sleep(Duration::from_millis(20));
-                    let running = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
-                    if !running
-                        .as_ref()
-                        .is_some_and(|running| Arc::ptr_eq(&running.0, &cell.0))
-                    {
+                    // Steel drops a pending interrupt after a collection.
+                    if !interrupt_on_engine(&cells.running, &cells.controllers, &cell) {
                         return;
                     }
-                    // Steel drops a pending interrupt after a collection.
-                    cells.controller.interrupt();
                 }
             });
         if let Err(error) = watching {
             tracing::warn!("an ended session's cell is interrupted once only: {error}");
         }
+        leaving
     }
 
     /// Answer one `(%cell operation argument ...)` call from the running cell.
@@ -784,13 +829,17 @@ pub(super) fn register(engine: &mut Engine, cells: &Arc<Cells>) -> anyhow::Resul
         ("%cell-output", Stream::Output),
         ("%cell-errors", Stream::Errors),
     ] {
-        engine.register_value(
-            name,
+        let port = || {
             SteelVal::new_dyn_writer_port(CellOutput {
                 cells: Arc::clone(cells),
                 stream,
-            }),
-        );
+            })
+        };
+        engine.register_value(name, port());
+        // What a macro body prints is its cell's output too.
+        engine.with_macro_engine(|macros| {
+            macros.register_value(name, port());
+        });
     }
     let answering = Arc::clone(cells);
     engine.register_value(
@@ -984,6 +1033,8 @@ pub(super) async fn execute(
         session: Arc::clone(&cells.session),
         stream,
         state: Mutex::new(CellState::default()),
+        thread: std::sync::OnceLock::new(),
+        stuck: AtomicBool::new(false),
     }));
     let running = Arc::clone(&session);
     let run = cell.clone();
@@ -1004,6 +1055,8 @@ pub(super) async fn execute(
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             *running.cell.lock().unwrap_or_else(PoisonError::into_inner) = run.signal();
+            // Set once, here: a cell has one thread.
+            let _ = run.0.thread.set(std::thread::current());
             *cells.running.lock().unwrap_or_else(PoisonError::into_inner) = Some(run.clone());
             CURRENT.with(|current| *current.borrow_mut() = Some(run.clone()));
             // Only a cell without a window is stopped at its limit: a command it
@@ -1026,10 +1079,9 @@ pub(super) async fn execute(
                 Err(refusal)
             } else {
                 engine
-                    .run(
-                        "(current-output-port %cell-output) (current-error-port %cell-errors) \
-                     (current-input-port (open-input-string \"\"))",
-                    )
+                    .with_macro_engine(|macros| macros.run(CELL_PORTS))
+                    .transpose()
+                    .and_then(|_| engine.run(CELL_PORTS))
                     .and_then(|_| engine.run(code))
                     .map(|values| {
                         values
@@ -1046,7 +1098,9 @@ pub(super) async fn execute(
             // cleared here, and none can arrive for it afterwards.
             let mut on_engine = cells.running.lock().unwrap_or_else(PoisonError::into_inner);
             *on_engine = None;
-            cells.controller.resume();
+            for controller in &cells.controllers {
+                controller.resume();
+            }
             drop(on_engine);
             // A cell that reloaded the session's resources gets its skills'
             // changed sources evaluated before the next cell.

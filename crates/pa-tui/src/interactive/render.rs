@@ -159,7 +159,8 @@ pub(super) fn spawn_session_reader(ui_tx: mpsc::UnboundedSender<UiInput>, exit_g
                     true
                 }
             }
-            _ => true,
+            crossterm::event::Event::FocusGained => ui_tx.send(UiInput::Focus(true)).is_ok(),
+            crossterm::event::Event::FocusLost => ui_tx.send(UiInput::Focus(false)).is_ok(),
         },
     });
 }
@@ -303,6 +304,11 @@ impl Renderer {
                                     return;
                                 }
                             }
+                            HeadlessStep::Focus(focused) => {
+                                if ui_tx.send(UiInput::Focus(focused)).is_err() {
+                                    return;
+                                }
+                            }
                         }
                     }
                     let _ = ui_tx.send(UiInput::HeadlessDone);
@@ -324,6 +330,8 @@ impl Renderer {
         match self {
             Renderer::Terminal { .. } => {
                 let _ = crate::mouse_tracking::disable(&mut std::io::stdout());
+                // The resumed surface's first frame asks for the focus reports again.
+                let _ = crate::terminal_attention::release_focus_reports(&mut std::io::stdout());
                 // The raw-mode bracket takes the enhanced-key modes with it; `resume` re-enables
                 // both.
                 let _ = crate::enhanced_keys::disable(&mut std::io::stdout());
@@ -479,6 +487,12 @@ impl Renderer {
         if frames.last().map(String::as_str) != Some(text.as_str()) {
             frames.push(text);
         }
+        // The signal a terminal frame would have carried in its write.
+        session.attention_signals.extend(
+            view.pending_attention
+                .take()
+                .map(|attention| String::from_utf8_lossy(&attention.bytes()).into_owned()),
+        );
         session.dirty = false;
     }
 
@@ -511,6 +525,7 @@ impl Renderer {
         }
         // Tracking releases with the surface (disable written before leaving the alt screen).
         let _ = crate::mouse_tracking::disable(&mut std::io::stdout());
+        let _ = crate::terminal_attention::release_focus_reports(&mut std::io::stdout());
         // The enhanced-key modes release with the raw-mode bracket (the paste disable, the
         // kitty pop, and the modifyOtherKeys reset run for every exit, handoffs included).
         let _ = crate::enhanced_keys::disable(&mut std::io::stdout());

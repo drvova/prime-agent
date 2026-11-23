@@ -405,6 +405,24 @@ fn an_unmatched_slash_token_keeps_the_menu_open_on_its_no_match_row() {
     );
 }
 
+/// A no-match row longer than the menu ends in the shared cut mark, never mid-token unmarked.
+#[test]
+fn a_long_unmatched_slash_token_ends_its_row_in_the_cut_mark() {
+    let theme = theme();
+    let lines = typed_menu("/xyzzy-not-a-command-at-all").render(&theme, 34, &|_| None);
+    assert_eq!(
+        lines,
+        [vec![
+            crate::Span::raw("  "),
+            theme.fg_span(
+                crate::theme::ThemeColor::Muted,
+                "no command matches /xyzzy-not-a"
+            ),
+            theme.fg_span(crate::theme::ThemeColor::Muted, "\u{2026}"),
+        ]]
+    );
+}
+
 #[test]
 fn empty_items_render_the_shared_no_match_row() {
     let state = AutocompleteState::new(Vec::new(), 5, None);

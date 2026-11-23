@@ -162,6 +162,43 @@ impl SessionUi {
         }
     }
 
+    /// Report a transcript navigation action the first time it happens in the run (`tui
+    /// transcript navigation`), fire-and-forget so the keypress never waits on the delivery.
+    pub(super) fn track_navigation(&mut self, action: &'static str) {
+        if self.navigation_reported.contains(&action) {
+            return;
+        }
+        self.navigation_reported.push(action);
+        crate::view::navigation::report_used(self.telemetry.as_ref(), action);
+    }
+
+    /// The agent stopped for the user: an unfocused terminal gets the signal the
+    /// `terminal.notifyOnTurnEnd` setting names (as the view holds it: no settings read on the
+    /// event path), queued into the next frame's write. The report is fire-and-forget and sent
+    /// once per reason in a run.
+    fn signal_waiting(
+        &mut self,
+        waiting: crate::terminal_attention::Waiting,
+        view: &mut AgentView,
+    ) {
+        let signal = view.turn_end_signal;
+        let Some(attention) = crate::terminal_attention::Attention::for_waiting(
+            waiting,
+            signal,
+            self.terminal_focused,
+        ) else {
+            return;
+        };
+        view.pending_attention = Some(attention);
+        self.dirty = true;
+        let reason = waiting.wire_name();
+        if self.unfocused_signal_reported.contains(&reason) {
+            return;
+        }
+        self.unfocused_signal_reported.push(reason);
+        crate::terminal_attention::report_signal(self.telemetry.as_ref(), waiting, signal);
+    }
+
     /// Report the run's first selection copy (`tui selection used`),
     /// fire-and-forget. `lines` is the copied text's line count.
     pub(super) fn track_selection(&mut self, lines: usize) {
@@ -549,12 +586,18 @@ impl SessionUi {
                 // reticks the settled id on this run's paints, so it lands
                 // on nothing too.
                 if !self.aborted_tools.contains(&tool_call_id) && self.turn_active {
-                    // The live label is the call's title: a kernel cell's preview (a Python
-                    // `%%bash` cell previews its command), else the tool's name.
+                    // The live label is the call's title: a kernel cell's preview (a Scheme
+                    // cell's kernel call and its main argument, as its card is titled; a
+                    // Python `%%bash` cell previews its command), else the tool's name.
                     let code = args.get("code").and_then(Value::as_str).unwrap_or_default();
                     let preview = match pa_types::ai::kernel_tool_language(&tool_name) {
                         Some(pa_types::ai::KernelLanguage::Scheme) => {
-                            crate::code_preview::preview_scheme_code(code)
+                            let preview = crate::code_preview::scheme_outline(code).preview();
+                            [preview.head, preview.text]
+                                .into_iter()
+                                .filter(|part| !part.is_empty())
+                                .collect::<Vec<_>>()
+                                .join(" ")
                         }
                         Some(pa_types::ai::KernelLanguage::Python) => {
                             crate::code_preview::preview_ipython_code(code).text
@@ -779,6 +822,7 @@ impl SessionUi {
                 if let Some(working) = view.working.as_mut() {
                     working.message = Some("Waiting for your answer".to_string());
                 }
+                self.signal_waiting(crate::terminal_attention::Waiting::Question, view);
                 self.dirty = true;
             }
             TurnUpdate::Notification(notification) => {
@@ -892,6 +936,10 @@ impl SessionUi {
     /// The agent run ended: the busy state clears and the held bash cards stream into the
     /// transcript.
     fn end_run(&mut self, view: &mut AgentView) {
+        // Only a run this client saw running: a replayed or repeated `agent_end` says nothing new.
+        if self.turn_active {
+            self.signal_waiting(crate::terminal_attention::Waiting::TurnEnded, view);
+        }
         self.turn_active = false;
         view.working = None;
         // An interrupt that lands on a running tool ends the run with no aborted assistant

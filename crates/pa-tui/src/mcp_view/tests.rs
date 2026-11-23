@@ -95,7 +95,7 @@ fn renders_the_ts_inline_panel_shape() {
     // names the accounts step.
     let detail = rows
         .iter()
-        .position(|row| row == " Connected")
+        .position(|row| row == "  Connected")
         .expect("the detail line");
     assert_eq!(
         rows[detail - 1],
@@ -119,7 +119,7 @@ fn renders_the_ts_inline_panel_shape() {
         "the record tool count: {selected}"
     );
     assert!(
-        rows.iter().any(|row| row == " Notion workflows."),
+        rows.iter().any(|row| row == "  Notion workflows."),
         "the description detail line: {rows:?}"
     );
 }
@@ -207,7 +207,7 @@ fn pasteable_rows_keep_the_honest_status() {
     );
     assert!(
         rows.iter()
-            .any(|row| row == " paste a GitHub personal access token"),
+            .any(|row| row == "  paste a GitHub personal access token"),
         "the setup hint detail: {rows:?}"
     );
 }
@@ -289,7 +289,7 @@ fn credential_rows_render_and_route() {
     // A credential row carries no description: the detail line falls back
     // to its status (TS `secondaryText ?? statusText`).
     assert!(
-        rows.iter().any(|row| row == " Not configured"),
+        rows.iter().any(|row| row == "  Not configured"),
         "the detail line: {rows:?}"
     );
     assert_eq!(
@@ -520,13 +520,13 @@ fn the_empty_roster_renders_the_empty_message() {
     let rows = frame_text(&mut view);
     let message = rows
         .iter()
-        .position(|row| row == "  No external services available")
+        .position(|row| row == "  No MCP connections available")
         .expect("the empty message");
     assert_eq!(rows[message + 1], "", "the blank row before the hint");
     assert_eq!(
         rows[message + 2],
-        "  \u{2191}/\u{2193} navigate \u{b7} Esc close",
-        "no action filler in the hint (TS)"
+        "  Esc close",
+        "no action filler and no arrows over an empty list"
     );
     // A query with no matches.
     let mut view = McpView::from_response(&catalog_response(), 19);
@@ -616,14 +616,14 @@ fn the_empty_state_needs_its_window_budget() {
     let rows = frame_text(&mut view);
     assert!(rows.len() <= 6, "the too-short empty frame fits: {rows:?}");
     assert!(
-        !rows.iter().any(|row| row.contains("No external services")),
+        !rows.iter().any(|row| row.contains("No MCP connections")),
         "the message stays behind its budget: {rows:?}"
     );
     // Once the viewport budgets the two rows, the message rides.
     let mut view = McpView::from_response(&data, 7);
     let rows = frame_text(&mut view);
     assert!(
-        rows.iter().any(|row| row.contains("No external services")),
+        rows.iter().any(|row| row.contains("No MCP connections")),
         "the message renders inside its budget: {rows:?}"
     );
     assert!(rows.len() <= 7, "the empty frame fits: {rows:?}");

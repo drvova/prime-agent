@@ -2,9 +2,9 @@
 //! detail drill-in's pairs, and the action rows.
 
 use super::{
-    fill_row, hug_row, human_schedule, next_run_label, plain_cell, row_primary, session_label,
-    single_line, source_label, status_dot, str_width, truncate_line, HeartbeatEntry, Line, Span,
-    Theme, ThemeColor,
+    fill_row, human_schedule, next_run_label, plain_cell, row_primary, session_label, single_line,
+    source_label, status_dot, str_width, truncate_line, HeartbeatEntry, Line, Span, Theme,
+    ThemeColor,
 };
 
 /// The table's column width caps: the schedule expression and the label
@@ -201,33 +201,6 @@ impl Columns {
     }
 }
 
-/// One action row (the `/mcp` view's control pattern): the `›`-marker
-/// label with its dim description trailing, the selected row washed over
-/// its hug.
-pub(super) fn action_row(
-    theme: &Theme,
-    width: usize,
-    label: &str,
-    description: &str,
-    selected: bool,
-) -> Line {
-    let mut row = vec![Span::raw(if selected { "\u{203a}" } else { " " })];
-    row.push(Span::raw(" "));
-    if selected {
-        row.push(theme.bold(Span::raw(label.to_string())));
-    } else {
-        row.push(theme.fg_span(ThemeColor::Text, label.to_string()));
-    }
-    row.push(theme.fg_span(ThemeColor::Dim, format!("  {description}")));
-    hug_row(
-        &row,
-        str_width(label) + 2 + 2 + str_width(description),
-        selected,
-        width,
-        theme.selection_row_style(),
-    )
-}
-
 /// The pane's header block: a muted separator rule, then the title row
 /// (plain text, the status counts trailing flush right), an optional muted
 /// subtitle, and a blank line.
@@ -271,13 +244,4 @@ pub(super) fn pane_header_lines(
     }
     lines.push(Vec::new());
     lines
-}
-
-/// An error line (TS `Error: <message>` in the error color).
-pub(super) fn error_line(theme: &Theme, width: usize, message: &str) -> Line {
-    let line = vec![
-        Span::raw("  "),
-        theme.fg_span(ThemeColor::Error, format!("Error: {message}")),
-    ];
-    truncate_line(&line, width, "")
 }

@@ -1514,3 +1514,68 @@ fn the_context_indicator_never_blanks() {
         .expect("the over-limit percent is its own span");
     assert_eq!(percent.style, theme().fg_style(ThemeColor::Warning));
 }
+
+/// A pane too narrow for the logo is as tall as its text: the logo's rows are not held blank.
+#[test]
+fn a_narrow_splash_holds_no_blank_logo_rows() {
+    let state = ChromeState {
+        version: "0.0.0".to_string(),
+        cwd: "/tmp/project".to_string(),
+        ..Default::default()
+    };
+    let rows: Vec<String> = render_splash(&state, &theme(), 30)
+        .iter()
+        .map(|line| {
+            line.iter()
+                .map(|span| span.content.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(rows, ["", " prime agent v0.0.0", " cwd /tmp/project", ""]);
+}
+
+/// A session name longer than the bar ends in `…` and leaves the spend whole beside it.
+#[test]
+fn a_long_session_name_gives_way_to_the_spend() {
+    let state = ChromeState {
+        chat_name: "\u{4fee}\u{590d}\u{89e3}\u{6790}\u{5668} refactor the parser error handling"
+            .to_string(),
+        cost_usd: Some(12.35),
+        ..Default::default()
+    };
+    let text: String = render_top_bar(&state, &theme(), 30)
+        .iter()
+        .map(|span| span.content.as_str())
+        .collect();
+    assert_eq!(
+        text,
+        "\u{4fee}\u{590d}\u{89e3}\u{6790}\u{5668} refactor t\u{2026}  $12.35"
+    );
+}
+
+mod top_bar_width {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // The top bar is one row at every width, whatever the session is called.
+        #[test]
+        fn the_top_bar_never_exceeds_the_frame(
+            name in "[a-z \u{4e00}-\u{4e2f}\u{1f600}-\u{1f60f}]{0,60}",
+            profile in proptest::option::of("[a-z]{1,12}"),
+            cost in proptest::option::of(0.0f64..9_999.0),
+            width in 0usize..160,
+        ) {
+            let state = ChromeState {
+                chat_name: name,
+                profile,
+                cost_usd: cost,
+                ..Default::default()
+            };
+            let line = render_top_bar(&state, &theme(), width);
+            prop_assert!(crate::width::line_width(&line) <= width, "{line:?}");
+        }
+    }
+}

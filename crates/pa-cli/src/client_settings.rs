@@ -313,6 +313,12 @@ impl ClientSettings for CliClientSettings {
         set_idle_eviction_minutes
     );
     str_setting!(
+        notify_on_turn_end,
+        set_notify_on_turn_end,
+        get_notify_on_turn_end,
+        set_notify_on_turn_end
+    );
+    str_setting!(
         mermaid_rendering_mode,
         set_mermaid_rendering_mode,
         get_mermaid_rendering_mode,
@@ -464,6 +470,17 @@ mod tests {
         assert_eq!(value["theme"], "dark");
         assert_eq!(value["idleEvictionMinutes"], "off");
         assert_eq!(value["treeFilterMode"], "all");
+
+        // The turn-end signal defaults to off, persists under the terminal key, and refuses a
+        // value the setting does not have.
+        assert_eq!(settings.notify_on_turn_end(), "off");
+        settings.set_notify_on_turn_end("bell").expect("signal");
+        assert_eq!(settings.notify_on_turn_end(), "bell");
+        assert!(settings.set_notify_on_turn_end("loud").is_err());
+        let content =
+            std::fs::read_to_string(agent_dir.join("settings.json")).expect("settings file");
+        let value: serde_json::Value = serde_json::from_str(&content).expect("parse");
+        assert_eq!(value["terminal"]["notifyOnTurnEnd"], "bell");
 
         // The web search provider defaults to auto and persists the choice.
         assert_eq!(settings.web_search_provider(), "auto");

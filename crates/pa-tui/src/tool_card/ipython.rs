@@ -4,8 +4,12 @@
 //! mode the full cell source and output. The top line never changes with
 //! expansion, so toggling detail never shifts the layout.
 
-mod diffs;
+pub(crate) mod diffs;
 mod output;
+
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
 
 use diffs::render_diffs;
 use output::render_output;
@@ -17,11 +21,12 @@ use super::ipython_details::{
     IpythonError,
 };
 use super::layout::RowOutput;
+use super::scheme_value::{BashOutcome, PrintedHash};
 use super::{highlight, ToolCallCard};
 use crate::chat::Detail;
 use crate::code_preview::{
-    parse_ipython_bash_cell, preview_bash_command, preview_ipython_code, preview_scheme_code,
-    python_statement_lines, scheme_bash_calls, CodePreviewLanguage,
+    parse_ipython_bash_cell, preview_bash_command, preview_ipython_code, python_statement_lines,
+    scheme_outline, CodePreviewLanguage, SchemeOutline,
 };
 use crate::custom_message::AgentMessageDirection;
 use crate::error_summary::{normalize_error_details, summarize_error_details};
@@ -39,10 +44,18 @@ enum CardStatus {
     Done,
     Error,
     Aborted,
+    /// The cell ended and what it started goes on: the cell itself, moved
+    /// to the background past its yield window, or the command it left
+    /// running.
+    Background,
 }
 
 impl CardStatus {
-    fn of(card: &ToolCallCard, details: &IpythonDetails) -> CardStatus {
+    fn of(
+        card: &ToolCallCard,
+        details: &IpythonDetails,
+        command: Option<&BashOutcome>,
+    ) -> CardStatus {
         // An interrupted cell never renders as a success: a settled
         // straggler's kept partial can still carry a background shell
         // whose exit code reads Done, and the aborted stamp is the
@@ -66,6 +79,17 @@ impl CardStatus {
         let status = details.status.as_deref();
         if is_error || status == Some("error") {
             return CardStatus::Error;
+        }
+        if let (false, Some(command)) = (card.result_partial, command) {
+            if command.running {
+                return CardStatus::Background;
+            }
+            if command.timed_out || command.exit_code.is_some_and(|code| code != 0) {
+                return CardStatus::Error;
+            }
+        }
+        if !card.result_partial && status == Some("backgrounded") {
+            return CardStatus::Background;
         }
         if status == Some("aborted") {
             return CardStatus::Aborted;
@@ -135,7 +159,16 @@ pub fn render(
         show_images,
         &mut lines,
     );
-    lines.into_lines()
+    // No row is wider than the terminal, whatever the width and the text:
+    // a row that still is (a wide character in a one-column terminal, a
+    // fixed gutter in a narrower one) is cut to fit, by whole characters.
+    let mut rows = lines.into_lines();
+    for row in &mut rows {
+        if crate::width::line_width(row) > width {
+            *row = crate::width::slice_line_by_column_strict(row, 0, width, /*strict*/ true);
+        }
+    }
+    rows
 }
 
 pub(super) fn count(
@@ -229,6 +262,47 @@ fn layout(
     lines.images(card.result.as_ref(), show_images, theme, width);
 }
 
+/// A Scheme cell's source as its card reads it: the outline its title is
+/// made from and, once the card has been expanded, its highlighted rows with
+/// the palette that coloured them.
+struct SchemeSource {
+    outline: SchemeOutline,
+    rows: RefCell<Option<(highlight::SyntaxPalette, Rc<Vec<Line>>)>>,
+}
+
+/// How many cells' sources stay read.
+const SCHEME_SOURCES_KEPT: usize = 8;
+
+thread_local! {
+    /// The sources read last, the newest at the back. A running card
+    /// repaints on every frame and a cell's source does not change under its
+    /// card, so a source is lexed when it is first seen, not once a frame.
+    static SCHEME_SOURCES: RefCell<VecDeque<(String, Rc<SchemeSource>)>> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+/// The reading of the Scheme cell `code`, made on its first use.
+fn scheme_source(code: &str) -> Rc<SchemeSource> {
+    SCHEME_SOURCES.with_borrow_mut(|sources| {
+        if let Some((_, source)) = sources.iter().find(|(read, _)| read == code) {
+            return Rc::clone(source);
+        }
+        if sources.len() == SCHEME_SOURCES_KEPT {
+            sources.pop_front();
+        }
+        let source = Rc::new(SchemeSource {
+            outline: scheme_outline(code),
+            rows: RefCell::new(None),
+        });
+        sources.push_back((code.to_string(), Rc::clone(&source)));
+        source
+    })
+}
+
+/// The widest a Scheme error's message runs on the summary line, and the
+/// share of a narrower row it may take: the preview keeps the rest.
+const ERROR_SUMMARY_WIDTH: usize = 48;
+
 /// The fixed marker + summary line (TS `collapsedLine`).
 fn collapsed_line(
     card: &ToolCallCard,
@@ -246,30 +320,63 @@ fn collapsed_line(
     let bash_mode = theme.fg_style(ThemeColor::BashMode);
     let accent = theme.fg_style(ThemeColor::Accent);
 
-    let dominant = dominant_bash(card, details, code);
     // A cell's own label and preview follow its kernel's language; a saved
-    // session's Python cells keep theirs.
-    let (own_label, preview_text) = match pa_types::ai::kernel_tool_language(&card.name) {
-        Some(pa_types::ai::KernelLanguage::Scheme) => ("scheme", preview_scheme_code(code)),
-        Some(pa_types::ai::KernelLanguage::Python) | None => {
+    // session's Python cells keep theirs. A Scheme cell is titled from its
+    // source alone: the kernel call it makes and that call's main argument,
+    // the same while it waits, runs and settles.
+    let source = match pa_types::ai::kernel_tool_language(&card.name) {
+        Some(pa_types::ai::KernelLanguage::Scheme) => Some(scheme_source(code)),
+        Some(pa_types::ai::KernelLanguage::Python) | None => None,
+    };
+    let outline = source.as_ref().map(|source| &source.outline);
+    // (label, preview, further calls, titled as bash)
+    let (language_label, preview, more, bash_titled): (&str, Line, usize, bool) =
+        if let Some(outline) = outline {
+            let preview = outline.preview();
+            let mut part: Line = Vec::new();
+            if !preview.head.is_empty() {
+                part.push(Span::styled(
+                    preview.head,
+                    theme.fg_style(ThemeColor::SyntaxFunction),
+                ));
+            }
+            if !preview.text.is_empty() {
+                let gap = if part.is_empty() { "" } else { " " };
+                part.push(Span::styled(format!("{gap}{}", preview.text), dim));
+            }
+            let label = if preview.bash { "bash" } else { "scheme" };
+            (label, part, preview.more, preview.bash)
+        } else {
             let preview = preview_ipython_code(code);
-            let label = match (parse_ipython_bash_cell(code).is_some(), &preview.language) {
+            let own_label = match (parse_ipython_bash_cell(code).is_some(), &preview.language) {
                 (true, CodePreviewLanguage::Python) => "bash \u{00b7} python",
                 (true | false, CodePreviewLanguage::Bash) => "bash",
                 (false, CodePreviewLanguage::Python) => "python",
             };
-            (label, preview.text)
-        }
-    };
-    let language_label = if dominant.is_some() {
-        "bash".to_string()
-    } else {
-        own_label.to_string()
-    };
+            match dominant_bash(None, details, code) {
+                Some(bash) => {
+                    // A command that is not a literal previews as the cell's own first line.
+                    let text = Some(preview_bash_command(&bash.first).text)
+                        .filter(|text| !text.is_empty())
+                        .unwrap_or(preview.text);
+                    let more = bash.count.saturating_sub(1);
+                    ("bash", vec![Span::styled(text, dim)], more, true)
+                }
+                None => (own_label, vec![Span::styled(preview.text, dim)], 0, false),
+            }
+        };
+    // What a Scheme cell's printed value says of the command it ended on.
+    let command = outline
+        .and(details.result.as_deref())
+        .and_then(PrintedHash::parse)
+        .and_then(|hash| hash.bash_outcome())
+        .filter(|_| !card.result_partial);
+    let status = CardStatus::of(card, details, command.as_ref());
+    let in_background = matches!(status, CardStatus::Background);
 
     // The language label is the card's title: it carries the state by colour (accent while
     // running, muted once settled or queued, error on failure or interrupt) beside the marker.
-    let (marker, title): (Line, _) = match CardStatus::of(card, details) {
+    let (marker, title): (Line, _) = match status {
         CardStatus::Error | CardStatus::Aborted => {
             (vec![Span::styled("\u{2717}".to_string(), error)], error)
         }
@@ -282,31 +389,23 @@ fn collapsed_line(
             accent,
         ),
         CardStatus::Queued => (vec![Span::styled("\u{25c7}".to_string(), muted)], muted),
+        CardStatus::Background => (vec![Span::styled("\u{21bb}".to_string(), bash_mode)], muted),
     };
 
     let mut parts: Vec<Line> = Vec::new();
     let mut preview_index: Option<usize> = None;
     let mut marker = marker;
     marker.push(Span::raw(" "));
-    marker.push(Span::styled(language_label, title));
+    marker.push(Span::styled(language_label.to_string(), title));
     parts.push(marker);
-    if let Some(bash) = dominant {
-        // A command that is not a literal previews as the cell's own first line.
-        let preview = Some(preview_bash_command(&bash.first).text)
-            .filter(|text| !text.is_empty())
-            .unwrap_or(preview_text);
-        if !preview.is_empty() {
-            preview_index = Some(parts.len());
-            parts.push(vec![Span::styled(preview, dim)]);
-        }
-        if bash.count > 1 {
-            parts.push(vec![Span::styled(format!("+{} more", bash.count - 1), dim)]);
-        }
-    } else if !preview_text.is_empty() {
+    if preview.iter().any(|span| !span.content.is_empty()) {
         preview_index = Some(parts.len());
-        parts.push(vec![Span::styled(preview_text, dim)]);
-    } else if !card.started {
+        parts.push(preview);
+    } else if !bash_titled && !card.started {
         parts.push(vec![Span::styled("waiting for code".to_string(), dim)]);
+    }
+    if more > 0 {
+        parts.push(vec![Span::styled(format!("+{more} more"), dim)]);
     }
     if let Some(counts) = line_counts(card, details, code) {
         parts.push(vec![Span::styled(counts, dim)]);
@@ -331,19 +430,44 @@ fn collapsed_line(
         live_timer = card.ended_at.is_none();
     }
     if !card.result_partial {
-        let error_name = details
+        // Every Scheme failure carries the one error name, so its card says
+        // what failed: the first line of the message.
+        let said = details
             .error
             .as_ref()
-            .map(|e| e.ename.clone())
+            .filter(|e| outline.is_some() && e.ename == "SchemeError")
+            .and_then(|e| {
+                let message = normalize_error_details(&e.evalue);
+                let first = message.lines().map(str::trim).find(|l| !l.is_empty())?;
+                Some(crate::width::truncate_to_width(
+                    first.strip_prefix("Error: ").unwrap_or(first),
+                    ERROR_SUMMARY_WIDTH.min(width * 2 / 5),
+                    "\u{2026}",
+                ))
+            });
+        let error_name = said
+            .or_else(|| details.error.as_ref().map(|e| e.ename.clone()))
             .or_else(|| details.error_ename.clone());
         if let Some(ename) = error_name {
             parts.push(vec![Span::styled(ename, error)]);
         }
     }
-    if let Some(exit_code) = background.and_then(|shell| shell.exit_code) {
-        if exit_code != 0 {
-            parts.push(vec![Span::styled(format!("exit {exit_code}"), error)]);
-        }
+    let exit_code = background
+        .and_then(|shell| shell.exit_code)
+        .or(command.as_ref().and_then(|command| command.exit_code));
+    if let Some(exit_code) = exit_code.filter(|code| *code != 0) {
+        parts.push(vec![Span::styled(format!("exit {exit_code}"), error)]);
+    }
+    if command.as_ref().is_some_and(|command| command.timed_out) {
+        parts.push(vec![Span::styled("timed out".to_string(), error)]);
+    }
+    if in_background {
+        let what = if command.is_some() {
+            "command still running"
+        } else {
+            "in background"
+        };
+        parts.push(vec![Span::styled(what.to_string(), bash_mode)]);
     }
 
     // The live timer is only useful on screen, but the summary clips
@@ -352,7 +476,9 @@ fn collapsed_line(
     // shortening (or, if it cannot fit at all, dropping) itself. The
     // settled card keeps its established layout — `durationMs` lands
     // in the same slot, clipped exactly as before.
-    if live_timer {
+    // A Scheme cell's preview always gives way: its duration and what
+    // became of it are the parts a settled card is read for.
+    if live_timer || outline.is_some() {
         let separator_width = str_width(" \u{00b7} ");
         let used = parts
             .iter()
@@ -366,7 +492,9 @@ fn collapsed_line(
                 Some(index) if crate::width::line_width(&parts[index]) > excess => {
                     let part = &mut parts[index];
                     let target = crate::width::line_width(part) - excess;
-                    if let Some(span) = part.first_mut() {
+                    if outline.is_some() {
+                        *part = truncate_line(part, target, "\u{2026}");
+                    } else if let Some(span) = part.first_mut() {
                         span.content = crate::width::truncate_to_width(&span.content, target, "");
                     }
                 }
@@ -400,28 +528,28 @@ fn input_line_count(code: &str) -> usize {
     body.lines().filter(|line| !line.trim().is_empty()).count()
 }
 
-///
-/// A Python cell's bash lines are the ones it ran, known once its result
-/// arrives. A Scheme cell's are its top-level `(bash …)` forms, read from
-/// its source: its title is then the same while it waits, runs and settles,
+/// The `bash` commands a cell is titled by, when they make up most of it.
+/// A Python cell's are the ones it ran, known once its result arrives. A
+/// Scheme cell's are the `(bash …)` calls of its `outline`, read from its
+/// source: its title is then the same while it waits, runs and settles,
 /// where a title taken from the result changed from `scheme` to `bash` under
 /// the reader.
 fn dominant_bash(
-    card: &ToolCallCard,
+    outline: Option<&SchemeOutline>,
     details: &IpythonDetails,
     code: &str,
 ) -> Option<BashCommands> {
-    let bash = match pa_types::ai::kernel_tool_language(&card.name) {
-        Some(pa_types::ai::KernelLanguage::Scheme) => {
-            scheme_bash_calls(code).map(|calls| BashCommands {
-                first: calls.first,
-                count: calls.count,
-                lines: calls.lines,
-            })
-        }
-        Some(pa_types::ai::KernelLanguage::Python) | None => details.bash_commands.clone(),
-    };
-    bash.filter(|bash| bash.lines * BASH_DOMINANCE_DIVISOR >= input_line_count(code))
+    match outline {
+        Some(outline) => outline.dominant_bash().map(|calls| BashCommands {
+            first: calls.first.clone(),
+            count: calls.count,
+            lines: calls.lines,
+        }),
+        None => details
+            .bash_commands
+            .clone()
+            .filter(|bash| bash.lines * BASH_DOMINANCE_DIVISOR >= input_line_count(code)),
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -435,7 +563,12 @@ pub(crate) struct BashCellStats {
 pub(crate) fn bash_dominated_stats(card: &ToolCallCard) -> Option<BashCellStats> {
     let code = cell_code(card).trim_end();
     let details = IpythonDetails::parse(&card.result.as_ref()?.details);
-    let bash = dominant_bash(card, &details, code)?;
+    let source = match pa_types::ai::kernel_tool_language(&card.name) {
+        Some(pa_types::ai::KernelLanguage::Scheme) => Some(scheme_source(code)),
+        Some(pa_types::ai::KernelLanguage::Python) | None => None,
+    };
+    let outline = source.as_ref().map(|source| &source.outline);
+    let bash = dominant_bash(outline, &details, code)?;
     Some(BashCellStats {
         bash_lines: bash.lines,
         cell_lines: input_line_count(code),
@@ -450,16 +583,12 @@ fn line_counts(card: &ToolCallCard, details: &IpythonDetails, code: &str) -> Opt
     let input = input_line_count(code);
     let has_diffs = !details.diffs.is_empty();
 
-    let result =
-        if is_agent_message_receipt(details.result.as_deref(), &details.sent_agent_messages) {
-            None
-        } else {
-            details.result.as_deref()
-        };
+    let language = pa_types::ai::kernel_tool_language(&card.name);
+    let result = details.shown_result(language);
     let structured = [
         details.stdout.as_deref(),
         details.stderr.as_deref(),
-        result,
+        result.as_deref(),
         details.background_output.as_deref(),
     ]
     .into_iter()
@@ -468,12 +597,11 @@ fn line_counts(card: &ToolCallCard, details: &IpythonDetails, code: &str) -> Opt
     .collect::<Vec<_>>()
     .join("\n");
     let blocks_text = text_from_blocks(card);
-    let fallback =
-        if is_agent_message_receipt(Some(blocks_text.as_str()), &details.sent_agent_messages) {
-            String::new()
-        } else {
-            blocks_text
-        };
+    // The blocks repeat a value a row above already says: a Python receipt
+    // by its repr, a Scheme value by the print the card left out.
+    let said = is_agent_message_receipt(Some(blocks_text.as_str()), &details.sent_agent_messages)
+        || (language == Some(pa_types::ai::KernelLanguage::Scheme) && details.result.is_some());
+    let fallback = if said { String::new() } else { blocks_text };
     let output_text = if structured.trim().is_empty() {
         fallback
     } else {
@@ -528,7 +656,7 @@ fn is_magic_line(statement: &str) -> bool {
 /// The expanded source rows (TS `renderCode`): the first line guttered
 /// `\u{2570}\u{2500}`, continuation lines indented; bash cells and magic
 /// lines render in bashMode, python lines syntax highlighted. A Scheme
-/// cell's lines render plain: it has no magic lines and no highlighter.
+/// cell has no magic lines: all of it is highlighted as Scheme.
 fn render_code(
     lines: &mut RowOutput,
     code: &str,
@@ -554,10 +682,23 @@ fn render_code(
     let scheme = language == Some(pa_types::ai::KernelLanguage::Scheme);
     let is_bash_cell = !scheme && parse_ipython_bash_cell(code).is_some();
     let raw_lines: Vec<&str> = code.split('\n').collect();
-    let highlighted = if is_bash_cell || scheme {
-        Vec::new()
+    let palette = highlight::SyntaxPalette::from_theme(theme);
+    let highlighted = if is_bash_cell {
+        Rc::new(Vec::new())
+    } else if scheme {
+        // Coloured once for this source and palette, then shared.
+        let source = scheme_source(code);
+        let mut rows = source.rows.borrow_mut();
+        match rows.as_ref() {
+            Some((coloured, rows)) if *coloured == palette => Rc::clone(rows),
+            Some(_) | None => {
+                let fresh = Rc::new(highlight::highlight_scheme(code, &palette));
+                *rows = Some((palette, Rc::clone(&fresh)));
+                fresh
+            }
+        }
     } else {
-        highlight::highlight_python(code, &highlight::SyntaxPalette::from_theme(theme))
+        Rc::new(highlight::highlight_python(code, &palette))
     };
     let statements = if scheme {
         Vec::new()
@@ -772,5 +913,7 @@ fn add_wrapped(lines: &mut RowOutput, prefix: &Line, body: &Line, width: usize) 
     }
 }
 
+#[cfg(test)]
+mod scheme_tests;
 #[cfg(test)]
 mod tests;

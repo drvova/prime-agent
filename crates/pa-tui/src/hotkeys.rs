@@ -57,8 +57,21 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let interrupt = key_display(kb, "app.interrupt");
     let exit = key_display(kb, "app.exit");
     let select_model = key_display(kb, "app.model.select");
+    let cycle_recent_model = key_display(kb, "app.model.cycleRecent");
+    let model_actions = key_display(kb, "app.model.actions");
+    let model_sort = key_display(kb, "app.model.sort");
+    let model_filters = [
+        "app.model.filterProvider",
+        "app.model.filterBilling",
+        "app.model.filterCapability",
+        "app.model.filterContext",
+    ]
+    .map(|binding| key_display(kb, binding))
+    .join(" / ");
+    let model_scope = key_display(kb, "app.model.toggleScope");
     let cycle_thinking = key_display(kb, "app.thinking.cycle");
     let history_search = key_display(kb, "app.history.search");
+    let shortcuts = key_display(kb, "app.shortcuts.open");
     let expand_tools = key_display(kb, "app.tools.expand");
     let focus_subagents = key_display(kb, "app.subagents.focus");
     let external_editor = key_display(kb, "app.editor.external");
@@ -75,12 +88,20 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let viewport_page_down = key_display(kb, "tui.viewport.pageDown");
     let viewport_top = key_display(kb, "tui.viewport.top");
     let viewport_follow = key_display(kb, "tui.viewport.follow");
+    let viewport_previous_prompt = key_display(kb, "tui.viewport.previousPrompt");
+    let viewport_next_prompt = key_display(kb, "tui.viewport.nextPrompt");
+    let transcript_search = key_display(kb, "app.transcript.search");
+    let search_next = key_display(kb, "app.transcript.searchNext");
+    let search_previous = key_display(kb, "app.transcript.searchPrevious");
     let suspend = key_display(kb, "app.suspend");
     let select_paragraph_up = key_display(kb, "tui.editor.selectParagraphUp");
     let select_paragraph_down = key_display(kb, "tui.editor.selectParagraphDown");
     let select_doc_start = key_display(kb, "tui.editor.selectDocStart");
     let select_doc_end = key_display(kb, "tui.editor.selectDocEnd");
     let browse_queue_newer = key_display(kb, "app.message.navigateNewer");
+    let changes_open = key_display(kb, crate::session_changes::OPEN_BINDING);
+    let changes_scope = key_display(kb, crate::session_changes::SCOPE_BINDING);
+    let changes_attach = key_display(kb, crate::session_changes::ATTACH_BINDING);
     let usage_refresh = key_display(kb, "app.usage.refresh");
     let usage_overview = key_display(kb, "app.usage.overview");
     let select_confirm = key_display(kb, "tui.select.confirm");
@@ -144,8 +165,10 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
         r"| `{exit}` | Exit (when editor is empty) |
 | `{suspend}` | Suspend to background |
 | `{select_model}` | Open model selector |
+| `{cycle_recent_model}` | Switch to the next recently used model |
 | `{cycle_thinking}` | Cycle thinking level |
 | `{history_search}` | Search prompt history |
+| `{shortcuts}` | Show the most useful keys (on an empty prompt; type to dismiss) |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
     );
     let _ = writeln!(
@@ -165,9 +188,31 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{viewport_page_up}` / `{viewport_page_down}` | Scroll transcript by page |
 | `{viewport_top}` | Scroll to top |
 | `{viewport_follow}` | Scroll to bottom and follow output |
+| `{viewport_previous_prompt}` / `{viewport_next_prompt}` | Jump to the previous / next prompt |
+| `{transcript_search}` | Search the conversation: Enter stays at the match, Esc goes back |
+| `{search_next}` / `{search_previous}` | Next / previous match while searching |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
+| mouse double-click / triple-click | Copy a word / a row |
 | mouse click on link | Open link in browser |
+
+**Model picker (`/model`)**
+| Key | Action |
+|-----|--------|
+| `{cursor_left}` / `{cursor_right}` | Change the highlighted model's effort |
+| `{model_actions}` | The highlighted model's actions (default, effort, favorite, details) |
+| `{model_sort}` | Cycle the sort (recent, name, price, context) |
+| `{model_filters}` | Cycle the provider / billing / capability / context filter |
+| `{model_scope}` | Switch between the scoped models and the catalog |
+
+**Session changes (`/diff`)**
+| Key | Action |
+|-----|--------|
+| `{changes_open}` | Open the files changed this turn, and whether a test ran after each |
+| `{changes_scope}` | Switch between this turn and the whole session |
+| `{select_confirm}` | Show the selected file's diff |
+| `{changes_attach}` | Attach the selected file's diff to the next message |
+| `{select_cancel}` | Close the panel |
 
 **Usage page (`/usage`)**
 | Key | Action |
@@ -195,9 +240,15 @@ mod tests {
         );
         // The interrupt row is conditional: no default binding, no row.
         assert!(!guide.contains("Interrupt current operation |"), "{guide}");
-        // The `?` quick-shortcut overlay is removed (the operator's 2026-09-26
-        // directive): the guide keeps no reference to it.
+        // The old `?` quick-shortcut overlay stays removed (the operator's 2026-09-26
+        // directive); the `?` shortcut overview names its own row.
         assert!(!guide.contains("quick shortcuts"), "{guide}");
+        assert!(
+            guide.contains(
+                "| `?` | Show the most useful keys (on an empty prompt; type to dismiss) |"
+            ),
+            "{guide}"
+        );
         // The fullscreen toggle is retired (the operator's 2026-09-28 ruling):
         // the guide never advertises `/fullscreen`.
         assert!(

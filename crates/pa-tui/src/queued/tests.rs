@@ -175,7 +175,7 @@ fn long_previews_truncate_with_ellipsis() {
     // The row pads to the width like TS (a trailing pad column follows the
     // ellipsis), so the check strips the pad.
     assert!(
-        text.trim_end().ends_with(&format!("...{DISPATCH}")),
+        text.trim_end().ends_with(&format!("\u{2026}{DISPATCH}")),
         "the preview truncates with an ellipsis and keeps the clause: {text}"
     );
     assert!(
@@ -356,7 +356,7 @@ fn condensed_row_truncates_to_the_width() {
     assert_eq!(rows.len(), 2);
     let text: String = rows[1].iter().map(|span| span.content.as_str()).collect();
     assert!(
-        text.trim_end().ends_with("..."),
+        text.trim_end().ends_with('\u{2026}'),
         "the condensed row truncates with an ellipsis: {text}"
     );
     assert!(

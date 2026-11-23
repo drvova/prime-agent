@@ -87,17 +87,20 @@ impl OnboardingChoice {
     pub fn render(&self, theme: &Theme, width: usize) -> Vec<Line> {
         let safe_width = width.max(1);
         let mut lines: Vec<Line> = vec![Vec::new()];
+        // The question and the closing note wrap at the pane's edge (one leading cell, one
+        // spare): a narrow pane never cuts them off.
+        let pane_wrap = safe_width.saturating_sub(2).max(1);
         if let Some(prompt) = &self.config.prompt {
-            lines.push(vec![Span::styled(
-                format!(" {prompt}"),
-                theme.fg_style(ThemeColor::Text),
-            )]);
+            for row in wrap_words(prompt, pane_wrap) {
+                lines.push(vec![Span::styled(
+                    format!(" {row}"),
+                    theme.fg_style(ThemeColor::Text),
+                )]);
+            }
             lines.push(Vec::new());
         }
         if let Some(description) = &self.config.description {
-            let wrap = CHOICE_DESCRIPTION_WIDTH
-                .min(safe_width.saturating_sub(2))
-                .max(1);
+            let wrap = CHOICE_DESCRIPTION_WIDTH.min(pane_wrap);
             for row in wrap_words(description, wrap) {
                 lines.push(vec![Span::styled(
                     format!(" {row}"),
@@ -109,10 +112,12 @@ impl OnboardingChoice {
         lines.extend(self.option_rows(theme, safe_width));
         if let Some(note) = &self.config.note {
             lines.push(Vec::new());
-            lines.push(vec![Span::styled(
-                format!(" {note}"),
-                theme.fg_style(ThemeColor::Dim),
-            )]);
+            for row in wrap_words(note, pane_wrap) {
+                lines.push(vec![Span::styled(
+                    format!(" {row}"),
+                    theme.fg_style(ThemeColor::Dim),
+                )]);
+            }
         }
         lines
     }

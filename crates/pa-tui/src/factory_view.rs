@@ -751,7 +751,6 @@ impl FactoryView {
         let mut panels: Vec<Line> = Vec::new();
         let mut focus: Option<(usize, usize)> = None;
         if self.runs.is_empty() {
-            panels.push(vec![Span::raw("")]);
             panels.push(vec![
                 Span::raw("  "),
                 theme.fg_span(ThemeColor::Text, "No live factory runs."),
@@ -773,9 +772,19 @@ impl FactoryView {
                 focus = Some((panel_start, line));
             }
         }
-        // The chrome area: the error line from the last failed refresh
-        // and the trailing key hint (the view's only key legend).
-        let mut chrome_rows = 2;
+        // The chrome area: the title row with the live-run counts over a
+        // blank, the error line from the last failed refresh, and the
+        // trailing key hint (the view's only key legend).
+        let FactoryRunCounts { running, paused } = FactoryRunCounts::of(&self.runs);
+        let mut counts = vec![(ThemeColor::Accent, format!("{running} running"))];
+        if paused > 0 {
+            counts.push((ThemeColor::Warning, format!("{paused} paused")));
+        }
+        let title = vec![
+            crate::menu_chrome::title_counts_row(theme, width, "Factory", &counts),
+            vec![Span::raw("")],
+        ];
+        let mut chrome_rows = 2 + title.len();
         if self.error.is_some() {
             chrome_rows += 2;
         }
@@ -804,13 +813,11 @@ impl FactoryView {
             panels.drain(..start);
             panels.truncate(panel_budget);
         }
-        let mut rows = panels;
+        let mut rows = title;
+        rows.extend(panels);
         if let Some(error) = &self.error {
             rows.push(vec![Span::raw("")]);
-            rows.push(vec![
-                Span::raw("  "),
-                theme.fg_span(ThemeColor::Error, format!("Error: {error}")),
-            ]);
+            rows.push(crate::menu_chrome::error_row(theme, width, error));
         }
         rows.push(vec![Span::raw("")]);
         rows.push(self.footer(kb).line(theme, width));
@@ -820,7 +827,7 @@ impl FactoryView {
             rows.drain(..rows.len() - budget);
         }
         rows.into_iter()
-            .map(|row| truncate_line(&row, width, ""))
+            .map(|row| truncate_line(&row, width, crate::menu_chrome::ELLIPSIS))
             .collect()
     }
 
@@ -839,20 +846,18 @@ impl FactoryView {
                 ),
             );
         }
-        let mut footer = Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "move",
-                HintRank::Useful,
-            )
-            .bound(
+        // No run, no navigation: the empty page offers only its way out.
+        let mut footer = if self.runs.is_empty() {
+            Footer::new()
+        } else {
+            Footer::new().navigate(kb).bound(
                 kb,
                 &["tui.select.confirm", "app.modal.open"],
                 "open",
                 HintRank::Core,
             )
-            .bound(kb, &["app.modal.back"], "back", HintRank::Useful);
+        }
+        .bound(kb, &["app.modal.back"], "back", HintRank::Useful);
         if self
             .selected
             .as_ref()
@@ -890,11 +895,10 @@ impl FactoryView {
         let changed = self.recent_change.get(index).copied().unwrap_or(false);
         // The header: the selection marker, the run's name, its state.
         let mut header: Line = vec![Span::raw(if header_selected { "▸ " } else { "  " })];
-        header.push(theme.fg_span(ThemeColor::ToolTitle, "factory: "));
         header.push(theme.fg_span(ThemeColor::Text, run.display_name()));
         let state_text = match run.state.as_deref() {
-            Some(state) => format!(" — {state}"),
-            None => " — not running".to_string(),
+            Some(state) => format!("  {state}"),
+            None => "  not running".to_string(),
         };
         header.push(theme.fg_span(run_state_color(run.state.as_deref()), state_text));
         if changed {
@@ -912,7 +916,7 @@ impl FactoryView {
         ];
         let header_line = rows.len();
         rows.push(header);
-        rows.push(truncate_line(&stats, width, ""));
+        rows.push(truncate_line(&stats, width, crate::menu_chrome::ELLIPSIS));
         rows.push(vec![Span::raw("")]);
         let state_line = Self::render_diagram(theme, run, selected_state, rows);
         if !run.milestones.is_empty() {
@@ -939,9 +943,12 @@ impl FactoryView {
     }
 
     fn stats_line(run: &FactoryRunSnapshot, running: u64) -> String {
-        let elapsed = format_duration(run.elapsed_ms);
+        let elapsed = crate::duration_text::seconds(run.elapsed_ms / 1_000);
         let budget = match run.budget_limit_ms {
-            Some(limit) => format!("budget {}/{}", elapsed, format_duration(limit)),
+            Some(limit) => format!(
+                "budget {elapsed} / {}",
+                crate::duration_text::seconds(limit / 1_000)
+            ),
             None => format!("elapsed {elapsed}"),
         };
         let mut parts = vec![budget];
@@ -952,7 +959,15 @@ impl FactoryView {
                 usage.max_parallel
             ));
             parts.push(format!("{} settled", usage.settled));
-            parts.push(format!("{} transitions", usage.transitions_fired));
+            parts.push(format!(
+                "{} transition{}",
+                usage.transitions_fired,
+                if usage.transitions_fired == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
         }
         let queued = run
             .nodes
@@ -1076,17 +1091,5 @@ impl FactoryView {
             }
         }
         selected_line
-    }
-}
-
-/// A compact duration: seconds under a minute, minutes under an hour.
-fn format_duration(ms: u64) -> String {
-    let seconds = ms / 1_000;
-    if seconds < 60 {
-        format!("{seconds}s")
-    } else if seconds < 3_600 {
-        format!("{}m{:02}s", seconds / 60, seconds % 60)
-    } else {
-        format!("{}h{:02}m", seconds / 3_600, (seconds % 3_600) / 60)
     }
 }

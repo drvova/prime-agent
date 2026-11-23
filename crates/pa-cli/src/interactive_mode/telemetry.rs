@@ -217,6 +217,128 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         Box::pin(std::future::ready(()))
     }
 
+    fn transcript_navigated(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui crash notice`: `tui exit` sits at the backend's 128-key cap.
+        // Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            client.track("tui transcript navigation", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn transcript_searched(
+        &self,
+        search: pa_tui::interactive::TranscriptSearchReport,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui transcript navigation`: `tui exit` sits at the backend's 128-key
+        // cap. Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("outcome", serde_json::Value::from(search.outcome));
+            properties.set("steps", serde_json::Value::from(search.steps));
+            properties.set("revealed", serde_json::Value::from(search.revealed));
+            properties.set("history", serde_json::Value::from(search.history));
+            client.track("tui transcript search", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn session_changes_used(
+        &self,
+        action: &'static str,
+        files: u64,
+        untested: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            properties.set("files", serde_json::Value::from(files));
+            properties.set("untested", serde_json::Value::from(untested));
+            client.track("tui session changes", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn unfocused_signal_sent(
+        &self,
+        reason: &'static str,
+        mode: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the event path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("reason", serde_json::Value::from(reason));
+            properties.set("mode", serde_json::Value::from(mode));
+            client.track("tui unfocused signal", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn model_recent_used(
+        &self,
+        action: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone like `tui transcript navigation`: `tui exit` sits at the backend's 128-key
+        // cap. Delivery is the client worker's: the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("action", serde_json::Value::from(action));
+            client.track("tui model recent used", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            client.track(
+                "tui shortcut overlay opened",
+                pa_telemetry::base_properties("interactive"),
+            );
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn mouse_selection_copied(
+        &self,
+        kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the mouse path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("kind", serde_json::Value::from(kind));
+            client.track("tui mouse selection", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.count("tui_selection_count");
         Box::pin(std::future::ready(()))
@@ -678,6 +800,197 @@ mod tests {
 
     /// The agents view shares one telemetry handle across the sessions it
     /// opens: each `tui exit` reports only its own run's interactions.
+    /// The mirrored events as `[name, action, reason, mode]` rows.
+    fn mirrored(agent_dir: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .map(|event| {
+                let properties = &event["properties"];
+                serde_json::json!([
+                    event["name"],
+                    properties["action"],
+                    properties["reason"],
+                    properties["mode"],
+                    properties["kind"],
+                ])
+            })
+            .collect()
+    }
+
+    /// A transcript navigation report is a standalone event that keeps its catalogued enum.
+    #[test]
+    fn a_navigation_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.transcript_navigated("next_prompt"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![serde_json::json!([
+                    "tui transcript navigation",
+                    "next_prompt",
+                    null,
+                    null,
+                    null
+                ])]
+            );
+        });
+    }
+
+    /// A transcript search report is a standalone event carrying only its catalogued enums,
+    /// count and flag.
+    #[test]
+    fn a_search_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.transcript_searched(
+                    pa_tui::interactive::TranscriptSearchReport {
+                        outcome: "jumped",
+                        steps: 3,
+                        revealed: true,
+                        history: "loaded_only",
+                    },
+                ));
+            let event: serde_json::Value = serde_json::from_str(
+                std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            let properties = &event["properties"];
+            assert_eq!(
+                serde_json::json!([
+                    event["name"],
+                    properties["outcome"],
+                    properties["steps"],
+                    properties["revealed"],
+                    properties["history"],
+                ]),
+                serde_json::json!(["tui transcript search", "jumped", 3, true, "loaded_only"])
+            );
+        });
+    }
+
+    /// A recent-model report is a standalone event that keeps its catalogued enum.
+    #[test]
+    fn a_recent_model_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.model_recent_used("recent_pick"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![serde_json::json!([
+                    "tui model recent used",
+                    "recent_pick",
+                    null,
+                    null,
+                    null
+                ])]
+            );
+        });
+    }
+
+    /// An unfocused signal report is a standalone event that keeps its catalogued enums.
+    #[test]
+    fn an_unfocused_signal_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.unfocused_signal_sent("question", "notification"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![serde_json::json!([
+                    "tui unfocused signal",
+                    null,
+                    "question",
+                    "notification",
+                    null
+                ])]
+            );
+        });
+    }
+
+    /// The shortcut overview's open and a mouse selection's copy are standalone events; the
+    /// selection keeps its catalogued kind.
+    #[test]
+    fn overlay_and_mouse_selection_reports_are_standalone_events() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(telemetry.shortcut_overlay_opened());
+            runtime.block_on(telemetry.mouse_selection_copied("word"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![
+                    serde_json::json!(["tui shortcut overlay opened", null, null, null, null]),
+                    serde_json::json!(["tui mouse selection", null, null, null, "word"]),
+                ]
+            );
+        });
+    }
+
+    /// A session changes report is a standalone event that keeps its action and its counts.
+    #[test]
+    fn a_session_changes_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.session_changes_used("attach", 3, 1));
+            let events: Vec<serde_json::Value> =
+                std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .map(|event| {
+                        let properties = &event["properties"];
+                        serde_json::json!([
+                            event["name"],
+                            properties["action"],
+                            properties["files"],
+                            properties["untested"],
+                        ])
+                    })
+                    .collect();
+            assert_eq!(
+                events,
+                vec![serde_json::json!(["tui session changes", "attach", 3, 1])]
+            );
+        });
+    }
+
     #[test]
     fn each_tui_exit_reports_only_its_own_run() {
         crate::mode::tests::with_clean_telemetry_env(|| {

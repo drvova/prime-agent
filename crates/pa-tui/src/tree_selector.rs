@@ -329,66 +329,66 @@ impl TreeSelector {
     /// bindings, and Esc goes back out of the inner panes.
     fn footer(&self, kb: &KeybindingsManager) -> Footer {
         match &self.mode {
-            Mode::Tree => Footer::new()
-                .enter(
-                    kb,
-                    self.list.selected_id().map(|_| "navigates to this entry"),
-                )
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "move",
-                    HintRank::Useful,
-                )
-                .bound(
-                    kb,
-                    &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
-                    "page",
-                    HintRank::Extra,
-                )
-                .bound(
-                    kb,
-                    &["app.tree.foldOrUp", "app.tree.unfoldOrDown"],
-                    "fold",
-                    HintRank::Extra,
-                )
-                .bound(kb, &["app.tree.editLabel"], "label", HintRank::Useful)
-                .bound(
-                    kb,
-                    &[
-                        "app.tree.filter.cycleForward",
-                        "app.tree.filter.cycleBackward",
-                    ],
-                    "filter",
-                    HintRank::Useful,
-                )
-                .bound(
-                    kb,
-                    &[
-                        "app.tree.filter.default",
-                        "app.tree.filter.noTools",
-                        "app.tree.filter.userOnly",
-                        "app.tree.filter.labeledOnly",
-                        "app.tree.filter.all",
-                    ],
-                    "filters",
-                    HintRank::Extra,
-                )
-                .bound(
-                    kb,
-                    &["app.tree.toggleLabelTimestamp"],
-                    "label time",
-                    HintRank::Extra,
-                )
-                .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
-                .esc(kb, EscVerb::Close),
+            Mode::Tree => {
+                // A filter that hides every entry leaves nothing to move to, fold, label, or
+                // select: the footer keeps the filter keys and the way out.
+                let selected = self.list.selected_id();
+                let footer =
+                    Footer::new().enter(kb, selected.as_ref().map(|_| "navigates to this entry"));
+                let footer = match selected {
+                    Some(_) => footer
+                        .navigate(kb)
+                        .bound(
+                            kb,
+                            &["tui.editor.cursorLeft", "tui.editor.cursorRight"],
+                            "page",
+                            HintRank::Extra,
+                        )
+                        .bound(
+                            kb,
+                            &["app.tree.foldOrUp", "app.tree.unfoldOrDown"],
+                            "fold",
+                            HintRank::Extra,
+                        )
+                        .bound(kb, &["app.tree.editLabel"], "label", HintRank::Useful),
+                    None => footer,
+                };
+                let footer = footer
+                    .bound(
+                        kb,
+                        &[
+                            "app.tree.filter.cycleForward",
+                            "app.tree.filter.cycleBackward",
+                        ],
+                        "filter",
+                        HintRank::Useful,
+                    )
+                    .bound(
+                        kb,
+                        &[
+                            "app.tree.filter.default",
+                            "app.tree.filter.noTools",
+                            "app.tree.filter.userOnly",
+                            "app.tree.filter.labeledOnly",
+                            "app.tree.filter.all",
+                        ],
+                        "filters",
+                        HintRank::Extra,
+                    )
+                    .bound(
+                        kb,
+                        &["app.tree.toggleLabelTimestamp"],
+                        "label time",
+                        HintRank::Extra,
+                    );
+                match selected {
+                    Some(_) => footer.bound(kb, &["tui.select.confirm"], "select", HintRank::Core),
+                    None => footer,
+                }
+                .esc(kb, EscVerb::Close)
+            }
             Mode::Summarize { .. } => Footer::new()
-                .bound(
-                    kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
-                )
+                .navigate(kb)
                 .bound(kb, &["tui.select.confirm"], "select", HintRank::Core)
                 .esc(kb, EscVerb::Back),
             Mode::LabelInput { .. } | Mode::CustomPrompt { .. } => Footer::new()
@@ -475,7 +475,7 @@ mod tests {
         let text = frame_text(&selector().render(&theme, 240, &kb));
         assert!(
             text.contains(
-                "  \u{2191}/\u{2193} move \u{b7} \u{2190}/\u{2192} page \u{b7} Ctrl+\u{2190}/Ctrl+\u{2192} fold \u{b7} Shift+L label \u{b7} Ctrl+O/Shift+Ctrl+O filter \u{b7} Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A filters \u{b7} Shift+T label time \u{b7} Enter select \u{b7} Esc close"
+                "  \u{2191}/\u{2193} navigate \u{b7} \u{2190}/\u{2192} page \u{b7} Ctrl+\u{2190}/Ctrl+\u{2192} fold \u{b7} Shift+L label \u{b7} Ctrl+O/Shift+Ctrl+O filter \u{b7} Ctrl+D/Ctrl+T/Ctrl+U/Ctrl+L/Ctrl+A filters \u{b7} Shift+T label time \u{b7} Enter select \u{b7} Esc close"
             ),
             "{text}"
         );

@@ -80,6 +80,8 @@ impl SessionUi {
             model_accounts: std::collections::BTreeMap::new(),
             model_account_choices: std::collections::BTreeMap::new(),
             model_recent_models: options.model_recent_models.clone(),
+            recent_cycle: None,
+            recent_model_reported: Vec::new(),
             model_favorite_models: options
                 .client_settings
                 .as_ref()
@@ -225,6 +227,17 @@ impl SessionUi {
             page_notes,
             telemetry: options.telemetry.clone(),
             scroll_adoption_emitted: false,
+            navigation_reported: Vec::new(),
+            search_reported: Vec::new(),
+            shortcuts_reported: false,
+            clicks: crate::selection_gesture::ClickTracker::default(),
+            selection_kind: crate::selection_gesture::SelectionKind::Drag,
+            selection_kinds_reported: Vec::new(),
+            wheel: crate::mouse::WheelAcceleration::default(),
+            changes_reported: Vec::new(),
+            terminal_focused: true,
+            unfocused_signal_reported: Vec::new(),
+            attention_signals: Vec::new(),
             exit_reason: "daemon_closed",
             connection: crate::interactive::reconnect::Connection::Connected,
             pending_rebind: None,
@@ -718,6 +731,8 @@ impl SessionUi {
         // dies with its transcript, and the tok/sec stats restart per session.
         if matches!(kind, RebuildKind::Rebind) {
             view.bash_view = None;
+            // The changes panel reads the transcript the rebind replaces.
+            view.changes_panel = None;
             // The factory view dies the same death — it snapshots the
             // previous session's kernel runs, and its refresh lane must
             // not keep polling the new session's kernel for a view
@@ -1371,5 +1386,31 @@ mod backfill_tests {
         drop(session);
         server.abort();
         }).await.expect("mock session open, warning rebuild complete within ten seconds");
+    }
+
+    /// A notice that names the key leaving a side run names the effective `app.input.clear`
+    /// key, and nothing once the user unbound it.
+    #[tokio::test]
+    async fn side_run_notices_name_the_effective_clear_key() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let dir = tempfile::tempdir().unwrap();
+            let socket = dir.path().join("clear-key.sock");
+            let (mut session, server) = mock_session(&socket, mpsc::unbounded_channel().0).await;
+            let mut tails = Vec::new();
+            for keys in [None, Some(vec!["ctrl+g".to_string()]), Some(Vec::new())] {
+                let mut bindings = crate::keybindings::KeybindingsConfig::new();
+                if let Some(keys) = keys {
+                    bindings.insert("app.input.clear".to_string(), keys);
+                }
+                session.keybindings =
+                    crate::keybindings::KeybindingsManager::with_user_bindings(bindings);
+                tails.push(session.clear_key_tail(|key| format!(" ({key} cancels)")));
+            }
+            assert_eq!(tails, [" (Esc cancels)", " (Ctrl+G cancels)", ""]);
+            drop(session);
+            server.abort();
+        })
+        .await
+        .expect("the mock session opens within ten seconds");
     }
 }

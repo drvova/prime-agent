@@ -2,7 +2,7 @@
 //! grammar.
 
 use crate::keybindings::KeybindingsManager;
-use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, HintRank, CHROME_INDENT};
+use crate::menu_chrome::{empty_state_row, title_row, EscVerb, Footer, CHROME_INDENT};
 use crate::menu_panel::{menu_row, scroll_row, search_field_lines};
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
@@ -140,7 +140,7 @@ impl UserMessageSelector {
                     ),
                 ],
                 width,
-                "",
+                crate::menu_chrome::ELLIPSIS,
             ),
         ];
         lines.extend(search_field_lines(
@@ -191,13 +191,12 @@ impl UserMessageSelector {
                     kb,
                     (!self.filtered.is_empty()).then_some("forks from this message"),
                 )
-                .bound(
+                .list(
                     kb,
-                    &["tui.select.up", "tui.select.down"],
-                    "navigate",
-                    HintRank::Useful,
+                    self.filtered.len(),
+                    kb.first_key("tui.select.confirm"),
+                    "fork",
                 )
-                .bound(kb, &["tui.select.confirm"], "fork", HintRank::Core)
                 .esc(kb, EscVerb::Close)
                 .rows(theme, width),
         );

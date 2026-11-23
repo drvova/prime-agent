@@ -75,6 +75,21 @@ fn mount_teams(
     (panel, answer)
 }
 
+/// A sign-in step wider than the panel wraps under the content indent instead of stopping at
+/// the edge mid-word.
+#[test]
+fn a_progress_line_wider_than_the_panel_wraps() {
+    let mut panel = AuthPanel::new("Login to Prime Inference");
+    panel.push_progress("Checking existing Prime CLI credentials...");
+    let rows: Vec<String> = panel
+        .render(&theme(), 30, &kb())
+        .iter()
+        .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+        .filter(|row: &String| row.starts_with(" C") || row.starts_with(" c"))
+        .collect();
+    assert_eq!(rows, [" Checking existing Prime CLI", " credentials..."]);
+}
+
 #[test]
 fn the_first_progress_line_lands_under_the_section_title() {
     let mut panel = AuthPanel::new("Login to Prime Inference");

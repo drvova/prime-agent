@@ -16,7 +16,7 @@
 
 use pa_types::todo::{TodoItem, TodoList, TodoStatus};
 
-use crate::menu_chrome::CHROME_INDENT;
+use crate::menu_chrome::{CHROME_INDENT, ELLIPSIS};
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{str_width, truncate_line};
 use crate::{Line, Span};
@@ -29,8 +29,6 @@ pub(crate) const EXPANDED_ROWS: usize = 20;
 pub(crate) const NOTE_MIN_WIDTH: usize = 60;
 /// Narrower than this, only the header row shows.
 pub(crate) const ITEM_ROWS_MIN_WIDTH: usize = 24;
-
-const ELLIPSIS: &str = "\u{2026}";
 
 /// Whether the tray shows the window around the current item or the whole list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -228,6 +228,13 @@ impl AgentView {
             .then(|| (section - 1, row))
     }
 
+    /// The section and row at the top of the last composed window (section 0 is the rows above
+    /// the first entry); `None` once a scroll since has moved it.
+    pub(super) fn window_top_cursor(&self) -> Option<(usize, usize)> {
+        let window = self.sparse_window?;
+        window.cursor.filter(|_| window.pending == 0)
+    }
+
     /// Whether the last frame's top sat at or above the first entry's first row: scrolling up
     /// reveals no resident entry.
     pub(crate) fn viewport_at_top(&self) -> bool {
@@ -243,6 +250,9 @@ impl AgentView {
         let sparse = self.sparse_enabled;
         let offset = self.layout_pass(self.layout_width).entry_start(index) + row;
         self.sparse_enabled = sparse;
+        if self.following {
+            self.unseen_entries = 0;
+        }
         self.sparse_window = None;
         self.scroll_top = offset;
         self.following = false;

@@ -259,6 +259,23 @@ pub const TUI_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
             "Scroll to bottom and follow output (fullscreen)"
         ),
     ),
+    (
+        "tui.viewport.previousPrompt",
+        // `alt+pageUp`/`alt+pageDown` sit beside the page keys and no other binding claims
+        // them; `alt+up`/`alt+down` browse the queued messages and `ctrl+up`/`ctrl+down` move
+        // the editor by paragraph.
+        def!(
+            &["alt+pageUp"],
+            "Jump to the previous prompt in the transcript (fullscreen)"
+        ),
+    ),
+    (
+        "tui.viewport.nextPrompt",
+        def!(
+            &["alt+pageDown"],
+            "Jump to the next prompt in the transcript (fullscreen)"
+        ),
+    ),
     ("tui.select.up", def!(&["up"], "Move selection up")),
     ("tui.select.down", def!(&["down"], "Move selection down")),
     ("tui.select.pageUp", def!(&["pageUp"], "Selection page up")),
@@ -347,6 +364,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["shift+alt+m"], "Cycle to the previous scoped model"),
     ),
     (
+        "app.model.cycleRecent",
+        def!(&["f2"], "Switch to the next recently used model"),
+    ),
+    (
         "app.thinking.cycle",
         def!(&["shift+tab"], "Cycle thinking level"),
     ),
@@ -360,6 +381,27 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["alt+x"], "Open the context window"),
     ),
     (
+        "app.changes.open",
+        // `alt+g` is claimed by no other binding, editor motions included (`alt+b`/`alt+f`/
+        // `alt+d`/`alt+y` are the editor's); the panel's own keys are plain letters while it
+        // owns the frame.
+        def!(&["alt+g"], "Open the session changes panel"),
+    ),
+    (
+        "app.changes.scope",
+        def!(
+            &["t"],
+            "Changes panel: switch between this turn and the whole session"
+        ),
+    ),
+    (
+        "app.changes.attach",
+        def!(
+            &["a"],
+            "Changes panel: attach the selected file's diff to the next message"
+        ),
+    ),
+    (
         "app.editor.external",
         def!(&["ctrl+g"], "Open external editor"),
     ),
@@ -370,6 +412,27 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
     (
         "app.history.search",
         def!(&["ctrl+r"], "Search prompt history"),
+    ),
+    (
+        "app.transcript.search",
+        // `/` is the search key of less, vim and transcript pagers; Alt keeps a bare `/` for
+        // the composer's slash commands. No other binding claims `alt+/`, and `ctrl+/` is the
+        // same byte as the undo key `ctrl+-` on a legacy terminal.
+        def!(&["alt+/"], "Search the conversation (fullscreen)"),
+    ),
+    (
+        "app.transcript.searchNext",
+        // The bar owns the keyboard while open: the arrows have no other use there, and
+        // `ctrl+n`/`ctrl+p` are the readline next/previous keys.
+        def!(&["down", "ctrl+n"], "Transcript search: next match"),
+    ),
+    (
+        "app.transcript.searchPrevious",
+        def!(&["up", "ctrl+p"], "Transcript search: previous match"),
+    ),
+    (
+        "app.shortcuts.open",
+        def!(&["?"], "Show the shortcut overview (on an empty prompt)"),
     ),
     (
         "app.message.followUp",

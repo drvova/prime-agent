@@ -1247,3 +1247,76 @@ fn a_sessions_panic_is_written_to_that_sessions_log_and_not_to_the_daemons() {
         "session log: {session_log}\ndaemon log: {daemon_log}"
     );
 }
+
+/// A session's lifetime can end while its kernel's cell waits for a command
+/// with a time limit, on the engine's runtime and from a thread of its own.
+/// The cell is stopped and has left before that runtime goes: torn down
+/// under the wait, the runtime's timer panics the cell's thread, a second
+/// fault of a session that had one. The cell here went to the background
+/// (it outlived its one-second window inside the wait), so the session is
+/// idle when its next turn panics.
+#[test]
+fn a_cell_waiting_for_a_command_has_left_before_its_crashed_session_is_torn_down() {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let socket = dir.path().join("daemon.sock");
+    let agent_dir = dir.path().join("agent");
+    let _daemon = spawn_supervisor(&socket, &agent_dir);
+    let mut client = Client::connect(&socket);
+    let started = dir.path().join("command-started");
+    let command = format!("echo up > '{}'; /bin/sleep 600", started.to_string_lossy());
+    let session = client.create_attached(
+        dir.path(),
+        "waiting",
+        &json!({
+            "engine": "faux",
+            "responses": [
+                { "content": [
+                    { "type": "toolCall", "name": "eval", "arguments": {
+                        "code": format!(
+                            "(bash {} (hash 'timeout-ms 500000))",
+                            serde_json::to_string(&command).expect("a Scheme string literal")
+                        ),
+                        "timeout": 1,
+                    } },
+                ] },
+                { "text": "done" },
+            ],
+            "panicOn": { "message": "crash now", "panic": "injected fault" },
+        }),
+        // The wait keeps its command for the whole test instead of handing
+        // it over at the session's default window.
+        json!({ "launchEnv": { "PRIME_AGENT_BASH_WAIT_MS": "600000" } }),
+    );
+    let backgrounded = client.request("turn", &prompt_and_wait(&session));
+    assert_eq!(backgrounded["success"], true, "turn failed: {backgrounded}");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !started.exists() {
+        assert!(Instant::now() < deadline, "the command never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    client.send("crash", &crashing_prompt(&session));
+    // The crashed lifetime is torn down before its successor is announced.
+    client.event(&session, "session_recovered");
+    let session_log = std::fs::read_to_string(
+        agent_dir
+            .join("logs")
+            .join(format!("worker-{session}.stderr.log")),
+    )
+    .unwrap_or_default();
+    // Each panic is logged as its `panicked at` line, then its message.
+    let lines: Vec<&str> = session_log.lines().collect();
+    let panics: Vec<&str> = lines
+        .windows(2)
+        .filter(|pair| pair[0].contains("panicked at"))
+        .map(|pair| pair[1])
+        .collect();
+    let crashes: Vec<Value> = crash_log(&agent_dir, &socket)
+        .into_iter()
+        .map(|crash| crash["message"].clone())
+        .collect();
+    assert_eq!(
+        (panics, crashes),
+        (vec!["injected fault"], vec![json!("injected fault")]),
+        "session log: {session_log}"
+    );
+}

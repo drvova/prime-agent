@@ -28,6 +28,8 @@ mod confinement;
 mod contracts;
 mod factory;
 mod host_api;
+#[cfg(test)]
+mod interleavings;
 mod limits;
 
 use std::future::Future;
@@ -85,7 +87,29 @@ const HOST_BRIDGE: &str = r"
 /// had open.
 const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Keep Steel's own state inside the agent directory. Unless `STEEL_HOME` is
+/// How long the end of a session's lifetime waits for the cell on the engine
+/// to leave it, before the host shuts the session's runtime down. Longer than
+/// every bounded wait a stopped cell may still make on that runtime (a
+/// command's kill, a withdrawn question), so only a cell inside a call that
+/// does not observe its stop is given up on, and every end of such a session
+/// pays this.
+const CELL_LEAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The switches Steel's compiler reads from the process's environment: the
+/// first five on every compile (inlining, closure lifting, a dump of each
+/// syntax tree to standard output), the last once, as directories to find
+/// modules in.
+const STEEL_COMPILER_SWITCHES: [&str; 6] = [
+    "STEEL_DEBUG_AST",
+    "STEEL_INLINE",
+    "STEEL_INLINE_RECURSIVE",
+    "STEEL_MODULE_INLINE",
+    "STEEL_CLOSURE_LIFTING",
+    "STEEL_SEARCH_PATHS",
+];
+
+/// Keep Steel's own state inside the agent directory, and its compiler as
+/// it was built. Unless `STEEL_HOME` is
 /// set, the first engine built in a process creates a `steel` directory in
 /// the user's data home and prints to stderr when it cannot, which breaks
 /// every mode whose stderr is part of its output. Sets `STEEL_HOME` to
@@ -96,7 +120,15 @@ const WITHDRAW_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 /// The directory is named, never created: with the variable set Steel only
 /// reads it, and a distribution build's first-run import takes an agent
 /// directory that already exists to mean the first run is over.
+///
+/// [`STEEL_COMPILER_SWITCHES`] are removed from the process's environment:
+/// set in the environment the agent was started from (for a Steel of the
+/// user's own), they would change how every session's cells compile, or
+/// print each cell's syntax tree into a stream that is a protocol.
 pub fn pin_scheme_home() {
+    for switch in STEEL_COMPILER_SWITCHES {
+        std::env::remove_var(switch);
+    }
     if pa_types::session_scope::var_os("STEEL_HOME").is_some() {
         return;
     }
@@ -533,11 +565,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 let spare = SPARES.lock().unwrap_or_else(PoisonError::into_inner).pop();
                 FIRST_TAKEN.store(true, std::sync::atomic::Ordering::SeqCst);
                 let mut engine = spare.map_or_else(confinement::engine, Ok)?;
-                let cells = cell::Cells::new(
-                    Arc::clone(&environment),
-                    handlers.clone(),
-                    engine.get_thread_state_controller(),
-                );
+                let controllers = confinement::controllers(&mut engine);
+                let cells =
+                    cell::Cells::new(Arc::clone(&environment), handlers.clone(), controllers);
                 engine.register_fn(
                     "%host-request-json",
                     move |request_type: String, payload: String| -> String {
@@ -696,20 +726,35 @@ impl KernelProvisioner for SchemeKernelProvisioner {
             }
             let session = started?;
             // A hosted session's lifetime can end without `kill` (its host
-            // drops the runtime): the cell on the engine and the session's
-            // commands stop with it all the same.
+            // stops serving it and shuts its runtime down): the cell on the
+            // engine and the session's commands stop with it all the same.
             if let Some(scope) = pa_types::session_scope::current() {
-                // Weakly: a kernel released before then is not kept for it.
+                // Weakly: a kernel released before then is not kept for it
+                // (a cell still on its engine keeps it, and is waited for).
                 let ending = Arc::downgrade(&session);
                 let disassembling = Arc::downgrade(&state.rizin);
                 scope.at_end(Box::new(move || {
-                    if let Some(ending) = ending.upgrade() {
-                        ending.cells.end();
+                    let ending = ending.upgrade();
+                    let leaving = ending.as_ref().is_some_and(|ending| {
+                        let leaving = ending.cells.end();
                         ending.jobs.kill_all();
-                    }
+                        leaving
+                    });
                     // No rizin, and nothing it debugs, outlives the session.
                     if let Some(disassembling) = disassembling.upgrade() {
                         disassembling.shutdown();
+                    }
+                    // The stopped cell's thread still waits on the session's
+                    // runtime (for the command it kills, for a question it
+                    // withdraws), and a wait on a runtime that is shut down
+                    // under it panics. The host shuts the runtime down when
+                    // this returns: not before the cell's thread is done with
+                    // it. The engine's turn is held by exactly that thread.
+                    if let (true, Some(ending)) = (leaving, ending) {
+                        let until = std::time::Instant::now() + CELL_LEAVE_WAIT;
+                        while ending.turn.try_lock().is_err() && std::time::Instant::now() < until {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
                     }
                 }));
             }
@@ -739,7 +784,6 @@ impl KernelProvisioner for SchemeKernelProvisioner {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
 
     use super::*;
     use crate::kernel::shared::host_handler;
@@ -765,6 +809,51 @@ mod tests {
             result.result,
             result.error.map(|error| error.ename),
         )
+    }
+
+    /// Set in the child process of the test below.
+    const SWITCHES_CHILD_ENV: &str = "PRIME_AGENT_TEST_STEEL_SWITCHES_CHILD";
+
+    /// A process started with every switch Steel's compiler reads from the
+    /// environment compiles as one started with none: with
+    /// `STEEL_DEBUG_AST` it printed the syntax tree of everything an engine
+    /// compiled to standard output. The switches are set for a child
+    /// process, so nothing else in this one compiles under them.
+    #[test]
+    fn steels_compiler_switches_in_the_environment_do_not_reach_the_kernel() {
+        if std::env::var_os(SWITCHES_CHILD_ENV).is_some() {
+            pin_scheme_home();
+            confinement::engine()
+                .unwrap()
+                .run("(define (compiled-in-the-child x) (+ x 1))")
+                .unwrap();
+            let left: Vec<&str> = STEEL_COMPILER_SWITCHES
+                .into_iter()
+                .filter(|switch| std::env::var_os(switch).is_some())
+                .collect();
+            println!("switches left: {left:?}");
+            return;
+        }
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "kernel::scheme::tests::steels_compiler_switches_in_the_environment_do_not_reach_the_kernel",
+                "--nocapture",
+            ])
+            .env(SWITCHES_CHILD_ENV, "1")
+            .envs(STEEL_COMPILER_SWITCHES.map(|switch| (switch, "1")))
+            .output()
+            .unwrap();
+        let printed = String::from_utf8_lossy(&child.stdout);
+        assert_eq!(
+            (
+                child.status.success(),
+                printed.contains("switches left: []"),
+                printed.contains("compiled-in-the-child"),
+            ),
+            (true, true, false),
+            "the child printed: {printed}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -872,17 +961,32 @@ mod tests {
         let spin = "(define (spin n) (spin (+ n 1))) (displayln \"spinning\") (spin 0)";
         let signal = AbortSignal::new();
         let abort = signal.clone();
-        let aborting = tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            abort.cancel();
-        });
+        // Aborted once the cell's whole line has reached its stream: the
+        // cell is spinning by then, however slow the machine is.
+        let printed = Mutex::new(String::new());
+        let on_stream = move |text: &str, _stream: &'static str| {
+            let mut printed = printed.lock().unwrap();
+            printed.push_str(text);
+            if printed.ends_with('\n') {
+                abort.cancel();
+            }
+        };
         let aborted = kernel
-            .execute(spin, options(Some(signal), None))
+            .execute(
+                spin,
+                KernelExecuteOptions {
+                    signal: Some(signal),
+                    timeout_ms: None,
+                    on_stream: Some(&on_stream),
+                    on_late_sent_agent_message: None,
+                },
+            )
             .await
             .unwrap();
-        aborting.await.unwrap();
+        // This one prints nothing: what a cell printed before its limit
+        // depends on how far it got in that time.
         let timed_out = kernel
-            .execute(spin, options(None, Some(100)))
+            .execute("(spin 0)", options(None, Some(100)))
             .await
             .unwrap();
         let after = kernel
@@ -895,7 +999,7 @@ mod tests {
                 (ExecuteStatus::Aborted, "spinning\n".to_string(), None, None),
                 (
                     ExecuteStatus::Error,
-                    "spinning\n".to_string(),
+                    String::new(),
                     None,
                     Some("Timeout".to_string())
                 ),

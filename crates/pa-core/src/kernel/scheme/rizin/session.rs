@@ -36,6 +36,10 @@ const LAST_OUTPUT_BYTES: usize = 2 * 1024;
 const CARRY: usize = 128;
 /// How long an interrupted command has to end before rizin is killed.
 pub(super) const INTERRUPT_GRACE: Duration = Duration::from_secs(2);
+/// How long an interrupted command may run on before it is interrupted
+/// again: an interrupt can be lost, and one more ends the command where a
+/// kill at the grace would end the session.
+const INTERRUPT_AGAIN: Duration = Duration::from_millis(250);
 /// How long a killed rizin has to be reaped before its command stops
 /// waiting for the status.
 const REAP_GRACE: Duration = Duration::from_secs(2);
@@ -278,8 +282,23 @@ impl Session {
             reply = replies.recv() => return reply.ok_or_else(dead),
             () = limited => false,
         };
-        self.process.interrupt();
-        match tokio::time::timeout(INTERRUPT_GRACE, replies.recv()).await {
+        // Asked at once, and again while the command runs on: an interrupt
+        // that arrives while rizin is starting a program for the command
+        // (forked, not yet the program) is taken by rizin's own handler in
+        // that child and stops nothing.
+        let ended = tokio::time::timeout(INTERRUPT_GRACE, async {
+            let mut asking = tokio::time::interval(INTERRUPT_AGAIN);
+            asking.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    biased;
+                    reply = replies.recv() => break reply,
+                    _ = asking.tick() => self.process.interrupt(),
+                }
+            }
+        })
+        .await;
+        match ended {
             Ok(Some(_)) if stopped => Err(Failure::Stopped),
             Ok(Some(reply)) => Err(Failure::TimedOut(reply)),
             Ok(None) => Err(dead()),

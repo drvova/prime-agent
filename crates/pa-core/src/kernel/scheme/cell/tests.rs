@@ -41,6 +41,25 @@ async fn run(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
         .unwrap()
 }
 
+/// Run one cell with a limit of its own. A session with a window reads the
+/// limit as that cell's window, so the cell waits for the engine and runs to
+/// its end, however slow the machine is, where [`run`] would move it to the
+/// background or give up on the engine after the session's 100 ms.
+async fn run_to_its_end(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
+    kernel
+        .execute(
+            code,
+            KernelExecuteOptions {
+                signal: None,
+                timeout_ms: Some(PATIENCE.as_millis() as u64),
+                on_stream: None,
+                on_late_sent_agent_message: None,
+            },
+        )
+        .await
+        .unwrap()
+}
+
 /// A handler that answers once `release` is notified.
 fn held(release: &Arc<tokio::sync::Notify>) -> crate::kernel::shared::HostHandlerFn {
     let release = Arc::clone(release);
@@ -352,8 +371,8 @@ async fn a_cell_that_outlives_its_window_goes_on_in_the_background_and_holds_the
     let running = run(kernel.as_ref(), &format!("(cell-status \"{id}\")")).await;
     release.notify_one();
     let completion = completions.recv().await;
-    let after = run(kernel.as_ref(), "(+ 1 2)").await;
-    let read = run(
+    let after = run_to_its_end(kernel.as_ref(), "(+ 1 2)").await;
+    let read = run_to_its_end(
         kernel.as_ref(),
         &format!(
             "(let ([state (cell-status \"{id}\")])
@@ -408,8 +427,8 @@ async fn cancelling_a_background_cell_stops_it_and_frees_the_engine() {
     let (kernel, facts) = windowed_kernel(handlers, dir.path()).await;
     let long = run(kernel.as_ref(), r#"(host-request "never.answers" (hash))"#).await;
     let id = long.backgrounded_cell.unwrap();
-    let cancelled = run(kernel.as_ref(), &format!("(cell-cancel \"{id}\")")).await;
-    let after = run(kernel.as_ref(), "(+ 1 2)").await;
+    let cancelled = run_to_its_end(kernel.as_ref(), &format!("(cell-cancel \"{id}\")")).await;
+    let after = run_to_its_end(kernel.as_ref(), "(+ 1 2)").await;
     assert_eq!(
         (
             cancelled
@@ -423,6 +442,52 @@ async fn cancelling_a_background_cell_stops_it_and_frees_the_engine() {
             Some("3".to_string()),
             vec!["backgrounded", "interrupted"]
         )
+    );
+}
+
+/// Steel parks the engine's thread when a host function returns to an
+/// engine it reads as paused but not interrupted (an interrupt is two
+/// writes), and never unparks it: a stop that only raised the interrupt left
+/// such a cell on the engine for good. The host call here parks the cell's
+/// thread as that safepoint does.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_wakes_a_cell_whose_thread_is_parked() {
+    let (parking, mut parked) = tokio::sync::mpsc::unbounded_channel();
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register(
+        "thread.park",
+        host_handler(move |_payload: HostRequestPayload| {
+            // The test may have stopped listening.
+            let _ = parking.send(std::thread::current());
+            std::thread::park();
+            async move { Ok(json!({})) }
+        }),
+    );
+    let kernel = SchemeKernelProvisioner::new(handlers, "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let signal = AbortSignal::new();
+    let stop = signal.clone();
+    let cell = kernel.execute(
+        r#"(host-request "thread.park" (hash))"#,
+        KernelExecuteOptions {
+            signal: Some(signal),
+            timeout_ms: None,
+            on_stream: None,
+            on_late_sent_agent_message: None,
+        },
+    );
+    let (stopped, thread) = tokio::join!(tokio::time::timeout(PATIENCE, cell), async {
+        let thread = parked.recv().await.unwrap();
+        stop.cancel();
+        thread
+    });
+    // Let go of a thread the stop left parked, so that failure ends.
+    thread.unpark();
+    assert_eq!(
+        stopped.ok().map(|result| result.unwrap().status),
+        Some(ExecuteStatus::Aborted)
     );
 }
 
@@ -953,5 +1018,100 @@ async fn output_printed_past_what_a_cell_keeps_is_named_after_its_preview() {
             "x".repeat(200),
             crate::kernel::spill::content_id(&kept),
         )
+    );
+}
+
+/// A long session redefines its functions cell after cell, and a closure
+/// it kept in a vector goes on calling the definitions it was compiled
+/// against. Steel collects the slots of redefined globals once a hundred
+/// are shadowed, and it kept the slot such a closure calls without visiting
+/// the function in it: the globals that function calls were freed, and the
+/// kept closure called `#<void>` or whatever was defined into the slot next
+/// (steel #735, fixed in `vendor/steel-core`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_kept_closure_keeps_calling_what_it_was_compiled_against() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    // The padding keeps `inner` from being inlined, so `outer` calls it
+    // through its global slot.
+    let padding = "(set! sink (+ sink 1)) ".repeat(40);
+    let definitions = |round: usize| {
+        format!(
+            "(define (inner x) (begin {padding} (+ x {round})))
+             (define (outer x) (begin {padding} (inner x)))"
+        )
+    };
+    run_to_its_end(
+        kernel.as_ref(),
+        &format!(
+            "(define sink 0) (define kept (mutable-vector #f)) {}
+             (vector-set! kept 0 (lambda (x) (outer x)))",
+            definitions(0)
+        ),
+    )
+    .await;
+    let mut wrong = Vec::new();
+    for round in 1..=300 {
+        run_to_its_end(kernel.as_ref(), &definitions(round)).await;
+        let called = run_to_its_end(kernel.as_ref(), "((vector-ref kept 0) 1)").await;
+        if called.result.as_deref() != Some("1") {
+            wrong.push((round, called.result, called.error.map(|error| error.evalue)));
+        }
+    }
+    assert_eq!(wrong, Vec::new());
+}
+
+/// What the reference tells the model about redefinition (`scheme.md`),
+/// cell by cell: a later `define` is a new binding that functions compiled
+/// earlier do not see, until they are defined again; `set!` reaches them
+/// only where the compiler had not inlined the old value into its caller;
+/// what sits in a box changes for every reader.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_later_definition_does_not_change_what_earlier_functions_call() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let mut answers = Vec::new();
+    for code in [
+        "(define (helper x) (list 'old x))
+         (define (caller x) (helper x))
+         (define settings (hash 'mode 'old))
+         (define (mode) (hash-ref settings 'mode))
+         (define handler (box helper))
+         (define (handle x) ((unbox handler) x))
+         (define (small x) (list 'old x))
+         (define (uses-small x) (small x))
+         (list (caller 1) (mode) (handle 1))",
+        "(define (helper x) (list 'new x))
+         (define settings (hash 'mode 'new))
+         (list (helper 1) (caller 1) (mode))",
+        "(define (caller x) (helper x))
+         (define (mode) (hash-ref settings 'mode))
+         (list (caller 1) (mode))",
+        // A small function is inlined into a caller of its own cell. The
+        // caller defined in a later cell, and the reader of a hash built at
+        // run time, read the global.
+        "(set! helper (lambda (x) (list 'set x)))
+         (set! small (lambda (x) (list 'set x)))
+         (set! settings (hash 'mode 'set))
+         (list (caller 1) (uses-small 1) (mode))",
+        "(set-box! handler (lambda (x) (list 'boxed x)))
+         (handle 1)",
+    ] {
+        answers.push(run_to_its_end(kernel.as_ref(), code).await.result);
+    }
+    assert_eq!(
+        answers,
+        [
+            "((old 1) old (old 1))",
+            "((new 1) (old 1) old)",
+            "((new 1) new)",
+            "((set 1) (old 1) set)",
+            "(boxed 1)",
+        ]
+        .map(|answer| Some(answer.to_string()))
     );
 }

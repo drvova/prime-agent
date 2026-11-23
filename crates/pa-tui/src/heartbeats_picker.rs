@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::keybindings::KeybindingsManager;
 use crate::menu_chrome::{empty_state_row, EscVerb, Footer, HintRank};
 use crate::menu_panel::{
-    fill_row, hug_row, menu_list_layout, plain_cell, search_field_lines, status_dot,
+    action_row, fill_row, menu_list_layout, plain_cell, search_field_lines, status_dot,
 };
 use crate::search_input::SearchInput;
 use crate::theme::{Theme, ThemeColor};
@@ -29,9 +29,7 @@ pub use schedule::human_schedule;
 
 mod render;
 
-use render::{
-    action_row, detail_block_lines, detail_pairs, error_line, pane_header_lines, Columns,
-};
+use render::{detail_block_lines, detail_pairs, pane_header_lines, Columns};
 
 const PREFERRED_VISIBLE: usize = 8;
 
@@ -452,12 +450,18 @@ impl HeartbeatsPicker {
         ));
         let shown = self.shown();
         if shown.is_empty() {
+            // A failed fetch with nothing to show is not "none": the row says the list is
+            // missing and how to retry, and the warning under it carries the reason.
+            let empty = match (&self.fetch_error, self.heartbeats.is_empty()) {
+                (Some(_), true) => "Heartbeats not loaded \u{b7} reopen /heartbeats to retry",
+                (Some(_), false) | (None, _) => "No running or paused heartbeats",
+            };
             lines.push(empty_state_row(
                 theme,
                 width,
                 kb,
                 self.search.value(),
-                "No running or paused heartbeats",
+                empty,
             ));
         } else {
             let columns = Columns::new(width, &self.heartbeats);
@@ -483,7 +487,7 @@ impl HeartbeatsPicker {
                 ]);
             }
         }
-        lines.extend(self.pane_footer(theme, width, &Self::list_footer(kb)));
+        lines.extend(self.pane_footer(theme, width, &Footer::pane_list(kb, shown.len())));
         // The budget math keeps every normal viewport exact; a terminal shorter
         // than the frame itself degrades by truncation — the pane never renders
         // past its allocated rows.
@@ -613,11 +617,17 @@ impl HeartbeatsPicker {
             ));
         }
         lines.push(Vec::new());
+        let label_width = actions
+            .iter()
+            .map(|(label, _, _)| str_width(label))
+            .max()
+            .unwrap_or_default();
         for (index, (label, _, description)) in actions.iter().enumerate() {
             lines.push(action_row(
                 theme,
                 width,
                 label,
+                label_width,
                 description,
                 index == action_index,
             ));
@@ -627,39 +637,10 @@ impl HeartbeatsPicker {
         lines
     }
 
-    /// The list's footer: an override that empties one of the open/close key pairs drops that
-    /// key — the footer never advertises a key the handler does not take.
-    fn list_footer(kb: &KeybindingsManager) -> Footer {
-        Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "move",
-                HintRank::Useful,
-            )
-            .bound(
-                kb,
-                &["tui.select.confirm", "app.modal.open"],
-                "open",
-                HintRank::Core,
-            )
-            .bound(
-                kb,
-                &["app.modal.back", "tui.select.cancel"],
-                "close",
-                HintRank::Core,
-            )
-    }
-
     /// The detail pane's footer.
     fn detail_footer(kb: &KeybindingsManager) -> Footer {
         Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "move",
-                HintRank::Useful,
-            )
+            .navigate(kb)
             .bound(kb, &["tui.select.confirm"], "run", HintRank::Core)
             .bound(kb, &["app.modal.back"], "back", HintRank::Useful)
             .esc(kb, EscVerb::Close)
@@ -679,11 +660,11 @@ impl HeartbeatsPicker {
                     format!("Heartbeat refresh failed: {}", single_line(fetch_error)),
                 ),
             ];
-            lines.push(truncate_line(&line, width, ""));
+            lines.push(truncate_line(&line, width, crate::menu_chrome::ELLIPSIS));
         }
         if let Some(error) = &self.error {
             lines.push(Vec::new());
-            lines.push(error_line(theme, width, error));
+            lines.push(crate::menu_chrome::error_row(theme, width, error));
         }
         lines.push(Vec::new());
         lines.push(footer.line(theme, width));

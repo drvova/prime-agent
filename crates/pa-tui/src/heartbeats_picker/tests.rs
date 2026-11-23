@@ -134,7 +134,7 @@ fn the_list_renders_columned_rows_and_one_hint() {
     );
     assert!(text
         .iter()
-        .any(|row| row.contains("↑/↓ move · Enter/→ open · ←/Esc close")));
+        .any(|row| row.contains("↑/↓ navigate · Enter/→ open · ←/Esc close")));
     for line in &frame {
         assert!(
             crate::width::spans_width(line) <= 70,
@@ -153,7 +153,7 @@ fn the_list_hint_drops_unbound_keys() {
     let text = frame_text(&frame);
     assert!(
         text.iter()
-            .any(|row| row.contains("↑/↓ move · Enter/→ open · Esc close")),
+            .any(|row| row.contains("↑/↓ navigate · Enter/→ open · Esc close")),
         "the emptied back binding drops the arrow: {text:?}"
     );
     let mut cfg = crate::keybindings::KeybindingsConfig::new();
@@ -164,7 +164,7 @@ fn the_list_hint_drops_unbound_keys() {
     let text = frame_text(&frame);
     assert!(
         text.iter()
-            .any(|row| row.contains("↑/↓ move · Enter open · ←/Esc close")),
+            .any(|row| row.contains("↑/↓ navigate · Enter open · ←/Esc close")),
         "the emptied open binding drops the arrow: {text:?}"
     );
 }
@@ -390,7 +390,7 @@ fn the_detail_renders_the_full_prompt_created_by_and_actions() {
         .any(|row| row.contains("Continue scheduled deliveries")));
     assert!(text
         .iter()
-        .any(|row| row.contains("↑/↓ move · Enter run · ← back · Esc close")));
+        .any(|row| row.contains("↑/↓ navigate · Enter run · ← back · Esc close")));
 }
 
 #[test]
@@ -498,9 +498,10 @@ fn a_catalog_refresh_keeps_the_surviving_selection() {
     assert_eq!(picker.selected_heartbeat_id, None);
     let frame = picker.render(&theme(), 70, &kb());
     let text = frame_text(&frame);
+    // A failed fetch with nothing to show is not "none": the row names the retry.
     assert!(text
         .iter()
-        .any(|row| row.contains("No running or paused heartbeats")));
+        .any(|row| row == "  Heartbeats not loaded \u{b7} reopen /heartbeats to retry"));
     assert!(text
         .iter()
         .any(|row| row.contains("Heartbeat refresh failed: daemon down")));

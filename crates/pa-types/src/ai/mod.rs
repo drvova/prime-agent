@@ -264,6 +264,9 @@ pub struct ImageContent {
     pub rest: JsonMap,
 }
 
+mod cell_diff;
+pub use cell_diff::DiffCut;
+
 /// The Python kernel's tool, as saved transcripts name it. No session
 /// registers it any more; it is kept so those transcripts still read.
 pub const PYTHON_TOOL_NAME: &str = "python_repl";

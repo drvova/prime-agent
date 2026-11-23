@@ -11,6 +11,17 @@ pub enum MermaidRenderingMode {
     Streaming,
 }
 
+/// What an unfocused terminal is sent when a run ends or a question opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TurnEndNotification {
+    Off,
+    /// The terminal bell (BEL).
+    Bell,
+    /// A desktop notification through the terminal (OSC 9).
+    Notification,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdateChannel {
@@ -219,6 +230,8 @@ pub struct TerminalSettings {
     pub clear_on_shrink: Option<bool>,
     pub show_terminal_progress: Option<bool>,
     pub fullscreen_mouse: Option<bool>,
+    /// Unset means `off`.
+    pub notify_on_turn_end: Option<TurnEndNotification>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

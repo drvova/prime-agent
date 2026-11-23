@@ -426,10 +426,10 @@ impl SessionUi {
             return Ok(());
         };
         match crate::clipboard::copy_to_clipboard(&text, &mut self.osc_sink) {
-            Ok(crate::clipboard::CopyOutcome::Confirmed) => {
+            Ok(crate::clipboard::CopyOutcome::Confirmed(_)) => {
                 self.toast("Copied last agent message to clipboard", view);
             }
-            Ok(crate::clipboard::CopyOutcome::Requested) => {
+            Ok(crate::clipboard::CopyOutcome::Requested(_)) => {
                 self.toast(crate::clipboard::CLIPBOARD_REQUESTED, view);
             }
             Err(message) => self.error_row(&message, view),

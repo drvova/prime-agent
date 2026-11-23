@@ -172,13 +172,27 @@ impl SideQuestionPane {
                 // Follow-ups and notices render as standard user-message bubbles.
                 rows.extend(render_bubble(&turn.question, theme, width));
             } else {
-                let mut line: crate::Line = Vec::new();
-                line.push(crate::Span::styled(" ".repeat(PADDING_X), bg));
-                line.push(crate::Span::styled("/btw".to_string(), accent));
-                line.push(crate::Span::styled("  ".to_string(), bg));
-                line.push(crate::Span::styled(turn.question.clone(), user_text));
-                for wrapped in wrap_row(&line, width) {
-                    rows.push(surface(wrapped));
+                // The question wraps under its own first column (a hanging indent past the
+                // accent `/btw` label), so a long question never runs back to the pane's edge.
+                let label = "/btw  ";
+                let lead = PADDING_X + str_width(label);
+                for (row, segments) in wrap_text(&turn.question, width.saturating_sub(lead).max(1))
+                    .into_iter()
+                    .enumerate()
+                {
+                    let mut line: crate::Line =
+                        vec![crate::Span::styled(" ".repeat(PADDING_X), bg)];
+                    if row == 0 {
+                        line.push(crate::Span::styled("/btw".to_string(), accent));
+                        line.push(crate::Span::styled("  ".to_string(), bg));
+                    } else {
+                        line.push(crate::Span::styled(" ".repeat(str_width(label)), bg));
+                    }
+                    line.extend(segments.into_iter().map(|span| crate::Span {
+                        content: span.content,
+                        style: user_text,
+                    }));
+                    rows.push(surface(line));
                 }
             }
             rows.push(blank());
@@ -372,6 +386,47 @@ mod tests {
             vec![
                 ("question a".into(), "done".into()),
                 ("!echo pane".into(), "```\nhi\n```".into()),
+            ]
+        );
+    }
+
+    /// A question longer than the pane wraps under its own first column, past the `/btw` label,
+    /// instead of running back to the pane's edge.
+    #[test]
+    fn a_long_question_wraps_under_its_first_column() {
+        let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+        let pane = SideQuestionPane {
+            turns: vec![SideQuestionTurn {
+                question: "what does the parser do with an unterminated string".to_string(),
+                ..turn("a", "complete", "")
+            }],
+            ..SideQuestionPane::default()
+        };
+        let rows: Vec<String> = pane
+            .render(
+                &theme,
+                0,
+                false,
+                &crate::keybindings::KeybindingsManager::new(),
+                30,
+            )
+            .iter()
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.content.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .take(4)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "",
+                "  /btw  what does the parser",
+                "        do with an",
+                "        unterminated string",
             ]
         );
     }

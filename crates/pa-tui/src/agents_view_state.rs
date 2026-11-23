@@ -146,7 +146,8 @@ const SESSION_TITLE_MAX_CELLS: usize = SESSION_NAME_COLUMN_MAX_CELLS - 2;
 /// The picker's name target: the SESSION column's own title, clipped at the column's own cap;
 /// transcript text stays excluded.
 fn session_search_name(summary: &Value) -> String {
-    truncate_text(&session_title(summary), SESSION_TITLE_MAX_CELLS)
+    // A search target, not a rendered cell: the clip carries no cut mark a query could match.
+    crate::width::truncate_to_width(&session_title(summary), SESSION_TITLE_MAX_CELLS, "")
 }
 
 /// The picker targets of one unified record: the SESSION column's own title as the name target,
@@ -607,19 +608,11 @@ fn table_cell(value: &str, width: usize) -> String {
     )
 }
 
-/// Hard-truncate to a display width (no ellipsis, TS `truncateToWidth(_, "")`).
+/// Cut a plain string to a display width: a cut value ends in the shared cut mark
+/// ([`crate::menu_chrome::ELLIPSIS`]), so a heading, the scope line, or the search query never
+/// stops mid-word unmarked.
 pub(crate) fn truncate_text(value: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut used = 0usize;
-    for ch in value.chars() {
-        let ch_width = crate::width::char_width(ch);
-        if used + ch_width > width {
-            break;
-        }
-        out.push(ch);
-        used += ch_width;
-    }
-    out
+    crate::width::truncate_to_width(value, width, crate::menu_chrome::ELLIPSIS)
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -1187,7 +1180,7 @@ mod tests {
         )];
         let records = reconcile_unified_sessions(&roster, &[], None);
         let title = session_title(&summary_for_record(&records[0]));
-        let visible = truncate_text(&title, SESSION_TITLE_MAX_CELLS);
+        let visible = crate::width::truncate_to_width(&title, SESSION_TITLE_MAX_CELLS, "");
         let targets = record_search_text(&records[0]);
         assert_eq!(targets.name, visible);
         assert!(

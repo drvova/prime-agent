@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::keybindings::KeybindingsManager;
 use crate::menu_chrome::{EscVerb, Footer, HintRank};
 use crate::menu_panel::{
-    fill_row, hug_row, menu_list_layout, plain_cell, scrub_controls, status_dot,
+    action_row, fill_row, menu_list_layout, plain_cell, scrub_controls, status_dot,
 };
 use crate::theme::{Theme, ThemeColor};
 use crate::width::{str_width, truncate_line, wrap_text};
@@ -17,9 +17,7 @@ use crate::{Line, Span};
 mod render;
 
 pub(crate) use render::format_duration;
-use render::{
-    action_row, clean_line, error_line, marker_line, metadata_row, pane_header_lines, Columns,
-};
+use render::{clean_line, marker_line, metadata_row, pane_header_lines, Columns};
 
 // A tail response may outlive its entire pane, so tokens belong to the process,
 // not one BashView instance. Relaxed ordering only allocates distinct tokens.
@@ -618,7 +616,7 @@ impl BashView {
                 ]);
             }
         }
-        lines.extend(self.pane_footer(theme, width, &Self::list_footer(kb)));
+        lines.extend(self.pane_footer(theme, width, &Footer::pane_list(kb, self.activities.len())));
         // A terminal shorter than the frame degrades by truncation: the
         // pane never renders past its allocated rows.
         lines.truncate(self.viewport_rows.max(1));
@@ -754,7 +752,14 @@ impl BashView {
         if !actions.is_empty() {
             lines.push(Vec::new());
             let (label, description) = &actions[0];
-            lines.push(action_row(theme, width, label, description, true));
+            lines.push(action_row(
+                theme,
+                width,
+                label,
+                str_width(label),
+                description,
+                /*selected*/ true,
+            ));
         }
         lines.extend(self.pane_footer(theme, width, &self.detail_footer(kb)));
         lines.truncate(self.viewport_rows.max(1));
@@ -765,30 +770,6 @@ impl BashView {
         self.detail_region_rows.set(rendered);
         lines
     }
-    /// The list's footer: an override that empties the open or back binding drops its key (the
-    /// footer never advertises a key the handler does not take).
-    fn list_footer(kb: &KeybindingsManager) -> Footer {
-        Footer::new()
-            .bound(
-                kb,
-                &["tui.select.up", "tui.select.down"],
-                "move",
-                HintRank::Useful,
-            )
-            .bound(
-                kb,
-                &["tui.select.confirm", "app.modal.open"],
-                "open",
-                HintRank::Core,
-            )
-            .bound(
-                kb,
-                &["app.modal.back", "tui.select.cancel"],
-                "close",
-                HintRank::Core,
-            )
-    }
-
     /// The detail pane's footer: the scroll keys, and the run key only while the open row still
     /// offers its cancel action.
     fn detail_footer(&self, kb: &KeybindingsManager) -> Footer {
@@ -818,7 +799,7 @@ impl BashView {
         let mut lines = Vec::new();
         if let Some(error) = &self.error {
             lines.push(Vec::new());
-            lines.push(error_line(theme, width, error));
+            lines.push(crate::menu_chrome::error_row(theme, width, error));
         }
         lines.push(Vec::new());
         lines.push(footer.line(theme, width));
