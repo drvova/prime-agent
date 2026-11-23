@@ -26,8 +26,8 @@ use crate::properties::Properties;
 pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
-mod tui_model_recent;
 mod tui_discovery;
+mod tui_model_recent;
 mod tui_navigation;
 mod tui_search;
 mod tui_unfocused_signal;

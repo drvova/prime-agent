@@ -882,6 +882,7 @@ mod tests {
                     "tui model recent used",
                     "recent_pick",
                     null,
+                    null,
                     null
                 ])]
             );
