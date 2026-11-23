@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -52,8 +52,9 @@ enum Event {
 #[derive(Default)]
 struct Fake {
     calls: Mutex<Vec<String>>,
-    /// Interrupts go unanswered: only a kill ends a hanging command.
-    deaf: bool,
+    /// How many interrupts go unanswered before one ends a hanging command:
+    /// `usize::MAX` for a rizin only a kill ends.
+    unheard: AtomicUsize,
     /// What `verj` prints instead of version 0.9.1.
     version: Option<&'static str>,
     /// Told each time a command starts to hang.
@@ -78,7 +79,15 @@ impl Fake {
         for event in events {
             match event {
                 Event::Kill => return "signal: 9 (SIGKILL)".to_string(),
-                Event::Interrupt if hung && !self.deaf => {
+                Event::Interrupt
+                    if hung
+                        && self
+                            .unheard
+                            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |unheard| {
+                                unheard.checked_sub(1)
+                            })
+                            .is_err() =>
+                {
                     hung = false;
                     let _ = output.write_all(b"interrupted\n\0");
                 }
@@ -494,7 +503,7 @@ async fn a_command_ends_with_its_limit_or_its_cell_and_a_deaf_rizin_is_killed() 
     let usable = values(kernel.as_ref(), &[r#"(rz-cmd s "nul")"#, "(rz-sessions)"]).await;
 
     let deaf = Arc::new(Fake {
-        deaf: true,
+        unheard: AtomicUsize::new(usize::MAX),
         ..Fake::default()
     });
     provisioner
@@ -514,6 +523,13 @@ async fn a_command_ends_with_its_limit_or_its_cell_and_a_deaf_rizin_is_killed() 
     .await;
     let kill_took = killing.elapsed();
     let reason = "a command did not end within 2 s of its interrupt and rizin was killed; rizin ended (signal: 9 (SIGKILL))";
+    // A command that runs on is interrupted again, as often as its time
+    // allows: what each rizin was asked, without the repeats.
+    let asked = |fake: &Fake| {
+        let mut calls = fake.calls()[1..].to_vec();
+        calls.dedup();
+        calls
+    };
     let mut second = opened(2, "/bin/app", false, false);
     second["alive"] = json!(false);
     second["reason"] = json!(reason);
@@ -523,8 +539,8 @@ async fn a_command_ends_with_its_limit_or_its_cell_and_a_deaf_rizin_is_killed() 
             stopped,
             usable,
             killed,
-            fake.calls()[1..].to_vec(),
-            deaf.calls()[1..].to_vec(),
+            asked(&fake),
+            asked(&deaf),
             counted(&facts, 7),
         ),
         (
@@ -565,5 +581,36 @@ async fn a_command_ends_with_its_limit_or_its_cell_and_a_deaf_rizin_is_killed() 
     assert!(
         stop_took < INTERRUPT_GRACE && (INTERRUPT_GRACE..PATIENCE).contains(&kill_took),
         "stop {stop_took:?}, kill {kill_took:?}"
+    );
+}
+
+/// An interrupt can be lost: one that arrives while rizin starts a program
+/// for the command is taken in the child rizin forked, and the command runs
+/// on. It is interrupted again, and the session stays usable where a kill at
+/// the grace would have ended it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_whose_first_interrupt_is_lost_is_interrupted_again() {
+    let fake = Arc::new(Fake {
+        unheard: AtomicUsize::new(1),
+        ..Fake::default()
+    });
+    let provisioner = provisioner(SchemeKernelOptions::default(), &fake);
+    let kernel = provisioner.ensure(None, None).await.unwrap();
+    let returned = values(
+        kernel.as_ref(),
+        &[
+            r#"(begin (define s (rz-open "/bin/app")) #t)"#,
+            r#"(rz-cmd s "hang" #:timeout-ms 50)"#,
+            r#"(rz-cmd s "nul")"#,
+        ],
+    )
+    .await;
+    assert_eq!(
+        returned,
+        vec![
+            Ok(json!(true)),
+            Err("Error: Generic: rz-cmd: no reply within 50 ms: the command was interrupted and the session is still usable. What it had written ends:\ninterrupted".to_string()),
+            Ok(json!("a\u{0}b\n")),
+        ]
     );
 }
