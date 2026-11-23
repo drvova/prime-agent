@@ -191,3 +191,10 @@
   (%harness "harness-state"
             "state"
             (%options (hash 'global (if global #t #f)) 'state_dir state-dir)))
+
+;; How each installed skill and global harness entry has been reused: one
+;; hash per entry, with the sessions other than its creator's that were
+;; offered and used it, its uses there and in its own session, its last
+;; use, and what it costs each prompt that carries it. Read-only, and
+;; answered while harness refinements are off.
+(define (reuse-report) (%reuse-report))

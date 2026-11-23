@@ -909,12 +909,18 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         // registered in this embedding defines nothing in the kernel.
         skill_sources: Some({
             let reload = Arc::clone(&resource_reload);
-            let wired = handlers;
+            let wired = handlers.clone();
             Arc::new(move || {
                 crate::kernel::scheme::skills::SkillSource::from_skills(
                     &super::runtime_wiring::model_visible_skills(reload.skills(), &wired),
                 )
             })
+        }),
+        // The same skills, whole, for the reuse ledger's counts.
+        visible_skills: Some({
+            let reload = Arc::clone(&resource_reload);
+            let wired = handlers;
+            Arc::new(move || super::runtime_wiring::model_visible_skills(reload.skills(), &wired))
         }),
         on_unavailable_skills: Some({
             let boot_notice_rows = Arc::clone(&boot_notice_rows);
@@ -1049,6 +1055,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .map(|file| (file.path.display().to_string(), file.content.clone()))
                 .collect(),
             skills: model_visible_skills.clone(),
+            skill_standings: crate::reuse::skill_standings(
+                &config.agent_dir,
+                &model_visible_skills,
+            ),
             selected_tools: Some(
                 active_tool_names
                     .iter()
@@ -1098,6 +1108,23 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The static layers' byte span is the cache-stable prefix the cache
     // seam marks as its own block (shared by every session and subagent on
     // the same layers and model prompts).
+    // The skills the prompt lists are offered to this session; counted off
+    // the start path.
+    let reuse = crate::reuse::Recorder::new(&config.agent_dir, &session_id, &cwd);
+    if system_prompt_breakdown
+        .segments
+        .iter()
+        .any(|segment| segment.name == "skills-inventory")
+    {
+        reuse.record_detached(
+            crate::reuse::Event::Offered,
+            model_visible_skills
+                .iter()
+                .filter(|skill| !skill.disable_model_invocation && crate::reuse::tracked(skill))
+                .map(|skill| crate::reuse::EntryKey::Skill(skill.name.clone()))
+                .collect(),
+        );
+    }
     let system_prompt_static_len = system_prompt_breakdown.cached_prefix_len;
     let static_system_prefix =
         system_prompt_breakdown.assembled[..system_prompt_static_len].to_string();
@@ -1120,6 +1147,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             !skill.disable_model_invocation
                 && skill.name == crate::prompts::system_prompt::REFINE_SKILL_NAME
         }),
+        reuse: Some(reuse.clone()),
     };
     let (existing_messages, has_thinking_entry, has_service_tier_entry) = {
         let session = wiring.session.lock().await;
@@ -1499,6 +1527,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // inventory (TS `_expandSkillCommand` expands from the loader); the
     // model-visible list only shapes the prompt, pre-import, and counts.
     session.set_skills(resources.skills.clone());
+    session.set_skill_reuse(reuse);
     session.set_image_model_router(config.image_model_router.clone());
     // The semantic-edge handoff: the daemon's child registry and retry
     // park read the recorder; the side question keeps the pre-semantic

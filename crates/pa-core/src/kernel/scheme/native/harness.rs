@@ -113,6 +113,8 @@ fn clipped(text: &str, limit: usize) -> String {
 struct Harness {
     agent_dir: Option<PathBuf>,
     artifact_dir: Option<PathBuf>,
+    /// Counts the global entries this session creates and finds.
+    reuse: Option<crate::reuse::Recorder>,
 }
 
 impl Harness {
@@ -331,6 +333,20 @@ impl Harness {
             records.insert(id.clone(), entry.clone());
             Ok(entry)
         })?;
+        if let Some(reuse) = self
+            .reuse
+            .as_ref()
+            .filter(|_| creating && scope == HarnessScope::Global)
+        {
+            // The entry is stored: a ledger that cannot be written is the
+            // ledger's loss, not the call's.
+            if let Err(error) = reuse.record(
+                crate::reuse::Event::Created(crate::reuse::Creation::New),
+                &[crate::reuse::EntryKey::Harness(kind, id)],
+            ) {
+                tracing::warn!("the reuse ledger was not updated: {error:#}");
+            }
+        }
         Ok(serde_json::to_value(entry)?)
     }
 
@@ -349,7 +365,21 @@ impl Harness {
                 .ok_or_else(|| anyhow!(NoSuchEntry))
         });
         match removed {
-            Ok(_) => Ok(json!(true)),
+            Ok(_) => {
+                if let Some(reuse) = self
+                    .reuse
+                    .as_ref()
+                    .filter(|_| scope == HarnessScope::Global)
+                {
+                    if let Err(error) = crate::reuse::forget(
+                        reuse.agent_dir(),
+                        &[crate::reuse::EntryKey::Harness(kind, id.to_string())],
+                    ) {
+                        tracing::warn!("the reuse ledger was not updated: {error:#}");
+                    }
+                }
+                Ok(json!(true))
+            }
             Err(error) if error.is::<NoSuchEntry>() => Ok(json!(false)),
             Err(error) => Err(error),
         }
@@ -577,6 +607,19 @@ impl Harness {
             .take(limit)
             .map(|(_, entry)| entry)
             .collect();
+        if let Some(reuse) = self
+            .reuse
+            .as_ref()
+            .filter(|_| scope == HarnessScope::Global)
+        {
+            let keys: Vec<crate::reuse::EntryKey> = found
+                .iter()
+                .map(|entry| crate::reuse::EntryKey::Harness(entry.kind, entry.id.clone()))
+                .collect();
+            if let Err(error) = reuse.record(crate::reuse::Event::Used, &keys) {
+                tracing::warn!("the reuse ledger was not updated: {error:#}");
+            }
+        }
         Ok(serde_json::to_value(found)?)
     }
 
@@ -604,6 +647,7 @@ pub(super) fn register(engine: &mut Engine, session: &crate::kernel::scheme::Ses
     let harness = Harness {
         agent_dir: session.agent_dir.clone(),
         artifact_dir: session.artifact_dir.clone(),
+        reuse: session.reuse.clone(),
     };
     engine.register_fn(
         "%harness-call",

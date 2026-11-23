@@ -274,6 +274,10 @@ pub struct SchemeKernelOptions {
     pub skill_sources: Option<skills::SkillSourcesProvider>,
     /// Told which skills' Scheme source failed to load.
     pub on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
+    /// The skills the session's model sees, whose reads, writes and calls
+    /// the reuse ledger counts ([`crate::reuse`]). Counted only with
+    /// `agent_dir` and `session_id` set.
+    pub visible_skills: Option<crate::reuse::VisibleSkills>,
     /// Fires each time the kernel's last live background job settles (a
     /// shell command or a cell that outlived its call), so the session can
     /// run what was waiting for it.
@@ -318,6 +322,10 @@ pub(crate) struct SessionEnvironment {
     pub(crate) error_context: crate::kernel::error_context::ErrorContext,
     pub(crate) background: session::BackgroundWork,
     pub(crate) output_budget: crate::kernel::spill::OutputBudget,
+    pub(crate) visible_skills: Option<crate::reuse::VisibleSkills>,
+    /// Records this session's uses of stored entries; `None` without an
+    /// agent dir or a session id.
+    pub(crate) reuse: Option<crate::reuse::Recorder>,
 }
 
 /// One session's engine and the cells it runs.
@@ -431,6 +439,17 @@ impl SchemeKernelProvisioner {
         if let Some(agent_dir) = &options.agent_dir {
             mcp.set_agent_dir(agent_dir.clone());
         }
+        let reuse = options
+            .agent_dir
+            .as_deref()
+            .zip(options.session_id.as_deref())
+            .map(|(agent_dir, session)| {
+                crate::reuse::Recorder::new(agent_dir, session, &options.cwd)
+            });
+        let mut handlers = options.host_handlers;
+        if let Some((recorder, skills)) = reuse.as_ref().zip(options.visible_skills.as_ref()) {
+            native::watch_skill_files(&mut handlers, recorder, skills);
+        }
         let environment = Arc::new(SessionEnvironment {
             cwd: options.cwd,
             shell: options.shell,
@@ -446,19 +465,18 @@ impl SchemeKernelProvisioner {
             error_context: options.error_context,
             background: session::BackgroundWork::new(options.on_background_work_settled),
             output_budget: options.output_budget,
+            visible_skills: options.visible_skills,
+            reuse,
         });
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 mcp,
-                rizin: Arc::new(rizin::Registry::new(
-                    options.host_handlers.clone(),
-                    &environment,
-                )),
+                rizin: Arc::new(rizin::Registry::new(handlers.clone(), &environment)),
                 skill_sources: options.skill_sources,
                 on_unavailable_skills: options.on_unavailable_skills,
                 on_started: options.on_started,
                 on_state_lost: options.on_state_lost,
-                handlers: options.host_handlers,
+                handlers,
                 environment,
                 session: tokio::sync::Mutex::new(None),
             }),
@@ -536,6 +554,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 state.skill_sources.clone(),
                 state.on_unavailable_skills.clone(),
                 &mut handlers,
+                state.environment.reuse.clone(),
             );
             let factory = factory::Executor::new(
                 state.handlers.clone(),

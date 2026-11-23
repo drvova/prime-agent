@@ -125,6 +125,7 @@ async fn direction_rig(
             include_kernel_tool: false,
             include_shell_examples: false,
             include_refine: false,
+            reuse: None,
         }),
     )
     .await

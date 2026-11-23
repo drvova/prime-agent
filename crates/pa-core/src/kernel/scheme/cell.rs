@@ -1156,6 +1156,8 @@ pub(super) async fn execute(
                     .filter(|_| window.is_none())
                     .map(|limit| started + limit),
             );
+            // A cell that names a skill's function uses the skill.
+            running.skills.note_cell(&code);
             let outcome = if run.0.signal.is_cancelled() {
                 Err("the cell was stopped before it started".to_string())
             } else if code.len() > super::limits::SOURCE_BYTES {

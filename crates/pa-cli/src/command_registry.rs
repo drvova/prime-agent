@@ -321,6 +321,44 @@ and prints the per-layer breakdown (cached static layers, then the dynamic tail)
         "--cwd <dir>         Assemble for this working directory (default: current)",
         "--json              Print segments and prompt as JSON",
     ]),
+    CommandSpec::new(
+        &["reuse"],
+        "reuse <list|prune>",
+        "Show which stored skills and memories later sessions reuse",
+    )
+    .description(
+        "Every installed skill is listed in every session's prompt and every global harness \
+entry a digest shows costs its line there, so an entry used only in the session that made it \
+costs more than it saves. Counts leave out the session that created the entry. Nothing is \
+removed unless you prune it.",
+    ),
+    CommandSpec::new(
+        &["reuse", "list"],
+        "reuse list [--cwd <dir>] [--json]",
+        "List skills and global harness entries with their reuse and prompt cost",
+    )
+    .description(
+        "Standing: reused (used in two or more later sessions), used-once, unused (offered \
+to three or more later sessions, used by none), or new (too few to tell).",
+    )
+    .options(&[
+        "--cwd <dir>  List the skills a session in this directory sees (default: current)",
+        "--json       Print JSON",
+    ]),
+    CommandSpec::new(
+        &["reuse", "prune"],
+        "reuse prune <key>... [--cwd <dir>] [--json]",
+        "Remove the skills and global harness entries you name",
+    )
+    .description(
+        "Takes the keys `reuse list` prints (skill/<name>, harness/<kind>/<id>). A skill is \
+removed only from your own skills directory; every key is checked before anything is removed.",
+    )
+    .options(&[
+        "--cwd <dir>  Resolve skills as a session in this directory sees them",
+        "--json       Print JSON",
+    ])
+    .examples(&["reuse prune skill/old-deploy harness/memory/stale_port"]),
 ];
 
 /// Command names that once existed and now print removal guidance.

@@ -143,6 +143,7 @@ async fn digest_session(provider: Arc<ScriptedProvider>) -> (AgentSession, tempf
         include_kernel_tool: false,
         include_shell_examples: false,
         include_refine: false,
+        reuse: None,
     };
     let session = digest_session_with_harness(provider, harness).await;
     (session, tmp)
@@ -274,6 +275,7 @@ async fn resume_dedupes_by_state_fingerprint_and_appends_stale_digest_update() {
         include_kernel_tool: false,
         include_shell_examples: false,
         include_refine: false,
+        reuse: None,
     };
 
     // First session: the deferred first-turn digest rides the turn and

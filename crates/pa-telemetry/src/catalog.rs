@@ -26,6 +26,7 @@ use crate::properties::Properties;
 pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
+mod reuse_listing;
 mod tui_discovery;
 mod tui_model_recent;
 mod tui_navigation;
@@ -1890,6 +1891,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &tui_discovery::TUI_MOUSE_SELECTION,
         &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
         &tui_session_changes::TUI_SESSION_CHANGES,
+        &reuse_listing::AGENT_REUSE_LISTING,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

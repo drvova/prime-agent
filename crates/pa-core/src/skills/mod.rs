@@ -181,9 +181,15 @@ pub(crate) use validate_description as validate_skill_description;
 pub(crate) use validate_name as validate_skill_name;
 
 /// Format skills for a system prompt (Agent Skills XML standard); skills
-/// with disableModelInvocation are excluded.
+/// with disableModelInvocation are excluded. `standings` marks each skill
+/// whose reuse is known (by name) with a `<reuse>` element; a skill it does
+/// not name, or names as [`crate::reuse::Standing::New`], is unmarked. The
+/// order is the skills' own, whatever their standing.
 #[must_use]
-pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
+pub fn format_skills_for_prompt(
+    skills: &[Skill],
+    standings: &std::collections::BTreeMap<String, crate::reuse::Standing>,
+) -> String {
     let visible: Vec<&Skill> = skills
         .iter()
         .filter(|skill| !skill.disable_model_invocation)
@@ -191,29 +197,57 @@ pub fn format_skills_for_prompt(skills: &[Skill]) -> String {
     if visible.is_empty() {
         return String::new();
     }
+    let marks: Vec<Option<crate::reuse::Standing>> = visible
+        .iter()
+        .map(|skill| {
+            standings
+                .get(&skill.name)
+                .copied()
+                .filter(|standing| *standing != crate::reuse::Standing::New)
+        })
+        .collect();
     let mut lines = vec![
         "\n\nThe following skills provide specialized instructions for specific tasks.".to_string(),
         "Read a skill's file when the task matches its description: `(displayln (hash-ref (fs-read \"<location>\") 'text))`.".to_string(),
         "A skill of type scheme defines Scheme functions you can call from `eval`; its file describes them.".to_string(),
         "When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.".to_string(),
-        String::new(),
-        "<available_skills>".to_string(),
     ];
-    for skill in visible {
-        lines.push("  <skill>".to_string());
-        lines.push(format!("    <name>{}</name>", escape_xml(&skill.name)));
-        lines.push(format!("    <type>{}</type>", skill.kind_label()));
+    if marks.iter().any(Option::is_some) {
         lines.push(format!(
-            "    <description>{}</description>",
-            escape_xml(&skill.description)
+            "`<reuse>` says how sessions other than the one that made a skill used it: `reused` (two or more), `used-once`, or `unused` (listed in {} or more, read by none); `(reuse-report)` has the counts and each skill's prompt cost.",
+            crate::reuse::UNUSED_AFTER_SESSIONS
         ));
-        lines.push(format!(
-            "    <location>{}</location>",
-            escape_xml(&skill.file_path.display().to_string())
-        ));
-        lines.push("  </skill>".to_string());
+    }
+    lines.push(String::new());
+    lines.push("<available_skills>".to_string());
+    for (skill, mark) in visible.into_iter().zip(marks) {
+        lines.push(skill_inventory_block(skill, mark));
     }
     lines.push("</available_skills>".to_string());
+    lines.join("\n")
+}
+
+/// One skill's `<skill>` block in the inventory: what listing it costs
+/// every session's prompt.
+#[must_use]
+pub fn skill_inventory_block(skill: &Skill, mark: Option<crate::reuse::Standing>) -> String {
+    let mut lines = vec![
+        "  <skill>".to_string(),
+        format!("    <name>{}</name>", escape_xml(&skill.name)),
+        format!("    <type>{}</type>", skill.kind_label()),
+    ];
+    if let Some(standing) = mark {
+        lines.push(format!("    <reuse>{}</reuse>", standing.label()));
+    }
+    lines.push(format!(
+        "    <description>{}</description>",
+        escape_xml(&skill.description)
+    ));
+    lines.push(format!(
+        "    <location>{}</location>",
+        escape_xml(&skill.file_path.display().to_string())
+    ));
+    lines.push("  </skill>".to_string());
     lines.join("\n")
 }
 
@@ -411,11 +445,56 @@ mod tests {
             disable_model_invocation: disable,
             kind: SkillKind::Markdown,
         };
-        let hidden = format_skills_for_prompt(&[skill("hidden", true)]);
+        let hidden =
+            format_skills_for_prompt(&[skill("hidden", true)], &std::collections::BTreeMap::new());
         assert_eq!(hidden, "");
-        let formatted = format_skills_for_prompt(&[skill("web-search", false)]);
+        let formatted = format_skills_for_prompt(
+            &[skill("web-search", false)],
+            &std::collections::BTreeMap::new(),
+        );
         assert!(formatted.contains("<name>web-search</name>"));
         assert!(formatted.contains("<type>markdown</type>"));
         assert!(formatted.contains("<description>Does web-search</description>"));
+    }
+
+    /// The inventory marks a skill whose reuse is known, in the skills' own
+    /// order, and leaves a new one unmarked.
+    #[test]
+    fn the_inventory_marks_known_reuse_without_reordering() {
+        let skill = |name: &str| Skill {
+            name: name.to_string(),
+            description: format!("Does {name}"),
+            file_path: PathBuf::from(format!("/s/{name}/SKILL.md")),
+            base_dir: PathBuf::from(format!("/s/{name}")),
+            source_info: create_synthetic_source_info("/s", "user", SourceScope::User, None),
+            disable_model_invocation: false,
+            kind: SkillKind::Markdown,
+        };
+        let standings = [
+            ("stale".to_string(), crate::reuse::Standing::Unused),
+            ("fresh".to_string(), crate::reuse::Standing::New),
+            ("handy".to_string(), crate::reuse::Standing::Reused),
+        ]
+        .into_iter()
+        .collect();
+        let formatted = format_skills_for_prompt(
+            &[skill("stale"), skill("fresh"), skill("handy")],
+            &standings,
+        );
+        let marked: Vec<&str> = formatted
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("<name>") || line.starts_with("<reuse>"))
+            .collect();
+        assert_eq!(
+            marked,
+            vec![
+                "<name>stale</name>",
+                "<reuse>unused</reuse>",
+                "<name>fresh</name>",
+                "<name>handy</name>",
+                "<reuse>reused</reuse>",
+            ]
+        );
     }
 }

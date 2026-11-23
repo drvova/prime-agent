@@ -1116,6 +1116,7 @@ async fn refinement_preserves_provider_prefix_and_completed_state_across_resume(
         include_kernel_tool: false,
         include_shell_examples: false,
         include_refine: false,
+        reuse: None,
     };
     let resumed =
         super::tests::resumed_digest_session(session.entries().await, harness.clone()).await;

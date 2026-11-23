@@ -368,6 +368,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
             include_kernel_tool: true,
             include_shell_examples: true,
             include_refine: true,
+            reuse: None,
         },
         terms: super::super::harness_digest::digest_query_terms(None, &[]),
     };
@@ -455,6 +456,7 @@ async fn execute_compaction_attaches_harness_digest_snapshot() {
             include_kernel_tool: true,
             include_shell_examples: true,
             include_refine: true,
+            reuse: None,
         },
         terms: super::super::harness_digest::digest_query_terms(Some("fresh terms"), &[]),
     };
