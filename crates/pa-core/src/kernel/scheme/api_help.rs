@@ -19,13 +19,15 @@ pub(super) fn register(engine: &mut Engine) -> anyhow::Result<()> {
     engine.register_fn("%api-help-text", |topic: String| -> String {
         crate::prompts::layers::api_help(&topic)
     });
-    engine
-        .run(
-            "(define (api-help . topic)\n\
-               (display (%api-help-text (cond [(null? topic) \"\"]\n\
-                                              [(symbol? (car topic)) (symbol->string (car topic))]\n\
-                                              [else (car topic)]))))",
-        )
-        .map_err(|error| anyhow!("the Scheme API reference failed to load: {error}"))?;
+    super::contracts::load(
+        engine,
+        r#"
+(define (api-help . topic)
+  (display (%api-help-text (cond [(null? topic) ""]
+                                 [(symbol? (car topic)) (symbol->string (car topic))]
+                                 [else (car topic)]))))
+"#,
+    )
+    .map_err(|error| anyhow!("the Scheme API reference failed to load: {error}"))?;
     Ok(())
 }

@@ -170,6 +170,7 @@ mod tests {
             session_dir: None,
             status,
             settled: status != "running",
+            waiting_on_you: false,
             answer_preview: None,
             answer_text: None,
             error: None,

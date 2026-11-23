@@ -233,6 +233,20 @@ it. Each lookup is reported through the fire-and-forget `command_cache.fact` hos
 Adoption counts ride the `agent readonly cache` event. Non-goals: caching anything with side
 effects, and a setting.
 
+Call contracts (`kernel::scheme::contracts`): every kernel function refuses a call it does not
+declare before the function runs, naming what it accepts and the nearest accepted name: an unknown
+`#:keyword` (Steel's own binding only counts keywords, so it binds a misspelt one to nothing),
+a keyword given twice or without a value, too few or too many arguments, and a symbol where an
+optional argument is given (Steel passes over it). The contract is read from each
+`(define (name ...) ...)` when its source is loaded through `contracts::load`, which is how every
+kernel source and every skill's Scheme source reaches an engine; the options-hash tools (`bash`,
+`fs-*`) refuse an unknown key against the table they read from, and `mcp-call-tool` refuses an
+argument outside a tool schema that lists its properties and opens no other door. Each refusal is
+reported through the fire-and-forget `call.refused` host request (`kernel::call_refusals`) by its
+class and rides the `agent kernel call refusals` event. Non-goals: checking or coercing argument
+types, a function with a rest parameter (it reads its own rest list), and functions a cell defines
+for itself.
+
 Edit checks (`kernel::edit_checks`): the kernel runs the touched file's cheapest check after
 `fs.edit` and the `edit` skill (`rlm.edit_check`: fatal-rule `ruff` or `py_compile`, `cargo check
 -p`, `tsc --noEmit`, `go vet`), learns per project which checks pay for themselves, and reports

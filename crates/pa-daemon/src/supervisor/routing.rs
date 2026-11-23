@@ -42,6 +42,15 @@ pub(crate) const WORKER_REQUEST_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
 /// The route budget of a client command: turn-long waits ride TS's 24 h
 /// worker-request budget; everything else is a short control route.
 pub(crate) fn client_route_timeout(command: &DaemonCommand) -> u64 {
+    // A bounded idle wait is answered by the session at its bound: the route
+    // holds it that long plus one control budget, never the turn-long one.
+    if let DaemonCommand::WaitForIdle {
+        timeout_ms: Some(timeout_ms),
+        ..
+    } = command
+    {
+        return timeout_ms.saturating_add(ROUTE_TIMEOUT_MS);
+    }
     if matches!(
         command,
         DaemonCommand::PromptAndWait { .. }

@@ -566,6 +566,7 @@ impl Registry {
                                     FailureKind::Tool
                                     | FailureKind::Protocol
                                     | FailureKind::Invalid
+                                    | FailureKind::UndeclaredArgument
                                     | FailureKind::Host
                                     | FailureKind::Stopped => "the connection could not be opened or searched",
                                 };

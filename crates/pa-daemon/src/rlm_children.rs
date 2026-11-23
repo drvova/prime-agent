@@ -74,8 +74,15 @@ const STATE_TIMEOUT_MS: u64 = 30_000;
 const KILL_TIMEOUT_MS: u64 = 30_000;
 /// Budget for one session rename over the supervisor route (TS uses 30s).
 const RENAME_TIMEOUT_MS: u64 = 30_000;
-/// Grace over a collect budget passed to the worker `wait_for_idle`.
+/// Grace over a wait slice's budget on the link: the child answers its
+/// `wait_for_idle` at the budget, so this only covers a child that cannot.
 const IDLE_WAIT_GRACE_MS: u64 = 5_000;
+/// How long a collect's read of the supervisor's roster may take; past it
+/// the rows carry what the records last observed.
+const COLLECT_ROSTER_READ_MS: u64 = 500;
+/// How often a waiting collect re-reads the supervisor's roster: a child
+/// that starts waiting on this session shows there.
+const COLLECT_ROSTER_INTERVAL_MS: u64 = 1_000;
 const NOTICE_DELIVERY_TIMEOUT_MS: u64 = 30_000;
 /// Prompts longer than this are not mirrored into create runtime metadata.
 const RUNTIME_METADATA_PROMPT_MAX: usize = 4096;
@@ -193,6 +200,13 @@ struct ChildRecord {
     /// The task prompt was admitted; never settle a pre-prompt child (it
     /// is idle with an empty queue by construction).
     prompt_admitted: bool,
+    /// The child's last live summary showed it parked in an
+    /// `agent_message.wait` on this session: it cannot go on until this
+    /// session sends it a message, so a collect does not wait for it.
+    waiting_on_parent: bool,
+    /// The child's last live summary read mid-turn: on a settled row, a
+    /// follow-up turn whose usage is still to be observed.
+    streaming: bool,
     /// The detached task prompt's progress: a `collect` with a timeout
     /// releases a held prompt and waits for it to finish.
     kickoff: Arc<tokio::sync::watch::Sender<Kickoff>>,
@@ -405,6 +419,11 @@ struct SupervisorChildSessionsInner {
     /// and once per close walk, so a barrier parked behind descendant
     /// work re-reads the registry when the descendants settle.
     settle_notify: tokio::sync::Notify,
+    /// A collect's wake: `notify_waiters` fires when a record changes what a
+    /// collect waits on (a run's verdict lands, a child starts or stops
+    /// waiting on this session). The settle watchers and the roster reads
+    /// write the records; a collect only reads them.
+    record_changed: tokio::sync::Notify,
     /// The model-allowlist refusal telemetry: `spawn`/`create_session`
     /// refusals emit through the engine's shared lazily-built client.
     model_refusal_telemetry: std::sync::Arc<crate::model_allowlist::ModelRefusalTelemetry>,
@@ -466,6 +485,7 @@ impl SupervisorChildSessions {
                 settle_hook: std::sync::Mutex::new(None),
                 running: tokio::sync::watch::Sender::new(false),
                 settle_notify: tokio::sync::Notify::new(),
+                record_changed: tokio::sync::Notify::new(),
                 model_refusal_telemetry,
                 usage_sink: std::sync::Mutex::new(None),
                 delete_notifier: std::sync::Mutex::new(None),
@@ -775,6 +795,8 @@ impl SupervisorChildSessions {
                 notice_delivered: false,
                 factory: false,
                 prompt_admitted: true,
+                waiting_on_parent: false,
+                streaming: false,
                 kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
                 retirement: Retirement::live(),
                 usage_registration_forgotten: false,
@@ -858,12 +880,14 @@ impl SupervisorChildSessions {
     }
 
     fn collect_result(record: &ChildRecord, check_status: Option<&'static str>) -> RlmChildResult {
+        let running = record.run.is_running();
         RlmChildResult {
             rlm_child_id: record.rlm_child_id.clone(),
             session_name: Some(record.session_name.clone()),
             session_dir: Some(record.session_dir.clone()),
             status: record.run.status(),
-            settled: !record.run.is_running(),
+            settled: !running,
+            waiting_on_you: running && record.waiting_on_parent,
             answer_preview: record.answer_preview.clone(),
             answer_text: record.answer_text.clone(),
             error: record.run.error().map(str::to_string),
@@ -884,6 +908,7 @@ impl SupervisorChildSessions {
             session_dir: Some(deleted.session_dir.clone()),
             status: "cancelled",
             settled: true,
+            waiting_on_you: false,
             answer_preview: deleted.answer_preview.clone(),
             answer_text: None,
             error: Some(deleted.error.clone()),
@@ -952,6 +977,7 @@ impl SupervisorChildSessionsInner {
     pub(super) async fn child_roster_rows(
         &self,
         records: &[Arc<Mutex<ChildRecord>>],
+        budget: Duration,
     ) -> Option<Vec<Value>> {
         let running = async {
             for record in records {
@@ -969,7 +995,7 @@ impl SupervisorChildSessionsInner {
             .link
             .request_success(
                 json!({ "type": "list_agent_peers", "workerToken": self.worker_token }),
-                Duration::from_secs(5),
+                budget,
             )
             .await
             .ok()?;
@@ -1040,7 +1066,75 @@ impl SupervisorChildSessionsInner {
         }
         // An omitted count is zero, including after a session replacement.
         record.tool_use_count = summary.get("toolUseCount").and_then(Value::as_u64);
+        record.streaming = summary
+            .get("isStreaming")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        // A named wait carries the awaited member's live id, or its durable one.
+        let waiting_on_parent = summary
+            .get("waitingOn")
+            .and_then(Value::as_str)
+            .is_some_and(|awaited| {
+                awaited == self.parent_active_session_id
+                    || self
+                        .identity
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .session_id
+                        .as_deref()
+                        == Some(awaited)
+            });
+        if record.waiting_on_parent != waiting_on_parent {
+            record.waiting_on_parent = waiting_on_parent;
+            self.record_changed.notify_waiters();
+        }
         record.live_observation = Some(observation);
+    }
+
+    /// Join the supervisor's pushed roster onto `records`: each child's live
+    /// note, tool count, turn flag and wait target, in one in-memory read at
+    /// the supervisor and never a round trip to a child. A read that fails
+    /// or outlasts `budget` keeps what each record last observed.
+    pub(super) async fn observe_roster(
+        &self,
+        records: &[Arc<Mutex<ChildRecord>>],
+        budget: Duration,
+    ) {
+        let request_order = self
+            .observation_requests
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let Some(peers) = self.child_roster_rows(records, budget).await else {
+            return;
+        };
+        for record in records {
+            let (rlm_child_id, active_session_id) = {
+                let record = record.lock().await;
+                (
+                    record.rlm_child_id.clone(),
+                    record.active_session_id.clone(),
+                )
+            };
+            let live = peers
+                .iter()
+                .find(|row| {
+                    row.get("rlmChildId").and_then(Value::as_str) == Some(rlm_child_id.as_str())
+                })
+                .or_else(|| {
+                    peers.iter().find(|row| {
+                        row.get("activeSessionId").and_then(Value::as_str)
+                            == Some(active_session_id.as_str())
+                    })
+                });
+            if let Some(live) = live {
+                self.observe_live_state(
+                    record,
+                    live,
+                    request_order,
+                    ChildObservationSource::Roster,
+                )
+                .await;
+            }
+        }
     }
 
     pub(crate) async fn emit_child_update(&self, record: &Arc<Mutex<ChildRecord>>) {
@@ -1133,6 +1227,10 @@ mod watch_tests;
 /// `rlm.abort` over the watcher tests' fake supervisor.
 #[cfg(test)]
 mod abort_tests;
+
+/// `rlm.collect` against a child that cannot answer, over the same fake.
+#[cfg(test)]
+mod collect_tests;
 
 #[cfg(test)]
 mod usage_emit_tests;

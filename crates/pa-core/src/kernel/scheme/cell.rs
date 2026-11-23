@@ -807,8 +807,7 @@ pub(super) fn register(engine: &mut Engine, cells: &Arc<Cells>) -> anyhow::Resul
                 .map_err(|error| SteelErr::new(ErrorKind::Generic, format!("{error:#}")))
         })),
     );
-    engine
-        .run(CELL_API)
+    super::contracts::load(engine, CELL_API)
         .map_err(|error| anyhow!("the Scheme cell API failed to load: {error}"))?;
     Ok(())
 }

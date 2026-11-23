@@ -109,17 +109,16 @@ pub(super) const SCHEME: &str = r#"
       (begin (displayln (hash-ref result 'announce)) (hash-remove result 'announce))
       result))
 
-(define (bash command . rest)
-  (%bash-settled (%native "bash" (hash-insert (%options rest) 'command command))))
-(define (bash-wait job . rest)
-  (%bash-settled (%native "bash-wait" (hash 'job (%bash-job "bash-wait" job)
-                                            'seconds (if (null? rest) #f (car rest))))))
+(define (bash command [options (hash)])
+  (%bash-settled (%native "bash" (hash-insert options 'command command))))
+(define (bash-wait job [seconds #f])
+  (%bash-settled (%native "bash-wait" (hash 'job (%bash-job "bash-wait" job) 'seconds seconds))))
 (define (bash-poll job) (%native "bash-poll" (hash 'job (%bash-job "bash-poll" job))))
-(define (bash-tail job . rest)
-  (%native "bash-tail" (hash 'job (%bash-job "bash-tail" job) 'lines (if (null? rest) 50 (car rest)))))
+(define (bash-tail job [lines 50])
+  (%native "bash-tail" (hash 'job (%bash-job "bash-tail" job) 'lines lines)))
 (define (bash-output job) (%native "bash-output" (hash 'job (%bash-job "bash-output" job))))
-(define (bash-kill job . rest)
-  (%native "bash-kill" (hash-insert (%options rest) 'job (%bash-job "bash-kill" job))))
+(define (bash-kill job [options (hash)])
+  (%native "bash-kill" (hash-insert options 'job (%bash-job "bash-kill" job))))
 (define (bash-running? job) (%native "bash-running" (hash 'job (%bash-job "bash-running?" job))))
 (define (bash-jobs) (%native "bash-jobs" (hash)))
 (define (bash-persistent-shells) (%native "bash-persistent-shells" (hash)))
@@ -886,10 +885,13 @@ pub(super) fn call(
         .keys()
         .find(|key| !matches!(key.as_str(), "command" | "job") && !accepted.contains(&key.as_str()))
     {
-        bail!(
-            "unknown option '{unknown}' (accepted: {})",
-            accepted.join(", ")
-        );
+        return Err(crate::kernel::scheme::contracts::undeclared(
+            operation,
+            crate::kernel::scheme::contracts::Spelling::HashKey,
+            unknown,
+            accepted,
+        )
+        .into());
     }
     match operation {
         "bash" => {

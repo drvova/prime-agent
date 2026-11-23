@@ -85,6 +85,7 @@ impl SupervisorChildSessionsInner {
             let Some((notice_was_delivered, active_session_id)) = claim else {
                 continue;
             };
+            self.record_changed.notify_waiters();
             self.emit_child_update(record).await;
             // Capture before the abort: the completed turns' usage (the
             // aborted turn's partial row folds nowhere) must not die with
@@ -331,6 +332,7 @@ impl SupervisorChildSessionsInner {
                 RetirementIntent::Delete { was_running } => {
                     if was_running {
                         row.run.apply(RunEvent::DeleteCancel);
+                        self.record_changed.notify_waiters();
                     }
                     self.remember_deleted_child(&row);
                 }
@@ -610,6 +612,8 @@ fn ledger_child_records(
             notice_delivered: true,
             factory: edge.factory.is_some(),
             prompt_admitted: true,
+            waiting_on_parent: false,
+            streaming: false,
             kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
             retirement: Retirement::live(),
             usage_registration_forgotten: false,

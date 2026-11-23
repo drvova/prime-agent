@@ -47,6 +47,9 @@ pub(super) enum FakeChild {
     /// prompt's run leaves a failed assistant row and the retry
     /// episode's failed outcome row in the child's session file.
     FinalTurnFails,
+    /// The child's worker never answers a state read (wedged, or its route
+    /// not ready): the read stays in flight until its caller gives up.
+    Silent,
 }
 
 /// A scripted JSONL supervisor for the watcher tests: creates one child
@@ -161,6 +164,9 @@ async fn spawn_fake_supervisor(
                                 "refused by the fake supervisor",
                                 None,
                             )
+                        }
+                        "get_state" if matches!(child, FakeChild::Silent) => {
+                            std::future::pending().await
                         }
                         "get_state" | "wait_for_idle" if gone.load(Ordering::SeqCst) => {
                             response_failure(
@@ -588,12 +594,15 @@ async fn a_running_childs_roster_row_carries_its_live_note_and_tool_count() {
     );
 }
 
-/// #4: `collect` rows carry the same count: the refresh's `get_state`
-/// round trip (already in flight for the busy verdict) observes the child's
-/// live summary onto the record.
+/// #4: `collect` rows carry the same count, joined from the pushed roster:
+/// a collect asks the child nothing.
 #[tokio::test]
 async fn a_collect_row_counts_the_childs_tool_calls() {
-    let peers = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let peers = Arc::new(std::sync::Mutex::new(vec![json!({
+        "activeSessionId": "child-live",
+        "rlmChildId": "sub-collect",
+        "toolUseCount": 3,
+    })]));
     let (_tmp, sessions, _kill_rx) = sessions_with_roster_peers(peers, 5_000).await;
     sessions
         .push_test_child(RlmChildIdentity {
@@ -604,10 +613,9 @@ async fn a_collect_row_counts_the_childs_tool_calls() {
         })
         .await;
     let results = sessions.collect(Vec::new(), 0).await.expect("collect");
-    assert_eq!(results[0].status, "done");
     assert_eq!(
-        results[0].tool_use_count,
-        Some(3),
+        (results[0].status, results[0].tool_use_count),
+        ("running", Some(3)),
         "the collect row reads the observed count: {results:?}"
     );
 }
@@ -674,8 +682,9 @@ async fn a_delayed_roster_reply_keeps_the_newer_settled_observation() {
         tokio::spawn(async move { sessions.list_subagents().await.unwrap() })
     };
     gate.copied.notified().await;
-    let collected = sessions.collect(Vec::new(), 0).await.unwrap();
-    assert_eq!(collected[0].tool_use_count, Some(4));
+    let record = Arc::clone(&sessions.inner.children.lock().await[0]);
+    sessions.inner.refresh_record(&record).await;
+    assert_eq!(record.lock().await.tool_use_count, Some(4));
     gate.release.notify_one();
     let roster = listing.await.unwrap();
     assert_eq!(
@@ -983,11 +992,11 @@ async fn a_collect_while_the_task_prompt_is_in_flight_does_not_settle_the_child(
     );
 }
 
-/// A `collect` that reads the one idle snapshot between the task prompt's
+/// A refresh that reads the one idle snapshot between the task prompt's
 /// admission and the turn pop (the worker reads idle once, then busy) keeps
 /// the child running: no `done` verdict lands before the settle grace.
 #[tokio::test]
-async fn a_collect_reading_the_admission_idle_window_keeps_the_child_running() {
+async fn a_refresh_reading_the_admission_idle_window_keeps_the_child_running() {
     let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
     let child_subagents = Arc::new(FakeChildSubagents::default());
     child_subagents.live_state.lock().unwrap().replace(json!({
@@ -1004,7 +1013,7 @@ async fn a_collect_reading_the_admission_idle_window_keeps_the_child_running() {
             "hasRunningSubagents": false,
             "sessionActions": { "queuedCount": 0 },
         }));
-    // A slow idle wait parks the watcher, so the collect makes the first
+    // A slow idle wait parks the watcher, so this refresh makes the first
     // state read after the admission.
     let (_tmp, sessions, _kill_rx) = sessions_with_fake_child_subagents(
         follow_up_tx,
@@ -1022,13 +1031,14 @@ async fn a_collect_reading_the_admission_idle_window_keeps_the_child_running() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
+    sessions.inner.refresh_record(&record).await;
     let results = sessions
         .collect(vec![handle.rlm_child_id.clone()], 0)
         .await
         .expect("collect the admitted child");
     assert!(
         child_subagents.scripted_states.lock().unwrap().is_empty(),
-        "the collect must read the admission idle snapshot"
+        "the refresh must read the admission idle snapshot"
     );
     assert_eq!(
         (results[0].status, results[0].settled),
@@ -2774,9 +2784,9 @@ async fn a_failed_settle_captures_the_childs_last_assistant_text() {
 /// Review finding (PR #3462): a `None` first answer capture (the settle
 /// raced the worker's answer hand-off) FROZE the row empty — the capture fill
 /// only ran while the settle verdict was unset, so no later refresh could
-/// deliver the text and every re-collect answered the same empty envelope. The
-/// fill now runs on every refresh: it writes only when the fresh round trip
-/// produced a text AND the row has no answer yet.
+/// deliver the text and every re-collect answered the same empty envelope. A
+/// collect fills a settled row that has no answer from the child's durable
+/// rows (the worker persists its final say before it reads idle).
 #[tokio::test]
 async fn a_none_first_answer_capture_recovers_on_a_later_collect() {
     let (follow_up_tx, _follow_up_rx) = mpsc::unbounded_channel();
@@ -2799,8 +2809,26 @@ async fn a_none_first_answer_capture_recovers_on_a_later_collect() {
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    // A later collect refreshes the row and the answer lands: the settle
+    // A later collect reads the durable row and the answer lands: the settle
     // verdict is one-shot, the capture is not.
+    let session_file = sessions.inner.children.lock().await[0]
+        .lock()
+        .await
+        .session_file
+        .clone()
+        .expect("the child's session file");
+    std::fs::write(
+        &session_file,
+        format!(
+            "{}\n",
+            super::lifecycle::exit_capture_tests::assistant_row_ending(
+                "the child final answer",
+                pa_types::ai::StopReason::Stop,
+                None,
+            )
+        ),
+    )
+    .expect("write the child's final row");
     let results = sessions
         .collect(vec![handle.rlm_child_id.clone()], 0)
         .await
@@ -2939,6 +2967,8 @@ fn an_already_settled_child_never_re_scores_as_an_unreachable_error() {
         notice_delivered: false,
         factory: false,
         prompt_admitted: true,
+        waiting_on_parent: false,
+        streaming: false,
         kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
         retirement: Retirement::live(),
         usage_registration_forgotten: false,
@@ -3013,6 +3043,8 @@ async fn the_unreachable_give_up_skips_the_exit_capture_when_a_capture_stands() 
         notice_delivered: false,
         factory: false,
         prompt_admitted: true,
+        waiting_on_parent: false,
+        streaming: false,
         kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
         retirement: Retirement::live(),
         usage_registration_forgotten: false,

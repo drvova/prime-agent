@@ -134,6 +134,36 @@ async fn a_skills_scheme_source_is_loaded_at_kernel_start_and_a_markdown_skill_i
     );
 }
 
+/// A skill's functions get the kernel's call contracts; one that takes a
+/// rest list reads it as it likes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skills_function_refuses_an_option_it_does_not_declare() {
+    let skills = Skills::new();
+    skills.write(
+        "lint",
+        "skill.scm",
+        "(define (lint-run path #:fix [fix #f]) (list path fix))
+         (define (lint-all . paths) paths)",
+    );
+    let kernel = skills.kernel().await;
+    let kernel = kernel.as_ref();
+    assert_eq!(
+        (
+            value(kernel, "(lint-run \"a.rs\" #:fix #t)").await,
+            value(kernel, "(lint-run \"a.rs\" #:fxi #t)").await,
+            value(kernel, "(lint-all \"a.rs\" \"#:fxi\")").await,
+        ),
+        (
+            Ok(json!(["a.rs", true])),
+            Err(
+                "Error: Generic: lint-run: unknown option #:fxi. Did you mean #:fix? lint-run accepts #:fix"
+                    .to_string()
+            ),
+            Ok(json!(["a.rs", "#:fxi"])),
+        )
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_skill_whose_source_fails_is_reported_by_name_and_the_other_skills_still_load() {
     let skills = Skills::new();

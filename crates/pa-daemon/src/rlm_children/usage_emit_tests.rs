@@ -63,6 +63,8 @@ fn record_with_file(child_id: &str, session_file: &Path) -> Arc<Mutex<ChildRecor
         notice_delivered: false,
         factory: false,
         prompt_admitted: true,
+        waiting_on_parent: false,
+        streaming: false,
         kickoff: Arc::new(tokio::sync::watch::Sender::new(Kickoff::Finished)),
         retirement: Retirement::live(),
         usage_registration_forgotten: false,

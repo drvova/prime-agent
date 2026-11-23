@@ -1,4 +1,4 @@
-internal_host_requests = ["cell.completed", "cell.consumed"]
+internal_host_requests = ["cell.completed", "cell.consumed", "call.refused"]
 
 [[telemetry]]
 event = "agent repl background cells"
@@ -11,4 +11,14 @@ properties = [
   "cell_window_timeout_count",
   "cell_window_setting_count",
   "cell_window_default_count",
+]
+
+[[telemetry]]
+event = "agent kernel call refusals"
+properties = [
+  "call_refused_unknown_option_count",
+  "call_refused_repeated_option_count",
+  "call_refused_option_without_value_count",
+  "call_refused_arity_count",
+  "call_refused_tool_argument_count",
 ]

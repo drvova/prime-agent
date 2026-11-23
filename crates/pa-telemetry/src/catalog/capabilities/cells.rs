@@ -23,3 +23,21 @@ pub(in crate::catalog) const AGENT_REPL_BACKGROUND_CELLS: EventRule = EventRule 
         ("cell_window_default_count", required(count())),
     ],
 };
+
+/// Kernel calls refused before the function ran (v2), emitted at session end beside `agent
+/// session ended` (which sits near the backend's 128-key cap) only when a call was refused: calls
+/// that named an option the function does not declare, gave an option twice, gave an option no
+/// value, passed too few or too many arguments, or passed an MCP tool an argument its schema does
+/// not declare. Counts only: never a function, an option's or argument's name, or a value.
+pub(in crate::catalog) const AGENT_KERNEL_CALL_REFUSALS: EventRule = EventRule {
+    name: "agent kernel call refusals",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("call_refused_unknown_option_count", required(count())),
+        ("call_refused_repeated_option_count", required(count())),
+        ("call_refused_option_without_value_count", required(count())),
+        ("call_refused_arity_count", required(count())),
+        ("call_refused_tool_argument_count", required(count())),
+    ],
+};

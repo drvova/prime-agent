@@ -277,6 +277,52 @@ fn the_reference_documents_exactly_the_kernels_functions() {
     );
 }
 
+/// Each entry of the reference names only keywords a call can pass: the ones its own function
+/// declares, or those of another function the entry names (`` `rlm-spawn`'s `#:model` ``, or a
+/// call form of it). A keyword the kernel refuses cannot be taught.
+#[test]
+fn the_reference_names_no_keyword_its_function_refuses() {
+    let functions = kernel_functions();
+    let declares = |name: &str, keyword: &str| {
+        functions
+            .get(name)
+            .and_then(Option::as_deref)
+            .is_some_and(|form| form.split(' ').any(|word| word == keyword))
+    };
+    let mut refused = Vec::new();
+    for (_, doc) in API_DOCS {
+        let mut lines = doc.lines().peekable();
+        while let Some(bullet) = lines.next() {
+            let Some(call) = documented_calls(bullet).next() else {
+                continue;
+            };
+            let name = call.split(' ').next().unwrap_or(call);
+            let mut entry = bullet.to_string();
+            while let Some(nested) = lines.next_if(|line| line.starts_with("  ")) {
+                entry.push_str(nested);
+            }
+            for (at, _) in entry.match_indices("#:") {
+                let keyword = entry[at..]
+                    .split(|letter: char| {
+                        !(letter.is_ascii_alphanumeric() || "#:-".contains(letter))
+                    })
+                    .next()
+                    .unwrap_or_default();
+                let taught = declares(name, keyword)
+                    || functions.keys().any(|other| {
+                        declares(other, keyword)
+                            && (entry.contains(&format!("`{other}`"))
+                                || entry.contains(&format!("({other} ")))
+                    });
+                if !taught {
+                    refused.push(format!("{name}: {keyword}"));
+                }
+            }
+        }
+    }
+    assert_eq!(refused, Vec::<String>::new());
+}
+
 /// The capability manifests' `internal_host_requests`: requests the kernel issues as host
 /// plumbing, never as a model-facing function.
 static MANIFEST_INTERNAL_HOST_REQUESTS: LazyLock<BTreeSet<String>> = LazyLock::new(|| {

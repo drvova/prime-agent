@@ -99,12 +99,10 @@ const TOOLS: &str = r#"
         (%native-raise (hash-ref reply 'error))
         (hash-ref reply 'value))))
 
-(define (%options rest) (if (null? rest) (hash) (car rest)))
-
-(define (fs-read path . rest) (%native "fs-read" (hash-insert (%options rest) 'path path)))
-(define (fs-grep pattern . rest) (%native "fs-grep" (hash-insert (%options rest) 'pattern pattern)))
-(define (fs-glob pattern . rest) (%native "fs-glob" (hash-insert (%options rest) 'pattern pattern)))
-(define (fs-find . rest) (%native "fs-find" (%options rest)))
+(define (fs-read path [options (hash)]) (%native "fs-read" (hash-insert options 'path path)))
+(define (fs-grep pattern [options (hash)]) (%native "fs-grep" (hash-insert options 'pattern pattern)))
+(define (fs-glob pattern [options (hash)]) (%native "fs-glob" (hash-insert options 'pattern pattern)))
+(define (fs-find [options (hash)]) (%native "fs-find" options))
 "#;
 
 /// A tool's JSON reply as a Scheme value: objects become hashes keyed by
@@ -158,6 +156,7 @@ pub(super) fn register(
     handlers: crate::kernel::shared::HostRequestHandlers,
     agent_dir: Option<PathBuf>,
     session: &super::SessionEnvironment,
+    refusals: super::contracts::Refusals,
 ) -> anyhow::Result<BashJobs> {
     let runtime = tokio::runtime::Handle::current();
     let (commands, jobs) = bash::open(runtime.clone(), handlers.clone(), session);
@@ -191,7 +190,12 @@ pub(super) fn register(
                 });
             scheme_value(match outcome {
                 Ok(value) => serde_json::json!({ "value": value }),
-                Err(error) => serde_json::json!({ "error": format!("{operation}: {error:#}") }),
+                Err(error) => {
+                    if error.is::<super::contracts::Undeclared>() {
+                        refusals.count(crate::kernel::call_refusals::CallRefusal::UnknownOption);
+                    }
+                    serde_json::json!({ "error": format!("{operation}: {error:#}") })
+                }
             })
         },
     );
@@ -209,14 +213,11 @@ pub(super) fn register(
             )),
         }),
     );
-    engine
-        .run(TOOLS)
+    super::contracts::load(engine, TOOLS)
         .map_err(|error| anyhow!("the Scheme native tools failed to load: {error}"))?;
-    engine
-        .run(files::TOOLS)
+    super::contracts::load(engine, files::TOOLS)
         .map_err(|error| anyhow!("the Scheme file tools failed to load: {error}"))?;
-    engine
-        .run(bash::SCHEME)
+    super::contracts::load(engine, bash::SCHEME)
         .map_err(|error| anyhow!("the Scheme bash tools failed to load: {error}"))?;
     Ok(jobs)
 }

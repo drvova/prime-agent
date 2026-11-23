@@ -53,6 +53,8 @@ pub const HEARTBEAT_PROMPT_CUSTOM_TYPE: &str = "heartbeat_prompt";
 pub const GOAL_CONTEXT_CUSTOM_TYPE: &str = "goal_context";
 pub const IPYTHON_STATE_RESTORED_CUSTOM_TYPE: &str = "ipython_state_restored";
 pub const PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "python_skills_unavailable";
+/// The Scheme kernel's notice that a skill's source failed to load.
+pub const SCHEME_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "scheme_skills_unavailable";
 pub const RLM_CHILD_FAILURE_CUSTOM_TYPE: &str = "rlm_child_failure";
 pub const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE: &str = "rlm_child_terminal_notice";
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
@@ -264,7 +266,8 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
         HEARTBEAT_PROMPT_CUSTOM_TYPE
         | GOAL_CONTEXT_CUSTOM_TYPE
         | IPYTHON_STATE_RESTORED_CUSTOM_TYPE
-        | PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE => {
+        | PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE
+        | SCHEME_SKILLS_UNAVAILABLE_CUSTOM_TYPE => {
             vec![ChatEntry::InjectedPrompt(Box::new(injected_prompt_row(
                 custom_type,
                 message,
@@ -790,24 +793,40 @@ mod tests {
     }
 
     /// The unavailable-skills row decodes the failed names and keeps the
-    /// full report as its expandable body.
+    /// full report as its expandable body, for the Scheme kernel's notice and
+    /// for the Python one a saved session may still hold.
     #[test]
-    fn python_skills_unavailable_row_decodes() {
-        let unavailable = decoded(&json!({
-            "role": "custom",
-            "customType": PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
-            "content": "[python-skills-unavailable]\n\n- websearch: No module named 'websearch'",
-            "display": true,
-            "details": { "skills": ["websearch", "edit"] },
-        }));
-        assert!(matches!(
-            unavailable.as_slice(),
-            [ChatEntry::InjectedPrompt(boxed)]
-                if matches!(&boxed.kind,
-                    InjectedPromptKind::PythonSkillsUnavailable { skills }
-                        if skills == &vec!["websearch".to_string(), "edit".to_string()])
-                    && boxed.body.as_deref() == Some("[python-skills-unavailable]\n\n- websearch: No module named 'websearch'")
-        ));
+    fn a_skills_unavailable_row_decodes_for_either_kernel() {
+        let rows: Vec<bool> = [
+            (
+                SCHEME_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
+                "[scheme-skills-unavailable]\n\n- websearch: unbound identifier",
+            ),
+            (
+                PYTHON_SKILLS_UNAVAILABLE_CUSTOM_TYPE,
+                "[python-skills-unavailable]\n\n- websearch: No module named 'websearch'",
+            ),
+        ]
+        .into_iter()
+        .map(|(custom_type, content)| {
+            let unavailable = decoded(&json!({
+                "role": "custom",
+                "customType": custom_type,
+                "content": content,
+                "display": true,
+                "details": { "skills": ["websearch", "edit"] },
+            }));
+            matches!(
+                unavailable.as_slice(),
+                [ChatEntry::InjectedPrompt(boxed)]
+                    if matches!(&boxed.kind,
+                        InjectedPromptKind::SkillsUnavailable { skills }
+                            if skills == &vec!["websearch".to_string(), "edit".to_string()])
+                        && boxed.body.as_deref() == Some(content)
+            )
+        })
+        .collect();
+        assert_eq!(rows, [true, true]);
     }
 
     #[test]

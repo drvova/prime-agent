@@ -178,8 +178,7 @@ pub(super) fn register(
             reply.to_string()
         },
     );
-    engine
-        .run(API)
+    super::contracts::load(engine, API)
         .map_err(|error| anyhow!("the Scheme factory API failed to load: {error}"))?;
     Ok(())
 }

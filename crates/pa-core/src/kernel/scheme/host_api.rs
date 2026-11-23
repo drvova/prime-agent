@@ -5,10 +5,10 @@
 //!
 //! Each wrapper builds the payload its Rust handler parses, sends it through
 //! `(host-request type payload)`, and shapes the reply. Optional arguments
-//! are Steel keyword arguments (`(rlm-spawn "task" #:name "worker")`); Steel
-//! ignores a keyword a function does not declare, so a misspelt one reads as
-//! omitted. Whole numbers in a reply come back as exact integers, and an
-//! integer argument given as `8.0` is sent as `8`.
+//! are Steel keyword arguments (`(rlm-spawn "task" #:name "worker")`); a
+//! keyword a function does not declare is refused before the function runs
+//! (`contracts.rs`). Whole numbers in a reply come back as exact integers,
+//! and an integer argument given as `8.0` is sent as `8`.
 //!
 //! A changed todo list, a settled question, a sent agent message, and a
 //! transcript read also show on the running cell's result card, recorded
@@ -45,8 +45,7 @@ pub(super) fn load(engine: &mut Engine) -> anyhow::Result<()> {
         crate::session::manager::format_iso(now.as_millis() as i64 + (seconds * 1000.0) as i64)
     });
     for (name, source) in SOURCES {
-        engine
-            .run(source)
+        super::contracts::load(engine, source)
             .map_err(|error| anyhow!("the Scheme host API ({name}) failed to load: {error}"))?;
     }
     Ok(())

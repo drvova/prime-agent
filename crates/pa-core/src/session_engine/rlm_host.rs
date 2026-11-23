@@ -135,6 +135,11 @@ pub struct RlmChildResult {
     /// `queued` | `running` | `done` | `error` | `cancelled`.
     pub status: &'static str,
     pub settled: bool,
+    /// The running child is parked in an `agent_message.wait` on the collecting
+    /// session: it goes on only once that session sends it a message. Left out
+    /// when false.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub waiting_on_you: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answer_preview: Option<String>,
     /// The full final-answer text (the settle-binding lane; the roster
@@ -911,8 +916,17 @@ fn register_collect(handlers: &mut HostRequestHandlers, bridge: &Arc<RlmHostBrid
                     );
                 };
                 let results = host.collect(targets, timeout_ms).await?;
+                let waiting_on_parent = results.iter().filter(|row| row.waiting_on_you).count();
+                if let (Some(counters), true) = (bridge_telemetry.get(), waiting_on_parent > 0) {
+                    counters.note_capability(
+                        "rlm_collect_waiting_on_you_count",
+                        waiting_on_parent as u64,
+                    );
+                }
                 if let Some(depth) = host.delegation_depth() {
-                    let wait = if timeout_ms == 0 {
+                    // A wait cut short for a child that waits on this session ran
+                    // out no timeout: its unsettled rows are a snapshot.
+                    let wait = if timeout_ms == 0 || waiting_on_parent > 0 {
                         super::rlm_depth::CollectWait::Snapshot
                     } else {
                         super::rlm_depth::CollectWait::Bounded
@@ -1188,6 +1202,7 @@ mod tests {
                     session_dir: Some(format!("/tmp/{id}")),
                     status: "done",
                     settled: true,
+                    waiting_on_you: false,
                     answer_preview: Some("all done".into()),
                     answer_text: Some("all done".into()),
                     error: None,

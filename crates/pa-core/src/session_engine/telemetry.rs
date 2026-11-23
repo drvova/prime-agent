@@ -51,6 +51,7 @@ mod capability_counts;
 use capability_counts::CapabilityCounts;
 
 mod builtin_shell;
+mod call_refusals;
 mod edit_checks;
 mod error_enrichment;
 mod hypotheses;

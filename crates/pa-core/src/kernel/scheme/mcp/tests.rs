@@ -241,6 +241,46 @@ async fn a_tool_error_a_server_error_and_a_refused_call_raise() {
     );
 }
 
+/// `echo` lists its properties and nothing else, so an argument outside them
+/// is refused before the server hears of the call; `pid` publishes no
+/// schema, so its arguments are the server's to judge.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn an_argument_a_tools_schema_does_not_declare_is_refused_before_the_call_is_sent() {
+    let fixture = StdioFixture::new();
+    let handlers = configured(json!({"files": fixture.config("files", &json!({}), &[])}));
+    let kernel = SchemeKernelProvisioner::new(handlers, "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let returned = values(
+        kernel.as_ref(),
+        &[
+            r#"(mcp-call-tool "files" "echo" (hash 'mesage "hi"))"#,
+            r#"(string? (mcp-call-tool "files" "pid" (hash 'verbose #t)))"#,
+        ],
+    )
+    .await;
+    let calls: Vec<String> = fixture
+        .log("files")
+        .into_iter()
+        .filter(|line| line.starts_with("call "))
+        .collect();
+    assert_eq!(
+        (returned, calls),
+        (
+            vec![
+                Err(
+                    "Error: Generic: mcp-call-tool: unknown argument \"mesage\". Did you mean \"message\"? echo accepts \"message\""
+                        .to_string()
+                ),
+                Ok(json!(true)),
+            ],
+            vec!["call pid".to_string()],
+        )
+    );
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_the_server_never_answers_times_out_and_the_server_stays_usable() {

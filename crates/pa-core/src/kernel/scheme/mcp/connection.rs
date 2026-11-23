@@ -10,6 +10,7 @@ use super::credentials::Settings;
 use super::http::HttpTransport;
 use super::stdio::StdioTransport;
 use super::{Failure, FailureKind, PROTOCOL_VERSION};
+use crate::kernel::scheme::contracts::{undeclared, Spelling};
 
 /// How long a server has to start and list its tools when its configuration
 /// names no `startupTimeoutMs`.
@@ -19,6 +20,21 @@ const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 /// Pages of one listing that are followed: a server that paginates without
 /// end must not hold discovery forever.
 const MAX_PAGES: usize = 25;
+
+/// The JSON Schema keywords through which an object schema that does not
+/// say `additionalProperties` may still declare properties beyond the ones
+/// it lists.
+const OPEN_SCHEMA_KEYWORDS: [&str; 9] = [
+    "patternProperties",
+    "unevaluatedProperties",
+    "propertyNames",
+    "dependentSchemas",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "if",
+    "$ref",
+];
 
 /// How a server is reached.
 enum Transport {
@@ -207,7 +223,32 @@ impl Connection {
     /// The tool is unknown or excluded, the request failed, or the server
     /// flagged the result as an error.
     pub(super) async fn call_tool(&self, tool: &str, arguments: &Value) -> Result<Value, Failure> {
-        self.tool(tool)?;
+        // A schema that lists its properties and opens no other door is the
+        // whole of what the tool reads: an argument outside it would be
+        // dropped by the server, so the call is refused before it is sent.
+        let schema = &self.tool(tool)?["inputSchema"];
+        let declared = schema["properties"].as_object().filter(|properties| {
+            match &schema["additionalProperties"] {
+                Value::Bool(open) => !open,
+                Value::Null => {
+                    !properties.is_empty()
+                        && OPEN_SCHEMA_KEYWORDS
+                            .iter()
+                            .all(|keyword| schema.get(keyword).is_none())
+                }
+                // A schema for the extra properties, or a malformed keyword.
+                Value::Object(_) | Value::Number(_) | Value::String(_) | Value::Array(_) => false,
+            }
+        });
+        if let (Some(declared), Some(given)) = (declared, arguments.as_object()) {
+            if let Some(unknown) = given.keys().find(|name| !declared.contains_key(*name)) {
+                let accepted: Vec<&str> = declared.keys().map(String::as_str).collect();
+                return Err(Failure::new(
+                    FailureKind::UndeclaredArgument,
+                    undeclared(tool, Spelling::ToolArgument, unknown, &accepted).to_string(),
+                ));
+            }
+        }
         let mut result = self
             .request("tools/call", json!({"name": tool, "arguments": arguments}))
             .await?;
