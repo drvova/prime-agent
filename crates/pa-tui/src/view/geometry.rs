@@ -321,7 +321,7 @@ mod tests {
                 .prop_map(|(kind, objective)| InjectedPromptKind::Goal { kind, objective }),
             any::<bool>().prop_map(|restored| InjectedPromptKind::KernelRestored { restored }),
             prop::collection::vec("[a-z 数据]{1,12}", 0..4)
-                .prop_map(|skills| InjectedPromptKind::PythonSkillsUnavailable { skills }),
+                .prop_map(|skills| InjectedPromptKind::SkillsUnavailable { skills }),
         ]
     }
 
