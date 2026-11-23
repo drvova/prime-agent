@@ -143,4 +143,32 @@ mod tests {
             )
         );
     }
+    /// Two replies as the kernel really prints them (captured from a cell's
+    /// result): a failed command, and a file read whose `lines` field is a
+    /// quoted list of nested hashes ahead of the `text` the card shows.
+    #[test]
+    fn replies_captured_from_the_kernel_read_back() {
+        let bash = PrintedHash::parse("#<hashmap {\n    'timed-out: #false,\n    'tests: #false,\n    'exit-code: 3,\n    'handle: #false,\n    'running: #false,\n    'truncated: #false,\n    'pid: 536870912,\n    'duration-ms: 2,\n    'cached: #false,\n    'output: \"hi\\nthere\\n\",\n    'job: \"91ad66a38e7b4beabf74cb42cc8aa1da\",\n}>").expect("the command's reply");
+        let read = PrintedHash::parse("#<hashmap {\n    'lines: '(#<hashmap {\n        'anchor: \"1:rto\",\n        'line: 1,\n        'text: \"abc\",\n    }> #<hashmap {\n        'anchor: \"2:czm\",\n        'line: 2,\n        'text: \"\\\"q\\\"\\tz\",\n    }>),\n    'end: 2,\n    'encoding: \"utf-8\",\n    'line-ends: \"lf\",\n    'truncated: #false,\n    'text: \"a.txt (lines 1-2 of 2)\\n1:rto|abc\\n2:czm|\\\"q\\\"\\tz\",\n    'start: 1,\n    'final-newline: #true,\n    'path: \"a.txt\",\n    'total-lines: 2,\n}>").expect("the read's reply");
+        assert_eq!(
+            (
+                bash.string("output"),
+                bash.bash_outcome(),
+                read.string("text"),
+                read.string("path"),
+                read.raw("total-lines"),
+            ),
+            (
+                Some("hi\nthere\n".to_string()),
+                Some(BashOutcome {
+                    exit_code: Some(3),
+                    running: false,
+                    timed_out: false,
+                }),
+                Some("a.txt (lines 1-2 of 2)\n1:rto|abc\n2:czm|\"q\"\tz".to_string()),
+                Some("a.txt".to_string()),
+                Some("2"),
+            )
+        );
+    }
 }
