@@ -50,6 +50,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   log-file discovery, `--since`/`--until` window parsing, and report
   rendering belong to pa-cli; the notice polling, rotation-safe
   incremental reads, and dismissal horizons belong to pa-tui.
+- `ai::DiffCut`: the row that ends a kernel cell's edit diff (`details.diffs[].diff`) when
+  pa-core cut it, counting the changed lines it left out (`… diff cut: N more lines (+A -R)`);
+  pa-core writes it and pa-tui's card and `/diff` panel read it, so a cut diff keeps its true
+  totals with no new wire field.
 - `themes`: the bundled theme definition files (`prime`/`dark`/`light`) as
   pure data, shared by the TUI's theme loader (pa-tui renders terminal
   colors from them) and the session HTML exporter (pa-core resolves them

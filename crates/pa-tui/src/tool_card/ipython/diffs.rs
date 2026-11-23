@@ -16,11 +16,16 @@ const SUMMARY_PREFIX: &str = "    \u{2570}\u{2500} ";
 const DIFF_INDENT: &str = " ";
 
 /// One edit's added and removed rows, counted as the rows are labelled: a line the rows show
-/// as context is not a change. The card's summary line and the session changes panel count
-/// alike.
+/// as context is not a change, and the row ending a cut diff counts the changed lines the cut
+/// left out. The card's summary line and the session changes panel count alike.
 pub(crate) fn count_changes(diff: &str) -> (usize, usize) {
     let (mut added, mut removed) = (0usize, 0usize);
     for line in diff_lines(diff) {
+        if let Some(cut) = pa_types::ai::DiffCut::parse(line) {
+            added += cut.added;
+            removed += cut.removed;
+            continue;
+        }
         match split_row(line).0 {
             RowKind::Added => added += 1,
             RowKind::Removed => removed += 1,

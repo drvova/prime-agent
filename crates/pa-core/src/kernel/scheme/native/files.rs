@@ -532,14 +532,16 @@ impl Files {
 /// `fs.write` that changed `file`, and show the change on the running cell's
 /// card as `edit` shows its own: under the canonical path, from line 1.
 fn show_rewrite(reply: &mut Value, file: &Path) {
-    let Some(rewrite) = reply
+    let Some(mut rewrite) = reply
         .as_object_mut()
         .and_then(|fields| fields.remove(REWRITE_KEY))
     else {
         return;
     };
     if let Some(kernel) = crate::kernel::scheme::cell::current() {
-        let text = |side: &str| rewrite[side].as_str().unwrap_or_default().to_string();
+        // Moved out of the reply, not copied: a side is the whole file.
+        let mut text =
+            |side: &str| serde_json::from_value::<String>(rewrite[side].take()).unwrap_or_default();
         let path = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
         kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
             KernelDiffDisplay {

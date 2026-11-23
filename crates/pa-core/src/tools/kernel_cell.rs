@@ -388,6 +388,7 @@ pub async fn execute_kernel_cell(
         details["errorEname"] = json!(error.ename);
     }
     if !r.diffs.is_empty() {
+        let mut budget = diff::CELL_BUDGET;
         details["diffs"] = json!(r
             .diffs
             .iter()
@@ -398,7 +399,13 @@ pub async fn execute_kernel_cell(
                     .unwrap_or(1);
                 json!({
                     "path": diff.path,
-                    "diff": generate_diff_string(&diff.old_str, &diff.new_str, 4, start_line),
+                    "diff": generate_diff_string(
+                        &diff.old_str,
+                        &diff.new_str,
+                        4,
+                        start_line,
+                        &mut budget,
+                    ),
                 })
             })
             .collect::<Vec<_>>());
@@ -486,6 +493,95 @@ mod tests {
                 "deliveryStatus": "queued",
                 "target": { "activeSessionId": "a1", "sessionId": "s1" },
             })
+        );
+    }
+
+    /// The `details.diffs` of one cell run through a real session kernel in
+    /// `dir`.
+    async fn cell_diffs(dir: &std::path::Path, code: &str) -> serde_json::Value {
+        let options = KernelToolOptions {
+            provisioner: Arc::new(crate::kernel::scheme::SchemeKernelProvisioner::new(
+                crate::kernel::shared::HostRequestHandlers::new(),
+                dir,
+            )),
+            on_late_sent_agent_message: None,
+        };
+        let result = execute_kernel_cell(&options, code, None, None, None, None)
+            .await
+            .unwrap();
+        result.details.unwrap()["diffs"].take()
+    }
+
+    /// A cell's diffs keep 4,000 rows of one edit and 8,000 of the cell; past
+    /// that an edit's diff ends in a row counting the changed lines it left
+    /// out, so its `+A -R` stays true, down to an edit with no rows left.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_huge_write_keeps_a_bounded_diff_that_still_counts_every_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let diffs = cell_diffs(
+            dir.path(),
+            r#"(define big
+                 (apply string-append
+                   (map (lambda (i) (string-append "line " (number->string i) "\n"))
+                        (range 0 20000))))
+               (fs-write "a.txt" big)
+               (fs-write "b.txt" big)
+               (fs-write "c.txt" "one\n")"#,
+        )
+        .await;
+        let kept = (1..=4_000)
+            .map(|n| format!("+{n:>5} line {}", n - 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let cut = format!("{kept}\n\u{2026} diff cut: 16000 more lines (+16000 -0)");
+        let path = |name: &str| root.join(name).to_string_lossy().into_owned();
+        assert_eq!(
+            diffs,
+            json!([
+                { "path": path("a.txt"), "diff": cut },
+                { "path": path("b.txt"), "diff": cut },
+                { "path": path("c.txt"), "diff": "\u{2026} diff cut: 1 more line (+1 -0)" },
+            ])
+        );
+    }
+
+    /// An edit within the limits shows as it always did: its changed lines
+    /// and four lines of context, numbered as in the file.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_normal_edit_shows_its_whole_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = (1..=30)
+            .map(|n| format!("line {n}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        std::fs::write(dir.path().join("a.txt"), text).unwrap();
+        let diffs = cell_diffs(
+            dir.path(),
+            r#"(let ([view (fs-read "a.txt")])
+                 (fs-edit "a.txt" (hash 'replace (fs-anchor view 15) 'text "changed")))"#,
+        )
+        .await;
+        let path = dir.path().canonicalize().unwrap().join("a.txt");
+        let diff = [
+            "    ...",
+            " 11 line 11",
+            " 12 line 12",
+            " 13 line 13",
+            " 14 line 14",
+            "-15 line 15",
+            "+15 changed",
+            " 16 line 16",
+            " 17 line 17",
+            " 18 line 18",
+            " 19 line 19",
+            "    ...",
+        ]
+        .join("\n");
+        assert_eq!(
+            diffs,
+            json!([{ "path": path.to_string_lossy(), "diff": diff }])
         );
     }
 }

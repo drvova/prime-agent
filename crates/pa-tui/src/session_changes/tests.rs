@@ -312,6 +312,50 @@ fn enter_shows_the_files_diff_through_the_card_renderer() {
     );
 }
 
+/// A diff the kernel cut ends in a row counting the changed lines it left out: the card's
+/// summary and the panel count them, and the card's rows end in that row.
+#[test]
+fn a_cut_diff_counts_the_lines_it_left_out_on_the_card_and_in_the_panel() {
+    let mut view = view();
+    prompt(&mut view, "write the fixture");
+    let cut = "+1 a\n-2 b\n\u{2026} diff cut: 98 more lines (+90 -8)";
+    edits(&mut view, &[("/w/big.rs", cut.to_string())]);
+    let theme = Theme::builtin("prime", ColorMode::TrueColor);
+    let mut card = crate::tool_card::layout::RowOutput::paint();
+    crate::tool_card::ipython::diffs::render_diffs(
+        &mut card,
+        &[json!({ "path": "/w/big.rs", "diff": cut })],
+        /*has_code*/ false,
+        /*expanded*/ true,
+        &theme,
+        40,
+    );
+    let mut panel = ChangesPanel::new(LoadedHistory::Whole);
+    assert_eq!(
+        (
+            card.into_lines().iter().map(text).collect::<Vec<_>>(),
+            render(&mut view, &mut panel, 60),
+        ),
+        (
+            rows(&[
+                "    \u{2570}\u{2500} /w/big.rs +91 -9",
+                "  1 + a",
+                "  2 - b",
+                "  \u{2026} diff cut: 98 more lines (+90 -8)",
+            ]),
+            rows(&[
+                "  Changes \u{b7} this turn",
+                "  1 file \u{b7} +91 -9",
+                "",
+                "\u{203a} big.rs  +91 -9  1 edit  no test after",
+                "",
+                "  \u{2191}/\u{2193} navigate \u{b7} A attach \u{b7} Enter/\u{2192} diff \u{b7} \u{2190}/Esc close",
+                "",
+            ]),
+        )
+    );
+}
+
 /// With no edits the pane says so, and offers only the keys that do something: the scope
 /// switch and the close keys.
 #[test]
