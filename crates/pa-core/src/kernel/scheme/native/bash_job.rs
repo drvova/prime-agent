@@ -32,6 +32,11 @@
 //! On Windows there is no status channel: the shell is held at a gate on its
 //! stdin until it is inside a kill-on-close job object, its result is its
 //! exit, and ending the job ends every process in it.
+//!
+//! A session whose commands run on the built-in shell has no shell process:
+//! [`spawn`] hands the command to [`super::engine`], which runs it inside
+//! this process and starts only the programs it names. Such a job shares
+//! everything here but the process: its capture, its slot, its result.
 
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -133,7 +138,7 @@ fn list_running(list: &std::path::Path, record: &serde_json::Value) {
 
 /// Held by the task that watches a job, until the job's group is known to be
 /// gone. Dropped before then, it kills the whole group.
-struct GroupHold(Arc<Job>);
+pub(super) struct GroupHold(pub(super) Arc<Job>);
 
 impl Drop for GroupHold {
     fn drop(&mut self) {
@@ -181,14 +186,14 @@ impl BoundedBuffer {
 
 /// What has been read from a command's output pipe.
 #[derive(Default)]
-struct Capture {
+pub(super) struct Capture {
     buffer: BoundedBuffer,
     /// Bytes held back because they may be the start of the fence.
     pending: Vec<u8>,
     /// The output as it stood when the fence arrived: the command's result.
-    fenced: Option<String>,
+    pub(super) fenced: Option<String>,
     /// The fence arrived, or the output will never carry one.
-    settled: bool,
+    pub(super) settled: bool,
     /// The pipe closed: every process that held it has ended.
     eof: bool,
     /// The output up to its settling, for the session's spill store (only
@@ -245,7 +250,7 @@ impl Capture {
     }
 
     /// No fence will come: what was held back is plain output.
-    fn settle(&mut self) {
+    pub(super) fn settle(&mut self) {
         if !self.settled {
             let pending = std::mem::take(&mut self.pending);
             self.keep(&pending);
@@ -310,12 +315,17 @@ pub(super) struct Job {
     /// A persistent shell's files and identity; `None` for every other job.
     pub(super) lasting: Option<Lasting>,
     pub(super) state: Mutex<State>,
-    capture: Mutex<Capture>,
+    pub(super) capture: Mutex<Capture>,
     /// The output reader is moving a chunk from the pipe into the buffer.
     transferring: AtomicBool,
-    changed: watch::Sender<()>,
+    pub(super) changed: watch::Sender<()>,
     gate: Mutex<Option<Gate>>,
-    on_finished: Mutex<Option<FinishHook>>,
+    /// What starts a held command of the built-in shell.
+    pub(super) start: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// The programs a command of the built-in shell has started; `None` for
+    /// a command that is a shell process of its own.
+    pub(super) engine: Option<Arc<super::engine::Programs>>,
+    pub(super) on_finished: Mutex<Option<FinishHook>>,
     /// A second handle on the output pipe, to ask how much is unread.
     #[cfg(unix)]
     probe: Mutex<Option<std::io::PipeReader>>,
@@ -348,6 +358,8 @@ impl Job {
             transferring: AtomicBool::new(false),
             changed: watch::Sender::new(()),
             gate: Mutex::new(None),
+            start: Mutex::new(None),
+            engine: None,
             on_finished: Mutex::new(None),
             #[cfg(unix)]
             probe: Mutex::new(None),
@@ -392,11 +404,20 @@ impl Job {
             // A failed write means the shell already died; its exit reports that.
             let _ = gate.write_all(b"\n");
         }
+        if let Some(start) = lock(&self.start).take() {
+            start();
+        }
     }
 
     /// Kill what is left of the job's processes at once. True when they are
-    /// gone or the kill was delivered.
+    /// gone or the kill was delivered, and the job's entry in the orphan
+    /// journal can go. A command of the built-in shell answers false: its
+    /// programs keep their own entries, and take them out themselves.
     pub(super) fn destroy(&self) -> bool {
+        if let Some(programs) = &self.engine {
+            programs.end();
+            return false;
+        }
         #[cfg(unix)]
         return end_group(self.pid);
         #[cfg(windows)]
@@ -436,6 +457,21 @@ impl Job {
             .as_ref()
             .is_none_or(|lasting| lasting.identity(self.pid) == Some(true));
         if lock(&self.state).reaped || !identified {
+            return;
+        }
+        if let Some(programs) = &self.engine {
+            // The script stops at its next command either way; its programs
+            // get the signal, and what a `Term` leaves is killed after `grace`.
+            programs.stop(signal);
+            if signal == Signal::Term {
+                let job = Arc::clone(self);
+                runtime.spawn(async move {
+                    let ended = job.until(|job| lock(&job.state).reaped);
+                    if tokio::time::timeout(grace, ended).await.is_err() {
+                        job.destroy();
+                    }
+                });
+            }
             return;
         }
         #[cfg(unix)]
@@ -509,6 +545,83 @@ impl Table {
     }
 }
 
+/// Read `output` into `job`'s capture, watching for `fence`, on a thread
+/// of its own: reading blocks, and a process the command leaves behind can
+/// hold the pipe open long after its result, so that process never blocks on
+/// a full pipe.
+///
+/// # Errors
+///
+/// The thread could not be started.
+pub(super) fn read_output(
+    job: &Arc<Job>,
+    mut output: std::io::PipeReader,
+    fence: Vec<u8>,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    let reading = Arc::clone(job);
+    std::thread::Builder::new()
+        .name("scheme-bash-output".to_string())
+        .spawn(pa_types::session_scope::propagate(move || {
+            let mut chunk = vec![0u8; 64 * 1024];
+            loop {
+                match output.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(read) => {
+                        reading.transferring.store(true, Ordering::SeqCst);
+                        let settled = lock(&reading.capture).consume(&fence, &chunk[..read]);
+                        reading.transferring.store(false, Ordering::SeqCst);
+                        if settled {
+                            reading.changed.send_replace(());
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+            let mut capture = lock(&reading.capture);
+            capture.settle();
+            capture.eof = true;
+            drop(capture);
+            reading.changed.send_replace(());
+        }))
+}
+
+/// Put `job` in the session's table and its list of running commands, with
+/// a slot or, when `may_queue` and the session is at its limit, in line for
+/// one. Returns whether it is held, or `None` when the kernel was killed and
+/// nothing more may start.
+pub(super) fn enlist(session: &Session, job: &Arc<Job>, may_queue: bool) -> Option<bool> {
+    let queued = {
+        let mut table = lock(&session.table);
+        if table.closed {
+            return None;
+        }
+        table.jobs.insert(job.id.clone(), Arc::clone(job));
+        table.order.push(job.id.clone());
+        // Under the table's lock, so the list's lines are in the jobs' order.
+        if let Some(list) = &session.running_list {
+            list_running(
+                list,
+                &serde_json::json!({
+                    "job": job.id,
+                    "pid": job.pid,
+                    "command": super::capped(&job.command),
+                    "running": true,
+                }),
+            );
+        }
+        let queued = may_queue && table.running >= session.host.settings.max_jobs;
+        if queued {
+            table.queue.push_back(Arc::clone(job));
+        } else {
+            table.running += 1;
+        }
+        queued
+    };
+    lock(&job.state).queued = queued;
+    Some(queued)
+}
+
 /// Start `command` as a job of `session`. It runs at once when a job slot
 /// is free; over the session's limit it is held at its gate (`queued`) until
 /// one frees or a caller starts it. `on_finished` runs with its result.
@@ -530,10 +643,16 @@ pub(super) fn spawn(
         );
     }
     let settings = &session.host.settings;
+    match settings.engine {
+        platform::KernelShell::BuiltIn => {
+            return super::engine::spawn(session, command, on_finished);
+        }
+        platform::KernelShell::System => {}
+    }
     let shell =
         platform::resolve_kernel_bash_shell(settings.shell.as_deref())?.ok_or_else(|| {
             anyhow!(
-                "no POSIX shell was found (on Windows, install Git Bash in its default location)"
+                "no shell program was found (on Windows, install Git Bash in its default location, or drop \"shell\": \"system\" from settings to use the built-in shell)"
             )
         })?;
     let command_line = match &settings.command_prefix {
@@ -548,7 +667,7 @@ pub(super) fn spawn(
     );
     let fence = format!("\x1eprime-agent-complete:{first}{second}\x1f").into_bytes();
     // One pipe carries stdout and stderr, so their order is the command's own.
-    let (mut output, output_end) = std::io::pipe().context("could not open the output pipe")?;
+    let (output, output_end) = std::io::pipe().context("could not open the output pipe")?;
     let mut process = pa_types::session_scope::tokio_command(&shell);
     process
         .arg("-c")
@@ -656,73 +775,18 @@ pub(super) fn spawn(
         *lock(&job.container) = Some(container);
     }
     let job = Arc::new(job);
-    // Reading blocks, and a process the command leaves behind can hold the
-    // pipe open long after its result: a thread of its own reads on, so that
-    // process never blocks on a full pipe.
-    let reading = Arc::clone(&job);
-    let reader = std::thread::Builder::new()
-        .name("scheme-bash-output".to_string())
-        .spawn(pa_types::session_scope::propagate(move || {
-            let mut chunk = vec![0u8; 64 * 1024];
-            loop {
-                match output.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(read) => {
-                        reading.transferring.store(true, Ordering::SeqCst);
-                        let settled = lock(&reading.capture).consume(&fence, &chunk[..read]);
-                        reading.transferring.store(false, Ordering::SeqCst);
-                        if settled {
-                            reading.changed.send_replace(());
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => break,
-                }
-            }
-            let mut capture = lock(&reading.capture);
-            capture.settle();
-            capture.eof = true;
-            drop(capture);
-            reading.changed.send_replace(());
-        }));
+    let reader = read_output(&job, output, fence);
     if let Err(error) = reader {
         return Err(abandon(
             &mut child,
             anyhow!("could not start the output reader: {error}"),
         ));
     }
-    let limit = settings.max_jobs;
-    let queued = {
-        let mut table = lock(&session.table);
-        if table.closed {
-            drop(table);
-            return Err(abandon(&mut child, anyhow!("the kernel was shut down")));
-        }
-        table.jobs.insert(job.id.clone(), Arc::clone(&job));
-        table.order.push(job.id.clone());
-        // Under the table's lock, so the list's lines are in the jobs' order.
-        if let Some(list) = &session.running_list {
-            list_running(
-                list,
-                &serde_json::json!({
-                    "job": job.id,
-                    "pid": pid,
-                    "command": super::capped(command),
-                    "running": true,
-                }),
-            );
-        }
-        // Windows starts every command at once: its gate only covers the
-        // moment before the shell is inside its job object.
-        let queued = cfg!(unix) && table.running >= limit;
-        if queued {
-            table.queue.push_back(Arc::clone(&job));
-        } else {
-            table.running += 1;
-        }
-        queued
+    // Windows starts every command at once: its gate only covers the
+    // moment before the shell is inside its job object.
+    let Some(queued) = enlist(session, &job, /*may_queue*/ cfg!(unix)) else {
+        return Err(abandon(&mut child, anyhow!("the kernel was shut down")));
     };
-    lock(&job.state).queued = queued;
     // The hold exists before the task is first polled: a runtime shut down
     // before then still kills the group.
     session.runtime.spawn(supervise(
@@ -840,6 +904,25 @@ async fn supervise(
             size = current;
         }
     }
+    settle(&session, &job, exit_code, fenced);
+    if exited.is_none() {
+        // The shell is waiting for what the command left in the background.
+        // Only its end matters now: the result is already settled.
+        let _ = child.wait().await;
+    }
+    let gone = job.destroy();
+    drop(lock(&job.gate).take());
+    #[cfg(unix)]
+    drop(lock(&job.probe).take());
+    retire(&session, &job);
+    if gone {
+        record_orphan_process_state(job.pid as i32, false);
+    }
+}
+
+/// Give `job` its result: the command's own output (`fenced`, or everything
+/// captured when it ended without the fence) with `exit_code`.
+pub(super) fn settle(session: &Session, job: &Job, exit_code: i32, fenced: Option<String>) {
     let finished = {
         let mut capture = lock(&job.capture);
         let truncated = capture.buffer.dropped > 0;
@@ -861,22 +944,18 @@ async fn supervise(
         hook(&finished);
     }
     job.update(|state| state.finished = Some(finished));
-    if exited.is_none() {
-        // The shell is waiting for what the command left in the background.
-        // Only its end matters now: the result is already settled.
-        let _ = child.wait().await;
-    }
-    let gone = job.destroy();
-    drop(lock(&job.gate).take());
-    #[cfg(unix)]
-    drop(lock(&job.probe).take());
+}
+
+/// Everything of `job` has ended: mark it so, pass its slot on, and take it
+/// off the session's list of running commands.
+pub(super) fn retire(session: &Session, job: &Arc<Job>) {
     job.update(|state| state.reaped = true);
     let started = {
         let mut table = lock(&session.table);
         let mut started = Vec::new();
         // A job that ended while still held never had a slot: taking it out
         // of the line counts one, which its end gives back.
-        table.promote(&job);
+        table.promote(job);
         table.running = table.running.saturating_sub(1);
         while table.running < session.host.settings.max_jobs {
             let Some(next) = table.queue.pop_front() else {
@@ -885,7 +964,7 @@ async fn supervise(
             table.running += 1;
             started.push(next);
         }
-        table.retire(&job);
+        table.retire(job);
         // A killed kernel's commands stay listed: its session's next kernel
         // tells the session they were lost.
         if let (false, Some(list)) = (table.closed, &session.running_list) {
@@ -903,8 +982,5 @@ async fn supervise(
     };
     for next in started {
         next.open_gate();
-    }
-    if gone {
-        record_orphan_process_state(job.pid as i32, false);
     }
 }

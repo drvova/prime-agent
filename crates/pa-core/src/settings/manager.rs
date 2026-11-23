@@ -1083,6 +1083,7 @@ fn load_scope(
         // document on disk, but never let it select a process, command prefix,
         // package installer, or MCP server through an effective settings read.
         settings.shell_path = None;
+        settings.shell = None;
         settings.shell_command_prefix = None;
         settings.npm_command = None;
         settings.packages = None;

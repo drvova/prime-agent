@@ -2688,6 +2688,7 @@ dependencies = [
  "pa-agent",
  "pa-ai",
  "pa-models",
+ "pa-shell",
  "pa-telemetry",
  "pa-types",
  "pdf-extract",

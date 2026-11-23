@@ -21,4 +21,6 @@ pub use process::{
 // already depends on; re-exported so the platform wall stays the engine's
 // single platform entry.
 pub use pa_telemetry::rename_onto;
-pub use shell::{get_shell_config, resolve_kernel_bash_shell, ShellConfig};
+pub use shell::{
+    get_shell_config, resolve_kernel_bash_shell, resolve_kernel_shell, KernelShell, ShellConfig,
+};

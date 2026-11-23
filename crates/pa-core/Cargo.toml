@@ -18,6 +18,7 @@ pa-types.workspace = true
 pa-ai.workspace = true
 pa-models = { path = "../pa-models" }
 pa-agent.workspace = true
+pa-shell.workspace = true
 pa-telemetry.workspace = true
 base64 = "0.22"
 # The Scheme kernel's `attach-image`: decode, scale and re-encode images, as

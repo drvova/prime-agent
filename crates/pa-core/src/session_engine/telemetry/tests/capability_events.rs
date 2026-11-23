@@ -22,6 +22,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::hypotheses::HypothesesRun;
     use crate::kernel::shared::BackgroundCellFact;
+    use crate::kernel::shell_runs::ShellRun;
     use crate::kernel::spill::host::CtxRead;
     use crate::kernel::spill::{PreviewFact, SpillFact};
     use crate::kernel::test_runs::TestRunFact;
@@ -280,6 +281,14 @@ fn drive(counters: &SessionCounters) {
     ] {
         counters.note_cache_lookup(CacheLookup { file_read, hit });
     }
+    for (in_process, spawned, handed_over, unavailable) in [(4, 1, 1, 0), (2, 2, 0, 3)] {
+        counters.note_shell_run(ShellRun {
+            in_process,
+            spawned,
+            handed_over,
+            unavailable,
+        });
+    }
     for outcome in [
         EditCheckOutcome::Clean,
         EditCheckOutcome::Clean,
@@ -516,6 +525,10 @@ async fn capability_events_stay_byte_identical() {
 /// Captured from the per-feature counter structs (the pre-refactor emission: this test run
 /// against the Scheme-kernel branch's counters, before the generic counter replaced them).
 const EXPECTED: &[(&str, &str)] = &[
+    (
+        "agent builtin shell",
+        r#"{"builtin_shell_command_count":2,"builtin_shell_in_process_count":6,"builtin_shell_spawned_count":3,"builtin_shell_handed_over_count":1,"builtin_shell_unavailable_count":3}"#,
+    ),
     (
         "agent better prompt",
         r#"{"better_run_count":3,"better_completed_count":1,"better_cancelled_count":1,"better_failed_count":1,"better_sent_as_is_count":1,"better_edited_count":2,"better_discarded_count":1,"better_brief_run_count":2,"better_brief_unchanged_count":1,"better_verification_pass_count":1,"better_check_round_count":2,"better_check_passed_count":3,"better_check_failed_count":1}"#,

@@ -20,7 +20,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{calls:shell}}
 
-`(bash command)` waits for the command and returns `{exit-code, output, running, timed-out, truncated, handle, tests, ...}`; `output` is stdout and stderr together. Each call is its own shell process in the session's working directory. The wait has a window; a command that outlives it keeps running and the call returns a snapshot with `running` `#t` and `exit-code` `#f`. A command finished outside its cell is announced by a `[bash-done]` notice. Options: `'wait-ms`, `'timeout-ms`, `'background`, `'persistent`.
+`(bash command)` waits for the command and returns `{exit-code, output, running, timed-out, truncated, handle, tests, ...}`; `output` is stdout and stderr together. Each call is its own shell in the session's working directory. The wait has a window; a command that outlives it keeps running and the call returns a snapshot with `running` `#t` and `exit-code` `#f`. A command finished outside its cell is announced by a `[bash-done]` notice. Options: `'wait-ms`, `'timeout-ms`, `'background`, `'persistent`.
 
 ## Files
 

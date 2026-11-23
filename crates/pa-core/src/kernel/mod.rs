@@ -15,6 +15,7 @@ pub mod orphan_journal;
 pub mod rlm_runtime;
 pub mod scheme;
 pub mod shared;
+pub(crate) mod shell_runs;
 pub mod spill;
 pub(crate) mod test_runs;
 

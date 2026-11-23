@@ -380,6 +380,12 @@ pub struct Settings {
     /// validated once at session start (a bad value fails session creation
     /// naming this setting). Only global settings can select this executable.
     pub shell_path: Option<String>,
+    /// What runs the kernel's `bash` commands: `"builtin"` (Prime Agent's
+    /// own shell and utilities, inside the process) or `"system"` (a shell
+    /// process per command: `shellPath`, or the platform's default shell).
+    /// Unset, a shell process is used where the machine has one and the
+    /// built-in shell where it has none. Only global settings select it.
+    pub shell: Option<String>,
     pub quiet_startup: Option<bool>,
     pub shell_command_prefix: Option<String>,
     pub npm_command: Option<Vec<String>>,

@@ -1,6 +1,10 @@
 //! `bash` and its jobs: shell commands run in the session's working
 //! directory, in the foreground of their cell or in the background.
 //!
+//! A command runs on a shell process of its own (`bash_job.rs`) or on the
+//! built-in shell inside this process (`bash_engine.rs`), as the session's
+//! settings say; everything below holds for both.
+//!
 //! - `(bash command [options])` starts the command and waits for it. It
 //!   returns its result: `'running` `#f`, `'exit-code`, `'output` (stdout and
 //!   stderr together, in the order written), `'truncated`, `'timed-out`,
@@ -57,6 +61,8 @@
 
 #[path = "bash_cache.rs"]
 mod cache;
+#[path = "bash_engine.rs"]
+mod engine;
 #[path = "bash_job.rs"]
 mod job;
 #[path = "bash_persistent.rs"]
@@ -146,8 +152,10 @@ const HANDLE_WAIT: Duration = Duration::from_secs(2);
 
 /// The session settings commands run under.
 struct BashSettings {
-    /// The absolute path of the session's shell; the platform's default
-    /// one without it.
+    /// Whether commands run on the built-in shell or a shell process.
+    engine: crate::platform::KernelShell,
+    /// The absolute path of the session's shell process; the platform's
+    /// default one without it.
     shell: Option<String>,
     /// Shell text run before each command.
     command_prefix: Option<String>,
@@ -531,6 +539,13 @@ pub(super) fn open(
                 .as_deref()
                 .map(SpillStore::for_session_dir),
             settings: BashSettings {
+                // `PRIME_AGENT_BASH_SHELL` (`builtin` or `system`) overrides
+                // the session's setting, for one session or one test run.
+                engine: match set("PRIME_AGENT_BASH_SHELL").as_deref() {
+                    Some("builtin") => crate::platform::KernelShell::BuiltIn,
+                    Some("system") => crate::platform::KernelShell::System,
+                    Some(_) | None => environment.shell,
+                },
                 shell: environment
                     .shell_path
                     .as_deref()

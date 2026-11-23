@@ -231,6 +231,53 @@ pub fn default_kernel_bash_shell() -> Option<String> {
     None
 }
 
+/// What runs the kernel's `bash` commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelShell {
+    /// Prime Agent's own shell (`pa-shell`), inside the process: no shell
+    /// program is needed, and only the programs a command names are started.
+    BuiltIn,
+    /// A shell process per command: the `shellPath` setting's, or the
+    /// platform's default one.
+    System,
+}
+
+impl Default for KernelShell {
+    /// What a kernel with no session settings runs on: [`KernelShell::System`]
+    /// wherever [`default_kernel_bash_shell`] finds a shell.
+    fn default() -> Self {
+        if default_kernel_bash_shell().is_some() {
+            Self::System
+        } else {
+            Self::BuiltIn
+        }
+    }
+}
+
+/// Decide what runs the kernel's `bash` from the `shell` setting
+/// (`"builtin"` or `"system"`) and the shell process that
+/// [`resolve_kernel_bash_shell`] found. Without the setting a shell process
+/// is used where there is one, and the built-in shell where there is none:
+/// a Windows machine without Git Bash.
+///
+/// # Errors
+///
+/// A `shell` setting that is neither `builtin` nor `system`.
+pub fn resolve_kernel_shell(
+    setting: Option<&str>,
+    system_shell: Option<&str>,
+) -> anyhow::Result<KernelShell> {
+    match setting.map(str::trim).filter(|setting| !setting.is_empty()) {
+        Some("builtin") => Ok(KernelShell::BuiltIn),
+        Some("system") => Ok(KernelShell::System),
+        Some(other) => anyhow::bail!(
+            "Unknown shell: {other} (shell setting; expected \"builtin\" or \"system\")"
+        ),
+        None if system_shell.is_some() => Ok(KernelShell::System),
+        None => Ok(KernelShell::BuiltIn),
+    }
+}
+
 /// Resolve the absolute shell for the kernel's `bash()` from an explicit
 /// `shellPath`, validated here so a bad setting fails session creation
 /// once instead of every kernel `bash()` call: a trimmed non-empty
@@ -301,6 +348,44 @@ mod windows_tests {
         assert_eq!(
             resolve_kernel_bash_shell(None).unwrap(),
             default_kernel_bash_shell()
+        );
+    }
+}
+
+#[cfg(test)]
+mod kernel_shell_tests {
+    use super::*;
+
+    /// The `shell` setting decides; without it a shell process is used
+    /// where one was found and the built-in shell where none was.
+    #[test]
+    fn the_setting_decides_and_a_machine_without_a_shell_gets_the_built_in_one() {
+        let resolved = [
+            (Some("builtin"), Some("/bin/bash")),
+            (Some(" system "), None),
+            (None, Some("/bin/bash")),
+            (None, None),
+            (Some(""), None),
+        ]
+        .map(|(setting, system)| resolve_kernel_shell(setting, system).ok());
+        assert_eq!(
+            (
+                resolved,
+                resolve_kernel_shell(Some("zsh"), None)
+                    .unwrap_err()
+                    .to_string()
+            ),
+            (
+                [
+                    Some(KernelShell::BuiltIn),
+                    Some(KernelShell::System),
+                    Some(KernelShell::System),
+                    Some(KernelShell::BuiltIn),
+                    Some(KernelShell::BuiltIn),
+                ],
+                "Unknown shell: zsh (shell setting; expected \"builtin\" or \"system\")"
+                    .to_string()
+            )
         );
     }
 }

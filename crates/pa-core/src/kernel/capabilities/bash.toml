@@ -1,4 +1,4 @@
-internal_host_requests = ["bash.completed", "bash.consumed", "tests.summary", "command_cache.fact"]
+internal_host_requests = ["bash.completed", "bash.consumed", "tests.summary", "command_cache.fact", "shell.fact"]
 
 [[telemetry]]
 event = "agent test summaries"
@@ -17,4 +17,14 @@ properties = [
   "readonly_cache_miss_count",
   "readonly_cache_fs_read_hit_count",
   "readonly_cache_fs_read_miss_count",
+]
+
+[[telemetry]]
+event = "agent builtin shell"
+properties = [
+  "builtin_shell_command_count",
+  "builtin_shell_in_process_count",
+  "builtin_shell_spawned_count",
+  "builtin_shell_handed_over_count",
+  "builtin_shell_unavailable_count",
 ]
