@@ -39,8 +39,10 @@
 //!   on the cell's card, as `edit` does.
 //! - `(fs-anchor view line)` is the anchor of a 1-based line of an `fs-read`
 //!   view.
-//! - `(edit path old-str new-str)` replaces one exact, unique occurrence of a
-//!   string: `'path`, `'start-line`, `'check`, `'text`.
+//! - `(edit path old-str new-str)` replaces one unique occurrence of a
+//!   string, found exactly or, failing that, by the first normalization that
+//!   finds it (`edit_replace`): `'path`, `'start-line`, `'matched-by`,
+//!   `'check`, `'text`.
 
 use std::path::{Path, PathBuf};
 
@@ -284,11 +286,20 @@ impl Files {
         options: &Value,
     ) -> anyhow::Result<Value> {
         match operation {
-            "fs-read" => self.request(
-                "fs.read",
-                Value::Object(payload("fs-read", options, READ, "path", &self.cwd)?),
-                cell,
-            ),
+            "fs-read" => {
+                let payload = payload("fs-read", options, READ, "path", &self.cwd)?;
+                let file = PathBuf::from(payload["path"].as_str().unwrap_or_default());
+                let reply = self.request("fs.read", Value::Object(payload), cell)?;
+                // The read rides the cell's result, as an edit's diff does:
+                // a compaction reads the session's latest files from them.
+                if let Some(kernel) = crate::kernel::scheme::cell::current() {
+                    let path = file.canonicalize().unwrap_or(file);
+                    kernel.record(crate::kernel::scheme::cell::CellRecord::FileRead {
+                        path: path.to_string_lossy().into_owned(),
+                    });
+                }
+                Ok(reply)
+            }
             "fs-grep" => {
                 let mut payload = payload("fs-grep", options, GREP, "root", &self.cwd)?;
                 // `context` is both sides' default, as in `rg -C`.
@@ -322,16 +333,50 @@ impl Files {
                 Ok(reply)
             }
             "edit" => {
-                let (file, mut reply) = edit_replace::replace(&self.cwd, options)?;
+                let replaced = edit_replace::replace(&self.cwd, options);
+                // How it matched, or why nothing did (adoption telemetry):
+                // nothing waits for the count, and one the host refuses
+                // changes nothing here.
+                let outcome = match &replaced {
+                    Ok(replaced) => replaced.reply["matchedBy"].as_str(),
+                    Err(error) => error
+                        .downcast_ref::<edit_replace::Miss>()
+                        .map(|miss| match miss.outcome {
+                            edit_replace::MissOutcome::AnchorPrefix => "anchor-prefix",
+                            edit_replace::MissOutcome::Ambiguous => "ambiguous",
+                            edit_replace::MissOutcome::NotFound => "not-found",
+                        }),
+                };
+                if let (Some(outcome), Some(handler)) = (
+                    outcome,
+                    self.handlers
+                        .get(crate::kernel::edit_matches::EDIT_FACT_REQUEST_TYPE),
+                ) {
+                    let counted = handler(HostRequestPayload {
+                        data: json!({ "outcome": outcome }),
+                    });
+                    self.runtime.spawn(async move {
+                        if let Err(error) = counted.await {
+                            tracing::debug!("edit fact was refused: {error:#}");
+                        }
+                    });
+                }
+                let edit_replace::Replaced {
+                    file,
+                    mut reply,
+                    old,
+                    new,
+                } = replaced?;
                 // The edit shows on the running cell's card, as the Python
-                // kernel's `edit` skill displayed it.
+                // kernel's `edit` skill displayed it: the text that was
+                // replaced, which a normalized match spells differently from
+                // `old-str`.
                 if let Some(kernel) = crate::kernel::scheme::cell::current() {
-                    let text = |name: &str| options[name].as_str().unwrap_or_default().to_string();
                     kernel.record(crate::kernel::scheme::cell::CellRecord::Diff(
                         KernelDiffDisplay {
                             path: file.to_string_lossy().into_owned(),
-                            old_str: text("old-str"),
-                            new_str: text("new-str"),
+                            old_str: old,
+                            new_str: new,
                             start_line: reply["startLine"].as_u64(),
                         },
                     ));

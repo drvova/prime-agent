@@ -685,7 +685,14 @@ async fn requested_compaction_streams_the_ts_event_pair() {
         .expect("the compaction_end event");
     assert!(start_at < end_at);
     assert_eq!(events[end_at]["reason"], "requested");
-    assert_eq!(events[end_at]["result"]["summary"], "the summary");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            events[end_at]["result"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "the summary"
+    );
     assert_eq!(events[end_at]["aborted"], false);
     assert_eq!(events[end_at]["willRetry"], false);
     assert_eq!(events[end_at]["customInstructions"], "focus on the goal");
@@ -1036,7 +1043,14 @@ async fn threshold_compaction_streams_the_ts_event_pair() {
         .expect("the compaction_end event");
     assert!(start_at < end_at);
     assert_eq!(events[end_at]["reason"], "threshold");
-    assert_eq!(events[end_at]["result"]["summary"], "the summary");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            events[end_at]["result"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "the summary"
+    );
     assert_eq!(events[end_at]["aborted"], false);
     assert_eq!(events[end_at]["willRetry"], false);
     assert!(
@@ -1101,7 +1115,14 @@ async fn pre_turn_check_consumes_a_pending_request_before_the_prompt() {
     );
     assert_eq!(captured[1]["type"], "compaction_end");
     assert_eq!(captured[1]["reason"], "requested");
-    assert_eq!(captured[1]["result"]["summary"], "the summary");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            captured[1]["result"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "the summary"
+    );
     assert_eq!(captured[1]["willRetry"], false);
     assert_eq!(
         captured
@@ -1208,7 +1229,12 @@ async fn pre_turn_threshold_arm_compacts_a_resumed_session_before_the_prompt() {
     );
     assert_eq!(events[1]["type"], "compaction_end");
     assert_eq!(events[1]["reason"], "threshold");
-    assert_eq!(events[1]["result"]["summary"], "the resumed summary");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            events[1]["result"]["summary"].as_str().unwrap_or_default()
+        ),
+        "the resumed summary"
+    );
     assert_eq!(events[1]["willRetry"], false);
     assert_eq!(compaction_count(&engine_b).await, 1);
     assert!(outcome_rows(&engine_b).await.is_empty());
@@ -1374,7 +1400,14 @@ async fn requested_refinement_streams_rows_and_refine_complete() {
         .position(|event| event["type"] == "refine_complete")
         .expect("the refine_complete event");
     assert!(notice_at < complete_at);
-    assert_eq!(events[complete_at]["result"]["summary"], "note it");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            events[complete_at]["result"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "note it"
+    );
     assert_eq!(events[complete_at]["result"]["appliedEdits"][0]["id"], "m1");
     let rows = refine_rows(&engine).await;
     assert_eq!(rows.len(), 2);
@@ -1463,7 +1496,14 @@ async fn compact_trigger_auto_refine_streams_at_the_next_boundary() {
         .position(|event| event["type"] == "refine_complete")
         .expect("the refine_complete event");
     assert!(outcome_at < notice_at && notice_at < complete_at);
-    assert_eq!(events[complete_at]["result"]["summary"], "note it");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            events[complete_at]["result"]["summary"]
+                .as_str()
+                .unwrap_or_default()
+        ),
+        "note it"
+    );
     assert_eq!(events[notice_at]["message"]["details"]["source"], "auto");
     let rows = refine_rows(&engine).await;
     assert_eq!(rows.len(), 2);

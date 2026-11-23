@@ -230,7 +230,7 @@ impl BetterHost {
         let ending = match delivery {
             NoticeDelivery::Steer if round >= MAX_ROUNDS => Some(LAST_ROUND_NOTE),
             NoticeDelivery::Steer => Some(RETRY_NOTE),
-            NoticeDelivery::Record => None,
+            NoticeDelivery::Record | NoticeDelivery::WakeIdle => None,
         };
         sink(KernelNotice {
             row: notice_row(&evidence, ending),
@@ -456,7 +456,10 @@ mod tests {
         ));
         let notices: Arc<Mutex<Vec<KernelNotice>>> = Arc::default();
         let sink = Arc::clone(&notices);
-        host.bind_notice_sink(Arc::new(move |notice| sink.lock().unwrap().push(notice)));
+        host.bind_notice_sink(Arc::new(move |notice| {
+            sink.lock().unwrap().push(notice);
+            crate::session_engine::bash_notices::NoticeAdmission::Taken
+        }));
         (host, notices)
     }
 

@@ -57,6 +57,10 @@ pub struct ExecuteResult {
     pub attachments: Vec<KernelAttachment>,
     /// File edits displayed by this cell, in order.
     pub diffs: Vec<crate::kernel::shared::KernelDiffDisplay>,
+    /// The files this cell's `fs-read`s read, absolute, oldest first
+    /// (`fileReads` on the tool-result details; a compaction reads the
+    /// session's latest files again from them).
+    pub file_reads: Vec<String>,
     /// Agent messages sent from this cell, in order (TS
     /// `sentAgentMessages` on the tool-result details).
     pub sent_agent_messages: Vec<crate::kernel::shared::KernelSentAgentMessage>,
@@ -369,6 +373,9 @@ pub async fn execute_kernel_cell(
     }
     if !r.transcript_reads.is_empty() {
         details["transcriptReads"] = json!(r.transcript_reads);
+    }
+    if !r.file_reads.is_empty() {
+        details["fileReads"] = json!(r.file_reads);
     }
     if let Some(list) = &r.todo_list {
         details["todoList"] = list.clone();

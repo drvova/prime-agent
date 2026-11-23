@@ -236,13 +236,25 @@ impl AgentSession {
             None => None,
         };
         let notice_landed = kernel_state.is_some();
+        let mut recent_files = false;
         if let CompactOutcome::Ran(run) = &mut outcome {
             run.kernel_state = kernel_state;
+            // After the kernel notice, in the order the built context
+            // shows the two rows.
+            recent_files = super::compaction_files::sync_after_compaction(
+                &self.session,
+                &self.agent,
+                &run.entry.first_kept_entry_id,
+                model.context_window,
+            )
+            .await?
+            .is_some();
         }
         compaction_trace::trace(
             "compact.returned",
             &serde_json::json!({
                 "notice": notice_landed,
+                "recentFiles": recent_files,
             }),
         );
         Ok(outcome)

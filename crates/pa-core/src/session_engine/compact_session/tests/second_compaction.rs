@@ -71,7 +71,10 @@ async fn second_compaction_updates_the_prior_summary_over_new_history() {
     let CompactOutcome::Ran(first) = outcome else {
         panic!("expected the first compaction to run")
     };
-    assert_eq!(first.result.summary, "the first summary");
+    assert_eq!(
+        super::super::compaction_utils::strip_harness_blocks(&first.result.summary),
+        "the first summary"
+    );
     let mut requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
     assert!(requests[0].contains("Create a structured context checkpoint summary"));
@@ -112,7 +115,10 @@ async fn second_compaction_updates_the_prior_summary_over_new_history() {
     assert!(!request.contains("[User]: turn zero"));
     assert!(!request.contains("[User]: turn one"));
     // The merged durable entry: the updated summary, the new cut.
-    assert_eq!(second.result.summary, "the second summary");
+    assert_eq!(
+        super::super::compaction_utils::strip_harness_blocks(&second.result.summary),
+        "the second summary"
+    );
     let kept_id = session
         .get_all_entries()
         .iter()
@@ -126,7 +132,9 @@ async fn second_compaction_updates_the_prior_summary_over_new_history() {
         .get_entries()
         .iter()
         .filter_map(|entry| match entry {
-            FileEntry::Compaction { payload, .. } => Some(payload.summary.clone()),
+            FileEntry::Compaction { payload, .. } => Some(
+                super::super::compaction_utils::strip_harness_blocks(&payload.summary),
+            ),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -230,7 +238,7 @@ async fn second_compaction_request_carries_the_anchor_and_strips_file_blocks() {
     };
     assert_eq!(
         first.result.summary,
-        "the first summary\n\n<modified-files>\na.rs\n</modified-files>"
+        "the first summary\n\n<modified-files>\na.rs\n</modified-files>\n\n<user-messages>\nThe user's own messages from the compacted conversation, verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n\n[1]\nturn one\n\n[2]\nturn zero\n</user-messages>"
     );
     let requests = seen.lock().unwrap().clone();
     assert_eq!(requests.len(), 1);
@@ -299,9 +307,11 @@ async fn second_compaction_request_carries_the_anchor_and_strips_file_blocks() {
     let anchor_start = request.find("<recent-state-anchor>").expect("anchor block");
     assert!(anchor_start > previous_end);
     assert!(request.contains("\n\nthe newest kept reply\n</recent-state-anchor>\n\n"));
+    // The file blocks follow the model's text; the carried user messages
+    // follow them.
     assert_eq!(
-        second.result.summary,
-        "the second summary\n\n<modified-files>\na.rs\n</modified-files>"
+        second.result.summary.split("\n\n<user-messages>").next(),
+        Some("the second summary\n\n<modified-files>\na.rs\n</modified-files>")
     );
     registration.unregister();
 }
@@ -447,7 +457,7 @@ async fn second_compaction_split_turn_history_updates_prefix_does_not() {
     assert!(!prefix_request.contains("<previous-summary>"));
     assert!(!prefix_request.contains("NEW conversation messages to incorporate"));
     assert_eq!(
-        second.result.summary,
+        super::super::compaction_utils::strip_harness_blocks(&second.result.summary),
         "the updated history summary\n\n---\n\n**Turn Context (split turn):**\n\nthe turn prefix summary"
     );
     registration.unregister();

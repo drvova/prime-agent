@@ -2476,7 +2476,14 @@ fn acp_overflow_recovery_compacts_and_retries_the_turn() {
     );
     let metas = compaction_metas(&updates);
     assert_eq!(metas.len(), 1, "one compaction meta: {metas:?}");
-    assert_eq!(metas[0]["summary"], "the summary");
+    // The model's text; the user's carried messages (the long seed turn)
+    // follow it.
+    assert_eq!(
+        metas[0]["summary"]
+            .as_str()
+            .and_then(|summary| summary.split("\n\n<user-messages>").next()),
+        Some("the summary")
+    );
     assert!(metas[0]["tokensBefore"].as_u64().unwrap() > 0);
 }
 
@@ -2542,7 +2549,14 @@ fn acp_overflow_recovery_recovers_from_the_live_413_body() {
     );
     let metas = compaction_metas(&updates);
     assert_eq!(metas.len(), 1, "one compaction meta: {metas:?}");
-    assert_eq!(metas[0]["summary"], "the summary");
+    // The model's text; the user's carried messages (the long seed turn)
+    // follow it.
+    assert_eq!(
+        metas[0]["summary"]
+            .as_str()
+            .and_then(|summary| summary.split("\n\n<user-messages>").next()),
+        Some("the summary")
+    );
 }
 
 /// The namespaced prime-agent payload of one session/update frame.

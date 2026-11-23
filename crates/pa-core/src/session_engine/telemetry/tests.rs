@@ -15,6 +15,7 @@ use crate::session_engine::agent_messaging::AgentMessageRefusals;
 use crate::session_engine::decision::DecideFact;
 
 mod capability_events;
+mod run_metrics;
 
 /// Tests that resolve the env-gated switch need the three override vars
 /// cleared (the Cargo test config sets `DO_NOT_TRACK`); restore after.
@@ -115,6 +116,9 @@ fn fixture_with_clock(clock: TestClock) -> Fixture {
         recording: true,
         now,
         auth_baseline: crate::auth::resolver::AuthMetrics::current(),
+        meter: crate::session_engine::run_metrics::MetricsMeter::new(
+            crate::session_engine::run_metrics::SpawnVisibility::Observed,
+        ),
     }));
     Fixture {
         client,
@@ -1398,6 +1402,9 @@ fn fixture_with_switch(telemetry_enabled: Arc<dyn Fn() -> bool + Send + Sync>) -
         recording: true,
         now,
         auth_baseline: crate::auth::resolver::AuthMetrics::current(),
+        meter: crate::session_engine::run_metrics::MetricsMeter::new(
+            crate::session_engine::run_metrics::SpawnVisibility::Observed,
+        ),
     }));
     Fixture {
         client,

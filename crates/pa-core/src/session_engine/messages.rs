@@ -34,6 +34,9 @@ pub const HEARTBEAT_PROMPT_CUSTOM_TYPE: &str = "heartbeat_prompt";
 /// The durable row a detached kernel bash completion admits as the
 /// woken turn's injected prompt.
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
+/// The durable row a background command that has gone quiet (`bash.quiet`)
+/// admits as the woken turn's injected prompt.
+pub const ASYNC_BASH_QUIET_CUSTOM_TYPE: &str = "async_bash_quiet";
 /// The durable row a backgrounded kernel cell's end (`cell.completed`)
 /// admits as the woken turn's injected prompt.
 pub const ASYNC_CELL_COMPLETION_CUSTOM_TYPE: &str = "async_cell_completion";
@@ -45,6 +48,8 @@ pub const SESSION_RENAMED_CUSTOM_TYPE: &str = "session_renamed";
 /// notice's queued row carries (the TUI renders it with its own label,
 /// no lane prefix).
 pub const ASYNC_BASH_COMPLETION_PREVIEW_LABEL: &str = "Background command finished";
+/// The queue-strip label a quiet background command's row carries.
+pub const ASYNC_BASH_QUIET_PREVIEW_LABEL: &str = "Background command quiet";
 /// The queue-strip label a backgrounded cell's completion row carries.
 pub const ASYNC_CELL_COMPLETION_PREVIEW_LABEL: &str = "Background cell finished";
 /// The durable row a factory run milestone (`factory.progress`) admits on
@@ -308,6 +313,92 @@ pub fn create_async_bash_lost_message(
             "pid": pid,
             "command": command,
             "lost": true,
+        })),
+        timestamp,
+        rest: serde_json::Map::default(),
+    }
+}
+
+/// One still-running background command a `[bash-quiet]` notice names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuietJob {
+    /// The kernel's job id, which the `bash-*` functions take.
+    pub job: String,
+    pub pid: u32,
+    pub command: String,
+    /// How long it has run, and how long nothing has been heard from it.
+    pub elapsed_ms: u64,
+    pub quiet_ms: u64,
+    /// Its newest output, bounded as a snapshot's is.
+    pub output: String,
+    pub output_truncated: bool,
+}
+
+/// The notice that every background command still running has written
+/// nothing for a while: the `[bash-quiet]` header, then each command's job,
+/// pid, run and silent time, command and output tail, then what to do. The
+/// session hears it only while it is idle.
+#[must_use]
+pub fn create_async_bash_quiet_message(
+    jobs: &[QuietJob],
+    timestamp: u64,
+) -> pa_types::session::CustomMessage {
+    let minutes = |ms: u64| match ms / 60_000 {
+        0 => format!("{} s", ms / 1000),
+        whole => format!("{whole} min"),
+    };
+    let quiet = jobs
+        .iter()
+        .map(|job| job.quiet_ms)
+        .min()
+        .unwrap_or_default();
+    let mut content = format!(
+        "[bash-quiet] {} background command{} still running, nothing written for {}",
+        jobs.len(),
+        if jobs.len() == 1 { "" } else { "s" },
+        minutes(quiet)
+    );
+    for job in jobs {
+        let encoded_command = serde_json::to_string(&job.command).unwrap_or_default();
+        let _ = write!(
+            content,
+            "\n\nJob {} (pid {}): running {}, quiet {}\nCommand: {encoded_command}",
+            sanitize_message_header_value(&job.job),
+            job.pid,
+            minutes(job.elapsed_ms),
+            minutes(job.quiet_ms),
+        );
+        push_output_tail(
+            &mut content,
+            if job.output_truncated {
+                BackgroundOutputTail::Truncated(&job.output)
+            } else {
+                BackgroundOutputTail::Complete(&job.output)
+            },
+            "`(bash-output job)` with the job's id",
+        );
+    }
+    content.push_str(
+        "\n\nA command that writes nothing for this long may be stuck (waiting for input, a lock, \
+         or the network). Check it with `(bash-tail job)`, or end it with `(bash-kill job)`. If it \
+         is only slow, end the turn again: `[bash-done]` still arrives when it finishes, and a \
+         command is named in at most three of these notices, each after a longer silence.",
+    );
+    pa_types::session::CustomMessage {
+        custom_type: ASYNC_BASH_QUIET_CUSTOM_TYPE.to_string(),
+        content: UserContent::Text(content),
+        display: true,
+        details: Some(serde_json::json!({
+            "jobs": jobs
+                .iter()
+                .map(|job| serde_json::json!({
+                    "job": job.job,
+                    "pid": job.pid,
+                    "command": job.command,
+                    "elapsedMs": job.elapsed_ms,
+                    "quietMs": job.quiet_ms,
+                }))
+                .collect::<Vec<_>>(),
         })),
         timestamp,
         rest: serde_json::Map::default(),

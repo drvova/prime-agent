@@ -148,7 +148,7 @@ async fn nudge_for(messages: Vec<AgentMessage>) -> Option<Vec<ToolResultContent>
         panic!("the newest message is the calling round");
     };
     let call = current.tool_calls()[0].clone();
-    let hook = repeat_call_nudge(Arc::new(OnceLock::new()));
+    let hook = repeat_call_guard(Arc::new(OnceLock::new()));
     hook(
         AfterToolCallContext {
             assistant_message: current,

@@ -118,7 +118,11 @@ async fn compaction_auxiliary_selector_unusable_falls_back_to_the_session_model(
     let CompactOutcome::Ran(run) = outcome else {
         panic!("expected the compaction to run on the fallback model");
     };
-    assert_eq!(run.result.summary, "the summary");
+    // The model's text; the carried user messages follow it.
+    assert_eq!(
+        super::super::compaction_utils::strip_harness_blocks(&run.result.summary),
+        "the summary"
+    );
     assert_eq!(seen_models.lock().unwrap().as_slice(), ["compact-m"]);
     registration.unregister();
 }

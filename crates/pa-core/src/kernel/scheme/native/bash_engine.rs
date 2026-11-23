@@ -36,7 +36,7 @@ use std::time::Duration;
 use anyhow::{bail, Context};
 use serde_json::json;
 
-use super::job::{self, lock, FinishHook, GroupHold, Job, CHILD_ENV};
+use super::job::{self, lock, FinishHook, GroupHold, Job};
 use super::Session;
 use crate::kernel::orphan_journal::{note_orphan_process_state, OrphanState};
 use crate::kernel::shared::HostRequestPayload;
@@ -211,15 +211,8 @@ pub(super) fn spawn(
     // The session's environment as a shell process of it would inherit it,
     // later names over earlier ones.
     let mut env: Vec<(String, String)> = pa_types::session_scope::vars();
-    for (name, value) in settings
-        .env
-        .iter()
-        .cloned()
-        .chain(
-            CHILD_ENV
-                .iter()
-                .map(|(name, value)| ((*name).to_string(), (*value).to_string())),
-        )
+    for (name, value) in job::child_env(&settings.env)
+        .into_iter()
         // How a script, or a program it starts, can tell which shell runs it.
         .chain([("PRIME_AGENT_SHELL".to_string(), "builtin".to_string())])
     {

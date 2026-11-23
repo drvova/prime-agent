@@ -761,6 +761,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::shell_runs::ShellObserver
         }),
     );
+    // `edit.fact`: how each `edit` matched, or why it did not (telemetry counts).
+    crate::kernel::edit_matches::register_edit_match_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |outcome| counters.note_edit_match(outcome))
+                as crate::kernel::edit_matches::EditMatchObserver
+        }),
+    );
     // `call.refused`: kernel calls refused before they ran (telemetry counts).
     crate::kernel::call_refusals::register_call_refusal_handler(
         &mut handlers,
@@ -832,6 +841,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             &wake,
             &bash_notice_agent,
         ));
+    }
+    // `bash.quiet` (the embedding's or the in-process one, registered above):
+    // telemetry counts each notice, its jobs and back-off step, and whether it
+    // woke the session (never a command or output).
+    if config.telemetry.is_some() {
+        let counters = std::sync::Arc::clone(&session_counters);
+        super::bash_notices::observe_bash_quiet(
+            &mut handlers,
+            std::sync::Arc::new(move |fact| counters.note_bash_quiet(fact)),
+        );
     }
     // One model-visible skill list, computed now that the host-handler
     // registry is final (every registration, the refine handlers, and
@@ -1381,7 +1400,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         },
         should_stop_before_turn: config.queued_steering_probe.clone(),
         after_tool_call: (loop_guard_level != Some(pa_agent::types::LoopGuardLevel::Off)).then(
-            || super::loop_guard::repeat_call_nudge(std::sync::Arc::clone(&repeat_nudge_telemetry)),
+            || super::loop_guard::repeat_call_guard(std::sync::Arc::clone(&repeat_nudge_telemetry)),
         ),
         steering_mode: config.steering_mode,
         follow_up_mode: config.follow_up_mode,

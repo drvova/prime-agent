@@ -1,0 +1,39 @@
+{
+  "provenance": "synthetic",
+  "description": "Generated session compacted twice: after the first compaction the user reverses an earlier constraint (memory-only cache becomes an on-disk cache) and an earlier decision (the `lru` crate becomes a `HashMap`). Only the newer one may stand as current.",
+  "keepRecentTokens": 2500,
+  "items": [
+    {
+      "class": "correction",
+      "text": "Change of plan: the cache must persist to disk under `.cache/dns/` so it survives restarts.",
+      "supersedes": "Keep the cache in memory only; never write it to disk."
+    },
+    {
+      "class": "correction",
+      "text": "Don't use the `lru` crate; use a `HashMap` with a size cap instead.",
+      "supersedes": "back the cache with the `lru` crate"
+    },
+    {
+      "class": "file",
+      "text": "crates/dns/src/resolver.rs"
+    },
+    {
+      "class": "file",
+      "text": "crates/dns/src/cache_store.rs"
+    }
+  ],
+  "followUps": [
+    {
+      "question": "Where must the resolver's answer cache be kept: in memory only, or on disk? Answer in a few words.",
+      "expectAll": [
+        "disk"
+      ]
+    },
+    {
+      "question": "Which data structure backs the answer cache now?",
+      "expectAll": [
+        "HashMap"
+      ]
+    }
+  ]
+}

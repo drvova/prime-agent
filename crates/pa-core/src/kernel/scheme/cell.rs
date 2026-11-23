@@ -163,6 +163,8 @@ pub(crate) enum CellRecord {
     Attachment(KernelAttachment),
     /// One file edit.
     Diff(KernelDiffDisplay),
+    /// One file `fs-read` read (its absolute path).
+    FileRead { path: String },
     /// One shell command the cell started.
     BashCommand { command: String },
     /// One bounded wait on a command (the Python kernel's `bash-wait`
@@ -347,6 +349,7 @@ impl CellHandle {
                     | CellRecord::Question(_)
                     | CellRecord::TranscriptRead(_)
                     | CellRecord::Attachment(_)
+                    | CellRecord::FileRead { .. }
                     | CellRecord::BashCommand { .. }
                     | CellRecord::BashWait { .. }
                     | CellRecord::CommandFailure(_),
@@ -379,6 +382,11 @@ impl CellHandle {
             }
             CellRecord::Attachment(attachment) => shown.attachments.push(attachment),
             CellRecord::Diff(diff) => shown.diffs.push(diff),
+            CellRecord::FileRead { path } => {
+                // The newest read of a file is its place.
+                shown.file_reads.retain(|read| *read != path);
+                shown.file_reads.push(path);
+            }
             CellRecord::BashCommand { command } => {
                 let lines = command
                     .lines()

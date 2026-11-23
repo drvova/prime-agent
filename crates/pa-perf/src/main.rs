@@ -1,4 +1,4 @@
-//! The `pa-perf` CLI: `corpus`, `bench`, `run`, and `report`.
+//! The `pa-perf` CLI: `corpus`, `bench`, `run`, `report`, `session-metrics`, and `trials`.
 
 use std::path::PathBuf;
 
@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 use pa_perf::bench::{BenchOptions, RunOptions, Scenario};
 use pa_perf::corpus::{self, CacheMode, CorpusOptions, Profile};
 use pa_perf::report::{self, Baseline};
+use pa_perf::trials::{self, Bootstrap, Prices, SessionTotals};
 
 #[derive(Parser)]
 #[command(name = "pa-perf", about = "prime-agent performance tooling", version)]
@@ -25,6 +26,40 @@ enum Command {
     Run(RunArgs),
     /// Compare result JSONs against the baseline; fail on >2x regressions.
     Report(ReportArgs),
+    /// Print the per-run harness metrics of a saved session file as JSON.
+    SessionMetrics(SessionMetricsArgs),
+    /// Aggregate a directory of trial records (cost and time per task and
+    /// per pass, with 95% task-bootstrap intervals) as JSON.
+    Trials(TrialsArgs),
+}
+
+#[derive(clap::Args)]
+struct SessionMetricsArgs {
+    /// The session JSONL file.
+    #[arg(long)]
+    session: PathBuf,
+}
+
+#[derive(clap::Args)]
+struct TrialsArgs {
+    /// The directory of `*.json` trial records `{task, attempt, passed,
+    /// session_file}` (`session_file` relative to the directory).
+    #[arg(long)]
+    trials: PathBuf,
+    /// The pinned price table: `{input, cached_input, output}` in USD per
+    /// million tokens.
+    #[arg(long)]
+    prices: PathBuf,
+    /// A baseline run's trial directory: adds the paired per-task
+    /// difference (this run minus the baseline).
+    #[arg(long)]
+    baseline: Option<PathBuf>,
+    /// Bootstrap resamples over tasks.
+    #[arg(long, default_value_t = 400)]
+    resamples: usize,
+    /// The bootstrap seed.
+    #[arg(long, default_value_t = 1)]
+    seed: u64,
 }
 
 #[derive(clap::Args)]
@@ -139,6 +174,42 @@ fn main() -> anyhow::Result<()> {
         Command::Bench(args) => bench_command(args),
         Command::Run(args) => run_command(args),
         Command::Report(args) => report_command(args),
+        Command::SessionMetrics(args) => {
+            let runs = pa_core::session_engine::run_metrics::transcript_run_metrics(
+                &std::fs::read_to_string(&args.session)?,
+            );
+            let session = SessionTotals::of(&runs);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "runs": runs,
+                    "session": session,
+                }))?
+            );
+            Ok(())
+        }
+        Command::Trials(args) => {
+            let prices: Prices = serde_json::from_str(&std::fs::read_to_string(&args.prices)?)?;
+            let options = Bootstrap {
+                resamples: args.resamples,
+                seed: args.seed,
+            };
+            let run = trials::load_trials(&args.trials)?;
+            let mut output = serde_json::json!({
+                "prices": prices,
+                "bootstrap": { "resamples": options.resamples, "seed": options.seed },
+                "summary": trials::summarize(&run, &prices, options),
+            });
+            if let Some(baseline) = &args.baseline {
+                let baseline = trials::load_trials(baseline)?;
+                output["baseline_summary"] =
+                    serde_json::to_value(trials::summarize(&baseline, &prices, options))?;
+                output["paired"] =
+                    serde_json::to_value(trials::paired(&run, &baseline, &prices, options))?;
+            }
+            println!("{}", serde_json::to_string_pretty(&output)?);
+            Ok(())
+        }
     }
 }
 

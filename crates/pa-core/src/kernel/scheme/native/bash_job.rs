@@ -66,24 +66,74 @@ const HISTORY_CAP: usize = 64;
 /// result names a handle the `ctx-*` readers page.
 const SPILL_OVER_CHARS: usize = 8_192;
 
-/// The environment every command gets on top of the process's own: nothing
-/// may open an editor, a pager, or a prompt, since no one can answer it.
-pub(super) const CHILD_ENV: [(&str, &str); 14] = [
+/// The environment every command gets over the session's own and its
+/// settings': nothing may open an editor, a pager, or a prompt, since no one
+/// can answer it.
+const CHILD_ENV: [(&str, &str); 16] = [
     ("NO_COLOR", "1"),
     ("TERM", "dumb"),
     ("CLICOLOR", "0"),
     ("FORCE_COLOR", "0"),
     ("GIT_EDITOR", "true"),
     ("GIT_SEQUENCE_EDITOR", "true"),
-    ("GIT_TERMINAL_PROMPTS", "0"),
+    ("GIT_TERMINAL_PROMPT", "0"),
     ("GIT_ASKPASS", "true"),
     ("SSH_ASKPASS_REQUIRE", "never"),
     ("EDITOR", "true"),
     ("VISUAL", "true"),
     ("PAGER", "cat"),
     ("GIT_PAGER", "cat"),
+    ("GH_PAGER", "cat"),
+    ("MANPAGER", "cat"),
     ("DEBIAN_FRONTEND", "noninteractive"),
 ];
+
+/// What a command gets unless the session's environment or its settings
+/// name the variable: no progress bars redrawn into a capture nobody
+/// watches.
+const QUIET_ENV: [(&str, &str); 2] = [("PIP_PROGRESS_BAR", "off"), ("TQDM_DISABLE", "1")];
+
+/// The character type a command gets when nothing names a locale
+/// (`LC_ALL`, `LC_CTYPE` and `LANG` all unset or empty), as Python's own
+/// C-locale coercion picks it: UTF-8 text without changing the messages,
+/// the collation or the number formats of the C locale. macOS has no
+/// `C.UTF-8`; its UTF-8 character type is named `UTF-8`.
+#[cfg(target_os = "macos")]
+const UTF8_CTYPE: &str = "UTF-8";
+#[cfg(not(target_os = "macos"))]
+const UTF8_CTYPE: &str = "C.UTF-8";
+
+/// The variables a command gets over the session's environment, later over
+/// earlier: [`QUIET_ENV`] and a UTF-8 `LC_CTYPE` where neither the session
+/// nor `settings` set their own, then `settings`, then [`CHILD_ENV`].
+pub(super) fn child_env(settings: &[(String, String)]) -> Vec<(String, String)> {
+    let value = |name: &str| {
+        settings
+            .iter()
+            .rev()
+            .find(|(variable, _)| variable == name)
+            .map(|(_, value)| value.clone())
+            .or_else(|| pa_types::session_scope::var(name).ok())
+    };
+    let defaults = QUIET_ENV
+        .into_iter()
+        .filter(|(name, _)| value(name).is_none())
+        .chain(
+            ["LC_ALL", "LC_CTYPE", "LANG"]
+                .into_iter()
+                .all(|name| value(name).is_none_or(|locale| locale.is_empty()))
+                .then_some(("LC_CTYPE", UTF8_CTYPE)),
+        );
+    defaults
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .chain(settings.iter().cloned())
+        .chain(
+            CHILD_ENV
+                .into_iter()
+                .map(|(name, value)| (name.to_string(), value.to_string())),
+        )
+        .collect()
+}
 
 /// What opens a held shell's start gate: its end of the status socket on
 /// Unix, the writing end of its stdin pipe elsewhere.
@@ -196,6 +246,8 @@ pub(super) struct Capture {
     pub(super) settled: bool,
     /// The pipe closed: every process that held it has ended.
     eof: bool,
+    /// When the command last wrote anything, for its `[bash-quiet]` notice.
+    pub(super) last_output: Option<Instant>,
     /// The output up to its settling, for the session's spill store (only
     /// when the session has one), and the bytes of a character split across
     /// two reads.
@@ -224,6 +276,7 @@ impl Capture {
     /// Take one read of the pipe, watching for `fence`. True when this read
     /// settled the output.
     fn consume(&mut self, fence: &[u8], chunk: &[u8]) -> bool {
+        self.last_output = Some(Instant::now());
         if self.settled {
             // Written after the fence (a background job, an EXIT trap): kept
             // for `bash-output`, outside the result.
@@ -285,6 +338,21 @@ pub(super) enum Notice {
     Sent,
 }
 
+/// Where a job stands with its `[bash-quiet]` notices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Quiet {
+    /// Named in this many so far.
+    Named(u32),
+    /// Someone asked for it to be killed: it is named in no more.
+    KillRequested,
+}
+
+impl Default for Quiet {
+    fn default() -> Self {
+        Self::Named(0)
+    }
+}
+
 /// What changes about a job while it lives.
 #[derive(Default)]
 pub(super) struct State {
@@ -300,6 +368,7 @@ pub(super) struct State {
     pub(super) tests: Option<serde_json::Value>,
     /// Why a persistent shell's result could not be read.
     pub(super) failure: Option<String>,
+    pub(super) quiet: Quiet,
 }
 
 /// One command the kernel started.
@@ -459,6 +528,7 @@ impl Job {
         if lock(&self.state).reaped || !identified {
             return;
         }
+        lock(&self.state).quiet = Quiet::KillRequested;
         if let Some(programs) = &self.engine {
             // The script stops at its next command either way; its programs
             // get the signal, and what a `Term` leaves is killed after `grace`.
@@ -672,8 +742,7 @@ pub(super) fn spawn(
     process
         .arg("-c")
         .current_dir(&session.cwd)
-        .envs(settings.env.iter().map(|(name, value)| (name, value)))
-        .envs(CHILD_ENV)
+        .envs(child_env(&settings.env))
         .stdout(
             output_end
                 .try_clone()

@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 use crate::headless_autonomous::{autonomous_runtime_config, HeadlessAutonomous};
 use crate::mode::{AppMode, MissingSubsystem, RunOptions};
 use pa_agent::stream::{LlmContext, StreamFn, StreamRequestOptions};
+use pa_core::session_engine::auto_retry::AutoRetryEvent;
 use pa_core::session_engine::goal_continuation::{ContinuationTrigger, GoalContinuationDecision};
 use pa_core::session_engine::provider_adapter::{
     json_round_trip, map_thinking_level, stream_once, switchable_stream_fn, ProviderTarget,
@@ -1672,16 +1673,59 @@ async fn run_prompts(
         boundary
             .run_pre_turn(engine, model, api_key.clone())
             .await?;
+        // The daemon's retry contract: provider failures and a final reply
+        // that cannot end the turn retry under the shared driver; json mode
+        // streams the retry events in the session-event wire shape.
+        let retry_policy = pa_core::settings::SettingsManager::create(
+            &options.config.cwd,
+            &options.config.agent_dir,
+        )
+        .get_provider_retry_policy();
         engine
             .session
-            .prompt_with_images(
+            .prompt_with_auto_retry(
                 prompt,
                 images,
-                pa_core::session_engine::PromptOptions::default(),
+                &retry_policy,
+                model.context_window,
+                |event| {
+                    if json_mode {
+                        let event = match event {
+                            AutoRetryEvent::Start {
+                                attempt,
+                                max_attempts,
+                                delay_ms,
+                                error_message,
+                            } => serde_json::json!({
+                                "type": "auto_retry_start",
+                                "attempt": attempt,
+                                "maxAttempts": max_attempts,
+                                "delayMs": delay_ms,
+                                "errorMessage": error_message,
+                            }),
+                            AutoRetryEvent::End {
+                                success,
+                                attempt,
+                                final_error,
+                            } => {
+                                let mut event = serde_json::json!({
+                                    "type": "auto_retry_end",
+                                    "success": success,
+                                    "attempt": attempt,
+                                });
+                                if let Some(final_error) = final_error {
+                                    event["finalError"] = serde_json::json!(final_error);
+                                }
+                                event
+                            }
+                        };
+                        println!("{event}");
+                    }
+                    std::future::ready(Ok(()))
+                },
             )
             .await
             .map_err(|error| format!("{error:#}"))?;
-        engine.session.agent().wait_for_idle().await;
         boundary
             .run_at_settled_turn(engine, model, api_key.clone(), global_harness_dir.clone())
             .await?;

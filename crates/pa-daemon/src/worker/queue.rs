@@ -5,6 +5,7 @@ use super::{
     SessionCore, Value, VecDeque, WorkerRecoveryJournal, AGENT_MESSAGE_SOURCE,
     AUTONOMOUS_QUEUE_KEY,
 };
+use pa_core::session_engine::bash_notices::NoticeAdmission;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
@@ -538,7 +539,9 @@ pub(crate) fn admit_goal_follow_up(
 /// Admit one kernel notice (a detached bash completion or a factory run
 /// milestone): the row queues on the steering lane (busy sessions keep a
 /// visible steer row, idle sessions wake into it); a crash before the
-/// delivery revives with the row replaying.
+/// delivery revives with the row replaying. A notice that only wakes an
+/// idle session (a quiet background command) is dropped by a busy one.
+/// Says what became of the notice.
 pub(crate) fn admit_kernel_notice(
     recovery: &std::sync::Mutex<Option<WorkerRecoveryJournal>>,
     core: &Arc<Mutex<SessionCore>>,
@@ -546,23 +549,24 @@ pub(crate) fn admit_kernel_notice(
     work_notify: &Arc<Notify>,
     notice: crate::engine::KernelNotice,
     session_is_closed: impl Fn() -> bool,
-) {
+) -> NoticeAdmission {
     let crate::engine::KernelNotice {
         row,
         preview_label,
         delivery,
     } = notice;
-    match delivery {
-        pa_core::session_engine::bash_notices::NoticeDelivery::Steer => {}
+    let idle_only = match delivery {
+        pa_core::session_engine::bash_notices::NoticeDelivery::Steer => false,
+        pa_core::session_engine::bash_notices::NoticeDelivery::WakeIdle => true,
         // A recorded row persists and shows in the transcript; no turn runs behind it.
         pa_core::session_engine::bash_notices::NoticeDelivery::Record => {
             let Ok(message) = serde_json::to_value(pa_types::session::AgentMessage::Custom(row))
             else {
-                return;
+                return NoticeAdmission::NotTaken;
             };
             let mut core = core.lock().unwrap();
             if session_is_closed() {
-                return;
+                return NoticeAdmission::NotTaken;
             }
             if let Some(store) = core.store.as_mut() {
                 let _ = store.persist_entry(
@@ -576,9 +580,9 @@ pub(crate) fn admit_kernel_notice(
                 );
             }
             super::broadcast_custom_row_locked(&mut core, events, &message);
-            return;
+            return NoticeAdmission::Taken;
         }
-    }
+    };
     let content = match &row.content {
         pa_types::ai::UserContent::Text(text) => text.clone(),
         pa_types::ai::UserContent::Blocks(_) => String::new(),
@@ -589,7 +593,10 @@ pub(crate) fn admit_kernel_notice(
     // A notice that raced past the sink's first check is refused here or wiped
     // by the close's clear — never a completion turn for a closed session.
     if session_is_closed() {
-        return;
+        return NoticeAdmission::NotTaken;
+    }
+    if idle_only && core_guard.busy {
+        return NoticeAdmission::DroppedBusy;
     }
     let (policy, queue_visible) = if core_guard.busy {
         (TurnPolicy::Queued, true)
@@ -626,6 +633,7 @@ pub(crate) fn admit_kernel_notice(
         },
     );
     work_notify.notify_one();
+    NoticeAdmission::Taken
 }
 
 /// Withdraw one queued background-job completion notice: the kernel read

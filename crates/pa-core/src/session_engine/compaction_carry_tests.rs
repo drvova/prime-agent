@@ -72,17 +72,25 @@ fn todo(id: &str, text: &str, status: TodoStatus) -> TodoItem {
     }
 }
 
-/// The carried state merges the previous compaction's constraints with the
-/// span's (a repeat moves to its newest place; questions and plain
-/// requests are not constraints), keeps only the active goal and the todo
-/// items not done, and keeps the newest uncleared failure with the lines
-/// that name it.
+fn whole(text: &str) -> CarriedUserMessage {
+    CarriedUserMessage {
+        text: text.to_string(),
+        form: CarriedText::Whole,
+    }
+}
+
+/// The carried state puts the span's user messages, whole and newest first,
+/// before the previous compaction's (a repeat keeps its newest place, an
+/// older row's sentences carry on as excerpts, an expanded skill or file is
+/// dropped), keeps only the active goal and the todo items not done, and
+/// keeps the newest uncleared failure with the lines that name it.
 #[test]
 fn carried_state_is_merged_from_the_previous_state_the_span_and_the_live_work() {
     let previous = CarriedState {
+        user_messages: vec![whole("Only edit crates/net.")],
         user_constraints: vec![
             "Never run `cargo update`.".to_string(),
-            "Only edit crates/net.".to_string(),
+            "Prefer small commits.".to_string(),
         ],
         goal: Some("an old goal".to_string()),
         open_todos: vec![todo("9", "an old todo", TodoStatus::Pending)],
@@ -121,14 +129,19 @@ fn carried_state_is_merged_from_the_previous_state_the_span_and_the_live_work() 
         }),
     };
     assert_eq!(
-        CarriedState::carry(Some(&previous), &span, live),
+        CarriedState::carry(Some(&previous), &span, live, 200_000),
         CarriedState {
-            user_constraints: vec![
-                "Only edit crates/net.".to_string(),
-                "Don't add dependencies!".to_string(),
-                "You must keep 3 attempts.".to_string(),
-                "never run `cargo update`".to_string(),
+            user_messages: vec![
+                whole("Run the lint skill."),
+                whole("never run `cargo update`"),
+                whole("Fix the retry loop. Don't add dependencies!\n- You must keep 3 attempts.\nShould we keep it?"),
+                whole("Only edit crates/net."),
+                CarriedUserMessage {
+                    text: "Prefer small commits.".to_string(),
+                    form: CarriedText::Excerpt,
+                },
             ],
+            user_constraints: Vec::new(),
             goal: Some("Fix the zero-delay retry".to_string()),
             open_todos: vec![
                 todo("2", "Make the test pass", TodoStatus::InProgress),
@@ -142,7 +155,7 @@ fn carried_state_is_merged_from_the_previous_state_the_span_and_the_live_work() 
     );
     // The failing test run is the newest failure until its command passes.
     assert_eq!(
-        CarriedState::carry(None, &span[..6], LiveWork::default()).last_failure,
+        CarriedState::carry(None, &span[..6], LiveWork::default(), 200_000).last_failure,
         Some(CarriedFailure {
             command: "cargo test -p net".to_string(),
             error: "thread 'b' panicked at src/lib.rs:3:5:\nassertion failed: x\ntest result: FAILED. 1 passed; 1 failed".to_string(),
@@ -150,48 +163,32 @@ fn carried_state_is_merged_from_the_previous_state_the_span_and_the_live_work() 
     );
 }
 
-/// Over the caps the newest constraints stay: 32 sentences, 4,000
-/// characters in all, 400 in one (a longer one keeps its head).
+/// A tenth of a 1,000-token window carries 100 tokens (400 characters) of
+/// user messages, newest first: a message larger than all of it keeps only
+/// its instruction sentences (none: it is left out), and the first older
+/// message that does not fit what is left ends the walk.
 #[test]
-fn carried_constraints_keep_the_newest_within_the_caps() {
-    let span: Vec<AgentMessage> = (0..40)
-        .map(|i| user(&format!("Never touch module_{i}.")))
-        .collect();
-    let carried = CarriedState::carry(None, &span, LiveWork::default());
-    assert_eq!(
-        carried.user_constraints,
-        (8..40)
-            .map(|i| format!("Never touch module_{i}."))
-            .collect::<Vec<_>>()
+fn carried_user_messages_keep_the_newest_within_the_window_budget() {
+    let oversized = format!(
+        "{}Never touch the lockfile. Thanks.",
+        "Some context. ".repeat(40)
     );
-
-    let long = format!("Always {}.", "x".repeat(500));
-    let span: Vec<AgentMessage> = (0..12)
-        .map(|_| user(&long))
-        .chain([user("Never stop.")])
-        .collect();
-    // Every long sentence is the same one: it is kept once, clipped.
-    let carried = CarriedState::carry(None, &span, LiveWork::default());
+    let span = vec![
+        user(&"o".repeat(60)),
+        user("Use tabs in this repo."),
+        user(&oversized),
+        user(&"z".repeat(300)),
+        user(&"q".repeat(500)),
+    ];
     assert_eq!(
-        carried.user_constraints,
+        CarriedState::carry(None, &span, LiveWork::default(), 1_000).user_messages,
         vec![
-            format!("{}{CLIPPED_MARK}", &long[..MAX_CONSTRAINT_CHARS]),
-            "Never stop.".to_string(),
+            whole(&"z".repeat(300)),
+            CarriedUserMessage {
+                text: "Never touch the lockfile.".to_string(),
+                form: CarriedText::Excerpt,
+            },
+            whole("Use tabs in this repo."),
         ]
     );
-    let span: Vec<AgentMessage> = (0..12)
-        .map(|i| user(&format!("Always {i} {}.", "y".repeat(380))))
-        .collect();
-    let carried = CarriedState::carry(None, &span, LiveWork::default());
-    let total: usize = carried
-        .user_constraints
-        .iter()
-        .map(|c| c.chars().count())
-        .sum();
-    assert!(total <= MAX_CONSTRAINT_TOTAL_CHARS);
-    assert_eq!(
-        carried.user_constraints.last(),
-        Some(&format!("Always 11 {}.", "y".repeat(380)))
-    );
-    assert_eq!(carried.user_constraints.len(), 10);
 }

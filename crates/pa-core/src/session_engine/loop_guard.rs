@@ -3,7 +3,8 @@
 //! re-issues it once (`provider_retry::REPETITION_LOOP_KIND`). This module carries the session's
 //! `loopGuard` setting onto every request, tells the one retried request what went wrong, and
 //! nudges a model that re-runs the same tool call with the same arguments round after round
-//! (where the text guard cannot see a loop, because each round is a fresh, short stream).
+//! (where the text guard cannot see a loop, because each round is a fresh, short stream), and
+//! ends the turn once the same `eval` cell has returned the same result too often in one run.
 
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -13,6 +14,7 @@ use pa_agent::types::{
     AfterToolCallResult, AgentMessage, AssistantContent, AssistantMessage, LoopGuardLevel, Message,
     TextContent, ToolResultContent, UserContent, UserMessage, UserPart,
 };
+use serde_json::Value;
 
 use super::provider_retry::{provider_stream_failure_kind, REPETITION_LOOP_KIND};
 use super::telemetry::SessionTelemetry;
@@ -24,6 +26,17 @@ const REPETITION_NUDGE: &str = "[loop guard] Your previous reply was cut off bec
 /// call's result carries a nudge. Polling a job can legitimately repeat a call twice; a third
 /// identical round is where a stuck model usually is.
 const REPEAT_CALL_ROUNDS: usize = 3;
+
+/// `eval` calls in one run with identical code that each returned an identical result (the
+/// current call included) at which the turn is ended. Cline warns at 3 identical tool calls and
+/// stops at 5 (`loop-detection.ts`); Factory's Droid stops at 6. Prime counts only calls whose
+/// results match too, so polling that makes progress never counts, and stops at the larger of
+/// the two: a cut turn is cheap, but a run cut while it was not stuck is a lost one.
+const STOP_IDENTICAL_CELLS: usize = 6;
+
+/// The start of every text the guard adds to a tool result; such text is not part of what the
+/// tool returned, so it is left out when results are compared.
+const GUARD_TAG: &str = "[loop guard]";
 
 /// Wrap the session's provider stream: every request carries `level` (`None` leaves it to the
 /// model family's default), and the retry of a request whose stream the guard cut carries
@@ -127,12 +140,16 @@ impl ModelStream for TripWatch {
     }
 }
 
-/// The after-tool-call hook that nudges a model re-running the same call: when this round's call
-/// repeats the previous rounds' call with identical arguments [`REPEAT_CALL_ROUNDS`] rounds in a
-/// row, its result gains a note saying so. The run is not stopped: polling can be legitimate,
-/// and the model decides. `telemetry` counts each nudge once the session's telemetry is
-/// installed.
-pub(crate) fn repeat_call_nudge(
+/// The after-tool-call hook that guards against a model re-running the same call. When this
+/// round's call repeats the previous rounds' call with identical arguments [`REPEAT_CALL_ROUNDS`]
+/// rounds in a row, its result gains a note saying so, and the model decides: polling can be
+/// legitimate. When the call is an `eval` cell that this run has already issued with identical
+/// code [`STOP_IDENTICAL_CELLS`]` - 1` times, each returning what this one returned, the result
+/// also says the loop was cut, carries `details.loopGuardStop`
+/// ([`super::run_metrics::LOOP_GUARD_STOP_DETAIL`], which makes the run's end reason
+/// `loop_guard`), and ends the turn. `telemetry` counts each nudge once the session's telemetry
+/// is installed.
+pub(crate) fn repeat_call_guard(
     telemetry: Arc<OnceLock<Arc<SessionTelemetry>>>,
 ) -> AfterToolCallFn {
     Arc::new(move |context, _signal| {
@@ -159,22 +176,86 @@ pub(crate) fn repeat_call_nudge(
                     AgentMessage::Standard(Message::User(_)) | AgentMessage::Custom(_) => break,
                 }
             }
-            if rounds < REPEAT_CALL_ROUNDS {
+            // Earlier calls of this run (back to its user message) with the same code whose
+            // result, without the guard's own notes, is this call's. A result is paired with the
+            // call of the same id in the assistant message before it.
+            let produced = |content: &[ToolResultContent]| -> Vec<ToolResultContent> {
+                content
+                    .iter()
+                    .filter(|block| {
+                        !matches!(block, ToolResultContent::Text(text) if text.text.starts_with(GUARD_TAG))
+                    })
+                    .cloned()
+                    .collect()
+            };
+            let mut identical = 1;
+            if call.name == pa_types::ai::KERNEL_TOOL_NAME {
+                let current = produced(&context.result.content);
+                let mut results = Vec::new();
+                for message in context.context.messages.iter().rev() {
+                    match message {
+                        AgentMessage::Standard(Message::ToolResult(result)) => results.push(result),
+                        AgentMessage::Standard(Message::Assistant(assistant)) => {
+                            identical += results
+                                .drain(..)
+                                .filter(|result| {
+                                    assistant.content.iter().any(|block| {
+                                        matches!(block, AssistantContent::ToolCall(earlier)
+                                            if earlier.id == result.tool_call_id
+                                                && earlier.name == call.name
+                                                && earlier.arguments == call.arguments)
+                                    }) && produced(&result.content) == current
+                                })
+                                .count();
+                        }
+                        AgentMessage::Standard(Message::User(_)) => break,
+                        AgentMessage::Custom(_) => {}
+                    }
+                }
+            }
+            let stop = identical >= STOP_IDENTICAL_CELLS;
+            if rounds < REPEAT_CALL_ROUNDS && !stop {
                 return Ok(None);
             }
-            if let Some(telemetry) = telemetry.get() {
-                telemetry.note_tool_repeat_nudge();
-            }
             let mut content = context.result.content;
+            if rounds >= REPEAT_CALL_ROUNDS {
+                if let Some(telemetry) = telemetry.get() {
+                    telemetry.note_tool_repeat_nudge();
+                }
+                content.push(ToolResultContent::text(format!(
+                    "{GUARD_TAG} This is round {rounds} in a row calling `{}` with identical arguments. If its result is not changing, do not run it again unchanged: change the input or take a different approach.",
+                    call.name
+                )));
+            }
+            if !stop {
+                return Ok(Some(AfterToolCallResult {
+                    content: Some(content),
+                    details: None,
+                    is_error: None,
+                    terminate: None,
+                }));
+            }
             content.push(ToolResultContent::text(format!(
-                "[loop guard] This is round {rounds} in a row calling `{}` with identical arguments. If its result is not changing, do not run it again unchanged: change the input or take a different approach.",
-                context.tool_call.name
+                "{GUARD_TAG} Turn stopped: this run has issued this same cell {identical} times and it returned the same result every time, so the loop was cut here. Do not run it again unchanged: say what is blocking you, or take a different approach."
             )));
+            // A cell's details are an object (or absent); the mark joins them.
+            let mut details = match context.result.details {
+                Value::Object(fields) => fields,
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_) => serde_json::Map::new(),
+            };
+            details.insert(
+                super::run_metrics::LOOP_GUARD_STOP_DETAIL.to_string(),
+                Value::Bool(true),
+            );
             Ok(Some(AfterToolCallResult {
                 content: Some(content),
-                details: None,
+                details: Some(Value::Object(details)),
                 is_error: None,
-                terminate: None,
+                terminate: Some(true),
             }))
         })
     })

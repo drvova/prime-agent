@@ -588,10 +588,19 @@ mod tests {
         assert_eq!(ends.len(), 2);
         assert_eq!(ends[0]["reason"], "overflow");
         assert_eq!(ends[0]["willRetry"], true);
-        assert_eq!(ends[0]["result"]["summary"], "the summary");
+        assert_eq!(
+            pa_core::session_engine::compaction_utils::strip_harness_blocks(
+                ends[0]["result"]["summary"].as_str().unwrap()
+            ),
+            "the summary"
+        );
         assert_eq!(
             ends[0]["result"]["details"],
-            json!({ "readFiles": [], "modifiedFiles": [] })
+            json!({
+                "readFiles": [],
+                "modifiedFiles": [],
+                "userMessages": [{ "text": format!("seed turn {}", "x".repeat(48_000)), "form": "whole" }],
+            })
         );
         let reported = "Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
         assert_eq!(
@@ -651,7 +660,12 @@ mod tests {
         let ends = compaction_ends(&probe_events);
         assert_eq!(ends.len(), 1);
         assert_eq!(ends[0]["willRetry"], true);
-        assert_eq!(ends[0]["result"]["summary"], "the summary");
+        assert_eq!(
+            pa_core::session_engine::compaction_utils::strip_harness_blocks(
+                ends[0]["result"]["summary"].as_str().unwrap()
+            ),
+            "the summary"
+        );
         let assistant = assistant_messages(&probe_events);
         assert_eq!(assistant.len(), 2);
         assert_eq!(assistant[1]["content"][0]["text"], "recovered reply");
@@ -693,7 +707,12 @@ mod tests {
         let ends = compaction_ends(&probe_events);
         assert_eq!(ends.len(), 1);
         assert_eq!(ends[0]["willRetry"], true);
-        assert_eq!(ends[0]["result"]["summary"], "the summary");
+        assert_eq!(
+            pa_core::session_engine::compaction_utils::strip_harness_blocks(
+                ends[0]["result"]["summary"].as_str().unwrap()
+            ),
+            "the summary"
+        );
         let assistant = assistant_messages(&probe_events);
         assert_eq!(assistant.len(), 2);
         assert_eq!(assistant[1]["content"][0]["text"], "recovered reply");

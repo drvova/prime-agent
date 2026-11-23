@@ -1,0 +1,78 @@
+loading dataset from /data/shards (48 files)
+model: resnet50, params 25.6M, device cuda:0
+epoch 1 step   0/500 loss=1.4706 lr=0.0010 8 img/s
+epoch 1 step  25/500 loss=1.4184 lr=0.0010 16 img/s
+epoch 1 step  50/500 loss=1.3699 lr=0.0010 25 img/s
+epoch 1 step  75/500 loss=1.3245 lr=0.0010 33 img/s
+epoch 1 step 100/500 loss=1.2821 lr=0.0010 41 img/s
+epoch 1 step 125/500 loss=1.2422 lr=0.0010 50 img/s
+epoch 1 step 150/500 loss=1.2048 lr=0.0010 58 img/s
+epoch 1 step 175/500 loss=1.1696 lr=0.0010 66 img/s
+epoch 1 step 200/500 loss=1.1364 lr=0.0010 75 img/s
+epoch 1 step 225/500 loss=1.1050 lr=0.0010 83 img/s
+epoch 1 step 250/500 loss=1.0753 lr=0.0010 91 img/s
+epoch 1 step 275/500 loss=1.0471 lr=0.0010 100 img/s
+epoch 1 step 300/500 loss=1.0204 lr=0.0010 108 img/s
+epoch 1 step 325/500 loss=0.9950 lr=0.0010 116 img/s
+epoch 1 step 350/500 loss=0.9709 lr=0.0010 125 img/s
+epoch 1 step 375/500 loss=0.9479 lr=0.0010 133 img/s
+epoch 1 step 400/500 loss=0.9259 lr=0.0010 141 img/s
+epoch 1 step 425/500 loss=0.9050 lr=0.0010 150 img/s
+epoch 1 step 450/500 loss=0.8850 lr=0.0010 158 img/s
+epoch 1 step 475/500 loss=0.8658 lr=0.0010 166 img/s
+epoch 1 done: val_acc=0.680 checkpoint saved to /work/ckpt/epoch1.pt
+epoch 2 step   0/500 loss=1.0417 lr=0.0010 16 img/s
+epoch 2 step  25/500 loss=1.0152 lr=0.0010 33 img/s
+epoch 2 step  50/500 loss=0.9901 lr=0.0010 50 img/s
+epoch 2 step  75/500 loss=0.9662 lr=0.0010 66 img/s
+epoch 2 step 100/500 loss=0.9434 lr=0.0010 83 img/s
+epoch 2 step 125/500 loss=0.9217 lr=0.0010 100 img/s
+epoch 2 step 150/500 loss=0.9009 lr=0.0010 116 img/s
+epoch 2 step 175/500 loss=0.8811 lr=0.0010 133 img/s
+epoch 2 step 200/500 loss=0.8621 lr=0.0010 150 img/s
+epoch 2 step 225/500 loss=0.8439 lr=0.0010 166 img/s
+epoch 2 step 250/500 loss=0.8264 lr=0.0010 183 img/s
+epoch 2 step 275/500 loss=0.8097 lr=0.0010 200 img/s
+epoch 2 step 300/500 loss=0.7937 lr=0.0010 216 img/s
+epoch 2 step 325/500 loss=0.7782 lr=0.0010 233 img/s
+epoch 2 step 350/500 loss=0.7634 lr=0.0010 250 img/s
+epoch 2 step 375/500 loss=0.7491 lr=0.0010 266 img/s
+epoch 2 step 400/500 loss=0.7353 lr=0.0010 283 img/s
+epoch 2 step 425/500 loss=0.7220 lr=0.0010 300 img/s
+epoch 2 step 450/500 loss=0.7092 lr=0.0010 316 img/s
+epoch 2 step 475/500 loss=0.6969 lr=0.0010 333 img/s
+epoch 2 done: val_acc=0.750 checkpoint saved to /work/ckpt/epoch2.pt
+epoch 3 step   0/500 loss=0.8065 lr=0.0010 25 img/s
+epoch 3 step  25/500 loss=0.7905 lr=0.0010 50 img/s
+epoch 3 step  50/500 loss=0.7752 lr=0.0010 75 img/s
+epoch 3 step  75/500 loss=0.7605 lr=0.0010 100 img/s
+epoch 3 step 100/500 loss=0.7463 lr=0.0010 125 img/s
+epoch 3 step 125/500 loss=0.7326 lr=0.0010 150 img/s
+epoch 3 step 150/500 loss=0.7194 lr=0.0010 175 img/s
+epoch 3 step 175/500 loss=0.7067 lr=0.0010 200 img/s
+epoch 3 step 200/500 loss=0.6944 lr=0.0010 225 img/s
+epoch 3 step 225/500 loss=0.6826 lr=0.0010 250 img/s
+epoch 3 step 250/500 loss=0.6711 lr=0.0010 275 img/s
+epoch 3 step 275/500 loss=0.6601 lr=0.0010 300 img/s
+epoch 3 step 300/500 loss=0.6494 lr=0.0010 325 img/s
+epoch 3 step 325/500 loss=0.6390 lr=0.0010 350 img/s
+epoch 3 step 350/500 loss=0.6289 lr=0.0010 375 img/s
+epoch 3 step 375/500 loss=0.6192 lr=0.0010 400 img/s
+epoch 3 step 400/500 loss=0.6098 lr=0.0010 425 img/s
+epoch 3 step 425/500 loss=0.6006 lr=0.0010 450 img/s
+epoch 3 step 450/500 loss=0.5917 lr=0.0010 475 img/s
+epoch 3 step 475/500 loss=0.5831 lr=0.0010 500 img/s
+epoch 3 done: val_acc=0.820 checkpoint saved to /work/ckpt/epoch3.pt
+epoch 4 step   0/500 loss=0.8812 lr=0.0010 0 img/s
+Traceback (most recent call last):
+  File "/work/train.py", line 142, in <module>
+    main()
+  File "/work/train.py", line 131, in main
+    loss = step(model, batch, optimizer)
+  File "/work/train.py", line 77, in step
+    logits = model(batch.images)
+  File "/usr/lib/python3/site-packages/torch/nn/modules/module.py", line 1532, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/work/model.py", line 58, in forward
+    x = self.layer4(x)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 GiB (GPU 0; 15.78 GiB total capacity; 13.10 GiB already allocated)

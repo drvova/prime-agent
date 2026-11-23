@@ -27,10 +27,12 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
-const FIXTURES: [&str; 3] = [
+const FIXTURES: [&str; 5] = [
     "synthetic-config-refactor",
     "synthetic-retry-debug",
     "synthetic-two-compactions",
+    "synthetic-correction",
+    "synthetic-plain-constraints",
 ];
 
 /// The placeholder the deterministic mode's summarizer writes: nothing a
@@ -46,12 +48,19 @@ enum ItemClass {
     OpenTask,
     Failure,
     Goal,
+    /// A later user message that reverses an earlier constraint or
+    /// decision (Factory's correction probe): `text` is the newer words,
+    /// `supersedes` the stale ones they replace.
+    Correction,
 }
 
 #[derive(Debug, serde::Deserialize)]
 struct Item {
     class: ItemClass,
     text: String,
+    /// The stale words a correction replaces (correction items only).
+    #[serde(default)]
+    supersedes: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -224,7 +233,9 @@ async fn replay_and_compact(
 /// (items, items the summarizer was shown, items the context keeps).
 type ClassCounts = BTreeMap<ItemClass, (usize, usize, usize)>;
 
-async fn deterministic_retention(name: &str) -> ClassCounts {
+/// One fixture's counts, and the compacted summary's size in tokens
+/// (chars/4: the placeholder, the file lists and the carried blocks).
+async fn deterministic_retention(name: &str) -> (ClassCounts, usize) {
     let (steps, expect) = load_fixture(name);
     assert_eq!(
         expect.provenance, "synthetic",
@@ -249,24 +260,52 @@ async fn deterministic_retention(name: &str) -> ClassCounts {
         );
         let entry = counts.entry(item.class).or_default();
         entry.0 += 1;
-        entry.1 += usize::from(shown.contains(&text));
-        entry.2 += usize::from(context.summary.contains(&text));
+        if let Some(stale) = item.supersedes.as_deref().map(normalized) {
+            assert!(
+                !context.tail.contains(&stale),
+                "{name}: superseded words {stale:?} sit in the kept tail"
+            );
+            // The requests are chronological: the stale words may come
+            // before their reversal (history), never after it.
+            entry.1 += usize::from(
+                shown
+                    .find(&text)
+                    .is_some_and(|at| !shown[at..].contains(&stale)),
+            );
+            // The compacted context lists what it carries newest
+            // first: the newer words lead, the stale ones follow or
+            // are gone.
+            entry.2 += usize::from(context.summary.find(&text).is_some_and(|at| {
+                context
+                    .summary
+                    .find(&stale)
+                    .is_none_or(|stale_at| stale_at > at)
+            }));
+        } else {
+            entry.1 += usize::from(shown.contains(&text));
+            entry.2 += usize::from(context.summary.contains(&text));
+        }
     }
-    counts
+    (counts, context.summary.chars().count() / 4)
 }
 
 /// The per-class retention table over every fixture (printed; run with
 /// `--nocapture`). The totals are pinned: what the harness keeps of each
-/// class whatever the model writes. Decisions are the summarizer's to keep;
-/// a failure inside a cell that did not fail, and a goal that is only the
-/// user's opening request, are not established by the harness.
+/// class whatever the model writes. Decisions are the summarizer's to keep,
+/// and a failure inside a cell that did not fail is not established by the
+/// harness; a goal that is only the user's opening request rides the
+/// carried user messages. A
+/// correction is shown when the stale words never follow the newer ones in
+/// the requests, and kept when the newer words lead the compacted context.
 #[tokio::test]
 async fn compaction_retention_report() {
     let mut totals = ClassCounts::new();
     println!("compaction retention (deterministic: placeholder summary)");
     println!("fixture                      class       kept/items  shown-to-summarizer");
     for name in FIXTURES {
-        for (class, (items, shown, kept)) in deterministic_retention(name).await {
+        let (counts, summary_tokens) = deterministic_retention(name).await;
+        println!("{name:<28} summary     ~{summary_tokens} tokens");
+        for (class, (items, shown, kept)) in counts {
             let class_name = format!("{class:?}");
             println!("{name:<28} {class_name:<11} {kept:>4}/{items:<6} {shown:>4}/{items}");
             let total = totals.entry(class).or_default();
@@ -286,12 +325,13 @@ async fn compaction_retention_report() {
     assert_eq!(
         totals,
         ClassCounts::from([
-            (ItemClass::Constraint, (10, 10, 10)),
+            (ItemClass::Constraint, (14, 14, 14)),
             (ItemClass::Decision, (5, 5, 0)),
-            (ItemClass::File, (5, 5, 5)),
+            (ItemClass::File, (8, 8, 8)),
             (ItemClass::OpenTask, (5, 0, 5)),
             (ItemClass::Failure, (5, 4, 3)),
-            (ItemClass::Goal, (2, 1, 1)),
+            (ItemClass::Goal, (2, 1, 2)),
+            (ItemClass::Correction, (2, 2, 2)),
         ])
     );
 }

@@ -102,10 +102,20 @@ fn threshold_crossing_auto_compacts_with_the_event_pair() {
     };
     assert!(compaction_index > start_index);
     assert_eq!(event["reason"], "threshold");
-    assert_eq!(event["result"]["summary"], "the summary");
+    // The model's text; the carried user messages follow it.
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            event["result"]["summary"].as_str().unwrap()
+        ),
+        "the summary"
+    );
     assert_eq!(
         event["result"]["details"],
-        serde_json::json!({ "readFiles": [], "modifiedFiles": [] })
+        serde_json::json!({
+            "readFiles": [],
+            "modifiedFiles": [],
+            "userMessages": [{ "text": "seed turn", "form": "whole" }],
+        })
     );
     assert!(entry["firstKeptEntryId"].is_string());
     // Exactly one pair: the pre-turn check sees no built session, the
@@ -287,7 +297,10 @@ fn threshold_compaction_stays_on_the_session_provider_after_a_resolution_drift()
             _ => None,
         })
         .expect("the compaction end carries the summarizer's text");
-    assert_eq!(summary, "the drifted summary");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(&summary),
+        "the drifted summary"
+    );
     assert_eq!(
         registration.call_count(),
         calls_before_crossing + 2,
@@ -1029,7 +1042,12 @@ fn compact_session_command_emits_the_result_on_success() {
     assert_eq!(end["aborted"], false);
     assert_eq!(end["customInstructions"], "focus on the goal");
     let result = end["result"].as_object().expect("the result payload");
-    assert_eq!(result["summary"], "## Summary\nthe session story");
+    assert_eq!(
+        pa_core::session_engine::compaction_utils::strip_harness_blocks(
+            result["summary"].as_str().unwrap()
+        ),
+        "## Summary\nthe session story"
+    );
     assert!(result["tokensBefore"].as_u64().unwrap_or_default() > 0);
     // The TS dataKeys on the wire result (the live golden,
     // `tests/goldens/compaction-live-ts.json`): summary, firstKeptEntryId,
@@ -1044,7 +1062,11 @@ fn compact_session_command_emits_the_result_on_success() {
     );
     assert_eq!(
         result["details"],
-        serde_json::json!({ "readFiles": [], "modifiedFiles": [] })
+        serde_json::json!({
+            "readFiles": [],
+            "modifiedFiles": [],
+            "userMessages": [{ "text": "first", "form": "whole" }],
+        })
     );
     assert!(result.get("usage").is_none());
     // The durable rows stay minimal (TS's queued `/compact` catch arm

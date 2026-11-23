@@ -7,9 +7,12 @@
 //! (pa-types payloads, pa-daemon `SessionEntry`/`session_header_line`/
 //! `RlmSpawnLedger`, pa-core's `WindowedSessionStore` for the warm
 //! sidecars). The bench harness drives the real release binary under a pty.
+//! The trials aggregation reads saved session files through pa-core's run
+//! metrics and aggregates them the FrontierHarness Eval way.
 
 pub mod bench;
 pub mod corpus;
 pub mod report;
+pub mod trials;
 
 mod rng;

@@ -61,4 +61,6 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &cells::AGENT_KERNEL_CALL_REFUSALS,
     &core::AGENT_RLM_COLLECT_WAITS,
     &cells::AGENT_KERNEL_WAITS,
+    &fs::AGENT_EDIT_MATCHES,
+    &bash::AGENT_BASH_QUIET,
 ];

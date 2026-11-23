@@ -1141,3 +1141,260 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
     );
 }
 }
+
+on_each_shell! {
+/// A command's environment: prompts and pagers off over everything, quiet
+/// defaults under the session's and its settings' own values, and a UTF-8
+/// character type only where the session names no locale.
+fn a_command_gets_quiet_defaults_under_the_sessions_own_values(shell) {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = |scope_env: &[(&str, &str)], hidden: &[&str]| -> String {
+        let scope = pa_types::session_scope::SessionScope::new(
+            "environment".to_string(),
+            dir.path().to_path_buf(),
+            scope_env
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+            hidden.iter().map(|name| (*name).to_string()).collect(),
+        );
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(pa_types::session_scope::inherit())
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+                shell,
+                cwd: dir.path().to_path_buf(),
+                env: vec![("PIP_PROGRESS_BAR".to_string(), "on".to_string())],
+                ..SchemeKernelOptions::default()
+            })
+            .await;
+            value(
+                kernel.as_ref(),
+                r#"(hash-ref (bash "echo \"$GIT_TERMINAL_PROMPT ${GIT_TERMINAL_PROMPTS-unset} $GH_PAGER $PIP_PROGRESS_BAR $TQDM_DISABLE ${LC_CTYPE-unset} ${LANG-unset}\"") 'output)"#,
+            )
+            .await
+        })
+    };
+    let hidden = ["LC_ALL", "LC_CTYPE", "LANG", "TQDM_DISABLE"];
+    let utf8 = if cfg!(target_os = "macos") { "UTF-8" } else { "C.UTF-8" };
+    assert_eq!(
+        (
+            seen(&[], &hidden),
+            seen(&[("TQDM_DISABLE", "0"), ("LANG", "fr_FR.UTF-8")], &hidden[..2]),
+        ),
+        (
+            format!("\"0 unset cat on 1 {utf8} unset\\n\""),
+            "\"0 unset cat on 0 unset fr_FR.UTF-8\\n\"".to_string(),
+        )
+    );
+}
+}
+
+on_each_shell! {
+/// A background command that has gone quiet is reported once its silence
+/// passes the quiet period, again after four times that, and never while it
+/// prints; a cell waiting on it still stops at once, and once it is killed
+/// only its `[bash-done]` follows, while a new quiet command is reported
+/// alone.
+async fn a_background_command_that_goes_quiet_is_reported_on_a_backoff(shell) {
+    const FIRST: u64 = 1000;
+    let dir = tempfile::tempdir().unwrap();
+    let (waiting, gate) = (pipe_in(dir.path(), "waiting"), pipe_in(dir.path(), "gate"));
+    let (handlers, mut received) =
+        recording(&[("bash.quiet", json!({})), ("bash.completed", json!({}))]);
+    let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        shell,
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PRIME_AGENT_BASH_QUIET_MS".to_string(), FIRST.to_string())],
+        ..SchemeKernelOptions::default()
+    })
+    .await;
+    let command = "for i in $(seq 1 30); do echo tick $i; sleep 0.05; done; echo going quiet; /bin/sleep 600";
+    let started = value(
+        kernel.as_ref(),
+        &format!(
+            "(define loud (bash \"{command}\" (hash 'background #t)))
+             (list (hash-ref loud 'job) (hash-ref loud 'pid))"
+        ),
+    )
+    .await;
+    // A printed `(job pid)` list.
+    let handle = |printed: &str| {
+        printed
+            .trim_matches(['(', ')'])
+            .split_once(' ')
+            .map(|(job, pid)| (job.trim_matches('"').to_string(), pid.parse::<u32>().unwrap()))
+            .unwrap()
+    };
+    // A notice as compared: its quiet time only as long enough or not.
+    let shape = |(request, mut data): (String, Value), at_least: u64| {
+        for named in data["jobs"].as_array_mut().unwrap() {
+            let quiet = named["quietMs"].as_u64().unwrap();
+            named["quietMs"] = json!(quiet >= at_least);
+            named.as_object_mut().unwrap().remove("elapsedMs");
+        }
+        (request, data)
+    };
+    let first = shape(next(&mut received).await, FIRST);
+    let second = shape(next(&mut received).await, FIRST * 4);
+    // A cell that waits on the quiet command stops when it is stopped.
+    let signal = crate::tools::tool_definition::AbortSignal::new();
+    let stopped = kernel.execute(
+        "(bash \"echo up > waiting\") (bash-wait loud 600)",
+        KernelExecuteOptions {
+            signal: Some(signal.clone()),
+            timeout_ms: None,
+            on_stream: None,
+            on_late_sent_agent_message: None,
+        },
+    );
+    let stop = async {
+        read(&waiting).await;
+        signal.cancel();
+        Instant::now()
+    };
+    let (stopped, stopped_at) = tokio::join!(stopped, stop);
+    let stopped_within = stopped_at.elapsed();
+    let killed = value(kernel.as_ref(), "(bash-kill loud)").await;
+    let done = next(&mut received).await;
+    let still = value(
+        kernel.as_ref(),
+        "(define still (bash \"read -r line < gate\" (hash 'background #t)))
+         (list (hash-ref still 'job) (hash-ref still 'pid))",
+    )
+    .await;
+    let after_kill = shape(next(&mut received).await, FIRST);
+    write(&gate, "go\n").await;
+    let (job, pid) = handle(&started);
+    let (still_job, still_pid) = handle(&still);
+    let tail = (12..=30)
+        .map(|tick| format!("tick {tick}"))
+        .chain(["going quiet".to_string()])
+        .collect::<Vec<_>>()
+        .join("\n");
+    let loud = json!({
+        "job": job,
+        "pid": pid,
+        "command": command,
+        "quietMs": true,
+        "output": tail,
+        "outputTruncated": true,
+    });
+    assert_eq!(
+        (
+            first,
+            second,
+            stopped.unwrap().status,
+            stopped_within < Duration::from_secs(10),
+            killed.as_str(),
+            done,
+            after_kill,
+        ),
+        (
+            ("bash.quiet".to_string(), json!({ "jobs": [loud], "step": 1 })),
+            ("bash.quiet".to_string(), json!({ "jobs": [loud], "step": 2 })),
+            crate::tools::kernel_cell::ExecuteStatus::Aborted,
+            true,
+            "#true",
+            (
+                "bash.completed".to_string(),
+                json!({
+                    "pid": pid,
+                    "command": command,
+                    "exitCode": 143,
+                    "output": tail,
+                    "outputTruncated": true,
+                })
+            ),
+            (
+                "bash.quiet".to_string(),
+                json!({ "jobs": [{
+                    "job": still_job,
+                    "pid": still_pid,
+                    "command": "read -r line < gate",
+                    "quietMs": true,
+                    "output": "",
+                    "outputTruncated": false,
+                }], "step": 1 })
+            ),
+        )
+    );
+}
+}
+
+/// Each `[bash-quiet]` notice the session's handler answers reaches its
+/// counts: the commands it named, its back-off step, and whether it woke the
+/// session or a turn in progress dropped it.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_quiet_notice_is_counted_with_its_jobs_step_and_admission() {
+    use crate::session_engine::bash_notices::{
+        observe_bash_quiet, BashQuietFact, NoticeAdmission, QuietStep,
+    };
+    const FIRST: u64 = 200;
+    let dir = tempfile::tempdir().unwrap();
+    // The host wakes the idle session into the first notice; a turn has
+    // started by the second.
+    let answered = std::sync::atomic::AtomicUsize::new(0);
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register(
+        "bash.quiet",
+        host_handler(move |_| {
+            let admission = match answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => "delivered",
+                _ => "dropped_busy",
+            };
+            async move { Ok(json!({ "admission": admission })) }
+        }),
+    );
+    let (heard, mut facts) = unbounded_channel();
+    observe_bash_quiet(
+        &mut handlers,
+        std::sync::Arc::new(move |fact| {
+            // A test that has ended no longer listens.
+            let _ = heard.send(fact);
+        }),
+    );
+    let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PRIME_AGENT_BASH_QUIET_MS".to_string(), FIRST.to_string())],
+        ..SchemeKernelOptions::default()
+    })
+    .await;
+    value(
+        kernel.as_ref(),
+        "(define one (bash \"/bin/sleep 600\" (hash 'background #t)))
+         (define two (bash \"/bin/sleep 600\" (hash 'background #t)))",
+    )
+    .await;
+    let mut heard = Vec::new();
+    for _ in 0..2 {
+        heard.push(
+            tokio::time::timeout(STEP, facts.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    value(kernel.as_ref(), "(bash-kill one) (bash-kill two)").await;
+    assert_eq!(
+        heard,
+        vec![
+            BashQuietFact {
+                admission: NoticeAdmission::Taken,
+                jobs: 2,
+                step: Some(QuietStep::First),
+            },
+            BashQuietFact {
+                admission: NoticeAdmission::DroppedBusy,
+                jobs: 2,
+                step: Some(QuietStep::Second),
+            },
+        ]
+    );
+}

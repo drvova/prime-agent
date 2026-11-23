@@ -168,7 +168,7 @@ async fn a_later_cell_pages_the_middle_of_a_huge_output_back_in() {
     assert_eq!(status, "ok", "{text}");
     assert!(
         text.contains(&format!(
-            "[{handle} · 240,000 chars · 20,000 lines · 211,903 chars not shown]"
+            "[{handle} · 240,000 chars · 20,000 lines · 211,699 chars not shown]"
         )),
         "{}",
         &text[text.len().saturating_sub(400)..]
@@ -258,18 +258,19 @@ async fn a_thinned_result_pages_back_in_whole_from_a_live_kernel() {
     assert_eq!(status, "ok", "{original}");
 
     // The last request carried call-00 as a preview of its lines, then its
-    // handle. Every line of this result is as informative as the next, so the
-    // preview keeps the first and last two and fills its 360 characters in
-    // order: nine lines, the gap, and the last two.
+    // handle. The preview ends with one unbroken tail block in at most half
+    // its 360 characters (the last twelve 14-char lines), and every earlier
+    // line is as informative as the next, so the rest fills in order from the
+    // top: five lines, the gap, and the last twelve.
     let id = &format!("{:x}", sha2::Sha256::digest(original.as_bytes()))[..10];
     let chars: Vec<char> = original.chars().collect();
     let all: Vec<&str> = original.lines().collect();
     let lines = all.len();
     let preview = format!(
         "{}\n[… {} lines …]\n{}",
-        all[..9].join("\n"),
-        lines - 11,
-        all[lines - 2..].join("\n")
+        all[..5].join("\n"),
+        lines - 17,
+        all[lines - 12..].join("\n")
     );
     let last = provider.calls().pop().expect("a request");
     let thinned = request_results(&last)

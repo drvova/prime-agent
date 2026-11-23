@@ -44,6 +44,10 @@ const SUMMARY_CHUNKS: [&str; 4] = [
     "as it generated.",
 ];
 const FULL_SUMMARY: &str = "The session covered the fleet work: one compaction summary, streamed live to the attached clients as it generated.";
+/// The harness block the compaction appends after the model's text (the
+/// seed turn's user message, carried verbatim): the run flushes it to the
+/// stream as one last delta.
+const CARRIED_BLOCK: &str = "\n\n<user-messages>\nThe user's own messages from the compacted conversation, verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n\n[1]\nseed turn\n</user-messages>";
 
 struct Supervisor {
     child: Child,
@@ -493,9 +497,11 @@ fn threshold_compaction_streams_summary_deltas_to_attached_clients() {
         .iter()
         .map(|index| client.events[*index]["delta"].as_str().expect("delta text"))
         .collect();
-    assert_eq!(deltas, SUMMARY_CHUNKS.to_vec(), "generation order holds");
+    let mut generated = SUMMARY_CHUNKS.to_vec();
+    generated.push(CARRIED_BLOCK);
+    assert_eq!(deltas, generated, "generation order holds");
     let streamed = deltas.concat();
-    assert_eq!(streamed, FULL_SUMMARY);
+    assert_eq!(streamed, format!("{FULL_SUMMARY}{CARRIED_BLOCK}"));
     // The settled end carries the same text: the streamed block resolves into the
     // final summary entry.
     let end_event = client.events[end_index].clone();
@@ -503,7 +509,7 @@ fn threshold_compaction_streams_summary_deltas_to_attached_clients() {
         end_event["result"]["summary"]
             .as_str()
             .expect("result summary"),
-        FULL_SUMMARY
+        format!("{FULL_SUMMARY}{CARRIED_BLOCK}")
     );
 
     // The delta frames are ephemeral: the session file carries the compaction entry but never a

@@ -384,6 +384,17 @@ pub fn build_session_context(entries: &[FileEntry], leaf_id: Option<&str>) -> Se
             }
             _ => None,
         });
+    // Likewise only the newest post-compaction re-read of the recent files: an older one
+    // shows files as they were.
+    let newest_recent_files_entry_id = path.iter().rev().find_map(|&index| match &entries[index] {
+        FileEntry::CustomMessage { payload, .. }
+            if payload.custom_type
+                == crate::session_engine::compaction_files::RECENT_FILES_CUSTOM_TYPE =>
+        {
+            entries[index].id()
+        }
+        _ => None,
+    });
     let compaction_path_idx = compaction
         .and_then(|compaction_index| path.iter().position(|&index| index == compaction_index));
     // True when the compaction snapshot is the newest digest in context, so
@@ -425,6 +436,12 @@ pub fn build_session_context(entries: &[FileEntry], leaf_id: Option<&str>) -> Se
                     if payload.custom_type
                         == crate::session_engine::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
                         && entry.id() != newest_kernel_notice_entry_id
+                    {
+                        return;
+                    }
+                    if payload.custom_type
+                        == crate::session_engine::compaction_files::RECENT_FILES_CUSTOM_TYPE
+                        && entry.id() != newest_recent_files_entry_id
                     {
                         return;
                     }

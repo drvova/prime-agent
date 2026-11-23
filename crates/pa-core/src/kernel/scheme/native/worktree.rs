@@ -128,7 +128,7 @@ impl Worktrees {
         command
             .args(args)
             .current_dir(cwd)
-            .env("GIT_TERMINAL_PROMPTS", "0")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .stdin(if stdin.is_some() {
                 Stdio::piped()
             } else {
