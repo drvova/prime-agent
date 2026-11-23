@@ -28,6 +28,17 @@ logic of its own). The RLM recursion host seam
 selector-error vocabulary the daemon implements over the supervisor link.
 Platform wall (`platform`): process control (signals/process groups, kernel exit waits), file locking, file permissions, and shell selection - every OS-specific behavior in the engine lives there behind cfg-gated implementations (the durable-write rename primitive is pa-telemetry's `rename_onto`, re-exported as `platform::rename_onto`). Scheduled jobs (`cron`, the `AgentCronJobStore` port of `core/cron-jobs.ts`): file-backed job state under session artifacts (`scheduled-jobs.json` partitions) with cross-process locking, plus the public read-only scan (`cron::store::read_scheduled_jobs_artifact`) the update flow's roster projection and boot re-arm read. Tools (python_repl + internal rename/stdout), rendering rules, RLM kernel lifecycle (IPython spawn/execute/revive), skills loading, system prompt assembly, compaction, harness refinement, settings/config, package manager (npm/git/local source install/remove/list/update against settings, plus `resolve()`: precedence-ranked session resource resolution over configured packages, settings arrays, auto-discovery, and bundled skills), session manager (persist/resume). origin/main
 
+Per-run harness metrics (`session_engine::run_metrics`): `MetricsMeter` folds
+one run's model requests, tool results, compactions and subagent spawns into
+`RunMetrics` (steps, eval cells and their time, tool errors, the uncached /
+cache-read / cache-write / output token split, the token-weighted cache hit
+rate, cache-prefix breaks, compaction context fractions, the turn-end reason
+with `empty` and `loop_guard`, wall time). The session telemetry feeds it live
+and writes the result onto `agent run completed`; `transcript_run_metrics`
+feeds the same meter from a saved session file for offline runners
+(`pa-perf session-metrics`/`trials`). Time a cell spends blocked in a wait is
+not measured separately: it is inside the cell's own duration.
+
 Provider resilience policies in `session_engine`: the shared quick-retry
 policy (TS `provider-retry.ts`: permanent-kind classification,
 Retry-After-aware capped delays) and the interactive auto-retry loop.

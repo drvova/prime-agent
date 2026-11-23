@@ -240,6 +240,19 @@ pub const RUN_OUTCOMES: &[&str] = &["success", "error", "aborted"];
 
 pub const STOP_REASONS: &[&str] = &["stop", "length", "toolUse", "error", "aborted", "unknown"];
 
+/// How a run ended: [`STOP_REASONS`] plus a final answer with nothing in it
+/// and a loop-guard cut (pa-core `run_metrics::TurnEndReason`).
+const TURN_END_REASONS: &[&str] = &[
+    "stop",
+    "length",
+    "toolUse",
+    "error",
+    "aborted",
+    "unknown",
+    "empty",
+    "loop_guard",
+];
+
 pub const PROVIDER_CATEGORIES: &[&str] = &[
     "anthropic",
     "openai",
@@ -523,6 +536,16 @@ const fn duration() -> PropKind {
     }
 }
 
+/// A percentage (fractional), clamped to `max`: a context reading can pass
+/// 100 when an overflow compaction fires.
+const fn percent(max: u64) -> PropKind {
+    PropKind::Number {
+        max,
+        integer: false,
+        nullable: false,
+    }
+}
+
 const fn uuid() -> PropKind {
     PropKind::Uuid
 }
@@ -681,6 +704,21 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         // when the run had any).
         ("bash_wait_completed_count", optional(count())),
         ("bash_wait_yielded_count", optional(count())),
+        // The harness metrics (pa-core `run_metrics`): how the run ended,
+        // its eval cells, admitted subagent spawns, cache-prefix breaks
+        // (set only when a request could be compared), the token-weighted
+        // cache hit rate, and how full the context was at its compactions.
+        (
+            "end_reason",
+            optional(enum_rule(TURN_END_REASONS, "unknown")),
+        ),
+        ("eval_cell_count", optional(count())),
+        ("eval_cell_duration_ms", optional(duration())),
+        ("subagent_spawn_count", optional(count())),
+        ("cache_read_break_count", optional(count())),
+        ("cache_hit_percent", optional(percent(100))),
+        ("compaction_context_percent_min", optional(percent(1000))),
+        ("compaction_context_percent_max", optional(percent(1000))),
     ],
 };
 

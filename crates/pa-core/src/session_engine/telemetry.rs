@@ -35,6 +35,7 @@ use serde_json::Value;
 use super::auto_retry::AutoRetryEvent;
 use super::error_classify::classify_error_message;
 use super::provider_retry::{provider_stream_failure_kind, REPETITION_LOOP_KIND};
+use super::run_metrics::{MetricsMeter, SpawnVisibility};
 
 mod track;
 pub use track::{
@@ -170,6 +171,9 @@ pub(crate) struct TelemetryState {
     /// observes an off period moves it forward, so the off window's
     /// exchanges never ride a later event.
     auth_baseline: crate::auth::resolver::AuthMetrics,
+    /// The per-run harness metrics (`super::run_metrics`), fed only while a
+    /// run is active; its cache baseline spans runs.
+    meter: MetricsMeter,
 }
 
 /// Is recording on right now? `None` (tests, one-shot paths) is always
@@ -190,6 +194,8 @@ fn recording_on(state: &TelemetryState) -> bool {
 fn sever_off_period_run(state: &mut TelemetryState) {
     state.active_run = None;
     state.tool_starts.clear();
+    // The off window's requests are unseen: no baseline survives it.
+    state.meter = MetricsMeter::new(SpawnVisibility::Observed);
 }
 
 /// One turn boundary (a run or turn start): ask the live switch, cache
@@ -319,10 +325,6 @@ struct ActiveRun {
     /// tools by name, every MCP and custom tool folded into `mcp` /
     /// `custom`: no raw tool names leave the machine).
     tool_summary: HashMap<ToolCategory, ToolCategoryStats>,
-    /// The run's bounded `bash()` awaits, folded from each `python_repl`
-    /// result's `bashWaits` details: finished inside the wait window vs
-    /// yielded a still-running snapshot.
-    bash_waits: crate::kernel::shared::KernelBashWaits,
     /// The stream loop guard's interventions in the run.
     loop_guard: LoopGuardCounts,
     /// The run's loop requests that changed bytes inside the previous
@@ -1207,6 +1209,7 @@ pub async fn install_session_telemetry(
         recording: true,
         now,
         auth_baseline: crate::auth::resolver::AuthMetrics::current(),
+        meter: MetricsMeter::new(SpawnVisibility::Observed),
     }));
     // The counters arrive already gated: the engine installs the same
     // live switch on them at creation (the MCP and kernel seams count
@@ -1272,6 +1275,26 @@ impl SessionTelemetry {
         if let Some(run) = state.active_run.as_mut() {
             run.compaction_count += 1;
             run.compaction_duration_ms += duration_ms.unwrap_or(0);
+        }
+        if state.active_run.is_some() {
+            state.meter.compaction();
+        }
+    }
+
+    /// The kernel admitted a subagent spawn (`rlm-spawn`); counts toward
+    /// the active run's `subagent_spawn_count`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_subagent_spawn(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if state.active_run.is_some() {
+            state.meter.subagent_spawn();
         }
     }
 
@@ -1867,7 +1890,6 @@ fn handle_event(
                 error_category_counts: std::collections::BTreeMap::new(),
                 compaction_duration_ms: 0,
                 tool_summary: HashMap::new(),
-                bash_waits: crate::kernel::shared::KernelBashWaits::default(),
                 loop_guard: LoopGuardCounts::default(),
                 cache_prefix_breaks: 0,
                 cache_prefix_break_bytes: 0,
@@ -1967,6 +1989,9 @@ fn handle_event(
                             .copied()
                     });
                 let cost_total = assistant.usage.cost.total;
+                if state.active_run.is_some() {
+                    state.meter.request(&assistant);
+                }
                 if let Some(run) = state.active_run.as_mut() {
                     run.usage.add(&assistant.usage);
                     run.last_assistant = Some(assistant);
@@ -2004,6 +2029,11 @@ fn handle_event(
             let started_at = state.tool_starts.remove(&tool_call_id);
             let duration_ms = started_at.map_or(0, |start| now.saturating_sub(start));
             let category = ToolCategory::from_tool_name(&tool_name);
+            if state.active_run.is_some() {
+                state
+                    .meter
+                    .tool_result(&tool_name, is_error, &result.details);
+            }
             if let Some(run) = state.active_run.as_mut() {
                 run.tool_call_count += 1;
                 if is_error {
@@ -2015,11 +2045,6 @@ fn handle_event(
                 tool_stats.failures += u64::from(is_error);
                 tool_stats.duration_ms += duration_ms;
                 tool_stats.max_duration_ms = tool_stats.max_duration_ms.max(duration_ms);
-                if let Some(waits) = result.details.get("bashWaits") {
-                    let count = |key: &str| waits.get(key).and_then(Value::as_u64).unwrap_or(0);
-                    run.bash_waits.completed += count("completed");
-                    run.bash_waits.yielded += count("yielded");
-                }
             }
         }
         AgentEvent::AgentEnd { .. } => {
@@ -2058,6 +2083,9 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     };
     let now = (state.now)();
     let run_end = run.ended_at.unwrap_or(now);
+    let metrics = state
+        .meter
+        .finish_run(run_end.saturating_sub(run.started_at));
     let outcome = run_outcome(run.last_assistant.as_ref());
     state.totals.run_count += 1;
     state.totals.tool_call_count += run.tool_call_count;
@@ -2180,15 +2208,39 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
         opt_value(median(&mut run.model_latencies)),
     );
     properties.set("model_error_count", Value::from(run.model_error_count));
-    if run.bash_waits != crate::kernel::shared::KernelBashWaits::default() {
+    if metrics.bash_waits_completed + metrics.bash_waits_yielded > 0 {
         properties.set(
             "bash_wait_completed_count",
-            Value::from(run.bash_waits.completed),
+            Value::from(metrics.bash_waits_completed),
         );
         properties.set(
             "bash_wait_yielded_count",
-            Value::from(run.bash_waits.yielded),
+            Value::from(metrics.bash_waits_yielded),
         );
+    }
+    // The harness metrics (`super::run_metrics`): input_tokens above is the
+    // uncached split already.
+    properties.set("end_reason", Value::from(metrics.end_reason.as_str()));
+    properties.set("eval_cell_count", Value::from(metrics.eval_cells));
+    properties.set("eval_cell_duration_ms", Value::from(metrics.eval_cell_ms));
+    if let Some(spawns) = metrics.subagent_spawns {
+        properties.set("subagent_spawn_count", Value::from(spawns));
+    }
+    if let Some(breaks) = metrics.cache_breaks {
+        properties.set("cache_read_break_count", Value::from(breaks));
+    }
+    if let Some(rate) = metrics.cache_hit_rate {
+        properties.set("cache_hit_percent", Value::from(rate * 100.0));
+    }
+    let percents = metrics
+        .compactions
+        .iter()
+        .filter_map(|point| point.context_fraction.map(|fraction| fraction * 100.0));
+    if let Some(min) = percents.clone().reduce(f64::min) {
+        properties.set("compaction_context_percent_min", Value::from(min));
+    }
+    if let Some(max) = percents.reduce(f64::max) {
+        properties.set("compaction_context_percent_max", Value::from(max));
     }
     for (category, count) in &run.error_category_counts {
         properties.set(&format!("error_{category}_count"), Value::from(*count));

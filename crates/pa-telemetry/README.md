@@ -28,6 +28,11 @@ pseudonymous installation identity for Prime Agent product analytics.
   `CAPABILITY_EVENTS_BEFORE_SESSION_END` / `CAPABILITY_EVENTS_AFTER_SESSION_END`, which
   pa-core's generic capability counter emits as they stand: a rule's counted properties in rule
   order, then its derived ones.
+- The `agent run completed` harness properties (pa-core `run_metrics`): `end_reason` (the
+  `stop_reason` words plus `empty` and `loop_guard`), `eval_cell_count`,
+  `eval_cell_duration_ms`, `subagent_spawn_count`, `cache_read_break_count`, `cache_hit_percent`
+  and `compaction_context_percent_min`/`_max`, beside the existing token split
+  (`input_tokens` is the uncached input).
 - `install_id`: `<agentDir>/telemetry.json` `{version, installationId}`,
   exclusive 0600 create, validated on load (TS parity).
 - `rename_onto`: the shared rename-onto-destination primitive for durable

@@ -277,11 +277,12 @@ impl RlmChildUsageAttributions {
     }
 
     /// The child attributes to the parent's last assistant row; that row's usage becomes the
-    /// aggregate base. No assistant row leaves the child unregistered, its reports drop.
+    /// aggregate base. No assistant row leaves the child unregistered, its reports drop. The
+    /// spawn counts into the active run's telemetry either way.
     ///
     /// # Panics
     ///
-    /// Panics if the forward or children state mutexes are poisoned.
+    /// Panics if the forward, children, or telemetry state mutexes are poisoned.
     pub async fn register_spawn(&self, rlm_child_id: &str) {
         // The guard drops at its statement end (held across the forwarded await it is not
         // Send); the recursion is boxed so a rebuild chain forwards across successors.
@@ -289,6 +290,14 @@ impl RlmChildUsageAttributions {
         if let Some(forward) = forward {
             Box::pin(async move { forward.register_spawn(rlm_child_id).await }).await;
             return;
+        }
+        if let Some(telemetry) = self
+            .telemetry
+            .lock()
+            .expect("rlm usage telemetry lock")
+            .as_ref()
+        {
+            telemetry.note_subagent_spawn();
         }
         let target = self.store.last_assistant().await;
         if let Some((target_id, usage)) = target {

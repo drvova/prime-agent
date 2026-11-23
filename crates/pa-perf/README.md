@@ -13,8 +13,13 @@ only).
   trees, artifacts, the spawn ledger, the cwd project tree), and measuring
   the interactive surfaces (start, agents view, open/switch session,
   @ completion) through the real binary.
-- Non-goals: benchmarks of provider/LLM paths (the harness stays offline),
-  and any product-code changes. The new `vt100` screen-model dependency
+- Scope, too: the harness-eval numbers of saved sessions (`session-metrics`)
+  and their aggregation over benchmark trials (`trials`), offline from the
+  session files a run left.
+- Non-goals: benchmarks of provider/LLM paths (the harness stays offline;
+  `trials` reads sessions someone else ran and never calls a model), any
+  benchmark detection or behaviour keyed to a benchmark, and any
+  product-code changes. The new `vt100` screen-model dependency
   is described below; clap and nix were already in the tree.
 
 ## The corpus generator
@@ -194,6 +199,54 @@ worst-gap columns never gate; scenarios without a baseline entry print as
 fails. `baseline.json` is committed from CI numbers, not laptop/sandbox
 ones. The kernel scenarios (`first-eval`, `warm-first-eval`, `subagent-first-eval`) have no
 baseline yet: they print `(no baseline)` until a CI run supplies one.
+
+## Harness-eval metrics
+
+```
+pa-perf session-metrics --session SESSION.jsonl
+pa-perf trials --trials DIR --prices PRICES.json [--baseline DIR] [--resamples 400] [--seed 1]
+```
+
+`session-metrics` prints `{"runs": [...], "session": {...}}`: one object per
+run of the session file (a user message to the end of its turn), computed by
+pa-core's `session_engine::run_metrics::transcript_run_metrics`, the same
+meter that writes the live `agent run completed` harness properties:
+`model_requests` (steps), `failed_model_requests`, `eval_cells`,
+`eval_cell_ms`, `tool_calls`, `tool_errors`, `tokens` (`uncached_input`,
+`cache_read`, `cache_write`, `output`), `cache_hit_rate` (cache read over
+all prompt tokens), `cache_breaks` (requests that re-read more than 1,024
+tokens less than the previous request's whole prompt; `null` when the
+provider never reported cache tokens), `bash_waits_completed` /
+`bash_waits_yielded`, `subagent_spawns` (always `null` offline: the session
+file records no spawn), `compactions` (`context_fraction` each: the last
+reply's context over the model's catalog window), `end_reason` (`stop`,
+`length`, `toolUse`, `error`, `aborted`, `unknown`, `empty`, `loop_guard`)
+and `wall_ms` (first to last entry stamp). `session` folds the runs (sums,
+and the last run's `end_reason`).
+
+`trials` reads every `*.json` record `{task, attempt, passed, session_file}`
+in `DIR` (`session_file` relative to `DIR`), prices each trial's tokens at
+the pinned table `{input, cached_input, output}` (USD per million tokens;
+cache writes at the input rate) and prints `summary` (with `--baseline`
+also `baseline_summary` and `paired`), following FrontierHarness Eval:
+
+- per task: the mean cost, wall time and steps over its attempts;
+- pass rate: passes over scored attempts, pooled;
+- cost and time per task: the mean of the per-task means; per pass: that
+  divided by the pass rate (`null` without passes);
+- `steps_per_passed_trial`, `failed_cost_share` (cost of trials that did not
+  pass over all cost) and `failed_final_answer_share` (failed trials whose
+  last run ended `stop` or `empty`);
+- every estimate as `{value, low, high}`: the 95% percentile interval of a
+  bootstrap over tasks (`--resamples` draws of the task list with
+  replacement, seeded `--seed`; a draw without passes is left out of the
+  per-pass intervals);
+- `paired`: over the tasks both runs hold, the mean of the per-task
+  differences (this run minus the baseline) in pass rate, cost and time,
+  bootstrapped the same way.
+
+Grading, infra-failure reruns and the time the verifier took are the
+runner's: a record says only whether the attempt passed.
 
 ## Local run
 
