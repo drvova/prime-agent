@@ -58,6 +58,8 @@ pub const SCHEME_SKILLS_UNAVAILABLE_CUSTOM_TYPE: &str = "scheme_skills_unavailab
 pub const RLM_CHILD_FAILURE_CUSTOM_TYPE: &str = "rlm_child_failure";
 pub const RLM_CHILD_TERMINAL_NOTICE_CUSTOM_TYPE: &str = "rlm_child_terminal_notice";
 pub const ASYNC_BASH_COMPLETION_CUSTOM_TYPE: &str = "async_bash_completion";
+/// Wire twin of `pa_core::session_engine::messages::ASYNC_BASH_QUIET_CUSTOM_TYPE`.
+pub const ASYNC_BASH_QUIET_CUSTOM_TYPE: &str = "async_bash_quiet";
 /// Wire twin of `pa_core::session_engine::messages::ASYNC_CELL_COMPLETION_CUSTOM_TYPE`.
 pub const ASYNC_CELL_COMPLETION_CUSTOM_TYPE: &str = "async_cell_completion";
 pub const COMPACTION_OUTCOME_CUSTOM_TYPE: &str = "compaction_outcome";
@@ -106,17 +108,18 @@ pub struct AgentMessageRow {
     pub message: String,
 }
 
-/// One background-job completion row, standalone form (the TS live path attaches
+/// One background-job notice row, standalone form (the TS live path attaches
 /// a shell completion to a tool card, which the Rust engine never emits).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BackgroundCompletionRow {
     pub outcome: BackgroundOutcome,
-    /// Raw content (`[bash-done pid:N exit:M] ...` or `[cell-done cell:ID status:S] ...`).
+    /// Raw content (`[bash-done pid:N exit:M] ...`, `[cell-done cell:ID status:S] ...` or
+    /// `[bash-quiet] ...`).
     pub content: String,
 }
 
-/// Which background job finished and how; `None` fields mark invalid details,
-/// which render the default finished row.
+/// Which background job finished and how, or went quiet; `None` fields mark
+/// invalid details, which render the default row.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BackgroundOutcome {
     /// A detached shell command.
@@ -126,6 +129,14 @@ pub enum BackgroundOutcome {
     },
     /// A backgrounded Python cell and its end (`ok`, `error`, `interrupted`).
     Cell { status: Option<String> },
+    /// Detached shell commands still running that have all written nothing for a while
+    /// (`[bash-quiet]`): the first one's command (its whitespace runs folded to one space), how
+    /// many others the notice names, and the shortest silence among them.
+    Quiet {
+        command: Option<String>,
+        others: usize,
+        quiet_ms: Option<u64>,
+    },
 }
 
 /// One refinement outcome row (TS `RefinementOutcomeMessageComponent`).
@@ -250,6 +261,30 @@ pub fn custom_message_entries(message: &Value) -> Vec<ChatEntry> {
         ASYNC_BASH_COMPLETION_CUSTOM_TYPE => vec![ChatEntry::BackgroundCompletion(Box::new(
             shell_completion_row(message, details),
         ))],
+        ASYNC_BASH_QUIET_CUSTOM_TYPE => {
+            let jobs = details
+                .get("jobs")
+                .and_then(Value::as_array)
+                .map_or(&[][..], Vec::as_slice);
+            vec![ChatEntry::BackgroundCompletion(Box::new(
+                BackgroundCompletionRow {
+                    outcome: BackgroundOutcome::Quiet {
+                        command: jobs
+                            .first()
+                            .and_then(|job| job.get("command"))
+                            .and_then(Value::as_str)
+                            .map(|command| command.split_whitespace().collect::<Vec<_>>().join(" "))
+                            .filter(|command| !command.is_empty()),
+                        others: jobs.len().saturating_sub(1),
+                        quiet_ms: jobs
+                            .iter()
+                            .filter_map(|job| job.get("quietMs").and_then(Value::as_u64))
+                            .min(),
+                    },
+                    content,
+                },
+            ))]
+        }
         ASYNC_CELL_COMPLETION_CUSTOM_TYPE => {
             let status = details
                 .get("status")

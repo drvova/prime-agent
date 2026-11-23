@@ -142,8 +142,10 @@ pub(crate) fn truncate_text(text: &str, width: usize, ellipsis: &str) -> String 
         .collect::<String>()
 }
 
-/// One shell-completion row, standalone form: the header mark, then the
-/// raw content under the branch gutter when expanded.
+/// One background-job notice row, standalone form: the header mark, then the
+/// raw content under the branch gutter when expanded. A quiet notice names
+/// its first command between its label and its silence, cut to fit; a row
+/// too narrow for a useful piece of it keeps the label and the silence.
 pub(crate) fn render_background_completion(
     row: &BackgroundCompletionRow,
     detail: Detail,
@@ -151,29 +153,85 @@ pub(crate) fn render_background_completion(
     width: usize,
     leading: bool,
 ) -> Vec<Line> {
-    let (failed, label) = match &row.outcome {
+    /// The fewest columns of a quiet notice's command worth showing.
+    const QUIET_COMMAND_MIN: usize = 10;
+    let (tone, mark, label) = match &row.outcome {
         BackgroundOutcome::Shell {
             exit_code: Some(code),
             ..
         } if *code != 0 => (
-            true,
+            ThemeColor::Error,
+            "\u{2717}",
             format!("Background shell command failed \u{b7} exit {code}"),
         ),
-        BackgroundOutcome::Shell { .. } => (false, "Background shell command finished".to_string()),
+        BackgroundOutcome::Shell { .. } => (
+            ThemeColor::Muted,
+            "\u{2713}",
+            "Background shell command finished".to_string(),
+        ),
         BackgroundOutcome::Cell { status } => match status.as_deref() {
-            Some("error") => (true, "Background cell failed".to_string()),
-            Some("interrupted") => (true, "Background cell interrupted".to_string()),
-            Some(_) | None => (false, "Background cell finished".to_string()),
+            Some("error") => (
+                ThemeColor::Error,
+                "\u{2717}",
+                "Background cell failed".to_string(),
+            ),
+            Some("interrupted") => (
+                ThemeColor::Error,
+                "\u{2717}",
+                "Background cell interrupted".to_string(),
+            ),
+            Some(_) | None => (
+                ThemeColor::Muted,
+                "\u{2713}",
+                "Background cell finished".to_string(),
+            ),
         },
+        BackgroundOutcome::Quiet {
+            command,
+            others,
+            quiet_ms,
+        } => {
+            let head = if *others == 0 {
+                "Background command quiet"
+            } else {
+                "Background commands quiet"
+            };
+            let more = if *others == 0 {
+                String::new()
+            } else {
+                format!(" +{others} more")
+            };
+            let silence = quiet_ms.map(crate::duration_text::millis);
+            let quiet = silence
+                .as_deref()
+                .map(|silence| format!(" \u{b7} quiet {silence}"))
+                .unwrap_or_default();
+            // The columns left for the command: the mark's, the label's and
+            // the rest's taken.
+            let room =
+                width.saturating_sub(str_width(&format!(" \u{25f7} {head} \u{b7} {more}{quiet}")));
+            let label = match command {
+                Some(command) if room >= QUIET_COMMAND_MIN.min(str_width(command)) => {
+                    let command = crate::width::truncate_to_width(
+                        command,
+                        room,
+                        crate::menu_chrome::ELLIPSIS,
+                    );
+                    format!("{head} \u{b7} {command}{more}{quiet}")
+                }
+                Some(_) | None => match silence {
+                    Some(silence) => format!("{head} \u{b7} {silence}"),
+                    None => head.to_string(),
+                },
+            };
+            (ThemeColor::Warning, "\u{25f7}", label)
+        }
     };
-    let color = if failed {
-        theme.fg_style(ThemeColor::Error)
-    } else {
-        theme.fg_style(ThemeColor::Muted)
-    };
-    let mark = if failed { "\u{2717}" } else { "\u{2713}" };
     let header = truncate_line(
-        &vec![Span::styled(format!(" {mark} {label}"), color)],
+        &vec![Span::styled(
+            format!(" {mark} {label}"),
+            theme.fg_style(tone),
+        )],
         width,
         crate::menu_chrome::ELLIPSIS,
     );
@@ -425,6 +483,67 @@ mod tests {
                 "    Command: \"printf done\"",
             ],
             "{rows:?}"
+        );
+    }
+
+    /// A `[bash-quiet]` notice is one compact warning row: its first command between the label
+    /// and the silence, cut to fit with the one cut mark; the other commands it names as a count;
+    /// on a row too narrow for a useful piece of the command, the label and the silence alone.
+    #[test]
+    fn quiet_notice_rows() {
+        let quiet = |jobs: serde_json::Value| {
+            let message = serde_json::json!({
+                "role": "custom",
+                "customType": "async_bash_quiet",
+                "content": "[bash-quiet] background commands still running",
+                "display": true,
+                "details": { "jobs": jobs },
+            });
+            match &crate::custom_message::custom_message_entries(&message)[..] {
+                [crate::chat::ChatEntry::BackgroundCompletion(row)] => (**row).clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let job = |command: &str, quiet_ms: u64| {
+            serde_json::json!({
+                "job": "a1",
+                "pid": 7,
+                "command": command,
+                "elapsedMs": quiet_ms + 5_000,
+                "quietMs": quiet_ms,
+            })
+        };
+        let long = quiet(serde_json::json!([job(
+            "cargo test --workspace   --all-features\n  -- --nocapture --test-threads 1",
+            180_000
+        )]));
+        let short = quiet(serde_json::json!([job("npm run dev", 750_000)]));
+        let two = quiet(serde_json::json!([
+            job("npm run dev", 750_000),
+            job("tail -f log", 200_000)
+        ]));
+        let warning = theme().fg_style(ThemeColor::Warning);
+        let row = |text: &str| vec![Span::styled(text.to_string(), warning)];
+        assert_eq!(
+            [
+                (&long, 80),
+                (&long, 40),
+                (&short, 80),
+                (&short, 40),
+                (&two, 80),
+                (&two, 40),
+            ]
+            .map(|(row, width)| {
+                render_background_completion(row, Detail::Overview, &theme(), width, false)
+            }),
+            [
+                vec![row(" \u{25f7} Background command quiet \u{b7} cargo test --workspace --all-featu\u{2026} \u{b7} quiet 3m 00s")],
+                vec![row(" \u{25f7} Background command quiet \u{b7} 3m 00s")],
+                vec![row(" \u{25f7} Background command quiet \u{b7} npm run dev \u{b7} quiet 12m 30s")],
+                vec![row(" \u{25f7} Background command quiet \u{b7} 12m 30s")],
+                vec![row(" \u{25f7} Background commands quiet \u{b7} npm run dev +1 more \u{b7} quiet 3m 20s")],
+                vec![row(" \u{25f7} Background commands quiet \u{b7} 3m 20s")],
+            ]
         );
     }
 

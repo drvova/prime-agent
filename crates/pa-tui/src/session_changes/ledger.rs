@@ -216,7 +216,8 @@ impl Facts {
                 BackgroundOutcome::Shell {
                     exit_code: None, ..
                 }
-                | BackgroundOutcome::Cell { .. } => Facts::Nothing,
+                | BackgroundOutcome::Cell { .. }
+                | BackgroundOutcome::Quiet { .. } => Facts::Nothing,
             },
             ChatEntry::Status { .. }
             | ChatEntry::RunSummary(_)
