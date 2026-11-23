@@ -814,18 +814,23 @@ async fn supervise(
     let mut exited = None;
     // The status the shell reported after its command, when it got that far.
     #[cfg(unix)]
-    let delivered: Option<i32> = match status
-        .set_nonblocking(true)
-        .and_then(|()| tokio::net::UnixStream::from_std(status))
-    {
+    let delivered: Option<i32> = match status.set_nonblocking(true).and_then(|()| {
+        let direct = status.try_clone()?;
+        Ok((direct, tokio::net::UnixStream::from_std(status)?))
+    }) {
         // Unreadable: the shell's exit settles the job instead.
         Err(_) => None,
-        Ok(stream) => {
+        Ok((mut direct, stream)) => {
             let mut line = Vec::new();
             loop {
                 let mut chunk = [0u8; 64];
                 // Status bytes first: the shell writes them before it exits,
-                // so they are already readable when its exit is seen.
+                // so they are already in the socket when its exit is seen.
+                // The exit can be seen before the runtime has heard that the
+                // socket is readable, and `try_read` answers from what the
+                // runtime has heard: there the socket itself is read. A
+                // status missed here would settle the output without its
+                // fence, which then shows in the result.
                 let read = tokio::select! {
                     biased;
                     ready = stream.readable() => match ready {
@@ -838,7 +843,7 @@ async fn supervise(
                     },
                     status = child.wait() => {
                         exited = Some(status);
-                        stream.try_read(&mut chunk).unwrap_or(0)
+                        direct.read(&mut chunk).unwrap_or(0)
                     }
                 };
                 line.extend_from_slice(&chunk[..read]);
