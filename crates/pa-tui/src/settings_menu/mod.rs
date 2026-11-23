@@ -251,6 +251,16 @@ struct SettingsTab {
     selected: usize,
 }
 
+/// How a stored value reads on screen: a boolean setting is `on`/`off` (the `/fast` status's
+/// words); the stored `true`/`false` and every other value are unchanged.
+fn shown_value(value: &str) -> &str {
+    match value {
+        "true" => "on",
+        "false" => "off",
+        other => other,
+    }
+}
+
 /// The TS settings-menu rows in the TS order, with the caller-assembled
 /// current values.
 pub fn settings_menu_rows(current: &SettingsCurrentValues) -> Vec<SettingsMenuRow> {
@@ -1169,12 +1179,15 @@ impl SettingsMenu {
             let (label, value) = if self.changed_default(row).is_some() {
                 (
                     theme.fg_span(ThemeColor::Warning, row.label),
-                    crate::menu_panel::MenuSegment::themed(ThemeColor::Warning, &row.current),
+                    crate::menu_panel::MenuSegment::themed(
+                        ThemeColor::Warning,
+                        shown_value(&row.current),
+                    ),
                 )
             } else {
                 (
                     crate::Span::raw(row.label),
-                    crate::menu_panel::MenuSegment::muted(&row.current),
+                    crate::menu_panel::MenuSegment::muted(shown_value(&row.current)),
                 )
             };
             lines.push(crate::menu_panel::menu_row(
@@ -1245,7 +1258,7 @@ impl SettingsMenu {
                     format!(
                         "sets {} to {}",
                         row.label.to_lowercase(),
-                        values.get(next).map_or("", String::as_str)
+                        values.get(next).map_or("", |value| shown_value(value))
                     )
                 }
                 None => format!("opens {}", row.label),

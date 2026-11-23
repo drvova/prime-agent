@@ -27,7 +27,7 @@ pub(crate) const PROVIDERS_NOTE: &str = "You can add providers anytime with /log
 pub(crate) const LOGIN_ACTION_LABEL: &str = "Log in with Prime Intellect";
 /// The Prime Inference login's heading: the panel that owns the block names itself in place of the
 /// brand line.
-pub(crate) const PRIME_LOGIN_HEADING: &str = "Login with Prime Intellect";
+pub(crate) const PRIME_LOGIN_HEADING: &str = "Log in with Prime Intellect";
 pub(crate) const API_KEY_PROMPT: &str = "Enter API key:";
 
 const WELCOME_DESCRIPTION_PARAGRAPHS: [&str; 2] = [

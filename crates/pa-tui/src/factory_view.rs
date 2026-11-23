@@ -751,7 +751,6 @@ impl FactoryView {
         let mut panels: Vec<Line> = Vec::new();
         let mut focus: Option<(usize, usize)> = None;
         if self.runs.is_empty() {
-            panels.push(vec![Span::raw("")]);
             panels.push(vec![
                 Span::raw("  "),
                 theme.fg_span(ThemeColor::Text, "No live factory runs."),
@@ -773,9 +772,19 @@ impl FactoryView {
                 focus = Some((panel_start, line));
             }
         }
-        // The chrome area: the error line from the last failed refresh
-        // and the trailing key hint (the view's only key legend).
-        let mut chrome_rows = 2;
+        // The chrome area: the title row with the live-run counts over a
+        // blank, the error line from the last failed refresh, and the
+        // trailing key hint (the view's only key legend).
+        let FactoryRunCounts { running, paused } = FactoryRunCounts::of(&self.runs);
+        let mut counts = vec![(ThemeColor::Accent, format!("{running} running"))];
+        if paused > 0 {
+            counts.push((ThemeColor::Warning, format!("{paused} paused")));
+        }
+        let title = vec![
+            crate::menu_chrome::title_counts_row(theme, width, "Factory", &counts),
+            vec![Span::raw("")],
+        ];
+        let mut chrome_rows = 2 + title.len();
         if self.error.is_some() {
             chrome_rows += 2;
         }
@@ -804,7 +813,8 @@ impl FactoryView {
             panels.drain(..start);
             panels.truncate(panel_budget);
         }
-        let mut rows = panels;
+        let mut rows = title;
+        rows.extend(panels);
         if let Some(error) = &self.error {
             rows.push(vec![Span::raw("")]);
             rows.push(crate::menu_chrome::error_row(theme, width, error));
@@ -885,11 +895,10 @@ impl FactoryView {
         let changed = self.recent_change.get(index).copied().unwrap_or(false);
         // The header: the selection marker, the run's name, its state.
         let mut header: Line = vec![Span::raw(if header_selected { "▸ " } else { "  " })];
-        header.push(theme.fg_span(ThemeColor::ToolTitle, "factory: "));
         header.push(theme.fg_span(ThemeColor::Text, run.display_name()));
         let state_text = match run.state.as_deref() {
-            Some(state) => format!(" — {state}"),
-            None => " — not running".to_string(),
+            Some(state) => format!("  {state}"),
+            None => "  not running".to_string(),
         };
         header.push(theme.fg_span(run_state_color(run.state.as_deref()), state_text));
         if changed {

@@ -123,7 +123,12 @@ goal panel; the working loader keeps its ticking `1h 07m 05s`. Notices that name
 unbound. The `/settings` tab strip windows whole tabs around the active one on a narrow pane and
 marks each hidden side with `…`. The splash is as tall as its text when the pane is too narrow for
 the logo, and the agents view folds it to one identity row on a terminal too short to show it and
-a usable list (fewer than the splash plus 12 rows).
+a usable list (fewer than the splash plus 21 rows: the full logo shows from 30 rows, so the
+default 24-row terminal folds). A pane title that carries counts is `menu_chrome::title_counts_row`
+(`  Factory          3 running · 1 paused`, the counts flush right two columns short of the edge:
+the bash view and the factory page). `/settings` shows a boolean setting as `on`/`off` (the
+`/fast` words); the stored `true`/`false` are unchanged. A single choice carries radio marks
+(`( )`/`(•)`: the question prompt and `/effort`), a multiple choice checkboxes (`[ ]`/`[x]`).
 
 
 ## Non-goals

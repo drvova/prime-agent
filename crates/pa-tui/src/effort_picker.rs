@@ -87,6 +87,38 @@ mod tests {
         assert_eq!(picker.checked("low"), Some(false));
     }
 
+    /// Effort is one choice, so its rows carry radio marks (the question prompt's single
+    /// choice), not the resource modal's checkboxes.
+    #[test]
+    fn the_effort_rows_carry_radio_marks() {
+        let picker = ChoicePicker::effort(&levels(), Some("medium"));
+        let theme = crate::theme::Theme::builtin("prime", crate::theme::ColorMode::TrueColor);
+        let rows: Vec<String> = picker
+            .render(&theme, 60, &crate::keybindings::KeybindingsManager::new())
+            .iter()
+            .map(|line| line.iter().map(|span| span.content.as_str()).collect())
+            .filter_map(|row: String| {
+                let level = levels()
+                    .into_iter()
+                    .find(|level| row.trim_end().ends_with(level_description(level)))?;
+                Some(
+                    row[..row.find(level_description(&level))?]
+                        .trim_end()
+                        .to_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "  ( ) off".to_string(),
+                "  ( ) low".to_string(),
+                "\u{203a} (\u{2022}) medium".to_string(),
+                "  ( ) high".to_string(),
+            ]
+        );
+    }
+
     #[test]
     fn a_known_argument_applies_directly() {
         match effort_command(&levels(), None, " HIGH ") {

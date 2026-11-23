@@ -406,13 +406,21 @@ impl ConfigSelector {
                     ..
                 } => {
                     let selected = position == self.selected;
+                    // Effort is one choice: radio marks, as the question prompt's single choice;
+                    // the resource modal toggles each row: checkboxes.
+                    let mark = match (self.kind, *checked) {
+                        (SelectorKind::ResourceConfig, true) => "[x]",
+                        (SelectorKind::ResourceConfig, false) => "[ ]",
+                        (SelectorKind::Effort, true) => "(\u{2022})",
+                        (SelectorKind::Effort, false) => "( )",
+                    };
                     let checkbox = theme.fg_span(
                         if *checked {
                             ThemeColor::Success
                         } else {
                             ThemeColor::Dim
                         },
-                        if *checked { "[x]" } else { "[ ]" },
+                        mark,
                     );
                     let primary: Line = vec![checkbox, Span::raw(" "), Span::raw(label.clone())];
                     let trailing: Vec<crate::menu_panel::MenuSegment> = if type_label.is_empty() {

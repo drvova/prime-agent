@@ -10,8 +10,10 @@ use super::{
 };
 
 /// The rows a frame keeps for the search prompt, a usable list, the preview and the hints: a
-/// terminal shorter than the splash plus these folds the splash to one row.
-const SHORT_FRAME_RESERVE_ROWS: usize = 12;
+/// terminal shorter than the splash plus these folds the splash to one row. With the logo's
+/// nine-row splash the full logo shows from 30 rows, so the default 24-row terminal folds and
+/// its list shows about fifteen sessions instead of seven.
+const SHORT_FRAME_RESERVE_ROWS: usize = 21;
 
 impl AgentsViewMode {
     pub(super) fn render_frame(

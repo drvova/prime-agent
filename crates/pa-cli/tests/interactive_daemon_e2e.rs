@@ -1139,7 +1139,10 @@ async fn fresh_home_runs_the_full_sign_in_flow_to_completion() {
         "the welcome screen's action rendered:\n{rendered}"
     );
     assert!(
-        rendered.contains("Login with Prime Intellect"),
+        outcome.frames.iter().any(|frame| {
+            frame.contains("Log in with Prime Intellect")
+                && frame.contains("Paste a Prime API key below:")
+        }),
         "the login dialog's heading replaced the brand line:\n{rendered}"
     );
     assert!(

@@ -26,6 +26,35 @@ pub(crate) fn title_row(theme: &Theme, width: usize, title: &str) -> Line {
     truncate_line(&line, width, ELLIPSIS)
 }
 
+/// A pane's title row with its counts flush right (`  Factory          3 running · 1 paused`),
+/// two columns short of the edge; a row too narrow for both cuts the counts with the ellipsis.
+pub(crate) fn title_counts_row(
+    theme: &Theme,
+    width: usize,
+    title: &str,
+    counts: &[(ThemeColor, String)],
+) -> Line {
+    let mut row = title_row(theme, usize::MAX, title);
+    if !counts.is_empty() {
+        let joined_width = counts
+            .iter()
+            .map(|(_, text)| str_width(text) + str_width(SEPARATOR))
+            .sum::<usize>()
+            .saturating_sub(str_width(SEPARATOR));
+        let gap = width
+            .saturating_sub(str_width(CHROME_INDENT) + str_width(title) + 2 + joined_width)
+            .max(2);
+        row.push(Span::raw(" ".repeat(gap)));
+        for (index, (color, text)) in counts.iter().enumerate() {
+            if index > 0 {
+                row.push(theme.fg_span(ThemeColor::Muted, SEPARATOR.to_string()));
+            }
+            row.push(theme.fg_span(*color, text.clone()));
+        }
+    }
+    truncate_line(&row, width, ELLIPSIS)
+}
+
 /// Hold a searchable list's height while a query is active: the rows pushed since `list_start`
 /// (list rows, scroll row, empty state) are padded with blank rows up to `held`, the height the
 /// unfiltered list renders — which is the height it had when the query started, since a query

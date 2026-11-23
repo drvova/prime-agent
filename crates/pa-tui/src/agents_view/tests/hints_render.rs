@@ -161,6 +161,33 @@ fn a_short_terminal_folds_the_splash_and_keeps_the_list() {
     );
 }
 
+/// The fold threshold: the default 24-row terminal (and 29 rows) folds the logo to its identity
+/// row; the full logo returns at 30 rows.
+#[test]
+fn the_logo_folds_below_thirty_rows() {
+    let identity = " prime agent v0.0.0 \u{b7} 0 running, 1 idle, 0 inactive";
+    let first_rows = |height: usize| -> Vec<String> {
+        let mut mode = mode_with_parent_and_child();
+        let (lines, _) = mode.render_frame(100, height);
+        lines
+            .iter()
+            .take(2)
+            .map(|line| flat(line).trim_end().to_string())
+            .collect()
+    };
+    assert_eq!(first_rows(24), vec![identity.to_string(), String::new()]);
+    assert_eq!(first_rows(29), vec![identity.to_string(), String::new()]);
+    // The splash opens with its top padding row, then the logo's first row.
+    let logo_top = crate::chrome::PRIME_COMPACT_BUTTERFLY_LOGO
+        .split('\n')
+        .next()
+        .unwrap_or_default();
+    assert_eq!(
+        first_rows(30),
+        vec![String::new(), format!(" {logo_top}").trim_end().to_string()]
+    );
+}
+
 /// An empty view advertises no key that does nothing: no arrows, no open.
 #[test]
 fn an_empty_view_offers_only_what_works() {

@@ -207,27 +207,9 @@ pub(super) fn pane_header_lines(
     counts: &[(ThemeColor, String)],
     subtitle: Option<&str>,
 ) -> Vec<Line> {
-    let mut title_row = crate::menu_chrome::title_row(theme, usize::MAX, title);
-    if !counts.is_empty() {
-        let joined_width = counts
-            .iter()
-            .map(|(_, text)| str_width(text) + 3)
-            .sum::<usize>()
-            .saturating_sub(3);
-        let gap = width
-            .saturating_sub(2 + title.chars().count() + 2 + joined_width)
-            .max(2);
-        title_row.push(Span::raw(" ".repeat(gap)));
-        for (index, (color, text)) in counts.iter().enumerate() {
-            if index > 0 {
-                title_row.push(theme.fg_span(ThemeColor::Muted, " \u{b7} ".to_string()));
-            }
-            title_row.push(theme.fg_span(*color, text.clone()));
-        }
-    }
     let mut lines = vec![
         vec![theme.fg_span(ThemeColor::BorderMuted, "\u{2500}".repeat(width.max(1)))],
-        truncate_line(&title_row, width, ""),
+        crate::menu_chrome::title_counts_row(theme, width, title, counts),
     ];
     if let Some(subtitle) = subtitle {
         if !subtitle.is_empty() {

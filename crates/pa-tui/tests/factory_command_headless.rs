@@ -753,7 +753,7 @@ fn factory_page_picker_keys_paint_the_moved_selection_on_the_key() {
         HeadlessStep::Key(enter()),
         // The page opens on the feed's live head: the newest run.
         HeadlessStep::WaitRender {
-            needle: "factory: second-run".to_string(),
+            needle: "\u{25b8} second-run".to_string(),
             timeout_ms: 5_000,
         },
         // Down moves the selection to the older run, and Esc closes the
@@ -767,11 +767,11 @@ fn factory_page_picker_keys_paint_the_moved_selection_on_the_key() {
     let frames = run_plan_config(vec!["factory_activity".to_string()], Some(graph), steps);
     let all = flat_text(&frames);
     assert!(
-        all.contains("factory: second-run"),
+        all.contains("\u{25b8} second-run"),
         "the page mounted on the newest run:\n{all}"
     );
     assert!(
-        all.contains("\u{25b8} factory: first-run"),
+        all.contains("\u{25b8} first-run"),
         "the arrow's own repaint painted the moved selection before the page closed:\n{all}"
     );
 }
@@ -788,20 +788,20 @@ fn a_paste_on_the_factory_page_stays_out_of_the_hidden_editor() {
         HeadlessStep::Key(down()),
         HeadlessStep::Key(enter()),
         HeadlessStep::WaitRender {
-            needle: "factory: only-run".to_string(),
+            needle: "\u{25b8} only-run".to_string(),
             timeout_ms: 5_000,
         },
         HeadlessStep::Paste("zq-stray-paste".to_string()),
         HeadlessStep::Key(escape()),
         HeadlessStep::WaitGone {
-            needle: "factory: only-run".to_string(),
+            needle: "\u{25b8} only-run".to_string(),
             timeout_ms: 5_000,
         },
     ];
     let frames = run_plan_config(vec!["factory_activity".to_string()], Some(graph), steps);
     let all = flat_text(&frames);
     assert!(
-        all.contains("factory: only-run"),
+        all.contains("\u{25b8} only-run"),
         "the page mounted before the paste:\n{all}"
     );
     assert!(
@@ -822,7 +822,7 @@ fn a_closed_session_clears_the_open_factory_page() {
         HeadlessStep::Key(down()),
         HeadlessStep::Key(enter()),
         HeadlessStep::WaitRender {
-            needle: "factory: only-run".to_string(),
+            needle: "\u{25b8} only-run".to_string(),
             timeout_ms: 5_000,
         },
         // The first stop press arms the selected run, the second stops it; the mock's daemon
