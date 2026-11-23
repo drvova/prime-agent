@@ -6,6 +6,7 @@ members = [
     "crates/pa-ai",
     "crates/pa-models",
     "crates/pa-agent",
+    "crates/pa-shell",
     "crates/pa-core",
     "crates/pa-daemon",
     "crates/pa-tui",
@@ -23,6 +24,11 @@ crossterm = { path = "vendor/crossterm" }
 # path form everywhere so the Linux-hosted Windows cross-check compiles
 # (vendor/steel-core/PRIME_AGENT_PATCH.md).
 steel-core = { path = "vendor/steel-core" }
+# brush-core 0.5.0 starts its external commands itself, listens for SIGINT, SIGTSTP and
+# SIGCHLD on behalf of the whole process, cannot be stopped from outside, and runs a compound
+# command in a pipeline to its end before the next stage starts. The vendored copy gives an
+# embedding process a hook for each (vendor/brush-core/PRIME_AGENT_PATCH.md).
+brush-core = { path = "vendor/brush-core" }
 
 [workspace.package]
 version = "0.10.3"
@@ -51,6 +57,7 @@ pa-telemetry = { path = "crates/pa-telemetry" }
 pa-types = { path = "crates/pa-types" }
 pa-ai = { path = "crates/pa-ai" }
 pa-agent = { path = "crates/pa-agent" }
+pa-shell = { path = "crates/pa-shell" }
 thiserror = "2"
 futures = "0.3"
 toml = "0.9"

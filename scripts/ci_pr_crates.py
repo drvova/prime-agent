@@ -79,6 +79,7 @@ WORKSPACE_DEPS = {
     "pa-ai": {"pa-types"},
     "pa-models": {"pa-ai", "pa-types"},
     "pa-agent": {"pa-ai", "pa-types"},
+    "pa-shell": {"pa-types"},
     "pa-core": {"pa-agent", "pa-ai", "pa-models", "pa-types", "pa-telemetry"},
     "pa-daemon": {"pa-types", "pa-core", "pa-agent", "pa-ai", "pa-telemetry",
                   "pa-models"},

@@ -1,0 +1,67 @@
+[package]
+name = "pa-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "In-process bash-compatible shell and session-safe utilities for Prime Agent."
+
+[dependencies]
+pa-types.workspace = true
+tokio.workspace = true
+# The shell engine: parser, interpreter and the shell's own builtins. brush-core is the
+# vendored copy (vendor/brush-core/PRIME_AGENT_PATCH.md).
+brush-core = "0.5.0"
+# Without the builtins that act on the whole process (exec, kill, umask, ulimit, suspend,
+# times), wait for a job by its number only (wait), or need a terminal (fg, bg, bind, fc,
+# history, completion): `shims.rs` replaces the ones a script needs.
+brush-builtins = { version = "0.2.0", default-features = false, features = [
+    "builtin.alias",
+    "builtin.break",
+    "builtin.builtin",
+    "builtin.caller",
+    "builtin.cd",
+    "builtin.colon",
+    "builtin.command",
+    "builtin.continue",
+    "builtin.declare",
+    "builtin.dirs",
+    "builtin.dot",
+    "builtin.echo",
+    "builtin.enable",
+    "builtin.eval",
+    "builtin.exit",
+    "builtin.export",
+    "builtin.false",
+    "builtin.getopts",
+    "builtin.hash",
+    "builtin.jobs",
+    "builtin.let",
+    "builtin.mapfile",
+    "builtin.popd",
+    "builtin.printf",
+    "builtin.pushd",
+    "builtin.pwd",
+    "builtin.read",
+    "builtin.return",
+    "builtin.set",
+    "builtin.shift",
+    "builtin.shopt",
+    "builtin.test",
+    "builtin.trap",
+    "builtin.true",
+    "builtin.type",
+    "builtin.unalias",
+    "builtin.unset",
+] }
+regex = "1"
+globset = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["feature", "signal", "user"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
