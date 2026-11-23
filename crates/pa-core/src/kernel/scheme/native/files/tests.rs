@@ -439,6 +439,75 @@ async fn a_near_miss_edit_matches_by_the_first_normalization_that_finds_one_plac
     );
 }
 
+/// Each `edit` reaches the session's count by how it matched or why it did
+/// not (`edit.fact`): every step of the ladder, a pasted `fs-read` anchor,
+/// an ambiguous match and a miss. A failure that is no match at all (a
+/// missing file) counts nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_edit_is_counted_by_how_it_matched() {
+    use crate::kernel::edit_matches::{register_edit_match_handler, EditMatch};
+    let dir = tempfile::tempdir().unwrap();
+    let (heard, mut received) = tokio::sync::mpsc::unbounded_channel();
+    let mut handlers = HostRequestHandlers::new();
+    register_edit_match_handler(
+        &mut handlers,
+        Some(Arc::new(move |outcome| {
+            // A test that has ended no longer listens.
+            let _ = heard.send(outcome);
+        })),
+    );
+    let kernel = kernel_over(handlers, dir.path()).await;
+    for (name, text) in [
+        ("a.txt", "alpha\nbeta\n"),
+        ("b.py", "def f():\n    return 1\n"),
+        ("c.txt", "say \"hi\"\n"),
+        ("d.txt", "one\ntwo\n"),
+        ("e.txt", "same\nsame\n"),
+    ] {
+        std::fs::write(dir.path().join(name), text).unwrap();
+    }
+    let mut outcomes = Vec::new();
+    for cell in [
+        r#"(edit "a.txt" "alpha" "ALPHA")"#,
+        r#"(edit "a.txt" "beta   " "BETA")"#,
+        r#"(edit "b.py" "\treturn 1" "\treturn 2")"#,
+        "(edit \"c.txt\" \"say \u{201C}hi\u{201D}\" \"say bye\")",
+        r#"(edit "d.txt" "one\\ntwo" "1\\n2")"#,
+        r#"(edit "d.txt" "1:abc|1" "x")"#,
+        r#"(edit "e.txt" "same" "other")"#,
+        r#"(edit "e.txt" "absent" "other")"#,
+        // Not counted: the next outcome heard is the exact match after it.
+        r#"(edit "missing.txt" "x" "y")"#,
+        r#"(edit "a.txt" "ALPHA" "alpha")"#,
+    ] {
+        let missing = cell.contains("missing.txt");
+        // Whether the edit applied or failed is the ladder's tests' concern.
+        let _ = value(kernel.as_ref(), cell).await;
+        if !missing {
+            outcomes.push(
+                tokio::time::timeout(Duration::from_secs(10), received.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+    }
+    assert_eq!(
+        outcomes,
+        vec![
+            EditMatch::Exact,
+            EditMatch::TrailingWhitespace,
+            EditMatch::Indentation,
+            EditMatch::UnicodePunctuation,
+            EditMatch::Unescaped,
+            EditMatch::AnchorPrefix,
+            EditMatch::Ambiguous,
+            EditMatch::NotFound,
+            EditMatch::Exact,
+        ]
+    );
+}
+
 /// A TypeScript project under `root` whose `tsc` is `script`. A child process
 /// writes it, so no thread of this one can hold it open for writing while it
 /// is being started.

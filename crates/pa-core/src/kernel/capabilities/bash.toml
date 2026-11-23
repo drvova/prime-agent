@@ -28,3 +28,14 @@ properties = [
   "builtin_shell_handed_over_count",
   "builtin_shell_unavailable_count",
 ]
+
+[[telemetry]]
+event = "agent bash quiet"
+properties = [
+  "bash_quiet_delivered_count",
+  "bash_quiet_dropped_busy_count",
+  "bash_quiet_job_count",
+  "bash_quiet_step_1_count",
+  "bash_quiet_step_2_count",
+  "bash_quiet_step_3_count",
+]

@@ -20,6 +20,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::cell_window::CellWindowSource;
     use crate::kernel::command_cache::CacheLookup;
     use crate::kernel::edit_checks::EditCheckOutcome;
+    use crate::kernel::edit_matches::EditMatch;
     use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::hypotheses::HypothesesRun;
     use crate::kernel::shared::{BackgroundCellFact, CellWaitFact};
@@ -28,6 +29,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::spill::{PreviewFact, SpillFact};
     use crate::kernel::test_runs::TestRunFact;
     use crate::prefetch::PrefetchFact;
+    use crate::session_engine::bash_notices::{BashQuietFact, NoticeAdmission, QuietStep};
     use crate::session_engine::checkpoint_host::CheckpointFact;
     use crate::session_engine::decision::DecideFact;
     use crate::session_engine::rizin_usage::RizinFact;
@@ -299,6 +301,38 @@ fn drive(counters: &SessionCounters) {
             unavailable,
         });
     }
+    for (admission, jobs, step) in [
+        (NoticeAdmission::Taken, 2, Some(QuietStep::First)),
+        (NoticeAdmission::Taken, 1, Some(QuietStep::Second)),
+        (NoticeAdmission::DroppedBusy, 1, Some(QuietStep::First)),
+        (NoticeAdmission::DroppedBusy, 1, Some(QuietStep::Third)),
+        (NoticeAdmission::NotTaken, 3, None),
+    ] {
+        counters.note_bash_quiet(BashQuietFact {
+            admission,
+            jobs,
+            step,
+        });
+    }
+    for outcome in [
+        EditMatch::Exact,
+        EditMatch::Exact,
+        EditMatch::Exact,
+        EditMatch::TrailingWhitespace,
+        EditMatch::Indentation,
+        EditMatch::Indentation,
+        EditMatch::UnicodePunctuation,
+        EditMatch::Unescaped,
+        EditMatch::AnchorPrefix,
+        EditMatch::AnchorPrefix,
+        EditMatch::Ambiguous,
+        EditMatch::NotFound,
+        EditMatch::NotFound,
+        EditMatch::NotFound,
+        EditMatch::NotFound,
+    ] {
+        counters.note_edit_match(outcome);
+    }
     for outcome in [
         EditCheckOutcome::Clean,
         EditCheckOutcome::Clean,
@@ -553,6 +587,10 @@ async fn capability_events_stay_byte_identical() {
 /// against the Scheme-kernel branch's counters, before the generic counter replaced them).
 const EXPECTED: &[(&str, &str)] = &[
     (
+        "agent bash quiet",
+        r#"{"bash_quiet_delivered_count":2,"bash_quiet_dropped_busy_count":2,"bash_quiet_job_count":8,"bash_quiet_step_1_count":2,"bash_quiet_step_2_count":1,"bash_quiet_step_3_count":1}"#,
+    ),
+    (
         "agent builtin shell",
         r#"{"builtin_shell_command_count":2,"builtin_shell_in_process_count":6,"builtin_shell_spawned_count":3,"builtin_shell_handed_over_count":1,"builtin_shell_unavailable_count":3}"#,
     ),
@@ -571,6 +609,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent edit checks",
         r#"{"edit_check_run_count":4,"edit_check_found_count":1,"edit_check_late_count":1,"edit_check_skipped_count":2,"edit_check_failed_count":1}"#,
+    ),
+    (
+        "agent edit matches",
+        r#"{"edit_exact_count":3,"edit_trailing_whitespace_count":1,"edit_indentation_count":2,"edit_unicode_punctuation_count":1,"edit_unescaped_count":1,"edit_anchor_prefix_refused_count":2,"edit_ambiguous_count":1,"edit_not_found_count":4}"#,
     ),
     (
         "agent endpoint discovery",

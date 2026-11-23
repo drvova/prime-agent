@@ -650,11 +650,12 @@ impl Worker {
                 let notice_recovery = Arc::clone(&recovery);
                 let notice_events = events.clone();
                 let notice_sink: crate::engine::KernelNoticeSink = Arc::new(move |notice| {
+                    use pa_core::session_engine::bash_notices::NoticeAdmission;
                     let Some(engine) = notice_engine.upgrade() else {
-                        return;
+                        return NoticeAdmission::NotTaken;
                     };
                     if engine.session_is_closed() {
-                        return;
+                        return NoticeAdmission::NotTaken;
                     }
                     admit_kernel_notice(
                         &notice_recovery,
@@ -665,7 +666,7 @@ impl Worker {
                         // Revalidated inside the admission's lock section: the
                         // close paths mark the session BEFORE clearing the lanes.
                         || engine.session_is_closed(),
-                    );
+                    )
                 });
                 let withdraw_core = Arc::clone(&core);
                 let withdraw_recovery = Arc::clone(&recovery);

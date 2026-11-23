@@ -1,4 +1,4 @@
-internal_host_requests = ["edit_check.fact"]
+internal_host_requests = ["edit_check.fact", "edit.fact"]
 
 [[telemetry]]
 event = "agent fs search"
@@ -60,3 +60,16 @@ properties = [
 [[telemetry]]
 event = "agent fs rereads"
 properties = ["fs_reread_unchanged_count", "fs_reread_diff_count", "fs_reread_full_count"]
+
+[[telemetry]]
+event = "agent edit matches"
+properties = [
+  "edit_exact_count",
+  "edit_trailing_whitespace_count",
+  "edit_indentation_count",
+  "edit_unicode_punctuation_count",
+  "edit_unescaped_count",
+  "edit_anchor_prefix_refused_count",
+  "edit_ambiguous_count",
+  "edit_not_found_count",
+]

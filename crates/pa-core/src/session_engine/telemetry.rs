@@ -51,9 +51,11 @@ pub use classify::provider_category;
 mod capability_counts;
 use capability_counts::CapabilityCounts;
 
+mod bash_quiet;
 mod builtin_shell;
 mod call_refusals;
 mod edit_checks;
+mod edit_matches;
 mod error_enrichment;
 mod hypotheses;
 mod prefetch;

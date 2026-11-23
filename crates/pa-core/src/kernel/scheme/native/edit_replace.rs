@@ -88,6 +88,32 @@ pub(super) struct Replaced {
     pub(super) new: String,
 }
 
+/// Why the ladder found nothing to replace (what the session counts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MissOutcome {
+    /// `old-str` carries `fs-read` anchor prefixes.
+    AnchorPrefix,
+    /// The first step to find `old-str` found it more than once.
+    Ambiguous,
+    /// No step found it.
+    NotFound,
+}
+
+/// An edit the ladder refused: the error a cell sees, and why.
+#[derive(Debug)]
+pub(super) struct Miss {
+    pub(super) outcome: MissOutcome,
+    message: String,
+}
+
+impl std::fmt::Display for Miss {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Miss {}
+
 /// Replace the one occurrence of `old-str` in the file at `path` (relative to
 /// `cwd`, absolute, or `~`-prefixed). The reply carries `path`, `startLine`
 /// (the 1-based line the match starts on), `matchedBy`, and `text`.
@@ -198,23 +224,35 @@ pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<Replaced> {
                     | Matched::UnicodePunctuation
                     | Matched::Unescaped => format!(" {how}"),
                 };
-                bail!(
-                    "found {count} occurrences in {path}{how}, need exactly 1 — widen the snippet to make it unique"
-                );
+                return Err(Miss {
+                    outcome: MissOutcome::Ambiguous,
+                    message: format!(
+                        "found {count} occurrences in {path}{how}, need exactly 1 — widen the snippet to make it unique"
+                    ),
+                }
+                .into());
             }
         }
         if step == Matched::Exact {
             let mut lines = old.strip_suffix('\n').unwrap_or(old).split('\n');
             if lines.all(|line| line.contains('|') && Anchor::parse(line).is_ok()) {
-                bail!(
-                    "old-str carries fs-read anchor prefixes (`LINE:abc|`), which are not in {path}: \
-                     drop them and pass the file's text alone, or edit those lines with fs-edit and their anchors"
-                );
+                return Err(Miss {
+                    outcome: MissOutcome::AnchorPrefix,
+                    message: format!(
+                        "old-str carries fs-read anchor prefixes (`LINE:abc|`), which are not in {path}: \
+                         drop them and pass the file's text alone, or edit those lines with fs-edit and their anchors"
+                    ),
+                }
+                .into());
             }
         }
     }
     let Some((matched, Candidate { range, new })) = found else {
-        bail!("{}", miss_diagnostic(path, &content, old));
+        return Err(Miss {
+            outcome: MissOutcome::NotFound,
+            message: miss_diagnostic(path, &content, old),
+        }
+        .into());
     };
     let start_line = content[..range.start].matches('\n').count() + 1;
     let replaced = content[range.clone()].to_string();

@@ -456,7 +456,10 @@ mod tests {
         ));
         let notices: Arc<Mutex<Vec<KernelNotice>>> = Arc::default();
         let sink = Arc::clone(&notices);
-        host.bind_notice_sink(Arc::new(move |notice| sink.lock().unwrap().push(notice)));
+        host.bind_notice_sink(Arc::new(move |notice| {
+            sink.lock().unwrap().push(notice);
+            crate::session_engine::bash_notices::NoticeAdmission::Taken
+        }));
         (host, notices)
     }
 

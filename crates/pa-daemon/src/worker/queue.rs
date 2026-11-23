@@ -5,6 +5,7 @@ use super::{
     SessionCore, Value, VecDeque, WorkerRecoveryJournal, AGENT_MESSAGE_SOURCE,
     AUTONOMOUS_QUEUE_KEY,
 };
+use pa_core::session_engine::bash_notices::NoticeAdmission;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lane {
@@ -540,6 +541,7 @@ pub(crate) fn admit_goal_follow_up(
 /// visible steer row, idle sessions wake into it); a crash before the
 /// delivery revives with the row replaying. A notice that only wakes an
 /// idle session (a quiet background command) is dropped by a busy one.
+/// Says what became of the notice.
 pub(crate) fn admit_kernel_notice(
     recovery: &std::sync::Mutex<Option<WorkerRecoveryJournal>>,
     core: &Arc<Mutex<SessionCore>>,
@@ -547,7 +549,7 @@ pub(crate) fn admit_kernel_notice(
     work_notify: &Arc<Notify>,
     notice: crate::engine::KernelNotice,
     session_is_closed: impl Fn() -> bool,
-) {
+) -> NoticeAdmission {
     let crate::engine::KernelNotice {
         row,
         preview_label,
@@ -560,11 +562,11 @@ pub(crate) fn admit_kernel_notice(
         pa_core::session_engine::bash_notices::NoticeDelivery::Record => {
             let Ok(message) = serde_json::to_value(pa_types::session::AgentMessage::Custom(row))
             else {
-                return;
+                return NoticeAdmission::NotTaken;
             };
             let mut core = core.lock().unwrap();
             if session_is_closed() {
-                return;
+                return NoticeAdmission::NotTaken;
             }
             if let Some(store) = core.store.as_mut() {
                 let _ = store.persist_entry(
@@ -578,7 +580,7 @@ pub(crate) fn admit_kernel_notice(
                 );
             }
             super::broadcast_custom_row_locked(&mut core, events, &message);
-            return;
+            return NoticeAdmission::Taken;
         }
     };
     let content = match &row.content {
@@ -590,8 +592,11 @@ pub(crate) fn admit_kernel_notice(
     let mut core_guard = core.lock().unwrap();
     // A notice that raced past the sink's first check is refused here or wiped
     // by the close's clear — never a completion turn for a closed session.
-    if session_is_closed() || (idle_only && core_guard.busy) {
-        return;
+    if session_is_closed() {
+        return NoticeAdmission::NotTaken;
+    }
+    if idle_only && core_guard.busy {
+        return NoticeAdmission::DroppedBusy;
     }
     let (policy, queue_visible) = if core_guard.busy {
         (TurnPolicy::Queued, true)
@@ -628,6 +633,7 @@ pub(crate) fn admit_kernel_notice(
         },
     );
     work_notify.notify_one();
+    NoticeAdmission::Taken
 }
 
 /// Withdraw one queued background-job completion notice: the kernel read

@@ -10,7 +10,7 @@
 //! quiet). While none of them has written anything, no cell runs, and no
 //! cell has ended for a quiet period, the session is sent one `bash.quiet`
 //! request naming every one of them with its run time, quiet time and
-//! output tail. The periods back off: [`QUIET_AFTER`], then four times the
+//! output tail, and which period of the silence it came after (`step`). The periods back off: [`QUIET_AFTER`], then four times the
 //! one before, for [`QUIET_STEPS`] notices; output from any of the commands,
 //! or a new one, starts the schedule again. A command is named in at most
 //! [`QUIET_STEPS`] notices in its life, so one that prints now and then
@@ -127,8 +127,10 @@ pub(super) async fn watch(session: Arc<Session>, first: Duration) {
             if !named.is_empty() {
                 // A refused notice is a silence the session does not hear of;
                 // the next step may still reach it.
+                // `step`: which quiet period of the silence this is (1-3),
+                // for the session's counts.
                 let _ = handler(HostRequestPayload {
-                    data: json!({ "jobs": named }),
+                    data: json!({ "jobs": named, "step": step }),
                 })
                 .await;
             }

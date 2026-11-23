@@ -225,6 +225,7 @@ async fn a_bash_completion_notice_on_a_busy_session_queues_a_visible_steer_row()
 /// turn in progress; an idle session wakes into it as into a completion.
 #[tokio::test]
 async fn a_wake_idle_notice_is_dropped_by_a_busy_session_and_wakes_an_idle_one() {
+    use pa_core::session_engine::bash_notices::NoticeAdmission;
     let worker = created_worker_with_journal().await;
     worker.dispatch("clear_queue", &json!({})).await;
     let quiet = || crate::engine::KernelNotice {
@@ -245,7 +246,7 @@ async fn a_wake_idle_notice_is_dropped_by_a_busy_session_and_wakes_an_idle_one()
     };
     let admit = |busy: bool| {
         worker.core.lock().unwrap().busy = busy;
-        admit_kernel_notice(
+        let admission = admit_kernel_notice(
             &worker.recovery,
             &worker.core,
             &worker.events,
@@ -254,14 +255,20 @@ async fn a_wake_idle_notice_is_dropped_by_a_busy_session_and_wakes_an_idle_one()
             || false,
         );
         let core = worker.core.lock().unwrap();
-        core.steering
-            .iter()
-            .map(|item| (item.policy, item.queue_visible))
-            .collect::<Vec<_>>()
+        (
+            admission,
+            core.steering
+                .iter()
+                .map(|item| (item.policy, item.queue_visible))
+                .collect::<Vec<_>>(),
+        )
     };
     assert_eq!(
         (admit(true), admit(false)),
-        (Vec::new(), vec![(TurnPolicy::Injected, false)])
+        (
+            (NoticeAdmission::DroppedBusy, Vec::new()),
+            (NoticeAdmission::Taken, vec![(TurnPolicy::Injected, false)])
+        )
     );
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }

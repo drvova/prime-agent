@@ -333,12 +333,40 @@ impl Files {
                 Ok(reply)
             }
             "edit" => {
+                let replaced = edit_replace::replace(&self.cwd, options);
+                // How it matched, or why nothing did (adoption telemetry):
+                // nothing waits for the count, and one the host refuses
+                // changes nothing here.
+                let outcome = match &replaced {
+                    Ok(replaced) => replaced.reply["matchedBy"].as_str(),
+                    Err(error) => error
+                        .downcast_ref::<edit_replace::Miss>()
+                        .map(|miss| match miss.outcome {
+                            edit_replace::MissOutcome::AnchorPrefix => "anchor-prefix",
+                            edit_replace::MissOutcome::Ambiguous => "ambiguous",
+                            edit_replace::MissOutcome::NotFound => "not-found",
+                        }),
+                };
+                if let (Some(outcome), Some(handler)) = (
+                    outcome,
+                    self.handlers
+                        .get(crate::kernel::edit_matches::EDIT_FACT_REQUEST_TYPE),
+                ) {
+                    let counted = handler(HostRequestPayload {
+                        data: json!({ "outcome": outcome }),
+                    });
+                    self.runtime.spawn(async move {
+                        if let Err(error) = counted.await {
+                            tracing::debug!("edit fact was refused: {error:#}");
+                        }
+                    });
+                }
                 let edit_replace::Replaced {
                     file,
                     mut reply,
                     old,
                     new,
-                } = edit_replace::replace(&self.cwd, options)?;
+                } = replaced?;
                 // The edit shows on the running cell's card, as the Python
                 // kernel's `edit` skill displayed it: the text that was
                 // replaced, which a normalized match spells differently from

@@ -1,6 +1,6 @@
-//! The `fs` capability owns six events: the search calls, the anchored read/edit/write calls,
-//! the re-reads of seen files, the checks after edits, the symbol index queries, and the
-//! neighbour prefetch of a read.
+//! The `fs` capability owns seven events: the search calls, the anchored read/edit/write calls,
+//! the re-reads of seen files, the checks after edits, how `edit` found the text it replaced, the
+//! symbol index queries, and the neighbour prefetch of a read.
 
 use super::super::{count, duration, optional, required, uuid, EventRule};
 
@@ -112,5 +112,28 @@ pub(in crate::catalog) const AGENT_PREFETCH: EventRule = EventRule {
         ("prefetch_used_count", required(count())),
         ("prefetch_unused_count", required(count())),
         ("prefetch_skipped_count", required(count())),
+    ],
+};
+
+/// How the kernel's `(edit path old-str new-str)` found the text it replaced (v2), emitted at
+/// session end beside `agent session ended` (which sits near the backend's 128-key cap) only when
+/// an edit matched or missed: edits applied by each step of its normalization ladder (exact,
+/// trailing whitespace ignored, indentation ignored, Unicode punctuation folded, literal escapes
+/// unescaped), and edits refused for an `old-str` carrying `fs-read` anchor prefixes, failed as
+/// ambiguous (the first step to find it found it more than once), or failed as not found.
+/// Counts only: never a path, a string, or file content.
+pub(in crate::catalog) const AGENT_EDIT_MATCHES: EventRule = EventRule {
+    name: "agent edit matches",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("edit_exact_count", required(count())),
+        ("edit_trailing_whitespace_count", required(count())),
+        ("edit_indentation_count", required(count())),
+        ("edit_unicode_punctuation_count", required(count())),
+        ("edit_unescaped_count", required(count())),
+        ("edit_anchor_prefix_refused_count", required(count())),
+        ("edit_ambiguous_count", required(count())),
+        ("edit_not_found_count", required(count())),
     ],
 };

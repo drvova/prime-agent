@@ -10,6 +10,7 @@ mod capabilities;
 pub mod cell_window;
 pub(crate) mod command_cache;
 pub(crate) mod edit_checks;
+pub(crate) mod edit_matches;
 pub mod error_context;
 pub(crate) mod hypotheses;
 pub mod orphan_journal;

@@ -1,5 +1,5 @@
-//! The `bash` capability owns three events: the read-only command cache, the typed summaries
-//! of awaited test runs, and the built-in shell.
+//! The `bash` capability owns four events: the read-only command cache, the typed summaries
+//! of awaited test runs, the built-in shell, and the `[bash-quiet]` notices.
 
 use super::super::{count, required, uuid, EventRule};
 
@@ -54,5 +54,25 @@ pub(in crate::catalog) const AGENT_BUILTIN_SHELL: EventRule = EventRule {
         ("builtin_shell_spawned_count", required(count())),
         ("builtin_shell_handed_over_count", required(count())),
         ("builtin_shell_unavailable_count", required(count())),
+    ],
+};
+
+/// The `[bash-quiet]` notices (v2), emitted at session end beside `agent session ended` (which
+/// sits near the backend's 128-key cap) only when the kernel reported background commands that
+/// had all written nothing for a quiet period: notices that woke the idle session, notices dropped
+/// because a turn was running, the commands the notices named, and the notices by back-off step
+/// (the first, second and third quiet period of one silence). Counts only: never a command, a
+/// path, output, or a duration.
+pub(in crate::catalog) const AGENT_BASH_QUIET: EventRule = EventRule {
+    name: "agent bash quiet",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("bash_quiet_delivered_count", required(count())),
+        ("bash_quiet_dropped_busy_count", required(count())),
+        ("bash_quiet_job_count", required(count())),
+        ("bash_quiet_step_1_count", required(count())),
+        ("bash_quiet_step_2_count", required(count())),
+        ("bash_quiet_step_3_count", required(count())),
     ],
 };

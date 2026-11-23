@@ -1296,8 +1296,8 @@ async fn a_background_command_that_goes_quiet_is_reported_on_a_backoff(shell) {
             after_kill,
         ),
         (
-            ("bash.quiet".to_string(), json!({ "jobs": [loud] })),
-            ("bash.quiet".to_string(), json!({ "jobs": [loud] })),
+            ("bash.quiet".to_string(), json!({ "jobs": [loud], "step": 1 })),
+            ("bash.quiet".to_string(), json!({ "jobs": [loud], "step": 2 })),
             crate::tools::kernel_cell::ExecuteStatus::Aborted,
             true,
             "#true",
@@ -1320,9 +1320,81 @@ async fn a_background_command_that_goes_quiet_is_reported_on_a_backoff(shell) {
                     "quietMs": true,
                     "output": "",
                     "outputTruncated": false,
-                }] })
+                }], "step": 1 })
             ),
         )
     );
 }
+}
+
+/// Each `[bash-quiet]` notice the session's handler answers reaches its
+/// counts: the commands it named, its back-off step, and whether it woke the
+/// session or a turn in progress dropped it.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_quiet_notice_is_counted_with_its_jobs_step_and_admission() {
+    use crate::session_engine::bash_notices::{
+        observe_bash_quiet, BashQuietFact, NoticeAdmission, QuietStep,
+    };
+    const FIRST: u64 = 200;
+    let dir = tempfile::tempdir().unwrap();
+    // The host wakes the idle session into the first notice; a turn has
+    // started by the second.
+    let answered = std::sync::atomic::AtomicUsize::new(0);
+    let mut handlers = HostRequestHandlers::new();
+    handlers.register(
+        "bash.quiet",
+        host_handler(move |_| {
+            let admission = match answered.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => "delivered",
+                _ => "dropped_busy",
+            };
+            async move { Ok(json!({ "admission": admission })) }
+        }),
+    );
+    let (heard, mut facts) = unbounded_channel();
+    observe_bash_quiet(
+        &mut handlers,
+        std::sync::Arc::new(move |fact| {
+            // A test that has ended no longer listens.
+            let _ = heard.send(fact);
+        }),
+    );
+    let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        host_handlers: handlers,
+        cwd: dir.path().to_path_buf(),
+        env: vec![("PRIME_AGENT_BASH_QUIET_MS".to_string(), FIRST.to_string())],
+        ..SchemeKernelOptions::default()
+    })
+    .await;
+    value(
+        kernel.as_ref(),
+        "(define one (bash \"/bin/sleep 600\" (hash 'background #t)))
+         (define two (bash \"/bin/sleep 600\" (hash 'background #t)))",
+    )
+    .await;
+    let mut heard = Vec::new();
+    for _ in 0..2 {
+        heard.push(
+            tokio::time::timeout(STEP, facts.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    value(kernel.as_ref(), "(bash-kill one) (bash-kill two)").await;
+    assert_eq!(
+        heard,
+        vec![
+            BashQuietFact {
+                admission: NoticeAdmission::Taken,
+                jobs: 2,
+                step: Some(QuietStep::First),
+            },
+            BashQuietFact {
+                admission: NoticeAdmission::DroppedBusy,
+                jobs: 2,
+                step: Some(QuietStep::Second),
+            },
+        ]
+    );
 }

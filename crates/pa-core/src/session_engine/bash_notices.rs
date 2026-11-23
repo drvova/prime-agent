@@ -113,10 +113,92 @@ impl KernelNotice {
     }
 }
 
+/// What admitting one kernel notice did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoticeAdmission {
+    /// The session took the row: it steers, wakes the session, or is recorded.
+    Taken,
+    /// A [`NoticeDelivery::WakeIdle`] row a session in a turn did not take.
+    DroppedBusy,
+    /// Nothing took the row: the session is closed, or has no agent yet.
+    NotTaken,
+}
+
 /// The queue-admission seam for one kernel notice (the daemon worker's
 /// steering lane + runner wake + recovery busy-evidence; the in-process
-/// sinks below steer onto the session's own agent).
-pub type KernelNoticeSink = Arc<dyn Fn(KernelNotice) + Send + Sync>;
+/// sinks below steer onto the session's own agent). It says what it did
+/// with the notice.
+pub type KernelNoticeSink = Arc<dyn Fn(KernelNotice) -> NoticeAdmission + Send + Sync>;
+
+/// One `[bash-quiet]` notice the kernel sent (counts only: never a command
+/// or output).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BashQuietFact {
+    pub(crate) admission: NoticeAdmission,
+    /// The background commands it named.
+    pub(crate) jobs: u64,
+    /// Which quiet period of the silence it came after.
+    pub(crate) step: Option<QuietStep>,
+}
+
+/// The back-off steps of one silence: the first quiet period, four times
+/// it, sixteen times it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuietStep {
+    First,
+    Second,
+    Third,
+}
+
+/// Hears each `[bash-quiet]` notice the session's handler answered.
+pub(crate) type BashQuietObserver = Arc<dyn Fn(BashQuietFact) + Send + Sync>;
+
+/// Wrap the registered `bash.quiet` handler (the embedding's or the
+/// in-process one) so `observer` hears each notice it answered: the jobs
+/// and step from the kernel's payload, the admission from the reply. A
+/// session without the handler observes nothing.
+pub(crate) fn observe_bash_quiet(handlers: &mut HostRequestHandlers, observer: BashQuietObserver) {
+    let Some(quiet) = handlers.get(BASH_QUIET_REQUEST_TYPE).cloned() else {
+        return;
+    };
+    handlers.register(
+        BASH_QUIET_REQUEST_TYPE,
+        host_handler(move |payload| {
+            let quiet = Arc::clone(&quiet);
+            let observer = Arc::clone(&observer);
+            async move {
+                let jobs = payload
+                    .data
+                    .get("jobs")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len) as u64;
+                let step = match payload.data.get("step").and_then(Value::as_u64) {
+                    Some(1) => Some(QuietStep::First),
+                    Some(2) => Some(QuietStep::Second),
+                    Some(3) => Some(QuietStep::Third),
+                    Some(_) | None => None,
+                };
+                let reply = quiet(payload).await;
+                let admission = reply.as_ref().ok().and_then(|reply| {
+                    match reply.get("admission").and_then(Value::as_str) {
+                        Some("delivered") => Some(NoticeAdmission::Taken),
+                        Some("dropped_busy") => Some(NoticeAdmission::DroppedBusy),
+                        Some("not_taken") => Some(NoticeAdmission::NotTaken),
+                        Some(_) | None => None,
+                    }
+                });
+                if let Some(admission) = admission {
+                    observer(BashQuietFact {
+                        admission,
+                        jobs,
+                        step,
+                    });
+                }
+                reply
+            }
+        }),
+    );
+}
 
 /// The kernel read a finished background job's result before its notice
 /// delivered (`bash.consumed`, `cell.consumed`): the queued notice is stale.
@@ -207,8 +289,14 @@ pub fn register_kernel_notice_host_handlers(
         host_handler(move |payload| {
             let quiet = quiet.clone();
             Box::pin(async move {
-                quiet(validate_quiet(&payload.data)?);
-                Ok(serde_json::json!({}))
+                // What became of it, for the session's counts
+                // (`observe_bash_quiet`); the kernel reads nothing here.
+                let admission = match quiet(validate_quiet(&payload.data)?) {
+                    NoticeAdmission::Taken => "delivered",
+                    NoticeAdmission::DroppedBusy => "dropped_busy",
+                    NoticeAdmission::NotTaken => "not_taken",
+                };
+                Ok(serde_json::json!({ "admission": admission }))
             })
         }),
     );
@@ -426,16 +514,17 @@ pub fn in_process_notice_sink(
     Arc::new(move |notice| {
         match notice.delivery {
             NoticeDelivery::Steer | NoticeDelivery::WakeIdle => {}
-            NoticeDelivery::Record => return,
+            NoticeDelivery::Record => return NoticeAdmission::NotTaken,
         }
         let Some(agent) = bound_agent(&notice_slot) else {
-            return;
+            return NoticeAdmission::NotTaken;
         };
         let Some(row) = session_message_to_loop(&SessionAgentMessage::Custom(notice.row)) else {
-            return;
+            return NoticeAdmission::NotTaken;
         };
         agent.steer(row);
         notice_wake();
+        NoticeAdmission::Taken
     })
 }
 
