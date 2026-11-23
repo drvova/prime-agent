@@ -332,3 +332,41 @@ async fn a_script_that_kills_itself_ends_only_itself() {
         ]
     );
 }
+
+/// An expansion that would take more than the shell allows fails the line
+/// it is on, as any failed expansion does, and the script goes on with the
+/// next one: a count of words, a word that doubles itself, and the output of
+/// a command substitution.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expansion_past_the_limits_fails_its_line_and_the_script_goes_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let (ended, printed) = begin(
+        "echo {1..2000000}; echo not-reached\n\
+         echo \"rc=$?\"\n\
+         x=0123456789abcdef; while :; do x=$x$x; done\n\
+         echo \"rc=$? length ${#x}\"\n\
+         y=$(yes | head -c 40000000)\n\
+         echo \"rc=$? length ${#y}\"\n\
+         z=$(yes | head -c 1000000); echo \"rc=$? length ${#z}\"",
+        dir.path(),
+        &[("PATH", "/nonexistent-bin")],
+    )
+    .finish()
+    .await;
+    assert_eq!(
+        (ended.exit_code, printed.as_str()),
+        (
+            0,
+            "bash: brace expansion: 2000000 words is more than this shell expands \
+             (at most 1000000 words and 33554432 bytes)\n\
+             rc=1\n\
+             bash: expansion: a word of 67108864 bytes is longer than this shell expands \
+             (at most 33554432 bytes)\n\
+             rc=1 length 33554432\n\
+             bash: command substitution: the command wrote more than this shell captures \
+             (at most 33554432 bytes)\n\
+             rc=1 length 0\n\
+             rc=0 length 999999\n"
+        )
+    );
+}

@@ -783,11 +783,22 @@ pub(crate) async fn invoke_command_in_subshell_and_get_output(
     let cmd_join_handle =
         crate::host::spawn_beside(run_substitution_command(subshell, params, s));
 
-    let output_str = async_reader.read_to_string().await?;
+    // Prime Agent patch: a host bounds what is kept of the output.
+    let limit = shell
+        .host()
+        .map_or(usize::MAX, |host| host.limits().substitution_bytes);
+    let output_str = async_reader.read_to_string(limit).await?;
 
     // Now observe the command's completion.
     let run_result = cmd_join_handle.await?;
     let cmd_result = run_result?;
+
+    let Some(output_str) = output_str else {
+        return Err(error::ErrorKind::LimitExceeded(format!(
+            "command substitution: the command wrote more than this shell captures (at most {limit} bytes)"
+        ))
+        .into());
+    };
 
     // Store the status.
     shell.set_last_exit_status(cmd_result.exit_code.into());

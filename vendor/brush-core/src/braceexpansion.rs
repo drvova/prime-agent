@@ -15,6 +15,41 @@ pub(crate) fn generate_and_combine_brace_expansions(
         .map(|v| v.join(""))
 }
 
+/// Prime Agent patch: how many words `pieces` expand to, without expanding
+/// them: the product of the pieces, each expression the sum of its members.
+pub(crate) fn expansion_count(pieces: &[word::BraceExpressionOrText]) -> usize {
+    pieces
+        .iter()
+        .map(|piece| match piece {
+            word::BraceExpressionOrText::Text(_) => 1,
+            word::BraceExpressionOrText::Expr(members) => members
+                .iter()
+                .map(|member| match member {
+                    word::BraceExpressionMember::NumberSequence {
+                        start,
+                        end,
+                        increment,
+                    } => usize::try_from(
+                        start.abs_diff(*end) / increment.unsigned_abs().max(1),
+                    )
+                    .unwrap_or(usize::MAX)
+                    .saturating_add(1),
+                    word::BraceExpressionMember::CharSequence {
+                        start,
+                        end,
+                        increment,
+                    } => {
+                        (u32::from(*start).abs_diff(u32::from(*end)) as usize)
+                            / increment.unsigned_abs().max(1) as usize
+                            + 1
+                    }
+                    word::BraceExpressionMember::Child(elements) => expansion_count(elements),
+                })
+                .fold(0usize, usize::saturating_add),
+        })
+        .fold(1usize, usize::saturating_mul)
+}
+
 fn expand_brace_expr_or_text(
     beot: word::BraceExpressionOrText,
 ) -> Box<dyn Iterator<Item = String>> {

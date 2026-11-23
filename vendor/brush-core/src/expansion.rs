@@ -675,6 +675,19 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
 
         let coalesced = coalesce_expansions(expansions);
 
+        // Prime Agent patch: a word that doubles itself in a loop
+        // (`x=$x$x`) is refused here, while it still fits.
+        if let Some(limits) = self.shell.host().map(|host| host.limits()) {
+            let bytes = coalesced.fields.iter().map(WordField::len).sum::<usize>();
+            if bytes > limits.word_bytes {
+                return Err(error::ErrorKind::LimitExceeded(format!(
+                    "expansion: a word of {bytes} bytes is longer than this shell expands (at most {} bytes)",
+                    limits.word_bytes
+                ))
+                .into());
+            }
+        }
+
         Ok(coalesced)
     }
 
@@ -735,6 +748,20 @@ impl<'a, SE: extensions::ShellExtensions> WordExpander<'a, SE> {
         };
 
         tracing::debug!(target: trace_categories::EXPANSION, "Brace expansion pieces: {brace_expansion_pieces:?}");
+
+        // Prime Agent patch: refuse what would not fit before any of it is
+        // built. No word of the expansion is longer than the word itself.
+        if let Some(limits) = self.shell.host().map(|host| host.limits()) {
+            let words = braceexpansion::expansion_count(&brace_expansion_pieces);
+            if words > limits.brace_words || words.saturating_mul(word.len()) > limits.word_bytes
+            {
+                return Err(error::ErrorKind::LimitExceeded(format!(
+                    "brace expansion: {words} words is more than this shell expands (at most {} words and {} bytes)",
+                    limits.brace_words, limits.word_bytes
+                ))
+                .into());
+            }
+        }
 
         let result = braceexpansion::generate_and_combine_brace_expansions(brace_expansion_pieces)
             .into_iter()

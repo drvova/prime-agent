@@ -30,14 +30,22 @@ whole process.
   embedder. Function calls and nested programs (`eval`, `.`) are limited to 512 deep, a script
   to 1 MiB and 3000 nested brackets, and every thread of a script has a 64 MiB stack: a stack
   overflow would end the process.
+- **Memory**: a refused allocation ends the process too, so the expansions that grow without
+  the script writing anything long are bounded (`engine::LIMITS`): a word's brace expansions
+  to 1,000,000 words (`{1..N}`), one expanded word, and so one assignment, to 32 MiB
+  (`x=$x$x` in a loop), and the output a command substitution keeps to 32 MiB. A command past
+  one fails with a message and ends the line it is on, as any failed expansion does; the script
+  goes on with the next line.
 
 ## Non-goals
 No session state, settings, or telemetry (pa-core). No process containment: process groups,
 Windows job objects, the orphan journal and killing are the embedder's, behind `Children`. No
 interactive shell: no prompt, history, line editing, completion, or job control through a
 terminal. Not every coreutils option: the subset each utility's doc comment names. No `awk`,
-`jq`, `diff`, `tar`, `curl`: those are programs. A script's memory is the process's: nothing
-bounds what a script allocates.
+`jq`, `diff`, `tar`, `curl`: those are programs. Beyond the bounds under Memory, a script's
+memory is the process's: nothing bounds how many variables and array elements a script keeps,
+what `read`, `mapfile` and `printf` build, or what a utility that holds its whole input
+(`sort`, `tac`, `sed` with `-z` or `N`, `xargs`) is given.
 
 Known differences from bash 5.2, beside the shell being one of many in its process:
 

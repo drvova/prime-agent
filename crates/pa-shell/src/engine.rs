@@ -33,6 +33,17 @@ const FUNCTION_DEPTH: usize = 512;
 const SOURCE_BYTES: usize = 1024 * 1024;
 /// How deeply a script's brackets may nest: the parser recurses with them.
 const NESTING: usize = 3000;
+/// What one expansion may cost the process the shell shares: a refused
+/// allocation is not a panic, so it ends the process and every session in
+/// it. A command past one of these fails; the script goes on.
+const LIMITS: brush_core::host::Limits = brush_core::host::Limits {
+    // `{1..1000000}`: about 7 MiB of words.
+    brace_words: 1_000_000,
+    // The longest value a variable is given by one assignment, and the
+    // longest argument a command is passed.
+    word_bytes: 32 * 1024 * 1024,
+    substitution_bytes: 32 * 1024 * 1024,
+};
 
 /// The shell's extensions: errors worded as a shell words them.
 pub(crate) type Extensions = ShellExtensionsImpl<ShellErrors>;
@@ -89,6 +100,10 @@ impl brush_core::host::Host for Embedding {
 
     fn process_id(&self) -> u32 {
         self.id
+    }
+
+    fn limits(&self) -> brush_core::host::Limits {
+        LIMITS
     }
 
     fn as_any(&self) -> &dyn std::any::Any {

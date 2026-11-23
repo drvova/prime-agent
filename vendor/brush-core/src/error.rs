@@ -318,6 +318,11 @@ pub enum ErrorKind {
     /// A glob pattern failed to match any files (failglob).
     #[error("no match: {0}")]
     NoMatch(String),
+
+    /// Prime Agent patch: an expansion went past one of the embedder's
+    /// [`crate::host::Limits`].
+    #[error("{0}")]
+    LimitExceeded(String),
 }
 
 /// Trait implementable by built-in commands to represent errors.

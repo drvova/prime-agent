@@ -28,8 +28,31 @@ pub trait Host: Send + Sync + 'static {
     /// `kill $$`, even run by a program, would end every shell in it.
     fn process_id(&self) -> u32;
 
+    /// The sizes this shell may not exceed. Asked at each expansion, and
+    /// expected to answer the same every time.
+    fn limits(&self) -> Limits;
+
     /// The implementation, for builtins that share state with it.
     fn as_any(&self) -> &dyn std::any::Any;
+}
+
+/// What one expansion of a shell with a host may cost the process. Upstream
+/// expands whatever a script asks for, and a refused allocation ends the
+/// whole process, not the script. A command that goes past one of these
+/// fails with [`crate::ErrorKind::LimitExceeded`] instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// The most words one word's brace expansions may produce
+    /// (`{1..N}`, and the product of several in one word).
+    pub brace_words: usize,
+    /// The most bytes one word may expand to, all of its fields together.
+    /// It is also the most one assignment gives a variable, and the most
+    /// the words of one brace expansion take together.
+    pub word_bytes: usize,
+    /// The most bytes of output a command substitution keeps. The command
+    /// runs to its end either way; output past the limit is discarded and
+    /// the substitution then fails.
+    pub substitution_bytes: usize,
 }
 
 /// Run `future` beside its caller, on a blocking thread of the runtime.

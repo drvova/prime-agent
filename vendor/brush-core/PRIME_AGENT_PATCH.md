@@ -54,6 +54,31 @@ of its tokio runtime.
   counts function calls only, so `x='eval "$x"'; eval "$x"` recurses until
   the stack overflows, which aborts the process.
 
+## What one expansion may cost
+
+Upstream expands whatever a script asks for, and an allocation the system
+refuses ends the process, not the script. `host::Limits`, answered by
+`Host::limits`, bounds the three expansions that grow without the script
+writing anything long; a command past one fails with
+`ErrorKind::LimitExceeded`, which ends the line it is on like any failed
+expansion.
+
+- `expansion.rs`, `brace_expand_if_needed`: the words of a word's brace
+  expansions are counted before any is built
+  (`braceexpansion::expansion_count`) and refused past `brace_words`, or
+  when that many words of the word's length would pass `word_bytes`.
+- `expansion.rs`, `basic_expand`: a word that expands to more than
+  `word_bytes` is refused (`x=$x$x` in a loop).
+- `commands.rs`, `invoke_command_in_subshell_and_get_output` and
+  `sys/*/async_pipe.rs`: a command substitution keeps at most
+  `substitution_bytes` of output. The rest is read and dropped, so the
+  command runs to its end as it would have, and the substitution then
+  fails.
+
+Not bounded by these: the elements of an array and the variables of a
+shell, what `read`, `mapfile` and `printf -v` put in a variable, and
+`printf`'s field widths (brush-builtins).
+
 ## Background jobs
 
 - `interp.rs`, `spawn_async_ao_list_in_task`: upstream runs every background
