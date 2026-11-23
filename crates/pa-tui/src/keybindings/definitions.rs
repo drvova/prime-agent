@@ -410,6 +410,10 @@ pub const APP_KEYBINDINGS: &[(&str, KeybindingDefinition)] = &[
         def!(&["up", "ctrl+p"], "Transcript search: previous match"),
     ),
     (
+        "app.shortcuts.open",
+        def!(&["?"], "Show the shortcut overview (on an empty prompt)"),
+    ),
+    (
         "app.message.followUp",
         def!(&["alt+enter"], "Queue follow-up message"),
     ),

@@ -1561,6 +1561,70 @@ mod tests {
             // The delivery never completes: a hung sink.
             Box::pin(std::future::pending())
         }
+
+        fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push(["", "", "shortcut_overlay", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
+        fn mouse_selection_copied(
+            &self,
+            kind: &'static str,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push([kind, "", "mouse_selection", ""]);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+    }
+
+    /// The shortcut overview's report is fire-and-forget: with a sink that never replies, the
+    /// key path's hand-off returns at once and the report still starts.
+    #[tokio::test]
+    async fn a_hanging_shortcut_overlay_report_never_holds_the_key_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::shortcut_overlay::report_opened(Some(&hook));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["", "", "shortcut_overlay", ""]]
+        );
+    }
+
+    /// The mouse selection's report is fire-and-forget too: with a sink that never replies, the
+    /// mouse path's hand-off returns at once and the report still starts with its kind.
+    #[tokio::test]
+    async fn a_hanging_mouse_selection_report_never_holds_the_mouse_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::selection_gesture::report_selection(
+            Some(&hook),
+            crate::selection_gesture::SelectionKind::Word,
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            *telemetry.reports.lock().unwrap(),
+            vec![["word", "", "mouse_selection", ""]]
+        );
     }
 
     /// The transcript search report is fire-and-forget: with a sink that never replies, the

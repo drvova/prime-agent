@@ -240,6 +240,66 @@ fn dock_press_drag_copies_the_frame_region() {
     assert_eq!(copies, vec!["Collap".to_string()], "the dock span copied");
 }
 
+/// A double click copies the word under the pointer.
+#[test]
+fn a_double_click_copies_the_word_under_the_pointer() {
+    let (row0, col0, ..) = top_layout();
+    let steps = vec![
+        // The located press targets are valid only while the view sits at the transcript top.
+        HeadlessStep::ScrollTop,
+        HeadlessStep::Mouse(press(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(press(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 2, row0 + 1)),
+    ];
+    let (_, copies) = run_plan(steps, true);
+    assert_eq!(copies, vec!["row".to_string()], "the word copied");
+}
+
+/// A triple click copies the whole row under the pointer.
+#[test]
+fn a_triple_click_copies_the_row() {
+    let (row0, col0, ..) = top_layout();
+    let steps = vec![
+        // The located press targets are valid only while the view sits at the transcript top.
+        HeadlessStep::ScrollTop,
+        HeadlessStep::Mouse(press(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(press(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(press(col0 + 2, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 2, row0 + 1)),
+    ];
+    let (_, copies) = run_plan(steps, true);
+    assert_eq!(
+        copies,
+        vec!["row".to_string(), "row 0".to_string()],
+        "the double click copied the word, the third press the row"
+    );
+}
+
+/// The copy's toast says it was copied and names the path it took: the headless run hands the
+/// text to the terminal's OSC 52 channel, which cannot confirm delivery.
+#[test]
+fn the_copy_toast_names_the_clipboard_path() {
+    let (row0, col0, ..) = top_layout();
+    let steps = vec![
+        // The located press targets are valid only while the view sits at the transcript top.
+        HeadlessStep::ScrollTop,
+        HeadlessStep::Mouse(press(col0 + 1, row0 + 1)),
+        HeadlessStep::Mouse(drag(col0 + 6, row0 + 1)),
+        HeadlessStep::Mouse(release(col0 + 6, row0 + 1)),
+    ];
+    let (frames, _) = run_plan(steps, true);
+    assert!(
+        frames
+            .last()
+            .is_some_and(|frame| frame.contains("Copied selection via OSC 52; paste to verify")),
+        "the toast names the path: {:?}",
+        frames.last()
+    );
+}
+
 #[test]
 fn selection_reports_are_consumed_when_tracking_is_disabled() {
     let (row0, col0, ..) = top_layout();

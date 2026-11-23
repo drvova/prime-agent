@@ -656,8 +656,8 @@ impl AuthPanel {
         };
         let url = scrub_controls(&url).replace('\n', "");
         self.copy_status = match crate::clipboard::copy_to_clipboard(&url, sink) {
-            Ok(crate::clipboard::CopyOutcome::Confirmed) => Some(CopyStatus::Copied),
-            Ok(crate::clipboard::CopyOutcome::Requested) => Some(CopyStatus::Requested),
+            Ok(crate::clipboard::CopyOutcome::Confirmed(_)) => Some(CopyStatus::Copied),
+            Ok(crate::clipboard::CopyOutcome::Requested(_)) => Some(CopyStatus::Requested),
             Err(_) => Some(CopyStatus::Failed),
         };
     }

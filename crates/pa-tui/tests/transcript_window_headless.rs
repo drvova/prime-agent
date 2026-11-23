@@ -296,8 +296,10 @@ fn scrolling_up_through_older_pages_keeps_the_viewport_anchored() {
         "the climb loaded the history in older pages: {pages:?}"
     );
     let mut page_rows = None;
+    // A batch's wheel turns arrive as a fast spin, so each scrolls 3 lines up to the
+    // acceleration's 12; any other move is a page.
     for (index, moved) in moves(&frames[1..reached_top]) {
-        if moved != 3 {
+        if !(3..=12).contains(&moved) {
             let page = *page_rows.get_or_insert(moved);
             assert_eq!(
                 moved,

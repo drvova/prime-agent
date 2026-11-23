@@ -289,6 +289,36 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the key path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            client.track(
+                "tui shortcut overlay opened",
+                pa_telemetry::base_properties("interactive"),
+            );
+            let _ = client.shutdown().await;
+        })
+    }
+
+    fn mouse_selection_copied(
+        &self,
+        kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the mouse path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("kind", serde_json::Value::from(kind));
+            client.track("tui mouse selection", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn selection_used(&self, _lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         self.count("tui_selection_count");
         Box::pin(std::future::ready(()))
@@ -763,6 +793,7 @@ mod tests {
                     properties["action"],
                     properties["reason"],
                     properties["mode"],
+                    properties["kind"],
                 ])
             })
             .collect()
@@ -785,6 +816,7 @@ mod tests {
                 vec![serde_json::json!([
                     "tui transcript navigation",
                     "next_prompt",
+                    null,
                     null,
                     null
                 ])]
@@ -874,8 +906,32 @@ mod tests {
                     "tui unfocused signal",
                     null,
                     "question",
-                    "notification"
+                    "notification",
+                    null
                 ])]
+            );
+        });
+    }
+
+    /// The shortcut overview's open and a mouse selection's copy are standalone events; the
+    /// selection keeps its catalogued kind.
+    #[test]
+    fn overlay_and_mouse_selection_reports_are_standalone_events() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(telemetry.shortcut_overlay_opened());
+            runtime.block_on(telemetry.mouse_selection_copied("word"));
+            assert_eq!(
+                mirrored(&agent_dir),
+                vec![
+                    serde_json::json!(["tui shortcut overlay opened", null, null, null, null]),
+                    serde_json::json!(["tui mouse selection", null, null, null, "word"]),
+                ]
             );
         });
     }

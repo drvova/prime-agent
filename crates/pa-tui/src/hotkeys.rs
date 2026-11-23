@@ -71,6 +71,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let model_scope = key_display(kb, "app.model.toggleScope");
     let cycle_thinking = key_display(kb, "app.thinking.cycle");
     let history_search = key_display(kb, "app.history.search");
+    let shortcuts = key_display(kb, "app.shortcuts.open");
     let expand_tools = key_display(kb, "app.tools.expand");
     let focus_subagents = key_display(kb, "app.subagents.focus");
     let external_editor = key_display(kb, "app.editor.external");
@@ -164,6 +165,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{cycle_recent_model}` | Switch to the next recently used model |
 | `{cycle_thinking}` | Cycle thinking level |
 | `{history_search}` | Search prompt history |
+| `{shortcuts}` | Show the most useful keys (on an empty prompt; type to dismiss) |
 | `{expand_tools}` | Cycle overview → thinking + diffs → all output |"
     );
     let _ = writeln!(
@@ -188,6 +190,7 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
 | `{search_next}` / `{search_previous}` | Next / previous match while searching |
 | mouse wheel | Scroll transcript |
 | mouse drag | Select and copy text |
+| mouse double-click / triple-click | Copy a word / a row |
 | mouse click on link | Open link in browser |
 
 **Model picker (`/model`)**
@@ -225,9 +228,15 @@ mod tests {
         );
         // The interrupt row is conditional: no default binding, no row.
         assert!(!guide.contains("Interrupt current operation |"), "{guide}");
-        // The `?` quick-shortcut overlay is removed (the operator's 2026-09-26
-        // directive): the guide keeps no reference to it.
+        // The old `?` quick-shortcut overlay stays removed (the operator's 2026-09-26
+        // directive); the `?` shortcut overview names its own row.
         assert!(!guide.contains("quick shortcuts"), "{guide}");
+        assert!(
+            guide.contains(
+                "| `?` | Show the most useful keys (on an empty prompt; type to dismiss) |"
+            ),
+            "{guide}"
+        );
         // The fullscreen toggle is retired (the operator's 2026-09-28 ruling):
         // the guide never advertises `/fullscreen`.
         assert!(

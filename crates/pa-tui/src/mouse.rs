@@ -91,6 +91,37 @@ pub(crate) fn wheel_scroll_delta(event: &MouseEvent) -> Option<isize> {
 
 const WHEEL_SCROLL_LINES: isize = 3;
 
+/// A wheel turn this soon after the previous one in the same direction is part of a fast spin.
+const FAST_WHEEL_GAP: std::time::Duration = std::time::Duration::from_millis(40);
+/// The most lines one turn of a fast spin scrolls.
+const MAX_WHEEL_SCROLL_LINES: isize = 12;
+
+/// Wheel acceleration: a slow turn scrolls the base three lines; each turn of a fast spin (the
+/// same direction, under [`FAST_WHEEL_GAP`] after the last) scrolls one line more than the
+/// one before, up to [`MAX_WHEEL_SCROLL_LINES`]. A pause or a change of direction starts over.
+#[derive(Debug, Default)]
+pub(crate) struct WheelAcceleration {
+    last: Option<(std::time::Instant, isize)>,
+    lines: isize,
+}
+
+impl WheelAcceleration {
+    /// The scroll for one wheel turn's base `delta` (from [`wheel_scroll_delta`]) at `now`.
+    pub(crate) fn scroll(&mut self, delta: isize, now: std::time::Instant) -> isize {
+        let direction = delta.signum();
+        let spinning = self.last.is_some_and(|(at, last_direction)| {
+            last_direction == direction && now.saturating_duration_since(at) < FAST_WHEEL_GAP
+        });
+        self.lines = if spinning {
+            (self.lines + 1).min(MAX_WHEEL_SCROLL_LINES)
+        } else {
+            WHEEL_SCROLL_LINES
+        };
+        self.last = Some((now, direction));
+        direction * self.lines
+    }
+}
+
 /// A report read back from a crossterm mouse event: wheel turns, left-button presses, drags,
 /// releases, and the buttonless motion of `?1003` tracking (crossterm's `Moved` — operator
 /// directive 2026-09-26). `None` for other buttons: those reports are consumed at the source
@@ -209,6 +240,23 @@ mod tests {
         assert!(event.ctrl);
         assert!(event.alt);
         assert!(!event.motion);
+    }
+
+    /// A slow wheel scrolls three lines a turn; a fast spin scrolls one line more each turn up
+    /// to the cap; a pause or a reversal starts over at three.
+    #[test]
+    fn a_fast_spin_accelerates_and_a_pause_or_reversal_resets() {
+        let mut wheel = WheelAcceleration::default();
+        let t0 = std::time::Instant::now();
+        let ms = std::time::Duration::from_millis;
+        let mut turns = vec![wheel.scroll(3, t0), wheel.scroll(3, t0 + ms(200))];
+        turns.extend((1..=12).map(|turn| wheel.scroll(3, t0 + ms(200 + turn * 10))));
+        turns.push(wheel.scroll(-3, t0 + ms(330)));
+        turns.push(wheel.scroll(-3, t0 + ms(500)));
+        assert_eq!(
+            turns,
+            [3, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 12, 12, 12, -3, -3]
+        );
     }
 
     #[test]

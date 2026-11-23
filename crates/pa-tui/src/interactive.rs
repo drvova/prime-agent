@@ -193,6 +193,17 @@ pub trait InteractionTelemetry: Send + Sync {
         reason: &'static str,
         mode: &'static str,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The shortcut overview opened, the first time in a run (event `tui shortcut overlay
+    /// opened`). Implementations return at once: the key path spawns it and never waits.
+    fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// A mouse selection was copied, the first time per kind in a run (event `tui mouse
+    /// selection`): `kind` is `drag` / `word` (a double click) / `line` (a triple click). Never
+    /// the copied text. Implementations return at once: the mouse path spawns it and never
+    /// waits.
+    fn mouse_selection_copied(
+        &self,
+        kind: &'static str,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first selection copy (`tui selection used`): `lines` is the copy's line count.
     fn selection_used(&self, lines: usize) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// The run's first click-driven interaction (`tui click used`): `surface` is `transcript` /

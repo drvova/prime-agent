@@ -161,6 +161,7 @@ impl SessionUi {
         }
         if let Some(delta) = crate::mouse::wheel_scroll_delta(&event) {
             if !overlay_focused {
+                let delta = self.wheel.scroll(delta, Instant::now());
                 self.window.scroll(delta, view);
                 self.dirty = true;
             }
@@ -181,6 +182,8 @@ impl SessionUi {
             self.stop_selection_auto_scroll();
             if left_press && !event.motion {
                 self.record_pressed_click(view, &event);
+                // A picker's rows select by drag only.
+                self.selection_kind = crate::selection_gesture::SelectionKind::Drag;
                 if !view.begin_frame_selection(row, col) {
                     view.begin_selection(row, col);
                 }
@@ -202,9 +205,17 @@ impl SessionUi {
         } else if left_press && !event.motion {
             self.stop_selection_auto_scroll();
             self.record_pressed_click(view, &event);
-            if !view.begin_selection(row, col) {
-                view.begin_frame_selection(row, col);
-            }
+            // A double press selects the word under the pointer, a triple press the row; the
+            // release copies either like a drag.
+            let kind = self.clicks.press(row, col, Instant::now());
+            self.selection_kind = if view.select_transcript_span(row, col, kind) {
+                kind
+            } else {
+                if !view.begin_selection(row, col) {
+                    view.begin_frame_selection(row, col);
+                }
+                crate::selection_gesture::SelectionKind::Drag
+            };
             self.dirty = true;
         } else if left_press && event.motion {
             self.left_mouse_dragged = true;
@@ -267,17 +278,22 @@ impl SessionUi {
         let lines = text.lines().count().max(1);
         self.copies.push(text.to_string());
         self.track_selection(lines);
-        if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        if !self.selection_kinds_reported.contains(&self.selection_kind) {
+            self.selection_kinds_reported.push(self.selection_kind);
+            crate::selection_gesture::report_selection(
+                self.telemetry.as_ref(),
+                self.selection_kind,
+            );
+        }
+        // The headless run's buffer sink captures the OSC 52 request its verifiers read.
+        if !std::io::IsTerminal::is_terminal(&std::io::stdout())
+            && matches!(self.osc_sink, crate::clipboard::OscSink::Stdout)
+        {
             self.toast("Copied selection to clipboard", view);
             return;
         }
         match crate::clipboard::copy_to_clipboard(text, &mut self.osc_sink) {
-            Ok(crate::clipboard::CopyOutcome::Confirmed) => {
-                self.toast("Copied selection to clipboard", view);
-            }
-            Ok(crate::clipboard::CopyOutcome::Requested) => {
-                self.toast(crate::clipboard::CLIPBOARD_REQUESTED, view);
-            }
+            Ok(outcome) => self.toast(&outcome.selection_toast(), view),
             Err(error) => self.error_row(&error, view),
         }
     }
@@ -509,6 +525,22 @@ impl SessionUi {
         if view.goal_panel.is_some() {
             return self.handle_goal_panel_key(key, view);
         }
+        // The shortcut overview closes on a printable key and lets it type into the prompt (a
+        // message can still start with `?`: the second press types it).
+        let typed_past_overview = view
+            .info_panel
+            .as_ref()
+            .is_some_and(crate::info_panel::InfoPanel::closes_on_typing)
+            && matches!(key.code, crossterm::event::KeyCode::Char(c) if !c.is_control())
+            && !key.modifiers.intersects(
+                crossterm::event::KeyModifiers::CONTROL
+                    | crossterm::event::KeyModifiers::ALT
+                    | crossterm::event::KeyModifiers::SUPER,
+            );
+        if typed_past_overview {
+            view.info_panel = None;
+            self.dirty = true;
+        }
         if view.info_panel.is_some() {
             return self.handle_info_panel_key(key, view);
         }
@@ -684,6 +716,26 @@ impl SessionUi {
             }
             self.subagents_focused = false;
             self.update_subagent_summary(view);
+        }
+        // `?` on an empty prompt opens the shortcut overview over the editor dock.
+        if !typed_past_overview
+            && view.editor.get_text().is_empty()
+            && view.editor.keybindings().matches(&id, "app.shortcuts.open")
+        {
+            let mouse = if crate::mouse_tracking::active() {
+                crate::shortcut_overlay::MouseGestures::Tracked
+            } else {
+                crate::shortcut_overlay::MouseGestures::Untracked
+            };
+            view.info_panel = Some(crate::info_panel::InfoPanel::shortcuts(
+                crate::shortcut_overlay::ShortcutSheet::new(view.editor.keybindings(), mouse),
+            ));
+            if !self.shortcuts_reported {
+                self.shortcuts_reported = true;
+                crate::shortcut_overlay::report_opened(self.telemetry.as_ref());
+            }
+            self.dirty = true;
+            return Ok(());
         }
         // The editor's own ctrl+v is otherwise unbound, so the exact match is
         // safe before any editor motion. The key reached the app, so the terminal did not paste:
@@ -1222,12 +1274,7 @@ impl SessionUi {
                     // mouse selection. Headless tests retain the selection.
                     if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
                         match crate::clipboard::copy_to_clipboard(&text, &mut self.osc_sink) {
-                            Ok(crate::clipboard::CopyOutcome::Confirmed) => {
-                                self.toast("Copied selection to clipboard", view);
-                            }
-                            Ok(crate::clipboard::CopyOutcome::Requested) => {
-                                self.toast(crate::clipboard::CLIPBOARD_REQUESTED, view);
-                            }
+                            Ok(outcome) => self.toast(&outcome.selection_toast(), view),
                             Err(message) => self.error_row(&message, view),
                         }
                     } else {

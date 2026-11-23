@@ -146,13 +146,22 @@ impl AgentView {
             dock.extend(view.render(&self.theme, width, self.editor.keybindings()));
             Some(dock)
         } else if let Some(panel) = self.info_panel.as_mut() {
+            // The shortcut overview takes the frame down to the transcript's minimum rows, like
+            // `/usage`: an overview reads whole wherever the terminal is tall enough.
+            let rows = if panel.closes_on_typing() {
+                height.saturating_sub(
+                    1 + crate::view::FULLSCREEN_MIN_TRANSCRIPT_ROWS + prompt_context.len(),
+                )
+            } else {
+                info_viewport_rows
+            };
             let mut dock = prompt_context;
             dock.extend(panel.render(
                 &self.theme,
                 width,
                 self.editor.keybindings(),
                 &self.code_block_indent,
-                info_viewport_rows,
+                rows,
             ));
             Some(dock)
         } else if let Some(page) = self.usage_page.as_mut() {
