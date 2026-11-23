@@ -24,7 +24,7 @@ use anyhow::{anyhow, bail, Context};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::job::{end_group, lock, Finished, Job, CHILD_ENV, HEAD_CAP, TAIL_CAP};
+use super::job::{self, end_group, lock, Finished, Job, HEAD_CAP, TAIL_CAP};
 use super::Session;
 use crate::kernel::orphan_journal::get_process_start_id;
 use crate::platform;
@@ -214,8 +214,7 @@ pub(super) fn spawn(session: &Arc<Session>, command: &str) -> anyhow::Result<Arc
         ))
         .arg(shell_file(&home, &id, "rc"))
         .current_dir(&session.cwd)
-        .envs(settings.env.iter().map(|(name, value)| (name, value)))
-        .envs(CHILD_ENV)
+        .envs(job::child_env(&settings.env))
         .stdin(gate_end)
         .stdout(
             output

@@ -1141,3 +1141,55 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
     );
 }
 }
+
+on_each_shell! {
+/// A command's environment: prompts and pagers off over everything, quiet
+/// defaults under the session's and its settings' own values, and a UTF-8
+/// character type only where the session names no locale.
+fn a_command_gets_quiet_defaults_under_the_sessions_own_values(shell) {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = |scope_env: &[(&str, &str)], hidden: &[&str]| -> String {
+        let scope = pa_types::session_scope::SessionScope::new(
+            "environment".to_string(),
+            dir.path().to_path_buf(),
+            scope_env
+                .iter()
+                .map(|(name, value)| ((*name).to_string(), (*value).to_string()))
+                .collect(),
+            hidden.iter().map(|name| (*name).to_string()).collect(),
+        );
+        let _scope = pa_types::session_scope::enter(Some(scope));
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .on_thread_start(pa_types::session_scope::inherit())
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+                shell,
+                cwd: dir.path().to_path_buf(),
+                env: vec![("PIP_PROGRESS_BAR".to_string(), "on".to_string())],
+                ..SchemeKernelOptions::default()
+            })
+            .await;
+            value(
+                kernel.as_ref(),
+                r#"(hash-ref (bash "echo \"$GIT_TERMINAL_PROMPT ${GIT_TERMINAL_PROMPTS-unset} $GH_PAGER $PIP_PROGRESS_BAR $TQDM_DISABLE ${LC_CTYPE-unset} ${LANG-unset}\"") 'output)"#,
+            )
+            .await
+        })
+    };
+    let hidden = ["LC_ALL", "LC_CTYPE", "LANG", "TQDM_DISABLE"];
+    let utf8 = if cfg!(target_os = "macos") { "UTF-8" } else { "C.UTF-8" };
+    assert_eq!(
+        (
+            seen(&[], &hidden),
+            seen(&[("TQDM_DISABLE", "0"), ("LANG", "fr_FR.UTF-8")], &hidden[..2]),
+        ),
+        (
+            format!("\"0 unset cat on 1 {utf8} unset\\n\""),
+            "\"0 unset cat on 0 unset fr_FR.UTF-8\\n\"".to_string(),
+        )
+    );
+}
+}
