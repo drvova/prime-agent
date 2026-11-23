@@ -255,6 +255,10 @@ impl Executor {
     ) -> anyhow::Result<HashMap<String, ResolvedSubagent>> {
         let mut resolved = HashMap::new();
         let mut errors: Vec<String> = Vec::new();
+        // Each reference is looked up once: a lookup reads the session's
+        // whole harness store, and a machine may name one entry in every
+        // state.
+        let mut stored: HashMap<&str, Option<crate::refinement::HarnessEntry>> = HashMap::new();
         for state in canonical["states"]
             .as_array()
             .into_iter()
@@ -275,7 +279,10 @@ impl Executor {
                 ),
                 reference => {
                     let reference = reference.as_str().unwrap_or_default();
-                    let Some(entry) = self.shared.environment.subagent_entry(reference) else {
+                    let Some(entry) = stored
+                        .entry(reference)
+                        .or_insert_with(|| self.shared.environment.subagent_entry(reference))
+                    else {
                         errors.push(format!(
                             "state {quoted} references unknown subagent {}",
                             repr_str(reference)
