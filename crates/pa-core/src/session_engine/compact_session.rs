@@ -246,6 +246,7 @@ pub(crate) fn prepare_attempt(
             goal: session.active_goal_state(),
             todos: session.active_todo_list(),
         },
+        options.model.context_window,
     );
     Ok(CompactionAttempt {
         session_id: session.get_session_id().to_string(),

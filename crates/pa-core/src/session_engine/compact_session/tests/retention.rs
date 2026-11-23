@@ -27,11 +27,12 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 
-const FIXTURES: [&str; 4] = [
+const FIXTURES: [&str; 5] = [
     "synthetic-config-refactor",
     "synthetic-retry-debug",
     "synthetic-two-compactions",
     "synthetic-correction",
+    "synthetic-plain-constraints",
 ];
 
 /// The placeholder the deterministic mode's summarizer writes: nothing a
@@ -290,9 +291,10 @@ async fn deterministic_retention(name: &str) -> (ClassCounts, usize) {
 
 /// The per-class retention table over every fixture (printed; run with
 /// `--nocapture`). The totals are pinned: what the harness keeps of each
-/// class whatever the model writes. Decisions are the summarizer's to keep;
-/// a failure inside a cell that did not fail, and a goal that is only the
-/// user's opening request, are not established by the harness. A
+/// class whatever the model writes. Decisions are the summarizer's to keep,
+/// and a failure inside a cell that did not fail is not established by the
+/// harness; a goal that is only the user's opening request rides the
+/// carried user messages. A
 /// correction is shown when the stale words never follow the newer ones in
 /// the requests, and kept when the newer words lead the compacted context.
 #[tokio::test]
@@ -323,12 +325,12 @@ async fn compaction_retention_report() {
     assert_eq!(
         totals,
         ClassCounts::from([
-            (ItemClass::Constraint, (10, 10, 10)),
+            (ItemClass::Constraint, (14, 14, 14)),
             (ItemClass::Decision, (5, 5, 0)),
-            (ItemClass::File, (7, 7, 7)),
+            (ItemClass::File, (8, 8, 8)),
             (ItemClass::OpenTask, (5, 0, 5)),
             (ItemClass::Failure, (5, 4, 3)),
-            (ItemClass::Goal, (2, 1, 1)),
+            (ItemClass::Goal, (2, 1, 2)),
             (ItemClass::Correction, (2, 2, 2)),
         ])
     );

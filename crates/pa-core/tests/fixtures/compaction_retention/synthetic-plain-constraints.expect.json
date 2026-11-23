@@ -1,0 +1,53 @@
+{
+  "provenance": "synthetic",
+  "description": "Generated session whose user constraints use none of the constraint marker words (no must, never, only, keep, ...).",
+  "keepRecentTokens": 2500,
+  "items": [
+    {
+      "class": "constraint",
+      "text": "The CLI flags stay as they are."
+    },
+    {
+      "class": "constraint",
+      "text": "Use tabs in this repo."
+    },
+    {
+      "class": "constraint",
+      "text": "Tests go in tests/integration/, one file per command."
+    },
+    {
+      "class": "constraint",
+      "text": "Error messages are in British English, like the rest of the CLI."
+    },
+    {
+      "class": "file",
+      "text": "crates/cli/src/status.rs"
+    }
+  ],
+  "followUps": [
+    {
+      "question": "May you rename or remove a flag of the `status` command?",
+      "expectAll": [
+        "no"
+      ]
+    },
+    {
+      "question": "Tabs or spaces for indentation here?",
+      "expectAll": [
+        "tab"
+      ]
+    },
+    {
+      "question": "Where do the new tests go?",
+      "expectAll": [
+        "tests/integration"
+      ]
+    },
+    {
+      "question": "Which spelling do error messages use?",
+      "expectAll": [
+        "british"
+      ]
+    }
+  ]
+}

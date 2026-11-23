@@ -2142,8 +2142,12 @@ async fn tui_compact_shows_the_loader_then_the_summary_and_rebuilds() {
         last.contains("\u{25c6} Context compacted"),
         "the summary row follows the retained tail:\n{last}"
     );
+    // Its prompt row is gone (the summary row may quote it among the
+    // user's carried messages).
     assert!(
-        !last.contains("first"),
+        !last
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some("first")),
         "the compacted-away first turn dropped from the rebuilt transcript:\n{last}"
     );
 

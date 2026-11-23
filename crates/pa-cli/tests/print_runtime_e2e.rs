@@ -932,9 +932,10 @@ fn print_mode_json_streams_the_threshold_compaction_pair() {
         .expect("the compaction_end event");
     assert!(start_at < end_at);
     assert_eq!(events[end_at]["reason"], "threshold");
+    // The model's text, then the seed turn carried verbatim.
     assert_eq!(
         events[end_at]["result"]["summary"],
-        "the compaction summary"
+        "the compaction summary\n\n<user-messages>\nThe user's own messages from the compacted conversation, verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n\n[1]\nseed turn\n</user-messages>"
     );
     assert_eq!(events[end_at]["aborted"], false);
     assert_eq!(events[end_at]["willRetry"], false);

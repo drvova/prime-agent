@@ -21,8 +21,10 @@ fn default_percentage_preserves_the_current_threshold_and_strict_boundary() {
 #[test]
 fn custom_percentages_obey_both_ceilings_as_model_limits_change() {
     for (percent, expected_by_model) in [
-        (1.0, [52_769, 52_769, 17_152]),
-        (50.0, [524_288, 65_536, 17_152]),
+        // The floor: 20,000 kept + 2 * 16,384 reserved + the carried user
+        // messages (a tenth of the window, at most 20,000) + 1.
+        (1.0, [72_769, 65_876, 17_152]),
+        (50.0, [524_288, 65_876, 17_152]),
         (62.5, [655_360, 81_920, 17_152]),
         (80.0, [838_860, 81_920, 17_152]),
         (95.0, [996_147, 81_920, 17_152]),
@@ -115,15 +117,15 @@ async fn saved_percentage_applies_to_existing_sessions_without_changing_manual_b
 }
 
 #[test]
-fn low_percentages_leave_room_for_retained_history_and_both_summaries() {
+fn low_percentages_leave_room_for_retained_history_carried_messages_and_both_summaries() {
     for percent in [1.0, 5.0, 10.0] {
         let settings = CompactionSettings {
             threshold_percent: percent,
             ..Default::default()
         };
-        assert_eq!(compaction_threshold(128_000, 16_384, &settings), 52_769);
-        assert!(!should_compact(52_769, 128_000, 16_384, &settings));
-        assert!(should_compact(52_770, 128_000, 16_384, &settings));
+        assert_eq!(compaction_threshold(128_000, 16_384, &settings), 65_569);
+        assert!(!should_compact(65_569, 128_000, 16_384, &settings));
+        assert!(should_compact(65_570, 128_000, 16_384, &settings));
         // The hard combined model ceiling wins even if retention cannot fit.
         assert_eq!(compaction_threshold(65_536, 32_000, &settings), 17_152);
     }

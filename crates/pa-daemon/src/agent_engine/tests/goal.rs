@@ -274,7 +274,13 @@ fn recovered_engine_compaction_walk_sees_the_durable_history() {
     );
     match outcome {
         crate::engine::CompactionOutcome::Compacted { run } => {
-            assert_eq!(run.result["summary"], "the summary", "the compact ran");
+            assert_eq!(
+                pa_core::session_engine::compaction_utils::strip_harness_blocks(
+                    run.result["summary"].as_str().unwrap()
+                ),
+                "the summary",
+                "the compact ran"
+            );
             assert!(
                 run.result["firstKeptEntryId"].is_string(),
                 "the cut resolved a kept entry: {run:?}"

@@ -157,7 +157,7 @@ async fn split_turn_compaction_runs_two_summarizer_calls_and_merges_the_turn_con
     assert!(!prefix_request.contains("checkpoint summary"));
     assert_eq!(prefix_response, "the turn prefix summary");
     assert_eq!(
-        run.result.summary,
+        super::super::compaction_utils::strip_harness_blocks(&run.result.summary),
         "the history summary\n\n---\n\n**Turn Context (split turn):**\n\nthe turn prefix summary"
     );
     assert_eq!(run.result.first_kept_entry_id, kept_id);

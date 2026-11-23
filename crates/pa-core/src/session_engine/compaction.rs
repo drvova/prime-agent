@@ -170,10 +170,14 @@ pub fn compaction_threshold(
     let requested = (context_window as f64 * (percent / 100.0)) as u64;
     // Retained history and both summary passes must fit below the trigger,
     // otherwise a low percentage re-summarizes the same retained context on
-    // every tool turn. Two reserves cover both summary completion budgets.
+    // every tool turn. Two reserves cover both summary completion budgets;
+    // the user messages a compaction carries ride above them.
     let retention_floor = settings
         .keep_recent_tokens
         .saturating_add(settings.reserve_tokens.saturating_mul(2))
+        .saturating_add(super::compaction_carry::carried_user_budget_tokens(
+            context_window,
+        ))
         .saturating_add(1);
     let percentage = requested.max(retention_floor);
     let headroom = settings.reserve_tokens.max(COMBINED_LIMIT_HEADROOM_FLOOR);
@@ -456,7 +460,7 @@ const SUMMARIZATION_PROMPT: &str = "The messages above are a conversation to sum
 
 /// Both summary templates end in it: a summary is judged by what the next
 /// model can reuse, so it asks for structure and forbids transcript copies.
-const REUSABLE_STRUCTURE_RULE: &str = "Write reusable structure, not a transcript: every line should be something the next model can act on — a decision with its reason, a constraint, an interface, a result, or open work. Do not copy conversation passages, tool output, logs, or code blocks; state the fact they establish in one line, keeping file paths, identifiers, commands, and error messages exact. List constraints briefly: after your summary the harness appends the user's explicit constraint sentences verbatim, and the goal, open todos, and last failure it recorded.";
+const REUSABLE_STRUCTURE_RULE: &str = "Write reusable structure, not a transcript: every line should be something the next model can act on — a decision with its reason, a constraint, an interface, a result, or open work. Do not copy conversation passages, tool output, logs, or code blocks; state the fact they establish in one line, keeping file paths, identifiers, commands, and error messages exact. List constraints briefly: after your summary the harness appends the user's own messages verbatim, newest first, and the goal, open todos, and last failure it recorded.";
 
 const KERNEL_PERSIST_SUMMARY_NOTE: &str = "Note: the Scheme kernel keeps running after this summary — every function and variable your `eval` cells defined stays available. The cells that defined them won't appear above, so record in the summary any names worth remembering so you reuse them instead of redefining them.";
 

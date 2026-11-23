@@ -1,9 +1,11 @@
 //! The state a compaction carries as data instead of leaving it to the
-//! summarizer's prose: the user's own constraint sentences (verbatim), the
-//! active goal, the open todo items, and the last failure the summarized
-//! span shows. It rides the compaction row's `details` (so the next
-//! compaction merges it instead of re-deriving it from a summary) and is
-//! rendered as harness blocks after the model-written summary.
+//! summarizer's prose: the user's own messages (verbatim, newest first,
+//! within a token budget), the active goal, the open todo items, and the
+//! last failure the summarized span shows. It rides the compaction row's
+//! `details` (so the next compaction merges it instead of re-deriving it
+//! from a summary) and is rendered as harness blocks after the
+//! model-written summary, in the row written once: nothing already sent is
+//! rewritten.
 
 use std::fmt::Write as _;
 
@@ -14,10 +16,20 @@ use pa_types::todo::{TodoItem, TodoList, TodoStatus};
 #[path = "compaction_carry_tests.rs"]
 mod tests;
 
-/// The most constraint sentences carried; the oldest drop first.
+/// The most tokens (chars/4) the carried user messages take, as Codex keeps
+/// 20,000 tokens of them beside its summary; past it the oldest drop.
+const MAX_CARRIED_USER_TOKENS: u64 = 20_000;
+/// A smaller window carries at most a tenth of itself in user messages:
+/// the post-compaction context also holds the summary and the kept tail
+/// (`keepRecentTokens`, 20,000 by default) and must stay well under the
+/// compaction trigger. A 200k window carries the full 20,000 tokens, a 128k
+/// one 12,800, a 32k one 3,200.
+const CARRIED_USER_WINDOW_DIVISOR: u64 = 10;
+/// The most constraint sentences the excerpt of one message too large for
+/// the budget keeps; the oldest drop first.
 const MAX_CONSTRAINTS: usize = 32;
-/// The most characters all carried constraint sentences take together; the
-/// oldest drop first.
+/// The most characters one excerpt's sentences take together; the oldest
+/// drop first.
 const MAX_CONSTRAINT_TOTAL_CHARS: usize = 4_000;
 /// The longest single constraint sentence kept whole; a longer one keeps its
 /// head and ends in [`CLIPPED_MARK`].
@@ -71,8 +83,10 @@ const CONSTRAINT_MARKERS: [&str; 24] = [
 ];
 
 /// The tags of the blocks [`CarriedState::render`] writes; the summary of a
-/// previous compaction is stripped of them before it is updated.
-pub(crate) const CARRIED_BLOCK_TAGS: [&str; 2] = ["user-constraints", "open-work"];
+/// previous compaction is stripped of them before it is updated
+/// (`user-constraints` is the block rows wrote before whole user messages
+/// were carried).
+pub(crate) const CARRIED_BLOCK_TAGS: [&str; 3] = ["user-messages", "user-constraints", "open-work"];
 
 /// The last failure the summarized span shows, and not a later success of
 /// the same command.
@@ -85,12 +99,38 @@ pub struct CarriedFailure {
     pub error: String,
 }
 
+/// How much of a user message a carried one holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CarriedText {
+    /// The whole message, verbatim (an expanded skill or attached file
+    /// dropped).
+    Whole,
+    /// Only its instruction sentences, by marker word: the message alone
+    /// was larger than the whole budget, or a row written before whole
+    /// messages were carried kept only these.
+    Excerpt,
+}
+
+/// One user message a compaction carries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CarriedUserMessage {
+    pub text: String,
+    pub form: CarriedText,
+}
+
 /// The deterministic state a compaction carries (see the module docs).
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CarriedState {
-    /// The user's constraint and instruction sentences, verbatim, oldest
-    /// first, deduplicated (a repeat moves to its newest position).
+    /// The user's own messages, newest first, deduplicated (a repeat keeps
+    /// its newest place), within the window's budget.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_messages: Vec<CarriedUserMessage>,
+    /// The constraint sentences, oldest first, of a row written before
+    /// whole user messages were carried: read so the next compaction keeps
+    /// them (as excerpts); a new state leaves it empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_constraints: Vec<String>,
     /// The active goal's objective.
@@ -110,29 +150,96 @@ pub struct LiveWork {
     pub todos: Option<TodoList>,
 }
 
+/// The most tokens the carried user messages take in a session whose model
+/// has `context_window` tokens; the compaction trigger's retention floor
+/// counts them, as they ride every post-compaction context.
+pub(crate) fn carried_user_budget_tokens(context_window: u64) -> u64 {
+    MAX_CARRIED_USER_TOKENS.min(context_window / CARRIED_USER_WINDOW_DIVISOR)
+}
+
 impl CarriedState {
     /// The state after a compaction of `span` (the summarized messages,
-    /// tool results included), on top of the previous compaction's.
+    /// tool results included), on top of the previous compaction's, for a
+    /// session whose model has `context_window` tokens. The user's messages
+    /// are the `user` rows: the harness's own notices are custom rows, never
+    /// user ones.
     #[must_use]
-    pub fn carry(previous: Option<&CarriedState>, span: &[AgentMessage], live: LiveWork) -> Self {
-        let mut constraints: Vec<String> = previous
-            .map(|state| state.user_constraints.clone())
-            .unwrap_or_default();
-        for message in span {
-            if let AgentMessage::User(user) = message {
-                for sentence in constraint_sentences(&user.content.text()) {
-                    let key = dedupe_key(&sentence);
-                    constraints.retain(|kept| dedupe_key(kept) != key);
-                    constraints.push(sentence);
+    pub fn carry(
+        previous: Option<&CarriedState>,
+        span: &[AgentMessage],
+        live: LiveWork,
+        context_window: u64,
+    ) -> Self {
+        let budget = usize::try_from(carried_user_budget_tokens(context_window).saturating_mul(4))
+            .unwrap_or(usize::MAX);
+        // Newest first: the span's messages, then the previous row's, then
+        // the sentences an older row kept.
+        let span_messages = span.iter().rev().filter_map(|message| {
+            let AgentMessage::User(user) = message else {
+                return None;
+            };
+            // An expanded skill or attached file is not the user's words.
+            let mut own = user.content.text();
+            for (open, close) in [("<skill ", "</skill>"), ("<file ", "</file>")] {
+                while let Some(start) = own.find(open) {
+                    let Some(length) = own[start..].find(close) else {
+                        own.truncate(start);
+                        break;
+                    };
+                    own.replace_range(start..start + length + close.len(), "");
                 }
             }
-        }
-        // Newest kept: drop from the oldest end until both caps hold.
-        while constraints.len() > MAX_CONSTRAINTS
-            || constraints.iter().map(|c| c.chars().count()).sum::<usize>()
-                > MAX_CONSTRAINT_TOTAL_CHARS
-        {
-            constraints.remove(0);
+            let own = own.trim();
+            (!own.is_empty()).then(|| CarriedUserMessage {
+                text: own.to_string(),
+                form: CarriedText::Whole,
+            })
+        });
+        let previous_messages = previous.into_iter().flat_map(|state| {
+            state
+                .user_messages
+                .iter()
+                .cloned()
+                .chain(
+                    state
+                        .user_constraints
+                        .iter()
+                        .rev()
+                        .map(|sentence| CarriedUserMessage {
+                            text: sentence.clone(),
+                            form: CarriedText::Excerpt,
+                        }),
+                )
+        });
+        let mut user_messages = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut remaining = budget;
+        for candidate in span_messages.chain(previous_messages) {
+            if !seen.insert(dedupe_key(&candidate.text)) {
+                continue;
+            }
+            // Only a message larger than the whole budget falls back to its
+            // instruction sentences; one that does not fit what is left ends
+            // the walk, so the newest are kept.
+            let carried = match candidate.form {
+                CarriedText::Whole if candidate.text.chars().count() > budget => {
+                    let sentences = constraint_sentences(&candidate.text);
+                    if sentences.is_empty() {
+                        continue;
+                    }
+                    CarriedUserMessage {
+                        text: sentences.join("\n"),
+                        form: CarriedText::Excerpt,
+                    }
+                }
+                CarriedText::Whole | CarriedText::Excerpt => candidate,
+            };
+            let size = carried.text.chars().count();
+            if size > remaining {
+                break;
+            }
+            remaining -= size;
+            user_messages.push(carried);
         }
         let goal = live
             .goal
@@ -150,7 +257,8 @@ impl CarriedState {
             })
             .unwrap_or_default();
         Self {
-            user_constraints: constraints,
+            user_messages,
+            user_constraints: Vec::new(),
             goal,
             open_todos,
             last_failure: last_failure(previous.and_then(|state| state.last_failure.clone()), span),
@@ -158,19 +266,26 @@ impl CarriedState {
     }
 
     /// The harness blocks for the summary text (empty when nothing is
-    /// carried): the constraints, then the open work.
+    /// carried): the user's messages, then the open work.
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::new();
-        if !self.user_constraints.is_empty() {
+        if !self.user_messages.is_empty() {
             // Newest first and numbered: the harness cannot tell when a
-            // later sentence overrides an earlier one on the same subject,
+            // later message overrides an earlier one on the same subject,
             // so it keeps both and says which is newer.
-            out.push_str("\n\n<user-constraints>\nThe user's own words from the compacted conversation, quoted verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n");
-            for (rank, constraint) in self.user_constraints.iter().rev().enumerate() {
-                let _ = writeln!(out, "[{}] \"{constraint}\"", rank + 1);
+            out.push_str("\n\n<user-messages>\nThe user's own messages from the compacted conversation, verbatim, newest first: [1] is the newest. Each still applies unless the user withdrew it later; where two disagree, the newer one (the lower number) wins.\n");
+            for (rank, CarriedUserMessage { text, form }) in self.user_messages.iter().enumerate() {
+                let rank = rank + 1;
+                let _ = match form {
+                    CarriedText::Whole => writeln!(out, "\n[{rank}]\n{text}"),
+                    CarriedText::Excerpt => writeln!(
+                        out,
+                        "\n[{rank}] (its instruction sentences only: the message was too long to carry whole)\n{text}"
+                    ),
+                };
             }
-            out.push_str("</user-constraints>");
+            out.push_str("</user-messages>");
         }
         if self.goal.is_none() && self.open_todos.is_empty() && self.last_failure.is_none() {
             return out;
@@ -201,20 +316,10 @@ impl CarriedState {
 }
 
 /// The constraint sentences of one user message, verbatim (a list marker
-/// dropped), in order. A question is not a constraint, and an expanded
-/// skill or attached file (`<skill …>…</skill>`, `<file …>…</file>`) is not
-/// the user's words.
-fn constraint_sentences(text: &str) -> Vec<String> {
-    let mut own = text.to_string();
-    for (open, close) in [("<skill ", "</skill>"), ("<file ", "</file>")] {
-        while let Some(start) = own.find(open) {
-            let Some(length) = own[start..].find(close) else {
-                own.truncate(start);
-                break;
-            };
-            own.replace_range(start..start + length + close.len(), "");
-        }
-    }
+/// dropped), in order, deduplicated, the newest kept within
+/// [`MAX_CONSTRAINTS`] and [`MAX_CONSTRAINT_TOTAL_CHARS`]. A question is
+/// not a constraint.
+fn constraint_sentences(own: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     for line in own.lines() {
         let line = line.trim();
@@ -237,7 +342,8 @@ fn constraint_sentences(text: &str) -> Vec<String> {
         }
         sentences.push(line[start..].trim().to_string());
     }
-    sentences
+    let mut kept: Vec<String> = Vec::new();
+    for sentence in sentences
         .into_iter()
         .filter(|sentence| !sentence.is_empty() && !sentence.ends_with('?'))
         .filter(|sentence| {
@@ -253,9 +359,22 @@ fn constraint_sentences(text: &str) -> Vec<String> {
                 .any(|marker| joined.contains(&format!(" {marker} ")))
         })
         .map(|sentence| clip_head(&sentence, MAX_CONSTRAINT_CHARS))
-        .collect()
+    {
+        let key = dedupe_key(&sentence);
+        kept.retain(|earlier| dedupe_key(earlier) != key);
+        kept.push(sentence);
+    }
+    // Newest kept: drop from the oldest end until both caps hold.
+    while kept.len() > MAX_CONSTRAINTS
+        || kept.iter().map(|c| c.chars().count()).sum::<usize>() > MAX_CONSTRAINT_TOTAL_CHARS
+    {
+        kept.remove(0);
+    }
+    kept
 }
 
+/// Whitespace-normalized, case-folded, without a final full stop: the key
+/// two copies of the same words share.
 fn dedupe_key(sentence: &str) -> String {
     sentence
         .split_whitespace()

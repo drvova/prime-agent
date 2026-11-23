@@ -378,13 +378,15 @@ pub fn compaction_entry_for(
 /// The details of a compact run: the previous compaction's details (its file
 /// lists and carried state) merged with the summarized `span` — every
 /// message it summarizes, tool results included (a kernel cell's diffs ride
-/// its result) — and the session's live goal and todo list.
+/// its result) — and the session's live goal and todo list; the session
+/// model's `context_window` sizes the carried user messages.
 #[must_use]
 pub fn details_for(
     span: &[AgentMessage],
     entries: &[FileEntry],
     prev_compaction_index: Option<usize>,
     live: LiveWork,
+    context_window: u64,
 ) -> CompactionDetails {
     let previous = prev_compaction_index
         .and_then(|index| match entries.get(index) {
@@ -410,6 +412,7 @@ pub fn details_for(
             previous.as_ref().map(|details| &details.carried),
             span,
             live,
+            context_window,
         ),
     }
 }
@@ -629,7 +632,13 @@ mod tests {
         assert!(result.summary.starts_with("## Goal"));
         assert_eq!(result.first_kept_entry_id, "e1");
         assert_eq!(result.tokens_before, 1_000);
-        let details = details_for(&messages, &entries, None, LiveWork::default());
+        let details = details_for(
+            &messages,
+            &entries,
+            None,
+            LiveWork::default(),
+            /*context_window*/ 200_000,
+        );
         let entry = compaction_entry_for(&result, &details, Some("focus"), None, None);
         assert_eq!(entry.summary, "## Goal\nship it");
         assert_eq!(entry.custom_instructions.as_deref(), Some("focus"));

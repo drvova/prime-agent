@@ -211,7 +211,10 @@ async fn execute_compaction_streams_summary_deltas_to_the_sink() {
     // The streamed deltas concatenate to exactly the generated
     // summary.
     assert!(!deltas.is_empty(), "the sink saw at least one delta");
-    assert_eq!(deltas, "## Goal\nsummarized goal");
+    assert_eq!(
+        super::super::compaction_utils::strip_harness_blocks(&deltas),
+        "## Goal\nsummarized goal"
+    );
     // The convergence invariant: a client accumulating every delta
     // holds exactly the committed summary the settled end carries.
     assert_eq!(deltas, run.result.summary);
@@ -312,7 +315,7 @@ async fn split_turn_compaction_streams_in_final_order_and_converges() {
         panic!("expected the compaction to run");
     };
     assert_eq!(registration.call_count(), 2, "both wire calls ran");
-    let summary = &run.result.summary;
+    let summary = &super::super::compaction_utils::strip_harness_blocks(&run.result.summary);
     let marker = "\n\n---\n\n**Turn Context (split turn):**\n\n";
     let split = summary
         .split_once(marker)
@@ -340,7 +343,7 @@ async fn split_turn_compaction_streams_in_final_order_and_converges() {
     assert_eq!(live_history, history_text, "deltas: {deltas:?}");
     // The convergence invariant: the accumulated stream IS the
     // committed summary.
-    assert_eq!(deltas.concat(), *summary);
+    assert_eq!(deltas.concat(), run.result.summary);
     registration.unregister();
 }
 
@@ -625,7 +628,10 @@ async fn execute_compaction_retries_a_length_capped_summarizer_response() {
     let CompactOutcome::Ran(run) = outcome else {
         panic!("expected the compaction to run");
     };
-    assert_eq!(run.entry.summary, "shorter summary");
+    assert_eq!(
+        super::super::compaction_utils::strip_harness_blocks(&run.entry.summary),
+        "shorter summary"
+    );
     // Exactly one retry: the capped reply plus its shorter-summary retry.
     assert_eq!(registration.call_count(), 2);
     registration.unregister();
@@ -673,7 +679,7 @@ async fn execute_compaction_accepts_a_twice_capped_summary_behind_the_marker() {
         panic!("expected the compaction to run");
     };
     assert_eq!(
-        run.entry.summary,
+        super::super::compaction_utils::strip_harness_blocks(&run.entry.summary),
         format!(
             "{}\n\npartial two",
             super::super::compaction::SUMMARY_TRUNCATED_MARKER
@@ -787,6 +793,6 @@ async fn an_early_user_constraint_survives_compaction_verbatim() {
     assert!(summary
         .content
         .text()
-        .contains("[1] \"Never push to the release branch; it deploys on push.\"\n"));
+        .contains("\nPort the parser. Never push to the release branch; it deploys on push.\n"));
     registration.unregister();
 }
