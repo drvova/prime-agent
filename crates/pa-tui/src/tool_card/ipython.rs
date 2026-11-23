@@ -21,7 +21,7 @@ use super::{highlight, ToolCallCard};
 use crate::chat::Detail;
 use crate::code_preview::{
     parse_ipython_bash_cell, preview_bash_command, preview_ipython_code, preview_scheme_code,
-    python_statement_lines, CodePreviewLanguage,
+    python_statement_lines, scheme_bash_calls, CodePreviewLanguage,
 };
 use crate::custom_message::AgentMessageDirection;
 use crate::error_summary::{normalize_error_details, summarize_error_details};
@@ -246,7 +246,7 @@ fn collapsed_line(
     let bash_mode = theme.fg_style(ThemeColor::BashMode);
     let accent = theme.fg_style(ThemeColor::Accent);
 
-    let dominant = dominant_bash(details, code);
+    let dominant = dominant_bash(card, details, code);
     // A cell's own label and preview follow its kernel's language; a saved
     // session's Python cells keep theirs.
     let (own_label, preview_text) = match pa_types::ai::kernel_tool_language(&card.name) {
@@ -291,10 +291,13 @@ fn collapsed_line(
     marker.push(Span::styled(language_label, title));
     parts.push(marker);
     if let Some(bash) = dominant {
-        let preview = preview_bash_command(&bash.first);
-        if !preview.text.is_empty() {
+        // A command that is not a literal previews as the cell's own first line.
+        let preview = Some(preview_bash_command(&bash.first).text)
+            .filter(|text| !text.is_empty())
+            .unwrap_or(preview_text);
+        if !preview.is_empty() {
             preview_index = Some(parts.len());
-            parts.push(vec![Span::styled(preview.text, dim)]);
+            parts.push(vec![Span::styled(preview, dim)]);
         }
         if bash.count > 1 {
             parts.push(vec![Span::styled(format!("+{} more", bash.count - 1), dim)]);
@@ -397,11 +400,28 @@ fn input_line_count(code: &str) -> usize {
     body.lines().filter(|line| !line.trim().is_empty()).count()
 }
 
-fn dominant_bash<'a>(details: &'a IpythonDetails, code: &str) -> Option<&'a BashCommands> {
-    details
-        .bash_commands
-        .as_ref()
-        .filter(|bash| bash.lines * BASH_DOMINANCE_DIVISOR >= input_line_count(code))
+///
+/// A Python cell's bash lines are the ones it ran, known once its result
+/// arrives. A Scheme cell's are its top-level `(bash …)` forms, read from
+/// its source: its title is then the same while it waits, runs and settles,
+/// where a title taken from the result changed from `scheme` to `bash` under
+/// the reader.
+fn dominant_bash(
+    card: &ToolCallCard,
+    details: &IpythonDetails,
+    code: &str,
+) -> Option<BashCommands> {
+    let bash = match pa_types::ai::kernel_tool_language(&card.name) {
+        Some(pa_types::ai::KernelLanguage::Scheme) => {
+            scheme_bash_calls(code).map(|calls| BashCommands {
+                first: calls.first,
+                count: calls.count,
+                lines: calls.lines,
+            })
+        }
+        Some(pa_types::ai::KernelLanguage::Python) | None => details.bash_commands.clone(),
+    };
+    bash.filter(|bash| bash.lines * BASH_DOMINANCE_DIVISOR >= input_line_count(code))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -415,7 +435,7 @@ pub(crate) struct BashCellStats {
 pub(crate) fn bash_dominated_stats(card: &ToolCallCard) -> Option<BashCellStats> {
     let code = cell_code(card).trim_end();
     let details = IpythonDetails::parse(&card.result.as_ref()?.details);
-    let bash = dominant_bash(&details, code)?;
+    let bash = dominant_bash(card, &details, code)?;
     Some(BashCellStats {
         bash_lines: bash.lines,
         cell_lines: input_line_count(code),

@@ -16,9 +16,51 @@ use crate::kernel::shared::{
     host_handler, HostRequestHandlers, HostRequestPayload, KernelBashCommands, KernelBashWaits,
 };
 use crate::kernel::spill::{SpillLookup, SpillStore, StoredSpill};
+use crate::platform::KernelShell;
 use crate::tools::kernel_cell::{
     ExecuteResult, KernelExecuteOptions, KernelExecutor, KernelProvisioner,
 };
+
+/// A behaviour both shells share is tested on each of them: a shell
+/// process per command, and the built-in shell.
+macro_rules! on_each_shell {
+    ($(#[$doc:meta])* async fn $name:ident($shell:ident) $body:block) => {
+        mod $name {
+            use super::*;
+
+            $(#[$doc])*
+            async fn checked($shell: KernelShell) $body
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn on_a_shell_process() {
+                checked(KernelShell::System).await;
+            }
+
+            #[tokio::test(flavor = "multi_thread")]
+            async fn on_the_built_in_shell() {
+                checked(KernelShell::BuiltIn).await;
+            }
+        }
+    };
+    ($(#[$doc:meta])* fn $name:ident($shell:ident) $body:block) => {
+        mod $name {
+            use super::*;
+
+            $(#[$doc])*
+            fn checked($shell: KernelShell) $body
+
+            #[test]
+            fn on_a_shell_process() {
+                checked(KernelShell::System);
+            }
+
+            #[test]
+            fn on_the_built_in_shell() {
+                checked(KernelShell::BuiltIn);
+            }
+        }
+    };
+}
 
 /// How long any one step may take before its test fails instead of hanging.
 const STEP: Duration = Duration::from_secs(60);
@@ -133,10 +175,12 @@ async fn kernel_with(
 }
 
 async fn kernel_in(
+    shell: KernelShell,
     handlers: HostRequestHandlers,
     cwd: &Path,
 ) -> (SchemeKernelProvisioner, Box<dyn KernelExecutor>) {
     kernel_with(SchemeKernelOptions {
+        shell,
         host_handlers: handlers,
         cwd: cwd.to_path_buf(),
         ..SchemeKernelOptions::default()
@@ -145,8 +189,12 @@ async fn kernel_in(
 }
 
 /// A kernel whose cells move to the background after 100 ms.
-async fn windowed_kernel_in(cwd: &Path) -> (SchemeKernelProvisioner, Box<dyn KernelExecutor>) {
+async fn windowed_kernel_in(
+    shell: KernelShell,
+    cwd: &Path,
+) -> (SchemeKernelProvisioner, Box<dyn KernelExecutor>) {
     kernel_with(SchemeKernelOptions {
+        shell,
         cwd: cwd.to_path_buf(),
         cell_window: CellWindow::for_session(CellWindowConfig {
             daemonless: false,
@@ -160,11 +208,11 @@ async fn windowed_kernel_in(cwd: &Path) -> (SchemeKernelProvisioner, Box<dyn Ker
     .await
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn a_background_job_is_tailed_polled_waited_and_listed() {
+on_each_shell! {
+async fn a_background_job_is_tailed_polled_waited_and_listed(shell) {
     let dir = tempfile::tempdir().unwrap();
     let (started, gate) = (pipe_in(dir.path(), "started"), pipe_in(dir.path(), "gate"));
-    let (_provisioner, kernel) = kernel_in(HostRequestHandlers::new(), dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, HostRequestHandlers::new(), dir.path()).await;
     let begun = value(
         kernel.as_ref(),
         "(define job (bash \"echo first; echo up > started; read -r line < gate; echo \\\"got $line\\\"\"
@@ -200,15 +248,16 @@ async fn a_background_job_is_tailed_polled_waited_and_listed() {
         )
     );
 }
+}
 
-#[tokio::test(flavor = "multi_thread")]
-async fn killing_a_job_ends_every_process_of_its_group() {
+on_each_shell! {
+async fn killing_a_job_ends_every_process_of_its_group(shell) {
     let dir = tempfile::tempdir().unwrap();
     let started = pipe_in(dir.path(), "started");
-    let (_provisioner, kernel) = kernel_in(HostRequestHandlers::new(), dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, HostRequestHandlers::new(), dir.path()).await;
     let shell = value(
         kernel.as_ref(),
-        "(define job (bash \"sleep 300 & echo $! > child.pid; echo up > started; wait\"
+        "(define job (bash \"sh -c 'sleep 300' & echo $! > child.pid; echo up > started; wait\"
                            (hash 'background #t)))
          (hash-ref job 'pid)",
     )
@@ -231,17 +280,18 @@ async fn killing_a_job_ends_every_process_of_its_group() {
         ("(#true 143 #false)", true, true)
     );
 }
+}
 
+on_each_shell! {
 /// A command that outlives its wait window keeps running as a job; its end
 /// is announced once, and reading its result withdraws the announcement. A
 /// job its own cell waited to its end is never announced.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_command_that_outlives_its_window_runs_on_and_is_announced_when_it_ends() {
+async fn a_command_that_outlives_its_window_runs_on_and_is_announced_when_it_ends(shell) {
     let dir = tempfile::tempdir().unwrap();
     let gate = pipe_in(dir.path(), "gate");
     let (handlers, mut received) =
         recording(&[("bash.completed", json!({})), ("bash.consumed", json!({}))]);
-    let (_provisioner, kernel) = kernel_in(handlers, dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, handlers, dir.path()).await;
     let command = "echo begun; read -r line < gate; echo \\\"got $line\\\"; exit 4";
     let yielded = value(
         kernel.as_ref(),
@@ -294,17 +344,18 @@ async fn a_command_that_outlives_its_window_runs_on_and_is_announced_when_it_end
         )
     );
 }
+}
 
+on_each_shell! {
 /// The call returns with the command's own end, not with the end of what
 /// the command left running, which stays the job's to kill.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_command_returns_at_its_own_end_while_what_it_started_runs_on() {
+async fn a_command_returns_at_its_own_end_while_what_it_started_runs_on(shell) {
     let dir = tempfile::tempdir().unwrap();
-    let (_provisioner, kernel) = kernel_in(HostRequestHandlers::new(), dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, HostRequestHandlers::new(), dir.path()).await;
     let called = Instant::now();
     let returned = value(
         kernel.as_ref(),
-        "(define result (bash \"sleep 300 & echo $! > left.pid; echo x\"))
+        "(define result (bash \"sh -c 'sleep 300' & echo $! > left.pid; echo x\"))
          (list (hash-ref result 'output) (hash-ref result 'exit-code) (bash-running? result))",
     )
     .await;
@@ -321,13 +372,14 @@ async fn a_command_returns_at_its_own_end_while_what_it_started_runs_on() {
         ("(\"x\\n\" 0 #true)", true, "#true", true)
     );
 }
+}
 
+on_each_shell! {
 /// Killing a kernel, and dropping one, each end every job it has: a
 /// background job with its children and a command that yielded.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_killed_or_dropped_kernel_leaves_no_job_running() {
+async fn a_killed_or_dropped_kernel_leaves_no_job_running(shell) {
     let cell =
-        "(define held (bash \"sleep 300 & echo $! > child.pid; echo up > held.started; wait\"
+        "(define held (bash \"sh -c 'sleep 300' & echo $! > child.pid; echo up > held.started; wait\"
                              (hash 'background #t)))
                 (define yielded (bash \"echo up > yielded.started; sleep 300\" (hash 'wait-ms 0)))
                 (list (hash-ref held 'pid) (hash-ref yielded 'pid))";
@@ -338,7 +390,7 @@ async fn a_killed_or_dropped_kernel_leaves_no_job_running() {
             pipe_in(dir.path(), "held.started"),
             pipe_in(dir.path(), "yielded.started"),
         ];
-        let (provisioner, kernel) = kernel_in(HostRequestHandlers::new(), dir.path()).await;
+        let (provisioner, kernel) = kernel_in(shell, HostRequestHandlers::new(), dir.path()).await;
         let mut pids = numbers(&value(kernel.as_ref(), cell).await);
         for pipe in &pipes {
             read(pipe).await;
@@ -359,15 +411,107 @@ async fn a_killed_or_dropped_kernel_leaves_no_job_running() {
     }
     assert_eq!(gone, [true; 8]);
 }
+}
 
+/// A command on the built-in shell needs no program for what the shell
+/// runs itself, starts the programs it names, hides this process's id, and
+/// reports how many of each it ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_built_in_shell_runs_utilities_itself_and_counts_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (handlers, mut received) = recording(&[("shell.fact", json!({}))]);
+    let (_provisioner, kernel) = kernel_in(KernelShell::BuiltIn, handlers, dir.path()).await;
+    let ran = value(
+        kernel.as_ref(),
+        "(define without (bash \"PATH=/nonexistent-bin; printf 'b\\na\\n' > f; sort f | head -n 1; echo $PRIME_AGENT_SHELL; ls --zero\"))
+         (define with (bash \"/bin/sh -c 'echo from-a-program'; [ $$ -ge 536870912 ] && echo no-process-id\"))
+         (list (hash-ref without 'output) (hash-ref without 'exit-code) (hash-ref with 'output))",
+    )
+    .await;
+    assert_eq!(
+        (ran.as_str(), next(&mut received).await, next(&mut received).await),
+        (
+            "(\"a\\nbuiltin\\nls: option --zero is not supported by Prime Agent's built-in ls, and no ls program is installed on this machine\\n\" 2 \"from-a-program\\nno-process-id\\n\")",
+            (
+                "shell.fact".to_string(),
+                json!({ "inProcess": 2, "spawned": 0, "handedOver": 0, "unavailable": 1 })
+            ),
+            (
+                "shell.fact".to_string(),
+                json!({ "inProcess": 0, "spawned": 1, "handedOver": 0, "unavailable": 0 })
+            ),
+        )
+    );
+}
+
+/// A program that a command on the built-in shell leaves running is listed
+/// in the orphan journal as it starts, so the next host reaps it
+/// if this process dies, and is taken out again when its job ends.
+#[test]
+fn a_program_of_the_built_in_shell_is_journaled_while_it_runs() {
+    use crate::kernel::orphan_journal::{read_active_orphan_processes, ORPHAN_PROCESS_JOURNAL_ENV};
+    let dir = tempfile::tempdir().unwrap();
+    let started = pipe_in(dir.path(), "started");
+    let journal = dir.path().join("orphans.jsonl");
+    let scope = pa_types::session_scope::SessionScope::new(
+        "journal".to_string(),
+        dir.path().to_path_buf(),
+        std::collections::BTreeMap::from([(
+            ORPHAN_PROCESS_JOURNAL_ENV.to_string(),
+            journal.to_string_lossy().into_owned(),
+        )]),
+        std::collections::BTreeSet::new(),
+    );
+    let _scope = pa_types::session_scope::enter(Some(scope));
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .on_thread_start(pa_types::session_scope::inherit())
+        .build()
+        .unwrap();
+    let journaled = |journal: &Path| -> Vec<i32> {
+        read_active_orphan_processes(journal, i64::from(std::process::id()))
+            .unwrap()
+            .into_iter()
+            .map(|orphan| orphan.pid)
+            .collect()
+    };
+    let seen = runtime.block_on(async {
+        let (_provisioner, kernel) =
+            kernel_in(KernelShell::BuiltIn, HostRequestHandlers::new(), dir.path()).await;
+        value(
+            kernel.as_ref(),
+            "(define job (bash \"/bin/sleep 300 & echo $! > child.pid; echo up > started; wait\"
+                               (hash 'background #t)))",
+        )
+        .await;
+        read(&started).await;
+        let child: i32 = std::fs::read_to_string(dir.path().join("child.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // No wait: the program was listed before the script went on.
+        let listed = journaled(&journal);
+        value(
+            kernel.as_ref(),
+            "(bash-kill job (hash 'signal 'kill))
+             (define (ended) (if (bash-running? job) (ended) #t))
+             (ended)",
+        )
+        .await;
+        (listed == [child], journaled(&journal))
+    });
+    assert_eq!(seen, (true, Vec::new()));
+}
+
+on_each_shell! {
 /// A read-only command whose inputs are unchanged answers from the cache;
 /// a changed input, or a command that is more than one read, runs again.
-#[tokio::test(flavor = "multi_thread")]
-async fn an_unchanged_read_only_command_is_answered_from_the_cache() {
+async fn an_unchanged_read_only_command_is_answered_from_the_cache(shell) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("note.txt"), "one\n").unwrap();
     let (handlers, mut received) = recording(&[("command_cache.fact", json!({}))]);
-    let (_provisioner, kernel) = kernel_in(handlers, dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, handlers, dir.path()).await;
     let first = value(
         kernel.as_ref(),
         "(define (seen command)
@@ -397,6 +541,7 @@ async fn an_unchanged_read_only_command_is_answered_from_the_cache() {
             None,
         )
     );
+}
 }
 
 macro_rules! captured_run {
@@ -466,16 +611,16 @@ fn every_captured_test_run_summarizes_to_its_counts_and_failures() {
     );
 }
 
+on_each_shell! {
 /// A waited test run returns its summary with the handles the host gave its
 /// outputs, and prints it with the cell's output.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_waited_test_run_returns_and_prints_its_summary_with_handles() {
+async fn a_waited_test_run_returns_and_prints_its_summary_with_handles(shell) {
     let dir = tempfile::tempdir().unwrap();
     let (handlers, mut received) = recording(&[(
         "tests.summary",
         json!({ "output": "out:00000000ff", "failures": ["out:00000000a1", "out:00000000a2"] }),
     )]);
-    let (_provisioner, kernel) = kernel_in(handlers, dir.path()).await;
+    let (_provisioner, kernel) = kernel_in(shell, handlers, dir.path()).await;
     let captured = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/src/kernel/scheme/native/fixtures/test_runs/cargo_test.txt"
@@ -514,14 +659,16 @@ async fn a_waited_test_run_returns_and_prints_its_summary_with_handles() {
         )
     );
 }
+}
 
+on_each_shell! {
 /// A large output is kept whole in the session's spill store under the
 /// handle its result names; a small one has no handle.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_large_output_is_spilled_under_the_handle_its_result_names() {
+async fn a_large_output_is_spilled_under_the_handle_its_result_names(shell) {
     let dir = tempfile::tempdir().unwrap();
     let artifacts = dir.path().join("session-a");
     let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        shell,
         cwd: dir.path().to_path_buf(),
         artifact_dir: Some(artifacts.clone()),
         ..SchemeKernelOptions::default()
@@ -556,14 +703,16 @@ async fn a_large_output_is_spilled_under_the_handle_its_result_names() {
         )
     );
 }
+}
 
+on_each_shell! {
 /// Over the session's job limit a background command is held until a slot
 /// frees, unless the cell that started it waits for it.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_command_over_the_job_limit_is_queued_until_a_slot_frees() {
+async fn a_command_over_the_job_limit_is_queued_until_a_slot_frees(shell) {
     let dir = tempfile::tempdir().unwrap();
     let (started, gate) = (pipe_in(dir.path(), "started"), pipe_in(dir.path(), "gate"));
     let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        shell,
         cwd: dir.path().to_path_buf(),
         env: vec![("PRIME_AGENT_BASH_MAX_JOBS".to_string(), "1".to_string())],
         ..SchemeKernelOptions::default()
@@ -590,11 +739,12 @@ async fn a_command_over_the_job_limit_is_queued_until_a_slot_frees() {
         )
     );
 }
+}
 
+on_each_shell! {
 /// What a cell's commands leave on its result: the commands it started, how
 /// its waits ended, and the source lines a failed command's output names.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_cells_commands_waits_and_failures_show_on_its_result() {
+async fn a_cells_commands_waits_and_failures_show_on_its_result(shell) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join("src")).unwrap();
     std::fs::write(
@@ -606,6 +756,7 @@ async fn a_cells_commands_waits_and_failures_show_on_its_result() {
     std::fs::write(dir.path().join("build.log"), build).unwrap();
     let (handlers, _received) = recording(&[("bash.completed", json!({}))]);
     let (_provisioner, kernel) = kernel_with(SchemeKernelOptions {
+        shell,
         host_handlers: handlers,
         cwd: dir.path().to_path_buf(),
         error_context: ErrorContext::for_workspace(dir.path().to_path_buf(), None),
@@ -656,6 +807,7 @@ async fn a_cells_commands_waits_and_failures_show_on_its_result() {
             (None, KernelBashWaits::default(), None),
         )
     );
+}
 }
 
 /// A persistent shell is recorded for its session, outlives the kernel that
@@ -739,13 +891,13 @@ async fn a_persistent_shell_outlives_its_kernel_and_is_reattached_by_the_next() 
     );
 }
 
+on_each_shell! {
 /// A cell that moves to the background while it waits for a command keeps
 /// that command: it runs on, and its result reaches the cell.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_backgrounded_cell_keeps_the_command_it_waits_for() {
+async fn a_backgrounded_cell_keeps_the_command_it_waits_for(shell) {
     let dir = tempfile::tempdir().unwrap();
     let (started, gate) = (pipe_in(dir.path(), "started"), pipe_in(dir.path(), "gate"));
-    let (_provisioner, kernel) = windowed_kernel_in(dir.path()).await;
+    let (_provisioner, kernel) = windowed_kernel_in(shell, dir.path()).await;
     let moved = run_within(
         kernel.as_ref(),
         "(hash-ref (bash \"echo up > started; read -r line < gate; echo \\\"got $line\\\"\") 'output)",
@@ -770,18 +922,19 @@ async fn a_backgrounded_cell_keeps_the_command_it_waits_for() {
         Some("(\"ok\" \"\\\"got go\\\\n\\\"\")")
     );
 }
+}
 
+on_each_shell! {
 /// Cancelling a background cell kills the command it waits for, with what
 /// that command started, and leaves the jobs it started in the background.
-#[tokio::test(flavor = "multi_thread")]
-async fn cancelling_a_background_cell_kills_its_command_and_keeps_its_jobs() {
+async fn cancelling_a_background_cell_kills_its_command_and_keeps_its_jobs(shell) {
     let dir = tempfile::tempdir().unwrap();
     let started = pipe_in(dir.path(), "started");
-    let (_provisioner, kernel) = windowed_kernel_in(dir.path()).await;
+    let (_provisioner, kernel) = windowed_kernel_in(shell, dir.path()).await;
     let moved = run_within(
         kernel.as_ref(),
         "(define kept (bash \"sleep 300\" (hash 'background #t)))
-         (bash \"sleep 300 & echo $$ $! > waited.pids; echo up > started; wait\")",
+         (bash \"sh -c 'sleep 300' & echo $$ $! > waited.pids; echo up > started; wait\")",
         None,
     )
     .await;
@@ -807,6 +960,7 @@ async fn cancelling_a_background_cell_kills_its_command_and_keeps_its_jobs() {
         (vec![true, true], Some("(\"interrupted\" #true #true)"))
     );
 }
+}
 
 /// Steel's prelude binds hundreds of names; a definition here that reused
 /// one would replace a builtin for every cell.
@@ -825,15 +979,15 @@ fn no_bash_name_replaces_a_steel_builtin() {
 /// The cell both lifetime-end tests run: a background shell that leaves a
 /// child of its own, with the shell's pid as the cell's value.
 const HELD_JOB: &str =
-    "(define held (bash \"sleep 300 & echo $! > child.pid; echo up > started; wait\"
+    "(define held (bash \"sh -c 'sleep 300' & echo $! > child.pid; echo up > started; wait\"
                         (hash 'background #t)))
      (hash-ref held 'pid)";
 
+on_each_shell! {
 /// A session thread that panics drops its runtime, and with it the task
 /// that watches each job. That alone ends each job's whole group, even
 /// while something of the session still holds the kernel.
-#[test]
-fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs() {
+fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs(shell) {
     let dir = tempfile::tempdir().unwrap();
     let started = pipe_in(dir.path(), "started");
     let (kept, keep) = std::sync::mpsc::channel();
@@ -843,7 +997,7 @@ fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs() {
             .enable_all()
             .build()
             .unwrap();
-        let (provisioner, kernel) = runtime.block_on(kernel_in(HostRequestHandlers::new(), &cwd));
+        let (provisioner, kernel) = runtime.block_on(kernel_in(shell, HostRequestHandlers::new(), &cwd));
         runtime.block_on(async {
             value(kernel.as_ref(), HELD_JOB).await;
             read(&started).await;
@@ -865,12 +1019,13 @@ fn a_runtime_dropped_by_a_panic_kills_every_process_of_its_jobs() {
         .unwrap();
     assert!(waiting.block_on(exited(child.trim().parse().unwrap())));
 }
+}
 
+on_each_shell! {
 /// A session whose thread is stuck never runs a destructor: its host ends
 /// the lifetime from outside, and that kills every job's whole group while
 /// the stuck thread still holds the kernel and its runtime.
-#[test]
-fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
+fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go(shell) {
     let dir = tempfile::tempdir().unwrap();
     let started = pipe_in(dir.path(), "started");
     let scope = pa_types::session_scope::SessionScope::new(
@@ -879,7 +1034,7 @@ fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
         std::collections::BTreeMap::new(),
         std::collections::BTreeSet::new(),
     );
-    let (told, shell) = std::sync::mpsc::channel();
+    let (told, started_job) = std::sync::mpsc::channel();
     let (release, held) = std::sync::mpsc::channel::<()>();
     let (cwd, entered) = (dir.path().to_path_buf(), std::sync::Arc::clone(&scope));
     let stuck = std::thread::spawn(move || {
@@ -889,17 +1044,17 @@ fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
             .on_thread_start(pa_types::session_scope::inherit())
             .build()
             .unwrap();
-        let (_provisioner, kernel) = runtime.block_on(kernel_in(HostRequestHandlers::new(), &cwd));
+        let (_provisioner, kernel) = runtime.block_on(kernel_in(shell, HostRequestHandlers::new(), &cwd));
         told.send(runtime.block_on(async {
-            let shell = value(kernel.as_ref(), HELD_JOB).await;
+            let job = value(kernel.as_ref(), HELD_JOB).await;
             read(&started).await;
-            shell
+            job
         }))
         .unwrap();
         // Stuck: nothing here is dropped until the test has seen the jobs die.
         let _ = held.recv();
     });
-    let shell = shell.recv_timeout(STEP).unwrap();
+    let job = started_job.recv_timeout(STEP).unwrap();
     let child = std::fs::read_to_string(dir.path().join("child.pid")).unwrap();
     scope.end();
     let waiting = tokio::runtime::Builder::new_current_thread()
@@ -908,7 +1063,7 @@ fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
         .unwrap();
     let gone = waiting.block_on(async {
         (
-            exited(shell.parse().unwrap()).await,
+            exited(job.parse().unwrap()).await,
             exited(child.trim().parse().unwrap()).await,
         )
     });
@@ -916,15 +1071,17 @@ fn ending_a_lifetime_kills_the_jobs_of_a_thread_that_never_lets_go() {
     stuck.join().unwrap();
     assert_eq!(gone, (true, true));
 }
+}
 
+on_each_shell! {
 /// A command still running when its kernel ends is killed with it, and the
 /// session's next kernel says so once; a command that ended is not named.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kernel() {
+async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kernel(shell) {
     let dir = tempfile::tempdir().unwrap();
     let started = pipe_in(dir.path(), "started");
     let artifacts = dir.path().join("artifacts");
     let saved = |handlers| SchemeKernelOptions {
+        shell,
         host_handlers: handlers,
         cwd: dir.path().to_path_buf(),
         artifact_dir: Some(artifacts.clone()),
@@ -943,7 +1100,7 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
     .await;
     read(&started).await;
     provisioner.kill().await;
-    let listed = artifacts.join(super::job::RUNNING_FILE);
+    let listed = artifacts.join(super::super::job::RUNNING_FILE);
     let was_listed = listed.exists();
     let (handlers, mut received) = recording(&[("bash.completed", json!({}))]);
     let (_provisioner, _kernel) = kernel_with(saved(handlers)).await;
@@ -962,4 +1119,5 @@ async fn a_command_killed_with_its_kernel_is_announced_as_lost_by_the_next_kerne
             false,
         )
     );
+}
 }

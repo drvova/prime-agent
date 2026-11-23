@@ -1,6 +1,7 @@
 //! Orphan-process journal e2e: a session ending without a teardown of its
-//! own must not leak the `bash` process groups its kernel journaled: the
-//! supervisor reaps them from the journal when it sees the session crashed.
+//! own must not leak the processes its `bash` commands started: its
+//! lifetime's end and the supervisor's reap of the journal take them out
+//! when the session is seen to have crashed.
 // 64-bit-only targets; the narrowing casts sit at bounded OS boundaries.
 #![allow(
     clippy::cast_possible_truncation,
@@ -67,10 +68,13 @@ fn spawn_daemon(socket: &Path, agent_dir: &Path) -> Daemon {
     Daemon { child }
 }
 
-/// The orphaning cell: a background `(bash "sleep 600")` whose process
-/// group outlives the turn, plus the id the test probes by.
+/// The orphaning cell: a background command that starts the program
+/// `/bin/sleep`, which outlives the turn, and writes its pid for the test to
+/// probe by. A program, by its path: under the built-in shell a bare `sleep`
+/// is the shell's own, and the job's `pid` a job number, so neither names a
+/// process.
 fn orphaning_cell() -> String {
-    let code = "(define job (bash \"sleep 600\" (hash 'background #t)))\n(displayln (string-append \"ORPHAN_PGID=\" (number->string (hash-ref job 'pid))))";
+    let code = "(bash \"/bin/sleep 600 & echo $! > orphan.pid; wait\" (hash 'background #t))";
     serde_json::to_string(&json!({ "code": code })).expect("serialize cell")
 }
 
@@ -272,15 +276,6 @@ impl Client {
             }
         }
     }
-
-    fn messages(&mut self, active_session_id: &str) -> String {
-        let response = self.request(
-            "gm",
-            &json!({ "type": "get_messages", "activeSessionId": active_session_id }),
-        );
-        assert_eq!(response["success"], true, "get_messages failed: {response}");
-        serde_json::to_string(&response["data"]).expect("messages json")
-    }
 }
 
 fn wait_until<T>(deadline: Duration, mut probe: impl FnMut() -> Option<T>) -> T {
@@ -324,51 +319,42 @@ fn create_session(client: &mut Client, id: &str, dir: &Path, agent_dir: &Path) -
         .to_string()
 }
 
-/// The bash process group the orphaning cell printed, parsed from the
-/// tool result the turn settled with. The cell's code echoes through the
-/// tool-call arguments too (`ORPHAN_PGID=` there), so the parse scans
-/// every marker occurrence for the first one followed by digits: only the
-/// executed result prints them.
-fn orphan_pgid(client: &mut Client, active_session_id: &str) -> i32 {
+/// The pid of the program the orphaning cell started, once the command has
+/// written it into the session's working directory.
+fn orphan_pid(dir: &Path) -> i32 {
     wait_until(Duration::from_secs(30), || {
-        number_after(&client.messages(active_session_id), "ORPHAN_PGID=")
+        std::fs::read_to_string(dir.join("orphan.pid"))
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 0)
     })
 }
 
-fn number_after(text: &str, marker: &str) -> Option<i32> {
-    text.split(marker).skip(1).find_map(|rest| {
-        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-        digits.parse::<i32>().ok().filter(|pid| *pid > 0)
-    })
+fn orphan_alive(pid: i32) -> bool {
+    signal_pid(Pid::from_raw(pid), None).is_ok()
 }
 
-fn group_alive(pgid: i32) -> bool {
-    // The whole process group: signaling the negative pgid answers ESRCH
-    // only when every process the group named is gone.
-    signal_pid(Pid::from_raw(-pgid), None).is_ok()
-}
-
-/// Wait out the one liveness signal the feature produces: the group's
+/// Wait out the one liveness signal the feature produces: the program's
 /// death. The message names the kill that failed to reap it, so a red
 /// run says exactly which half of the contract leaked.
-fn expect_group_dead(pgid: i32, cause: &str) {
+fn expect_orphan_dead(pid: i32, cause: &str) {
     let deadline = Instant::now() + Duration::from_secs(30);
-    while group_alive(pgid) {
+    while orphan_alive(pid) {
         assert!(
             Instant::now() < deadline,
-            "the journaled bash group (pgid {pgid}) survived {cause}: the reap never ran"
+            "the command's program (pid {pid}) survived {cause}: the reap never ran"
         );
         std::thread::sleep(Duration::from_millis(100));
     }
 }
 
-/// A red run must not leak `sleep 600` past the test: the group dies with
+/// A red run must not leak `sleep 600` past the test: the program dies with
 /// the guard whether or not the assertions passed.
-struct GroupGuard(i32);
+struct OrphanGuard(i32);
 
-impl Drop for GroupGuard {
+impl Drop for OrphanGuard {
     fn drop(&mut self) {
-        let _ = signal_pid(Pid::from_raw(-self.0), Signal::SIGKILL);
+        let _ = signal_pid(Pid::from_raw(self.0), Signal::SIGKILL);
     }
 }
 
@@ -378,7 +364,7 @@ impl Drop for GroupGuard {
 /// outside the stuck thread), and records it in the journal, so the
 /// supervisor's reap that follows finds nothing left alive.
 #[test]
-fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
+fn a_crashed_session_has_the_programs_of_its_commands_reaped_by_the_supervisor() {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let root = tempfile::TempDir::new().expect("temp dir");
     let agent_dir = root.path().join("agent");
@@ -420,11 +406,11 @@ fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
         }),
     );
     assert_eq!(started["success"], true, "first turn failed: {started}");
-    let pgid = orphan_pgid(&mut client, &active_session_id);
-    let _guard = GroupGuard(pgid);
+    let pid = orphan_pid(root.path());
+    let _guard = OrphanGuard(pid);
     assert!(
-        group_alive(pgid),
-        "the orphaning sleep died before the crash: pgid {pgid}"
+        orphan_alive(pid),
+        "the orphaning sleep died before the crash: pid {pid}"
     );
 
     // The session ends with no teardown of its own: its next cell wedges in a
@@ -457,7 +443,7 @@ fn a_crashed_session_has_its_journaled_bash_groups_reaped_by_the_supervisor() {
             })
             .then_some(())
     });
-    // The supervisor's crash handling owns the only reap: the group dies
+    // The supervisor's crash handling owns the only reap: the program dies
     // when it runs, not on any timeout of ours.
-    expect_group_dead(pgid, "the session crash");
+    expect_orphan_dead(pid, "the session crash");
 }

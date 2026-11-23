@@ -202,8 +202,11 @@ pub struct SchemeKernelOptions {
     /// The session's working directory: where relative paths in host
     /// functions resolve and commands run.
     pub cwd: PathBuf,
-    /// The session's resolved shell for `(bash ...)`; `None` uses the
-    /// platform's default one.
+    /// Whether `(bash ...)` commands run on the built-in shell or on a
+    /// shell process (the `shell` setting).
+    pub shell: crate::platform::KernelShell,
+    /// The session's resolved shell process for `(bash ...)`; `None` uses
+    /// the platform's default one.
     pub shell_path: Option<PathBuf>,
     /// Shell text run before every `(bash ...)` command (the
     /// `shellCommandPrefix` setting).
@@ -265,6 +268,7 @@ pub type KernelStartObserver = Arc<dyn Fn(KernelStart) + Send + Sync>;
 /// A session's settings as its cells and host functions read them.
 pub(crate) struct SessionEnvironment {
     pub(crate) cwd: PathBuf,
+    pub(crate) shell: crate::platform::KernelShell,
     pub(crate) shell_path: Option<PathBuf>,
     pub(crate) command_prefix: Option<String>,
     /// What every command gets on top of the process's own environment.
@@ -392,6 +396,7 @@ impl SchemeKernelProvisioner {
         }
         let environment = Arc::new(SessionEnvironment {
             cwd: options.cwd,
+            shell: options.shell,
             shell_path: options.shell_path,
             command_prefix: options.command_prefix,
             env,

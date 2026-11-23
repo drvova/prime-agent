@@ -39,14 +39,44 @@ pub fn get_process_start_id(pid: i32) -> Option<String> {
     pa_types::platform::process::process_start_id(pid as u32)
 }
 
-/// Record a process as active/inactive in the journal. Best-effort: process
-/// tracking must never make a successfully spawned command fail.
+/// Whether a journaled process is running or has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrphanState {
+    Active,
+    Ended,
+}
+
+/// Record a process as active/inactive in the journal, synced to disk.
+/// Best-effort: process tracking must never make a successfully spawned
+/// command fail.
 pub fn record_orphan_process_state(pid: i32, active: bool) {
-    let Some(path) = journal_path() else {
-        return;
+    let state = if active {
+        OrphanState::Active
+    } else {
+        OrphanState::Ended
     };
+    if let Some(file) = append_orphan_record(pid, state) {
+        // Best-effort, as the record itself.
+        let _ = file.sync_all();
+    }
+}
+
+/// Record a process's state in the journal without syncing it to disk: for
+/// the programs of the built-in shell, which a script may start by the
+/// thousand. The record is in the file as soon as this returns, which is
+/// what the host that reaps after this process died reads; only a machine
+/// that goes down could lose it, and takes the process with it.
+pub fn note_orphan_process_state(pid: i32, state: OrphanState) {
+    // The file is closed as it is dropped: nothing more to do with it.
+    drop(append_orphan_record(pid, state));
+}
+
+/// Append one record, and return the journal file it went into.
+fn append_orphan_record(pid: i32, state: OrphanState) -> Option<std::fs::File> {
+    let active = state == OrphanState::Active;
+    let path = journal_path()?;
     if pid <= 0 {
-        return;
+        return None;
     }
     let process_start_id = if active {
         get_process_start_id(pid)
@@ -71,14 +101,12 @@ pub fn record_orphan_process_state(pid: i32, active: bool) {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).append(true);
     crate::platform::perms::set_private_mode(&mut options);
-    let Ok(mut file) = options.open(&path) else {
-        return;
-    };
+    let mut file = options.open(&path).ok()?;
     // One write per record: the in-process kernel journals from several
     // threads at once, and a record written in pieces interleaves with
     // another into lines the reader has to drop.
-    let _ = file.write_all(format!("{record}\n").as_bytes());
-    let _ = file.sync_all();
+    file.write_all(format!("{record}\n").as_bytes()).ok()?;
+    Some(file)
 }
 
 fn iso8601_now() -> String {

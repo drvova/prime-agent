@@ -241,8 +241,12 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // naming the setting, not every kernel `bash()` call later.
     let kernel_shell_path = crate::platform::shell::resolve_kernel_bash_shell(
         settings.settings().shell_path.as_deref(),
-    )?
-    .map(std::path::PathBuf::from);
+    )?;
+    let kernel_shell = crate::platform::shell::resolve_kernel_shell(
+        settings.settings().shell.as_deref(),
+        settings.settings().shell_path.as_deref(),
+    )?;
+    let kernel_shell_path = kernel_shell_path.map(std::path::PathBuf::from);
     // TS injects the prefix only when truthy (an empty string stays unset).
     let kernel_command_prefix = settings
         .settings()
@@ -748,6 +752,15 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::command_cache::CacheObserver
         }),
     );
+    // `shell.fact`: commands on the built-in shell (telemetry counts).
+    crate::kernel::shell_runs::register_shell_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |run| counters.note_shell_run(run))
+                as crate::kernel::shell_runs::ShellObserver
+        }),
+    );
     super::better::register_better_handler(&mut handlers, &better);
     // A delegation brief's depth follows the levels its subagent may still delegate.
     if let Some(depth) = config
@@ -843,6 +856,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
         error_context,
         host_handlers: handlers.clone(),
         cwd: cwd.clone(),
+        shell: kernel_shell,
         shell_path: kernel_shell_path,
         command_prefix: kernel_command_prefix,
         agent_dir: Some(config.agent_dir.clone()),

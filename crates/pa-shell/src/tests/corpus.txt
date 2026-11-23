@@ -1,0 +1,1604 @@
+### lists and exit codes
+true && echo yes || echo no; false && echo yes || echo no; false; echo "rc=$?"; (exit 7); echo "rc=$?"; ! true; echo "rc=$?"
+--- 0
+yes
+no
+rc=1
+rc=7
+rc=1
+### variables and parameter expansion
+x=5; s="hello world"; echo "$x ${x}0 $((x*3+1))"; echo "${s^^} ${s/world/there} ${s:0:5} ${#s} ${s%% *} ${s##* }"; echo "${unset_one-fallback} ${empty:=assigned} $empty ${unset_two:-default} ${x:+set}"
+--- 0
+5 50 16
+HELLO WORLD hello there hello 11 hello world
+fallback assigned assigned default set
+### arithmetic
+echo $((2**10)) $((7/2)) $((7%3)) $(( (1+2)*3 )); a=3; ((a++)); ((a+=2)); echo $a; if ((a > 5)); then echo big; fi; let "z = 4 * 5"; echo $z
+--- 0
+1024 3 1 9
+6
+big
+20
+### loops
+for i in 1 2 3; do echo "i=$i"; done; i=0; while [ $i -lt 3 ]; do echo $i; i=$((i+1)); done; until false; do echo once; break; done; for ((j=0; j<2; j++)); do echo "j=$j"; done; echo {1..5} {a,b}{x,y}
+--- 0
+i=1
+i=2
+i=3
+0
+1
+2
+once
+j=0
+j=1
+1 2 3 4 5 ax ay bx by
+### functions and locals
+f() { echo "in f: $1 $#"; return 3; }; f a b; echo "rc=$?"; g() { local v=inner; echo $v; }; v=outer; g; echo $v; h() { for a in "$@"; do echo "<$a>"; done; }; h "a b" c
+--- 0
+in f: a 2
+rc=3
+inner
+outer
+<a b>
+<c>
+### arrays
+arr=(a b "c d"); echo "${#arr[@]} ${arr[2]}"; for x in "${arr[@]}"; do echo "[$x]"; done; arr+=(e); unset 'arr[0]'; echo "${arr[@]} ${!arr[@]}"; declare -A m; m[k]=v; m[z]=w; echo "${m[k]} ${#m[@]}"
+--- 0
+3 c d
+[a]
+[b]
+[c d]
+b c d e 1 2 3
+v 2
+### tests and pattern matching
+if [[ "abc" == a* && 3 -gt 2 ]]; then echo match; fi; [[ "foo123" =~ ^([a-z]+)([0-9]+)$ ]] && echo "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"; touch f; test -f f && [ -d . ] && [ ! -e nope ] && echo files-ok; case "file.txt" in *.rs) echo rust;; *.txt|*.md) echo text;; *) echo other;; esac
+--- 0
+match
+foo 123
+files-ok
+text
+### quoting and printf
+x='a"b'; y="it's"; echo "$x $y" 'single $x' "double \$x \\ \"q\""; echo $'tab\there\nnewline'; printf '%s-%d\n' a 1 b 2; printf '%05.2f|%-6s|%x\n' 3.14159 ab 255; echo -n no-newline; echo; echo -e 'x\ny'; printf 'x%.0s' 1 2 3; echo
+--- 0
+a"b it's single $x double $x \ "q"
+tab	here
+newline
+a-1
+b-2
+03.14|ab    |ff
+no-newline
+x
+y
+xxx
+### here-documents and here-strings
+cat <<EOF
+line $((1+1))
+  indented ${HOME:+home-is-set}
+EOF
+cat <<'EOF'
+raw $x $(nope)
+EOF
+cat <<-EOF
+	tab-stripped
+	EOF
+IFS=, read -r p q r <<< "1,2,3"; echo "$q$r$p"
+--- 0
+line 2
+  indented home-is-set
+raw $x $(nope)
+tab-stripped
+231
+### command substitution and subshells
+echo "$(echo nested $(echo deep))"; x=1; (x=2; echo "sub $x"); echo "main $x"; out=$( { echo o; echo e >&2; } 2>&1 ); echo "$out" | wc -l; echo "pipestatus $(false | true; echo ${PIPESTATUS[0]}${PIPESTATUS[1]})"
+--- 0
+nested deep
+sub 2
+main 1
+2
+pipestatus 10
+### read and word splitting
+printf 'a b\nc d\n' | while read -r one two; do echo "$two $one"; done; str="a,b,c"; IFS=',' read -ra parts <<< "$str"; echo "${parts[1]} ${#parts[@]}"; x="a b"; set -- $x; echo "$# $1 $2"; set -- "$x"; echo "$#"; echo abc | { read v; echo "v=$v"; }; mapfile -t lines < <(printf 'l1\nl2\n'); echo "${#lines[@]} ${lines[1]}"
+--- 0
+b a
+d c
+b 3
+2 a b
+1
+v=abc
+2 l2
+### shell options
+set -e; if false; then echo x; fi; echo reached; set +e; set -o pipefail; false | true; echo "rc=$?"; set +o pipefail; shopt -s nullglob; for f in *.nomatch_zzz; do echo never; done; echo end
+--- 0
+reached
+rc=1
+end
+### set -e ends the script
+set -e; echo before; false; echo not-reached
+--- 1
+before
+### exit ends the script with its code
+echo before; exit 4; echo after
+--- 4
+before
+### globbing
+mkdir -p g/sub && touch g/a.txt g/b.txt g/sub/c.txt && cd g && echo *.txt && echo */*.txt && printf '%s\n' *.nomatch_zzz
+--- 0
+a.txt b.txt
+sub/c.txt
+*.nomatch_zzz
+### cd and directory state
+mkdir -p one/two; cd one && pwd | sed 's|.*/one$|one|'; cd two; cd - > /dev/null; pwd | sed 's|.*/one$|one|'; cd /nonexistent_zzz 2>/dev/null || echo "cd failed"; pushd two > /dev/null; pwd | sed 's|.*/two$|two|'; popd > /dev/null
+--- 0
+one
+one
+cd failed
+two
+### traps
+trap 'echo bye' EXIT; echo hi
+--- 0
+hi
+bye
+### file descriptors
+exec 3> fd3.txt; echo to3 >&3; exec 3>&-; cat fd3.txt; echo to-err 2>&1 >&2 | cat; { echo out; echo err >&2; } 2>&1 | sort
+--- 0
+to3
+to-err
+err
+out
+### eval, source and type
+eval 'echo "evaled $((1+1))"'; echo 'sourced_var=yes' > lib.sh; . ./lib.sh; echo "$sourced_var"; source /dev/null; type cd | head -n 1; command -v cd
+--- 0
+evaled 2
+yes
+cd is a shell builtin
+cd
+### getopts
+parse() { while getopts "ab:" o; do case $o in a) echo A;; b) echo "B=$OPTARG";; *) echo other;; esac; done; }; parse -a -b val
+--- 0
+A
+B=val
+### background jobs and wait
+sleep 0.05 & wait; echo "done $?"; (exit 3) & wait; echo waited; echo first & wait
+--- 0
+done 0
+waited
+first
+### an unknown command
+nosuchcommand_xyz; echo "rc=$?"
+--- 0
+bash: line 1: nosuchcommand_xyz: command not found
+rc=127
+### cat joins files and reports a missing one
+printf 'a\nb\n' > one; printf 'c' > two
+cat one two missing; echo " rc=$?"
+--- 0
+a
+b
+ccat: missing: No such file or directory
+ rc=1
+### cat numbers lines across files
+printf 'a\nb\n' > one; printf 'c\n' > two
+cat -n one two
+--- 0
+     1	a
+     2	b
+     3	c
+### cat reads its input
+printf 'x\ny\n' | cat
+--- 0
+x
+y
+### cat refuses a directory
+mkdir d; cat d; echo "rc=$?"
+--- 0
+cat: d: Is a directory
+rc=1
+### head and tail by lines
+seq 1 20 > n
+head -n 3 n; head -2 n; tail -n 2 n; tail -3 n; tail -n +19 n; head -n -18 n
+--- 0
+1
+2
+3
+1
+2
+19
+20
+18
+19
+20
+19
+20
+1
+2
+### head and tail by bytes
+printf 'abcdefghij' > f
+head -c 3 f; echo; tail -c 3 f; echo; tail -c +8 f; echo
+--- 0
+abc
+hij
+hij
+### head prints headers for several files
+printf '1\n2\n' > a; printf '3\n' > b
+head -n 1 a b; tail -n 1 a b; head -q -n 1 a b
+--- 0
+==> a <==
+1
+
+==> b <==
+3
+==> a <==
+2
+
+==> b <==
+3
+1
+3
+### head on a missing file
+head missing; echo "rc=$?"; tail missing; echo "rc=$?"
+--- 0
+head: cannot open 'missing' for reading: No such file or directory
+rc=1
+tail: cannot open 'missing' for reading: No such file or directory
+rc=1
+### head stops reading an endless producer
+yes | head -n 2; seq 1 100000 | head -n 1
+--- 0
+y
+y
+1
+### wc counts
+printf 'one two\nthree\n' > f; printf 'x\n' > g
+wc f; wc -l f; wc -w f; wc -c f; wc -l < f; wc -lw f g; wc -m f; printf 'no newline' | wc
+--- 0
+ 2  3 14 f
+2 f
+3 f
+14 f
+2
+ 2  3 f
+ 1  1 g
+ 3  4 total
+14 f
+      0       2      10
+### wc on a missing file
+wc -l missing; echo "rc=$?"
+--- 0
+wc: missing: No such file or directory
+rc=1
+### tee writes files and passes through
+printf 'a\nb\n' | tee t1 t2 | wc -l; cat t1; printf 'c\n' | tee -a t1 > /dev/null; cat t1 t2
+--- 0
+2
+a
+b
+a
+b
+c
+a
+b
+### touch creates and keeps
+touch a b; printf 'x' > c; touch c; ls; cat c; echo; touch -c nope; ls; touch no/such/file; echo "rc=$?"
+--- 0
+a
+b
+c
+x
+a
+b
+c
+touch: cannot touch 'no/such/file': No such file or directory
+rc=1
+### mkdir and rmdir
+mkdir a; mkdir a; echo "rc=$?"; mkdir -p x/y/z x/y; echo "rc=$?"; mkdir q/r; echo "rc=$?"; rmdir x/y/z; rmdir x; echo "rc=$?"; rmdir nope; echo "rc=$?"; ls
+--- 0
+mkdir: cannot create directory 'a': File exists
+rc=1
+rc=0
+mkdir: cannot create directory 'q/r': No such file or directory
+rc=1
+rmdir: failed to remove 'x': Directory not empty
+rc=1
+rmdir: failed to remove 'nope': No such file or directory
+rc=1
+a
+x
+### rm removes files and trees
+touch a b; mkdir -p d/e; touch d/e/f
+rm a; rm missing; echo "rc=$?"; rm -f missing; echo "rc=$?"; rm d; echo "rc=$?"; rm -r d; rm -rf b nothing; ls | wc -l; rm; echo "rc=$?"; rm -rf .; echo "rc=$?"
+--- 0
+rm: cannot remove 'missing': No such file or directory
+rc=1
+rc=0
+rm: cannot remove 'd': Is a directory
+rc=1
+0
+rm: missing operand
+Try 'rm --help' for more information.
+rc=1
+rm: refusing to remove '.' or '..' directory: skipping '.'
+rc=1
+### cp copies files and trees
+printf 'data\n' > a; mkdir d; mkdir -p t/u; printf 'deep\n' > t/u/f
+cp a b; cat b; cp a d; cat d/a; cp t x; echo "rc=$?"; cp -r t x; cat x/u/f; cp -r t d; cat d/t/u/f; cp missing z; echo "rc=$?"; cp a b nodir; echo "rc=$?"; cp a a; echo "rc=$?"; cp; echo "rc=$?"; cp a; echo "rc=$?"
+--- 0
+data
+data
+cp: -r not specified; omitting directory 't'
+rc=1
+deep
+deep
+cp: cannot stat 'missing': No such file or directory
+rc=1
+cp: target 'nodir': No such file or directory
+rc=1
+cp: 'a' and 'a' are the same file
+rc=1
+cp: missing file operand
+Try 'cp --help' for more information.
+rc=1
+cp: missing destination file operand after 'a'
+Try 'cp --help' for more information.
+rc=1
+### mv renames and moves into directories
+printf '1\n' > a; printf '2\n' > b; mkdir d
+mv a c; cat c; mv b c d; ls d; mv missing x; echo "rc=$?"; mv d e; ls e; mv c1 c2 nodir; echo "rc=$?"
+--- 0
+1
+b
+c
+mv: cannot stat 'missing': No such file or directory
+rc=1
+b
+c
+mv: target 'nodir': No such file or directory
+rc=1
+### basename and dirname
+basename /a/b/c.txt; basename /a/b/c.txt .txt; basename a/; basename /; basename c.txt c.txt; dirname /a/b/c.txt; dirname c.txt; dirname /; dirname a/b/; dirname /a; dirname a b/c
+--- 0
+c.txt
+c
+a
+/
+c.txt
+/a/b
+.
+/
+a
+/
+.
+b
+### realpath resolves
+mkdir -p a/b; cd a/b; realpath . | sed 's|.*/a/b$|ok|'; realpath ../../a/x | sed 's|.*/a/x$|ok|'; realpath /no/such/dir/x; echo "rc=$?"
+--- 0
+ok
+ok
+realpath: /no/such/dir/x: No such file or directory
+rc=1
+### ls lists names
+mkdir d; touch b a .hidden d/z d/y
+ls; ls -a; ls -A; ls d; ls -1 d a; ls -d d; ls -p; ls -F; ls missing; echo "rc=$?"; ls -r; ls a missing b; echo "rc=$?"
+--- 0
+a
+b
+d
+.
+..
+.hidden
+a
+b
+d
+.hidden
+a
+b
+d
+y
+z
+a
+
+d:
+y
+z
+d
+a
+b
+d/
+a
+b
+d/
+ls: cannot access 'missing': No such file or directory
+rc=2
+d
+b
+a
+ls: cannot access 'missing': No such file or directory
+a
+b
+rc=2
+### ls recurses
+mkdir -p r/s/t; touch r/a r/s/b r/s/t/c
+ls -R r; ls -R
+--- 0
+r:
+a
+s
+
+r/s:
+b
+t
+
+r/s/t:
+c
+.:
+r
+
+./r:
+a
+s
+
+./r/s:
+b
+t
+
+./r/s/t:
+c
+### ls long format
+printf 'hello\n' > f; mkdir d; chmod 640 f; touch -c f
+ls -l f | sed -E 's/^(\S+) +(\S+) +\S+ +\S+ +(\S+) .* (\S+)$/\1 \2 \3 \4/'; ls -ld d | cut -c1-10; ls -l | head -n 1 | cut -d' ' -f1; ls -lh f | sed -E 's/^(\S+) +(\S+) +\S+ +\S+ +(\S+) .* (\S+)$/\1 \2 \3 \4/'
+--- 0
+-rw-r----- 1 6 f
+drwxr-xr-x
+total
+-rw-r----- 1 6 f
+### ls sorts by size and time
+printf 'aaaa' > big; printf 'a' > small; printf 'aa' > mid
+ls -S; ls -Sr
+--- 0
+big
+mid
+small
+small
+mid
+big
+### grep basics
+printf 'apple\nBanana\ncherry pie\napple pie\n' > f
+grep apple f; grep -i banana f; grep -v apple f; grep -n pie f; grep -c apple f; grep -q cherry f; echo "rc=$?"; grep nothing f; echo "rc=$?"; grep x missing; echo "rc=$?"; grep -s x missing; echo "rc=$?"
+--- 0
+apple
+apple pie
+Banana
+Banana
+cherry pie
+3:cherry pie
+4:apple pie
+2
+rc=0
+rc=1
+grep: missing: No such file or directory
+rc=2
+rc=2
+### grep pattern syntaxes
+printf 'a+b\nab\naab\na|b\nfoo(bar)\nfoo bar\n' > f
+grep 'a+b' f; grep -E 'a+b' f; grep 'a\+b' f; grep -F 'a|b' f; grep 'a\|foo' f; grep -E 'a\|b' f; grep 'foo(bar)' f; grep -E 'foo\(bar\)' f; grep '^a*b$' f; grep -E '^(a|f)o' f; grep 'a\{2\}' f; grep -E 'a{2}' f; grep '[[:space:]]' f; grep -w foo f; grep -x ab f; grep -e ab -e foo f
+--- 0
+a+b
+ab
+aab
+ab
+aab
+a|b
+a+b
+ab
+aab
+a|b
+foo(bar)
+foo bar
+a|b
+foo(bar)
+foo(bar)
+ab
+aab
+foo(bar)
+foo bar
+aab
+aab
+foo bar
+foo(bar)
+foo bar
+ab
+ab
+aab
+foo(bar)
+foo bar
+### grep output forms
+printf 'one\ntwo\none two\n' > a; printf 'two\nthree\n' > b
+grep two a b; grep -h two a b; grep -H one a; grep -l two a b; grep -L one a b; grep -c two a b; grep -o 't[a-z]*' a; grep -on o a; grep -m 1 one a; grep -n -e one -e three a b
+--- 0
+a:two
+a:one two
+b:two
+two
+one two
+two
+a:one
+a:one two
+a
+b
+b
+a:2
+b:1
+two
+two
+1:o
+2:o
+3:o
+3:o
+one
+a:1:one
+a:3:one two
+b:2:three
+### grep context
+seq 1 12 > n
+grep -A1 3 n; grep -B1 7 n; grep -C1 -n 5 n; grep -A1 -e 2 -e 9 n; grep -2 6 n
+--- 0
+3
+4
+6
+7
+4-4
+5:5
+6-6
+2
+3
+--
+9
+10
+--
+12
+4
+5
+6
+7
+8
+### grep recursive
+mkdir -p src/sub; printf 'needle\n' > src/a.rs; printf 'hay\nneedle\n' > src/sub/b.txt; printf 'needle\n' > top.rs
+grep -r needle; grep -rn needle src; grep -rl needle .; grep -r --include='*.rs' needle; grep -r --exclude='*.rs' needle; grep -r --exclude-dir=sub needle; grep needle src; echo "rc=$?"
+--- 0
+src/a.rs:needle
+src/sub/b.txt:needle
+top.rs:needle
+src/a.rs:1:needle
+src/sub/b.txt:2:needle
+./src/a.rs
+./src/sub/b.txt
+./top.rs
+src/a.rs:needle
+top.rs:needle
+src/sub/b.txt:needle
+src/a.rs:needle
+top.rs:needle
+grep: src: Is a directory
+rc=2
+### grep reads input and pattern files
+printf 'x\ny\n' > pats; printf 'ax\nb\ncy\n' | grep -f pats; printf 'a\nb\n' | grep -c ''; printf 'A\n' | grep -y a; printf 'a\n' | grep; echo "rc=$?"
+--- 0
+ax
+cy
+2
+A
+Usage: grep [OPTION]... PATTERNS [FILE]...
+Try 'grep --help' for more information.
+rc=2
+### grep binary files
+printf 'text\0binary match\n' > bin; printf 'plain match\n' > txt
+grep match bin txt; echo "rc=$?"; grep -a -c match bin; grep -I match bin txt; grep -c match bin; grep -l match bin
+--- 0
+grep: bin: binary file matches
+txt:plain match
+rc=0
+1
+txt:plain match
+1
+bin
+### sort orders
+printf 'pear\napple\nFig\n10\n9\napple\n' > f
+sort f; sort -r f; sort -u f; sort -f f; sort -n f; sort -rn f; printf '3\n1\n2\n' | sort; sort missing; echo "rc=$?"
+--- 0
+10
+9
+Fig
+apple
+apple
+pear
+pear
+apple
+apple
+Fig
+9
+10
+10
+9
+Fig
+apple
+pear
+10
+9
+apple
+apple
+Fig
+pear
+Fig
+apple
+apple
+pear
+9
+10
+10
+9
+pear
+apple
+apple
+Fig
+1
+2
+3
+sort: cannot read: missing: No such file or directory
+rc=2
+### sort keys
+printf 'b 2 x\na 10 y\nc 1 z\na 2 w\n' > f; printf 'x,3\ny,1\nz,2\n' > c
+sort -k2 f; sort -k2n f; sort -k2,2n -k1,1r f; sort -t, -k2 c; sort -t, -k2nr c; sort -k1,1 -s f; sort -k1,1 -u f; sort -o out f; cat out
+--- 0
+c 1 z
+a 10 y
+a 2 w
+b 2 x
+c 1 z
+a 2 w
+b 2 x
+a 10 y
+c 1 z
+b 2 x
+a 2 w
+a 10 y
+y,1
+z,2
+x,3
+x,3
+z,2
+y,1
+a 10 y
+a 2 w
+b 2 x
+c 1 z
+a 10 y
+b 2 x
+c 1 z
+a 10 y
+a 2 w
+b 2 x
+c 1 z
+### uniq
+printf 'a\na\nb\nA\na\n' > f
+uniq f; uniq -c f; uniq -d f; uniq -u f; uniq -i f; sort f | uniq -c
+--- 0
+a
+b
+A
+a
+      2 a
+      1 b
+      1 A
+      1 a
+a
+b
+A
+a
+a
+b
+A
+      1 A
+      3 a
+      1 b
+### cut
+printf 'a:b:c\nno delimiter\nd:e\n' > f; printf 'one\ttwo\tthree\n' > t
+cut -d: -f2 f; cut -d: -f1,3 f; cut -d: -f2- f; cut -d: -f-2 f; cut -s -d: -f2 f; cut -f2 t; cut -c1-3 f; cut -c2,4- f; cut -d: -f1,3 --output-delimiter=' ' f; cut f; echo "rc=$?"
+--- 0
+b
+no delimiter
+e
+a:c
+no delimiter
+d
+b:c
+no delimiter
+e
+a:b
+no delimiter
+d:e
+b
+e
+two
+a:b
+no 
+d:e
+::c
+odelimiter
+:
+a c
+no delimiter
+d
+cut: you must specify a list of bytes, characters, or fields
+Try 'cut --help' for more information.
+rc=1
+### tr
+printf 'Hello World\n' | tr a-z A-Z; printf 'Hello World\n' | tr -d lo; printf 'aaabbbccc\n' | tr -s ab; printf 'a  b   c\n' | tr -s ' ' '\n'; printf 'hello\n' | tr '[:lower:]' '[:upper:]'; printf 'abc123\n' | tr -cd '0-9\n'; printf 'abc\n' | tr abc x; printf 'a-b\n' | tr -- '-' '_'; printf 'tab\there\n' | tr '\t' ' '; printf 'aabb\n' | tr -s a b; printf 'x\n' | tr; echo "rc=$?"
+--- 0
+HELLO WORLD
+He Wrd
+abccc
+a
+b
+c
+HELLO
+123
+xxx
+a_b
+tab here
+b
+tr: missing operand
+Try 'tr --help' for more information.
+rc=1
+### seq
+seq 3; seq 2 4; seq 10 -3 1; seq -s, 1 5; seq -w 8 11; seq 5 1; seq 0; seq -1 1
+--- 0
+1
+2
+3
+2
+3
+4
+10
+7
+4
+1
+1,2,3,4,5
+08
+09
+10
+11
+-1
+0
+1
+### tac and yes
+printf 'a\nb\nc\n' | tac; printf 'a\nb' | tac; echo; yes ab cd | head -n 2
+--- 0
+c
+b
+a
+ba
+
+ab cd
+ab cd
+### sed substitutes
+printf 'hello world\nfoo bar foo\n' > f
+sed 's/o/0/' f; sed 's/o/0/g' f; sed 's/o/0/2' f; sed -n 's/foo/X/p' f; sed 's/\(hello\) \(world\)/\2 \1/' f; sed -E 's/(foo) (bar)/\2-\1/' f; sed 's/foo/[&]/g' f; sed 's|o|/|g' f; sed 's/WORLD/x/I' f; sed -e 's/hello/a/' -e 's/world/b/' f; sed 's/o/0/;s/l/L/g' f; sed 's/ /\n/' f
+--- 0
+hell0 world
+f0o bar foo
+hell0 w0rld
+f00 bar f00
+hello w0rld
+fo0 bar foo
+X bar foo
+world hello
+foo bar foo
+hello world
+bar-foo foo
+hello world
+[foo] bar [foo]
+hell/ w/rld
+f// bar f//
+hello x
+foo bar foo
+a b
+foo bar foo
+heLL0 worLd
+f0o bar foo
+hello
+world
+foo
+bar foo
+### sed addresses and deletes
+seq 1 10 > n
+sed -n '3p' n; sed -n '2,4p' n; sed '3,$d' n; sed -n '$p' n; sed '/5/,/7/d' n | tr '\n' ' '; echo; sed -n '/^1/p' n; sed '2!d' n; sed -n '2,+2p' n; sed -n '1~4p' n; sed '3q' n; sed -n '0~5p' n; sed -n '/9/,$p' n
+--- 0
+3
+2
+3
+4
+1
+2
+10
+1 2 3 4 8 9 10 
+1
+10
+2
+2
+3
+4
+1
+5
+9
+1
+2
+3
+5
+10
+9
+10
+### sed text commands
+printf 'a\nb\nc\n' > f
+sed '2i inserted' f; sed '2a appended' f; sed '2c changed' f; sed '$a last' f; sed -n '2{p;p}' f; sed = f; sed 'y/abc/xyz/' f; sed '1d;3d' f; sed -n '/b/{=;p}' f
+--- 0
+a
+inserted
+b
+c
+a
+b
+appended
+c
+a
+changed
+c
+a
+b
+c
+last
+b
+b
+1
+a
+2
+b
+3
+c
+x
+y
+z
+b
+2
+b
+### sed hold space and multi-line
+printf '1\n2\n3\n4\n' > f
+sed 'N;s/\n/+/' f; sed -n 'h;n;G;p' f; sed '1!G;h;$!d' f; sed '$!N;P;D' f; sed 'x;$!d' f; sed -n '2{h;d};${G;p}' f
+--- 0
+1+2
+3+4
+2
+1
+4
+3
+4
+3
+2
+1
+1
+2
+3
+4
+3
+4
+2
+### sed edits in place
+printf 'one\ntwo\n' > f; printf 'two\n' > g
+sed -i 's/two/2/' f g; cat f g; sed -i.bak '1d' f; cat f f.bak; sed -n -i 'p;p' g; cat g; sed 's/x/y/' missing; echo "rc=$?"
+--- 0
+one
+2
+2
+2
+one
+2
+2
+2
+sed: can't read missing: No such file or directory
+rc=2
+### sed reads input and script files
+printf 's/a/b/\n2d\n' > script; printf 'a\na\na\n' | sed -f script; printf 'x\n' | sed -n p; printf 'no newline' | sed 's/no/a/'; echo; printf 'a\tb\n' | sed 's/\t/ /'
+--- 0
+b
+b
+x
+a newline
+a b
+### find lists and filters
+mkdir -p t/a/b t/c; touch t/one.txt t/a/two.rs t/a/b/three.txt t/c/.hidden; printf 'x' > t/c/data
+find t | sort; echo; find t -name '*.txt' | sort; echo; find t -type d | sort; echo; find t -type f -name 't*' | sort; echo; find t -maxdepth 1 | sort; echo; find t -mindepth 2 -type f | sort; echo; find t -name a -prune -o -type f -print | sort; echo; find t -iname 'ONE*'; find t -path '*/a/*' | sort; echo; find t -empty | sort; echo; find t -size +0c | sort; echo; find t ! -name '*.txt' -type f | sort; echo; find t \( -name '*.rs' -o -name 'data' \) -print | sort; find missing; echo "rc=$?"
+--- 0
+t
+t/a
+t/a/b
+t/a/b/three.txt
+t/a/two.rs
+t/c
+t/c/.hidden
+t/c/data
+t/one.txt
+
+t/a/b/three.txt
+t/one.txt
+
+t
+t/a
+t/a/b
+t/c
+
+t/a/b/three.txt
+t/a/two.rs
+
+t
+t/a
+t/c
+t/one.txt
+
+t/a/b/three.txt
+t/a/two.rs
+t/c/.hidden
+t/c/data
+
+t/c/.hidden
+t/c/data
+t/one.txt
+
+t/one.txt
+t/a/b
+t/a/b/three.txt
+t/a/two.rs
+
+t/a/b/three.txt
+t/a/two.rs
+t/c/.hidden
+t/one.txt
+
+t
+t/a
+t/a/b
+t/c
+t/c/data
+
+t/a/two.rs
+t/c/.hidden
+t/c/data
+
+t/a/two.rs
+t/c/data
+find: 'missing': No such file or directory
+rc=1
+### find from the working directory
+mkdir d; touch d/f g
+find | sort; find . -name g; find . -type f | sort; find d/ -type f; find . -newer g -type f; find . -mtime -1 -type f | sort; find . -mmin +100
+--- 0
+.
+./d
+./d/f
+./g
+./g
+./d/f
+./g
+d/f
+./d/f
+./g
+### find deletes
+mkdir -p t/a; touch t/a/x.tmp t/y.tmp t/keep
+find t -name '*.tmp' -delete; find t | sort; find t/a -delete; find t | sort; find t -maxdepth 0 -print0 | tr '\0' ' '; echo
+--- 0
+t
+t/a
+t/keep
+t
+t/keep
+t 
+### xargs runs commands
+printf 'a b\nc\n' | xargs; printf 'a b\nc\n' | xargs echo item; printf 'a b c\n' | xargs -n 2 echo; printf 'x\ny\n' | xargs -I {} echo "<{}>"; printf 'a b\0c\0' | xargs -0 -n 1 echo; printf '"q u o" t\\ ed\n' | xargs -n 1 echo; printf '' | xargs echo empty; printf '' | xargs -r echo never; printf 'a,b' | xargs -d , -n 1 echo; touch f1 f2; ls f1 f2 | xargs rm; ls | wc -l; printf '1\n' | xargs false; echo "rc=$?"; printf '1\n' | xargs nosuchcommand 2>/dev/null; echo "rc=$?"
+--- 0
+a b c
+item a b c
+a b
+c
+<x>
+<y>
+a b
+c
+q u o
+t ed
+empty
+a
+b
+0
+rc=123
+rc=127
+### sleep, env, printenv, which, whoami, uname
+sleep 0; sleep 0.01; sleep; echo "rc=$?"; export PA_TEST_ONE=1; printenv PA_TEST_ONE; printenv PA_NOPE; echo "rc=$?"; env | grep -c '^PA_TEST_ONE=1$'; which nosuch_program_zz; echo "rc=$?"; [ -n "$(whoami)" ] && echo someone; [ -n "$(uname)" ] && echo system
+--- 0
+sleep: missing operand
+Try 'sleep --help' for more information.
+rc=1
+1
+rc=1
+1
+rc=1
+someone
+system
+### date formats
+date -u +%Y | grep -c '^20[0-9][0-9]$'; date +%s | grep -c '^[0-9]*$'; date -u '+%Y-%m-%dT%H:%M:%SZ' | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$'; date -u | grep -c UTC
+--- 0
+1
+1
+1
+1
+### pipelines of utilities
+printf 'b 2\na 1\nb 3\na 4\n' > f
+cut -d' ' -f1 f | sort | uniq -c | sort -rn | head -n 1; grep b f | wc -l; sort -k2nr f | head -n 2 | tac; cat f | tr a-z A-Z | sed 's/ /=/' | tail -n 1; for i in 1 2 3; do echo "line $i"; done | grep -n 2; seq 1 50000 | sort -rn | head -n 1; seq 1 50000 | wc -l; find . -type f | xargs cat | wc -l
+--- 0
+      2 b
+2
+b 3
+a 4
+A=4
+2:line 2
+50000
+50000
+4
+### a compound command feeds a long pipeline
+for i in $(seq 1 8000); do echo "line number $i"; done | tail -n 1
+{ seq 1 20000; seq 1 20000; } | wc -l
+seq 1 20000 | while read -r n; do echo "$n"; done | tail -n 1
+--- 0
+line number 8000
+40000
+20000
+### redirections and here-documents
+cat > f <<EOF
+first $((1+1))
+second
+EOF
+cat f; cat <<'EOF' | tr a-z A-Z
+quoted $x
+EOF
+wc -l < f; sort < f > g; cat g; cat missing 2>/dev/null; echo "rc=$?"; cat missing 2>&1 | sed 's/missing/M/'; echo out >&2 2>/dev/null; cat f >> g; wc -l g | cut -d' ' -f1
+--- 0
+first 2
+second
+QUOTED $X
+2
+first 2
+second
+rc=1
+cat: M: No such file or directory
+out
+4
+### process substitution and command substitution
+diff_lines=$(sort <(printf 'b\na\n') | head -n 1); echo "$diff_lines"; while read -r l; do echo "got $l"; done < <(seq 1 2); echo "$(cat <(echo inner))"; x=$(seq 1 3 | tr '\n' ,); echo "$x"; n=$(ls | wc -l); echo "$n"
+--- 0
+a
+got 1
+got 2
+inner
+1,2,3,
+0
+### set -e and pipefail with utilities
+set -e; set -o pipefail; printf 'a\n' > f; grep a f > /dev/null; echo found; grep z f | cat; echo not-reached
+--- 1
+found
+### chmod sets and changes modes
+touch f; mkdir -p d/e; touch d/e/g
+chmod 600 f; ls -l f | cut -c1-10; chmod u+x,g+r f; ls -l f | cut -c1-10; chmod a-r f; ls -l f | cut -c1-10; chmod go=rx f; ls -l f | cut -c1-10; chmod -R 700 d; ls -ld d d/e d/e/g | cut -c1-10; chmod a+X f d/e/g; ls -l f d/e/g | cut -c1-10; chmod 644 missing; echo "rc=$?"; chmod 644; echo "rc=$?"
+--- 0
+-rw-------
+-rwxr-----
+--wx------
+--wxr-xr-x
+drwx------
+drwx------
+-rwx------
+-rwx--x--x
+--wxr-xr-x
+chmod: cannot access 'missing': No such file or directory
+rc=1
+chmod: missing operand after '644'
+Try 'chmod --help' for more information.
+rc=1
+### device paths belong to the command, not to the process
+printf 'in\n' | cat /dev/stdin; cat <(echo one) /dev/null <(echo two); printf 'b\na\n' | sort /dev/stdin; echo to-err > /dev/stderr; echo to-out > /dev/stdout; echo quiet > /dev/null
+--- 0
+in
+one
+two
+a
+b
+to-err
+to-out
+### jq prints a value pretty, compact, raw and joined
+echo '{"name":"a b","tags":["x","y"],"n":{"deep":[1,{"k":null}],"empty":[],"none":{}},"ok":true}' > f.json
+jq . f.json; jq -c . f.json; jq .name f.json; jq -r .name f.json; jq -j '.tags[]' f.json; echo; jq -r '.tags[], .n.deep[0], .ok' f.json; jq '.tags | length' < f.json; cat f.json | jq -c '{name, first: .tags[0], count: (.tags | length)}'; jq --compact-output --raw-output '.tags' f.json
+--- 0
+{
+  "name": "a b",
+  "tags": [
+    "x",
+    "y"
+  ],
+  "n": {
+    "deep": [
+      1,
+      {
+        "k": null
+      }
+    ],
+    "empty": [],
+    "none": {}
+  },
+  "ok": true
+}
+{"name":"a b","tags":["x","y"],"n":{"deep":[1,{"k":null}],"empty":[],"none":{}},"ok":true}
+"a b"
+a b
+xy
+x
+y
+1
+true
+2
+{"name":"a b","first":"x","count":2}
+["x","y"]
+### jq -n, -s, -e, -S, --tab and --indent
+echo '{"b":1,"a":{"d":[3,{"z":1,"y":2}],"c":2}}' > f.json; printf '1 2\n3\n' > nums
+jq -n '1 + 2'; jq -n '[1,2,3] | map(. * 2)'; jq -s . nums; jq -sc 'add' nums; jq -S . f.json; jq -S -c . f.json; jq --tab .a f.json; jq --indent 1 .a f.json; jq --indent 0 .a f.json; jq --indent 7 '.a.d[1]' f.json
+jq -e .b f.json; echo "rc=$?"; jq -e '.missing' f.json; echo "rc=$?"; jq -e '.b == 2' f.json; echo "rc=$?"; jq -e 'empty' f.json; echo "rc=$?"; jq -e '1, null' f.json; echo "rc=$?"; jq -n -e 'false, 1'; echo "rc=$?"
+--- 0
+3
+[
+  2,
+  4,
+  6
+]
+[
+  1,
+  2,
+  3
+]
+6
+{
+  "a": {
+    "c": 2,
+    "d": [
+      3,
+      {
+        "y": 2,
+        "z": 1
+      }
+    ]
+  },
+  "b": 1
+}
+{"a":{"c":2,"d":[3,{"y":2,"z":1}]},"b":1}
+{
+	"d": [
+		3,
+		{
+			"z": 1,
+			"y": 2
+		}
+	],
+	"c": 2
+}
+{
+ "d": [
+  3,
+  {
+   "z": 1,
+   "y": 2
+  }
+ ],
+ "c": 2
+}
+{"d":[3,{"z":1,"y":2}],"c":2}
+{
+       "z": 1,
+       "y": 2
+}
+1
+rc=0
+null
+rc=1
+false
+rc=1
+rc=4
+1
+null
+rc=1
+false
+1
+rc=0
+### jq binds --arg, --argjson, --slurpfile, --rawfile, --args and --jsonargs
+printf '{"a":1}\n[2]\n' > values.json; printf 'two\nlines\n' > text; echo '.x | . + $n' > prog.jq
+jq -n --arg who 'a "quoted" b' '"hello \($who)"'; jq -nc --arg a 1 --argjson b '{"k":[1,2]}' '[$a, $b, ($a | type), ($b.k | add)]'; jq -nc --slurpfile v values.json --rawfile t text '[$v, $t]'; jq -nc --arg a 1 --argjson b 2 '$ARGS'; jq -nc '$ARGS.positional' --args one 'two words' 3; jq -nc '$ARGS.positional' --jsonargs 1 '"s"' '{"a":null}' '[true]'; jq -nc --arg x y '$ARGS' --args p q
+echo '{"x":40}' | jq --argjson n 2 -f prog.jq; echo '{"x":40}' | jq --from-file prog.jq --argjson n 0.5; jq -n --arg v "$HOME" '$v == env.HOME, ($ENV.HOME == $v), ($ENV | has("PATH")), (env | type)'
+--- 0
+"hello a \"quoted\" b"
+["1",{"k":[1,2]},"string",3]
+[[{"a":1},[2]],"two\nlines\n"]
+{"positional":[],"named":{"a":"1","b":2}}
+["one","two words","3"]
+[1,"s",{"a":null},[true]]
+{"positional":["p","q"],"named":{"x":"y"}}
+42
+40.5
+true
+true
+true
+"object"
+### jq reads standard input, files in turn, and raw lines
+printf '{"id":1}\n{"id":2}\n' > a.jsonl; printf '{"id":3}' > b.json; printf 'first line\nsecond "line"\n\nlast' > lines.txt
+jq -c . a.jsonl b.json; jq .id a.jsonl b.json; cat a.jsonl | jq -c '.id * 10'; jq -c -s 'map(.id)' a.jsonl b.json; jq -n '[inputs.id]' -c a.jsonl b.json; jq -n 'input.id, input.id' a.jsonl; jq -c '[., input]' a.jsonl; jq -r 'input_filename' a.jsonl b.json; jq -n 'input_filename'
+jq -R . lines.txt; jq -R 'length' lines.txt; jq -Rs . lines.txt; jq -Rn '[inputs] | length' lines.txt; jq -rR 'ascii_upcase' < lines.txt; jq -R 'split(" ")' -c lines.txt; printf '' | jq .; printf '' | jq -s -c .; printf '\n\n' | jq -R .; printf '1' | jq -c '[.]'; jq -c . - < b.json
+--- 0
+{"id":1}
+{"id":2}
+{"id":3}
+1
+2
+3
+10
+20
+[1,2,3]
+[1,2,3]
+1
+2
+[{"id":1},{"id":2}]
+a.jsonl
+a.jsonl
+b.json
+null
+"first line"
+"second \"line\""
+""
+"last"
+10
+13
+0
+4
+"first line\nsecond \"line\"\n\nlast"
+4
+FIRST LINE
+SECOND "LINE"
+
+LAST
+["first","line"]
+["second","\"line\""]
+[]
+["last"]
+[]
+""
+""
+[1]
+{"id":3}
+### jq selects, maps and reshapes
+echo '[{"name":"api","port":8080,"tags":["web","prod"],"up":true},{"name":"db","port":5432,"tags":["prod"],"up":false},{"name":"cache","port":6379,"tags":[],"up":true}]' > s.json
+jq -c '.[] | select(.up)' s.json; jq -r '.[] | select(.port > 6000) | .name' s.json; jq -c 'map(.name)' s.json; jq -c 'map(select(.tags | index("prod"))) | map(.name)' s.json; jq -c '[.[] | {(.name): .port}] | add' s.json; jq -c 'map({name, n: (.tags | length)})' s.json; jq -c 'sort_by(.port) | map(.port)' s.json; jq -c 'group_by(.up) | map({up: .[0].up, names: map(.name)})' s.json; jq -c 'map(.tags[]) | unique' s.json; jq -c 'unique_by(.up) | map(.name)' s.json; jq -c 'min_by(.port).name, max_by(.port).name' s.json; jq -c 'map(.port) | add, min, max, length' s.json; jq -c 'any(.[]; .up), all(.[]; .up), (map(.up) | any, all)' s.json; jq -c 'first, last | .name' s.json; jq -c '.[0] | keys, to_entries[0], (with_entries(.value |= tostring) | .port), has("up"), has("x")' s.json; jq -c '.[1:], .[:1][0].name, .[-1].name, .[5], (.[0].tags | .[1:])' s.json; jq -c 'map(del(.tags, .up))' s.json; jq -c '.[0] | del(.tags) | . + {new: 1} | .port += 1 | .name |= ascii_upcase | .extra //= "d"' s.json; jq -c 'map(select(.name | test("^[ad]")) | .name)' s.json; jq -c '[.[] | .tags | length] | indices(1), index(0)' s.json; jq -c 'to_entries | map("\(.key)=\(.value.name)") | join(",")' s.json; jq -c 'INDEX(.name) | map_values(.port)' s.json; jq -c '[limit(2; .[] | .name)], [.[] | .name] == map(.name), ([.[].port] | sort | reverse)' s.json; jq -c 'map(.tags) | flatten, (. | flatten | unique | length)' s.json; jq -c '[paths(type == "boolean")]' s.json; jq -c '[.. | strings]' s.json; jq -c '[.[] | getpath(["tags", 0])], (path(.[0].name)), ([paths] | length)' s.json; jq -c 'map(if .up then "up" elif .port == 5432 then "db down" else "down" end)' s.json; jq -c 'reduce .[] as $s ({}; .[$s.name] = $s.port)' s.json; jq -c '[foreach .[] as $s (0; . + $s.port; .)]' s.json; jq -c '. as [$first, $second] | [$second.name, $first.name]' s.json; jq -c '.[] as {name: $n, port: $p} | "\($n):\($p)"' s.json; jq -c 'map(.missing // "none"), (.[0].a.b.c // 1), ([.[] | .tags[0]?]), (map(try error("x") catch .))' s.json; jq -c 'walk(if type == "array" then length else . end)' s.json; jq -c '[recurse(.[]?; type != "string") | numbers]' s.json; jq -c 'map(.name) | contains(["db"]), inside(["api","db","cache","x"]), (.[0] | startswith("a"), endswith("i"), ltrimstr("a"), rtrimstr("i"))' s.json; jq -c 'map(.port) | map(tostring) | map(tonumber) | [.[] | . % 100], (map(type) | unique)' s.json; jq -c '[range(3)], [range(1;4)], [range(0;10;3)], ([range(5)] | .[2:4]), (isempty(empty)), ([.[] | select(.up | not) | .name])' s.json; jq -c '.[0] | to_entries | from_entries == ., ([{"key":"a","value":1},{"key":"b","value":[2]}] | from_entries)' s.json; jq -c '{a:1} * {a:{b:2}} , ({a:{b:1}} * {a:{c:2}}), ([1,2,3] - [2]), ({} | .a = {b: 1} | .a.c = 2), ([3,1,2] | sort, (sort_by(-.))), ("abc" | explode | implode), (["a","b"] | join("-"))' s.json
+--- 0
+{"name":"api","port":8080,"tags":["web","prod"],"up":true}
+{"name":"cache","port":6379,"tags":[],"up":true}
+api
+cache
+["api","db","cache"]
+["api","db"]
+{"api":8080,"db":5432,"cache":6379}
+[{"name":"api","n":2},{"name":"db","n":1},{"name":"cache","n":0}]
+[5432,6379,8080]
+[{"up":false,"names":["db"]},{"up":true,"names":["api","cache"]}]
+["prod","web"]
+["db","api"]
+"db"
+"api"
+19891
+5432
+8080
+3
+true
+false
+true
+false
+"api"
+"cache"
+["name","port","tags","up"]
+{"key":"name","value":"api"}
+"8080"
+true
+false
+[{"name":"db","port":5432,"tags":["prod"],"up":false},{"name":"cache","port":6379,"tags":[],"up":true}]
+"api"
+"cache"
+null
+["prod"]
+[{"name":"api","port":8080},{"name":"db","port":5432},{"name":"cache","port":6379}]
+{"name":"API","port":8081,"up":true,"new":1,"extra":"d"}
+["api","db"]
+[1]
+2
+"0=api,1=db,2=cache"
+{"api":8080,"db":5432,"cache":6379}
+["api","db"]
+true
+[8080,6379,5432]
+["web","prod","prod"]
+2
+[[0,"up"],[1,"up"],[2,"up"]]
+["api","web","prod","db","prod","cache"]
+["web","prod",null]
+[0,"name"]
+18
+["up","db down","up"]
+{"api":8080,"db":5432,"cache":6379}
+[8080,13512,19891]
+["db","api"]
+"api:8080"
+"db:5432"
+"cache:6379"
+["none","none","none"]
+1
+["web","prod",null]
+["x","x","x"]
+3
+[8080,5432,6379]
+true
+true
+true
+true
+"pi"
+"ap"
+[80,32,79]
+["number"]
+[0,1,2]
+[1,2,3]
+[0,3,6,9]
+[2,3]
+true
+["db"]
+false
+{"a":1,"b":[2]}
+{"a":{"b":2}}
+{"a":{"b":1,"c":2}}
+[1,3]
+{"a":{"b":1,"c":2}}
+[1,2,3]
+[3,2,1]
+"abc"
+"a-b"
+### jq works on strings
+echo '{"s":"Hello, World","csv":"a,b,,c","path":"/usr/local/bin/tool.tar.gz","b64":"aGk=","url":"a b&c=d/é","html":"<a href=\"x\">&</a>","sh":"it'"'"'s $HOME","n":"42","json":"{\"k\":[1,2]}"}' > t.json
+jq -r '.s | length, ascii_downcase, ascii_upcase, (split(", ") | reverse | join(" ")), .[0:5], .[-5:], (index("o")), (indices("o") | tostring), (test("world"; "i")), (sub("World"; "jq")), (gsub("o"; "0")), (gsub("(?<c>[A-Z])"; "<\(.c)>")), (ltrimstr("Hello, ")), (rtrimstr("World")), (explode | length), ([match("o"; "g").offset] | tostring), (capture("(?<first>\\w+), (?<second>\\w+)") | .second), ([scan("[A-Z]")] | join("")), (splits(", *") ), (ascii_downcase | contains("world")), (. * 2), (tojson), (@json), (@text), (. + "!" | @base64), (utf8bytelength)' t.json
+jq -r '.csv | split(",") | @csv, @tsv, @json, (map(select(length > 0)) | join("|")), length' t.json; jq -r '.path | split("/") | last, (.[1:-1] | join("/")), (last | split(".") | first)' t.json; jq -r '(.b64 | @base64d), (.url | @uri), (.html | @html), (.sh | @sh), ([.s, .n] | @sh), ("x \(.n) y" ), (.n | tonumber + 1), (.json | fromjson | .k | add), ({a: .n} | tojson), ([1, "a", null, true] | @csv), ([1, "a\tb", null] | @tsv), (@base64 "v=\(.n)"), (@uri "q=\(.url)"), (@json "j=\(.csv)")' t.json; jq -r '.s | "\(.) has \(length) chars", (ascii | type)?, (tostring), ([.[] ]? // "no iteration" )' t.json 2>/dev/null; jq -n -r '"a\tb\nc", ("x" | ascii_downcase), ("é😀" | length, utf8bytelength, (explode | map(. > 127) | all)), ("1,2" | split(",") | map(tonumber) | add), ("  pad " | ltrimstr(" ") | length), ("a.b.c" | split(".") | .[1]), ("abc" | test("B"), test("B"; "i")), ([ "b", "a", "C" ] | sort | join("")), ("%41" | @text)'
+--- 0
+12
+hello, world
+HELLO, WORLD
+World Hello
+Hello
+World
+4
+[4,8]
+true
+Hello, jq
+Hell0, W0rld
+<H>ello, <W>orld
+World
+Hello, 
+12
+[4,8]
+World
+HW
+Hello
+World
+true
+Hello, WorldHello, World
+"Hello, World"
+"Hello, World"
+Hello, World
+SGVsbG8sIFdvcmxkIQ==
+12
+"a","b","","c"
+a	b		c
+["a","b","","c"]
+a|b|c
+4
+tool.tar.gz
+usr/local/bin
+tool
+hi
+a%20b%26c%3Dd%2F%C3%A9
+&lt;a href=&quot;x&quot;&gt;&amp;&lt;/a&gt;
+'it'\''s $HOME'
+'Hello, World' '42'
+x 42 y
+43
+3
+{"a":"42"}
+1,"a",,true
+1	a\tb	
+v=NDI=
+q=a%20b%26c%3Dd%2F%C3%A9
+j="a,b,,c"
+a	b
+c
+x
+2
+6
+true
+3
+5
+b
+false
+true
+Cab
+%41
+### jq computes numbers and prints them as jq does
+jq -n -c '[1, 1.5, 1.0, 1.50, 100000000000000000000, 0.1, -3, 3.14159, 1.000]'; jq -n -c '[1 + 1, 3 - 5, 2 * 3.5, 7 / 2, 6 / 3, 7 % 3, -7 % 3, 1 / 3, 0.1 + 0.2, 10 / 4, 2 / 2, 1e3 + 0, 1e17 + 0, 1e16 + 0, 1e15 + 0, 1.5e300 * 1, 1e-5 + 0, 1e-4 + 0, 0.0001234 * 1, 123456789012345680000 + 0, 1e-7 + 0, 1.5e-7 * 1, 5e-324 + 0]'; jq -n -c '[nan, infinite, -infinite, (nan | isnan), (1 | isinfinite), (infinite | isinfinite), (nan < 1), ([nan] | sort), (null + 1), (1 | tostring), (1.5 | tostring), ("1.50" | tonumber), ("3" | tonumber + 1)]'; jq -n -c '[(3.7 | floor, ceil, round, fabs), (-3.2 | floor, ceil, round, fabs), (16 | sqrt), (2 | pow(.; 10)), (100 | log10), (1 | exp | floor), (10 | . / 3 | . * 3), ([1,2,3,4] | add / length), (5 | [., . * 2] | max), (17 | tostring | length), (1000000 | . * 1000000), (9007199254740992 | . + 0), (255 | tojson), ([3, 1.5, 2] | sort), (3 == 3.0), (1 < 2), ("a" < "b"), ([1,2] < [1,3]), (null < false), ({} > [])]'; echo '[1.0, 2.50, 100, 0.10, 1234567890123456, 3]' | jq -c '., map(. + 0), map(type), (.[0] == 1), (.[1] * 2), (map(tostring)), (map(tojson) | join(" ")), (.[5] / 3 | . * 3), (.[2] | floor)' 2>&1 | sed -n '2,$p'
+--- 0
+[1,1.5,1.0,1.50,100000000000000000000,0.1,-3,3.14159,1.000]
+[2,-2,7,3.5,2,1,-1,0.3333333333333333,0.30000000000000004,2.5,1,1000,1e+17,1e+16,1000000000000000,1.5e+300,1e-05,0.0001,0.0001234,123456789012345680000,1e-07,1.5e-07,5e-324]
+[null,1.7976931348623157e+308,-1.7976931348623157e+308,true,false,true,true,[null],1,"1","1.5",1.50,4]
+[3,4,4,3.7,-4,-3,-3,3.2,4,1024,2,2,10,2.5,10,2,1000000000000,9007199254740992,"255",[1.5,2,3],true,true,true,true,true,true]
+[1,2.5,100,0.1,1234567890123456,3]
+["number","number","number","number","number","number"]
+true
+5
+["1.0","2.50","100","0.10","1234567890123456","3"]
+"1.0 2.50 100 0.10 1234567890123456 3"
+3
+100
+### jq dates, types, paths and assignments
+jq -n -c '[0 | todate], [1700000000 | todate, (strftime("%Y-%m-%d %H:%M:%S")), (gmtime | mktime), (gmtime | .[0])], ["2023-11-14T22:13:20Z" | fromdate, fromdateiso8601], ("2024-02-29T00:00:00Z" | strptime("%Y-%m-%dT%H:%M:%SZ") | mktime), (now | type), (1700000000 | strftime("%A %B %d %j %Z"))'; jq -n -c '[null, true, 1, "s", [], {}] | map(type), map(length?), (map(select(. != null)) | length), (.[2:4] | map(tostring)), map(arrays, objects), [.[] | scalars], [.[] | iterables], [.[] | booleans, nulls, numbers, strings], (map(not)), (map(. // "alt"))'; jq -n -c '{"a":{"b":[1,{"c":2}]},"d":null} | [paths], [paths(type == "number")], (getpath(["a","b",1,"c"])), (setpath(["a","b",0]; 9) | .a.b), (delpaths([["a","b",0],["d"]])), (to_entries | map(.key)), (path(.a.b[1].c)), ([path(..)] | length), (.a.b[1].c |= . + 1 | .a.b[1]), (.a.b |= map(numbers)), (.d //= 5 | .d), (.a.b[0] += 10 | .a.b[0]), (.x = {} | .x.y = 1 | .x), (del(.a.b[0]) | .a.b), (del(.a, .d)), (.a.b | .[1:] = [] ), ([.a.b[] | numbers] | length), (. as {a: {b: [$n, {$c}]}} | [$n, $c]), (with_entries(select(.value != null)) | keys), (.a | has("b"), (.b | has(1), has(5))), (.a.b | map(objects | .c)), (.. |= (numbers |= . + 1)? // "x" | .a.b[0]), (to_entries | map(select(.value == null) | .key)), ([limit(3; repeat(1))]), ([.a.b[]] | first, (last | type)), (try (1 | error("custom")) catch .), (try error({"code": 3}) catch .code), ([.[] | try keys catch "nokeys"]), (label $done | 1, 2, break $done, 3), ([splits("x")?] | length), (.a.b | until(length > 3; . + [0]) | length), ([1 | while(. < 20; . * 2)]), (reduce range(5) as $i ([]; . + [$i * $i])), ([foreach (1,2,3) as $x (0; . + $x; [$x, .])])' 2>&1
+--- 0
+["1970-01-01T00:00:00Z"]
+["2023-11-14T22:13:20Z","2023-11-14 22:13:20",1700000000,2023]
+[1700000000,1700000000]
+1709164800
+"number"
+"Tuesday November 14 318 UTC"
+["null","boolean","number","string","array","object"]
+[0,1,1,0,0]
+5
+["1","s"]
+[[],{}]
+[null,true,1,"s"]
+[[],{}]
+[null,true,1,"s"]
+[true,false,false,false,false,false]
+["alt",true,1,"s",[],{}]
+[["a"],["a","b"],["a","b",0],["a","b",1],["a","b",1,"c"],["d"]]
+[["a","b",0],["a","b",1,"c"]]
+2
+[9,{"c":2}]
+{"a":{"b":[{"c":2}]}}
+["a","d"]
+["a","b",1,"c"]
+7
+{"c":3}
+{"a":{"b":[1]},"d":null}
+5
+11
+{"y":1}
+[{"c":2}]
+{}
+[1]
+1
+[1,2]
+["a"]
+true
+true
+false
+[2]
+2
+["d"]
+[1,1,1]
+1
+"object"
+"custom"
+3
+[["b"],"nokeys"]
+1
+2
+0
+4
+[1,2,4,8,16]
+[0,1,4,9,16]
+[[1,1],[2,3],[3,6]]
+### jq exit codes for errors, missing files and halts
+echo '{"a":1}' > ok.json; echo '{"a":' > bad.json
+jq '.a | .b' ok.json 2>/dev/null; echo "index rc=$?"; jq '.[' ok.json 2>/dev/null; echo "syntax rc=$?"; jq 'nosuchfunction' ok.json 2>/dev/null; echo "undefined rc=$?"; jq . bad.json 2>/dev/null; echo "json rc=$?"; printf '1 2 [' | jq -c . 2>/dev/null; echo "partial rc=$?"; jq .a ok.json missing.json 2>/dev/null; echo "missing rc=$?"; jq .a missing.json 2>/dev/null; echo "only missing rc=$?"; jq -n 'error("x")' 2>/dev/null; echo "error rc=$?"; jq -n '1, error("x"), 2' 2>/dev/null; echo "after rc=$?"; printf '1 "a" 3' | jq '. + 1' 2>/dev/null; echo "continues rc=$?"; jq -n 'halt' ; echo "halt rc=$?"; jq -n '1, halt_error' 2>/dev/null; echo "halt_error rc=$?"; jq -n '"bye\n" | halt_error(3)' 2>&1; echo "halt_error(3) rc=$?"; jq -n '{"a":1} | halt_error(2)' 2>&1; echo "object rc=$?"; jq -n '1 | debug | . + 1' 2>&1; jq -n '"to stderr" | stderr | length' 2>/dev/null; jq 2>/dev/null; echo "usage rc=$?"; jq --indent 8 . ok.json 2>/dev/null; echo "indent rc=$?"; jq -n --argjson v '{' '$v' 2>/dev/null; echo "argjson rc=$?"; jq -n --arg v 2>/dev/null; echo "arg rc=$?"; jq -e '.a > 5' ok.json; echo "e rc=$?"; jq -n '[limit(3; range(10))] | length' ; jq -n 'try error("caught") catch "ok: \(.)"'; jq '.a as $x | $y' ok.json 2>/dev/null; echo "variable rc=$?"
+--- 0
+index rc=5
+syntax rc=3
+undefined rc=3
+json rc=5
+1
+2
+partial rc=5
+1
+missing rc=2
+only missing rc=2
+error rc=5
+1
+after rc=5
+2
+4
+continues rc=0
+halt rc=0
+1
+halt_error rc=5
+bye
+halt_error(3) rc=3
+{"a":1}
+object rc=2
+["DEBUG:",1]
+2
+9
+usage rc=0
+indent rc=2
+argjson rc=2
+arg rc=2
+false
+e rc=1
+3
+"ok: caught"
+variable rc=3
+### jq edits objects as jq does
+echo '{"name":"app","version":"1.0.0","scripts":{"build":"make"},"keywords":["a"],"private":true}' > package.json
+jq -c 'del(.version)' package.json; jq -c 'del(.name, .private)' package.json; jq -c 'del(.scripts.build) | .keywords |= map(select(. != "a"))' package.json; jq -c '.name |= empty' package.json; jq -c 'delpaths([["version"],["keywords",0]])' package.json; jq -c 'with_entries(select(.key != "version"))' package.json; jq -c 'to_entries | map(.key)' package.json
+jq -c '.scripts.test = "cargo test"' package.json; jq -c '.config.paths.out = "dist" | .config' package.json; jq -c '.engines.node |= ">=20" | .engines' package.json; jq -c '.keywords[3] = "d" | .keywords' package.json; jq -c '.files[1] = "src" | .files' package.json; jq -c '.a.b.c += 1 | .a' package.json; jq -c '.x.y //= "set" | .x' package.json; jq -nc '{} | .a.b.c = 1'; jq -nc 'null | .a = 1, .[2] = 1, (.a[1].b = 2)'; jq -nc '{"a":null} | .a.b = 1'; jq -nc '[1] | .[3] = 9, (.[2] |= empty), (.[-1] = 5)'; jq -nc '{} | setpath(["a","b"]; 1), (setpath(["l",1]; true)), (getpath(["a","b"]))'; jq -nc 'reduce ("a","b","c") as $k ({}; .[$k].count += 1)'; jq -nc '[{"k":"x","v":1},{"k":"y","v":2},{"k":"x","v":3}] | reduce .[] as $e ({}; .[$e.k].sum += $e.v | .[$e.k].n += 1)'
+jq -nr '"\(4/2) \(1/2) \(10/4) \(2*3) \(1e3 + 0) \(7 % 2)", (4/2 | tostring), (1.5 * 2 | tostring), ([2/2, 1/4] | map(tostring) | join(",")), ("total: " + (6 / 3 | tostring)), (nan | tostring), (infinite | tostring), ([4/2, nan, 0.5] | tojson), (1e17 + 0 | tostring), (1e-5 + 0 | tostring), ({"a": (9/3)} | tostring), ([4/2] | @csv), ([1/2, 8/2] | @tsv), (@json "\(6/2)"), (10 / 5 | tostring | length)'
+--- 0
+{"name":"app","scripts":{"build":"make"},"keywords":["a"],"private":true}
+{"version":"1.0.0","scripts":{"build":"make"},"keywords":["a"]}
+{"name":"app","version":"1.0.0","scripts":{},"keywords":[],"private":true}
+{"version":"1.0.0","scripts":{"build":"make"},"keywords":["a"],"private":true}
+{"name":"app","scripts":{"build":"make"},"keywords":[],"private":true}
+{"name":"app","scripts":{"build":"make"},"keywords":["a"],"private":true}
+["name","version","scripts","keywords","private"]
+{"name":"app","version":"1.0.0","scripts":{"build":"make","test":"cargo test"},"keywords":["a"],"private":true}
+{"paths":{"out":"dist"}}
+{"node":">=20"}
+["a",null,null,"d"]
+[null,"src"]
+{"b":{"c":1}}
+{"y":"set"}
+{"a":{"b":{"c":1}}}
+{"a":1}
+[null,null,1]
+{"a":[null,{"b":2}]}
+{"a":{"b":1}}
+[1,null,null,9]
+[1]
+[5]
+{"a":{"b":1}}
+{"l":[null,true]}
+null
+{"a":{"count":1},"b":{"count":1},"c":{"count":1}}
+{"x":{"sum":4,"n":2},"y":{"sum":2,"n":1}}
+2 0.5 2.5 6 1000 1
+2
+3
+1,0.25
+total: 2
+null
+1.7976931348623157e+308
+[2,null,0.5]
+1e+17
+1e-05
+{"a":3}
+2
+0.5	4
+3
+1

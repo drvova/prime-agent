@@ -43,6 +43,7 @@ pub(crate) struct IpythonError {
 
 /// The `bashCommands` details field: the first executed `bash()` command,
 /// how many ran, and their summed non-blank line count.
+#[derive(Clone)]
 pub(crate) struct BashCommands {
     pub(crate) first: String,
     pub(crate) count: usize,

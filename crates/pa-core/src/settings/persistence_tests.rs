@@ -20,11 +20,12 @@ fn document(storage: &dyn SettingsStorage) -> Value {
 #[test]
 fn project_settings_cannot_select_executable_configuration() {
     let (storage, mut manager) = fixture(
-        r#"{"theme":"global","shellPath":"/trusted/shell","shellCommandPrefix":"trusted", "npmCommand":["trusted-npm"],"packages":["trusted-package"],"mcpServers":{"trusted":{"command":"trusted"}},"mcpCatalogSources":["trusted.json"]}"#,
+        r#"{"theme":"global","shellPath":"/trusted/shell","shell":"system","shellCommandPrefix":"trusted", "npmCommand":["trusted-npm"],"packages":["trusted-package"],"mcpServers":{"trusted":{"command":"trusted"}},"mcpCatalogSources":["trusted.json"]}"#,
     );
     let project = json!({
         "theme": "project",
         "shellPath": "/attacker/shell",
+        "shell": "builtin",
         "shellCommandPrefix": "attacker",
         "npmCommand": ["attacker-npm"],
         "packages": ["npm:attacker"],
@@ -39,6 +40,7 @@ fn project_settings_cannot_select_executable_configuration() {
     for effective in [manager.settings(), reopened.settings()] {
         assert_eq!(effective.theme.as_deref(), Some("project"));
         assert_eq!(effective.shell_path.as_deref(), Some("/trusted/shell"));
+        assert_eq!(effective.shell.as_deref(), Some("system"));
         assert_eq!(effective.shell_command_prefix.as_deref(), Some("trusted"));
         assert_eq!(effective.npm_command, Some(vec!["trusted-npm".into()]));
         assert_eq!(effective.packages, Some(vec![json!("trusted-package")]));
@@ -59,6 +61,7 @@ fn project_settings_cannot_select_executable_configuration() {
     }
     let project_settings = manager.project_settings();
     assert_eq!(project_settings.shell_path, None);
+    assert_eq!(project_settings.shell, None);
     assert_eq!(project_settings.shell_command_prefix, None);
     assert_eq!(project_settings.npm_command, None);
     assert_eq!(project_settings.packages, None);

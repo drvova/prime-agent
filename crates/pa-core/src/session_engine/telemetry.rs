@@ -50,6 +50,7 @@ pub use classify::provider_category;
 mod capability_counts;
 use capability_counts::CapabilityCounts;
 
+mod builtin_shell;
 mod edit_checks;
 mod error_enrichment;
 mod hypotheses;

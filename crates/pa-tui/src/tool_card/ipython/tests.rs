@@ -847,3 +847,44 @@ fn a_scheme_cell_renders_on_the_kernel_card_as_scheme() {
         "{flat:?}"
     );
 }
+
+/// A Scheme cell that is mostly `bash` calls is titled `bash` from its code
+/// alone: the title is the same while the cell waits, while it runs with no
+/// result yet, and once it has settled, whatever the result says it ran.
+#[test]
+fn a_scheme_bash_cell_keeps_one_title_from_start_to_finish() {
+    let code = "(bash \"cargo test -p pa-tui\")\n(bash \"git status\")";
+    let titled = |details: Value, partial: bool| {
+        let card = ToolCallCard {
+            name: "eval".into(),
+            ..cell_card(code, details, false, partial)
+        };
+        let row = text_of(&render_card(&card, Detail::Overview)[0]);
+        row.split(" \u{00b7} ")
+            .take(3)
+            .map(str::to_string)
+            .collect::<Vec<_>>()[0..3]
+            .join(" | ")
+            .trim_start_matches(|marker: char| !marker.is_alphabetic())
+            .to_string()
+    };
+    let title = "bash | cargo test -p pa-tui | +1 more";
+    assert_eq!(
+        (
+            titled(json!({}), true),
+            titled(
+                json!({ "status": "ok", "durationMs": 2, "stdout": "ok\n" }),
+                false
+            ),
+            titled(
+                json!({
+                    "status": "ok",
+                    "durationMs": 2,
+                    "bashCommands": { "first": "something else", "count": 9, "lines": 9 },
+                }),
+                false,
+            ),
+        ),
+        (title.to_string(), title.to_string(), title.to_string()),
+    );
+}

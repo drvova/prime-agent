@@ -38,6 +38,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "imageModel",
     "autonomous",
     "shellPath",
+    "shell",
     "quietStartup",
     "shellCommandPrefix",
     "npmCommand",

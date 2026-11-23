@@ -226,18 +226,26 @@ async fn a_background_command_is_live_work_the_user_can_read_and_stop() {
     engine.dispose_kernel().await;
 }
 
-/// The pid of the long command a cell of `engine` leaves running.
-async fn left_running(engine: &SessionEngine, provider: &ScriptedProvider) -> u32 {
+/// The pid of the long-running program a cell of `engine` leaves running:
+/// `/bin/sleep`, by its path, whose pid the command writes into a pipe in
+/// `dir`. A job's own `pid` names no process under the built-in shell, and a
+/// bare `sleep` is that shell's own.
+async fn left_running(engine: &SessionEngine, provider: &ScriptedProvider, dir: &Path) -> u32 {
+    let started = dir.join("started");
+    let mut pids = piped_lines(&started);
+    let command = format!("/bin/sleep 600 & echo $! > '{}'; wait", started.display());
     run_cell(
         engine,
         provider,
-        "(display (hash-ref (bash \"exec sleep 600\" (hash 'background #t)) 'pid))",
+        &format!("(bash {} (hash 'background #t))", json!(command)),
     )
     .await;
-    cell_results(provider)
-        .last()
+    tokio::time::timeout(PATIENCE, pids.next_line())
+        .await
+        .expect("the command never ran")
+        .unwrap()
         .and_then(|pid| pid.trim().parse().ok())
-        .expect("the cell printed its command's pid")
+        .expect("the command wrote its program's pid")
 }
 
 /// Ending a session ends the commands its cells started.
@@ -247,7 +255,7 @@ async fn disposing_a_session_kills_the_commands_its_cells_left_running() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(ScriptedProvider::new(model()));
     let engine = session(&provider, dir.path(), |_| {}).await;
-    let pid = left_running(&engine, &provider).await;
+    let pid = left_running(&engine, &provider, dir.path()).await;
     engine.dispose_kernel().await;
     tokio::time::timeout(PATIENCE, crate::platform::process::wait_for_exit(pid))
         .await
@@ -262,7 +270,7 @@ async fn dropping_a_session_kills_the_commands_its_cells_left_running() {
     let dir = tempfile::tempdir().unwrap();
     let provider = Arc::new(ScriptedProvider::new(model()));
     let engine = session(&provider, dir.path(), |_| {}).await;
-    let pid = left_running(&engine, &provider).await;
+    let pid = left_running(&engine, &provider, dir.path()).await;
     drop(engine);
     tokio::time::timeout(PATIENCE, crate::platform::process::wait_for_exit(pid))
         .await

@@ -98,7 +98,9 @@ async fn a_command_runs_in_the_session_cwd_and_a_failing_one_is_a_result() {
 }
 
 /// A sleeping command ends with its own timeout, or with its cell's, well
-/// before it would on its own, and nothing it started survives.
+/// before it would on its own, and nothing it started survives. What it
+/// starts is the program `/bin/sleep`: a bare `sleep` is the built-in
+/// shell's own, with no process for `$!` to name.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_timeout_kills_the_command_and_everything_it_started() {
@@ -108,7 +110,7 @@ async fn a_timeout_kills_the_command_and_everything_it_started() {
     let started = Instant::now();
     let own = run(
         kernel.as_ref(),
-        "(let ([r (bash \"sleep 30 & echo $! > own.pid; wait\" (hash 'timeout-ms 300))])
+        "(let ([r (bash \"/bin/sleep 30 & echo $! > own.pid; wait\" (hash 'timeout-ms 300))])
            (list (hash-ref r 'timed-out) (hash-ref r 'exit-code)))",
         None,
         None,
@@ -118,7 +120,7 @@ async fn a_timeout_kills_the_command_and_everything_it_started() {
     let started = Instant::now();
     let cell = run(
         kernel.as_ref(),
-        "(bash \"sleep 30 & echo $! > cell.pid; wait\")",
+        "(bash \"/bin/sleep 30 & echo $! > cell.pid; wait\")",
         None,
         Some(300),
     )
@@ -169,7 +171,7 @@ async fn an_abort_kills_a_running_command_and_the_kernel_stays_usable() {
     let signal = AbortSignal::new();
     let running = run(
         kernel.as_ref(),
-        "(bash \"sleep 30 & echo $! > started; wait\" (hash 'timeout-ms #f))",
+        "(bash \"/bin/sleep 30 & echo $! > started; wait\" (hash 'timeout-ms #f))",
         Some(signal.clone()),
         None,
     );
