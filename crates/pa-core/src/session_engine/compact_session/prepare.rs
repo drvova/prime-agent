@@ -81,7 +81,7 @@ pub fn prepare_compaction(
                 .iter()
                 .position(|entry| entry.id() == Some(payload.first_kept_entry_id.as_str()));
             let boundary_start = first_kept_index.unwrap_or(index + 1);
-            let stripped = super::compaction_utils::strip_file_list_blocks(&payload.summary);
+            let stripped = super::compaction_utils::strip_harness_blocks(&payload.summary);
             let previous_summary = (!stripped.is_empty()).then_some(stripped);
             (boundary_start, previous_summary)
         }

@@ -124,17 +124,19 @@ pub fn format_file_operations(read_files: &[String], modified_files: &[String]) 
     format!("\n\n{}", sections.join("\n\n"))
 }
 
-/// Remove `<read-files>`/`<modified-files>` blocks from a stored summary:
-/// re-appended after every summarization, they would compound and drift;
+/// Remove the harness blocks (`<read-files>`, `<modified-files>`, and the
+/// carried state's) from a stored summary: re-appended after every
+/// summarization from the row's details, they would compound and drift;
 /// an open tag without its close stays.
 #[must_use]
-pub fn strip_file_list_blocks(summary: &str) -> String {
+pub fn strip_harness_blocks(summary: &str) -> String {
     let mut result = String::with_capacity(summary.len());
     let mut rest = summary;
     loop {
         // The earliest open tag wins.
         let next = ["read-files", "modified-files"]
             .iter()
+            .chain(super::compaction_carry::CARRIED_BLOCK_TAGS.iter())
             .filter_map(|tag| rest.find(&format!("<{tag}>")).map(|pos| (pos, *tag)))
             .min_by_key(|(pos, _)| *pos);
         let Some((pos, tag)) = next else {
@@ -540,33 +542,30 @@ mod tests {
     }
 
     #[test]
-    fn strip_file_list_blocks_removes_read_and_modified_blocks() {
+    fn strip_harness_blocks_removes_read_and_modified_blocks() {
         assert_eq!(
-            strip_file_list_blocks(
+            strip_harness_blocks(
                 "the summary\n\n<read-files>\na.rs\nb.rs\n</read-files>\n\n<modified-files>\nc.rs\n</modified-files>"
             ),
             "the summary"
         );
         assert_eq!(
-            strip_file_list_blocks("before\n\n<modified-files>m.rs</modified-files>\n\nafter"),
+            strip_harness_blocks("before\n\n<modified-files>m.rs</modified-files>\n\nafter"),
             "before\n\nafter"
         );
         assert_eq!(
-            strip_file_list_blocks(
+            strip_harness_blocks(
                 "<read-files>\na.rs\n</read-files>\n\n<modified-files>\nb.rs\n</modified-files>"
             ),
             ""
         );
         // No blocks: unchanged except the trailing trim.
-        assert_eq!(strip_file_list_blocks("plain summary\n\n"), "plain summary");
-        assert_eq!(
-            strip_file_list_blocks("a <read-files> b"),
-            "a <read-files> b"
-        );
+        assert_eq!(strip_harness_blocks("plain summary\n\n"), "plain summary");
+        assert_eq!(strip_harness_blocks("a <read-files> b"), "a <read-files> b");
         // The scan resumes after an unclosed tag: a later complete
         // block still strips.
         assert_eq!(
-            strip_file_list_blocks(
+            strip_harness_blocks(
                 "alpha\n\n<read-files> unclosed\n\n<modified-files>\na.txt\n</modified-files>\nend"
             ),
             "alpha\n\n<read-files> unclosed\nend"
@@ -574,7 +573,7 @@ mod tests {
         // The outer close makes one block either way (the lazy span
         // swallows the inner block).
         assert_eq!(
-            strip_file_list_blocks(
+            strip_harness_blocks(
                 "<read-files> x <modified-files>a</modified-files> y </read-files> tail"
             ),
             " tail"

@@ -2,6 +2,7 @@
 //! (via pa-ai's completion facade).
 
 use super::compaction::{build_summarization_prompt, CutPointResult};
+use super::compaction_carry::{CarriedState, LiveWork};
 use super::compaction_utils::{
     compute_file_lists, extract_file_ops_from_message, format_file_operations, FileOperations,
 };
@@ -10,12 +11,15 @@ use pa_types::ai::{AssistantMessage, TextContent, UserContent, UserContentBlock,
 use pa_types::session::{AgentMessage, CompactionEntry, FileEntry};
 use std::fmt::Write as _;
 
-/// Details stored on the compaction entry for file tracking.
+/// Details stored on the compaction entry: the file lists and the carried
+/// state (its keys follow the file lists and are absent while empty).
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactionDetails {
     pub read_files: Vec<String>,
     pub modified_files: Vec<String>,
+    #[serde(flatten)]
+    pub carried: CarriedState,
 }
 
 /// The result of running a compaction.
@@ -284,31 +288,6 @@ pub fn summed_usage(slices: &[SummarySlice]) -> Option<pa_types::ai::Usage> {
     total
 }
 
-/// File operations preserved across prior compactions plus current messages.
-fn extract_file_operations(
-    messages: &[AgentMessage],
-    entries: &[FileEntry],
-    prev_compaction_index: Option<usize>,
-) -> FileOperations {
-    let mut ops = FileOperations::default();
-    if let Some(index) = prev_compaction_index {
-        if let Some(FileEntry::Compaction { payload, .. }) = entries.get(index) {
-            if payload.from_hook != Some(true) {
-                if let Some(details) = payload.details.clone() {
-                    if let Ok(details) = serde_json::from_value::<CompactionDetails>(details) {
-                        ops.read.extend(details.read_files);
-                        ops.edited.extend(details.modified_files);
-                    }
-                }
-            }
-        }
-    }
-    for message in messages {
-        extract_file_ops_from_message(message, &mut ops);
-    }
-    ops
-}
-
 /// Inputs to a compaction run.
 pub struct CompactRequest<'a> {
     pub messages: &'a [AgentMessage],
@@ -396,25 +375,52 @@ pub fn compaction_entry_for(
     }
 }
 
-/// Full-file-list details for a compact run (prev compaction ops + messages).
+/// The details of a compact run: the previous compaction's details (its file
+/// lists and carried state) merged with the summarized `span` — every
+/// message it summarizes, tool results included (a kernel cell's diffs ride
+/// its result) — and the session's live goal and todo list.
 #[must_use]
 pub fn details_for(
-    messages: &[AgentMessage],
+    span: &[AgentMessage],
     entries: &[FileEntry],
     prev_compaction_index: Option<usize>,
+    live: LiveWork,
 ) -> CompactionDetails {
-    let ops = extract_file_operations(messages, entries, prev_compaction_index);
+    let previous = prev_compaction_index
+        .and_then(|index| match entries.get(index) {
+            Some(FileEntry::Compaction { payload, .. }) if payload.from_hook != Some(true) => {
+                payload.details.clone()
+            }
+            Some(_) | None => None,
+        })
+        .and_then(|details| serde_json::from_value::<CompactionDetails>(details).ok());
+    let mut ops = FileOperations::default();
+    if let Some(previous) = &previous {
+        ops.read.extend(previous.read_files.iter().cloned());
+        ops.edited.extend(previous.modified_files.iter().cloned());
+    }
+    for message in span {
+        extract_file_ops_from_message(message, &mut ops);
+    }
     let (read_files, modified_files) = compute_file_lists(&ops);
     CompactionDetails {
         read_files,
         modified_files,
+        carried: CarriedState::carry(
+            previous.as_ref().map(|details| &details.carried),
+            span,
+            live,
+        ),
     }
 }
 
-/// The XML file-ops block appended to a summary presentation.
+/// The harness blocks appended to a summary: the file lists, then the
+/// carried state.
 #[must_use]
-pub fn file_ops_block(read_files: &[String], modified_files: &[String]) -> String {
-    format_file_operations(read_files, modified_files)
+pub fn summary_blocks(details: &CompactionDetails) -> String {
+    let mut blocks = format_file_operations(&details.read_files, &details.modified_files);
+    blocks.push_str(&details.carried.render());
+    blocks
 }
 
 #[cfg(test)]
@@ -490,6 +496,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["a.rs".to_string()],
             modified_files: vec![],
+            carried: CarriedState::default(),
         };
         assert_eq!(
             compaction_entry_for(&result, &details, Some("focus"), None, None),
@@ -552,6 +559,7 @@ mod tests {
         let details = CompactionDetails {
             read_files: vec!["a.rs".to_string(), "b.rs".to_string()],
             modified_files: vec!["c.rs".to_string()],
+            carried: CarriedState::default(),
         };
         assert_eq!(
             serde_json::to_string(&details).unwrap(),
@@ -621,7 +629,7 @@ mod tests {
         assert!(result.summary.starts_with("## Goal"));
         assert_eq!(result.first_kept_entry_id, "e1");
         assert_eq!(result.tokens_before, 1_000);
-        let details = details_for(&messages, &entries, None);
+        let details = details_for(&messages, &entries, None, LiveWork::default());
         let entry = compaction_entry_for(&result, &details, Some("focus"), None, None);
         assert_eq!(entry.summary, "## Goal\nship it");
         assert_eq!(entry.custom_instructions.as_deref(), Some("focus"));

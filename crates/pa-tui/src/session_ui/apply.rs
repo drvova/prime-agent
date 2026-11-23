@@ -477,7 +477,12 @@ impl SessionUi {
 
     fn apply_update(&mut self, update: TurnUpdate, view: &mut AgentView) {
         match update {
-            TurnUpdate::TurnStarted => {
+            boundary @ (TurnUpdate::RunStarted | TurnUpdate::TurnStarted) => {
+                // The loader's clock and the summary row's tallies belong to the run, not to
+                // one model response: `agent_start` opens a run, and the `turn_start` before
+                // each later response (one per tool round) keeps counting. A `turn_start` with
+                // no run open (a client that missed the run's `agent_start`) opens one.
+                let opens_run = matches!(boundary, TurnUpdate::RunStarted) || !self.turn_active;
                 self.turn_active = true;
                 self.turn_error_shown = false;
                 // A new turn opens no retry episode yet: an aborted attempt's episode never saw
@@ -500,9 +505,11 @@ impl SessionUi {
                 self.aborted_tools.clear();
                 // Only the retry that follows a failed attempt's `agent_end` pops its summary.
                 self.attempt_summary = None;
-                // A retried run keeps the episode's start: the timer never resets mid-episode.
-                let since = self.retry_run_since.unwrap_or_else(std::time::Instant::now);
-                self.start_loader_at(view, since);
+                if opens_run {
+                    // A retried run keeps the episode's start: the timer never resets mid-episode.
+                    let since = self.retry_run_since.unwrap_or_else(std::time::Instant::now);
+                    self.start_loader_at(view, since);
+                }
             }
             TurnUpdate::UserMessage { text, images } => {
                 match crate::custom_message::skill_invocation_entries(&text) {

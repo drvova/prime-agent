@@ -325,6 +325,11 @@ struct ActiveRun {
     bash_waits: crate::kernel::shared::KernelBashWaits,
     /// The stream loop guard's interventions in the run.
     loop_guard: LoopGuardCounts,
+    /// The run's loop requests that changed bytes inside the previous
+    /// request's prefix (compaction included), and the previous requests'
+    /// bytes they did not keep (`session_engine::cache_prefix`).
+    cache_prefix_breaks: u64,
+    cache_prefix_break_bytes: u64,
 }
 
 /// One run's stream loop guard interventions (`session_engine::loop_guard`).
@@ -774,6 +779,19 @@ impl SessionCounters {
                 BackgroundCellFact::EndedOk { .. } => "cell_background_ok_count",
                 BackgroundCellFact::EndedWithError { .. } => "cell_background_error_count",
                 BackgroundCellFact::Interrupted => "cell_background_interrupted_count",
+            },
+            1,
+        );
+    }
+
+    /// One `wait-until` wait, by how far it got (counts only: never a condition or a duration).
+    pub(crate) fn note_cell_wait(&self, fact: crate::kernel::shared::CellWaitFact) {
+        use crate::kernel::shared::CellWaitFact;
+        self.note_capability(
+            match fact {
+                CellWaitFact::Started => "wait_until_count",
+                CellWaitFact::Met => "wait_until_met_count",
+                CellWaitFact::TimedOut => "wait_until_timed_out_count",
             },
             1,
         );
@@ -1334,6 +1352,25 @@ impl SessionTelemetry {
         }
     }
 
+    /// A loop request broke the previous request's prompt-cache prefix,
+    /// leaving `broken_bytes` of it unreused (`session_engine::cache_prefix`);
+    /// counts toward the active run.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_cache_prefix_break(&self, broken_bytes: u64) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if let Some(run) = state.active_run.as_mut() {
+            run.cache_prefix_breaks += 1;
+            run.cache_prefix_break_bytes += broken_bytes;
+        }
+    }
+
     /// A feature attempt's observed result at a session-engine seam,
     /// counted as `feature_<name>_<outcome>_count` on `agent session
     /// ended`. The configuration choice is not reported.
@@ -1832,6 +1869,8 @@ fn handle_event(
                 tool_summary: HashMap::new(),
                 bash_waits: crate::kernel::shared::KernelBashWaits::default(),
                 loop_guard: LoopGuardCounts::default(),
+                cache_prefix_breaks: 0,
+                cache_prefix_break_bytes: 0,
             });
         }
         AgentEvent::MessageStart { message } => {
@@ -2066,6 +2105,14 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     properties.set(
         "loop_guard_tool_repeat_nudge_count",
         Value::from(run.loop_guard.tool_repeat_nudges),
+    );
+    properties.set(
+        "cache_prefix_break_count",
+        Value::from(run.cache_prefix_breaks),
+    );
+    properties.set(
+        "cache_prefix_break_bytes",
+        Value::from(run.cache_prefix_break_bytes),
     );
     properties.set(
         "provider_category",

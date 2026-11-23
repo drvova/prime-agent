@@ -14,6 +14,7 @@ fn empty_state_digest_renders_placeholder() {
         include_kernel_tool: true,
         include_shell_examples: false,
         include_refine: true,
+        reuse: None,
     };
     let digest = harness_digest_text(&context, HarnessQueryTerms::default());
     assert!(digest.starts_with("# Continual Harness State"));
@@ -333,6 +334,7 @@ async fn placement_rig(
             include_kernel_tool: false,
             include_shell_examples: false,
             include_refine: false,
+            reuse: None,
         }),
     )
     .await

@@ -80,9 +80,9 @@ fn delegation_rule(depth: BriefDepth) -> String {
                 .to_string()
         }
         BriefDepth::Levels(levels) => format!(
-            "\n\nThe subagent may delegate {levels} more level(s) below itself: make the brief \
-             decomposable (name its separable parts, each with its own acceptance check) so it \
-             can hand them on."
+            "\n\nThe subagent may delegate {levels} more level(s) below itself: where the task has \
+             independent parts each large enough to hand on, name them, each with its own \
+             acceptance check."
         ),
     }
 }

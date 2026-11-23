@@ -26,7 +26,9 @@ use crate::properties::Properties;
 pub const SCHEMA_VERSION: u64 = 2;
 
 mod capabilities;
+mod reuse_listing;
 mod tui_discovery;
+mod tui_keybindings;
 mod tui_model_recent;
 mod tui_navigation;
 mod tui_search;
@@ -587,6 +589,10 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("loop_guard_trip_count", optional(count())),
         ("loop_guard_retry_count", optional(count())),
         ("loop_guard_tool_repeat_nudge_count", optional(count())),
+        // Loop requests that changed bytes inside the previous request's
+        // prefix (compaction included), and the bytes they did not keep.
+        ("cache_prefix_break_count", optional(count())),
+        ("cache_prefix_break_bytes", optional(tokens())),
         (
             "provider_category",
             optional(enum_rule(PROVIDER_CATEGORIES, "custom")),
@@ -1888,8 +1894,10 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &tui_model_recent::TUI_MODEL_RECENT_USED,
         &tui_discovery::TUI_SHORTCUT_OVERLAY_OPENED,
         &tui_discovery::TUI_MOUSE_SELECTION,
+        &tui_keybindings::TUI_KEYBINDING_TAKEOVERS,
         &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
         &tui_session_changes::TUI_SESSION_CHANGES,
+        &reuse_listing::AGENT_REUSE_LISTING,
         &AGENT_CREDENTIAL_ADDED,
         &AGENT_CREDENTIAL_PINNED,
         &AGENT_PROFILE_STATE,

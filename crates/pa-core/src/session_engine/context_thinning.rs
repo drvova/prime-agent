@@ -9,18 +9,22 @@
 //! older than the newest 8 cut to a head plus a recall pointer under
 //! pressure), with three changes:
 //!
-//! - **Cache-stable boundary.** The view is a pure function of the history
-//!   and the settings. Rounds thin only in whole blocks of [`STEP_ROUNDS`], so
-//!   the thinned prefix of the request is byte-identical from one request to
-//!   the next and only moves (invalidating the provider's prompt cache from
-//!   that point) once every `STEP_ROUNDS` tool rounds. Pressure is measured on
-//!   the *unthinned* history (chars/4), never on provider usage of a thinned
-//!   request, so thinning cannot feed back into its own trigger and flap.
-//! - **Protected results.** The newest round (the results the next response
-//!   reacts to) and the newest `keep_recent_rounds` rounds are never thinned;
-//!   neither is a result whose tool call id the latest assistant text names,
-//!   nor an error result no later call of the same tool has superseded with a
-//!   success (the output an active fix still needs).
+//! - **Append-only between crossings.** A provider's prompt cache reuses a
+//!   request's prefix only while its bytes are unchanged, so the view never
+//!   rewrites what an earlier request sent except at a crossing: a request
+//!   whose estimated view (chars/4, after the thinning in force) reaches the
+//!   threshold thins every round but the newest `keep_recent_rounds` at once,
+//!   dropping the view well under the threshold, and later requests only
+//!   append until the view grows back to it. The boundary is replayed from
+//!   the history at each request (it reads only the history before each
+//!   earlier request), so the view stays a pure function of the history and
+//!   the settings, identical across a restart, and only moves forward.
+//!   Nothing outside the boundary decides what thins: an exemption that
+//!   depends on a later row (a later success, the latest reply's text)
+//!   would rewrite an already-sent result when that row arrives.
+//! - **Protected results.** The newest `keep_recent_rounds` rounds (at least
+//!   the newest, whose results the next response reacts to) are never
+//!   thinned at a crossing.
 //! - **Recall.** A persistent session pages the thinned result's whole text
 //!   out to its spill store ([`ThinnedRecall::Spill`]): the pointer is the
 //!   spill's content handle, read back with `ctx.page`/`ctx.grep`, so nothing
@@ -48,18 +52,18 @@ use crate::session::manager::SessionManager;
 #[cfg(test)]
 mod tests;
 
-/// Default estimated share of the context window (percent) past which aged
-/// results thin: early enough that compaction (95%) is deferred, late enough
-/// that short sessions never see a thinned result.
+/// Default estimated share of the context window (percent) a request's view
+/// reaches before aged results thin, when thinning is on: early enough that
+/// compaction (95%) is deferred, late enough that short sessions never see a
+/// thinned result.
 pub const DEFAULT_THRESHOLD_PERCENT: f64 = 65.0;
 /// Default number of newest tool rounds that always replay whole.
 pub const DEFAULT_KEEP_RECENT_ROUNDS: usize = 8;
 /// Default size (characters) at or under which a result never thins.
 pub const DEFAULT_MIN_CHARS: usize = 600;
-/// The thinning boundary advances in blocks of this many tool rounds, so the
-/// request prefix (and the provider's prompt cache over it) holds still for
-/// `STEP_ROUNDS - 1` requests out of every `STEP_ROUNDS`.
-pub const STEP_ROUNDS: usize = 8;
+/// The estimated characters a thinned result's pointer and its line breaks
+/// add to its kept head and tail (the replayed boundary's sizing only).
+const THINNED_MARKER_CHARS: u64 = 200;
 /// Characters of a thinned result kept from its start.
 const HEAD_CHARS: usize = 240;
 /// Characters of a thinned result kept from its end (a failing run's verdict
@@ -68,7 +72,10 @@ const TAIL_CHARS: usize = 120;
 /// Image blocks count like the compaction estimate (~1200 tokens).
 const IMAGE_CHARS: u64 = 4_800;
 
-/// The resolved `contextThinning` settings.
+/// The resolved `contextThinning` settings. Off unless `enabled` is set: a
+/// crossing re-sends the request from its first newly thinned result as
+/// uncached input, and an append-only session that compacts late re-sent
+/// less uncached input than thinning saved in the measured long sessions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ThinningSettings {
     pub enabled: bool,
@@ -80,7 +87,7 @@ pub struct ThinningSettings {
 impl Default for ThinningSettings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             threshold_percent: DEFAULT_THRESHOLD_PERCENT,
             keep_recent_rounds: DEFAULT_KEEP_RECENT_ROUNDS,
             min_chars: DEFAULT_MIN_CHARS,
@@ -171,47 +178,77 @@ pub fn thin_context(
         return unchanged(messages);
     }
 
-    // Round numbers by tool call id, and the latest assistant text.
+    // Replay the boundary over the history: rounds before it thin. It moves
+    // only at a request (the history before an assistant reply, and the
+    // request being built now) whose estimated view reaches the threshold,
+    // and then jumps to all but the newest `keep_recent_rounds` rounds, so
+    // the view drops well under the threshold and every later request only
+    // appends to it until the next crossing. The replay reads only the
+    // history up to each request, so it gives every earlier request the
+    // boundary it was sent with: the bytes already sent never change
+    // between crossings, and the view stays a pure function of the history.
+    let threshold_chars = context_window as f64 * settings.threshold_percent / 100.0 * 4.0;
+    let keep = settings.keep_recent_rounds.max(1);
+    let floor = settings.min_chars.max(HEAD_CHARS + TAIL_CHARS) as u64;
     let mut round_of_call: HashMap<&str, usize> = HashMap::new();
-    let mut rounds = 0usize;
-    let mut latest_assistant_text = String::new();
-    for message in &messages {
-        let AgentMessage::Standard(Message::Assistant(assistant)) = message else {
-            continue;
-        };
-        latest_assistant_text.clear();
-        let mut has_calls = false;
-        for block in &assistant.content {
-            match block {
-                AssistantContent::Text(text) => latest_assistant_text.push_str(&text.text),
-                AssistantContent::ToolCall(call) => {
-                    round_of_call.insert(call.id.as_str(), rounds);
-                    has_calls = true;
-                }
-                AssistantContent::Thinking(_) => {}
+    // Per round: the estimated characters thinning its results saves.
+    let mut round_savings: Vec<u64> = Vec::new();
+    let mut boundary = 0usize;
+    let mut view_chars = 0u64;
+    for message in messages.iter().map(Some).chain([None]) {
+        if matches!(
+            message,
+            None | Some(AgentMessage::Standard(Message::Assistant(_)))
+        ) && view_chars as f64 >= threshold_chars
+        {
+            let next = round_savings.len().saturating_sub(keep);
+            if next > boundary {
+                view_chars -= round_savings[boundary..next].iter().sum::<u64>();
+                boundary = next;
             }
         }
-        rounds += usize::from(has_calls);
+        let Some(message) = message else {
+            break;
+        };
+        view_chars += message_chars(message);
+        match message {
+            AgentMessage::Standard(Message::Assistant(assistant)) => {
+                let mut has_calls = false;
+                for block in &assistant.content {
+                    match block {
+                        AssistantContent::ToolCall(call) => {
+                            round_of_call.insert(call.id.as_str(), round_savings.len());
+                            has_calls = true;
+                        }
+                        AssistantContent::Text(_) | AssistantContent::Thinking(_) => {}
+                    }
+                }
+                if has_calls {
+                    round_savings.push(0);
+                }
+            }
+            AgentMessage::Standard(Message::ToolResult(result)) => {
+                let Some(&round) = round_of_call.get(result.tool_call_id.as_str()) else {
+                    continue;
+                };
+                let text = result
+                    .content
+                    .iter()
+                    .map(|block| match block {
+                        ToolResultContent::Text(text) => text.text.chars().count() as u64,
+                        ToolResultContent::Image(_) => 0,
+                    })
+                    .sum::<u64>();
+                if text > floor {
+                    round_savings[round] += text
+                        .saturating_sub((HEAD_CHARS + TAIL_CHARS) as u64 + THINNED_MARKER_CHARS);
+                }
+            }
+            AgentMessage::Standard(Message::User(_)) | AgentMessage::Custom(_) => {}
+        }
     }
-    let thinnable = rounds.saturating_sub(settings.keep_recent_rounds.max(1));
-    let boundary = thinnable / STEP_ROUNDS * STEP_ROUNDS;
     if boundary == 0 {
         return unchanged(messages);
-    }
-
-    // Error results no later success of the same tool superseded.
-    let mut succeeded_later: HashSet<&str> = HashSet::new();
-    let mut active_errors: HashSet<&str> = HashSet::new();
-    for message in messages.iter().rev() {
-        if let AgentMessage::Standard(Message::ToolResult(result)) = message {
-            if result.is_error {
-                if !succeeded_later.contains(result.tool_name.as_str()) {
-                    active_errors.insert(result.tool_call_id.as_str());
-                }
-            } else {
-                succeeded_later.insert(result.tool_name.as_str());
-            }
-        }
     }
 
     let thinned_ids: HashSet<String> = messages
@@ -224,8 +261,6 @@ pub fn thin_context(
             round_of_call
                 .get(result.tool_call_id.as_str())
                 .is_some_and(|round| *round < boundary)
-                && !active_errors.contains(result.tool_call_id.as_str())
-                && !latest_assistant_text.contains(result.tool_call_id.as_str())
         })
         .map(|result| result.tool_call_id.clone())
         .collect();
@@ -316,43 +351,44 @@ pub fn thin_context(
 /// The chars/4 token estimate of the unthinned history (the compaction
 /// estimator's sizing, on the loop's wire types).
 fn estimate_tokens(messages: &[AgentMessage]) -> u64 {
+    messages.iter().map(message_chars).sum::<u64>().div_ceil(4)
+}
+
+/// One message's size in the compaction estimator's characters.
+fn message_chars(message: &AgentMessage) -> u64 {
     let chars = |text: &str| text.chars().count() as u64;
-    messages
-        .iter()
-        .map(|message| match message {
-            AgentMessage::Standard(Message::User(user)) => match &user.content {
-                UserContent::Text(text) => chars(text),
-                UserContent::Parts(parts) => parts
-                    .iter()
-                    .map(|part| match part {
-                        UserPart::Text(text) => chars(&text.text),
-                        UserPart::Image(_) => IMAGE_CHARS,
-                    })
-                    .sum(),
-            },
-            AgentMessage::Standard(Message::Assistant(assistant)) => assistant
-                .content
+    match message {
+        AgentMessage::Standard(Message::User(user)) => match &user.content {
+            UserContent::Text(text) => chars(text),
+            UserContent::Parts(parts) => parts
                 .iter()
-                .map(|block| match block {
-                    AssistantContent::Text(text) => chars(&text.text),
-                    AssistantContent::Thinking(thinking) => chars(&thinking.thinking),
-                    AssistantContent::ToolCall(call) => {
-                        chars(&call.name) + chars(&call.arguments.to_string())
-                    }
+                .map(|part| match part {
+                    UserPart::Text(text) => chars(&text.text),
+                    UserPart::Image(_) => IMAGE_CHARS,
                 })
                 .sum(),
-            AgentMessage::Standard(Message::ToolResult(result)) => result
-                .content
-                .iter()
-                .map(|block| match block {
-                    ToolResultContent::Text(text) => chars(&text.text),
-                    ToolResultContent::Image(_) => IMAGE_CHARS,
-                })
-                .sum(),
-            AgentMessage::Custom(custom) => chars(&custom.payload.to_string()),
-        })
-        .sum::<u64>()
-        .div_ceil(4)
+        },
+        AgentMessage::Standard(Message::Assistant(assistant)) => assistant
+            .content
+            .iter()
+            .map(|block| match block {
+                AssistantContent::Text(text) => chars(&text.text),
+                AssistantContent::Thinking(thinking) => chars(&thinking.thinking),
+                AssistantContent::ToolCall(call) => {
+                    chars(&call.name) + chars(&call.arguments.to_string())
+                }
+            })
+            .sum(),
+        AgentMessage::Standard(Message::ToolResult(result)) => result
+            .content
+            .iter()
+            .map(|block| match block {
+                ToolResultContent::Text(text) => chars(&text.text),
+                ToolResultContent::Image(_) => IMAGE_CHARS,
+            })
+            .sum(),
+        AgentMessage::Custom(custom) => chars(&custom.payload.to_string()),
+    }
 }
 
 /// Reads the context window of the model the next request goes to.

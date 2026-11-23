@@ -420,8 +420,121 @@ fn editor_claims_free_app_defaults_in_editor_scope() {
         vec!["up".to_string(), "ctrl+o".to_string()]
     );
     assert!(kb.get_keys("app.tools.expand").is_empty());
-    // No scope => a claim never frees its default.
+    // The agents view's own key is read where the editor's never is, so the claim keeps it.
     assert_eq!(kb.get_keys("app.agents.new"), vec!["ctrl+n".to_string()]);
+}
+
+/// The default table with `changes` applied: the resolved keys a rebuild must produce.
+fn defaults_with(changes: &[(&str, &[&str])]) -> BTreeMap<String, Vec<String>> {
+    let mut table = KeybindingsManager::new().get_effective_config();
+    for (id, keys) in changes {
+        table.insert(
+            id.to_string(),
+            keys.iter().map(ToString::to_string).collect(),
+        );
+    }
+    table
+}
+
+/// The regression: a user's key takes the default of an action with no scope too, so the new F2
+/// default no longer runs ahead of the user's `app.session.resume` on F2.
+#[test]
+fn a_user_binding_takes_an_unscoped_default_key() {
+    let kb = KeybindingsManager::with_user_bindings(cfg(&[("app.session.resume", &["F2"])]));
+    assert_eq!(
+        (kb.get_effective_config(), kb.get_takeovers().to_vec()),
+        (
+            defaults_with(&[
+                ("app.session.resume", &["F2"]),
+                ("app.model.cycleRecent", &[]),
+            ]),
+            vec![KeybindingTakeover {
+                key: "f2".to_string(),
+                action: "app.model.cycleRecent".to_string(),
+                taken_by: vec!["app.session.resume".to_string()],
+            }]
+        )
+    );
+}
+
+/// A takeover is announced once per run: the manager's clones (the run's views) share the record,
+/// so a later view or a reload with the same bindings has nothing new to name.
+#[test]
+fn a_takeover_is_announced_once_across_clones() {
+    let kb = KeybindingsManager::with_user_bindings(cfg(&[("app.session.resume", &["f2"])]));
+    let reopened = kb.clone();
+    assert_eq!(
+        (
+            kb.take_unannounced_takeovers(),
+            reopened.take_unannounced_takeovers()
+        ),
+        (kb.get_takeovers().to_vec(), Vec::new())
+    );
+}
+
+/// The editor's keys behave as before: an editor binding takes the session view's default
+/// (`app.tools.expand` loses ctrl+o) but not a panel's (`app.agents.program`,
+/// `app.tree.filter.cycleForward` keep it), and an empty-prompt action leaves the editor the
+/// key it gives way to with text (word-left keeps alt+left).
+#[test]
+fn editor_takeovers_are_unchanged() {
+    let kb = KeybindingsManager::with_user_bindings(cfg(&[
+        ("tui.editor.cursorWordRight", &["ctrl+o"]),
+        ("app.agents.back", &["alt+left"]),
+    ]));
+    assert_eq!(
+        kb.get_effective_config(),
+        defaults_with(&[
+            ("tui.editor.cursorWordRight", &["ctrl+o"]),
+            ("app.agents.back", &["alt+left"]),
+            ("app.tools.expand", &[]),
+        ])
+    );
+}
+
+/// Two user bindings on one key stay a conflict, and the default they both name is still taken.
+#[test]
+fn two_user_bindings_on_one_key_stay_a_conflict() {
+    let kb = KeybindingsManager::with_user_bindings(cfg(&[
+        ("app.session.resume", &["f2"]),
+        ("app.session.new", &["f2"]),
+    ]));
+    assert_eq!(
+        (kb.get_conflicts().to_vec(), kb.get_effective_config()),
+        (
+            vec![KeybindingConflict {
+                key: "f2".to_string(),
+                keybindings: vec![
+                    "app.session.new".to_string(),
+                    "app.session.resume".to_string()
+                ],
+            }],
+            defaults_with(&[
+                ("app.session.resume", &["f2"]),
+                ("app.session.new", &["f2"]),
+                ("app.model.cycleRecent", &[]),
+            ])
+        )
+    );
+}
+
+/// A printable key bound to a session action takes no panel's key: the changes panel keeps `a`,
+/// the agents view and an agent question keep `space`. Typing is as before: the editor has no
+/// binding on a printable key, so `a` bound to an always-run action runs it instead of typing,
+/// and `space` bound to an empty-prompt action types once the prompt holds text.
+#[test]
+fn a_printable_user_key_takes_no_panel_key() {
+    let kb = KeybindingsManager::with_user_bindings(cfg(&[
+        ("app.session.new", &["a"]),
+        ("app.session.tree", &["space"]),
+    ]));
+    assert_eq!(
+        kb.get_effective_config(),
+        defaults_with(&[
+            ("app.session.new", &["a"]),
+            ("app.session.tree", &["space"])
+        ])
+    );
 }
 
 #[test]

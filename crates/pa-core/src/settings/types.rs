@@ -126,6 +126,8 @@ pub struct CompactionSettings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextThinningSettings {
+    /// Off when unset: thinning rewrites already-sent results, which
+    /// re-sends the request from there as uncached input.
     pub enabled: Option<bool>,
     /// Estimated context share (percent of the window) past which aged results thin.
     pub threshold_percent: Option<f64>,

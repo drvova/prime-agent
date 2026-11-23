@@ -53,12 +53,14 @@ mod edit_replace;
 mod files;
 mod harness;
 mod hypothesis;
+mod reuse;
 #[cfg(test)]
 mod tests;
 mod worktree;
 
 pub(super) use bash::BashJobs;
 pub(crate) use files::FileReads;
+pub(super) use reuse::watch_skill_files;
 
 /// The stop signal of the cell a session's engine is running: the kernel
 /// installs each cell's signal as it starts and cancels it when the cell is
@@ -85,6 +87,7 @@ pub(super) fn register_session_tools(
     session: &super::SessionEnvironment,
 ) {
     harness::register(engine, session);
+    reuse::register(engine, session);
     let worktrees = Arc::new(worktree::Worktrees::new(handlers.clone(), session));
     worktree::register(engine, Arc::clone(&worktrees));
     hypothesis::register(engine, handlers.clone(), worktrees);

@@ -35,6 +35,7 @@ mod attach;
 mod compaction;
 mod create;
 mod event_order;
+mod in_turn_waits;
 mod lifecycle;
 mod read_goldens;
 mod shutdown;

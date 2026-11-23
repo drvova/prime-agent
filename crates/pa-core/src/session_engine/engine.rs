@@ -898,18 +898,29 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 }
             }) as crate::kernel::shared::BackgroundCellObserver
         }),
+        on_cell_wait: config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |fact| counters.note_cell_wait(fact))
+                as crate::kernel::shared::CellWaitObserver
+        }),
         // The skills' Scheme source loads at kernel start and after each
         // reload; a skill that fails to load is named on the next turn.
         // Only the skills the model sees: one whose host request never
         // registered in this embedding defines nothing in the kernel.
         skill_sources: Some({
             let reload = Arc::clone(&resource_reload);
-            let wired = handlers;
+            let wired = handlers.clone();
             Arc::new(move || {
                 crate::kernel::scheme::skills::SkillSource::from_skills(
                     &super::runtime_wiring::model_visible_skills(reload.skills(), &wired),
                 )
             })
+        }),
+        // The same skills, whole, for the reuse ledger's counts.
+        visible_skills: Some({
+            let reload = Arc::clone(&resource_reload);
+            let wired = handlers;
+            Arc::new(move || super::runtime_wiring::model_visible_skills(reload.skills(), &wired))
         }),
         on_unavailable_skills: Some({
             let boot_notice_rows = Arc::clone(&boot_notice_rows);
@@ -1044,6 +1055,10 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 .map(|file| (file.path.display().to_string(), file.content.clone()))
                 .collect(),
             skills: model_visible_skills.clone(),
+            skill_standings: crate::reuse::skill_standings(
+                &config.agent_dir,
+                &model_visible_skills,
+            ),
             selected_tools: Some(
                 active_tool_names
                     .iter()
@@ -1093,6 +1108,23 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // The static layers' byte span is the cache-stable prefix the cache
     // seam marks as its own block (shared by every session and subagent on
     // the same layers and model prompts).
+    // The skills the prompt lists are offered to this session; counted off
+    // the start path.
+    let reuse = crate::reuse::Recorder::new(&config.agent_dir, &session_id, &cwd);
+    if system_prompt_breakdown
+        .segments
+        .iter()
+        .any(|segment| segment.name == "skills-inventory")
+    {
+        reuse.record_detached(
+            crate::reuse::Event::Offered,
+            model_visible_skills
+                .iter()
+                .filter(|skill| !skill.disable_model_invocation && crate::reuse::tracked(skill))
+                .map(|skill| crate::reuse::EntryKey::Skill(skill.name.clone()))
+                .collect(),
+        );
+    }
     let system_prompt_static_len = system_prompt_breakdown.cached_prefix_len;
     let static_system_prefix =
         system_prompt_breakdown.assembled[..system_prompt_static_len].to_string();
@@ -1115,6 +1147,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             !skill.disable_model_invocation
                 && skill.name == crate::prompts::system_prompt::REFINE_SKILL_NAME
         }),
+        reuse: Some(reuse.clone()),
     };
     let (existing_messages, has_thinking_entry, has_service_tier_entry) = {
         let session = wiring.session.lock().await;
@@ -1187,6 +1220,25 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // it is installed (after the agent exists).
     let repeat_nudge_telemetry = std::sync::Arc::new(std::sync::OnceLock::new());
     let side_question_stream_fn = std::sync::Arc::clone(&timing_stream_fn);
+    // The loop's own requests (not the side questions or the judge, which
+    // fork its prefix) count the prompt-cache prefix breaks into the
+    // session's telemetry run once it is installed.
+    let prefix_break_telemetry: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<super::telemetry::SessionTelemetry>>,
+    > = std::sync::Arc::default();
+    let timing_stream_fn = if config.telemetry.is_some() {
+        let telemetry = std::sync::Arc::clone(&prefix_break_telemetry);
+        super::cache_prefix::track_prefix_breaks(
+            timing_stream_fn,
+            std::sync::Arc::new(move |bytes| {
+                if let Some(telemetry) = telemetry.get() {
+                    telemetry.note_cache_prefix_break(bytes);
+                }
+            }),
+        )
+    } else {
+        timing_stream_fn
+    };
     let semantic_recorder = config.semantic_edges.take().map(|identity| {
         std::sync::Arc::new(super::semantic_edges::SemanticEdgeRecorder::open(identity))
     });
@@ -1494,6 +1546,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // inventory (TS `_expandSkillCommand` expands from the loader); the
     // model-visible list only shapes the prompt, pre-import, and counts.
     session.set_skills(resources.skills.clone());
+    session.set_skill_reuse(reuse);
     session.set_image_model_router(config.image_model_router.clone());
     // The semantic-edge handoff: the daemon's child registry and retry
     // park read the recorder; the side question keeps the pre-semantic
@@ -1578,6 +1631,7 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
     // whether this session reports at all).
     if let Some(telemetry) = telemetry.as_ref() {
         let _ = repeat_nudge_telemetry.set(telemetry.clone());
+        let _ = prefix_break_telemetry.set(telemetry.clone());
         session.set_skill_telemetry(telemetry.clone());
         // Same lifetime for the `rlm_child_*` session counters: the
         // producer's flush counts through this handle.

@@ -127,14 +127,14 @@ fn a_rebound_jump_key_moves_the_handler_and_its_hint() {
         let mut bindings = KeybindingsConfig::new();
         bindings.insert(
             "tui.viewport.previousPrompt".to_string(),
-            vec!["ctrl+g".to_string()],
+            vec!["ctrl+alt+p".to_string()],
         );
         KeybindingsManager::with_user_bindings(bindings)
     };
     let page_up = (KeyCode::PageUp, KeyModifiers::NONE);
     let hints = format!(
         "{} prev \u{b7} {} next",
-        format_key_text("ctrl+g"),
+        format_key_text("ctrl+alt+p"),
         format_key_text("alt+pageDown")
     );
     let pinned = format!(
@@ -146,7 +146,13 @@ fn a_rebound_jump_key_moves_the_handler_and_its_hint() {
         window_after(rebound(), &[(KeyCode::PageUp, KeyModifiers::ALT), page_up]),
         window_after(
             rebound(),
-            &[page_up, (KeyCode::Char('g'), KeyModifiers::CONTROL)],
+            &[
+                page_up,
+                (
+                    KeyCode::Char('p'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+            ],
         ),
     ];
     assert_eq!(

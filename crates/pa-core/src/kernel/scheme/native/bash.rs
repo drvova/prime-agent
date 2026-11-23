@@ -122,6 +122,60 @@ pub(super) const SCHEME: &str = r#"
 (define (bash-running? job) (%native "bash-running" (hash 'job (%bash-job "bash-running?" job))))
 (define (bash-jobs) (%native "bash-jobs" (hash)))
 (define (bash-persistent-shells) (%native "bash-persistent-shells" (hash)))
+
+;; Wait inside the turn until `check` holds: {status, value, checks,
+;; waited-ms}. `check` is a procedure of no arguments (it holds when it
+;; returns anything but #f, and that is the value) or a shell command (it
+;; holds when it exits 0; the value is its last result, so a timeout still
+;; carries what it printed). It is checked at once, then every #:every
+;; seconds until #:timeout seconds (default 60, at most 3600) have passed;
+;; status is "met" or "timed_out". The wait prints a line when it starts,
+;; every 30 seconds, and when it ends, and the cell's yield window does not
+;; run while it waits (`%cell` "hold"). Defined here, after `bash`, which its
+;; shell-command form runs.
+(define (wait-until check #:timeout [timeout 60] #:every [every 1] #:label [label #f])
+  (unless (or (procedure? check) (string? check))
+    (error "wait-until: check is a procedure of no arguments or a shell command string"))
+  (unless (and (number? timeout) (> timeout 0) (<= timeout 3600))
+    (error "wait-until: #:timeout is more than 0 and at most 3600 seconds"))
+  (unless (and (number? every) (>= every 0.05))
+    (error "wait-until: #:every is at least 0.05 seconds"))
+  (let* ([test (if (string? check)
+                   (lambda ()
+                     (let ([run (bash check)])
+                       (cons (equal? (hash-ref run 'exit-code) 0) run)))
+                   (lambda () (let ([value (check)]) (cons value value))))]
+         [what (cond [(string? label) label] [(string? check) check] [else "the condition"])]
+         [start (current-inexact-milliseconds)]
+         [end (+ start (* timeout 1000))]
+         [seconds (lambda ()
+                    (number->string
+                     (exact (round (/ (- (current-inexact-milliseconds) start) 1000)))))])
+    (displayln (string-append "waiting up to " (number->string timeout) " s for " what))
+    ;; The last check may start at the timeout: a command's own wait is 10 s.
+    (%cell "hold" (+ timeout 15))
+    (let loop ([checks 1] [said start])
+      (let* ([checked (test)]
+             [met (car checked)]
+             [now (current-inexact-milliseconds)])
+        (cond
+          [(or met (>= now end))
+           (let ([status (if met "met" "timed_out")])
+             (%cell "release" status)
+             (displayln (string-append what (if met ": met after " ": timed out after ")
+                                       (seconds) " s"))
+             (hash 'status status
+                   'value (cdr checked)
+                   'checks checks
+                   'waited-ms (exact (round (- now start)))))]
+          [else
+           (let ([said (if (>= (- now said) 30000)
+                           (begin (displayln (string-append "still waiting for " what ": "
+                                                            (seconds) " s"))
+                                  now)
+                           said)])
+             (time/sleep-ms (exact (round (min (* every 1000) (- end now)))))
+             (loop (+ checks 1) said))])))))
 "#;
 
 /// The wait window of a session that delivers completion notices.

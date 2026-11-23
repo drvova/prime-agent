@@ -45,7 +45,8 @@ use steel::steel_vm::register_fn::RegisterFn;
 
 use crate::kernel::cell_window::CellWindow;
 use crate::kernel::shared::{
-    BackgroundCellObserver, HostRequestHandlers, HostRequestPayload, END_TURN_REQUEST_TYPE,
+    BackgroundCellObserver, CellWaitObserver, HostRequestHandlers, HostRequestPayload,
+    END_TURN_REQUEST_TYPE,
 };
 use crate::tools::kernel_cell::{
     BootstrapProgressHandler, ExecuteResult, KernelExecuteOptions, KernelExecutor,
@@ -263,6 +264,8 @@ pub struct SchemeKernelOptions {
     pub cell_window: CellWindow,
     /// Hears each cell that moves to the background, and how it ends.
     pub on_background_cell: Option<BackgroundCellObserver>,
+    /// Hears each `wait-until` wait a cell makes, and how it ends.
+    pub on_cell_wait: Option<CellWaitObserver>,
     /// The source lines a failed command a cell waited for gets on the
     /// cell's result. The default attaches none.
     pub error_context: crate::kernel::error_context::ErrorContext,
@@ -271,6 +274,10 @@ pub struct SchemeKernelOptions {
     pub skill_sources: Option<skills::SkillSourcesProvider>,
     /// Told which skills' Scheme source failed to load.
     pub on_unavailable_skills: Option<skills::UnavailableSchemeSkillsCallback>,
+    /// The skills the session's model sees, whose reads, writes and calls
+    /// the reuse ledger counts ([`crate::reuse`]). Counted only with
+    /// `agent_dir` and `session_id` set.
+    pub visible_skills: Option<crate::reuse::VisibleSkills>,
     /// Fires each time the kernel's last live background job settles (a
     /// shell command or a cell that outlived its call), so the session can
     /// run what was waiting for it.
@@ -310,10 +317,15 @@ pub(crate) struct SessionEnvironment {
     pub(crate) artifact_dir: Option<PathBuf>,
     pub(crate) cell_window: CellWindow,
     pub(crate) on_background_cell: Option<BackgroundCellObserver>,
+    pub(crate) on_cell_wait: Option<CellWaitObserver>,
     pub(crate) agent_dir: Option<PathBuf>,
     pub(crate) error_context: crate::kernel::error_context::ErrorContext,
     pub(crate) background: session::BackgroundWork,
     pub(crate) output_budget: crate::kernel::spill::OutputBudget,
+    pub(crate) visible_skills: Option<crate::reuse::VisibleSkills>,
+    /// Records this session's uses of stored entries; `None` without an
+    /// agent dir or a session id.
+    pub(crate) reuse: Option<crate::reuse::Recorder>,
 }
 
 /// One session's engine and the cells it runs.
@@ -427,6 +439,17 @@ impl SchemeKernelProvisioner {
         if let Some(agent_dir) = &options.agent_dir {
             mcp.set_agent_dir(agent_dir.clone());
         }
+        let reuse = options
+            .agent_dir
+            .as_deref()
+            .zip(options.session_id.as_deref())
+            .map(|(agent_dir, session)| {
+                crate::reuse::Recorder::new(agent_dir, session, &options.cwd)
+            });
+        let mut handlers = options.host_handlers;
+        if let Some((recorder, skills)) = reuse.as_ref().zip(options.visible_skills.as_ref()) {
+            native::watch_skill_files(&mut handlers, recorder, skills);
+        }
         let environment = Arc::new(SessionEnvironment {
             cwd: options.cwd,
             shell: options.shell,
@@ -437,23 +460,23 @@ impl SchemeKernelProvisioner {
             artifact_dir: options.artifact_dir,
             cell_window: options.cell_window,
             on_background_cell: options.on_background_cell,
+            on_cell_wait: options.on_cell_wait,
             agent_dir: options.agent_dir,
             error_context: options.error_context,
             background: session::BackgroundWork::new(options.on_background_work_settled),
             output_budget: options.output_budget,
+            visible_skills: options.visible_skills,
+            reuse,
         });
         SchemeKernelProvisioner {
             state: Arc::new(ProvisionerState {
                 mcp,
-                rizin: Arc::new(rizin::Registry::new(
-                    options.host_handlers.clone(),
-                    &environment,
-                )),
+                rizin: Arc::new(rizin::Registry::new(handlers.clone(), &environment)),
                 skill_sources: options.skill_sources,
                 on_unavailable_skills: options.on_unavailable_skills,
                 on_started: options.on_started,
                 on_state_lost: options.on_state_lost,
-                handlers: options.host_handlers,
+                handlers,
                 environment,
                 session: tokio::sync::Mutex::new(None),
             }),
@@ -531,6 +554,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 state.skill_sources.clone(),
                 state.on_unavailable_skills.clone(),
                 &mut handlers,
+                state.environment.reuse.clone(),
             );
             let factory = factory::Executor::new(
                 state.handlers.clone(),
@@ -599,10 +623,15 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                                 // The engine cannot interrupt this wait: it
                                 // ends with the cell's signal instead, and
                                 // dropping the request withdraws it.
-                                let stopped = running.map(|cell| cell.signal());
+                                let stopped = running.as_ref().map(cell::CellHandle::signal);
                                 let question = (request_type == "question.ask")
                                     .then(|| data.get("id").cloned())
                                     .flatten();
+                                // A question waits for the user inside the
+                                // turn: the cell's yield window stops meanwhile.
+                                if let (Some(_), Some(cell)) = (&question, &running) {
+                                    cell.hold(None);
+                                }
                                 let answered = runtime.block_on(async {
                                     let request = handler(HostRequestPayload { data });
                                     match &stopped {
@@ -613,6 +642,9 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                                         None => Some(request.await),
                                     }
                                 });
+                                if let (Some(_), Some(cell)) = (&question, &running) {
+                                    cell.release();
+                                }
                                 match answered {
                                     Some(Ok(value)) => json!({ "value": value }),
                                     Some(Err(error)) => json!({ "error": format!("{error:#}") }),

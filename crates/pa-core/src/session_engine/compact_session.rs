@@ -8,7 +8,7 @@ use super::compaction::{estimate_context_tokens, find_cut_point, CutPointResult}
 use super::compaction_exec;
 use super::compaction_exec::{
     add_assistant_usage, build_summarization_request, build_turn_prefix_request,
-    compaction_entry_for, complete_summary_call, details_for, file_ops_block, split_summary,
+    compaction_entry_for, complete_summary_call, details_for, split_summary, summary_blocks,
     summed_usage, CompactionDetails, CompactionResult, SummaryDeltaSink, SummarySlice,
     NO_PRIOR_HISTORY,
 };
@@ -61,13 +61,13 @@ pub struct CompactOptions<'a> {
     pub semantic_edges: Option<std::sync::Arc<super::semantic_edges::SemanticEdgeRecorder>>,
 }
 
-/// The model-visible message produced by a session entry (summarizer input).
+/// The model-visible message produced by a session entry (summarizer input). A tool result is
+/// summarizer input too: it is where a test's outcome, an error and what a command found are,
+/// and `serialize_conversation` caps each one (`TOOL_RESULT_MAX_CHARS`), so the request stays
+/// smaller than the span it summarizes, which the context window already held whole.
 fn message_from_entry(entry: &FileEntry) -> Option<AgentMessage> {
     match entry {
-        FileEntry::Message { message, .. } => match message {
-            AgentMessage::ToolResult(_) => None,
-            _ => Some(message.clone()),
-        },
+        FileEntry::Message { message, .. } => Some(message.clone()),
         FileEntry::CustomMessage { payload, .. } => {
             if payload.custom_type == "harness_digest"
                 || payload.custom_type == super::kernel_state_notice::KERNEL_STATE_CUSTOM_TYPE
@@ -232,12 +232,21 @@ pub(crate) fn prepare_attempt(
     let prev_compaction_index = entries[..cut.first_kept_entry_index]
         .iter()
         .rposition(|entry| matches!(entry, FileEntry::Compaction { .. }));
-    // A split turn's prefix file operations still belong in the summary
-    // details.
-    let mut file_op_messages = history.clone();
-    file_op_messages.extend(turn_prefix_messages.iter().cloned());
-    let details: CompactionDetails =
-        details_for(&file_op_messages, &entries, prev_compaction_index);
+    // The details read every summarized message (a kernel cell's diffs and
+    // errors ride its result), a split turn's prefix too.
+    let span: Vec<AgentMessage> = entries[preparation.boundary_start..cut.first_kept_entry_index]
+        .iter()
+        .filter_map(message_from_entry)
+        .collect();
+    let details: CompactionDetails = details_for(
+        &span,
+        &entries,
+        prev_compaction_index,
+        super::compaction_carry::LiveWork {
+            goal: session.active_goal_state(),
+            todos: session.active_todo_list(),
+        },
+    );
     Ok(CompactionAttempt {
         session_id: session.get_session_id().to_string(),
         prefix_leaf,
@@ -500,10 +509,7 @@ pub(crate) async fn summarize_attempt(
             Some(prefix) => split_summary("", &prefix.summary),
             None => String::new(),
         };
-        remainder.push_str(&file_ops_block(
-            &attempt.details.read_files,
-            &attempt.details.modified_files,
-        ));
+        remainder.push_str(&summary_blocks(&attempt.details));
         if !remainder.is_empty() {
             sink(&remainder);
         }
@@ -514,10 +520,7 @@ pub(crate) async fn summarize_attempt(
         Some(prefix) => split_summary(&history_slice.summary, &prefix.summary),
         None => history_slice.summary.clone(),
     };
-    summary.push_str(&file_ops_block(
-        &attempt.details.read_files,
-        &attempt.details.modified_files,
-    ));
+    summary.push_str(&summary_blocks(&attempt.details));
     let mut slices = vec![history_slice];
     if let Some(prefix) = turn_prefix_slice {
         slices.push(prefix);

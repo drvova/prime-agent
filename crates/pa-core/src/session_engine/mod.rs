@@ -10,10 +10,12 @@ pub mod bash_notices;
 pub mod better;
 pub mod billing;
 pub mod branch_summarization;
+mod cache_prefix;
 mod cache_warming;
 pub mod checkpoint_host;
 pub mod compact_session;
 pub mod compaction;
+pub mod compaction_carry;
 pub mod compaction_exec;
 pub mod compaction_trace;
 pub mod compaction_utils;
@@ -170,6 +172,9 @@ pub struct AgentSession {
     /// The telemetry handle for the `skill_use_count` counter the prompt
     /// path owns (`None` in sessions without telemetry).
     skill_telemetry: Option<std::sync::Arc<telemetry::SessionTelemetry>>,
+    /// Counts each `/skill:<name>` use in the reuse ledger (`None` when
+    /// the session has no agent dir to keep one in).
+    skill_reuse: Option<crate::reuse::Recorder>,
     /// The image-model routing host seam; `None` keeps the session
     /// model on image turns.
     image_model_router: Option<image_model_routing::ImageModelRouter>,
@@ -277,6 +282,7 @@ impl AgentSession {
             pending_next_turn_rows: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             skills: Vec::new(),
             skill_telemetry: None,
+            skill_reuse: None,
             image_model_router: None,
             compaction_summary_sink: std::sync::Mutex::new(None),
             semantic_edges: std::sync::Mutex::new(None),

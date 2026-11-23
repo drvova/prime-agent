@@ -103,6 +103,11 @@ impl AgentSession {
         self.skill_telemetry = Some(telemetry);
     }
 
+    /// Bind the reuse ledger recorder a `/skill:<name>` use counts in.
+    pub fn set_skill_reuse(&mut self, recorder: crate::reuse::Recorder) {
+        self.skill_reuse = Some(recorder);
+    }
+
     /// Bind the durable store the session's `model_usage` rows append to.
     pub fn set_usage_store(&mut self, store: std::sync::Arc<dyn rlm_usage::RlmChildUsageStore>) {
         self.usage_store = store;

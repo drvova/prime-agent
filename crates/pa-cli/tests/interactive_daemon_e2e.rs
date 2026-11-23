@@ -3733,12 +3733,14 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
     let agent_dir = dir.path().join("agent");
     let session_dir = agent_dir.join("sessions");
     std::fs::create_dir_all(&session_dir).expect("session dir");
-    // `app.session.resume` has no default key, so the fixture binds it to a
-    // plain key no other action has by default (both products fire the action
-    // with text in the editor). F2 is `app.model.cycleRecent`'s default.
+    // `app.session.resume` has no default key, so the fixture binds it to F2
+    // (both products fire the action with text in the editor). F2 is also
+    // `app.model.cycleRecent`'s default, whose handler runs first: the user's
+    // binding must take the key from it, so this is the end-to-end guard for
+    // a user binding winning over a default added after it.
     std::fs::write(
         agent_dir.join("keybindings.json"),
-        r#"{ "app.session.resume": "f9" }"#,
+        r#"{ "app.session.resume": "f2" }"#,
     )
     .expect("write keybindings.json");
     let supervisor = spawn_supervisor(dir.path());
@@ -3809,7 +3811,7 @@ async fn tui_prompt_stash_survives_the_agents_view_handoff() {
             pa_tui::interactive::HeadlessStep::WaitMs(300),
             pa_tui::interactive::HeadlessStep::Type(" f24 handoff draft".to_string()),
             pa_tui::interactive::HeadlessStep::Key(KeyEvent::new(
-                KeyCode::F(9),
+                KeyCode::F(2),
                 KeyModifiers::NONE,
             )),
         ],

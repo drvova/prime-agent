@@ -80,6 +80,10 @@ pub struct BuildSystemPromptOptions<'a> {
     /// Pre-loaded context files (path, content).
     pub context_files: Vec<(String, String)>,
     pub skills: Vec<Skill>,
+    /// How each skill has been reused, read once when the prompt is built
+    /// (session start, `/reload`), so the inventory's marks never change
+    /// within a session's prompt.
+    pub skill_standings: std::collections::BTreeMap<String, crate::reuse::Standing>,
     /// Whether to include the subagent surface in this session.
     pub allow_recursion: Option<bool>,
     /// Fixed recursive-agent depth for this session.
@@ -192,7 +196,9 @@ pub fn system_prompt_breakdown(options: &BuildSystemPromptOptions) -> SystemProm
         .filter(|skill| !skill.disable_model_invocation)
         .collect();
     if has_file_access && !visible_skills.is_empty() {
-        let inventory = format_skills_for_prompt(&options.skills).trim().to_string();
+        let inventory = format_skills_for_prompt(&options.skills, &options.skill_standings)
+            .trim()
+            .to_string();
         segments.push(PromptSegment::dynamic_segment(
             "skills-inventory",
             "skill discovery",

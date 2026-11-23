@@ -1115,3 +1115,174 @@ async fn a_later_definition_does_not_change_what_earlier_functions_call() {
         .map(|answer| Some(answer.to_string()))
     );
 }
+
+/// A question waits for the user inside its cell's call: the yield window
+/// does not run while it is open, so an answer that comes after the window
+/// still comes back in the same call instead of in a background cell.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_answered_after_the_window_returns_in_its_own_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let (opened, mut asked) = tokio::sync::mpsc::unbounded_channel();
+    let mut handlers = HostRequestHandlers::new();
+    let answering = Arc::clone(&release);
+    handlers.register(
+        "question.ask",
+        host_handler(move |_payload: HostRequestPayload| {
+            let release = Arc::clone(&answering);
+            // The test may have stopped listening.
+            let _ = opened.send(());
+            async move {
+                release.notified().await;
+                Ok(json!({"status": "answered", "answer": ["done"]}))
+            }
+        }),
+    );
+    let (kernel, facts) = windowed_kernel(handlers, dir.path()).await;
+    let call = run(
+        kernel.as_ref(),
+        r#"(hash-ref (ask "Approve the prompt, then pick one" (list "done" "it failed")) 'answer)"#,
+    );
+    tokio::pin!(call);
+    tokio::select! {
+        _ = asked.recv() => {}
+        result = &mut call => panic!("the cell returned before its question opened: {result:?}"),
+    }
+    // Five of the session's 100 ms windows pass while the user thinks; a
+    // call that returns meanwhile left its question to a background cell.
+    let early = tokio::time::timeout(Duration::from_millis(500), &mut call).await;
+    release.notify_one();
+    let result = match early {
+        Ok(early) => early,
+        Err(_) => tokio::time::timeout(PATIENCE, call)
+            .await
+            .expect("the answer ended the call"),
+    };
+    assert_eq!(
+        (
+            result.status,
+            result.result,
+            result.backgrounded_cell,
+            facts.lock().unwrap().clone(),
+        ),
+        (
+            ExecuteStatus::Ok,
+            Some("\"done\"".to_string()),
+            None,
+            Vec::<&str>::new()
+        )
+    );
+}
+
+/// `wait-until` checks until its condition holds and returns its value, in
+/// the cell's own call however long past the window that takes.
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_until_returns_when_its_condition_holds_inside_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, facts) = windowed_kernel(HostRequestHandlers::new(), dir.path()).await;
+    let result = run(
+        kernel.as_ref(),
+        "(define checked 0)
+         (let ([waited (wait-until (lambda () (set! checked (+ checked 1)) (and (>= checked 4) checked))
+                                   #:every 0.1)])
+           (list (hash-ref waited 'status) (hash-ref waited 'value) (hash-ref waited 'checks)))",
+    )
+    .await;
+    assert_eq!(
+        (
+            result.status,
+            result.result,
+            result.stdout,
+            result.backgrounded_cell,
+            facts.lock().unwrap().clone(),
+        ),
+        (
+            ExecuteStatus::Ok,
+            Some("(\"met\" 4 4)".to_string()),
+            "waiting up to 60 s for the condition\nthe condition: met after 0 s\n".to_string(),
+            None,
+            Vec::<&str>::new()
+        )
+    );
+}
+
+/// A condition that never holds ends the wait at its timeout, with a result
+/// that says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_until_times_out_with_a_result_that_says_so() {
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let result = run(
+        kernel.as_ref(),
+        r#"(let ([waited (wait-until (lambda () #f) #:timeout 0.3 #:every 0.1 #:label "the flag file")])
+             (list (hash-ref waited 'status) (hash-ref waited 'value)))"#,
+    )
+    .await;
+    assert_eq!(
+        (result.status, result.result, result.stdout),
+        (
+            ExecuteStatus::Ok,
+            Some("(\"timed_out\" #false)".to_string()),
+            "waiting up to 0.3 s for the flag file\nthe flag file: timed out after 0 s\n"
+                .to_string()
+        )
+    );
+}
+
+/// A shell command is a condition too: it holds once it exits 0, here once
+/// a background command has written its file.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn wait_until_takes_a_shell_command_that_holds_when_it_exits_0() {
+    let dir = tempfile::tempdir().unwrap();
+    let (kernel, _facts) = windowed_kernel(HostRequestHandlers::new(), dir.path()).await;
+    let result = run_to_its_end(
+        kernel.as_ref(),
+        r#"(bash "sleep 0.3 && echo ready > flag" (hash 'background #t))
+           (let ([waited (wait-until "test -f flag" #:every 0.05)])
+             (list (hash-ref waited 'status) (hash-ref (hash-ref waited 'value) 'exit-code)))"#,
+    )
+    .await;
+    assert_eq!(result.result, Some("(\"met\" 0)".to_string()));
+}
+
+/// A stopped cell stops its wait at once and frees the engine.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_ends_wait_until_at_once() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let kernel = SchemeKernelProvisioner::new(HostRequestHandlers::new(), "/")
+        .ensure(None, None)
+        .await
+        .unwrap();
+    let signal = AbortSignal::new();
+    let abort = signal.clone();
+    let waiting = Arc::clone(&started);
+    let aborting = tokio::spawn(async move {
+        waiting.notified().await;
+        abort.cancel();
+    });
+    let on_stream = |_text: &str, _stream: &'static str| started.notify_one();
+    let result = tokio::time::timeout(
+        PATIENCE,
+        kernel.execute(
+            "(wait-until (lambda () #f) #:timeout 3600 #:every 0.05)",
+            KernelExecuteOptions {
+                signal: Some(signal),
+                timeout_ms: None,
+                on_stream: Some(&on_stream),
+                on_late_sent_agent_message: None,
+            },
+        ),
+    )
+    .await
+    .expect("the stop ended the wait")
+    .unwrap();
+    aborting.await.unwrap();
+    let after = run(kernel.as_ref(), "(+ 1 2)").await;
+    assert_eq!(
+        (result.status, after.result),
+        (ExecuteStatus::Aborted, Some("3".to_string()))
+    );
+}

@@ -9,7 +9,10 @@ use super::{
 /// `session_event` frames, matching the worker's event vocabulary).
 #[derive(Debug, Clone, PartialEq)]
 pub enum TurnUpdate {
-    /// `agent_start` / `turn_start`.
+    /// `agent_start`: a run opens (a prompt's, a retried attempt's, or a continued run's).
+    RunStarted,
+    /// `turn_start`: one model response of the run begins; the daemon opens every model
+    /// response of a run with one, so a run with tool rounds carries several.
     TurnStarted,
     /// `session_info_changed`: the session display name (cleared when
     /// the event carries none).
@@ -200,7 +203,8 @@ pub fn event_to_update(event: &Value) -> Option<TurnUpdate> {
                 .and_then(Value::as_str)
                 .map(str::to_string),
         }),
-        "agent_start" | "turn_start" => Some(TurnUpdate::TurnStarted),
+        "agent_start" => Some(TurnUpdate::RunStarted),
+        "turn_start" => Some(TurnUpdate::TurnStarted),
         // Every attached client re-reads the session display name.
         "session_info_changed" => Some(TurnUpdate::SessionInfoChanged {
             name: event

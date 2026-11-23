@@ -174,6 +174,102 @@ pub fn score_harness_entry_for_query(
     score
 }
 
+/// One kind's entries in the digest's order: by relevance to `query_terms`
+/// when there are any, then by path, title and id. The ranked corpus is the
+/// kind's own entries: they compete for the same top-k slots, so document
+/// frequency discounts terms ubiquitous within the kind rather than across
+/// unrelated kinds.
+fn ranked_entries(
+    mut entries: Vec<HarnessEntry>,
+    query_terms: Option<&HarnessQueryTerms>,
+) -> Vec<HarnessEntry> {
+    let ranked_idf = match query_terms {
+        Some(terms) if !terms.is_empty() => Some(harness_query_term_idf(&entries, terms)),
+        _ => None,
+    };
+    entries.sort_by(|a, b| match (query_terms, ranked_idf.as_ref()) {
+        (Some(terms), idf) if !terms.is_empty() => {
+            let left = score_harness_entry_for_query(b, terms, idf)
+                .partial_cmp(&score_harness_entry_for_query(a, terms, idf))
+                .unwrap_or(std::cmp::Ordering::Equal);
+            if left != std::cmp::Ordering::Equal {
+                return left;
+            }
+            entry_sort_key(a).cmp(&entry_sort_key(b))
+        }
+        _ => entry_sort_key(a).cmp(&entry_sort_key(b)),
+    });
+    entries
+}
+
+/// The digest's line for one entry: what the entry costs the prompt each
+/// time a digest shows it.
+#[must_use]
+pub fn digest_entry_line(entry: &HarnessEntry, max_content_length: usize) -> String {
+    let arguments_text = if entry.kind == RefinementKind::Skill && !entry.arguments.is_empty() {
+        format!(
+            " args={}",
+            compact_harness_text(
+                &serde_json::to_string(&entry.arguments).unwrap_or_default(),
+                max_content_length
+            )
+        )
+    } else {
+        String::new()
+    };
+    let reference_text = if entry.kind == RefinementKind::Skill && !entry.reference.is_empty() {
+        format!(
+            " ref={}",
+            compact_harness_text(
+                &serde_json::to_string(&entry.reference).unwrap_or_default(),
+                max_content_length
+            )
+        )
+    } else {
+        String::new()
+    };
+    let scope = match entry.scope {
+        Some(super::HarnessScope::Local) => "local",
+        _ => "global",
+    };
+    format!(
+        "- [{}:{}] {} ({}, v{}){}{}: {}",
+        scope,
+        entry.id,
+        entry.title,
+        entry.path,
+        entry.version,
+        reference_text,
+        arguments_text,
+        compact_harness_text(&entry.content, max_content_length)
+    )
+}
+
+/// The entries a digest rendered with `options` shows, kind by kind in the
+/// digest's order: at most its per-kind limit of each.
+#[must_use]
+pub fn digest_shown_entries(
+    state: &HarnessState,
+    options: &HarnessStatePromptOptions,
+) -> Vec<HarnessEntry> {
+    let max_entries_per_kind = options
+        .max_entries_per_kind
+        .unwrap_or(DEFAULT_OVERVIEW_ENTRY_LIMIT);
+    REFINEMENT_KINDS
+        .iter()
+        .flat_map(|kind| {
+            let entries = state
+                .entries
+                .get(&kind_for(kind))
+                .map(|entries| entries.values().cloned().collect())
+                .unwrap_or_default();
+            ranked_entries(entries, options.query_terms.as_ref())
+                .into_iter()
+                .take(max_entries_per_kind)
+        })
+        .collect()
+}
+
 fn entry_sort_key(entry: &HarnessEntry) -> String {
     format!("{}\0{}\0{}", entry.path, entry.title, entry.id)
 }
@@ -242,26 +338,7 @@ pub fn format_harness_state_for_prompt(
             .get(&kind_for(kind))
             .cloned()
             .unwrap_or_default();
-        // The ranked corpus is the kind's own entries: they compete for the
-        // same top-k slots, so document frequency discounts terms ubiquitous
-        // within the kind rather than across unrelated kinds.
-        let mut entries: Vec<HarnessEntry> = entries.into_values().collect();
-        let ranked_idf = match query_terms.as_ref() {
-            Some(terms) if !terms.is_empty() => Some(harness_query_term_idf(&entries, terms)),
-            _ => None,
-        };
-        entries.sort_by(|a, b| match (query_terms.as_ref(), ranked_idf.as_ref()) {
-            (Some(terms), idf) if !terms.is_empty() => {
-                let left = score_harness_entry_for_query(b, terms, idf)
-                    .partial_cmp(&score_harness_entry_for_query(a, terms, idf))
-                    .unwrap_or(std::cmp::Ordering::Equal);
-                if left != std::cmp::Ordering::Equal {
-                    return left;
-                }
-                entry_sort_key(a).cmp(&entry_sort_key(b))
-            }
-            _ => entry_sort_key(a).cmp(&entry_sort_key(b)),
-        });
+        let entries = ranked_entries(entries.into_values().collect(), query_terms.as_ref());
         total_entries += entries.len();
         let kind_name = kind;
         if kind_name == "subagent" && !entries.is_empty() && include_kernel_tool {
@@ -283,45 +360,7 @@ pub fn format_harness_state_for_prompt(
             }
         }
         for entry in entries.iter().take(max_entries_per_kind) {
-            let arguments_text =
-                if entry.kind == RefinementKind::Skill && !entry.arguments.is_empty() {
-                    format!(
-                        " args={}",
-                        compact_harness_text(
-                            &serde_json::to_string(&entry.arguments).unwrap_or_default(),
-                            max_content_length
-                        )
-                    )
-                } else {
-                    String::new()
-                };
-            let reference_text =
-                if entry.kind == RefinementKind::Skill && !entry.reference.is_empty() {
-                    format!(
-                        " ref={}",
-                        compact_harness_text(
-                            &serde_json::to_string(&entry.reference).unwrap_or_default(),
-                            max_content_length
-                        )
-                    )
-                } else {
-                    String::new()
-                };
-            let scope = match entry.scope {
-                Some(super::HarnessScope::Local) => "local",
-                _ => "global",
-            };
-            lines.push(format!(
-                "- [{}:{}] {} ({}, v{}){}{}: {}",
-                scope,
-                entry.id,
-                entry.title,
-                entry.path,
-                entry.version,
-                reference_text,
-                arguments_text,
-                compact_harness_text(&entry.content, max_content_length)
-            ));
+            lines.push(digest_entry_line(entry, max_content_length));
         }
         let overflow = entries.len().saturating_sub(max_entries_per_kind);
         if overflow > 0 {

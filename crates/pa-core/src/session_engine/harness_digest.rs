@@ -9,8 +9,8 @@ use pa_agent::types::{AgentMessage, Message, UserContent, UserPart};
 use pa_types::session::{AgentMessage as SessionAgentMessage, FileEntry};
 
 use crate::refinement::ranking::{
-    format_harness_state_for_prompt, harness_digest_fingerprint, harness_query_terms,
-    HarnessDigestRenderFlags, HarnessQueryTerms, HarnessStatePromptOptions,
+    digest_shown_entries, format_harness_state_for_prompt, harness_digest_fingerprint,
+    harness_query_terms, HarnessDigestRenderFlags, HarnessQueryTerms, HarnessStatePromptOptions,
 };
 use crate::refinement::{load_harness_state, merge_harness_states, HarnessScope};
 
@@ -31,6 +31,9 @@ pub struct HarnessDigestContext {
     pub include_kernel_tool: bool,
     pub include_shell_examples: bool,
     pub include_refine: bool,
+    /// Counts the global entries each render shows as offered to the
+    /// session; `None` counts nothing.
+    pub reuse: Option<crate::reuse::Recorder>,
 }
 
 /// Relevance terms for digest entry ranking: the active goal objective
@@ -93,16 +96,25 @@ fn render_digest_with_fingerprint(
         include_shell_examples: context.include_shell_examples,
         include_refine_examples: context.include_kernel_tool && context.include_refine,
     };
-    let digest = format_harness_state_for_prompt(
-        &merged,
-        &HarnessStatePromptOptions {
-            include_kernel_examples: Some(context.include_kernel_tool),
-            include_shell_examples: context.include_shell_examples,
-            include_refine_examples: Some(render_flags.include_refine_examples),
-            query_terms: Some(query_terms),
-            ..Default::default()
-        },
-    );
+    let options = HarnessStatePromptOptions {
+        include_kernel_examples: Some(context.include_kernel_tool),
+        include_shell_examples: context.include_shell_examples,
+        include_refine_examples: Some(render_flags.include_refine_examples),
+        query_terms: Some(query_terms),
+        ..Default::default()
+    };
+    let digest = format_harness_state_for_prompt(&merged, &options);
+    if let Some(reuse) = &context.reuse {
+        // Counted off the render's path: a render precedes a model call.
+        reuse.record_detached(
+            crate::reuse::Event::Offered,
+            digest_shown_entries(&merged, &options)
+                .into_iter()
+                .filter(|entry| entry.scope == Some(HarnessScope::Global))
+                .map(|entry| crate::reuse::EntryKey::Harness(entry.kind, entry.id))
+                .collect(),
+        );
+    }
     let state_fingerprint = harness_digest_fingerprint(&merged, render_flags);
     HarnessDigestRender {
         digest,

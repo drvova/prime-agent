@@ -70,6 +70,7 @@ pub(crate) mod project_card;
 pub mod prompts;
 pub mod refinement;
 pub mod resources;
+pub mod reuse;
 pub mod session;
 pub mod session_engine;
 pub mod settings;

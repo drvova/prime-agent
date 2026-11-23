@@ -76,6 +76,7 @@ mod auxiliary_model;
 mod cut_math;
 mod execute_compaction;
 mod prepare_compaction;
+mod retention;
 mod second_compaction;
 mod skip_guards;
 mod split_turn;

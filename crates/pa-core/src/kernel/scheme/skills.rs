@@ -23,6 +23,7 @@
 //! Skills discovered in the project's own directory are never loaded: code
 //! a repository ships must not run in the session by being checked out.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -133,6 +134,32 @@ pub(super) struct SkillLoader {
     unavailable: Arc<Mutex<UnavailableSchemeSkills>>,
     /// How long one source may take to evaluate before it is stopped.
     load_limit: std::time::Duration,
+    /// The functions the loaded sources define, each with its skill: a cell
+    /// that names one uses the skill.
+    functions: Mutex<BTreeMap<String, String>>,
+    /// Counts those uses.
+    reuse: Option<crate::reuse::Recorder>,
+}
+
+/// Whether `letter` ends a Scheme identifier.
+fn ends_identifier(letter: char) -> bool {
+    letter.is_whitespace() || "()[]{}\"';`,".contains(letter)
+}
+
+/// The names `text` defines with `(define name ...)` or `(define (name
+/// ...) ...)`, internal `%` names left out.
+fn defined_names(text: &str) -> impl Iterator<Item = String> + '_ {
+    text.match_indices("(define").filter_map(|(at, opening)| {
+        // `(define-syntax ...)` and its kin define no function.
+        let rest = text[at + opening.len()..].strip_prefix(char::is_whitespace)?;
+        let rest = rest.trim_start();
+        let rest = rest.strip_prefix('(').unwrap_or(rest);
+        let name: String = rest
+            .chars()
+            .take_while(|letter| !ends_identifier(*letter))
+            .collect();
+        (!name.is_empty() && !name.starts_with('%')).then_some(name)
+    })
 }
 
 /// How long one skill source may take to evaluate before it is stopped.
@@ -149,6 +176,7 @@ impl SkillLoader {
         sources: Option<SkillSourcesProvider>,
         on_unavailable: Option<UnavailableSchemeSkillsCallback>,
         handlers: &mut HostRequestHandlers,
+        reuse: Option<crate::reuse::Recorder>,
     ) -> Self {
         let reload_requested = Arc::new(AtomicBool::new(false));
         if let Some(reload) = handlers.get("rlm.reload").cloned() {
@@ -176,6 +204,35 @@ impl SkillLoader {
                 .ok()
                 .and_then(|raw| raw.parse().ok())
                 .map_or(LOAD_LIMIT, std::time::Duration::from_millis),
+            functions: Mutex::new(BTreeMap::new()),
+            reuse,
+        }
+    }
+
+    /// Count a use of each skill whose functions `code` names, before the
+    /// cell runs. A ledger that cannot be written is logged.
+    pub(super) fn note_cell(&self, code: &str) {
+        let Some(reuse) = &self.reuse else {
+            return;
+        };
+        let used: BTreeSet<String> = {
+            let functions = self
+                .functions
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if functions.is_empty() {
+                return;
+            }
+            code.split(ends_identifier)
+                .filter_map(|word| functions.get(word).cloned())
+                .collect()
+        };
+        let keys: Vec<crate::reuse::EntryKey> = used
+            .into_iter()
+            .map(crate::reuse::EntryKey::Skill)
+            .collect();
+        if let Err(error) = reuse.record(crate::reuse::Event::Used, &keys) {
+            tracing::warn!("the reuse ledger was not updated: {error:#}");
         }
     }
 
@@ -229,6 +286,7 @@ impl SkillLoader {
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let mut unavailable: UnavailableSchemeSkills = Vec::new();
+        let mut functions: BTreeMap<String, String> = BTreeMap::new();
         // What a source displays while loading belongs to no cell: it goes
         // to a port nothing reads (never the process's standard output), and
         // the next cell installs its own as every cell does.
@@ -249,6 +307,7 @@ impl SkillLoader {
                         break;
                     }
                 };
+                let names: Vec<String> = defined_names(&text).collect();
                 let known = evaluated.iter().position(|known| known.path == path);
                 let error =
                     if let Some(unchanged) = known.filter(|known| evaluated[*known].text == text) {
@@ -295,6 +354,9 @@ impl SkillLoader {
                         }
                         error
                     };
+                for name in names {
+                    functions.entry(name).or_insert_with(|| skill.name.clone());
+                }
                 if let Some(error) = error {
                     // The skill's later files build on this one.
                     unavailable.push((skill.name.clone(), format!("{shown}: {error}")));
@@ -302,6 +364,10 @@ impl SkillLoader {
                 }
             }
         }
+        *self
+            .functions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = functions;
         let changed = {
             let mut current = self
                 .unavailable

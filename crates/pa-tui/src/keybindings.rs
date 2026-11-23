@@ -7,28 +7,65 @@
 use anyhow::Result;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeybindingDefinition {
     pub default_keys: &'static [&'static str],
-    #[allow(dead_code)]
     pub description: &'static str,
-    pub default_key_scope: Option<&'static str>,
+    /// Where the action reads its key: a user binding takes a default key only from the actions
+    /// that read keys where it does.
+    pub(crate) surfaces: &'static [KeySurface],
+}
+
+/// Where an action's key is read, so [`KeybindingsManager`] knows which defaults a user binding
+/// competes with: one keypress reaches the actions of every surface that
+/// [`shares_keys_with`](Self::shares_keys_with) the one it lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeySurface {
+    /// The prompt editor's own keys (motions, editing, submit), read after the session view's
+    /// actions.
+    Editor,
+    /// The session view's actions, read before the editor whatever the prompt holds.
+    Composer,
+    /// Session view actions read only while the prompt is empty; with text the key is the
+    /// editor's (default `left` is `app.agents.back` on an empty prompt and a cursor motion
+    /// otherwise).
+    EmptyComposer,
+    /// The list and dialog keys every panel and picker reads.
+    List,
+    /// One panel's own keys, read while that panel owns the keyboard.
+    Panel(&'static str),
+}
+
+impl KeySurface {
+    /// Whether one keypress can reach actions on both surfaces: the session view reads its
+    /// actions and then the editor, an empty-prompt action never shares a key with the editor it
+    /// gives way to, and a panel reads its own keys and the list keys.
+    fn shares_keys_with(self, other: Self) -> bool {
+        match (self, other) {
+            (Self::Editor, Self::Editor | Self::Composer)
+            | (Self::Composer, Self::Editor | Self::Composer | Self::EmptyComposer)
+            | (Self::EmptyComposer, Self::Composer | Self::EmptyComposer)
+            | (Self::List, Self::List | Self::Panel(_))
+            | (Self::Panel(_), Self::List) => true,
+            (Self::Panel(own), Self::Panel(other)) => own == other,
+            (Self::Editor, Self::EmptyComposer | Self::List | Self::Panel(_))
+            | (Self::Composer, Self::List | Self::Panel(_))
+            | (Self::EmptyComposer, Self::Editor | Self::List | Self::Panel(_))
+            | (Self::List | Self::Panel(_), Self::Editor | Self::Composer | Self::EmptyComposer) => {
+                false
+            }
+        }
+    }
 }
 
 macro_rules! def {
-    ($keys:expr, $desc:expr) => {
+    ($keys:expr, $desc:expr, $($surface:expr),+) => {
         KeybindingDefinition {
             default_keys: $keys,
             description: $desc,
-            default_key_scope: None,
-        }
-    };
-    ($keys:expr, $desc:expr, scope $scope:expr) => {
-        KeybindingDefinition {
-            default_keys: $keys,
-            description: $desc,
-            default_key_scope: Some($scope),
+            surfaces: &[$($surface),+],
         }
     };
 }
@@ -44,6 +81,15 @@ pub type KeybindingsConfig = BTreeMap<String, Vec<String>>;
 pub struct KeybindingConflict {
     pub key: String,
     pub keybindings: Vec<String>,
+}
+
+/// One default key a user binding took from another action: `key` as the default spells it,
+/// `action` the definition that lost it, `taken_by` the user-bound ids that name it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KeybindingTakeover {
+    pub key: String,
+    pub action: String,
+    pub taken_by: Vec<String>,
 }
 
 /// A parsed key id (TS `parseKeyId`): the modifier set plus the base key, lowercase, so
@@ -353,6 +399,10 @@ pub struct KeybindingsManager {
     resolved: BTreeMap<String, Vec<String>>,
     user_bindings: KeybindingsConfig,
     conflicts: Vec<KeybindingConflict>,
+    takeovers: Vec<KeybindingTakeover>,
+    /// The takeovers a notice already named, shared by every clone of this manager (the run's
+    /// views and their reloads), so each one is announced once per run.
+    announced: Arc<Mutex<Vec<KeybindingTakeover>>>,
     config_path: Option<PathBuf>,
 }
 
@@ -379,6 +429,8 @@ impl KeybindingsManager {
             resolved: BTreeMap::new(),
             user_bindings,
             conflicts: Vec::new(),
+            takeovers: Vec::new(),
+            announced: Arc::default(),
             config_path: None,
         };
         manager.rebuild();
@@ -398,6 +450,8 @@ impl KeybindingsManager {
             resolved: BTreeMap::new(),
             user_bindings,
             conflicts: Vec::new(),
+            takeovers: Vec::new(),
+            announced: Arc::default(),
             config_path: Some(config_path),
         };
         manager.rebuild();
@@ -414,15 +468,19 @@ impl KeybindingsManager {
         self.rebuild();
     }
 
-    /// Mirrors TS `KeybindingsManager.rebuild()`: user bindings replace a definition's keys
-    /// outright; within the same default scope, a key a user binding adds is freed from the other
-    /// defaults in that scope; keys claimed by more than one user binding are reported as
-    /// conflicts.
+    /// Builds on TS `KeybindingsManager.rebuild()`: user bindings replace a definition's keys
+    /// outright; keys claimed by more than one user binding are reported as conflicts; and a key a
+    /// user binding adds (one outside that action's own defaults) is taken from the defaults of
+    /// every other action that reads keys where the bound action does ([`KeySurface`]), whatever
+    /// their scope, so the user's binding always wins over a default it competes with. TS frees a
+    /// default only when both actions share a `defaultKeyScope` (only the editor's keys have
+    /// one), so a new default could run ahead of a key the user had already bound; this is a
+    /// deliberate divergence. Each default key taken is recorded as a [`KeybindingTakeover`].
     fn rebuild(&mut self) {
         // Explicit claims: every key each known user binding names; added claims: the ones outside
-        // that binding's own defaults (these free same-scope defaults of other bindings).
+        // that binding's own defaults (these take the competing defaults of other bindings).
         let mut explicit_claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut added_claims: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut added_claims: Vec<(ParsedKeyId, &'static [KeySurface], &str)> = Vec::new();
         for (id, keys) in &self.user_bindings {
             let Some(definition) = self.definitions.get(id.as_str()) else {
                 // Unknown ids never resolve; they stay in the config for the round-trip.
@@ -433,8 +491,15 @@ impl KeybindingsManager {
                 if !claimants.contains(id) {
                     claimants.push(id.clone());
                 }
-                if !definition.default_keys.contains(&key.as_str()) {
-                    added_claims.entry(key).or_default().push(id.clone());
+                let Some(parsed) = parse_key_id(&key) else {
+                    continue;
+                };
+                let own_default = definition
+                    .default_keys
+                    .iter()
+                    .any(|default| parse_key_id(default).as_ref() == Some(&parsed));
+                if !own_default {
+                    added_claims.push((parsed, definition.surfaces, id.as_str()));
                 }
             }
         }
@@ -447,29 +512,42 @@ impl KeybindingsManager {
             })
             .collect();
         self.resolved.clear();
+        self.takeovers.clear();
         for (id, definition) in &self.definitions {
-            let keys = match self.user_bindings.get(*id) {
-                Some(user_keys) => normalize_keys(user_keys),
-                None => definition
-                    .default_keys
+            if let Some(user_keys) = self.user_bindings.get(*id) {
+                self.resolved
+                    .insert(id.to_string(), normalize_keys(user_keys));
+                continue;
+            }
+            let mut keys = Vec::new();
+            for key in definition.default_keys {
+                let parsed = parse_key_id(key);
+                // Claims are in user-binding id order, so one id spelling the key twice is
+                // adjacent.
+                let mut taken_by: Vec<String> = added_claims
                     .iter()
-                    .filter(|key| {
-                        let Some(scope) = definition.default_key_scope else {
-                            return true;
-                        };
-                        let key: &str = key;
-                        !added_claims.get(key).is_some_and(|claimants| {
-                            claimants.iter().any(|claimant| {
-                                self.definitions
-                                    .get(claimant.as_str())
-                                    .and_then(|d| d.default_key_scope)
-                                    == Some(scope)
+                    .filter(|(claimed, surfaces, _)| {
+                        parsed.as_ref() == Some(claimed)
+                            && surfaces.iter().any(|surface| {
+                                definition
+                                    .surfaces
+                                    .iter()
+                                    .any(|own| surface.shares_keys_with(*own))
                             })
-                        })
                     })
-                    .map(ToString::to_string)
-                    .collect(),
-            };
+                    .map(|(_, _, claimant)| (*claimant).to_string())
+                    .collect();
+                taken_by.dedup();
+                if taken_by.is_empty() {
+                    keys.push((*key).to_string());
+                } else {
+                    self.takeovers.push(KeybindingTakeover {
+                        key: (*key).to_string(),
+                        action: (*id).to_string(),
+                        taken_by,
+                    });
+                }
+            }
             self.resolved.insert(id.to_string(), keys);
         }
     }
@@ -541,6 +619,30 @@ impl KeybindingsManager {
     #[must_use]
     pub fn get_conflicts(&self) -> &[KeybindingConflict] {
         &self.conflicts
+    }
+
+    /// The default keys user bindings took from other actions, in definition id order.
+    #[must_use]
+    pub fn get_takeovers(&self) -> &[KeybindingTakeover] {
+        &self.takeovers
+    }
+
+    /// The takeovers no notice of this run has named yet, now marked as named: every clone of
+    /// this manager shares the record, so a takeover is announced once however many views open
+    /// and reload.
+    pub(crate) fn take_unannounced_takeovers(&self) -> Vec<KeybindingTakeover> {
+        let mut announced = self
+            .announced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let fresh: Vec<KeybindingTakeover> = self
+            .takeovers
+            .iter()
+            .filter(|takeover| !announced.contains(takeover))
+            .cloned()
+            .collect();
+        announced.extend(fresh.iter().cloned());
+        fresh
     }
 
     /// TS `getEffectiveConfig` / `getResolvedBindings`: the effective key list

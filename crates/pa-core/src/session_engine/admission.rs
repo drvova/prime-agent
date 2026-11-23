@@ -104,12 +104,23 @@ impl AgentSession {
         // once. A pre-expanded block (the daemon emits the accepted row
         // before admission) counts here too — the block parse carries the
         // skill identity.
-        let skill_used = used_skill.is_some()
-            || pa_types::skill_blocks::parse_skill_block(&normalized)
-                .is_some_and(|block| self.skills.iter().any(|skill| skill.name == block.name));
-        if skill_used {
+        let skill_used = used_skill.or_else(|| {
+            pa_types::skill_blocks::parse_skill_block(&normalized)
+                .and_then(|block| self.skills.iter().find(|skill| skill.name == block.name))
+        });
+        if let Some(skill) = skill_used {
             if let Some(telemetry) = &self.skill_telemetry {
                 telemetry.note_skill_used();
+            }
+            if let Some(reuse) = self
+                .skill_reuse
+                .as_ref()
+                .filter(|_| crate::reuse::tracked(skill))
+            {
+                reuse.record_detached(
+                    crate::reuse::Event::Used,
+                    vec![crate::reuse::EntryKey::Skill(skill.name.clone())],
+                );
             }
         }
         if busy && options.streaming_behavior.is_none() {

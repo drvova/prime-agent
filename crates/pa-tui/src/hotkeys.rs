@@ -107,8 +107,17 @@ pub fn hotkeys_guide(kb: &KeybindingsManager) -> String {
     let select_confirm = key_display(kb, "tui.select.confirm");
     let select_cancel = key_display(kb, "tui.select.cancel");
 
+    // A default key a user binding took leads the guide: the one place that says what the key
+    // did before and which action is left without it.
+    let mut takeovers = String::new();
+    for line in crate::keybinding_notice::takeover_lines(kb, kb.get_takeovers()) {
+        if takeovers.is_empty() {
+            takeovers.push_str("\n**Default keys your keybindings.json took**\n");
+        }
+        let _ = writeln!(takeovers, "- {}", line.text);
+    }
     let mut hotkeys = format!(
-        r"
+        r"{takeovers}
 **Navigation**
 | Key | Action |
 |-----|--------|

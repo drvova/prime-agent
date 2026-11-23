@@ -760,7 +760,8 @@ async fn recorded_thinning_session() -> RecordedSession {
     std::fs::create_dir_all(&agent_dir).unwrap();
     std::fs::write(
         agent_dir.join("settings.json"),
-        json!({ "compaction": { "enabled": false } }).to_string(),
+        json!({ "compaction": { "enabled": false }, "contextThinning": { "enabled": true } })
+            .to_string(),
     )
     .unwrap();
     let ai_model: pa_types::ai::Model = serde_json::from_value(json!({
