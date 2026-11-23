@@ -947,9 +947,10 @@ async fn paging_kernel(
 }
 
 /// A cell whose long, noisy output is cut returns the lines that carry
-/// information (its ends, the error and its location, the repeated progress
-/// line once with its count) instead of its first screenfuls, then the handle;
-/// the handle still pages everything the cell printed.
+/// information (its ends, the error and its location, each run of the
+/// repeated progress line once with its count) instead of its first
+/// screenfuls, then the handle; the handle still pages everything the cell
+/// printed.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cut_cells_output_is_previewed_by_information_and_pages_back_whole() {
     use crate::kernel::spill::{content_id, group_digits, SpillLookup, StoredSpill};
@@ -983,7 +984,8 @@ async fn a_cut_cells_output_is_previewed_by_information_and_pages_back_whole() {
         &format!("(display (hash-ref (ctx-page \"out:{id}\" #:start 1500 #:lines 3) 'text))"),
     )
     .await;
-    let preview = format!("{first}\n{progress}  ×3000\n{error}\n{location}\n{last}");
+    let preview =
+        format!("{first}\n{progress}  ×1500\n{error}\n{location}\n{progress}  ×1500\n{last}");
     let total = printed.chars().count();
     assert_eq!(
         (cut.stdout, paged.stdout, store.lookup(&id).await),
