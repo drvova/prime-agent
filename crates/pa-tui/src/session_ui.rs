@@ -46,6 +46,7 @@ pub(crate) use lifecycle::StatsUpdate;
 pub(crate) use model_picker::picker_viewport_rows;
 pub(crate) use model_picker::ModelCatalogUpdate;
 pub(crate) use model_picker::ThinkingCycleNote;
+pub(crate) use notes::TakeoverMoment;
 use panels::pop_superseded_attempt_row;
 pub(crate) use panels::ActivityUpdates;
 use prompt::PromptOrder;

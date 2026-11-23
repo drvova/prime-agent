@@ -323,6 +323,22 @@ impl pa_tui::interactive::InteractionTelemetry for CliInteractionTelemetry {
         })
     }
 
+    fn keybinding_takeovers(
+        &self,
+        takeovers: u64,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        // Standalone for the same reason; the startup path spawned this and never awaits it.
+        Box::pin(async move {
+            let Some(client) = self.client() else {
+                return;
+            };
+            let mut properties = pa_telemetry::base_properties("interactive");
+            properties.set("takeovers", serde_json::Value::from(takeovers));
+            client.track("tui keybinding takeovers", properties);
+            let _ = client.shutdown().await;
+        })
+    }
+
     fn mouse_selection_copied(
         &self,
         kind: &'static str,
@@ -987,6 +1003,34 @@ mod tests {
             assert_eq!(
                 events,
                 vec![serde_json::json!(["tui session changes", "attach", 3, 1])]
+            );
+        });
+    }
+
+    /// A keybinding takeover report is a standalone event that carries its count alone.
+    #[test]
+    fn a_keybinding_takeover_report_is_a_standalone_event() {
+        crate::mode::tests::with_clean_telemetry_env(|| {
+            let dir = tempfile::TempDir::new().unwrap();
+            let agent_dir = dir.path().join("agent");
+            std::fs::create_dir_all(&agent_dir).unwrap();
+            let telemetry =
+                CliInteractionTelemetry::new(dir.path().to_path_buf(), agent_dir.clone());
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(telemetry.keybinding_takeovers(2));
+            let events: Vec<serde_json::Value> =
+                std::fs::read_to_string(agent_dir.join("telemetry.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .map(|event| {
+                        serde_json::json!([event["name"], event["properties"]["takeovers"]])
+                    })
+                    .collect();
+            assert_eq!(
+                events,
+                vec![serde_json::json!(["tui keybinding takeovers", 2])]
             );
         });
     }

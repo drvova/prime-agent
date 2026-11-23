@@ -28,6 +28,7 @@ pub const SCHEMA_VERSION: u64 = 2;
 mod capabilities;
 mod reuse_listing;
 mod tui_discovery;
+mod tui_keybindings;
 mod tui_model_recent;
 mod tui_navigation;
 mod tui_search;
@@ -1889,6 +1890,7 @@ pub fn catalog() -> Vec<&'static EventRule> {
         &tui_model_recent::TUI_MODEL_RECENT_USED,
         &tui_discovery::TUI_SHORTCUT_OVERLAY_OPENED,
         &tui_discovery::TUI_MOUSE_SELECTION,
+        &tui_keybindings::TUI_KEYBINDING_TAKEOVERS,
         &tui_unfocused_signal::TUI_UNFOCUSED_SIGNAL,
         &tui_session_changes::TUI_SESSION_CHANGES,
         &reuse_listing::AGENT_REUSE_LISTING,

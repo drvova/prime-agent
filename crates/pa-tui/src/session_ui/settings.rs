@@ -842,6 +842,8 @@ impl SessionUi {
                 self.spawn_command_catalog_refresh();
                 // Tracked, so a back-to-back status rewrites it in place.
                 self.note("Reloaded keybindings, skills, prompts, themes", view);
+                // A default key the reloaded bindings newly took gets its own row.
+                self.show_keybinding_takeovers(super::TakeoverMoment::Reload, view);
             }
             Err(error) => {
                 self.error_row(&format!("Reload failed: {error}"), view);

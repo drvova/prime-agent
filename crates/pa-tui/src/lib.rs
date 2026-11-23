@@ -83,6 +83,7 @@ pub mod info_panel;
 mod inline_image;
 mod input;
 pub mod interactive;
+mod keybinding_notice;
 pub mod keybindings;
 pub mod keys;
 pub mod markdown;

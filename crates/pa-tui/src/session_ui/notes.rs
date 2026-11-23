@@ -6,6 +6,14 @@ use super::{
     SessionUi, StatusKind, Value, ANTHROPIC_SUBSCRIPTION_AUTH_WARNING, UI_REQUEST_TIMEOUT_MS,
 };
 
+/// When [`SessionUi::show_keybinding_takeovers`] runs: a run's start reports the takeover count,
+/// a `/reload` only shows the row.
+#[derive(Clone, Copy)]
+pub(crate) enum TakeoverMoment {
+    Startup,
+    Reload,
+}
+
 impl SessionUi {
     /// One `goal_update` session event: store the state, announce as a status
     /// row when the dedupe rules say so, and sync the tray goal label.
@@ -204,6 +212,30 @@ impl SessionUi {
         });
         let _ = settings.set_telemetry_notice_shown();
         self.dirty = true;
+    }
+
+    /// The quiet row naming the default keys the user's keybindings took that no notice of this
+    /// run has named yet (the manager's clones share the record, so a startup after an
+    /// agents-view handoff or a `/reload` with nothing new stays silent). The bindings are
+    /// already in memory: nothing is read. A startup with takeovers also reports their count.
+    pub(crate) fn show_keybinding_takeovers(
+        &mut self,
+        moment: TakeoverMoment,
+        view: &mut AgentView,
+    ) {
+        let kb = view.editor.keybindings();
+        let fresh = kb.take_unannounced_takeovers();
+        let Some(text) = crate::keybinding_notice::takeover_notice(kb, &fresh) else {
+            return;
+        };
+        match moment {
+            TakeoverMoment::Startup => crate::keybinding_notice::report_takeovers(
+                self.telemetry.as_ref(),
+                u64::try_from(fresh.len()).unwrap_or(u64::MAX),
+            ),
+            TakeoverMoment::Reload => {}
+        }
+        self.plain_row(&text, view);
     }
 
     pub(crate) async fn maybe_warn_anthropic_subscription_auth_if_subscribed(

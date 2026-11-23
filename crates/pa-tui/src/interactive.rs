@@ -206,6 +206,12 @@ pub trait InteractionTelemetry: Send + Sync {
     /// The shortcut overview opened, the first time in a run (event `tui shortcut overlay
     /// opened`). Implementations return at once: the key path spawns it and never waits.
     fn shortcut_overlay_opened(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    /// The user's keybindings took other actions' default keys, reported once at a run's start
+    /// when any did (event `tui keybinding takeovers`): `takeovers` counts the default keys
+    /// taken. Never a key or an action name. Implementations return at once: the startup path
+    /// spawns it and never waits.
+    fn keybinding_takeovers(&self, takeovers: u64)
+        -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
     /// A mouse selection was copied, the first time per kind in a run (event `tui mouse
     /// selection`): `kind` is `drag` / `word` (a double click) / `line` (a triple click). Never
     /// the copied text. Implementations return at once: the mouse path spawns it and never

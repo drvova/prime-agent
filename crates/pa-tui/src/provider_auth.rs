@@ -1209,6 +1209,8 @@ mod tests {
     #[derive(Default)]
     struct HangingTelemetry {
         reports: std::sync::Mutex<Vec<[&'static str; 4]>>,
+        /// The counts handed to the count-only reports.
+        counts: std::sync::Mutex<Vec<u64>>,
         reported: tokio::sync::Notify,
     }
 
@@ -1572,6 +1574,20 @@ mod tests {
             Box::pin(std::future::pending())
         }
 
+        fn keybinding_takeovers(
+            &self,
+            takeovers: u64,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+            self.reports
+                .lock()
+                .unwrap()
+                .push(["", "", "keybinding_takeovers", ""]);
+            self.counts.lock().unwrap().push(takeovers);
+            self.reported.notify_one();
+            // The delivery never completes: a hung sink.
+            Box::pin(std::future::pending())
+        }
+
         fn mouse_selection_copied(
             &self,
             kind: &'static str,
@@ -1617,6 +1633,28 @@ mod tests {
         assert_eq!(
             *telemetry.reports.lock().unwrap(),
             vec![["", "", "shortcut_overlay", ""]]
+        );
+    }
+
+    /// The startup takeover report is fire-and-forget: with a sink that never replies, the
+    /// startup path's hand-off returns at once and the report still starts with its count.
+    #[tokio::test]
+    async fn a_hanging_takeover_report_never_holds_the_startup_path() {
+        let telemetry = std::sync::Arc::new(HangingTelemetry::default());
+        let hook: std::sync::Arc<dyn crate::interactive::InteractionTelemetry> = telemetry.clone();
+        crate::keybinding_notice::report_takeovers(Some(&hook), 2);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            telemetry.reported.notified(),
+        )
+        .await
+        .expect("the spawned report started");
+        assert_eq!(
+            (
+                telemetry.reports.lock().unwrap().clone(),
+                telemetry.counts.lock().unwrap().clone()
+            ),
+            (vec![["", "", "keybinding_takeovers", ""]], vec![2])
         );
     }
 

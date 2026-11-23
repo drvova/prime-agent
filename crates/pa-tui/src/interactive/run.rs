@@ -834,6 +834,9 @@ async fn run_interactive_surface(
     // screen hides any pre-TUI stderr print, so the row is the only
     // shape the user actually sees.
     session.maybe_show_telemetry_notice(&mut view);
+    // A default key the user's keybindings took is named once per run, from the bindings
+    // already loaded.
+    session.show_keybinding_takeovers(crate::session_ui::TakeoverMoment::Startup, &mut view);
     // A daemon that was started after its predecessor died says so in its hello: a window
     // opening soon after leads with it (the record is already in hand; nothing is fetched).
     session.show_daemon_death(
