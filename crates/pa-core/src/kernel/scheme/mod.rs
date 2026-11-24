@@ -63,6 +63,7 @@ pub mod skills;
 pub use cell::StuckCellSink;
 pub(in crate::kernel::scheme) use factory::validate_factory_spec;
 pub use factory::{factory_cli_dispatch, FactoryEnvironment};
+pub use native::run_elevation_helper;
 pub(crate) use native::FileReads;
 #[cfg(windows)]
 pub(crate) use native::JobObject;

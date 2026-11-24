@@ -5,6 +5,11 @@ fn main() {
     // resident for the process lifetime.
     pa_types::memory_release::cap_thread_arenas();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A session's elevated helper (Windows), started through UAC: it serves
+    // that session's elevated commands and nothing else of the CLI runs.
+    if args.first().map(String::as_str) == Some("--elevation-helper") {
+        std::process::exit(pa_core::kernel::run_elevation_helper(&args[1..]));
+    }
     // A fresh top-level invocation sheds an inherited worker identity before
     // any thread exists (edition 2021 makes `remove_var` safe, but it must
     // still run single-threaded): everything but the supervisor-spawned

@@ -167,6 +167,8 @@ pub struct SchemeBashCalls {
     pub count: usize,
     /// How many of the cell's lines the top-level forms holding them span.
     pub lines: usize,
+    /// Whether any of them asks to run elevated (`'elevated #t`).
+    pub elevated: bool,
 }
 
 /// The title of a Scheme cell: the kernel call it names, or the cell's
@@ -326,13 +328,42 @@ pub fn scheme_outline(code: &str) -> SchemeOutline {
                     if let Some(open) = form.as_mut() {
                         open.2 = true;
                     }
+                    // `'elevated #t` anywhere in the call's own parentheses.
+                    let (mut nesting, mut last) = (1usize, ["", ""]);
+                    let mut elevated = false;
+                    for (kind, word) in tokens[index + 1..]
+                        .iter()
+                        .filter(|(kind, _)| significant(*kind))
+                    {
+                        match kind {
+                            SchemeToken::Open => nesting += 1,
+                            SchemeToken::Close => nesting -= 1,
+                            SchemeToken::String
+                            | SchemeToken::Number
+                            | SchemeToken::Literal
+                            | SchemeToken::Keyword
+                            | SchemeToken::Symbol
+                            | SchemeToken::Quote
+                            | SchemeToken::Space
+                            | SchemeToken::Comment => {}
+                        }
+                        if nesting == 0 {
+                            break;
+                        }
+                        elevated |= last == ["'", "elevated"] && matches!(*word, "#t" | "#true");
+                        last = [last[1], word];
+                    }
                     match outline.bash.as_mut() {
-                        Some(bash) => bash.count += 1,
+                        Some(bash) => {
+                            bash.count += 1;
+                            bash.elevated |= elevated;
+                        }
                         None => {
                             outline.bash = Some(SchemeBashCalls {
                                 first: command.clone().unwrap_or_default(),
                                 count: 1,
                                 lines: 0,
+                                elevated,
                             });
                         }
                     }

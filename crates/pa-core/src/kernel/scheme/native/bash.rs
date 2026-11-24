@@ -27,7 +27,9 @@
 //!   until then without a window; default none),
 //!   `'background` (`#t`: do not wait, return the job: `'job`, `'pid`,
 //!   `'command`, `'running`, `'queued`, `'persistent`), `'persistent` (`#t`:
-//!   a shell that outlives the kernel, see `bash_persistent.rs`).
+//!   a shell that outlives the kernel, see `bash_persistent.rs`),
+//!   `'elevated` (`#t`: run with administrator or root rights once the
+//!   user consents through the system's prompt, see `bash_elevated.rs`).
 //! - `(bash-wait job [seconds])` waits for a job, for `seconds` or the
 //!   session's window, and returns its result or a snapshot.
 //! - `(bash-poll job)` returns a finished job's result, or `#f`.
@@ -66,6 +68,8 @@
 
 #[path = "bash_cache.rs"]
 mod cache;
+#[path = "bash_elevated.rs"]
+mod elevated;
 #[path = "bash_engine.rs"]
 mod engine;
 #[path = "bash_job.rs"]
@@ -104,6 +108,8 @@ use crate::kernel::shared::{
 use crate::kernel::spill::SpillStore;
 use crate::platform::Signal;
 use crate::tools::tool_definition::AbortSignal;
+
+pub use self::elevated::run_elevation_helper;
 
 /// The Scheme side of `bash` and its jobs, loaded after the native bridge.
 pub(super) const SCHEME: &str = r#"
@@ -274,6 +280,10 @@ pub(super) struct Session {
     killed: AbortSignal,
     /// A saved session's list of its running commands ([`job::RUNNING_FILE`]).
     running_list: Option<PathBuf>,
+    /// The session's elevated helper, once its first elevated command
+    /// started one.
+    #[cfg(windows)]
+    elevation: elevated::HelperSlot,
 }
 
 /// The kernel's hold on its session's commands. Dropping it kills them, as
@@ -657,6 +667,8 @@ pub(super) fn open(
             .artifact_dir
             .as_ref()
             .map(|dir| dir.join(job::RUNNING_FILE)),
+        #[cfg(windows)]
+        elevation: elevated::HelperSlot::default(),
     });
     // What the session's last kernel left listed as running was killed with
     // it (or with the process that hosted it): the session hears of each
@@ -962,7 +974,13 @@ pub(super) fn call(
         .as_object()
         .ok_or_else(|| anyhow!("options must be a hash"))?;
     let accepted: &[&str] = match operation {
-        "bash" => &["timeout-ms", "wait-ms", "background", "persistent"],
+        "bash" => &[
+            "timeout-ms",
+            "wait-ms",
+            "background",
+            "persistent",
+            "elevated",
+        ],
         "bash-wait" => &["seconds"],
         "bash-tail" => &["lines"],
         "bash-kill" => &["signal", "grace-ms"],
@@ -995,7 +1013,13 @@ pub(super) fn call(
                 Some(Value::Bool(set)) => Ok(*set),
                 Some(_) => Err(anyhow!("{name} must be #t or #f")),
             };
-            let (background, persistent) = (flag("background")?, flag("persistent")?);
+            let (background, persistent, elevated) =
+                (flag("background")?, flag("persistent")?, flag("elevated")?);
+            if elevated && persistent {
+                bail!(
+                    "a persistent shell cannot be elevated: run each elevated command on its own"
+                );
+            }
             let limit = match fields.get("timeout-ms") {
                 None | Some(Value::Bool(false)) => None,
                 Some(value) => Some(Duration::from_millis(
@@ -1028,7 +1052,7 @@ pub(super) fn call(
             // An allowlisted read-only command whose inputs are unchanged
             // answers from the cache; a waited one is remembered when its
             // inputs held while it ran.
-            let cacheable = (!background && !persistent)
+            let cacheable = (!background && !persistent && !elevated)
                 .then(|| cache::plan(script))
                 .flatten()
                 .and_then(|plan| {
@@ -1050,6 +1074,7 @@ pub(super) fn call(
                 if let Some(hit) = hit {
                     show(CellRecord::BashCommand {
                         command: script.to_string(),
+                        elevated: false,
                     });
                     return Ok(result(
                         /*job*/ None, &hit, /*timed_out*/ false, /*tests*/ None,
@@ -1077,11 +1102,14 @@ pub(super) fn call(
             }
             let job = if persistent {
                 persistent::spawn(session, script)?
+            } else if elevated {
+                elevated::spawn(session, script)?
             } else {
                 job::spawn(session, script, on_finished)?
             };
             show(CellRecord::BashCommand {
                 command: script.to_string(),
+                elevated,
             });
             // Counted before the call returns: the cell can end right after it.
             let live = session.background.enter();

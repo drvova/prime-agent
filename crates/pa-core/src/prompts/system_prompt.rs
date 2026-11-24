@@ -147,13 +147,10 @@ impl HostAccess {
                 HOST_ELEVATED_ROOT.to_string()
             }
             (Elevation::Standard, ElevationRoute::Uac) => {
-                format!("{HOST_STANDARD_UAC} {HOST_DETAILS}")
+                format!("{HOST_STANDARD_UAC} {HOST_FALLBACK} {HOST_DETAILS}")
             }
-            (Elevation::Standard, ElevationRoute::MacosSudo) => {
-                format!("{HOST_STANDARD_SUDO} {HOST_STANDARD_MACOS_DIALOG} {HOST_DETAILS}")
-            }
-            (Elevation::Standard, ElevationRoute::UnixSudo) => {
-                format!("{HOST_STANDARD_SUDO} {HOST_STANDARD_PKEXEC} {HOST_DETAILS}")
+            (Elevation::Standard, ElevationRoute::MacosSudo | ElevationRoute::UnixSudo) => {
+                format!("{HOST_STANDARD_SUDO} {HOST_FALLBACK} {HOST_DETAILS}")
             }
         };
         format!(
@@ -165,10 +162,9 @@ impl HostAccess {
 const HOST_DETAILS: &str = "`(api-help \"shell\")` has the details.";
 const HOST_ELEVATED_ADMINISTRATOR: &str = "This session runs elevated, as Administrator: every command has administrator rights with no consent prompt, so a mistake reaches the whole machine. Use those rights only for what the task needs.";
 const HOST_ELEVATED_ROOT: &str = "This session runs as root: every command has root rights with no `sudo`, so a mistake reaches the whole machine, and files it creates belong to root. Use those rights only for what the task needs.";
-const HOST_STANDARD_UAC: &str = "This session runs with the user's own rights, not elevated. A step that needs administrator rights runs its program elevated through UAC, and the user approves a consent prompt on their screen: start `powershell -NoProfile -Command '$p = Start-Process -FilePath <program> -ArgumentList <arguments> -Verb RunAs -Wait -PassThru; exit $p.ExitCode'` with `(hash 'background #t)`, `ask` the user to approve the prompt, then `bash-wait` the job: it ends when the elevated program exits, with its exit code. The elevated program runs in a window of its own, so its output never reaches the command: have it write to a file under an absolute path, and read that.";
-const HOST_STANDARD_SUDO: &str = "This session runs with the user's own rights, not as root. A step that needs root runs under `sudo`, but commands have no terminal, so `sudo` cannot ask for a password (and the user's password never goes through you): `sudo -n <command>` runs only when `sudo` needs no password, and otherwise fails at once with `a password is required`. Then give the user the exact command, `ask` them to run it in their own terminal, and continue in the same turn with their answer.";
-const HOST_STANDARD_PKEXEC: &str = "On a desktop with a polkit agent, `pkexec <command>` started with `(hash 'background #t)` asks for the password in a window instead: `ask` the user to answer it.";
-const HOST_STANDARD_MACOS_DIALOG: &str = "Or `osascript -e 'do shell script \"<command>\" with administrator privileges'`, started with `(hash 'background #t)`, asks for the password in a macOS dialog and prints the command's output: `ask` the user to answer it.";
+const HOST_STANDARD_UAC: &str = "This session runs with the user's own rights, not elevated. A step that needs administrator rights runs with `(bash command (hash 'elevated #t))`: Windows asks the user to approve it in a UAC prompt first, and its output and exit code come back as any command's.";
+const HOST_STANDARD_SUDO: &str = "This session runs with the user's own rights, not as root. A step that needs root runs with `(bash command (hash 'elevated #t))`: the system asks the user for their password in a dialog of its own first (the password never passes through you), and its output and exit code come back as any command's.";
+const HOST_FALLBACK: &str = "If the user declines, or no prompt can be shown here, the result says so (`elevation declined:` or `elevation unavailable:`): then give the user the exact command to run themselves.";
 
 /// Build the system prompt (assembled text only).
 #[must_use]
@@ -580,7 +576,7 @@ mod tests {
             ],
             [
                 Some(format!(
-                    "{opening}Machine: the user's own computer (Windows), not a sandbox or container: what a command does, it does to their real system. This session runs with the user's own rights, not elevated. A step that needs administrator rights runs its program elevated through UAC, and the user approves a consent prompt on their screen: start `powershell -NoProfile -Command '$p = Start-Process -FilePath <program> -ArgumentList <arguments> -Verb RunAs -Wait -PassThru; exit $p.ExitCode'` with `(hash 'background #t)`, `ask` the user to approve the prompt, then `bash-wait` the job: it ends when the elevated program exits, with its exit code. The elevated program runs in a window of its own, so its output never reaches the command: have it write to a file under an absolute path, and read that. `(api-help \"shell\")` has the details."
+                    "{opening}Machine: the user's own computer (Windows), not a sandbox or container: what a command does, it does to their real system. This session runs with the user's own rights, not elevated. A step that needs administrator rights runs with `(bash command (hash 'elevated #t))`: Windows asks the user to approve it in a UAC prompt first, and its output and exit code come back as any command's. If the user declines, or no prompt can be shown here, the result says so (`elevation declined:` or `elevation unavailable:`): then give the user the exact command to run themselves. `(api-help \"shell\")` has the details."
                 )),
                 Some(format!(
                     "{opening}Machine: the user's own computer (Linux), not a sandbox or container: what a command does, it does to their real system. This session runs as root: every command has root rights with no `sudo`, so a mistake reaches the whole machine, and files it creates belong to root. Use those rights only for what the task needs."

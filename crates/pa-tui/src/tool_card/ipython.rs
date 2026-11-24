@@ -397,6 +397,23 @@ fn collapsed_line(
     let mut marker = marker;
     marker.push(Span::raw(" "));
     marker.push(Span::styled(language_label.to_string(), title));
+    // A command run with the machine's highest rights says so, from its call
+    // (while it waits for the user's consent too) or from its result.
+    let elevated = bash_titled
+        && (outline
+            .and_then(SchemeOutline::dominant_bash)
+            .is_some_and(|bash| bash.elevated)
+            || details
+                .bash_commands
+                .as_ref()
+                .is_some_and(|bash| bash.elevated));
+    if elevated {
+        marker.push(Span::raw(" "));
+        marker.push(Span::styled(
+            if cfg!(windows) { "admin" } else { "root" }.to_string(),
+            theme.fg_style(ThemeColor::Warning),
+        ));
+    }
     parts.push(marker);
     if preview.iter().any(|span| !span.content.is_empty()) {
         preview_index = Some(parts.len());
@@ -544,6 +561,7 @@ fn dominant_bash(
             first: calls.first.clone(),
             count: calls.count,
             lines: calls.lines,
+            elevated: calls.elevated,
         }),
         None => details
             .bash_commands

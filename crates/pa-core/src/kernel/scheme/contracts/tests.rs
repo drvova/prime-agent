@@ -205,7 +205,7 @@ async fn a_call_its_function_does_not_declare_is_refused_before_the_function_run
         ),
         (
             r#"(bash "true" (hash 'timout-ms 5000))"#,
-            "bash: unknown option 'timout-ms. Did you mean 'timeout-ms? bash accepts 'timeout-ms 'wait-ms 'background 'persistent",
+            "bash: unknown option 'timout-ms. Did you mean 'timeout-ms? bash accepts 'timeout-ms 'wait-ms 'background 'persistent 'elevated",
             CallRefusal::UnknownOption,
         ),
         (

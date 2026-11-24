@@ -762,19 +762,21 @@ fn restart_relists_child(delay_ms: u64, display_status: &str) {
     // (b) send receipt
     let _send: Value =
         serde_json::from_str(&await_receipt(&send_receipt)).expect("send receipt json");
-    // (c) wake oracle
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let content = std::fs::read_to_string(&child_file).unwrap_or_default();
-        if content.contains("boot-ping") {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the send never woke the child into its session file: {content}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    // (c) wake oracle. The receipt means the child queued the message; a
+    // child that was mid-turn at the stop first runs its revived
+    // continuation (the script's held response, as long again as the hold),
+    // so the message lands when the child's queue drains, not at a deadline.
+    client.send_command(
+        "child-idle",
+        &json!({ "type": "wait_for_idle", "activeSessionId": child_session_id }),
+    );
+    let idle = client.read_response("child-idle");
+    assert_eq!(idle["success"], true, "child wait_for_idle failed: {idle}");
+    let content = std::fs::read_to_string(&child_file).expect("child session file");
+    assert!(
+        content.contains("boot-ping"),
+        "the send never woke the child into its session file: {content}"
+    );
     // (d) child runtime
     client.send_command(
         "gs",

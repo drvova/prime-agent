@@ -273,13 +273,13 @@ pub(super) struct Capture {
     /// The fence arrived, or the output will never carry one.
     pub(super) settled: bool,
     /// The pipe closed: every process that held it has ended.
-    eof: bool,
+    pub(super) eof: bool,
     /// When the command last wrote anything, for its `[bash-quiet]` notice.
     pub(super) last_output: Option<Instant>,
     /// The output up to its settling, for the session's spill store (only
     /// when the session has one), and the bytes of a character split across
     /// two reads.
-    copy: Option<SpillCopy>,
+    pub(super) copy: Option<SpillCopy>,
     carry: Vec<u8>,
 }
 
@@ -423,6 +423,9 @@ pub(super) struct Job {
     /// a command that is a shell process of its own.
     pub(super) engine: Option<Arc<super::engine::Programs>>,
     pub(super) on_finished: Mutex<Option<FinishHook>>,
+    /// An elevated command's consent route and stop (`'elevated #t`);
+    /// `None` for every other job.
+    pub(super) elevated: Option<super::elevated::Elevated>,
     /// A second handle on the output pipe, to ask how much is unread.
     #[cfg(unix)]
     probe: Mutex<Option<std::io::PipeReader>>,
@@ -458,6 +461,7 @@ impl Job {
             start: Mutex::new(None),
             engine: None,
             on_finished: Mutex::new(None),
+            elevated: None,
             #[cfg(unix)]
             probe: Mutex::new(None),
             #[cfg(windows)]
@@ -511,6 +515,11 @@ impl Job {
     /// journal can go. A command of the built-in shell answers false: its
     /// programs keep their own entries, and take them out themselves.
     pub(super) fn destroy(&self) -> bool {
+        // Root's or the helper's processes are beyond this process's rights:
+        // the elevated side ends them.
+        if let Some(elevated) = &self.elevated {
+            elevated.stop();
+        }
         if let Some(programs) = &self.engine {
             programs.end();
             return false;
@@ -557,6 +566,11 @@ impl Job {
             return;
         }
         lock(&self.state).quiet = Quiet::KillRequested;
+        // Any stop ends an elevated command (its side sends `TERM`, then
+        // `KILL` after its own grace): this process cannot signal it.
+        if let Some(elevated) = &self.elevated {
+            elevated.stop();
+        }
         if let Some(programs) = &self.engine {
             // The script stops at its next command either way; its programs
             // get the signal, and what a `Term` leaves is killed after `grace`.

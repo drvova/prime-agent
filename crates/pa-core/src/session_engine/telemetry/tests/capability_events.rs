@@ -21,6 +21,7 @@ fn drive(counters: &SessionCounters) {
     use crate::kernel::command_cache::CacheLookup;
     use crate::kernel::edit_checks::EditCheckOutcome;
     use crate::kernel::edit_matches::EditMatch;
+    use crate::kernel::elevation_runs::{ConsentRoute, ElevationOutcome, ElevationRun};
     use crate::kernel::error_context::EnrichmentFact;
     use crate::kernel::hypotheses::HypothesesRun;
     use crate::kernel::shared::{BackgroundCellFact, CellWaitFact};
@@ -300,6 +301,19 @@ fn drive(counters: &SessionCounters) {
             handed_over,
             unavailable,
         });
+    }
+    for (outcome, route) in [
+        (ElevationOutcome::Approved, ConsentRoute::Uac),
+        (ElevationOutcome::Approved, ConsentRoute::SudoAskpass),
+        (ElevationOutcome::Declined, ConsentRoute::SudoAskpass),
+        (ElevationOutcome::Unavailable, ConsentRoute::Pkexec),
+        (
+            ElevationOutcome::Unavailable,
+            ConsentRoute::SudoNonInteractive,
+        ),
+        (ElevationOutcome::Approved, ConsentRoute::AlreadyElevated),
+    ] {
+        counters.note_elevation(ElevationRun { outcome, route });
     }
     for (admission, jobs, step) in [
         (NoticeAdmission::Taken, 2, Some(QuietStep::First)),
@@ -594,6 +608,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent builtin shell",
         r#"{"builtin_shell_command_count":2,"builtin_shell_in_process_count":6,"builtin_shell_spawned_count":3,"builtin_shell_handed_over_count":1,"builtin_shell_unavailable_count":3}"#,
+    ),
+    (
+        "agent elevated commands",
+        r#"{"elevated_command_count":6,"elevated_approved_count":3,"elevated_declined_count":1,"elevated_unavailable_count":2,"elevated_uac_count":1,"elevated_sudo_askpass_count":2,"elevated_pkexec_count":1,"elevated_sudo_noninteractive_count":1,"elevated_already_elevated_count":1}"#,
     ),
     (
         "agent better prompt",

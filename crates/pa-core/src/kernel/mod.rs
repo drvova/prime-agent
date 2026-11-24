@@ -11,6 +11,7 @@ pub mod cell_window;
 pub(crate) mod command_cache;
 pub(crate) mod edit_checks;
 pub(crate) mod edit_matches;
+pub(crate) mod elevation_runs;
 pub mod error_context;
 pub(crate) mod hypotheses;
 pub mod orphan_journal;
@@ -29,8 +30,9 @@ pub use rlm_runtime::{
     normalize_requested_rlm_subagent_thinking_level, RlmModelInfo, RlmModelMatch, THINKING_LEVELS,
 };
 pub use scheme::{
-    keep_spare_scheme_kernels, pin_scheme_home, prewarm_scheme_kernel, spare_scheme_kernels,
-    SchemeKernel, SchemeKernelOptions, SchemeKernelProvisioner, StuckCellSink,
+    keep_spare_scheme_kernels, pin_scheme_home, prewarm_scheme_kernel, run_elevation_helper,
+    spare_scheme_kernels, SchemeKernel, SchemeKernelOptions, SchemeKernelProvisioner,
+    StuckCellSink,
 };
 pub use shared::{
     HostRequestHandler, HostRequestHandlers, HostRequestPayload, KernelDiffDisplay,

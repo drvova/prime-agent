@@ -20,7 +20,7 @@ The harness often sends messages to the agent. These are user messages starting 
 
 {{calls:shell}}
 
-`(bash command)` waits for the command and returns `{exit-code, output, running, timed-out, truncated, handle, tests, ...}`; `output` is stdout and stderr together. Each call is its own shell in the session's working directory: a bash-compatible shell built into Prime Agent, in which `ls`, `cat`, `grep`, `sed`, `find`, `sort`, `jq` and other common utilities run without a program and any other command is a program on `PATH`; `(api-help "shell")` lists what is built in and where it differs from bash. The wait has a window; a command that outlives it keeps running and the call returns a snapshot with `running` `#t` and `exit-code` `#f`. A command finished outside its cell is announced by a `[bash-done]` notice. Options: `'wait-ms`, `'timeout-ms`, `'background`, `'persistent`.
+`(bash command)` waits for the command and returns `{exit-code, output, running, timed-out, truncated, handle, tests, ...}`; `output` is stdout and stderr together. Each call is its own shell in the session's working directory: a bash-compatible shell built into Prime Agent, in which `ls`, `cat`, `grep`, `sed`, `find`, `sort`, `jq` and other common utilities run without a program and any other command is a program on `PATH`; `(api-help "shell")` lists what is built in and where it differs from bash. The wait has a window; a command that outlives it keeps running and the call returns a snapshot with `running` `#t` and `exit-code` `#f`. A command finished outside its cell is announced by a `[bash-done]` notice. Options: `'wait-ms`, `'timeout-ms`, `'background`, `'persistent`, `'elevated` (administrator or root rights, after the user approves the system's prompt).
 
 ## Files
 

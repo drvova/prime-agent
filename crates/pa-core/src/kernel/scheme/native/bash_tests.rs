@@ -63,11 +63,11 @@ macro_rules! on_each_shell {
 }
 
 /// How long any one step may take before its test fails instead of hanging.
-const STEP: Duration = Duration::from_secs(60);
+pub(super) const STEP: Duration = Duration::from_secs(60);
 
 /// Handlers answering each request type with its reply, and every request
 /// they receive, as it arrives.
-fn recording(
+pub(super) fn recording(
     replies: &[(&str, Value)],
 ) -> (HostRequestHandlers, UnboundedReceiver<(String, Value)>) {
     let (sent, received) = unbounded_channel();
@@ -88,7 +88,7 @@ fn recording(
 }
 
 /// The next request the handlers received.
-async fn next(received: &mut UnboundedReceiver<(String, Value)>) -> (String, Value) {
+pub(super) async fn next(received: &mut UnboundedReceiver<(String, Value)>) -> (String, Value) {
     tokio::time::timeout(STEP, received.recv())
         .await
         .unwrap()
@@ -122,7 +122,7 @@ async fn run(kernel: &dyn KernelExecutor, code: &str) -> ExecuteResult {
 }
 
 /// A cell's value as the kernel prints it, or the error it raised.
-async fn value(kernel: &dyn KernelExecutor, code: &str) -> String {
+pub(super) async fn value(kernel: &dyn KernelExecutor, code: &str) -> String {
     let result = run(kernel, code).await;
     result
         .result
@@ -139,7 +139,7 @@ fn numbers(printed: &str) -> Vec<u32> {
 }
 
 /// The process `pid` names is gone within the wait.
-async fn exited(pid: u32) -> bool {
+pub(super) async fn exited(pid: u32) -> bool {
     tokio::time::timeout(STEP, crate::platform::process::wait_for_exit(pid))
         .await
         .is_ok_and(|waited| waited.is_ok())
@@ -147,13 +147,13 @@ async fn exited(pid: u32) -> bool {
 
 /// A pipe a command and its test meet on: reading it returns once the other
 /// side has written and closed it.
-fn pipe_in(dir: &Path, name: &str) -> std::path::PathBuf {
+pub(super) fn pipe_in(dir: &Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRWXU).unwrap();
     path
 }
 
-async fn read(pipe: &Path) -> String {
+pub(super) async fn read(pipe: &Path) -> String {
     tokio::time::timeout(STEP, tokio::fs::read_to_string(pipe))
         .await
         .unwrap()
@@ -167,7 +167,7 @@ async fn write(pipe: &Path, text: &str) {
         .unwrap();
 }
 
-async fn kernel_with(
+pub(super) async fn kernel_with(
     options: SchemeKernelOptions,
 ) -> (SchemeKernelProvisioner, Box<dyn KernelExecutor>) {
     let provisioner = SchemeKernelProvisioner::with_options(options);
@@ -807,6 +807,7 @@ async fn a_cells_commands_waits_and_failures_show_on_its_result(shell) {
                 first: "echo one\necho two".to_string(),
                 count: 3,
                 lines: 4,
+                elevated: false,
             }),
             KernelBashWaits {
                 completed: 2,

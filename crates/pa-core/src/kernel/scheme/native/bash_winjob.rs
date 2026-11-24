@@ -19,6 +19,11 @@
 //! before. A job is not a boundary against the programs it holds: a program
 //! of the same user can leave it on purpose in other ways (WMI's
 //! `Win32_Process.Create` starts a process outside the caller's job).
+//!
+//! `(bash command (hash 'elevated #t))` does not start its program through
+//! this exception: the session's elevated helper runs it, in a job of the
+//! helper's own that the helper ends (`bash_elevated/windows.rs`, which also
+//! states that design's threat model).
 
 #![allow(non_snake_case)] // The Win32 functions keep their documented names.
 
