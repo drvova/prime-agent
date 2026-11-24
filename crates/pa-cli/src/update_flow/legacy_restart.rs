@@ -449,19 +449,11 @@ fn validate_successor(hello: &Value, pid: u64, version: &str) -> Result<()> {
 
 pub(super) fn persist(path: &Path, value: &Value) -> Result<()> {
     use std::io::Write;
-    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(&temporary)?;
+    let mut file =
+        pa_types::platform::AtomicFile::create(path, super::status::UPDATE_ARTIFACT_WRITE)?;
     serde_json::to_writer(&mut file, value)?;
     file.write_all(b"\n")?;
-    file.sync_all()?;
-    std::fs::rename(temporary, path)?;
+    file.commit()?;
     Ok(())
 }
 

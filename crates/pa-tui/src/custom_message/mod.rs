@@ -412,7 +412,7 @@ fn compaction_outcome_entry(message: &Value, details: &Value) -> ChatEntry {
         )
         && matches!(
             details.get("outcome").and_then(Value::as_str),
-            Some("skipped" | "cancelled" | "failed")
+            Some("skipped" | "cancelled" | "failed" | "unreducible")
         );
     if !valid {
         return ChatEntry::Status {
@@ -1029,6 +1029,20 @@ mod tests {
             failed,
             vec![ChatEntry::Status {
                 text: "Compaction failed".to_string(),
+                kind: StatusKind::Error,
+            }]
+        );
+        let unreducible = decoded(&json!({
+            "role": "custom",
+            "customType": COMPACTION_OUTCOME_CUSTOM_TYPE,
+            "content": "Auto-compaction stopped",
+            "display": true,
+            "details": { "reason": "threshold", "outcome": "unreducible" },
+        }));
+        assert_eq!(
+            unreducible,
+            vec![ChatEntry::Status {
+                text: "Auto-compaction stopped".to_string(),
                 kind: StatusKind::Error,
             }]
         );

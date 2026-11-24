@@ -1287,3 +1287,51 @@ fn low_custom_percentage_compacts_real_history_once_and_then_makes_progress() {
         }
     );
 }
+
+/// Compactions that keep leaving the context over its threshold (the kept
+/// tail alone is larger than it: each round's huge reply) stop automatic
+/// compaction for the run at the second in a row: the turn ends with one
+/// row saying the context cannot be reduced, instead of compacting again
+/// after every tool round (four times here before the change).
+#[test]
+fn a_compaction_that_cannot_reduce_the_context_stops_the_run_once() {
+    let tool_turn = json!({"content":[{"type":"text","text":"x".repeat(120_000)}, {"type":"toolCall","id":"synthetic-call","name":"synthetic_missing_tool","arguments":{}}]});
+    let (_dir, engine) = faux_engine_with_settings(
+        &json!({
+            "responses": [
+                tool_turn, {"text":"summary one"},
+                tool_turn, {"text":"summary two"},
+                tool_turn, {"text":"summary three"},
+                {"text":"task finished"}
+            ]
+        }),
+        128_000 - FAUX_REQUEST_BUDGET - IN_RUN_THRESHOLD,
+    );
+    let mut events = Vec::new();
+    admit(&engine, "continue task".into(), &mut events);
+    let compactions = events
+        .iter()
+        .filter(|event| matches!(event, EngineEvent::CompactionStart { .. }))
+        .count();
+    let outcomes: Vec<_> = custom_rows(&events)
+        .into_iter()
+        .filter(|row| row["customType"] == "compaction_outcome")
+        .map(|row| (row["content"].clone(), row["details"].clone()))
+        .collect();
+    let message =
+        pa_core::session_engine::compaction_refill::RefillStop::StillOverThreshold.message();
+    assert_eq!(
+        (compactions, outcomes),
+        (
+            2,
+            vec![(
+                json!(message),
+                json!({ "reason": "threshold", "outcome": "unreducible" })
+            )]
+        )
+    );
+    assert!(
+        matches!(events.last(), Some(EngineEvent::Done(Err(error))) if *error == message),
+        "the turn ends with the stop"
+    );
+}

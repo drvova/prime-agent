@@ -72,37 +72,16 @@ pub(crate) fn write(request: &WriteRequest) -> anyhow::Result<(Value, EditFact, 
             .ok_or_else(|| anyhow!("{shown} has no parent directory"))?;
         std::fs::create_dir_all(parent)
             .with_context(|| format!("{shown}: cannot create its directory"))?;
-        let name = path
-            .file_name()
-            .ok_or_else(|| anyhow!("{shown} has no file name"))?
-            .to_string_lossy()
-            .into_owned();
-        let temp = path.with_file_name(format!(
-            ".{name}.{}.pa-edit.tmp",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let written = (|| -> anyhow::Result<()> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp)
-                .with_context(|| format!("{shown}: cannot create a temp file beside it"))?;
-            file.write_all(bytes)
-                .with_context(|| format!("{shown}: cannot write the temp file"))?;
-            file.sync_all()
-                .with_context(|| format!("{shown}: cannot flush the temp file"))?;
-            drop(file);
-            // Another writer may have created the file meanwhile: it is not replaced.
-            if path.exists() {
-                bail!("{shown} appeared while it was being created; nothing was written");
-            }
-            crate::platform::rename_onto(&temp, path)
-                .with_context(|| format!("{shown}: cannot move the file into place"))
-        })();
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temp);
+        let mut file = pa_types::platform::AtomicFile::create(path, document::EDIT_REPLACE)
+            .with_context(|| format!("{shown}: cannot create a temp file beside it"))?;
+        file.write_all(bytes)
+            .with_context(|| format!("{shown}: cannot write the temp file"))?;
+        // Another writer may have created the file meanwhile: it is not replaced.
+        if path.exists() {
+            bail!("{shown} appeared while it was being created; nothing was written");
         }
-        written?;
+        file.commit()
+            .with_context(|| format!("{shown}: cannot move the file into place"))?;
         // From no lines: only a seen version of an empty file, since
         // deleted, matches that and moves forward to what was written.
         Some(Rewrite {

@@ -55,7 +55,9 @@ impl AgentSessionEngine {
             CompactionOutcomeKind::Skipped => (false, Some(message), Some("warning")),
             // Automatic failures carry no `errorSeverity` on the wire (TS
             // `_endCompactionUnsuccessfully` passes none for the auto arms).
-            CompactionOutcomeKind::Failed => (false, Some(message), None),
+            CompactionOutcomeKind::Failed | CompactionOutcomeKind::Unreducible => {
+                (false, Some(message), None)
+            }
             // Aborts are user-initiated; the event carries no error message
             // (the durable row owns the disclosure).
             CompactionOutcomeKind::Cancelled => (true, None, None),

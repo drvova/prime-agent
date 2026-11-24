@@ -82,6 +82,10 @@ pub enum TurnEndReason {
     /// turn after the same `eval` cell kept returning the same result.
     #[serde(rename = "loop_guard")]
     LoopGuard,
+    /// Automatic compaction could not reduce the context and stopped the
+    /// run (`super::compaction_refill`).
+    #[serde(rename = "context_unreducible")]
+    ContextUnreducible,
 }
 
 impl TurnEndReason {
@@ -97,6 +101,7 @@ impl TurnEndReason {
             TurnEndReason::Unknown => "unknown",
             TurnEndReason::Empty => "empty",
             TurnEndReason::LoopGuard => "loop_guard",
+            TurnEndReason::ContextUnreducible => "context_unreducible",
         }
     }
 }
@@ -330,6 +335,12 @@ impl MetricsMeter {
             .compactions
             .push(CompactionPoint { context_fraction });
         self.baseline = None;
+    }
+
+    /// Automatic compaction stopped the run because it could not reduce
+    /// the context: the run ends as [`TurnEndReason::ContextUnreducible`].
+    pub fn context_unreducible(&mut self) {
+        self.run.end_reason = Some(TurnEndReason::ContextUnreducible);
     }
 
     /// One admitted subagent spawn.

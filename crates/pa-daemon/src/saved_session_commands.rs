@@ -95,10 +95,12 @@ fn same_name_parent(left: &FamilyRow, right: &NameScope) -> bool {
     left.parent_session_path.is_some() && left.parent_session_path == right.parent_session_path
 }
 
+/// Name a saved session: one `session_info` row appended to its file. The
+/// earlier bytes stay as they are (a whole-file rewrite of a 50 MB session
+/// wrote all of it again and made the roster rescan it).
 pub(crate) fn append_saved_session_name(path: &Path, name: &str) -> anyhow::Result<()> {
-    let mut session = SessionFile::open(path)?;
-    session.append_session_info(name);
-    session.rewrite()
+    SessionFile::open(path)?.persist_entry("session_info", json!({ "name": name.trim() }))?;
+    Ok(())
 }
 
 /// Delete a session file: try the `trash` CLI first, fall back to unlink,

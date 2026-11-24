@@ -322,7 +322,17 @@ fn write_json_object(path: &Path, entries: &OrderedConfig) -> Result<()> {
         out.push('}');
         out.push('\n');
     }
-    std::fs::write(path, out)?;
+    // The user's file, replaced whole: it keeps its mode and a symlink to it
+    // keeps pointing at it.
+    pa_types::platform::replace_file(
+        path,
+        out.as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: pa_types::platform::Durability::SyncFile,
+            mode: pa_types::platform::FileMode::KeepTarget,
+            symlinks: pa_types::platform::Symlinks::FollowToTarget,
+        },
+    )?;
     Ok(())
 }
 

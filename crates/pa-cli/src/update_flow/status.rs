@@ -17,6 +17,16 @@ use tokio::sync::Mutex;
 /// The status heartbeat interval.
 pub const STATUS_HEARTBEAT_MS: u64 = 5_000;
 
+/// How the update flow writes its `status.json` and `intent.json`: owner-only,
+/// synced before the rename (a coordinator that dies mid-write leaves the old
+/// artifact or the new one).
+pub(crate) const UPDATE_ARTIFACT_WRITE: pa_types::platform::ReplaceOptions =
+    pa_types::platform::ReplaceOptions {
+        durability: pa_types::platform::Durability::SyncFile,
+        mode: pa_types::platform::FileMode::Private,
+        symlinks: pa_types::platform::Symlinks::ReplaceLink,
+    };
+
 /// The telemetry outcome names for terminal states (a rollback that ends
 /// serving is `complete` on the old version, the rollback in the message).
 pub const UPDATE_TELEMETRY_STATE_NAMES: &[(UpdateState, &str)] = &[
@@ -189,29 +199,9 @@ impl StatusWriter {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
-        let temporary = self
-            .path
-            .with_extension(format!("{}.tmp", std::process::id()));
         let content = serde_json::to_string_pretty(&json!(self.status))? + "\n";
-        #[cfg(unix)]
-        {
-            use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&temporary)
-                .with_context(|| format!("create {}", temporary.display()))?;
-            file.write_all(content.as_bytes())?;
-            file.sync_all()?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&temporary, content)
-            .with_context(|| format!("write {}", temporary.display()))?;
-        std::fs::rename(&temporary, &self.path)
-            .with_context(|| format!("finalize {}", self.path.display()))?;
+        pa_types::platform::replace_file(&self.path, content.as_bytes(), UPDATE_ARTIFACT_WRITE)
+            .with_context(|| format!("write {}", self.path.display()))?;
         Ok(())
     }
 }

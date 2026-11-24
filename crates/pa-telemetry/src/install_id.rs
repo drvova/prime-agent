@@ -166,17 +166,36 @@ fn publish_exclusive(path: &Path, payload: &[u8]) -> Result<Publish> {
     }
 }
 
-/// Atomically replace invalid state (unique temp file + rename through
-/// `rename_onto`, so the win32 destination-busy retry applies like TS
-/// `writeTelemetryStateAtomically`).
+/// Atomically replace invalid state (unique temp file + rename with the
+/// win32 destination-busy retry, like TS `writeTelemetryStateAtomically`).
+///
+/// The retry is `pa_types::platform::rename_onto`'s (up to 5 attempts,
+/// `10ms * attempt` apart, on the access-denied and sharing/lock-violation
+/// family only, never off Windows), written out here because pa-telemetry
+/// depends on no workspace crate (AGENTS.md crate table) and so cannot reach
+/// pa-types, which owns the shared atomic-replace helpers.
 fn replace_invalid_state(path: &Path, payload: &[u8]) -> Result<()> {
     let tmp = unique_sibling(path);
     if let Err(err) = create_exclusive(&tmp, payload) {
         remove_quietly(&tmp);
         return Err(err).with_context(|| format!("create {}", tmp.display()));
     }
-    let renamed = crate::rename_onto(&tmp, path)
-        .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
+    let mut attempt = 1;
+    let renamed = loop {
+        match std::fs::rename(&tmp, path) {
+            Err(error)
+                if cfg!(windows)
+                    && attempt < 5
+                    && (error.kind() == std::io::ErrorKind::PermissionDenied
+                        || matches!(error.raw_os_error(), Some(32 | 33))) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10 * attempt));
+                attempt += 1;
+            }
+            outcome => break outcome,
+        }
+    }
+    .with_context(|| format!("rename {} -> {}", tmp.display(), path.display()));
     if renamed.is_err() {
         remove_quietly(&tmp);
     }

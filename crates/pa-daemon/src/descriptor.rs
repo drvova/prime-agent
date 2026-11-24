@@ -228,7 +228,7 @@ pub(crate) enum TempSync {
 /// # Errors
 ///
 /// Returns an error when the parent directory cannot be created or the temp file's
-/// create/write/sync/rename fails (the 0600 restriction is best effort).
+/// create/write/sync/rename fails (the temp file is created owner-only).
 pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
     write_file_atomic_at(path, content, TempSync::Synced)
 }
@@ -239,9 +239,8 @@ pub fn write_file_atomic(path: &Path, content: &str) -> Result<()> {
 /// # Errors
 ///
 /// Returns an error when the parent directory cannot be created, or when
-/// creating, writing, or flushing the temp file fails, or when the final
-/// rename onto `path` fails; the 0600 restriction is best effort and
-/// never fails the call.
+/// creating or writing the temp file fails, or when the final rename onto
+/// `path` fails (the temp file is created owner-only).
 pub(crate) fn write_file_atomic_unsynced(path: &Path, content: &str) -> Result<()> {
     write_file_atomic_at(path, content, TempSync::Unsynced)
 }
@@ -250,20 +249,19 @@ fn write_file_atomic_at(path: &Path, content: &str, sync: TempSync) -> Result<()
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    {
-        let file =
-            std::fs::File::create(&temp).with_context(|| format!("create {}", temp.display()))?;
-        let mut writer = std::io::BufWriter::new(file);
-        writer.write_all(content.as_bytes())?;
-        writer.flush()?;
-        if matches!(sync, TempSync::Synced) {
-            writer.get_ref().sync_all()?;
-        }
-    }
-    let _ = pa_core::platform::perms::restrict_file(&temp);
-    pa_core::platform::rename_onto(&temp, path)
-        .with_context(|| format!("persist {}", path.display()))?;
+    pa_types::platform::replace_file(
+        path,
+        content.as_bytes(),
+        pa_types::platform::ReplaceOptions {
+            durability: match sync {
+                TempSync::Synced => pa_types::platform::Durability::SyncFile,
+                TempSync::Unsynced => pa_types::platform::Durability::Unsynced,
+            },
+            mode: pa_types::platform::FileMode::Private,
+            symlinks: pa_types::platform::Symlinks::ReplaceLink,
+        },
+    )
+    .with_context(|| format!("persist {}", path.display()))?;
     #[cfg(test)]
     atomic_write_probe::record(path, sync);
     Ok(())
@@ -467,8 +465,6 @@ pub fn load_supervisor_config(
 pub fn persist_supervisor_config(path: &Path, config: &PersistedSupervisorConfig) -> Result<()> {
     write_file_atomic_unsynced(path, &serde_json::to_string_pretty(config)?)
 }
-
-use std::io::Write as _;
 
 #[cfg(test)]
 mod tests {

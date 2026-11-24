@@ -432,9 +432,11 @@ impl EditChecks {
                     if let Some(directory) = path.parent() {
                         std::fs::create_dir_all(directory)?;
                     }
-                    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-                    std::fs::write(&temp, body)?;
-                    std::fs::rename(&temp, &path)
+                    pa_types::platform::replace_file(
+                        &path,
+                        &body,
+                        crate::platform::REPLACE_KEEPING_MODE,
+                    )
                 });
             if let Err(error) = written {
                 tracing::debug!("edit check stats were not saved: {error}");

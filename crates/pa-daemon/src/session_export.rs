@@ -219,7 +219,23 @@ fn write_export(file_path: &Path, body: &str) -> Result<String> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
     }
-    std::fs::write(file_path, body).with_context(|| format!("writing {}", file_path.display()))?;
+    // A file is replaced whole, so a failed export leaves the previous one
+    // as it was; a pipe or a device (`/dev/stdout`) cannot be replaced and
+    // is written through.
+    if std::fs::metadata(file_path).is_ok_and(|metadata| !metadata.is_file()) {
+        std::fs::write(file_path, body)
+    } else {
+        pa_types::platform::replace_file(
+            file_path,
+            body.as_bytes(),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::Unsynced,
+                mode: pa_types::platform::FileMode::KeepTarget,
+                symlinks: pa_types::platform::Symlinks::FollowToTarget,
+            },
+        )
+    }
+    .with_context(|| format!("writing {}", file_path.display()))?;
     Ok(file_path.to_string_lossy().into_owned())
 }
 

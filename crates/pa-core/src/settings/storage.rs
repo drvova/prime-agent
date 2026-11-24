@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -375,27 +375,33 @@ pub(crate) fn opt_in_fsync_calls() -> usize {
 
 /// Atomic write: temp file + rename, private mode like `writeFileAtomicSync`,
 /// with explicit [`AtomicWriteOptions`] (the TS
-/// `writeFileAtomicSync(path, data, options)` shape). TS default durability:
+/// `writeFileAtomicSync(path, data, options)` shape), through the shared
+/// [`pa_types::platform::replace_file`]. TS default durability:
 /// NO fsync (opt-in) — a hard crash leaves either the previous file or the
-/// new file; the audit is per call site, never blanket.
+/// new file; the audit is per call site, never blanket. The opt-in syncs the
+/// temp file before the rename and the directory after it.
+///
+/// # Errors
+///
+/// The temp file cannot be created, written, synced or renamed onto `path`.
 pub fn atomic_write_with(path: &Path, content: &str, options: AtomicWriteOptions) -> Result<()> {
-    let temp = PathBuf::from(format!("{}.tmp{}", path.display(), std::process::id()));
-    {
-        let mut open = fs::OpenOptions::new();
-        open.create(true).write(true).truncate(true);
-        crate::platform::perms::set_private_mode(&mut open);
-        let mut file = open.open(&temp)?;
-        file.write_all(content.as_bytes())?;
-        if options.fsync {
-            #[cfg(test)]
-            OPT_IN_FSYNC.with(|count| count.set(count.get() + 1));
-            file.sync_all()?;
-        }
-    }
-    crate::platform::rename_onto(&temp, path)?;
-    if options.fsync {
-        crate::platform::fs::sync_directory(path.parent().unwrap_or_else(|| Path::new(".")))?;
-    }
+    use pa_types::platform::{Durability, FileMode, ReplaceOptions, Symlinks};
+    let durability = if options.fsync {
+        #[cfg(test)]
+        OPT_IN_FSYNC.with(|count| count.set(count.get() + 1));
+        Durability::SyncFileAndDirectory
+    } else {
+        Durability::Unsynced
+    };
+    pa_types::platform::replace_file(
+        path,
+        content.as_bytes(),
+        ReplaceOptions {
+            durability,
+            mode: FileMode::Private,
+            symlinks: Symlinks::ReplaceLink,
+        },
+    )?;
     Ok(())
 }
 

@@ -2,7 +2,6 @@
 //! crash repair, index).
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use pa_types::session::{

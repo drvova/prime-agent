@@ -763,8 +763,22 @@ pub(super) fn sed(invocation: &mut Invocation<'_>) -> Outcome {
             if !suffix.is_empty() {
                 std::fs::copy(&path, shell.path(&format!("{file}{suffix}")))?;
             }
-            // Written in place, so the file keeps its permissions and links.
-            std::fs::write(&path, edited)?;
+            // Replaced whole, like GNU sed's temp file and rename: a failure
+            // or a crash leaves the old text or the new, never part of
+            // either. The file keeps its mode; unlike GNU sed without
+            // `--follow-symlinks`, a symlink keeps pointing at the edited file
+            // (what writing through it did before) rather than becoming a
+            // regular file. Other hard links to it keep the old text, as with
+            // GNU sed.
+            pa_types::platform::replace_file(
+                &path,
+                &edited,
+                pa_types::platform::ReplaceOptions {
+                    durability: pa_types::platform::Durability::SyncFile,
+                    mode: pa_types::platform::FileMode::KeepTarget,
+                    symlinks: pa_types::platform::Symlinks::FollowToTarget,
+                },
+            )?;
             if code != 0 {
                 return Ok(code);
             }

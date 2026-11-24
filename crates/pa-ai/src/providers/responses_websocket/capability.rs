@@ -142,9 +142,14 @@ pub(crate) fn record_learned(key: &str, update: impl FnOnce(&mut LearnedEndpoint
     };
     // A failed write only costs a re-probe in a later session.
     runtime.spawn_blocking(move || {
-        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
-        if std::fs::write(&temp, &bytes).is_ok() && std::fs::rename(&temp, &path).is_err() {
-            let _ = std::fs::remove_file(&temp);
+        use pa_types::platform::{Durability, FileMode, ReplaceOptions, Symlinks};
+        let options = ReplaceOptions {
+            durability: Durability::Unsynced,
+            mode: FileMode::KeepTarget,
+            symlinks: Symlinks::FollowToTarget,
+        };
+        if let Err(error) = pa_types::platform::replace_file(&path, &bytes, options) {
+            tracing::debug!(%error, "learned Responses capability not saved");
         }
     });
 }

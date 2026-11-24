@@ -3,7 +3,6 @@
 //! One last-good snapshot per source URL; a scope change discards the
 //! previous view (an account's models never leak across scopes).
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -366,7 +365,11 @@ impl<T: Clone + Send + Sync + 'static> CatalogCache<T> {
             let Ok(bytes) = serde_json::to_vec(&stored) else {
                 return;
             };
-            if let Err(error) = write_atomic(path, &bytes) {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| pa_types::platform::replace_file(path, &bytes, SNAPSHOT_WRITE));
+            if let Err(error) = written {
                 // Keep the validated in-memory snapshot if persistence fails.
                 tracing::debug!(path = %path.display(), %error, "catalog cache write failed");
             }
@@ -437,56 +440,29 @@ async fn await_inflight<T: Clone>(inflight: Arc<InFlight<T>>) -> Option<T> {
     }
 }
 
-/// Atomic snapshot write: temp file + rename at mode 0600. The temp file
-/// is unique per writer (`pid` + an in-process counter): one agent dir is
-/// shared by many processes, and a shared temp path would let concurrent
-/// refreshes truncate each other's temp file and publish a malformed snapshot.
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let temp = path.with_extension(format!(
-        "{}-{}.tmp",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    #[cfg(unix)]
-    let write = || {
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temp)
-    };
-    #[cfg(not(unix))]
-    let write = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&temp)
-    };
-    let mut file = write()?;
-    file.write_all(bytes)?;
-    file.flush()?;
-    std::fs::rename(&temp, path)
-}
+/// How the snapshot is written: temp file + rename at mode 0600, unsynced (a
+/// lost write is refetched). The shared helper's temp file is unique per
+/// write (`pid` + an in-process counter): one agent dir is shared by many
+/// processes, and a shared temp path would let concurrent refreshes truncate
+/// each other's temp file and publish a malformed snapshot.
+const SNAPSHOT_WRITE: pa_types::platform::ReplaceOptions = pa_types::platform::ReplaceOptions {
+    durability: pa_types::platform::Durability::Unsynced,
+    mode: pa_types::platform::FileMode::Private,
+    symlinks: pa_types::platform::Symlinks::ReplaceLink,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// The multi-process snapshot-write invariant (Macroscope on #2576):
-    /// a reader racing concurrent `write_atomic` writers always parses a
+    /// a reader racing concurrent snapshot writers always parses a
     /// full document.
     #[test]
     fn concurrent_writers_never_publish_a_malformed_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("snapshot.json");
-        write_atomic(&path, br#"{"writer":0}"#).unwrap();
+        pa_types::platform::replace_file(&path, br#"{"writer":0}"#, SNAPSHOT_WRITE).unwrap();
         std::thread::scope(|scope| {
             for writer in 0..4u8 {
                 let path = &path;
@@ -496,7 +472,8 @@ mod tests {
                             r#"{{"writer":{writer},"round":{round},"padding":"{}"}}"#,
                             "x".repeat(round % 7 * 512)
                         );
-                        write_atomic(path, payload.as_bytes()).unwrap();
+                        pa_types::platform::replace_file(path, payload.as_bytes(), SNAPSHOT_WRITE)
+                            .unwrap();
                     }
                 });
             }

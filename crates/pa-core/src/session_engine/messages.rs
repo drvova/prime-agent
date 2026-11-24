@@ -110,6 +110,9 @@ pub enum CompactionOutcomeKind {
     Cancelled,
     /// The summarization failed.
     Failed,
+    /// Compaction cannot get the context under its threshold, so automatic
+    /// compaction stopped for the run (`super::compaction_refill`).
+    Unreducible,
 }
 
 impl CompactionOutcomeKind {
@@ -120,6 +123,7 @@ impl CompactionOutcomeKind {
             Self::Skipped => "skipped",
             Self::Cancelled => "cancelled",
             Self::Failed => "failed",
+            Self::Unreducible => "unreducible",
         }
     }
 }

@@ -382,20 +382,33 @@ fn reload_picks_up_file_changes() {
     assert!(!kb.matches("ctrl+e", "app.tools.expand"));
 }
 
+/// The rewrite replaces the file whole, never in place: a hard link made
+/// before it keeps the old text, and no temp file is left beside it.
 #[test]
 fn startup_migration_rewrites_file() {
     let dir = tempfile::tempdir().unwrap();
     let config_path = dir.path().join("keybindings.json");
-    std::fs::write(
-        &config_path,
-        "{\n  \"cursorUp\": [\"up\", \"ctrl+p\"],\n  \"expandTools\": \"ctrl+x\"\n}\n",
-    )
-    .unwrap();
+    let legacy = "{\n  \"cursorUp\": [\"up\", \"ctrl+p\"],\n  \"expandTools\": \"ctrl+x\"\n}\n";
+    std::fs::write(&config_path, legacy).unwrap();
+    let linked = dir.path().join("linked.json");
+    std::fs::hard_link(&config_path, &linked).unwrap();
     assert!(migrate_keybindings_file(dir.path()).unwrap());
-    let rewritten = std::fs::read_to_string(&config_path).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
     assert_eq!(
-        rewritten,
-        "{\n  \"tui.editor.cursorUp\": [\n    \"up\",\n    \"ctrl+p\"\n  ],\n  \"app.tools.expand\": \"ctrl+x\"\n}\n"
+        (
+            std::fs::read_to_string(&config_path).unwrap(),
+            std::fs::read_to_string(&linked).unwrap(),
+            names,
+        ),
+        (
+            "{\n  \"tui.editor.cursorUp\": [\n    \"up\",\n    \"ctrl+p\"\n  ],\n  \"app.tools.expand\": \"ctrl+x\"\n}\n".to_string(),
+            legacy.to_string(),
+            vec!["keybindings.json".to_string(), "linked.json".to_string()],
+        )
     );
     // A second run is a no-op (nothing left to migrate).
     assert!(!migrate_keybindings_file(dir.path()).unwrap());

@@ -1298,6 +1298,24 @@ impl SessionTelemetry {
         }
     }
 
+    /// Automatic compaction stopped because it could not reduce the context
+    /// (`super::compaction_refill`): the active run ends as
+    /// `context_unreducible`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_context_unreducible(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if state.active_run.is_some() {
+            state.meter.context_unreducible();
+        }
+    }
+
     /// The kernel admitted a subagent spawn (`rlm-spawn`); counts toward
     /// the active run's `subagent_spawn_count`.
     ///

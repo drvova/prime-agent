@@ -22,7 +22,6 @@ mod events;
 mod install_id;
 mod platform;
 mod properties;
-mod rename;
 mod sink;
 mod sinks;
 mod time;
@@ -66,7 +65,6 @@ pub use events::{
 pub use install_id::{existing_install_id, install_id};
 pub use platform::{base_properties, SCHEMA_VERSION};
 pub use properties::Properties;
-pub use rename::rename_onto;
 pub use sink::{SinkOutcome, TelemetrySink};
 pub use sinks::{AnalyticsSink, FileSink, MockSink, NoopSink, RecordedBatch, ANALYTICS_ENDPOINT};
 

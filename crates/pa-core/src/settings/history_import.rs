@@ -570,9 +570,11 @@ fn write_marker(agent_dir: &Path, report: &HistoryImportReport) -> std::io::Resu
         "kept": report.kept.len(),
         "configAdded": report.config_added,
     });
-    let temp = agent_dir.join(format!(".{HISTORY_IMPORT_MARKER}.tmp"));
-    std::fs::write(&temp, format!("{body}\n"))?;
-    crate::platform::rename_onto(&temp, &agent_dir.join(HISTORY_IMPORT_MARKER))
+    pa_types::platform::replace_file(
+        &agent_dir.join(HISTORY_IMPORT_MARKER),
+        format!("{body}\n").as_bytes(),
+        crate::platform::REPLACE_KEEPING_MODE,
+    )
 }
 
 #[cfg(test)]

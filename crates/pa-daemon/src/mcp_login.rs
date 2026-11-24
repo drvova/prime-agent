@@ -49,7 +49,17 @@ impl McpLoginUi for WorkerMcpLoginUi {
         pa_core::platform::browser::open_in_browser(url);
         eprintln!("pa-daemon: MCP login: {url} — {instructions}");
         if let Some(path) = &self.auth_url_file {
-            if let Err(error) = std::fs::write(path, url) {
+            // Replaced whole: a reader polling the file never sees half a URL.
+            let written = pa_types::platform::replace_file(
+                path,
+                url.as_bytes(),
+                pa_types::platform::ReplaceOptions {
+                    durability: pa_types::platform::Durability::Unsynced,
+                    mode: pa_types::platform::FileMode::KeepTarget,
+                    symlinks: pa_types::platform::Symlinks::FollowToTarget,
+                },
+            );
+            if let Err(error) = written {
                 eprintln!(
                     "pa-daemon: MCP login could not record the authorization URL at {}: {error}",
                     path.display()

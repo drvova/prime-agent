@@ -10,6 +10,7 @@ use serde_json::Value;
 use crate::agent_engine::AgentSessionEngine;
 use crate::engine::EngineEvent;
 use pa_core::session_engine::compact_session::CompactOutcome;
+use pa_core::session_engine::compaction_refill::RefillStop;
 use pa_core::session_engine::messages::{CompactionOutcomeKind, CompactionOutcomeReason};
 
 /// The outcome of one turn-boundary threshold check.
@@ -25,6 +26,11 @@ pub(crate) enum AutoCompactionRun {
     /// The emit callback cancelled the run (an aborted turn): the caller
     /// stops the turn loop like any other cancelled emit.
     Cancelled,
+    /// Compaction cannot reduce the context (pa-core `compaction_refill`):
+    /// the stop row went out, automatic compaction is off for the run, and
+    /// the turn ends with the stop's message
+    /// ([`AgentSessionEngine::end_for_unreducible_context`]).
+    Unreducible,
 }
 
 impl AutoCompactionRun {
@@ -33,7 +39,7 @@ impl AutoCompactionRun {
     /// rest of the run's checks; a committed summary and a plain
     /// not-due recheck keep them armed.
     pub(crate) fn continues_threshold_checks(self) -> bool {
-        !matches!(self, Self::Ran)
+        !matches!(self, Self::Ran | Self::Unreducible)
     }
 }
 
@@ -58,19 +64,34 @@ impl AgentSessionEngine {
         let run_model = self
             .armed_image_route()
             .map_or_else(|| model.clone(), |route| route.target.model);
-        let due = {
+        let (due, requests_since_compaction) = {
             let guard = self.session.blocking_lock();
             match guard.as_deref() {
-                Some(engine) => self
-                    .runtime
-                    .block_on(async { engine.session.auto_compaction_due(&run_model).await }),
+                Some(engine) => self.runtime.block_on(async {
+                    if engine.session.auto_compaction_due(&run_model).await {
+                        let reading = engine.session.context_reading(&run_model).await;
+                        (true, reading.requests_since_compaction)
+                    } else {
+                        (false, None)
+                    }
+                }),
                 // No built session: the live context is empty, matching the
                 // TS pre-turn check on a fresh session.
-                None => false,
+                None => (false, None),
             }
         };
         if !due {
             return AutoCompactionRun::NotDue;
+        }
+        // Due again right after the last compaction, twice in a row: the
+        // context refills faster than compaction reduces it.
+        let refill = self
+            .refill_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .before_compaction(requests_since_compaction);
+        if let Some(stop) = refill {
+            return self.stop_auto_compaction(stop, emit);
         }
         // TS assigns `_autoCompactionAbortController` for the run's duration: an
         // `abort_compaction` command lands in the slot and cancels the in-flight summarizer.
@@ -179,6 +200,20 @@ impl AgentSessionEngine {
                     "auto.end_emitted",
                     &serde_json::Value::Null,
                 );
+                // A compaction that left the context over its threshold makes
+                // the next request due again at once; the second in a row
+                // stops.
+                let reading = self
+                    .runtime
+                    .block_on(engine.session.context_reading(&run_model));
+                let refill = self
+                    .refill_guard
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .after_compaction(reading.over_threshold);
+                if let Some(stop) = refill {
+                    return self.stop_auto_compaction(stop, emit);
+                }
             }
             // A skip consumed the check (TS `CompactionSkippedError`): the disclosure row
             // goes out with its message pair, then the end event carries the warning.
@@ -225,6 +260,69 @@ impl AgentSessionEngine {
             AutoCompactionRun::Compacted
         } else {
             AutoCompactionRun::Ran
+        }
+    }
+
+    /// Stop automatic compaction for the run: the durable `unreducible` row
+    /// goes out with its message pair, the run's telemetry ends as
+    /// `context_unreducible`, and the turn loop ends the turn with the
+    /// stop's message ([`Self::end_for_unreducible_context`]).
+    fn stop_auto_compaction(
+        &self,
+        stop: RefillStop,
+        emit: &mut dyn FnMut(EngineEvent) -> bool,
+    ) -> AutoCompactionRun {
+        self.threshold_checks_enabled
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        *self
+            .unreducible_stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(stop);
+        let engine = self.session.blocking_lock().clone();
+        if let Some(engine) = engine {
+            if let Some(telemetry) = engine.telemetry.as_ref() {
+                telemetry.note_context_unreducible();
+            }
+            let row = self
+                .runtime
+                .block_on(engine.session.record_compaction_outcome(
+                    CompactionOutcomeReason::Threshold,
+                    CompactionOutcomeKind::Unreducible,
+                    &stop.message(),
+                ));
+            match row {
+                Ok(row) => {
+                    if !emit(EngineEvent::CustomMessage(
+                        crate::session_commands::custom_message_value(&row),
+                    )) {
+                        return AutoCompactionRun::Cancelled;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("pa-daemon: compaction stop row not persisted: {error:#}");
+                }
+            }
+        }
+        AutoCompactionRun::Unreducible
+    }
+
+    /// End the turn when this run stopped automatic compaction: the turn's
+    /// `Done` carries the stop's message. Returns whether it ended.
+    pub(crate) fn end_for_unreducible_context(
+        &self,
+        emit: &mut dyn FnMut(EngineEvent) -> bool,
+    ) -> bool {
+        let stop = self
+            .unreducible_stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match stop {
+            Some(stop) => {
+                emit(EngineEvent::Done(Err(stop.message())));
+                true
+            }
+            None => false,
         }
     }
 }

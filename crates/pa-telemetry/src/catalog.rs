@@ -240,8 +240,9 @@ pub const RUN_OUTCOMES: &[&str] = &["success", "error", "aborted"];
 
 pub const STOP_REASONS: &[&str] = &["stop", "length", "toolUse", "error", "aborted", "unknown"];
 
-/// How a run ended: [`STOP_REASONS`] plus a final answer with nothing in it
-/// and a loop-guard cut (pa-core `run_metrics::TurnEndReason`).
+/// How a run ended: [`STOP_REASONS`] plus a final answer with nothing in it,
+/// a loop-guard cut, and a stop because compaction could not reduce the
+/// context (pa-core `run_metrics::TurnEndReason`).
 const TURN_END_REASONS: &[&str] = &[
     "stop",
     "length",
@@ -251,6 +252,7 @@ const TURN_END_REASONS: &[&str] = &[
     "unknown",
     "empty",
     "loop_guard",
+    "context_unreducible",
 ];
 
 pub const PROVIDER_CATEGORIES: &[&str] = &[

@@ -17,6 +17,8 @@
 //! the live post-run compaction drain does; one before any run is skipped.
 //! So does an output-limit continuation row, which opens no run (a
 //! continued attempt adds no user message).
+//! A `compaction_outcome` row of outcome `unreducible` ends the open run as
+//! the live stop does (`super::super::compaction_refill`).
 
 use pa_agent::types::{Message, StopReason};
 use serde_json::Value;
@@ -64,11 +66,21 @@ pub fn transcript_run_metrics(content: &str) -> Vec<RunMetrics> {
                 continue;
             }
             Some("custom_message") => {
-                if open.is_some()
-                    && entry.get("customType").and_then(Value::as_str)
-                        == Some(OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE)
-                {
+                let custom_type = entry.get("customType").and_then(Value::as_str);
+                if open.is_some() && custom_type == Some(OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE) {
                     meter.output_limit_continuation();
+                }
+                let unreducible = custom_type
+                    == Some(super::super::messages::COMPACTION_OUTCOME_CUSTOM_TYPE)
+                    && entry
+                        .get("details")
+                        .and_then(|details| details.get("outcome"))
+                        .and_then(Value::as_str)
+                        == Some("unreducible");
+                if unreducible && open.is_some() {
+                    meter.context_unreducible();
+                    // The stop ended the turn: the next user message opens a run.
+                    turn_open = false;
                 }
                 continue;
             }

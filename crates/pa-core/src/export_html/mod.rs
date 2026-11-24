@@ -99,7 +99,18 @@ fn generate_html(data: &SessionExportData, theme: &theme::ExportTheme) -> String
 /// report it (the given path verbatim, or the default name).
 fn write_export(html: &str, session_file: &Path, output_path: Option<&str>) -> Result<String> {
     let output = output_path.map_or_else(|| default_html_output_path(session_file), str::to_string);
-    std::fs::write(&output, html)?;
+    // A file is replaced whole, so a failed export leaves the previous one
+    // as it was; a pipe or a device (`/dev/stdout`) cannot be replaced and
+    // is written through.
+    if std::fs::metadata(&output).is_ok_and(|metadata| !metadata.is_file()) {
+        std::fs::write(&output, html)?;
+    } else {
+        pa_types::platform::replace_file(
+            Path::new(&output),
+            html.as_bytes(),
+            crate::platform::REPLACE_KEEPING_MODE,
+        )?;
+    }
     Ok(output)
 }
 

@@ -2,10 +2,7 @@
 //! the durable append arm, and the atomic session-file write
 //! (TS `writeFileAtomicSync`).
 
-use super::{
-    serialize_entry, AgentMessage, FileEntry, Path, PathBuf, SessionManager,
-    SessionPersistListener, Write,
-};
+use super::{serialize_entry, AgentMessage, FileEntry, SessionManager, SessionPersistListener};
 
 impl SessionManager {
     pub(super) fn refresh_has_assistant_entry(&mut self, entries: &[FileEntry]) {
@@ -75,7 +72,19 @@ impl SessionManager {
         if let Some(parent) = session_file.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        atomic_write(session_file, &content)?;
+        // The session file write (TS `writeFileAtomicSync`): private temp,
+        // fsync, rename. The fsync is deliberate (TS passes none; a non-synced
+        // rename can zero the file on a hard crash); other sites are TS-default.
+        pa_types::session_scope::ensure_live()?;
+        pa_types::platform::replace_file(
+            session_file,
+            content.as_bytes(),
+            pa_types::platform::ReplaceOptions {
+                durability: pa_types::platform::Durability::SyncFile,
+                mode: pa_types::platform::FileMode::Private,
+                symlinks: pa_types::platform::Symlinks::ReplaceLink,
+            },
+        )?;
         self.notify_persist_listeners();
         Ok(())
     }
@@ -148,23 +157,4 @@ impl SessionManager {
         }
         Ok(())
     }
-}
-
-/// Atomic session-file write: private temp + fsync + rename (the
-/// `writeFileAtomicSync` shape; the win32 destination-busy retry rides
-/// along in `rename_onto`). The fsync is deliberate (TS passes none; a
-/// non-synced rename can zero the file on a hard crash); other sites are
-/// TS-default.
-pub(super) fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    pa_types::session_scope::ensure_live()?;
-    let temp = PathBuf::from(format!("{}.tmp{}", path.display(), std::process::id()));
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.create(true).write(true).truncate(true);
-        crate::platform::perms::set_private_mode(&mut options);
-        let mut file = options.open(&temp)?;
-        file.write_all(content.as_bytes())?;
-        file.sync_all()?;
-    }
-    crate::platform::rename_onto(&temp, path)
 }

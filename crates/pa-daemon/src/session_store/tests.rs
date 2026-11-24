@@ -1109,3 +1109,75 @@ fn listing_and_frozen_usage_agree_on_duplicate_attribution_ids() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+/// A saved session file holding bytes a whole-file rewrite would not
+/// reproduce: a row spelled with spaces, and a torn row the loader skips.
+fn saved_file_with_foreign_bytes(dir: &Path) -> (PathBuf, String) {
+    let path = dir.join("saved.jsonl");
+    let prefix = concat!(
+        r#"{"type":"session","version":3,"id":"saved","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work"}"#,
+        "\n",
+        r#"{"type": "message", "id": "m1", "parentId": null, "timestamp": "2026-01-01T00:00:01.000Z", "message": {"role": "user", "content": "hi", "timestamp": 1}}"#,
+        "\n",
+        r#"{"type":"message","id":"m2","pa"#,
+        "\n",
+    );
+    fs::write(&path, prefix).unwrap();
+    (path, prefix.to_string())
+}
+
+/// What a metadata change left after `prefix`: exactly one row, parsed.
+fn the_one_appended_row(path: &Path, prefix: &str) -> Value {
+    let written = fs::read_to_string(path).unwrap();
+    let appended = written
+        .strip_prefix(prefix)
+        .expect("the earlier bytes are unchanged");
+    let lines: Vec<&str> = appended.lines().collect();
+    assert_eq!(lines.len(), 1, "one appended row: {appended:?}");
+    serde_json::from_str(lines[0]).unwrap()
+}
+
+#[test]
+fn a_saved_session_rename_appends_one_row_and_keeps_the_earlier_bytes() {
+    let (_tmp, dir) = temp_dir();
+    let (path, prefix) = saved_file_with_foreign_bytes(&dir);
+    crate::saved_session_commands::append_saved_session_name(&path, " renamed ").unwrap();
+    let row = the_one_appended_row(&path, &prefix);
+    assert_eq!(
+        row,
+        json!({
+            "type": "session_info",
+            "id": row["id"],
+            "parentId": "m1",
+            "timestamp": row["timestamp"],
+            "name": "renamed",
+        })
+    );
+    // The current reader folds the appended row into the same state.
+    assert_eq!(
+        SessionFile::open(&path).unwrap().session_name(),
+        Some("renamed")
+    );
+}
+
+#[test]
+fn an_archive_belt_appends_one_row_and_keeps_the_earlier_bytes() {
+    let (_tmp, dir) = temp_dir();
+    let (path, prefix) = saved_file_with_foreign_bytes(&dir);
+    crate::stop_cleanup::ensure_archived_state(&path).unwrap();
+    let row = the_one_appended_row(&path, &prefix);
+    assert_eq!(
+        row,
+        json!({
+            "type": "session_state",
+            "id": row["id"],
+            "parentId": "m1",
+            "timestamp": row["timestamp"],
+            "state": { "status": "archived" },
+        })
+    );
+    assert_eq!(
+        SessionFile::open(&path).unwrap().state().as_deref(),
+        Some("archived")
+    );
+}

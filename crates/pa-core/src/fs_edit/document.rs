@@ -8,7 +8,7 @@
 //! back exactly the bytes it did not change.
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{anyhow, bail, Context};
 
@@ -266,7 +266,8 @@ pub(crate) fn load(path: &Path, shown: &str) -> anyhow::Result<Loaded> {
 
 /// Replace `path` with `bytes` atomically: write a temp file beside the real
 /// file (through a symlink, so the link survives), carry its permissions
-/// over, flush it, and rename it onto the file. When the file no longer holds
+/// over, flush it, and rename it onto the file
+/// ([`pa_types::platform::AtomicFile`]). When the file no longer holds
 /// `expected` (another writer got there between the check and the write),
 /// nothing is replaced.
 ///
@@ -280,41 +281,25 @@ pub(crate) fn replace_atomically(
     expected: &[u8],
     bytes: &[u8],
 ) -> anyhow::Result<()> {
-    let target = std::fs::canonicalize(path).with_context(|| format!("{shown}: cannot resolve"))?;
-    let permissions = std::fs::metadata(&target)
-        .with_context(|| format!("{shown}: cannot stat"))?
-        .permissions();
-    let name = target
-        .file_name()
-        .ok_or_else(|| anyhow!("{shown} has no file name"))?
-        .to_string_lossy()
-        .into_owned();
-    let temp: PathBuf = target.with_file_name(format!(
-        ".{name}.{}.pa-edit.tmp",
-        uuid::Uuid::new_v4().simple()
-    ));
-    let written = (|| -> anyhow::Result<()> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .with_context(|| format!("{shown}: cannot create a temp file beside it"))?;
-        file.write_all(bytes)
-            .with_context(|| format!("{shown}: cannot write the temp file"))?;
-        file.set_permissions(permissions)
-            .with_context(|| format!("{shown}: cannot copy permissions"))?;
-        file.sync_all()
-            .with_context(|| format!("{shown}: cannot flush the temp file"))?;
-        drop(file);
-        let current = std::fs::read(&target).with_context(|| format!("{shown}: cannot re-read"))?;
-        if current != expected {
-            bail!("{shown} changed while the edit was being applied; nothing was written");
-        }
-        crate::platform::rename_onto(&temp, &target)
-            .with_context(|| format!("{shown}: cannot replace the file"))
-    })();
-    if written.is_err() {
-        let _ = std::fs::remove_file(&temp);
+    let mut file = pa_types::platform::AtomicFile::create(path, EDIT_REPLACE)
+        .with_context(|| format!("{shown}: cannot create a temp file beside it"))?;
+    file.write_all(bytes)
+        .with_context(|| format!("{shown}: cannot write the temp file"))?;
+    let current =
+        std::fs::read(file.target()).with_context(|| format!("{shown}: cannot re-read"))?;
+    if current != expected {
+        bail!("{shown} changed while the edit was being applied; nothing was written");
     }
-    written
+    file.commit()
+        .with_context(|| format!("{shown}: cannot replace the file"))
 }
+
+/// How the file tools replace a file: the user's file keeps its mode, a
+/// symlink keeps pointing at it, and the new bytes are synced before the
+/// rename.
+pub(crate) const EDIT_REPLACE: pa_types::platform::ReplaceOptions =
+    pa_types::platform::ReplaceOptions {
+        durability: pa_types::platform::Durability::SyncFile,
+        mode: pa_types::platform::FileMode::KeepTarget,
+        symlinks: pa_types::platform::Symlinks::FollowToTarget,
+    };

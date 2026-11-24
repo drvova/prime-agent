@@ -17,10 +17,21 @@ pub use process::{
     set_no_window, termination_signal, Signal,
 };
 // The rename-onto-destination primitive (bounded win32 destination-busy
-// retry) lives in pa-telemetry — the bottom crate every persist owner
-// already depends on; re-exported so the platform wall stays the engine's
-// single platform entry.
-pub use pa_telemetry::rename_onto;
+// retry) lives in pa-types beside the atomic file replacement built on it
+// (`pa_types::platform::replace_file`); re-exported so the platform wall
+// stays the engine's single platform entry.
+pub use pa_types::platform::rename_onto;
 pub use shell::{
     get_shell_config, resolve_kernel_bash_shell, resolve_kernel_shell, KernelShell, ShellConfig,
 };
+
+/// How pa-core replaces a file that `std::fs::write` used to rewrite in place
+/// (learned stores, records, markers, exports): atomically, the file keeping
+/// its mode and a symlink its target (what that write kept), unsynced (a
+/// crash may lose the write, never tear it).
+pub(crate) const REPLACE_KEEPING_MODE: pa_types::platform::ReplaceOptions =
+    pa_types::platform::ReplaceOptions {
+        durability: pa_types::platform::Durability::Unsynced,
+        mode: pa_types::platform::FileMode::KeepTarget,
+        symlinks: pa_types::platform::Symlinks::FollowToTarget,
+    };

@@ -258,9 +258,11 @@ impl NoiseLearner {
                         let body = serde_json::to_vec(&stored)?;
                         let dir = project.path.parent().unwrap_or_else(|| Path::new("."));
                         std::fs::create_dir_all(dir)?;
-                        let temp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4().simple()));
-                        std::fs::write(&temp, body)?;
-                        crate::platform::rename_onto(&temp, &project.path)
+                        pa_types::platform::replace_file(
+                            &project.path,
+                            &body,
+                            crate::platform::REPLACE_KEEPING_MODE,
+                        )
                     })();
                     if let Err(error) = written {
                         tracing::debug!(%error, "preview noise patterns not saved");

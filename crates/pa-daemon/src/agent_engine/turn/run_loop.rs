@@ -33,6 +33,16 @@ impl AgentSessionEngine {
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.threshold_checks_enabled
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // The refill guard counts within one run.
+        *self
+            .refill_guard
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            pa_core::session_engine::compaction_refill::RefillGuard::default();
+        self.unreducible_stop
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         // Whether a loop-boundary frame already passed in this item: the
         // worker's run-opening frames are the first run's, so the engine
         // forwards the later runs' opening frames.
@@ -53,6 +63,9 @@ impl AgentSessionEngine {
             {
                 return;
             }
+            if self.end_for_unreducible_context(emit) {
+                return;
+            }
             // The overflow retry re-issues the loop without a new user
             // message; every other iteration runs a fresh prompt (`mem::take`
             // clears the slot as it reads it — a plain clear would be a dead store).
@@ -68,6 +81,10 @@ impl AgentSessionEngine {
                     // counts into the auto-refine review's turn line.
                     self.reset_overflow_recovery();
                     self.note_settled_turn_since_auto_refine_review();
+                    // A compaction inside the turn could not reduce the context.
+                    if self.end_for_unreducible_context(emit) {
+                        return;
+                    }
                 }
                 // An aborted turn never services boundary requests: drop any pending ones.
                 TurnResult::Aborted => {
@@ -123,6 +140,9 @@ impl AgentSessionEngine {
                 .load(std::sync::atomic::Ordering::SeqCst)
                 && self.run_auto_compaction(emit) == AutoCompactionRun::Cancelled
             {
+                return;
+            }
+            if self.end_for_unreducible_context(emit) {
                 return;
             }
             // The compact-trigger round is NOT consumed here: the review runs

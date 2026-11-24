@@ -169,7 +169,14 @@ pub struct AgentSessionEngine {
     pub(crate) session: Arc<tokio::sync::Mutex<Option<Arc<CoreSessionEngine>>>>,
     core_state: std::sync::Mutex<core_state::CoreSessionState>,
     threshold_yielded: Arc<std::sync::atomic::AtomicBool>,
-    threshold_checks_enabled: Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) threshold_checks_enabled: Arc<std::sync::atomic::AtomicBool>,
+    /// The run's rapid compaction refills in a row (pa-core
+    /// `compaction_refill`); a run starts with a fresh guard.
+    pub(crate) refill_guard:
+        std::sync::Mutex<pa_core::session_engine::compaction_refill::RefillGuard>,
+    /// Why this run stopped automatic compaction, until the turn ends with it.
+    pub(crate) unreducible_stop:
+        std::sync::Mutex<Option<pa_core::session_engine::compaction_refill::RefillStop>>,
     /// The build gate: at most one `build_session` in flight; the eager build
     /// and the first demand seam meet at one build.
     pub(crate) session_build: tokio::sync::Mutex<()>,
