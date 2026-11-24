@@ -133,9 +133,12 @@ pub(crate) fn ensure_archived_state(root_session_file: &Path) -> Result<()> {
     {
         return Ok(());
     }
-    let mut session = SessionFile::open(&path)?;
-    session.append_session_state("archived");
-    session.rewrite()
+    // One appended row: the earlier bytes stay as they are.
+    SessionFile::open(&path)?.persist_entry(
+        "session_state",
+        serde_json::json!({ "state": { "status": "archived" } }),
+    )?;
+    Ok(())
 }
 
 /// The finalize of a root-kill stop: the tree's scheduled jobs cancel durably
