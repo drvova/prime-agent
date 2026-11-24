@@ -160,6 +160,12 @@ pub fn wire_session_runtime(
         std::sync::Arc::clone(&interaction),
         &mut handlers,
     );
+    // `event.*` answers why it cannot here; a daemon worker's extra handlers replace it with
+    // its link to the supervisor's bus.
+    super::event_bus_host::register_event_bus_host_handlers(
+        &std::sync::Arc::new(super::event_bus_host::NoEventBus),
+        &mut handlers,
+    );
     let model_registry = rlm.model_registry.unwrap_or_else(|| {
         let auth = crate::auth::AuthStorage::create(agent_dir);
         Arc::new(crate::models::registry::ModelRegistry::create(

@@ -166,6 +166,17 @@ pub enum DaemonCommand {
         #[serde(flatten)]
         rest: JsonMap,
     },
+    /// `event_bus`: one request to the daemon's event bus from a session,
+    /// authenticated by its worker token like `list_agent_peers`.
+    EventBus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default)]
+        worker_token: String,
+        request: crate::events::EventBusRequest,
+        #[serde(flatten)]
+        rest: JsonMap,
+    },
     GetDirectWorkerTransport {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         id: Option<String>,

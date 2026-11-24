@@ -20,6 +20,10 @@ Daemon wire mechanics shared by the serving side (pa-daemon) and clients (pa-tui
   with `service_deadline_ms` aging. Pure decision logic with explicit clocks (no tokio, no IO):
   pa-ai's provider admission is its first user; any later autoscaled resource wraps the same
   controller in its own permit pool and persistence.
+- `events`: the event bus's wire vocabulary: the `event_bus` command's typed `EventBusRequest`
+  (define, remove, publish, subscribe, unsubscribe, list), the delivery mode, and the source and
+  subscription records the daemon's bus keeps and lists. pa-core's kernel functions build the
+  requests and pa-daemon's supervisor answers them.
 - `daemon::plane`: the session/control command-plane table (worker-side peer gating and client-side socket routing both read it).
 - `daemon::{DaemonPeerTransportTicket, DaemonWorkerPeerGrant, DaemonPeerCommand}`: the direct-transport ticket and grant wire shapes.
 - `goal`: the thread-goal wire state (`GoalState`/`GoalStatus`) shared by the

@@ -154,7 +154,10 @@ impl Supervisor {
     /// The send source's live session summary (`get_state`), strict: the
     /// read's error fails the send (the roster's `worker_summary` downgrades
     /// instead).
-    async fn source_worker_summary(&self, resident: &Arc<ResidentWorker>) -> Result<Value> {
+    pub(crate) async fn source_worker_summary(
+        &self,
+        resident: &Arc<ResidentWorker>,
+    ) -> Result<Value> {
         let state = self
             .route_command_typed(
                 resident,

@@ -833,6 +833,13 @@ impl AgentSessionEngine {
         let mut handlers = HostRequestHandlers::default();
         register_agent_message_host_handlers(sender, &mut handlers);
         register_agent_observe_host_handlers(observer, &mut handlers);
+        pa_core::session_engine::event_bus_host::register_event_bus_host_handlers(
+            &Arc::new(crate::event_bus::LinkEventBusController::new(
+                Arc::clone(&self.link),
+                config.worker_token.clone(),
+            )),
+            &mut handlers,
+        );
         self.register_kernel_notice_host_handlers(&mut handlers);
         self.register_settings_host_handler(&mut handlers);
         crate::usage_report::register_quota_host_handler(

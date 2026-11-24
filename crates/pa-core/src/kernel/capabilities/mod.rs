@@ -29,6 +29,7 @@ pub(crate) const MANIFESTS: &[(&str, &str)] = &[
     manifest!("core"),
     manifest!("ctx"),
     manifest!("decision"),
+    manifest!("events"),
     manifest!("fs"),
     manifest!("hypothesis"),
     manifest!("mcp"),

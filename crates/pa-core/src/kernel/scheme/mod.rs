@@ -46,7 +46,7 @@ use steel::steel_vm::register_fn::RegisterFn;
 use crate::kernel::cell_window::CellWindow;
 use crate::kernel::shared::{
     BackgroundCellObserver, CellWaitObserver, HostRequestHandlers, HostRequestPayload,
-    END_TURN_REQUEST_TYPE,
+    ReferenceLookupObserver, END_TURN_REQUEST_TYPE,
 };
 use crate::tools::kernel_cell::{
     BootstrapProgressHandler, ExecuteResult, KernelExecuteOptions, KernelExecutor,
@@ -269,6 +269,8 @@ pub struct SchemeKernelOptions {
     pub on_background_cell: Option<BackgroundCellObserver>,
     /// Hears each `wait-until` wait a cell makes, and how it ends.
     pub on_cell_wait: Option<CellWaitObserver>,
+    /// Hears each `api-help` and `api-search` call a cell makes.
+    pub on_reference_lookup: Option<ReferenceLookupObserver>,
     /// The source lines a failed command a cell waited for gets on the
     /// cell's result. The default attaches none.
     pub error_context: crate::kernel::error_context::ErrorContext,
@@ -321,6 +323,7 @@ pub(crate) struct SessionEnvironment {
     pub(crate) cell_window: CellWindow,
     pub(crate) on_background_cell: Option<BackgroundCellObserver>,
     pub(crate) on_cell_wait: Option<CellWaitObserver>,
+    pub(crate) on_reference_lookup: Option<ReferenceLookupObserver>,
     pub(crate) agent_dir: Option<PathBuf>,
     pub(crate) error_context: crate::kernel::error_context::ErrorContext,
     pub(crate) background: session::BackgroundWork,
@@ -464,6 +467,7 @@ impl SchemeKernelProvisioner {
             cell_window: options.cell_window,
             on_background_cell: options.on_background_cell,
             on_cell_wait: options.on_cell_wait,
+            on_reference_lookup: options.on_reference_lookup,
             agent_dir: options.agent_dir,
             error_context: options.error_context,
             background: session::BackgroundWork::new(options.on_background_work_settled),
@@ -719,7 +723,7 @@ impl KernelProvisioner for SchemeKernelProvisioner {
                 cell::register(&mut engine, &cells)?;
                 native::register_session_tools(&mut engine, &native_handlers, &environment);
                 host_api::load(&mut engine)?;
-                api_help::register(&mut engine)?;
+                api_help::register(&mut engine, environment.on_reference_lookup.clone())?;
                 let cell = native::CellSignal::default();
                 let jobs = native::register(
                     &mut engine,
