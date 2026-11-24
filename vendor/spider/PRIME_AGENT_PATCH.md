@@ -47,6 +47,13 @@ JavaScript renders it in the browser and assigns the rendered page to
 page's links. The patch puts the HTTP body back only when nothing replaced
 it.
 
+## `src/utils/mod.rs`: a browser cookie as a `Set-Cookie` line, public
+
+`utils::browser_cookie_to_set_cookie` is `pub(crate)` upstream; it is made
+`pub` so `web-screenshot` / `web-pdf` keep the cookies their page ends with
+in the session's jar exactly as a rendered crawl's pages do (domain, path,
+expiry and flags kept). Nothing else about it changes.
+
 Drop the vendored copy with the spider release that declares reqwest without
 default features and makes `dynamic-versions` optional (and the runtime
 lazy), or once pa-core no longer needs spider.

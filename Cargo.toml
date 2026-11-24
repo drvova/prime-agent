@@ -29,6 +29,16 @@ steel-core = { path = "vendor/steel-core" }
 # `dynamic-versions`, whose build script downloads Chrome version lists. The
 # vendored copy's manifest drops both (vendor/spider/PRIME_AGENT_PATCH.md).
 spider = { path = "vendor/spider" }
+# spider_agent 2.54.2 (spider's model-driven automation, for `web-automate`)
+# takes reqwest's default features, which every client in the graph would
+# gain (aws-lc-rs TLS beside ring, OS proxy settings, HTTP/3); the vendored
+# copy's manifest drops them (vendor/spider_agent/PRIME_AGENT_PATCH.md).
+spider_agent = { path = "vendor/spider_agent" }
+# spider_scraper 0.1.2 (spider_utils' and spider_transformations' CSS selection) is built on
+# selectors 0.25, which depends on the unmaintained fxhash (RUSTSEC-2025-0057), and no
+# release moves off it; the vendored copy is ported to selectors 0.37, the one lol_html
+# already brings (vendor/spider_scraper/PRIME_AGENT_PATCH.md).
+spider_scraper = { path = "vendor/spider_scraper" }
 # brush-core 0.5.0 starts its external commands itself, listens for SIGINT, SIGTSTP and
 # SIGCHLD on behalf of the whole process, cannot be stopped from outside, and runs a compound
 # command in a pipeline to its end before the next stage starts. The vendored copy gives an

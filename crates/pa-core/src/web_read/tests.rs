@@ -121,6 +121,7 @@ fn request(url: &str, section: Option<&str>) -> ReadRequest {
         max_chars: DEFAULT_MAX_CHARS,
         section: section.map(str::to_string),
         timeout: Duration::from_secs(20),
+        shaping: Shaping::default(),
     }
 }
 
@@ -530,8 +531,59 @@ fn the_payload_parses_defaults_and_rejects_bad_options() {
             max_chars: MAX_MAX_CHARS,
             section: Some("setup".to_string()),
             timeout: DEFAULT_TIMEOUT,
+            shaping: Shaping::default(),
         }
     );
     assert!(parse_request(&json!({"url": "ftp://example.com/x"})).is_err());
     assert!(parse_request(&json!({"url": "https://a.b", "maxChars": 0})).is_err());
+}
+
+/// A hostile page nested 200,000 elements deep reads through the default
+/// renderer, its text kept. A stack overflow aborts the process instead of
+/// failing a test, so the read runs in a child run of this test binary and
+/// the parent checks that child's outcome.
+#[test]
+fn a_page_nested_200k_deep_reads_without_overflowing_the_stack() {
+    const CHILD: &str = "PA_CORE_TEST_DEEP_PAGE_CHILD";
+    let name = "web_read::tests::a_page_nested_200k_deep_reads_without_overflowing_the_stack";
+    if std::env::var_os(CHILD).is_none() {
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([name, "--exact", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && stdout.contains("1 passed"),
+            "{}\n{stdout}\n{}",
+            child.status,
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+    let depth = 200_000;
+    let page = format!(
+        "<html><head><title>Deep</title></head><body><p>top</p>{}<p>bottom</p>{}</body></html>",
+        "<div>".repeat(depth),
+        "</div>".repeat(depth)
+    );
+    let fetched = Fetched {
+        final_url: Url::parse("https://example.com/deep").unwrap(),
+        media_type: Some("text/html".to_string()),
+        body: page.into_bytes(),
+    };
+    let document = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(render(fetched, &Shaping::default()))
+        .unwrap();
+    assert_eq!(
+        (document.title, document.body),
+        (
+            Some("Deep".to_string()),
+            Body::Markdown {
+                text: "top\n\nbottom".to_string(),
+                anchors: AnchorStyle::Explicit,
+            }
+        )
+    );
 }

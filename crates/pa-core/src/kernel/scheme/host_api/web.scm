@@ -39,7 +39,16 @@
 ;; long page is cut at #:max-chars (default 20000) with a note: read one span
 ;; with #:section (an outline anchor, a heading's text, or "L10-L40" for a
 ;; code view). #:timeout is the whole read's deadline in seconds (default 30).
-(define (web-read source #:max-chars [max-chars #f] #:section [section #f] #:timeout [timeout #f])
+;; #:format is 'markdown (the default), 'commonmark, 'text, 'html2text, 'html
+;; or 'xml for an HTML page; #:transform is a hash of 'readability,
+;; 'main-content, 'filter-images, 'filter-svg, 'clean-html (#t) and 'root,
+;; 'exclude (CSS selectors) run on the page first.
+(define (web-read source
+                  #:max-chars [max-chars #f]
+                  #:section [section #f]
+                  #:timeout [timeout #f]
+                  #:format [format #f]
+                  #:transform [transform #f])
   (%host-call "web.read"
               (%options (hash 'url
                               (cond
@@ -49,7 +58,22 @@
                                 [else (error "web-read: the source must be a URL or carry one under 'url")]))
                         'maxChars (and max-chars (%integer "web-read" "#:max-chars" max-chars))
                         'section section
-                        'timeoutSeconds (and timeout (%seconds "web-read" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-read" timeout))
+                        'format (and format (%format "web-read" format))
+                        'transform (and transform (%transform "web-read" transform)))))
+
+;; #:format as a format name string.
+(define (%format who value)
+  (cond
+    [(symbol? value) (symbol->string value)]
+    [(string? value) value]
+    [else (error (string-append who ": #:format is 'markdown, 'commonmark, 'text, 'html2text, 'html or 'xml"))]))
+
+;; #:transform as a hash of options.
+(define (%transform who value)
+  (if (hash? value)
+      value
+      (error (string-append who ": #:transform is a hash such as (hash 'main-content #t 'root \"article\")"))))
 
 ;; `value` as a list of regex strings: one string, or a list of them.
 (define (%patterns who name value)
@@ -81,7 +105,10 @@
 ;; #:scripts (a hash of URL or path to JavaScript to evaluate), #:block (kinds
 ;; 'images 'stylesheets 'scripts 'analytics 'ads and URL patterns the browser
 ;; refuses to load), #:init-script (JavaScript run in every document first),
-;; #:locale ("de-DE"), #:timezone ("Europe/Berlin").
+;; #:locale ("de-DE"), #:timezone ("Europe/Berlin"). #:cookies 'session (the
+;; default) starts the browser with the cookies this session's earlier
+;; rendered crawls and captures of the site left and keeps the ones this
+;; crawl's pages end with; #:cookies #f starts empty and keeps nothing.
 (define (web-crawl source
                    #:max-pages [max-pages #f]
                    #:max-depth [max-depth #f]
@@ -111,7 +138,11 @@
                    #:block [block #f]
                    #:init-script [init-script #f]
                    #:locale [locale #f]
-                   #:timezone [timezone #f])
+                   #:timezone [timezone #f]
+                   #:format [format #f]
+                   #:transform [transform #f]
+                   #:extract [extract #f]
+                   #:cookies [cookies 'session])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -158,7 +189,55 @@
                         'block (and block (%block "web-crawl" block))
                         'initScript init-script
                         'locale locale
-                        'timezone timezone)))
+                        'timezone timezone
+                        'format (and format (%format "web-crawl" format))
+                        'transform (and transform (%transform "web-crawl" transform))
+                        'extract (and extract (%selectors "web-crawl" "#:extract" extract))
+                        'cookies (%cookies "web-crawl" cookies))))
+
+;; A selectors map: names to a CSS selector or XPath expression, or a list of them.
+(define (%selectors who name value)
+  (if (hash? value)
+      value
+      (error (string-append who ": " name " is a hash of names to CSS selectors or XPath expressions"))))
+
+;; The values `selectors` (a hash of names to a CSS selector or an XPath
+;; expression, or a list of them) find on a page: a hash of each name to the
+;; list of what its selectors found. `source` is a URL, anything carrying one
+;; under 'url, or HTML text (starting with "<"). A URL is read as a one-page
+;; crawl (robots.txt and the user's web.crawl identity apply); #:render #t or
+;; #:mode 'render / 'smart loads it in the browser; #:timeout in seconds;
+;; #:cookies as for web-crawl.
+(define (web-extract source selectors
+                     #:render [render #f]
+                     #:mode [mode #f]
+                     #:timeout [timeout #f]
+                     #:cookies [cookies 'session])
+  (let ([text (cond
+                [(string? source) (trim source)]
+                [(and (hash? source) (string? (hash-try-get source 'url))) (trim (hash-ref source 'url))]
+                [else (error "web-extract: the source must be a URL, carry one under 'url, or be HTML")])])
+    (%host-call "web.extract"
+                (%options (if (and (> (string-length text) 0) (equal? (string-ref text 0) #\<))
+                              (hash 'html text)
+                              (hash 'url text))
+                          'selectors (%selectors "web-extract" "the selectors" selectors)
+                          'render render
+                          'mode (cond
+                                  [(not mode) #f]
+                                  [(symbol? mode) (symbol->string mode)]
+                                  [(string? mode) mode]
+                                  [else (error "web-extract: #:mode is 'http, 'render or 'smart")])
+                          'timeoutSeconds (and timeout (%seconds "web-extract" timeout))
+                          'cookies (%cookies "web-extract" cookies)))))
+
+;; #:cookies as the host's `cookies`: 'session (the session's jar) or
+;; #f / 'none (an empty jar, kept by nothing).
+(define (%cookies who value)
+  (cond
+    [(not value) "none"]
+    [(memq value '(session none)) (symbol->string value)]
+    [else (error (string-append who ": #:cookies is 'session or #f"))]))
 
 ;; #:block as a list of strings: a kind symbol or a URL pattern, or a list
 ;; of them.
@@ -181,32 +260,36 @@
 ;; (relative: under the session's working directory): {url, finalUrl, title,
 ;; path, bytes}. #:full-page #t captures the whole page, not the viewport;
 ;; #:viewport (width height); #:wait (seconds after the load); #:init-script;
-;; #:timeout (seconds, default 30). The user's web.crawl identity applies.
+;; #:timeout (seconds, default 30). The user's web.crawl identity applies;
+;; #:cookies as for web-crawl.
 (define (web-screenshot source path
                         #:full-page [full-page #f]
                         #:viewport [viewport #f]
                         #:wait [wait #f]
                         #:init-script [init-script #f]
-                        #:timeout [timeout #f])
+                        #:timeout [timeout #f]
+                        #:cookies [cookies 'session])
   (%host-call "web.capture"
               (%options (hash 'url (%capture-url "web-screenshot" source) 'path path 'kind "png")
                         'fullPage full-page
                         'viewport viewport
                         'waitSeconds wait
                         'initScript init-script
-                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout))
+                        'cookies (%cookies "web-screenshot" cookies))))
 
 ;; Load `source` in a local headless Chrome and print it to a PDF at `path`:
 ;; {url, finalUrl, title, path, bytes}. #:landscape #t; #:background #t
 ;; prints background colours and images; #:viewport, #:wait, #:init-script
-;; and #:timeout as for web-screenshot.
+;; #:timeout and #:cookies as for web-screenshot.
 (define (web-pdf source path
                  #:landscape [landscape #f]
                  #:background [background #f]
                  #:viewport [viewport #f]
                  #:wait [wait #f]
                  #:init-script [init-script #f]
-                 #:timeout [timeout #f])
+                 #:timeout [timeout #f]
+                 #:cookies [cookies 'session])
   (%host-call "web.capture"
               (%options (hash 'url (%capture-url "web-pdf" source) 'path path 'kind "pdf")
                         'landscape landscape
@@ -214,4 +297,30 @@
                         'viewport viewport
                         'waitSeconds wait
                         'initScript init-script
-                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout))
+                        'cookies (%cookies "web-pdf" cookies))))
+
+;; Let spider's model-driven automation work `source` toward `goal` in a
+;; local headless Chrome: {url, finalUrl, title, label, success, steps,
+;; error, extracted, usage, markdown, truncated, text}. Only with the user's
+;; web.crawl.ai setting (it spends model tokens on their account); refused
+;; otherwise. #:max-steps model rounds (default 6, at most 30); #:extract is
+;; what the model returns as 'extracted when done; #:max-chars cuts the final
+;; page's markdown (default 8000); #:timeout in seconds (default 120);
+;; #:cookies as for web-crawl.
+(define (web-automate source goal
+                      #:max-steps [max-steps #f]
+                      #:extract [extract #f]
+                      #:max-chars [max-chars #f]
+                      #:timeout [timeout #f]
+                      #:cookies [cookies 'session])
+  (%host-call "web.automate"
+              (%options (hash 'url (%capture-url "web-automate" source)
+                              'goal (if (string? goal)
+                                        goal
+                                        (error "web-automate: the goal is a string")))
+                        'maxSteps (and max-steps (%integer "web-automate" "#:max-steps" max-steps))
+                        'extract extract
+                        'maxChars (and max-chars (%integer "web-automate" "#:max-chars" max-chars))
+                        'timeoutSeconds (and timeout (%seconds "web-automate" timeout))
+                        'cookies (%cookies "web-automate" cookies))))

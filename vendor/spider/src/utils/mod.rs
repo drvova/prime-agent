@@ -6088,7 +6088,7 @@ fn set_page_response_headers_raw(
 /// cookie to the whole host, made a persistent one a session cookie, and
 /// dropped `Secure`, so the jar could send it over plain HTTP.
 #[cfg(all(feature = "chrome", feature = "cookies"))]
-pub(crate) fn browser_cookie_to_set_cookie(
+pub fn browser_cookie_to_set_cookie(
     cookie: &chromiumoxide::cdp::browser_protocol::network::Cookie,
 ) -> Option<(String, url::Url)> {
     let host = cookie.domain.trim_start_matches('.');

@@ -19,8 +19,10 @@
 //! and past [`TOTAL_CHARS`] of markdown a page's text is paged out to the
 //! session's spill store under an `out:` handle instead.
 
+mod automate;
 mod browser;
 mod capture;
+mod extract;
 mod host;
 mod identity;
 mod options;
@@ -37,7 +39,10 @@ use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
-pub(crate) use host::{CaptureObserver, CrawlObserver, CrawlSettings, WebCrawlHost};
+pub(crate) use automate::AutomateOutcome;
+pub(crate) use host::{
+    AutomateObserver, CaptureObserver, CrawlObserver, CrawlSettings, ExtractObserver, WebCrawlHost,
+};
 pub(crate) use identity::{changes as identity_changes, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
@@ -96,7 +101,47 @@ pub(crate) struct CrawlRequest {
     pub(crate) browsing: options::Browsing,
     /// A WARC file every response the crawl received is appended to.
     pub(crate) warc: Option<std::path::PathBuf>,
+    /// Each HTML page's format and the transform before it.
+    pub(crate) shaping: crate::web_read::Shaping,
+    /// What to extract from each HTML page (`extract` on its entry).
+    pub(crate) extract: Option<extract::Selectors>,
+    /// Which cookies the browser starts with and keeps.
+    pub(crate) cookies: CookieScope,
 }
+
+/// The cookies a browser load starts with and what becomes of the ones it
+/// ends with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum CookieScope {
+    /// The session's jar: the cookies earlier rendered crawls and captures
+    /// of the site left, and this load's added to them (a browser's way
+    /// within one session).
+    #[default]
+    Session,
+    /// An empty jar, dropped when the load ends.
+    None,
+}
+
+impl CookieScope {
+    /// The `cookies` option of a `who` payload: `session` (the default) or
+    /// `none`.
+    ///
+    /// # Errors
+    ///
+    /// Any other value.
+    pub(crate) fn parse(data: &Value, who: &str) -> anyhow::Result<CookieScope> {
+        match data.get("cookies").and_then(Value::as_str) {
+            None | Some("session") => Ok(CookieScope::Session),
+            Some("none") => Ok(CookieScope::None),
+            Some(other) => bail!("{who} cookies must be session or none; got {other:?}"),
+        }
+    }
+}
+
+/// A session's cookie jar for its rendered crawls and captures: in memory
+/// only (never written to disk, never in a result), one per session, gone
+/// with it.
+pub(crate) type CookieJar = Arc<reqwest::cookie::Jar>;
 
 /// How pages are loaded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +167,25 @@ pub(crate) struct CrawlOutcome {
     pub(crate) identity: bool,
     /// The crawl wrote a WARC file.
     pub(crate) archived: bool,
+    /// What the crawl did with each page beyond reading it.
+    pub(crate) per_page: PageWork,
+}
+
+/// What a crawl asked done to each page: counts for adoption telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct PageWork {
+    /// A `#:format` or a `#:transform`.
+    pub(crate) shaped: bool,
+    /// An `#:extract`.
+    pub(crate) extracted: bool,
+    /// The browser started with cookies the session's jar held for the site.
+    pub(crate) session_cookies: bool,
+}
+
+/// What adoption telemetry learns of one `web-extract`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExtractOutcome {
+    pub(crate) ok: bool,
 }
 
 /// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
@@ -130,6 +194,8 @@ pub(crate) struct CaptureOutcome {
     /// A PDF rather than a screenshot.
     pub(crate) pdf: bool,
     pub(crate) ok: bool,
+    /// The browser started with cookies the session's jar held for the page.
+    pub(crate) session_cookies: bool,
 }
 
 /// A finished crawl.
@@ -177,7 +243,10 @@ impl WebCrawlEngine {
     }
 
     /// Crawl `request.url` within the request's deadline, paging pages past
-    /// the output budget into `store` when the session has one.
+    /// the output budget into `store` when the session has one. A rendered
+    /// crawl's browser pages share `jar`: each starts with the jar's cookies
+    /// for its URL that the browser lacks, and the cookies the page holds
+    /// once loaded go back into it (spider's `chrome_cookie_jar`).
     ///
     /// # Errors
     ///
@@ -189,6 +258,7 @@ impl WebCrawlEngine {
         request: &CrawlRequest,
         identity: &Identity,
         store: Option<&SpillStore>,
+        jar: &CookieJar,
     ) -> anyhow::Result<Crawl> {
         let started = Instant::now();
         for pattern in request.include.iter().chain(&request.exclude) {
@@ -250,6 +320,8 @@ impl WebCrawlEngine {
         let browser = match request.render {
             Render::Http => None,
             Render::Browser | Render::Smart => {
+                website.cookie_jar = Arc::clone(jar);
+                website.with_chrome_cookie_jar(true);
                 let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
                 let started = browser::Browser::start(&program, &[]).await?;
                 website.with_chrome_connection(Some(started.endpoint.clone()));
@@ -446,36 +518,63 @@ impl<'a> Collected<'a> {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
             .or_else(|| (self.request.render != Render::Http).then(|| "text/html".to_string()));
+        let html = matches!(
+            media_type.as_deref(),
+            Some("text/html" | "application/xhtml+xml")
+        );
         let fetched = Fetched {
             final_url,
             media_type,
             body: page.get_html_bytes_u8().to_vec(),
+        };
+        let extracted = match (&self.request.extract, html) {
+            (Some(selectors), true) => {
+                let (selectors, body) = (selectors.clone(), fetched.body.clone());
+                Some(
+                    crate::web_read::on_own_thread("web-extract", move || {
+                        selectors.extract(&String::from_utf8_lossy(&body))
+                    })
+                    .await,
+                )
+            }
+            (Some(_), false) | (None, true | false) => None,
         };
         let read = ReadRequest {
             url,
             max_chars: self.request.max_chars,
             section: None,
             timeout: self.request.timeout,
+            shaping: self.request.shaping.clone(),
         };
-        let rendered = match crate::web_read::render(fetched).await {
+        let rendered = match crate::web_read::render(fetched, &self.request.shaping).await {
             Ok(document) => crate::web_read::finish(&read, document, Duration::ZERO),
             Err(error) => Err(error),
         };
         match rendered {
-            Ok(rendered) => self.keep(&rendered),
+            Ok(rendered) => self.keep(&rendered, extracted),
             Err(error) => self.notes.push(format!("{}: {error:#}", read.url)),
         }
     }
 
-    /// Add `page` to the result, or page it out once the budget is spent.
-    fn keep(&mut self, page: &WebPage) {
+    /// Add `page` to the result, with what was extracted from it, or page
+    /// it out once the budget is spent (the extraction stays).
+    fn keep(&mut self, page: &WebPage, extracted: Option<anyhow::Result<Value>>) {
+        let mut entry = page.to_json();
+        match extracted {
+            None => {}
+            Some(Ok(values)) => entry["extract"] = values,
+            Some(Err(error)) => {
+                if let Some(notes) = entry["notes"].as_array_mut() {
+                    notes.push(json!(format!("nothing extracted: {error:#}")));
+                }
+            }
+        }
         let chars = page.markdown.chars().count();
         if self.chars + chars <= TOTAL_CHARS {
             self.chars += chars;
-            self.pages.push(page.to_json());
+            self.pages.push(entry);
             return;
         }
-        let mut entry = page.to_json();
         let note = match self.store {
             Some(store) => {
                 let handle = store.spill(SpillCopy::of_text(&page.text()));
@@ -751,5 +850,8 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
                     (true, _) | (false, Err(_)) => path,
                 }
             }),
+        shaping: crate::web_read::Shaping::parse(data, "web.crawl")?,
+        extract: extract::Selectors::parse(data, "extract", "web.crawl")?,
+        cookies: CookieScope::parse(data, "web.crawl")?,
     })
 }

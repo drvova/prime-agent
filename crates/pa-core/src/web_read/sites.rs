@@ -11,7 +11,7 @@ use url::Url;
 use super::fetch::{failed_status, Accept, Fetcher};
 use super::html::{self, Element};
 use super::markdown::{demote_headings, resolve_links, AnchorStyle};
-use super::{pdf, Body, Document, PageLink, ReadMethod};
+use super::{on_own_thread, pdf, Body, Document, PageLink, ReadMethod};
 use crate::web_search::dates::epoch_seconds_to_iso;
 
 /// Stack Exchange sites outside `*.stackexchange.com`, with their API names.
@@ -156,11 +156,13 @@ async fn arxiv(fetcher: &Fetcher<'_>, id: &str, wants_pdf: bool) -> anyhow::Resu
         match fetcher.get(&html_url, Accept::Document).await {
             Ok(reply) => {
                 let page_url = reply.final_url.clone();
-                let rendered = tokio::task::spawn_blocking(move || {
-                    html::render_page(&String::from_utf8_lossy(&reply.body), &page_url)
+                let rendered = on_own_thread("web-render", move || {
+                    Ok(html::render_page(
+                        &String::from_utf8_lossy(&reply.body),
+                        &page_url,
+                    ))
                 })
-                .await
-                .context("HTML rendering")?;
+                .await?;
                 let mut final_url = html_url;
                 final_url.set_fragment(None);
                 return Ok(Document {
@@ -487,7 +489,25 @@ async fn stack_exchange(
                 .collect()
         })
         .unwrap_or_default();
-    let (question_body, mut links) = html::render_fragment(str_at(item, "/body"), &page);
+    let answers = answers
+        .get("items")
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    // The bodies are user HTML, rendered on a big stack like a page.
+    let bodies: Vec<String> = std::iter::once(item)
+        .chain(answers)
+        .map(|post| str_at(post, "/body").to_string())
+        .collect();
+    let base = page.clone();
+    let mut rendered = on_own_thread("web-render", move || {
+        Ok(bodies
+            .iter()
+            .map(|body| html::render_fragment(body, &base))
+            .collect::<Vec<_>>())
+    })
+    .await?
+    .into_iter();
+    let (question_body, mut links) = rendered.next().unwrap_or_default();
     let question_body = demote_headings(&question_body, 2);
     let mut text = format!(
         "# {title}\n\n**Score {}** · {} answers · asked by {} on {} · tags: {}\n\n## Question {{#question}}\n\n{question_body}",
@@ -497,12 +517,7 @@ async fn stack_exchange(
         date(item),
         tags.join(", "),
     );
-    for answer in answers
-        .get("items")
-        .and_then(Value::as_array)
-        .map_or(&[][..], Vec::as_slice)
-    {
-        let (body, mut answer_links) = html::render_fragment(str_at(answer, "/body"), &page);
+    for (answer, (body, mut answer_links)) in answers.iter().zip(rendered) {
         let body = demote_headings(&body, 2);
         let accepted = if answer.get("is_accepted").and_then(Value::as_bool) == Some(true) {
             " · accepted"

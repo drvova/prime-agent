@@ -13,6 +13,7 @@
 
 use url::Url;
 
+use super::shape::MAX_NESTING;
 use super::PageLink;
 use crate::web_search::http::decode_entities;
 
@@ -165,11 +166,18 @@ fn collect_text(nodes: &[Node], out: &mut String) {
     }
 }
 
-/// Parse `html` into a tree under a synthetic `#root` element.
+/// Parse `html` into a tree under a synthetic `#root` element, at most
+/// [`MAX_NESTING`] elements deep (see [`TreeBuilder`]).
 pub(crate) fn parse(html: &str) -> Element {
+    build(html).finish()
+}
+
+/// Run the tree builder over `html`, its open elements still open.
+fn build(html: &str) -> TreeBuilder {
     let lower = html.to_ascii_lowercase();
     let mut builder = TreeBuilder {
         stack: vec![Element::new("#root", Vec::new())],
+        deepest: 0,
     };
     let mut at = 0;
     while at < html.len() {
@@ -220,7 +228,7 @@ pub(crate) fn parse(html: &str) -> Element {
             at += 1;
         }
     }
-    builder.finish()
+    builder
 }
 
 struct Tag {
@@ -311,14 +319,30 @@ fn parse_tag(html: &str, lower: &str, start: usize) -> (Tag, usize) {
     )
 }
 
+/// The open elements, root first. Everything past [`MAX_NESTING`] levels is
+/// flattened: an element opened deeper stays on the stack for its end tag,
+/// but its content goes to the open element at that depth and the element
+/// itself is left out when it closes. Every walk of the tree (the renderer,
+/// [`Element::find`], dropping it) recurses with its depth, and a stack
+/// overflow aborts the daemon, so a hostile page nested 100,000 deep must
+/// not build a tree that deep.
 struct TreeBuilder {
     stack: Vec<Element>,
+    /// The deepest element the page nests, flattened ones included.
+    deepest: usize,
 }
 
 impl TreeBuilder {
+    /// The element new content goes to: the innermost open one, or the one
+    /// at [`MAX_NESTING`] when the page is nested deeper.
+    fn target(&mut self) -> &mut Element {
+        let at = (self.stack.len() - 1).min(MAX_NESTING);
+        &mut self.stack[at]
+    }
+
     fn text(&mut self, text: &str) {
         let decoded = decode_entities(text);
-        let top = self.stack.last_mut().expect("root stays open");
+        let top = self.target();
         if let Some(Node::Text(previous)) = top.children.last_mut() {
             previous.push_str(&decoded);
         } else {
@@ -327,11 +351,8 @@ impl TreeBuilder {
     }
 
     fn leaf(&mut self, element: Element) {
-        self.stack
-            .last_mut()
-            .expect("root stays open")
-            .children
-            .push(Node::Element(element));
+        self.deepest = self.deepest.max(self.stack.len());
+        self.target().children.push(Node::Element(element));
     }
 
     /// Pop the innermost open `targets` element if it sits above every
@@ -386,7 +407,12 @@ impl TreeBuilder {
     fn pop_to(&mut self, position: usize) {
         while self.stack.len() > position {
             let element = self.stack.pop().expect("above the root");
-            self.leaf(element);
+            if self.stack.len() > MAX_NESTING {
+                // Flattened: its content went to the element at the bound.
+                self.deepest = self.deepest.max(self.stack.len());
+            } else {
+                self.leaf(element);
+            }
         }
     }
 
@@ -444,6 +470,102 @@ pub(crate) fn render_fragment(html: &str, page_url: &Url) -> (String, Vec<PageLi
     let mut renderer = Renderer::new(page_url.clone(), page_url.clone(), Chrome::Kept);
     let markdown = renderer.fragment(&fragment.children);
     (markdown, renderer.links)
+}
+
+/// How deeply `html` nests elements, counting the levels [`parse`]
+/// flattens past [`MAX_NESTING`].
+pub(crate) fn nesting(html: &str) -> usize {
+    let mut builder = build(html);
+    builder.pop_to(1);
+    builder.deepest
+}
+
+/// `html` as well-formed XML for an `XPath` query, without recursion: one
+/// root element (the page's `html`, else an `html` around everything),
+/// element and attribute names that XML cannot carry (a namespace prefix,
+/// an odd character) left out with their children kept, the first of a
+/// repeated attribute kept, and text escaped. Script and style content is
+/// not kept ([`parse`] drops it).
+pub(crate) fn to_xml(html: &str) -> String {
+    fn xml_name(name: &str) -> bool {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    }
+    fn escape(text: &str, out: &mut String) {
+        for ch in text.chars() {
+            match ch {
+                '&' => out.push_str("&amp;"),
+                '<' => out.push_str("&lt;"),
+                '>' => out.push_str("&gt;"),
+                '"' => out.push_str("&quot;"),
+                // Characters XML 1.0 has no form for.
+                '\u{0}'..='\u{8}'
+                | '\u{b}'
+                | '\u{c}'
+                | '\u{e}'..='\u{1f}'
+                | '\u{fffe}'
+                | '\u{ffff}' => {}
+                other => out.push(other),
+            }
+        }
+    }
+    enum Step<'e> {
+        Node(&'e Node),
+        Close(&'e str),
+    }
+    let root = parse(html);
+    let elements: Vec<&Element> = root
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            Node::Element(element) => Some(element),
+            Node::Text(_) => None,
+        })
+        .collect();
+    let whitespace_only = root.children.iter().all(|child| match child {
+        Node::Element(_) => true,
+        Node::Text(text) => text.trim().is_empty(),
+    });
+    let mut out = String::with_capacity(html.len());
+    let mut steps: Vec<Step> = Vec::new();
+    if !(whitespace_only && matches!(elements.as_slice(), [only] if only.name == "html")) {
+        out.push_str("<html>");
+        steps.push(Step::Close("html"));
+    }
+    steps.extend(root.children.iter().rev().map(Step::Node));
+    while let Some(step) = steps.pop() {
+        match step {
+            Step::Close(name) => {
+                out.push_str("</");
+                out.push_str(name);
+                out.push('>');
+            }
+            Step::Node(Node::Text(text)) => escape(text, &mut out),
+            Step::Node(Node::Element(element)) => {
+                if xml_name(&element.name) {
+                    out.push('<');
+                    out.push_str(&element.name);
+                    let mut seen = std::collections::HashSet::new();
+                    for (key, value) in &element.attrs {
+                        if xml_name(key) && seen.insert(key.as_str()) {
+                            out.push(' ');
+                            out.push_str(key);
+                            out.push_str("=\"");
+                            escape(value, &mut out);
+                            out.push('"');
+                        }
+                    }
+                    out.push('>');
+                    steps.push(Step::Close(&element.name));
+                }
+                steps.extend(element.children.iter().rev().map(Step::Node));
+            }
+        }
+    }
+    out
 }
 
 /// Whether page headers and footers render: kept inside a `main`/`article`
