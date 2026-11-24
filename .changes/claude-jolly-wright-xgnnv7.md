@@ -79,3 +79,4 @@
 - Fixed a subagent that was sent its next message the moment its turn ended sometimes keeping its old kernel for that turn and being told of the kernel reset one turn late.
 - On Windows, an editor running Prime Agent over ACP (Zed and other ACP clients) now sees Prime Agent's output end when it exits: the daemon it started kept a copy of the editor's stdio pipes, so the client never noticed the exit.
 - On Windows, a connection to the daemon (a session registering, a client attaching) no longer sometimes waits until the next connection arrives: the daemon kept two pipe instances listening, and a client could land on the one nothing was serving yet.
+- On Windows, `@` file completion answers from its file index again instead of walking the tree on every keystroke (which could leave matching files out of the menu in a large tree): the index threw itself away whenever Windows reported that the `.git` directory's timestamps changed.
