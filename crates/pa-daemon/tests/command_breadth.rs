@@ -16,6 +16,10 @@ const WIRE_FIXTURES: &[(&str, &str)] = &[
         r#"{"type": "list_agent_peers", "workerToken": "token"}"#,
     ),
     (
+        "event_bus",
+        r#"{"type": "event_bus", "workerToken": "token", "request": {"op": "list"}}"#,
+    ),
+    (
         "get_direct_worker_transport",
         r#"{"type": "get_direct_worker_transport", "activeSessionId": "sess"}"#,
     ),

@@ -27,6 +27,7 @@ mod decision;
 pub mod effort_switch;
 pub mod engine;
 pub mod error_classify;
+pub mod event_bus_host;
 pub mod factory_host;
 pub mod goal_boundary;
 pub mod goal_continuation;

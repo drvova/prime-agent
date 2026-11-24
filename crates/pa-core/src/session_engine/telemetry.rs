@@ -895,6 +895,22 @@ impl SessionCounters {
         );
     }
 
+    /// One `event.*` call (counts only: never a source name, a payload, or a prompt).
+    pub(crate) fn note_event_bus_request(&self, fact: super::event_bus_host::EventRequestFact) {
+        use super::event_bus_host::EventRequestFact;
+        match fact {
+            EventRequestFact::SourceDefined => self.note_capability("event_source_define_count", 1),
+            EventRequestFact::Published { matched } => {
+                self.note_capability("event_publish_count", 1);
+                self.note_capability("event_publish_matched_count", matched);
+            }
+            EventRequestFact::Subscribed => self.note_capability("event_subscribe_count", 1),
+            EventRequestFact::Unsubscribed => self.note_capability("event_unsubscribe_count", 1),
+            EventRequestFact::Other => {}
+            EventRequestFact::Failed => self.note_capability("event_request_failed_count", 1),
+        }
+    }
+
     /// One read of the kernel API reference (counts only: never a topic or a query).
     pub(crate) fn note_reference_lookup(&self, fact: crate::kernel::shared::ReferenceLookupFact) {
         use crate::kernel::shared::ReferenceLookupFact;

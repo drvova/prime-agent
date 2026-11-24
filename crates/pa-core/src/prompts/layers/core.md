@@ -79,6 +79,12 @@ Agents can schedule a prompt to run in their session later, and create heartbeat
 
 {{calls:schedule}}
 
+## Events
+
+Sessions react to events instead of polling. An event source is a service with a schema: a session defines one, publishes its events, and every session subscribed to it gets a turn for each matching event.
+
+{{calls:events}}
+
 ## Worktrees and checkpoints
 
 {{calls:worktree}}

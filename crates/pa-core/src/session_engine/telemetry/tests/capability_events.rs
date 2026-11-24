@@ -33,6 +33,7 @@ fn drive(counters: &SessionCounters) {
     use crate::session_engine::bash_notices::{BashQuietFact, NoticeAdmission, QuietStep};
     use crate::session_engine::checkpoint_host::CheckpointFact;
     use crate::session_engine::decision::DecideFact;
+    use crate::session_engine::event_bus_host::EventRequestFact;
     use crate::session_engine::rizin_usage::RizinFact;
     use crate::session_engine::rlm_host::RlmAbortOutcome;
     use crate::session_engine::runtime::ScheduleFact;
@@ -268,6 +269,18 @@ fn drive(counters: &SessionCounters) {
         CellWaitFact::TimedOut,
     ] {
         counters.note_cell_wait(fact);
+    }
+    for fact in [
+        EventRequestFact::SourceDefined,
+        EventRequestFact::Published { matched: 3 },
+        EventRequestFact::Published { matched: 0 },
+        EventRequestFact::Subscribed,
+        EventRequestFact::Subscribed,
+        EventRequestFact::Unsubscribed,
+        EventRequestFact::Other,
+        EventRequestFact::Failed,
+    ] {
+        counters.note_event_bus_request(fact);
     }
     for fact in [
         ReferenceLookupFact::Help,
@@ -709,6 +722,10 @@ const EXPECTED: &[(&str, &str)] = &[
     (
         "agent kernel waits",
         r#"{"wait_until_count":3,"wait_until_met_count":1,"wait_until_timed_out_count":1}"#,
+    ),
+    (
+        "agent kernel events",
+        r#"{"event_source_define_count":1,"event_publish_count":2,"event_publish_matched_count":3,"event_subscribe_count":2,"event_unsubscribe_count":1,"event_request_failed_count":1}"#,
     ),
     (
         "agent kernel reference lookups",

@@ -12,6 +12,7 @@ mod checkpoint;
 mod core;
 mod ctx;
 mod decision;
+mod events;
 mod fs;
 mod hypothesis;
 mod mcp_session;
@@ -66,4 +67,5 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &bash::AGENT_BASH_QUIET,
     &bash::AGENT_ELEVATED_COMMANDS,
     &cells::AGENT_KERNEL_REFERENCE_LOOKUPS,
+    &events::AGENT_KERNEL_EVENTS,
 ];

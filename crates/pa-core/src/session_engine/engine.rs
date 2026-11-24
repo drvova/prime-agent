@@ -402,6 +402,14 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
             &mut handlers,
             std::sync::Arc::new(move |refusals| counters.note_agent_message_refusals(refusals)),
         );
+        // `event.*`: telemetry counts definitions, publications and the subscriptions they
+        // matched, subscriptions, and refused calls (never a name, a payload, or a prompt).
+        let counters = std::sync::Arc::clone(&session_counters);
+        super::event_bus_host::observe_event_bus_requests(
+            &mut handlers,
+            &(std::sync::Arc::new(move |fact| counters.note_event_bus_request(fact))
+                as super::event_bus_host::EventRequestObserver),
+        );
         // `agent_message.wait`: telemetry counts how each wait ended (never a sender or a body).
         let counters = std::sync::Arc::clone(&session_counters);
         super::agent_messaging::observe_agent_message_waits(

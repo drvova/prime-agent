@@ -1,1 +1,2 @@
 - The kernel gains `(api-search query)`: it ranks the API reference with BM25 and prints the entries and details that best match a plain description, so the model can find a function without knowing its name or topic.
+- Sessions can react to events instead of polling: `event-source-define` registers a named event source with a JSON schema, `event-publish` validates and publishes its events, and `event-subscribe` gives a session a new turn for each matching event, waking it if it is idle or saved. The daemon keeps sources and subscriptions across restarts.

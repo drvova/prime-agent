@@ -1,0 +1,10 @@
+[[telemetry]]
+event = "agent kernel events"
+properties = [
+  "event_source_define_count",
+  "event_publish_count",
+  "event_publish_matched_count",
+  "event_subscribe_count",
+  "event_unsubscribe_count",
+  "event_request_failed_count",
+]

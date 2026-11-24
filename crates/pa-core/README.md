@@ -386,6 +386,13 @@ paragraphs) against a query with BM25 (`prompts/layers/reference.rs`), so a cell
 by what it does. `tests/prompt_guards.rs` holds the reference equal to the functions the kernel's
 sources define. Public surface: `API_DOCS`, `documented_calls`, `CORE_LAYER`.
 
+Event bus kernel bridge (`session_engine::event_bus_host`): the `event.*` host requests behind
+the `event-*` kernel functions, each parsed into a typed `pa_types::events::EventBusRequest` and
+sent through an `EventBusController`; the bus itself lives in the daemon's supervisor. A
+daemonless run registers `NoEventBus`, which refuses every call with the reason; a daemon worker
+replaces it with its link-backed controller. Public surface: `EventBusController`, `NoEventBus`,
+`register_event_bus_host_handlers`.
+
 Session resource reload and settings view (`session_engine::resource_reload`,
 `session_engine::settings_view`): `rlm.reload` (and the daemon's `/reload`) re-runs
 resource discovery with the session's creation inputs, rebuilds the system prompt's
