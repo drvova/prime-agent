@@ -68,6 +68,13 @@
 ;; #:render #t loads pages in a local headless Chrome; #:timeout is the
 ;; whole crawl's deadline in seconds (default 60). Pages past the result's
 ;; output budget carry 'handle for ctx-page instead of their markdown.
+;; Reach: #:budget (a hash of path prefix to pages, "*" for all),
+;; #:external-domains (hosts crawled as part of the site), #:full-resources
+;; #t (PDFs, JSON and text the pages link, not only HTML), #:normalize #t,
+;; #:retry (0-3). With #:render only: #:wait-idle / #:wait-delay (seconds),
+;; #:wait-selector / #:wait-dom (CSS), #:viewport (width height),
+;; #:javascript #f, #:actions (a hash of URL or path to automation steps),
+;; #:scripts (a hash of URL or path to JavaScript to evaluate).
 (define (web-crawl source
                    #:max-pages [max-pages #f]
                    #:max-depth [max-depth #f]
@@ -77,7 +84,20 @@
                    #:subdomains [subdomains #f]
                    #:sitemap [sitemap #f]
                    #:render [render #f]
-                   #:timeout [timeout #f])
+                   #:timeout [timeout #f]
+                   #:budget [budget #f]
+                   #:external-domains [external-domains #f]
+                   #:full-resources [full-resources #f]
+                   #:normalize [normalize #f]
+                   #:retry [retry #f]
+                   #:wait-idle [wait-idle #f]
+                   #:wait-delay [wait-delay #f]
+                   #:wait-selector [wait-selector #f]
+                   #:wait-dom [wait-dom #f]
+                   #:viewport [viewport #f]
+                   #:javascript [javascript #t]
+                   #:actions [actions #f]
+                   #:scripts [scripts #f])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -93,4 +113,20 @@
                         'subdomains subdomains
                         'sitemap sitemap
                         'render render
-                        'timeoutSeconds (and timeout (%seconds "web-crawl" timeout)))))
+                        'timeoutSeconds (and timeout (%seconds "web-crawl" timeout))
+                        'budget budget
+                        'externalDomains (and external-domains
+                                              (if (string? external-domains)
+                                                  (list external-domains)
+                                                  external-domains))
+                        'fullResources full-resources
+                        'normalize normalize
+                        'retry (and retry (%integer "web-crawl" "#:retry" retry))
+                        'waitIdleSeconds wait-idle
+                        'waitDelaySeconds wait-delay
+                        'waitSelector wait-selector
+                        'waitDom wait-dom
+                        'viewport viewport
+                        'noJavascript (not javascript)
+                        'actions actions
+                        'scripts scripts)))

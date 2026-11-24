@@ -21,6 +21,7 @@
 
 mod browser;
 mod host;
+mod options;
 #[cfg(test)]
 mod tests;
 
@@ -70,7 +71,7 @@ const USER_AGENT: &str =
     "Mozilla/5.0 (compatible; prime-agent web.crawl; +https://github.com/PrimeIntellect-ai/prime-agent)";
 
 /// One crawl to run.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CrawlRequest {
     pub(crate) url: Url,
     pub(crate) max_pages: u32,
@@ -86,6 +87,10 @@ pub(crate) struct CrawlRequest {
     pub(crate) sitemap: bool,
     pub(crate) render: Render,
     pub(crate) timeout: Duration,
+    /// How far the frontier reaches beyond the defaults.
+    pub(crate) reach: options::Reach,
+    /// What the browser does on each page of a rendered crawl.
+    pub(crate) browsing: options::Browsing,
 }
 
 /// How pages are loaded.
@@ -199,6 +204,8 @@ impl WebCrawlEngine {
         }
         // Upstream reads the site's /sitemap.xml after its links unless told not to.
         website.with_ignore_sitemap(!request.sitemap);
+        request.reach.apply(&mut website, request.max_pages);
+        request.browsing.apply(&mut website);
         let mut notes = Vec::new();
         // Kept until the crawl's end: dropping it kills the browser.
         let browser = match request.render {
@@ -326,7 +333,13 @@ impl<'a> Collected<'a> {
         else {
             return;
         };
-        if !same_site(&self.request.url, &final_url, self.request.subdomains) {
+        if !same_site(&self.request.url, &final_url, self.request.subdomains)
+            && !final_url.host_str().is_some_and(|host| {
+                self.request
+                    .reach
+                    .includes_host(host.trim_start_matches("www."))
+            })
+        {
             self.notes.push(format!(
                 "{url} redirected off the site to {final_url}; not kept"
             ));
@@ -574,6 +587,11 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         }
         Some(_) => bail!("web.crawl timeoutSeconds must be positive"),
     };
+    let render = if flag("render") {
+        Render::Browser
+    } else {
+        Render::Http
+    };
     Ok(CrawlRequest {
         url,
         max_pages: u32::try_from(count(
@@ -598,11 +616,9 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         .unwrap_or(DEFAULT_MAX_CHARS),
         subdomains: flag("subdomains"),
         sitemap: flag("sitemap"),
-        render: if flag("render") {
-            Render::Browser
-        } else {
-            Render::Http
-        },
+        render,
         timeout,
+        reach: options::Reach::parse(data)?,
+        browsing: options::Browsing::parse(data, render == Render::Browser)?,
     })
 }

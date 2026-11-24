@@ -11,18 +11,23 @@ use tokio::net::TcpListener;
 
 use super::*;
 
+/// A fixture page titled `title` that links `links`.
+fn page(title: &str, links: &[&str]) -> String {
+    let links = links.iter().fold(String::new(), |mut list, link| {
+        write!(list, "<li><a href=\"{link}\">{link}</a></li>").unwrap();
+        list
+    });
+    format!(
+        "<!doctype html><html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>The {title} page of the fixture site, with enough prose to be kept as the readable part.</p><ul>{links}</ul></main></body></html>"
+    )
+}
+
+/// What a fixture site serves: each path's content type and body.
+type Pages = HashMap<&'static str, (&'static str, String)>;
+
 /// The site's pages: a home page linking two levels down, a robots.txt that
 /// disallows `/private`, an off-site link, and a docs section.
-fn pages() -> HashMap<&'static str, (&'static str, String)> {
-    let page = |title: &str, links: &[&str]| {
-        let links = links.iter().fold(String::new(), |mut list, link| {
-            write!(list, "<li><a href=\"{link}\">{link}</a></li>").unwrap();
-            list
-        });
-        format!(
-            "<!doctype html><html><head><title>{title}</title></head><body><main><h1>{title}</h1><p>The {title} page of the fixture site, with enough prose to be kept as the readable part.</p><ul>{links}</ul></main></body></html>"
-        )
-    };
+fn pages() -> Pages {
     HashMap::from([
         (
             "/robots.txt",
@@ -57,7 +62,7 @@ fn pages() -> HashMap<&'static str, (&'static str, String)> {
     ])
 }
 
-/// A loopback server for `site()`, recording every path it was asked for.
+/// A loopback server for `pages`, recording every path it was asked for.
 /// `hang` makes every page but robots.txt wait forever instead.
 struct Site {
     base: String,
@@ -67,11 +72,15 @@ struct Site {
 
 impl Site {
     async fn start(hang: bool) -> Self {
+        Self::serving(pages(), hang).await
+    }
+
+    async fn serving(pages: Pages, hang: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let base = format!("http://{}", listener.local_addr().expect("addr"));
         let hits = Arc::new(Mutex::new(Vec::new()));
         let asked = Arc::new(tokio::sync::Notify::new());
-        let pages = Arc::new(pages());
+        let pages = Arc::new(pages);
         let (recorded, notify) = (Arc::clone(&hits), Arc::clone(&asked));
         tokio::spawn(async move {
             while let Ok((mut socket, _)) = listener.accept().await {
@@ -298,6 +307,20 @@ async fn rendering_without_a_browser_says_how_to_get_one() {
     assert_eq!(format!("{error:#}"), browser::NO_BROWSER);
 }
 
+/// The processes whose command line names this test's browser profiles,
+/// once they are all gone or 10 s passed: a killed process leaves `/proc`
+/// only when it has finished dying.
+async fn browsers_left() -> Vec<u32> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let running = browsers_running();
+        if running.is_empty() || Instant::now() > deadline {
+            return running;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// Every process whose command line names this test's browser profiles.
 fn browsers_running() -> Vec<u32> {
     let marker = format!("prime-agent-browser-{}-", std::process::id());
@@ -315,8 +338,8 @@ fn browsers_running() -> Vec<u32> {
         .collect()
 }
 
-/// A rendered crawl sees the DOM after the page's scripts ran, and leaves no
-/// browser process behind.
+/// A rendered crawl sees the DOM after the page's scripts ran and after the
+/// automation steps asked for (a click), and leaves no browser process behind.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
     const CHROMIUM: &str = "/opt/pw-browsers/chromium";
@@ -324,33 +347,18 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
         eprintln!("skipped: no Chromium at {CHROMIUM} to render with");
         return;
     }
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move {
-        while let Ok((mut socket, _)) = listener.accept().await {
-            tokio::spawn(async move {
-                let mut buffer = [0u8; 4096];
-                let read = socket.read(&mut buffer).await.unwrap_or(0);
-                let path = String::from_utf8_lossy(&buffer[..read])
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("/")
-                    .to_string();
-                let body = if path == "/" {
-                    "<!doctype html><html><head><title>Scripted</title></head><body><main id=\"m\"></main><script>document.getElementById('m').innerHTML='<h1>Written by script</h1><p>This paragraph exists only after the page script ran in a browser.</p>';</script></body></html>"
-                } else {
-                    ""
-                };
-                let status = if path == "/" { 200 } else { 404 };
-                let head = format!(
-                    "HTTP/1.1 {status} X\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = socket.write_all(head.as_bytes()).await;
-                let _ = socket.write_all(body.as_bytes()).await;
-            });
-        }
-    });
+    let site = Site::serving(
+        HashMap::from([(
+            "/",
+            (
+                "text/html",
+                "<!doctype html><html><head><title>Scripted</title></head><body><main id=\"m\"></main><button id=\"more\" onclick=\"document.getElementById('m').insertAdjacentHTML('beforeend','<p>This paragraph appears only once the button was clicked.</p>')\">more</button><script>document.getElementById('m').innerHTML='<h1>Written by script</h1><p>This paragraph exists only after the page script ran in a browser.</p>';</script></body></html>".to_string(),
+            ),
+        )]),
+        false,
+    )
+    .await;
+    let base = site.base.clone();
     let scope = pa_types::session_scope::SessionScope::new(
         "render".to_string(),
         std::env::temp_dir(),
@@ -359,21 +367,24 @@ async fn a_rendered_crawl_reads_the_scripted_page_and_leaves_no_browser() {
     );
     let crawl = {
         let _scope = pa_types::session_scope::enter(Some(scope));
-        let request =
-            parse_request(&json!({"url": format!("{base}/"), "render": true, "maxPages": 1}))
-                .unwrap();
+        let request = parse_request(&json!({
+            "url": format!("{base}/"),
+            "render": true,
+            "maxPages": 1,
+            "actions": {"/": [{"Click": "#more"}, {"WaitFor": "#m p + p"}]},
+        }))
+        .unwrap();
         WebCrawlEngine::direct().crawl(&request, None).await
     }
     .unwrap();
+    let markdown = crawl.pages[0]["markdown"].as_str().unwrap();
     assert_eq!(
         (
-            crawl.pages[0]["markdown"]
-                .as_str()
-                .unwrap()
-                .contains("This paragraph exists only after the page script ran"),
-            browsers_running(),
+            markdown.contains("This paragraph exists only after the page script ran"),
+            markdown.contains("This paragraph appears only once the button was clicked"),
+            browsers_left().await,
         ),
-        (true, Vec::new())
+        (true, true, Vec::new())
     );
 }
 
@@ -429,5 +440,84 @@ async fn a_stopped_cell_stops_its_crawl() {
             stopped.elapsed() < Duration::from_secs(1)
         ),
         (ExecuteStatus::Aborted, true)
+    );
+}
+
+/// A path budget caps the pages crawled under that path, beside the rest.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_budget_caps_its_section() {
+    let site = Site::start(false).await;
+    let crawl = WebCrawlEngine::direct()
+        .crawl(
+            &request(&site, &json!({"maxDepth": 5, "budget": {"/a": 1, "*": 20}})),
+            None,
+        )
+        .await
+        .unwrap();
+    // Only the budgeted section is pinned: which other pages a crawl reaches
+    // before it settles varies with spider's scheduling once a budget is set.
+    let kept = paths(&crawl);
+    assert_eq!(
+        (
+            kept.iter()
+                .filter(|path| path.starts_with("/a"))
+                .collect::<Vec<_>>(),
+            kept.contains(&"/".to_string()),
+            site.hits().contains("/a/deep"),
+        ),
+        (vec![&"/a".to_string()], true, false)
+    );
+}
+
+/// `fullResources` also follows the links a crawl skips by their extension
+/// (stylesheets, scripts, media), each rendered as `web.read` renders it.
+#[tokio::test(flavor = "multi_thread")]
+async fn full_resources_keep_the_linked_documents() {
+    let site = Site::serving(
+        HashMap::from([
+            ("/", ("text/html", page("Home", &["/style.css"]))),
+            (
+                "/style.css",
+                ("text/css", "main { color: teal; }".to_string()),
+            ),
+        ]),
+        false,
+    )
+    .await;
+    let methods = |crawl: &Crawl| {
+        crawl
+            .pages
+            .iter()
+            .map(|page| page["method"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let engine = WebCrawlEngine::direct();
+    let pages_only = engine
+        .crawl(&request(&site, &json!({})), None)
+        .await
+        .unwrap();
+    let everything = engine
+        .crawl(&request(&site, &json!({"fullResources": true})), None)
+        .await
+        .unwrap();
+    assert_eq!(
+        (methods(&pages_only), methods(&everything)),
+        (
+            vec!["html".to_string()],
+            vec!["html".to_string(), "text".to_string()]
+        )
+    );
+}
+
+/// A browser option on a crawl that does not render is refused before
+/// anything is fetched.
+#[test]
+fn browser_options_need_render() {
+    let refused = parse_request(&json!({"url": "https://example.org/", "waitSelector": "#main"}))
+        .map(|_| ())
+        .map_err(|error| error.to_string());
+    assert_eq!(
+        refused,
+        Err("web.crawl waitSelector needs render: the browser does it".to_string())
     );
 }
