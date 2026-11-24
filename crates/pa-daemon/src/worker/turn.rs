@@ -1210,6 +1210,19 @@ impl TurnRunner {
         for admission_id in settled_admissions {
             self.prompt_admissions.clear(&admission_id);
         }
+        // A turn that settles with nothing queued parks the session, and a
+        // parked parent-owned child gives up its kernel. That happens here,
+        // before the waiting prompt resolves: a next prompt sent on the reply
+        // would otherwise reach the lanes before the pump parks, run on the
+        // kernel the client was told is idle, and leave the reset notice to
+        // the turn after. The park's own release then finds no kernel.
+        let parks = {
+            let core = self.core.lock().unwrap();
+            core.steering.is_empty() && core.follow_up.is_empty()
+        };
+        if parks {
+            self.maybe_release_settled_child_kernel().await;
+        }
         // The turn is fully unwound: the waiting prompt now resolves, so
         // a client's next request always observes the idle session.
         let settled_outcome = turn_outcome.lock().unwrap().take();
