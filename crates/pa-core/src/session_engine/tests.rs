@@ -1457,3 +1457,106 @@ async fn a_resolved_model_bill_survives_its_callers_cancellation() {
         .collect();
     assert_eq!(rows, vec![serde_json::to_value(bill).unwrap()]);
 }
+
+/// A scripted reply cut off at the output limit: `text` streamed, no tool call.
+fn cut_off_reply(text: &str) -> pa_agent::types::AssistantMessage {
+    pa_agent::types::AssistantMessage {
+        content: vec![pa_agent::types::AssistantContent::Text(
+            pa_agent::types::TextContent {
+                text: text.to_string(),
+                text_signature: None,
+            },
+        )],
+        api: "openai-completions".to_string(),
+        provider: "test".to_string(),
+        model: "m".to_string(),
+        response_model: None,
+        response_id: None,
+        diagnostics: None,
+        usage: pa_agent::types::Usage::zero(),
+        stop_reason: pa_agent::types::StopReason::Length,
+        stop_reason_raw: None,
+        error_message: None,
+        timestamp: 1,
+    }
+}
+
+/// A reply cut off at the output limit is never re-sent: the next request keeps the cut reply
+/// and adds one guiding user-role message, and the run's answer is the continuation's.
+#[tokio::test]
+async fn a_reply_cut_off_at_the_output_limit_continues_with_a_guiding_message() {
+    use pa_agent::scripted::{ScriptStep, ScriptedTurn};
+    use pa_agent::stream::AssistantMessageEvent;
+    let provider = Arc::new(ScriptedProvider::new(test_model()));
+    let cut = cut_off_reply("The first half of the ans");
+    let mut partial = cut.clone();
+    partial.content.clear();
+    provider.push_turn(ScriptedTurn::Events(vec![
+        ScriptStep::Event(Box::new(AssistantMessageEvent::Start { partial })),
+        ScriptStep::Event(Box::new(AssistantMessageEvent::Done {
+            reason: pa_agent::types::StopReason::Length,
+            message: cut.clone(),
+        })),
+    ]));
+    provider.push_text_turn("wer, and the second half.");
+    let (session, _tmp) = digest_session(Arc::clone(&provider)).await;
+    let events = std::sync::Mutex::new(Vec::new());
+    session
+        .prompt_with_auto_retry(
+            "explain",
+            Vec::new(),
+            &crate::session_engine::provider_retry::DEFAULT_PROVIDER_RETRY_POLICY,
+            1000,
+            |event| {
+                events.lock().unwrap().push(event);
+                std::future::ready(Ok(()))
+            },
+        )
+        .await
+        .unwrap();
+
+    let calls = provider.calls();
+    assert_eq!(calls.len(), 2, "{calls:?}");
+    let first = &calls[0].messages;
+    let (kept, added) = calls[1].messages.split_at(first.len());
+    assert_eq!(kept, &first[..]);
+    let mut added = added.to_vec();
+    if let Some(pa_agent::types::Message::User(guide)) = added.last_mut() {
+        guide.timestamp = 0;
+    }
+    let guide = "[output-limit] Your reply was cut off at the output limit. Continue from where it stopped; do not repeat or recap what you already wrote. If the remaining work is large, split it into smaller eval cells, or write long text to a file in parts.";
+    assert_eq!(
+        added,
+        vec![
+            pa_agent::types::Message::Assistant(cut),
+            pa_agent::types::Message::User(pa_agent::types::UserMessage {
+                content: pa_agent::types::UserContent::Parts(vec![
+                    pa_agent::types::UserPart::Text(pa_agent::types::TextContent {
+                        text: guide.to_string(),
+                        text_signature: None,
+                    })
+                ]),
+                timestamp: 0,
+            }),
+        ]
+    );
+    assert_eq!(events.into_inner().unwrap(), Vec::new(), "no retry episode");
+    let last = session.agent().state().await.messages.last().cloned();
+    let Some(pa_agent::types::AgentMessage::Standard(pa_agent::types::Message::Assistant(last))) =
+        last.clone()
+    else {
+        panic!("the run ends on the continuation: {last:?}");
+    };
+    assert_eq!(
+        (last.stop_reason, last.content),
+        (
+            pa_agent::types::StopReason::Stop,
+            vec![pa_agent::types::AssistantContent::Text(
+                pa_agent::types::TextContent {
+                    text: "wer, and the second half.".to_string(),
+                    text_signature: None,
+                }
+            )]
+        )
+    );
+}

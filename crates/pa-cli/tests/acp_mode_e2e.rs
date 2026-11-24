@@ -2022,17 +2022,18 @@ fn acp_autonomous_disabled_reports_end_turn_without_accounting() {
 }
 
 #[test]
-fn acp_truncated_final_response_retries_then_fails_the_turn() {
+fn acp_truncated_final_response_continues_then_fails_the_turn() {
     // A final reply cut off at the provider's output-token cap never ends
-    // the turn as its answer: it is retried once, and a second cut-off
-    // fails the prompt with an error instead of a stop reason. The stop
-    // reason stays per-turn: the following /compact prompt runs no model
-    // call and resolves end_turn.
+    // the turn as its answer: it is continued twice, and a third cut-off in
+    // a row fails the prompt with an error instead of a stop reason. The
+    // stop reason stays per-turn: the following /compact prompt runs no
+    // model call and resolves end_turn.
     let script = json!({
         "engine": "faux",
         "responses": [
             { "text": "half an answer", "stopReason": "length" },
             { "text": "half an answer again", "stopReason": "length" },
+            { "text": "and again", "stopReason": "length" },
             { "text": "never reached" },
         ],
     });

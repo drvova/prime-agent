@@ -15,7 +15,7 @@ use super::provider_retry::{
     is_context_overflow_failure, is_permanent_provider_failure_kind, is_unsupported_tool_failure,
     jittered_delay_ms, provider_retry_delay, provider_stream_failure_kind,
     provider_stream_failure_retry_after_ms, provider_stream_failure_status, retry_jitter_rand01,
-    ProviderRetryDelay, ProviderRetryPolicy,
+    ProviderRetryDelay, ProviderRetryPolicy, OUTPUT_LIMIT_KIND,
 };
 
 /// The whole-episode retry ceiling (SANCTIONED DIVERGENCE, operator
@@ -23,6 +23,29 @@ use super::provider_retry::{
 /// whatever `retry.maxRetries` says - the same anchor as TS's own
 /// provider-wait `maxParks: 8`.
 pub const MAX_TOTAL_PROVIDER_RETRIES: u32 = 8;
+
+/// Final replies cut off at the output limit in a row at which a turn gives
+/// up: the ones before it are continued, so a turn sends at most two
+/// continuations (the cap `OpenCode` uses). An identical retry tends to hit the same
+/// limit again; a continuation keeps the cut reply and tells the model to
+/// carry on in smaller pieces, and a model that is cut off a third time in
+/// a row is not making progress that way either.
+pub const MAX_CONSECUTIVE_OUTPUT_LIMIT_CUTS: u32 = 3;
+
+/// What the retry driver asks of one attempt of the turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnAttempt {
+    /// The turn's first attempt.
+    First,
+    /// The previous attempt failed: its reply leaves the loop context and
+    /// the run is re-issued.
+    Retry,
+    /// The previous reply was cut off at the output limit
+    /// ([`OUTPUT_LIMIT_KIND`]): it stays in the loop context and the run
+    /// continues behind the guiding row
+    /// ([`super::AgentSession::continue_after_output_limit`]).
+    ContinueAfterOutputLimit,
+}
 
 /// One retry-loop event, in the TS wire vocabulary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +112,13 @@ pub(super) async fn end_turn_on_auth_rejection(
 /// with stop reason `Error` is classified against the policy; `emit` observes
 /// retry events, `wait` sleeps one delay (returning `false` aborts).
 ///
+/// A reply cut off at the output limit ([`OUTPUT_LIMIT_KIND`]) is no retry:
+/// the next attempt is asked to continue it ([`TurnAttempt`]) at once, with
+/// no retry event, whether or not retries are enabled, until
+/// [`MAX_CONSECUTIVE_OUTPUT_LIMIT_CUTS`] attempts in a row end cut off;
+/// that one fails the turn like a permanent failure. Any other outcome ends
+/// the run of cuts.
+///
 /// A server-requested wait above the policy cap (a quota reset) fails the
 /// turn at once with the provider's raw error: nothing waits it out. When
 /// `quota_fallback` arms the provider's declared fallback, the turn instead
@@ -113,7 +143,7 @@ pub async fn run_turn_with_auto_retry<A, AF, E, EF, W, WF>(
     mut quota_fallback: Option<QuotaFallbackCallback<'_>>,
 ) -> anyhow::Result<AssistantMessage>
 where
-    A: FnMut() -> AF,
+    A: FnMut(TurnAttempt) -> AF,
     AF: Future<Output = anyhow::Result<AssistantMessage>>,
     E: FnMut(AutoRetryEvent) -> EF,
     EF: Future<Output = anyhow::Result<()>>,
@@ -123,8 +153,11 @@ where
     let max_retries = policy.max_retries.min(MAX_TOTAL_PROVIDER_RETRIES);
     let mut retries_performed = 0u32;
     let mut fallback_retried = false;
+    let mut next = TurnAttempt::First;
+    let mut output_limit_cuts = 0u32;
     loop {
-        let message = attempt().await?;
+        let message = attempt(next).await?;
+        next = TurnAttempt::Retry;
         if message.stop_reason != StopReason::Error {
             if retries_performed > 0 {
                 emit(AutoRetryEvent::End {
@@ -139,6 +172,25 @@ where
         if signal.is_some_and(AbortSignal::is_aborted) {
             return Ok(with_stop_reason_aborted(message));
         }
+        if provider_stream_failure_kind(&message).as_deref() == Some(OUTPUT_LIMIT_KIND) {
+            output_limit_cuts += 1;
+            if output_limit_cuts < MAX_CONSECUTIVE_OUTPUT_LIMIT_CUTS {
+                next = TurnAttempt::ContinueAfterOutputLimit;
+                continue;
+            }
+            let mut message = message;
+            message.error_message = Some(format!(
+                "The model's reply was cut off at its output limit {MAX_CONSECUTIVE_OUTPUT_LIMIT_CUTS} times in a row"
+            ));
+            emit(AutoRetryEvent::End {
+                success: false,
+                attempt: retries_performed,
+                final_error: Some(final_error_of(&message)),
+            })
+            .await?;
+            return Ok(message);
+        }
+        output_limit_cuts = 0;
         // Non-retryable failures never enter the retry bookkeeping: a
         // permanent failure only closes the active retry.
         let non_retryable = is_agent_lifecycle_failure(&message)

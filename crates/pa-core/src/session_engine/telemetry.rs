@@ -285,9 +285,10 @@ struct ActiveRun {
     usage: UsageTotals,
     last_assistant: Option<AssistantMessage>,
     /// An auto-retry started after this run's
-    /// failed attempt: the retried attempt's `AgentStart` continues this
-    /// run instead of starting a new one (TS: one run per turn, retries
-    /// counted in `retry_count`).
+    /// failed attempt, or an output-limit continuation after its cut reply:
+    /// the next attempt's `AgentStart` continues this run instead of
+    /// starting a new one (TS: one run per turn, retries counted in
+    /// `retry_count`).
     retry_pending: bool,
     // v2 (#2117) per-run tracking:
     /// The run's uuid.
@@ -1391,6 +1392,28 @@ impl SessionTelemetry {
         }
     }
 
+    /// The run's final reply was cut off at the output limit and the run
+    /// continues behind the guiding row
+    /// (`AgentSession::continue_after_output_limit`): the continuation
+    /// counts toward the active run, which the continued attempt keeps.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the telemetry state mutex is poisoned.
+    pub fn note_output_limit_continuation(&self) {
+        let mut state = self.state.lock().expect("telemetry state poisoned");
+        if !state.recording {
+            sever_off_period_run(&mut state);
+            return;
+        }
+        if state.active_run.is_some() {
+            state.meter.output_limit_continuation();
+        }
+        if let Some(run) = state.active_run.as_mut() {
+            run.retry_pending = true;
+        }
+    }
+
     /// A loop request broke the previous request's prompt-cache prefix,
     /// leaving `broken_bytes` of it unreused (`session_engine::cache_prefix`);
     /// counts toward the active run.
@@ -2238,6 +2261,10 @@ fn finalize_run_locked(client: &TelemetryClient, execution_mode: &str, state: &m
     // uncached split already.
     properties.set("end_reason", Value::from(metrics.end_reason.as_str()));
     properties.set("eval_cell_count", Value::from(metrics.eval_cells));
+    properties.set(
+        "output_limit_continuation_count",
+        Value::from(metrics.output_limit_continuations),
+    );
     properties.set("eval_cell_duration_ms", Value::from(metrics.eval_cell_ms));
     if let Some(spawns) = metrics.subagent_spawns {
         properties.set("subagent_spawn_count", Value::from(spawns));

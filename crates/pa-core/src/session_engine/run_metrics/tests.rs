@@ -109,6 +109,7 @@ fn a_scripted_run_folds_into_its_metrics() {
             bash_waits_completed: 1,
             bash_waits_yielded: 2,
             subagent_spawns: Some(1),
+            output_limit_continuations: 0,
             compactions: vec![CompactionPoint {
                 context_fraction: Some(5_730.0 / 1_000_000.0),
             }],
@@ -157,8 +158,9 @@ fn the_cache_break_counter_counts_a_break_and_not_an_append() {
 /// The offline feed over a synthetic session file (hand-built: the faux
 /// provider counts a request's new suffix in both its input and its cache
 /// write, so it is no model of a provider's cache): two runs, a steering
-/// message inside the first, a compaction after it, and an empty final
-/// answer ending the second.
+/// message inside the first, a compaction after it, and a reply cut off at
+/// the output limit, its continuation row and an empty final answer in the
+/// second.
 #[test]
 fn a_session_file_yields_the_metrics_of_each_run() {
     let runs = transcript_run_metrics(include_str!(concat!(
@@ -187,6 +189,7 @@ fn a_session_file_yields_the_metrics_of_each_run() {
                 bash_waits_completed: 1,
                 bash_waits_yielded: 0,
                 subagent_spawns: None,
+                output_limit_continuations: 0,
                 compactions: vec![CompactionPoint {
                     context_fraction: Some(6_040.0 / 1_000_000.0),
                 }],
@@ -194,7 +197,7 @@ fn a_session_file_yields_the_metrics_of_each_run() {
                 wall_ms: 10_000,
             },
             RunMetrics {
-                model_requests: 1,
+                model_requests: 2,
                 failed_model_requests: 0,
                 eval_cells: 0,
                 eval_cell_ms: 0,
@@ -211,6 +214,7 @@ fn a_session_file_yields_the_metrics_of_each_run() {
                 bash_waits_completed: 0,
                 bash_waits_yielded: 0,
                 subagent_spawns: None,
+                output_limit_continuations: 1,
                 compactions: Vec::new(),
                 end_reason: TurnEndReason::Empty,
                 wall_ms: 5_000,

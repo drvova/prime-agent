@@ -11,3 +11,17 @@ mod boundary;
 mod model;
 mod run_loop;
 mod run_once;
+
+/// How one [`AgentSessionEngine::run_turn_once`] starts its run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunStart {
+    /// Admit the turn's prompt.
+    Prompt,
+    /// Continue the loop context as it stands (a retry, after the failed
+    /// reply left it, or the tool run after an artificial yield).
+    Continue,
+    /// The final reply was cut off at the output limit: it stays, and the
+    /// run continues behind the guiding row
+    /// (`AgentSession::continue_after_output_limit`).
+    ContinueAfterOutputLimit,
+}

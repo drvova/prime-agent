@@ -2,7 +2,9 @@
 //! results, and agent messages.
 use crate::engine::{session_wire_value, AssistantSnapshot};
 
-use super::{json, json_round_trip, AgentSessionEngine, EngineEvent, TurnOnce, TurnPrompt, Value};
+use super::{
+    json, json_round_trip, AgentSessionEngine, EngineEvent, RunStart, TurnOnce, TurnPrompt, Value,
+};
 
 /// The wire value of a settled loop message; an assistant message carries the session's
 /// billing stamp, like the core's own record of it.
@@ -33,15 +35,16 @@ impl AgentSessionEngine {
     }
 
     /// Run one turn, streaming assistant updates through `emit` as they
-    /// arrive. The first attempt prompts the session; retries continue the
-    /// parked turn. Returns the final assistant message, `None` when none
+    /// arrive. `start` says how: the first attempt prompts the session,
+    /// retries continue the parked turn, and a reply cut off at the output
+    /// limit is continued behind the guiding row. Returns the final assistant message, `None` when none
     /// was produced, or `Aborted` when the emit cancelled or the cancel flag
     /// raced the admission.
     pub(super) async fn run_turn_once(
         &self,
         agent: &std::sync::Arc<pa_agent::agent::Agent>,
         prompt: &TurnPrompt,
-        first_attempt: bool,
+        start: RunStart,
         boundary_passed: &std::sync::Arc<std::sync::atomic::AtomicBool>,
         aborted: &dyn Fn() -> bool,
         emit: &mut dyn FnMut(EngineEvent) -> bool,
@@ -218,12 +221,16 @@ impl AgentSessionEngine {
                                     // (and the attached clients) here. Without the durable
                                     // row a later rebuild could not tell the model was
                                     // already told.
+                                    // The guiding row after a reply cut off at the output limit
+                                    // is the worker's to keep the same way.
                                     pa_agent::types::AgentMessage::Custom(custom)
-                                        if custom
-                                            .payload
-                                            .get("customType")
-                                            .and_then(Value::as_str)
-                                            == Some(pa_core::session_engine::state_restore_notice::KERNEL_STATE_RESTORED_CUSTOM_TYPE) =>
+                                        if matches!(
+                                            custom.payload.get("customType").and_then(Value::as_str),
+                                            Some(
+                                                pa_core::session_engine::state_restore_notice::KERNEL_STATE_RESTORED_CUSTOM_TYPE
+                                                    | pa_core::session_engine::messages::OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE
+                                            )
+                                        ) =>
                                     {
                                         if let Some(value) = session_wire_value(agent_message) {
                                             let _ = tx.send(EngineEvent::CustomMessage(value));
@@ -333,7 +340,7 @@ impl AgentSessionEngine {
                 abort_raced_admission.store(true, std::sync::atomic::Ordering::SeqCst);
                 return Ok(());
             }
-            if first_attempt {
+            if start == RunStart::Prompt {
                 // The session lock covers the clone only: holding it across
                 // the turn serialized every client read seam (the 2026-09-22
                 // dogfood failure); the Arc clone keeps reads free.
@@ -382,6 +389,13 @@ impl AgentSessionEngine {
                         .await
                         .map(|_| ()),
                 }
+            } else if start == RunStart::ContinueAfterOutputLimit {
+                let session = self.session.lock().await.clone();
+                session
+                    .expect("session built")
+                    .session
+                    .continue_after_output_limit()
+                    .await
             } else {
                 agent.continue_run().await
             }

@@ -1172,7 +1172,7 @@ fn cut_off_reply() -> serde_json::Value {
     })
 }
 
-const CUT_OFF: &str = "The model's reply was cut off at its output limit before it finished";
+const CUT_OFF: &str = "The model's reply was cut off at its output limit 3 times in a row";
 
 /// The assistant rows the run's session file holds.
 fn persisted_assistant_rows(home: &std::path::Path) -> usize {
@@ -1192,14 +1192,19 @@ fn run_retried(args: &[&str], script: &serde_json::Value) -> (String, String, i3
     (stdout, stderr, code, rows)
 }
 
+/// Three cut-off replies in a row: two continuations, then the turn fails.
+fn three_cut_offs() -> serde_json::Value {
+    serde_json::json!({ "responses": [
+        cut_off_reply(), cut_off_reply(), cut_off_reply(), "never reached",
+    ] })
+}
+
 #[test]
-fn print_mode_a_reply_cut_off_twice_fails_after_one_retry() {
-    let script =
-        serde_json::json!({ "responses": [cut_off_reply(), cut_off_reply(), "never reached"] });
-    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
+fn print_mode_a_reply_cut_off_three_times_fails_after_two_continuations() {
+    let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &three_cut_offs());
     assert_eq!(
         (stdout.as_str(), stderr.as_str(), code, rows),
-        ("", &*format!("{CUT_OFF}\n"), 1, 2)
+        ("", &*format!("{CUT_OFF}\n"), 1, 3)
     );
 }
 
@@ -1220,7 +1225,7 @@ fn print_mode_an_empty_reply_twice_fails_after_one_retry() {
 }
 
 #[test]
-fn print_mode_a_cut_off_reply_recovers_on_its_retry() {
+fn print_mode_a_cut_off_reply_recovers_on_its_continuation() {
     let script = serde_json::json!({ "responses": [cut_off_reply(), "The whole answer."] });
     let (stdout, stderr, code, rows) = run_retried(&["-p", "explain"], &script);
     assert_eq!(
@@ -1246,14 +1251,14 @@ fn print_mode_a_transient_provider_failure_retries_and_recovers() {
     );
 }
 
-/// json mode streams the retry and its failed end as session events; its
-/// exit code stays the json contract's (only the autonomous gates fail it).
+/// json mode streams the cut-off turn's failed end as a session event (the
+/// continuations are no retry episode); its exit code stays the json
+/// contract's (only the autonomous gates fail it).
 #[test]
-fn print_mode_json_streams_the_cut_off_retry_and_its_failure() {
-    let script =
-        serde_json::json!({ "responses": [cut_off_reply(), cut_off_reply(), "never reached"] });
-    let (stdout, stderr, code, rows) = run_retried(&["--mode", "json", "-p", "explain"], &script);
-    assert_eq!((stderr.as_str(), code, rows), ("", 0, 2));
+fn print_mode_json_streams_the_cut_off_failure() {
+    let (stdout, stderr, code, rows) =
+        run_retried(&["--mode", "json", "-p", "explain"], &three_cut_offs());
+    assert_eq!((stderr.as_str(), code, rows), ("", 0, 3));
     let events: Vec<serde_json::Value> = stdout
         .lines()
         .map(serde_json::from_str)
@@ -1276,19 +1281,11 @@ fn print_mode_json_streams_the_cut_off_retry_and_its_failure() {
         .collect();
     assert_eq!(
         retry_events,
-        vec![
-            serde_json::json!({
-                "type": "auto_retry_start",
-                "attempt": 1,
-                "maxAttempts": 3,
-                "errorMessage": CUT_OFF,
-            }),
-            serde_json::json!({
-                "type": "auto_retry_end",
-                "success": false,
-                "attempt": 1,
-                "finalError": CUT_OFF,
-            }),
-        ]
+        vec![serde_json::json!({
+            "type": "auto_retry_end",
+            "success": false,
+            "attempt": 0,
+            "finalError": CUT_OFF,
+        })]
     );
 }

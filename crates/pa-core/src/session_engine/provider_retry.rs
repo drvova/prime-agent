@@ -153,6 +153,12 @@ pub fn is_permanent_provider_failure_kind(
 /// turn (see [`incomplete_reply_reason`]). It gets one retry.
 pub const INCOMPLETE_REPLY_KIND: &str = "incomplete_reply";
 
+/// The `provider_stream_failure` kind of a final reply cut off at the output
+/// limit (see [`incomplete_reply_reason`]). It is never re-sent: the retry
+/// driver keeps the cut reply and continues the run with a guiding message
+/// ([`super::auto_retry::MAX_CONSECUTIVE_OUTPUT_LIMIT_CUTS`]).
+pub const OUTPUT_LIMIT_KIND: &str = "output_limit";
+
 /// The `provider_stream_failure` kind of a stream the loop guard cut because
 /// the model started repeating itself (pa-ai's `repetition_loop`). It gets
 /// one retry, which carries a nudge (`session_engine::loop_guard`).
@@ -195,7 +201,9 @@ pub fn incomplete_reply_reason(
 
 /// A turn's final reply as the retry driver must see it: `message` itself,
 /// or, when it cannot end its turn ([`incomplete_reply_reason`]), `message`
-/// as a retryable provider failure carrying the reason. Every host that
+/// as a provider failure carrying the reason: of kind [`OUTPUT_LIMIT_KIND`]
+/// when it was cut off at the output limit (the driver continues it), else
+/// [`INCOMPLETE_REPLY_KIND`] (the driver retries it once). Every host that
 /// drives a turn through the retry driver settles its reply here: the
 /// daemon's model turn and the daemonless `AgentSession::prompt_with_auto_retry`.
 #[must_use]
@@ -207,6 +215,12 @@ pub fn settle_final_reply(
     let Some(reason) = incomplete_reply_reason(&message, owes_answer, context_window) else {
         return message;
     };
+    let kind = match message.stop_reason {
+        StopReason::Length => OUTPUT_LIMIT_KIND,
+        StopReason::Stop | StopReason::ToolUse | StopReason::Error | StopReason::Aborted => {
+            INCOMPLETE_REPLY_KIND
+        }
+    };
     message.stop_reason = StopReason::Error;
     message.error_message = Some(reason.to_string());
     message
@@ -216,7 +230,7 @@ pub fn settle_final_reply(
             kind: "provider_stream_failure".to_string(),
             timestamp: message.timestamp,
             error: None,
-            details: Some(serde_json::json!({ "kind": INCOMPLETE_REPLY_KIND })),
+            details: Some(serde_json::json!({ "kind": kind })),
         });
     message
 }
@@ -656,22 +670,22 @@ mod tests {
 
     #[test]
     fn an_incomplete_reply_failure_is_a_retryable_non_overflow_failure() {
-        let message = reply(StopReason::Length, vec![thinking("t")]);
-        let reason = incomplete_reply_reason(&message, true, WINDOW).expect("incomplete");
-        let failure = settle_final_reply(message, true, WINDOW);
-        assert_eq!(failure.stop_reason, StopReason::Error);
-        assert_eq!(failure.error_message.as_deref(), Some(reason));
-        assert_eq!(
-            provider_stream_failure_kind(&failure).as_deref(),
-            Some(INCOMPLETE_REPLY_KIND)
-        );
-        assert!(has_provider_stream_failure(&failure));
-        assert!(!is_context_overflow_failure(&failure, 128_000));
-        let silent = reply(StopReason::Stop, Vec::new());
-        assert!(!is_context_overflow_failure(
-            &settle_final_reply(silent, true, WINDOW),
-            128_000
-        ));
+        for (stop_reason, kind) in [
+            (StopReason::Length, OUTPUT_LIMIT_KIND),
+            (StopReason::Stop, INCOMPLETE_REPLY_KIND),
+        ] {
+            let message = reply(stop_reason, vec![thinking("t")]);
+            let reason = incomplete_reply_reason(&message, true, WINDOW).expect("incomplete");
+            let failure = settle_final_reply(message, true, WINDOW);
+            assert_eq!(failure.stop_reason, StopReason::Error);
+            assert_eq!(failure.error_message.as_deref(), Some(reason));
+            assert_eq!(
+                provider_stream_failure_kind(&failure).as_deref(),
+                Some(kind)
+            );
+            assert!(has_provider_stream_failure(&failure));
+            assert!(!is_context_overflow_failure(&failure, 128_000));
+        }
     }
 
     /// The stream-drop arc, end to end: the REAL provider against the

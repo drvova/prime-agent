@@ -63,6 +63,17 @@ pub const FACTORY_PROGRESS_NOTICE_CUSTOM_TYPE: &str = "factory_progress_notice";
 pub const BETTER_CHECKS_CUSTOM_TYPE: &str = "better_acceptance_checks";
 /// The queue-strip label a failed acceptance-check round's queued row carries.
 pub const BETTER_CHECKS_PREVIEW_LABEL: &str = "Acceptance checks";
+/// The custom type of the row that continues a reply cut off at the output
+/// limit. It is model context (a user-role turn) and hidden in the chat
+/// (`display: false`): the cut reply and its continuation are what the user
+/// reads.
+pub const OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE: &str = "output_limit_continuation";
+/// What the model is told after its reply was cut off at the output limit.
+/// The cut reply stays in the context, so the model can pick up where it
+/// stopped; the advice is the one the cut tool calls' results already give
+/// (pa-agent `execute_tool_calls`). Admitted by
+/// `AgentSession::continue_after_output_limit`.
+pub const OUTPUT_LIMIT_CONTINUATION_TEXT: &str = "[output-limit] Your reply was cut off at the output limit. Continue from where it stopped; do not repeat or recap what you already wrote. If the remaining work is large, split it into smaller eval cells, or write long text to a file in parts.";
 /// The queue-strip label the factory progress notice's queued row carries.
 pub const FACTORY_PROGRESS_PREVIEW_LABEL: &str = "Factory progress";
 /// The queue-strip preview label for a parked heartbeat fire; the queued row reads

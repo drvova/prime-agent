@@ -1,6 +1,7 @@
-//! A final reply that cannot end its turn (no visible text where an answer
-//! is owed, or cut off at the output limit) gets one retry through the
-//! provider retry driver, then surfaces as the turn's error.
+//! A final reply that cannot end its turn goes through the provider retry
+//! driver: one with no visible text where an answer is owed gets one retry,
+//! one cut off at the output limit is continued behind a guiding row (twice
+//! in a row at most); then it surfaces as the turn's error.
 
 use super::*;
 
@@ -161,8 +162,24 @@ fn a_silent_acknowledgement_of_an_agent_message_ends_the_turn() {
     assert_eq!(events.last(), Some(&EngineEvent::Done(Ok(()))));
 }
 
+/// The guiding rows a run admitted after replies cut off at the output limit, as
+/// `(content, display)`.
+fn output_limit_guides(events: &[EngineEvent]) -> Vec<(serde_json::Value, serde_json::Value)> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            EngineEvent::CustomMessage(row) if row["customType"] == "output_limit_continuation" => {
+                Some((row["content"].clone(), row["display"].clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+const OUTPUT_LIMIT_GUIDE: &str = "[output-limit] Your reply was cut off at the output limit. Continue from where it stopped; do not repeat or recap what you already wrote. If the remaining work is large, split it into smaller eval cells, or write long text to a file in parts.";
+
 #[test]
-fn a_reply_cut_off_at_the_output_limit_retries_on_any_turn() {
+fn a_reply_cut_off_at_the_output_limit_continues_on_any_turn() {
     let events = run_request(
         &json!({"engine": "faux", "responses": [cut_off_while_thinking(), {"text": "Done: the file is saved."}]}),
         "continue the design task",
@@ -171,8 +188,34 @@ fn a_reply_cut_off_at_the_output_limit_retries_on_any_turn() {
     let assistants = assistant_rows(&events);
     assert_eq!(assistants.len(), 2);
     assert_eq!(text_of(&assistants[1]), "Done: the file is saved.");
-    assert_eq!(retry_events(&events), (1, vec![true]));
+    assert_eq!(retry_events(&events), (0, vec![]), "no retry episode");
+    assert_eq!(
+        output_limit_guides(&events),
+        vec![(json!(OUTPUT_LIMIT_GUIDE), json!(false))]
+    );
     assert_eq!(events.last(), Some(&EngineEvent::Done(Ok(()))));
+}
+
+#[test]
+fn a_third_cut_off_reply_in_a_row_ends_the_turn_with_its_error() {
+    // A fourth queued reply would answer a third continuation.
+    let events = run_request(
+        &json!({"engine": "faux", "responses": [
+            cut_off_while_thinking(), cut_off_while_thinking(), cut_off_while_thinking(),
+            {"text": "never reached"}
+        ]}),
+        "explain the slow query",
+        None,
+    );
+    assert_eq!(assistant_rows(&events).len(), 3);
+    assert_eq!(output_limit_guides(&events).len(), 2);
+    assert_eq!(retry_events(&events), (0, vec![false]));
+    assert_eq!(
+        events.last(),
+        Some(&EngineEvent::Done(Err(
+            "The model's reply was cut off at its output limit 3 times in a row".to_string()
+        )))
+    );
 }
 
 #[test]

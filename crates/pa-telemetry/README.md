@@ -30,7 +30,7 @@ pseudonymous installation identity for Prime Agent product analytics.
   order, then its derived ones.
 - The `agent run completed` harness properties (pa-core `run_metrics`): `end_reason` (the
   `stop_reason` words plus `empty` and `loop_guard`), `eval_cell_count`,
-  `eval_cell_duration_ms`, `subagent_spawn_count`, `cache_read_break_count`, `cache_hit_percent`
+  `eval_cell_duration_ms`, `output_limit_continuation_count`, `subagent_spawn_count`, `cache_read_break_count`, `cache_hit_percent`
   and `compaction_context_percent_min`/`_max`, beside the existing token split
   (`input_tokens` is the uncached input).
 - `install_id`: `<agentDir>/telemetry.json` `{version, installationId}`,

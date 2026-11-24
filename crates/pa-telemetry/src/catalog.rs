@@ -705,14 +705,16 @@ const AGENT_RUN_COMPLETED: EventRule = EventRule {
         ("bash_wait_completed_count", optional(count())),
         ("bash_wait_yielded_count", optional(count())),
         // The harness metrics (pa-core `run_metrics`): how the run ended,
-        // its eval cells, admitted subagent spawns, cache-prefix breaks
-        // (set only when a request could be compared), the token-weighted
-        // cache hit rate, and how full the context was at its compactions.
+        // its eval cells, replies cut off at the output limit that it
+        // continued, admitted subagent spawns, cache-prefix breaks (set only
+        // when a request could be compared), the token-weighted cache hit
+        // rate, and how full the context was at its compactions.
         (
             "end_reason",
             optional(enum_rule(TURN_END_REASONS, "unknown")),
         ),
         ("eval_cell_count", optional(count())),
+        ("output_limit_continuation_count", optional(count())),
         ("eval_cell_duration_ms", optional(duration())),
         ("subagent_spawn_count", optional(count())),
         ("cache_read_break_count", optional(count())),

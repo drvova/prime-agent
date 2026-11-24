@@ -15,10 +15,13 @@
 //! request (a harness digest ahead of the prompt) open no run of their own.
 //! A compaction counts into the open run, as
 //! the live post-run compaction drain does; one before any run is skipped.
+//! So does an output-limit continuation row, which opens no run (a
+//! continued attempt adds no user message).
 
 use pa_agent::types::{Message, StopReason};
 use serde_json::Value;
 
+use super::super::messages::OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE;
 use super::{loop_guard_stopped, MetricsMeter, RunMetrics, SpawnVisibility};
 
 /// The open run's first and last entry timestamps (epoch ms, 0 while none
@@ -57,6 +60,15 @@ pub fn transcript_run_metrics(content: &str) -> Vec<RunMetrics> {
             Some("compaction") => {
                 if open.is_some() {
                     meter.compaction();
+                }
+                continue;
+            }
+            Some("custom_message") => {
+                if open.is_some()
+                    && entry.get("customType").and_then(Value::as_str)
+                        == Some(OUTPUT_LIMIT_CONTINUATION_CUSTOM_TYPE)
+                {
+                    meter.output_limit_continuation();
                 }
                 continue;
             }
