@@ -48,6 +48,8 @@ pub(crate) struct BashCommands {
     pub(crate) first: String,
     pub(crate) count: usize,
     pub(crate) lines: usize,
+    /// Whether any of them ran elevated (`elevated`, absent when none did).
+    pub(crate) elevated: bool,
 }
 
 fn read_bash_commands(value: &Value) -> Option<BashCommands> {
@@ -62,6 +64,7 @@ fn read_bash_commands(value: &Value) -> Option<BashCommands> {
             .get("lines")?
             .as_u64()
             .and_then(|lines| usize::try_from(lines).ok())?,
+        elevated: record.get("elevated").and_then(Value::as_bool) == Some(true),
     })
 }
 

@@ -1,4 +1,4 @@
-internal_host_requests = ["bash.completed", "bash.consumed", "bash.quiet", "tests.summary", "command_cache.fact", "shell.fact"]
+internal_host_requests = ["bash.completed", "bash.consumed", "bash.quiet", "tests.summary", "command_cache.fact", "shell.fact", "elevation.fact"]
 
 [[telemetry]]
 event = "agent test summaries"
@@ -27,6 +27,20 @@ properties = [
   "builtin_shell_spawned_count",
   "builtin_shell_handed_over_count",
   "builtin_shell_unavailable_count",
+]
+
+[[telemetry]]
+event = "agent elevated commands"
+properties = [
+  "elevated_command_count",
+  "elevated_approved_count",
+  "elevated_declined_count",
+  "elevated_unavailable_count",
+  "elevated_uac_count",
+  "elevated_sudo_askpass_count",
+  "elevated_pkexec_count",
+  "elevated_sudo_noninteractive_count",
+  "elevated_already_elevated_count",
 ]
 
 [[telemetry]]

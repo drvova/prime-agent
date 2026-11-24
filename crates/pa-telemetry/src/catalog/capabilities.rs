@@ -64,4 +64,5 @@ pub const CAPABILITY_EVENTS_AFTER_SESSION_END: &[&EventRule] = &[
     &cells::AGENT_KERNEL_WAITS,
     &fs::AGENT_EDIT_MATCHES,
     &bash::AGENT_BASH_QUIET,
+    &bash::AGENT_ELEVATED_COMMANDS,
 ];

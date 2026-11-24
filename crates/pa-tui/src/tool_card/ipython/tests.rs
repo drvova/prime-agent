@@ -896,3 +896,43 @@ fn a_scheme_bash_cell_keeps_one_title_from_start_to_finish() {
         (title.to_string(), title.to_string(), title.to_string()),
     );
 }
+
+/// A `bash` call that asks to run elevated is badged on its card's title from
+/// its code, while it waits for the user's consent and once it has settled;
+/// a call whose options are not written out is badged from its result; any
+/// other command is not badged.
+#[test]
+fn an_elevated_command_is_badged_on_its_title() {
+    let titled = |code: &str, details: Value, partial: bool| {
+        let card = ToolCallCard {
+            name: "eval".into(),
+            ..cell_card(code, details, false, partial)
+        };
+        let row = text_of(&render_card(&card, Detail::Overview)[0]);
+        row.split(" \u{00b7} ")
+            .next()
+            .unwrap_or_default()
+            .trim_start_matches(|marker: char| !marker.is_alphabetic())
+            .to_string()
+    };
+    let badged = format!("bash {}", if cfg!(windows) { "admin" } else { "root" });
+    let elevated = "(bash \"netsh advfirewall reset\" (hash 'elevated #t))";
+    let settled = json!({
+        "status": "ok",
+        "durationMs": 2,
+        "bashCommands": { "first": "apt-get update", "count": 1, "lines": 1, "elevated": true },
+    });
+    assert_eq!(
+        [
+            titled(elevated, json!({}), true),
+            titled(elevated, settled.clone(), false),
+            titled("(bash \"apt-get update\" options)", settled, false),
+            titled(
+                "(bash \"ls\" (hash 'elevated #f 'background #t))",
+                json!({}),
+                true
+            ),
+        ],
+        [badged.clone(), badged.clone(), badged, "bash".to_string()]
+    );
+}

@@ -303,6 +303,21 @@ event. Always on a shell process: persistent shells (they outlive the daemon), t
 commands, and a hypothesis's check command. Non-goals: the interpreter and the utilities
 themselves (`pa-shell`).
 
+Elevated commands (`kernel::scheme::native::bash_elevated`): `(bash command (hash 'elevated #t))`
+runs one command with administrator or root rights once the user consents through the system's own
+prompt, as a job like any other (captured output, waits, kills), never queued. Linux and macOS: no
+lasting root process; each command goes through `sudo -A` with a graphical askpass program, `pkexec`,
+or `sudo -n`, and root's side holds a lifeline pipe that ends the command when it closes. Windows:
+the session's first elevated command starts `prime-agent --elevation-helper` through UAC
+(`ShellExecuteExW` `runas`, hand-declared), which connects back over a pipe only elevated
+administrators can open, proves itself by process id and one-time token, runs the session's
+elevated commands with their output piped back, and exits with the session or after 10 idle minutes
+(the module's docs state the threat model). A refused or impossible consent is the command's result
+(exit 126, `elevation declined:` / `elevation unavailable:`). Each command's outcome and route are
+reported through the fire-and-forget `elevation.fact` host request (`kernel::elevation_runs`) and
+ride the `agent elevated commands` event. Public surface: `kernel::run_elevation_helper`, the
+helper mode `pa-cli` dispatches to. Non-goals: elevating the daemon or a whole session.
+
 Session-boot admission (`kernel::boot_admission`): `admitted_boot(source, priority, boot)` runs one
 session boot (a kernel's interpreter start here; the daemon's child worker spawns and
 crash-recovery adoption) under a permit of the session-boot budget

@@ -775,6 +775,16 @@ pub async fn create_session(mut config: SessionEngineConfig) -> anyhow::Result<S
                 as crate::kernel::shell_runs::ShellObserver
         }),
     );
+    // `elevation.fact`: elevated commands by consent outcome and route
+    // (telemetry counts).
+    crate::kernel::elevation_runs::register_elevation_handler(
+        &mut handlers,
+        config.telemetry.is_some().then(|| {
+            let counters = std::sync::Arc::clone(&session_counters);
+            std::sync::Arc::new(move |run| counters.note_elevation(run))
+                as crate::kernel::elevation_runs::ElevationObserver
+        }),
+    );
     // `edit.fact`: how each `edit` matched, or why it did not (telemetry counts).
     crate::kernel::edit_matches::register_edit_match_handler(
         &mut handlers,

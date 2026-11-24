@@ -1,5 +1,5 @@
-//! The `bash` capability owns four events: the read-only command cache, the typed summaries
-//! of awaited test runs, the built-in shell, and the `[bash-quiet]` notices.
+//! The `bash` capability owns five events: the read-only command cache, the typed summaries
+//! of awaited test runs, the built-in shell, elevated commands, and the `[bash-quiet]` notices.
 
 use super::super::{count, required, uuid, EventRule};
 
@@ -54,6 +54,30 @@ pub(in crate::catalog) const AGENT_BUILTIN_SHELL: EventRule = EventRule {
         ("builtin_shell_spawned_count", required(count())),
         ("builtin_shell_handed_over_count", required(count())),
         ("builtin_shell_unavailable_count", required(count())),
+    ],
+};
+
+/// Elevated commands (v2), emitted at session end beside `agent session ended` (which sits near
+/// the backend's 128-key cap) only when the model asked for a `bash()` command with
+/// administrator or root rights (`'elevated #t`): commands asked for, by how their consent step
+/// ended (the user approved or no consent was needed, the user declined, or no consent prompt
+/// could be shown) and by the route that asked (UAC, `sudo` with a graphical askpass, `pkexec`,
+/// `sudo -n`, or a session already elevated). Counts only: never a command, output, or anything
+/// the user typed.
+pub(in crate::catalog) const AGENT_ELEVATED_COMMANDS: EventRule = EventRule {
+    name: "agent elevated commands",
+    since: 2,
+    properties: &[
+        ("session_id", required(uuid())),
+        ("elevated_command_count", required(count())),
+        ("elevated_approved_count", required(count())),
+        ("elevated_declined_count", required(count())),
+        ("elevated_unavailable_count", required(count())),
+        ("elevated_uac_count", required(count())),
+        ("elevated_sudo_askpass_count", required(count())),
+        ("elevated_pkexec_count", required(count())),
+        ("elevated_sudo_noninteractive_count", required(count())),
+        ("elevated_already_elevated_count", required(count())),
     ],
 };
 

@@ -181,6 +181,14 @@ impl Programs {
     }
 }
 
+/// A new job number: what names a job that is not a process of its own (a
+/// command of the built-in shell, or an elevated command whose process is
+/// root's or the elevated helper's), in a range no process id reaches.
+pub(super) fn job_number() -> u32 {
+    static NEXT_NUMBER: AtomicU32 = AtomicU32::new(0);
+    NUMBER_BASE + NEXT_NUMBER.fetch_add(1, Ordering::Relaxed) % NUMBER_BASE
+}
+
 /// Start `command` as a job of `session` on the built-in shell, as
 /// [`job::spawn`] starts one on a shell process.
 ///
@@ -195,8 +203,6 @@ pub(super) fn spawn(
     command: &str,
     on_finished: Option<FinishHook>,
 ) -> anyhow::Result<Arc<Job>> {
-    static NEXT_NUMBER: AtomicU32 = AtomicU32::new(0);
-
     if !session.cwd.is_dir() {
         bail!(
             "the working directory does not exist: {}",
@@ -238,7 +244,7 @@ pub(super) fn spawn(
     let mut job = Job::new(
         session,
         command,
-        NUMBER_BASE + NEXT_NUMBER.fetch_add(1, Ordering::Relaxed) % NUMBER_BASE,
+        job_number(),
         uuid::Uuid::new_v4().simple().to_string(),
         /*lasting*/ None,
     );

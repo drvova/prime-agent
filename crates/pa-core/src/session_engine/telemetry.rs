@@ -56,6 +56,7 @@ mod builtin_shell;
 mod call_refusals;
 mod edit_checks;
 mod edit_matches;
+mod elevated_commands;
 mod error_enrichment;
 mod hypotheses;
 mod prefetch;

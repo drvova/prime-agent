@@ -371,6 +371,10 @@ pub async fn execute_kernel_cell(
             "count": bash.count,
             "lines": bash.lines,
         });
+        // The card's elevation badge; absent for every other cell.
+        if bash.elevated {
+            details["bashCommands"]["elevated"] = json!(true);
+        }
     }
     if r.bash_waits != crate::kernel::shared::KernelBashWaits::default() {
         details["bashWaits"] = json!({

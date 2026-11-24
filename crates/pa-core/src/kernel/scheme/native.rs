@@ -58,6 +58,7 @@ mod reuse;
 mod tests;
 mod worktree;
 
+pub use bash::run_elevation_helper;
 pub(super) use bash::BashJobs;
 #[cfg(windows)]
 pub(crate) use bash::JobObject;

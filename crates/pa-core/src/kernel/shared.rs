@@ -152,6 +152,8 @@ pub struct KernelBashCommands {
     pub first: String,
     pub count: usize,
     pub lines: usize,
+    /// Whether any of them ran elevated (`'elevated #t`).
+    pub elevated: bool,
 }
 
 /// The bounded `bash()` awaits one cell ran: how many returned the finished

@@ -226,6 +226,7 @@ async fn a_cells_host_calls_show_on_its_result_and_end_turn_marks_it() {
                 first: "true".to_string(),
                 count: 1,
                 lines: 1,
+                elevated: false,
             }),
             KernelBashWaits {
                 completed: 1,

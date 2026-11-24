@@ -165,8 +165,8 @@ pub(crate) enum CellRecord {
     Diff(KernelDiffDisplay),
     /// One file `fs-read` read (its absolute path).
     FileRead { path: String },
-    /// One shell command the cell started.
-    BashCommand { command: String },
+    /// One shell command the cell started, and whether it was elevated.
+    BashCommand { command: String, elevated: bool },
     /// One bounded wait on a command (the Python kernel's `bash-wait`
     /// record): `completed` when the command finished inside the wait, not
     /// when the wait ended first and the command runs on.
@@ -323,7 +323,7 @@ impl CellHandle {
     pub(crate) fn record(&self, record: CellRecord) {
         // The project card learns the build and test commands cells run,
         // whether or not the cell's call is still waiting.
-        if let CellRecord::BashCommand { command } = &record {
+        if let CellRecord::BashCommand { command, .. } = &record {
             if let Some(card) = crate::project_card::ProjectCard::registered(&self.0.session.cwd) {
                 card.observe_command(command);
             }
@@ -387,7 +387,7 @@ impl CellHandle {
                 shown.file_reads.retain(|read| *read != path);
                 shown.file_reads.push(path);
             }
-            CellRecord::BashCommand { command } => {
+            CellRecord::BashCommand { command, elevated } => {
                 let lines = command
                     .lines()
                     .filter(|line| !line.trim().is_empty())
@@ -395,6 +395,7 @@ impl CellHandle {
                 if let Some(commands) = shown.bash_commands.as_mut() {
                     commands.count += 1;
                     commands.lines += lines;
+                    commands.elevated |= elevated;
                 } else {
                     let first = match command.char_indices().nth(COMMAND_SHOWN_CHARS) {
                         Some((end, _)) => {
@@ -406,6 +407,7 @@ impl CellHandle {
                         first,
                         count: 1,
                         lines,
+                        elevated,
                     });
                 }
             }
