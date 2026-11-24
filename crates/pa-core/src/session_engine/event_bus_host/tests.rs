@@ -1,6 +1,7 @@
 //! The `event-*` kernel functions against a recording controller: each call
 //! reaches the bus as its typed request, and a daemonless run refuses them.
 
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use pa_types::events::{EventBusRequest, EventDeliveryMode};
@@ -24,9 +25,12 @@ const NO_OPTIONS: KernelExecuteOptions<'static> = KernelExecuteOptions {
 struct Recording(Mutex<Vec<EventBusRequest>>);
 
 impl EventBusController for Recording {
-    async fn request(&self, request: EventBusRequest) -> anyhow::Result<Value> {
+    fn request(
+        &self,
+        request: EventBusRequest,
+    ) -> impl Future<Output = anyhow::Result<Value>> + Send {
         self.0.lock().unwrap().push(request);
-        Ok(json!({ "ok": true }))
+        std::future::ready(Ok(json!({ "ok": true })))
     }
 }
 
