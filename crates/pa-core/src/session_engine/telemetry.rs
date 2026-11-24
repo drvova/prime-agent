@@ -1252,6 +1252,13 @@ pub async fn install_session_telemetry(
     {
         let state = state.lock().expect("telemetry state poisoned");
         properties.set("session_id", Value::from(state.session_id.as_str()));
+        // Every session of a daemon runs in its process, with its rights.
+        properties.set(
+            "elevated",
+            Value::from(
+                pa_types::platform::process_elevation() == pa_types::platform::Elevation::Elevated,
+            ),
+        );
         if let Some(counts) = skill_counts {
             properties.set("skill_count", Value::from(counts.skill_count as u64));
             properties.set(

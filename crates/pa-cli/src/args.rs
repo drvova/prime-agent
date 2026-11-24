@@ -178,6 +178,9 @@ pub struct Args {
     #[allow(clippy::option_option)] // the CLI flag's tri-state is genuinely a double Option
     pub list_models: Option<Option<String>>,
     pub offline: bool,
+    /// `--elevated`: run as Administrator (Windows, through UAC) or root (Unix, only when
+    /// already root).
+    pub elevated: bool,
     pub verbose: bool,
     pub messages: Vec<String>,
     #[allow(clippy::struct_field_names)]
@@ -447,6 +450,7 @@ pub fn parse_args(args: &[String]) -> Args {
             }
             "--verbose" => result.verbose = true,
             "--offline" => result.offline = true,
+            "--elevated" => result.elevated = true,
             _ if arg.starts_with("--resume=") => {
                 let value = &arg["--resume=".len()..];
                 if value.is_empty() {

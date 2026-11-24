@@ -300,6 +300,8 @@ async fn run_interactive_surface(
     view.editor.set_keybindings(options.keybindings.clone());
     view.show_images = options.show_images;
     view.chrome.profile = options.model_selection.profile.clone();
+    // An elevated daemon's badge is in the first frame, before any session attaches.
+    view.chrome.note_daemon_hello(client.hello());
     view.editor.set_emoji_shortcodes(
         options
             .client_settings

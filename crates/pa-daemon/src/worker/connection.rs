@@ -365,6 +365,7 @@ impl Worker {
             update_resume: None,
             daemon_death: None,
             keeper_pid: None,
+            elevation: Some(pa_types::platform::process_elevation()),
             client_id: crate::util::new_display_id(),
             server_capabilities: factory_capabilities,
             rest: Map::default(),

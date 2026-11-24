@@ -389,6 +389,10 @@ const TOP_LEVEL_OPTION_GROUPS: &[OptionGroup] = &[
             ),
             ("--cwd <dir>", "Use a specific working directory"),
             ("--offline", "Disable startup network operations"),
+            (
+                "--elevated",
+                "Run as Administrator (Windows) or root (sudo -H on Linux/macOS)",
+            ),
             ("--verbose", "Force verbose startup"),
             ("--daemon-socket <path>", "Use a specific daemon socket"),
         ],

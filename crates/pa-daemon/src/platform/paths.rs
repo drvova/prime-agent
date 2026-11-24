@@ -50,7 +50,15 @@ pub fn socket_dir() -> PathBuf {
 }
 
 /// Default supervisor endpoint: `daemon.sock` in the socket dir (Unix) or
-/// the fixed daemon pipe name (Windows).
+/// the fixed daemon pipe name (Windows). A root process's socket dir is
+/// root's own (`prime-agent-0`), so a root daemon never serves the user's
+/// normal sessions; Windows has one pipe namespace for every integrity
+/// level, so an elevated process names the elevated daemon's own pipe
+/// (`prime-agent-elevated-daemon`). The pipe keeps Windows' default access
+/// list, whose write access goes to `SYSTEM`, `Administrators` and the
+/// creator's owner (by default `Administrators` for an elevated token): a
+/// process that is not elevated holds `Administrators` for denying only, so
+/// it cannot open the pipe to write.
 #[cfg(unix)]
 #[must_use]
 pub fn default_daemon_socket_path() -> PathBuf {
@@ -60,10 +68,13 @@ pub fn default_daemon_socket_path() -> PathBuf {
 #[cfg(not(unix))]
 #[must_use]
 pub fn default_daemon_socket_path() -> PathBuf {
-    PathBuf::from(format!(
-        r"\\.\pipe\{}-daemon",
-        pa_types::platform::StateLayout::BUILD.endpoint_prefix()
-    ))
+    let prefix = pa_types::platform::StateLayout::BUILD.endpoint_prefix();
+    PathBuf::from(match pa_types::platform::process_elevation() {
+        pa_types::platform::Elevation::Standard => format!(r"\\.\pipe\{prefix}-daemon"),
+        pa_types::platform::Elevation::Elevated => {
+            format!(r"\\.\pipe\{prefix}-elevated-daemon")
+        }
+    })
 }
 
 /// Worker endpoint next to the supervisor's: hashed supervisor key plus the
@@ -159,9 +170,15 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn windows_endpoints_are_the_ts_pipe_names() {
+        // An elevated process (a CI runner's administrator) reaches the elevated daemon's own.
         assert_eq!(
             default_daemon_socket_path(),
-            PathBuf::from(r"\\.\pipe\prime-agent-daemon")
+            PathBuf::from(match pa_types::platform::process_elevation() {
+                pa_types::platform::Elevation::Standard => r"\\.\pipe\prime-agent-daemon",
+                pa_types::platform::Elevation::Elevated => {
+                    r"\\.\pipe\prime-agent-elevated-daemon"
+                }
+            })
         );
         let supervisor = Path::new(r"\\.\pipe\prime-agent-daemon");
         let a = worker_socket_path(supervisor, "0123456789abcdef");

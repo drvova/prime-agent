@@ -138,6 +138,7 @@ impl Supervisor {
             update_resume: Some(self.restore.hello_resume()),
             daemon_death: crate::keeper::boot_death(&self.descriptor_dir),
             keeper_pid: crate::keeper::keeper_pid().map(u64::from),
+            elevation: Some(pa_types::platform::process_elevation()),
             client_id: connection_id.clone(),
             server_capabilities: factory_capabilities,
             rest: Map::default(),

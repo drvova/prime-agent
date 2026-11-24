@@ -883,6 +883,38 @@ fn top_bar_centers_name_with_cost() {
     assert_eq!(start, 55);
 }
 
+/// An elevated daemon's hello puts the account its commands run as at the bar's left edge; a
+/// standard daemon's hello, and an older daemon's without the field, show no badge.
+#[test]
+fn top_bar_badges_an_elevated_daemon() {
+    let title = |hello: serde_json::Value| {
+        let mut state = ChromeState {
+            chat_name: "fix-drivers".to_string(),
+            ..Default::default()
+        };
+        state.note_daemon_hello(&hello);
+        render_top_bar(&state, &theme(), 40)
+            .iter()
+            .map(|span| span.content.as_str())
+            .collect::<String>()
+    };
+    let account = pa_types::platform::ElevationRoute::CURRENT.elevated_account();
+    // The name centers at column 14 unless the badge and its gap need more room.
+    let centered = format!("{}fix-drivers", " ".repeat(14));
+    let badged = format!(
+        " {account} {}fix-drivers",
+        " ".repeat(14.max(account.len() + 3) - account.len() - 2)
+    );
+    assert_eq!(
+        [
+            title(serde_json::json!({"type": "daemon_hello", "elevation": "elevated"})),
+            title(serde_json::json!({"type": "daemon_hello", "elevation": "standard"})),
+            title(serde_json::json!({"type": "daemon_hello"})),
+        ],
+        [badged, centered.clone(), centered]
+    );
+}
+
 /// A plan's calls show the plan (its cached quota window when there is one), never a `$`; only a
 /// billed call adds a dollar figure.
 #[test]

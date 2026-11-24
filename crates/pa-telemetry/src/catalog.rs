@@ -574,7 +574,9 @@ const fn free_string(max: usize) -> PropKind {
 // The catalog: every event the product emits has exactly one row here; the
 // seams are the complete emission set (privacy contract).
 
-/// Session creation, depth-0 only.
+/// Session creation, depth-0 only. `elevated`: the session's daemon runs as Administrator
+/// (Windows) or root, so every command has those rights (`prime-agent --elevated`, or a launch
+/// that was already elevated).
 const AGENT_STARTED: EventRule = EventRule {
     name: "agent started",
     since: 1,
@@ -583,6 +585,7 @@ const AGENT_STARTED: EventRule = EventRule {
         ("skill_count", optional(count())),
         ("python_skill_count", optional(count())),
         ("scheme_skill_count", optional(count())),
+        ("elevated", optional(boolean())),
     ],
 };
 
