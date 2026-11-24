@@ -72,3 +72,4 @@
 - A hostile web page nested hundreds of thousands of elements deep can no longer crash Prime Agent when `web-read` or `web-crawl` renders it: past 2,000 levels the extra nesting is flattened and the page's text still reads.
 - Fixed a long message to the daemon (a large pasted prompt) sometimes going unanswered on a busy machine: when a session event reached the client while the message was still arriving, the daemon lost the part it had already read.
 - Fixed a session's link to the daemon sometimes dropping and reconnecting right after the session was first saved: when a daemon event was still arriving at that moment, the session read the rest of it as the daemon's reply.
+- The daemon no longer keeps two idle connections to the model and plugins catalog host open for 90 seconds after every catalog refresh (at startup, hourly and when the model picker opens): each refresh now closes its connection when it finishes.

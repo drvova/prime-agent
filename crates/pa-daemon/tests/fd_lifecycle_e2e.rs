@@ -26,36 +26,42 @@
 
 mod common;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-/// Sample the open-fd set of a process (empty for a dead pid).
-fn fd_snapshot(pid: u32) -> Vec<String> {
+/// Sample the open-fd table of a process, fd number to readlink target (empty
+/// for a dead pid).
+fn fd_snapshot(pid: u32) -> BTreeMap<u32, String> {
     let dir = PathBuf::from(format!("/proc/{pid}/fd"));
-    let mut targets = Vec::new();
+    let mut targets = BTreeMap::new();
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return targets;
     };
     for entry in entries.flatten() {
+        let Ok(fd) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
         let target = std::fs::read_link(entry.path())
             .map_or_else(|_| "?".to_string(), |t| t.to_string_lossy().to_string());
-        targets.push(target);
+        targets.insert(fd, target);
     }
     targets
 }
 
 /// Histogram of fd readlink targets (socket inodes collapse to a class).
-fn fd_classes(targets: &[String]) -> Vec<(String, usize)> {
+fn fd_classes(targets: &BTreeMap<u32, String>) -> Vec<(String, usize)> {
     let mut classes: HashMap<String, usize> = HashMap::new();
-    for target in targets {
+    for target in targets.values() {
         let class = if target.starts_with("socket:") {
             "socket".to_string()
         } else if target.starts_with("pipe:") {
             "pipe".to_string()
+        } else if let Some(kind) = target.strip_prefix("anon_inode:") {
+            format!("anon_inode {kind}")
         } else if target.starts_with("/memfd:") {
             "memfd".to_string()
         } else if target.starts_with("/dev/") {
@@ -68,6 +74,153 @@ fn fd_classes(targets: &[String]) -> Vec<(String, usize)> {
     let mut rows: Vec<(String, usize)> = classes.into_iter().collect();
     rows.sort();
     rows
+}
+
+/// What each socket inode in `pid`'s network namespace is, from
+/// `/proc/<pid>/net/{unix,tcp,tcp6,udp,udp6}`: a unix socket's type, state and
+/// path, an inet socket's local and remote address and TCP state.
+fn socket_details(pid: u32) -> HashMap<String, String> {
+    // A little-endian kernel prints each 32-bit address word as the number
+    // its in-memory bytes read as.
+    fn address(hex: &str) -> String {
+        let Some((host, port)) = hex.split_once(':') else {
+            return hex.to_string();
+        };
+        let port = u16::from_str_radix(port, 16).unwrap_or_default();
+        let bytes: Vec<u8> = (0..host.len() / 8)
+            .flat_map(|word| {
+                u32::from_str_radix(&host[word * 8..word * 8 + 8], 16)
+                    .unwrap_or_default()
+                    .to_le_bytes()
+            })
+            .collect();
+        match <[u8; 4]>::try_from(bytes.as_slice()) {
+            Ok(v4) => format!("{}:{port}", std::net::Ipv4Addr::from(v4)),
+            Err(_) => match <[u8; 16]>::try_from(bytes.as_slice()) {
+                Ok(v6) => format!("[{}]:{port}", std::net::Ipv6Addr::from(v6)),
+                Err(_) => hex.to_string(),
+            },
+        }
+    }
+    let mut details = HashMap::new();
+    let unix = std::fs::read_to_string(format!("/proc/{pid}/net/unix")).unwrap_or_default();
+    for row in unix.lines().skip(1) {
+        let columns: Vec<&str> = row.split_whitespace().collect();
+        let [_, _, _, _, kind, state, inode, path @ ..] = columns.as_slice() else {
+            continue;
+        };
+        let kind = match *kind {
+            "0001" => "stream",
+            "0002" => "dgram",
+            "0005" => "seqpacket",
+            other => other,
+        };
+        let state = match *state {
+            "01" => "unconnected",
+            "03" => "connected",
+            other => other,
+        };
+        details.insert(
+            (*inode).to_string(),
+            format!("unix {kind} {state} {}", path.join(" "))
+                .trim_end()
+                .to_string(),
+        );
+    }
+    for protocol in ["tcp", "tcp6", "udp", "udp6"] {
+        let table =
+            std::fs::read_to_string(format!("/proc/{pid}/net/{protocol}")).unwrap_or_default();
+        for row in table.lines().skip(1) {
+            let columns: Vec<&str> = row.split_whitespace().collect();
+            let (Some(local), Some(remote), Some(state), Some(inode)) = (
+                columns.get(1),
+                columns.get(2),
+                columns.get(3),
+                columns.get(9),
+            ) else {
+                continue;
+            };
+            let state = match *state {
+                "01" => "ESTABLISHED",
+                "02" => "SYN_SENT",
+                "06" => "TIME_WAIT",
+                "07" => "CLOSE",
+                "08" => "CLOSE_WAIT",
+                "0A" => "LISTEN",
+                other => other,
+            };
+            details.insert(
+                (*inode).to_string(),
+                format!(
+                    "{protocol} {} -> {} {state}",
+                    address(local),
+                    address(remote)
+                ),
+            );
+        }
+    }
+    details
+}
+
+/// The fd table of `pid` with every socket resolved to what it is (see
+/// [`socket_details`]); other targets (pipes, `anon_inode:[eventpoll]`, file
+/// paths) read as themselves.
+fn described_fds(pid: u32) -> BTreeMap<u32, String> {
+    let details = socket_details(pid);
+    fd_snapshot(pid)
+        .into_iter()
+        .map(|(fd, target)| {
+            let detail = target
+                .strip_prefix("socket:[")
+                .and_then(|inode| inode.strip_suffix(']'))
+                .and_then(|inode| details.get(inode));
+            let described = match detail {
+                Some(detail) => format!("{target} {detail}"),
+                None => target,
+            };
+            (fd, described)
+        })
+        .collect()
+}
+
+/// Wait until the daemon `pid` holds at most `limit` fds. On timeout the
+/// panic names what changed since `baseline` (a [`described_fds`] taken when
+/// the limit was set) and lists both tables, so a CI failure says which
+/// descriptor stayed open.
+#[track_caller]
+fn wait_for_fds(pid: u32, limit: usize, baseline: &BTreeMap<u32, String>) {
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        if fd_snapshot(pid).len() <= limit {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let now = described_fds(pid);
+    let changed = |from: &BTreeMap<u32, String>, to: &BTreeMap<u32, String>| -> String {
+        from.iter()
+            .filter(|(fd, target)| to.get(fd) != Some(target))
+            .map(|(fd, target)| format!("\n  {fd}: {target}"))
+            .collect::<Vec<_>>()
+            .concat()
+    };
+    let table = |fds: &BTreeMap<u32, String>| -> String {
+        fds.iter()
+            .map(|(fd, target)| format!("\n  {fd}: {target}"))
+            .collect::<Vec<_>>()
+            .concat()
+    };
+    panic!(
+        "the daemon's fds did not return to {limit} within 10s: baseline {}, now {}\n\
+         opened since the baseline:{}\nclosed since the baseline:{}\n\
+         baseline table:{}\ntable now:{}",
+        baseline.len(),
+        now.len(),
+        changed(&now, baseline),
+        changed(baseline, &now),
+        table(baseline),
+        table(&now),
+    );
 }
 
 const DAEMON: &str = env!("CARGO_BIN_EXE_pa-daemon");
@@ -369,7 +522,7 @@ fn daemon_fd_count_stable_across_a_sessions_prompts() {
     );
     assert_eq!(client.read_response("a0")["success"], true, "attach failed");
 
-    let mut baseline: Option<usize> = None;
+    let mut baseline: Option<BTreeMap<u32, String>> = None;
     for turn in 0..PROMPTS {
         let id = format!("p{turn}");
         client.send_command(
@@ -383,7 +536,7 @@ fn daemon_fd_count_stable_across_a_sessions_prompts() {
         let prompt = client.read_response(&id);
         assert_eq!(prompt["success"], true, "prompt failed: {prompt}");
         if turn % 5 == 0 {
-            let daemon_fds = fd_snapshot(supervisor_pid);
+            let daemon_fds = described_fds(supervisor_pid);
             println!(
                 "turn {turn}: daemon fds {} ({:?})",
                 daemon_fds.len(),
@@ -392,14 +545,12 @@ fn daemon_fd_count_stable_across_a_sessions_prompts() {
             // The turn's roster pushes each dial their own socket and may
             // still be in flight after the reply; a leaked fd never drains,
             // a push's socket does.
-            let baseline = *baseline.get_or_insert(daemon_fds.len());
-            wait_until(Duration::from_secs(10), || {
-                fd_snapshot(supervisor_pid).len() <= baseline + FD_SLACK
-            });
+            let baseline = baseline.get_or_insert(daemon_fds);
+            wait_for_fds(supervisor_pid, baseline.len() + FD_SLACK, baseline);
         }
     }
     assert!(
-        baseline.is_some_and(|baseline| baseline >= 3),
+        baseline.is_some_and(|baseline| baseline.len() >= 3),
         "fd sampling looked broken (no fds observed)"
     );
 }
@@ -520,22 +671,26 @@ fn daemon_fd_table_stable_across_connection_churn_on_a_session_socket() {
     for _ in 0..2 {
         probe_worker(&worker_socket);
     }
-    let mut baseline = fd_snapshot(supervisor_pid).len();
+    // Settled: the count held across one poll interval.
+    let mut baseline = described_fds(supervisor_pid);
     wait_until(Duration::from_secs(10), || {
-        let settled = fd_snapshot(supervisor_pid).len() == baseline;
-        baseline = fd_snapshot(supervisor_pid).len();
+        let now = described_fds(supervisor_pid);
+        let settled = now.len() == baseline.len();
+        baseline = now;
         settled
     });
-    println!("daemon baseline fds {baseline}");
+    println!(
+        "daemon baseline fds {} ({:?})",
+        baseline.len(),
+        fd_classes(&baseline)
+    );
 
     for _ in 0..PROBES {
         probe_worker(&worker_socket);
     }
     // The session's read loops observe EOF and the fan-out tasks exit: a
     // leaked connection never drains, a closing one does.
-    wait_until(Duration::from_secs(10), || {
-        fd_snapshot(supervisor_pid).len() <= baseline + 1
-    });
+    wait_for_fds(supervisor_pid, baseline.len() + 1, &baseline);
 
     // The session still serves after the churn: a routed command round-trips.
     client.send_command(
@@ -606,7 +761,7 @@ fn a_failing_rebuild_loop_leaves_nothing_behind() {
         .expect("session file in create response")
         .to_string();
 
-    let baseline = fd_snapshot(supervisor_pid);
+    let baseline = described_fds(supervisor_pid);
 
     // Corrupt the durable session file, then crash the session: every create replay fails.
     std::fs::write(&session_file, "not valid jsonl\n").expect("corrupt session file");
@@ -649,9 +804,7 @@ fn a_failing_rebuild_loop_leaves_nothing_behind() {
 
     // The daemon's own fd table returns to baseline: the session that held
     // its share is gone, and no failed rebuild kept a descriptor.
-    wait_until(Duration::from_secs(10), || {
-        fd_snapshot(supervisor_pid).len() <= baseline.len() + 1
-    });
+    wait_for_fds(supervisor_pid, baseline.len() + 1, &baseline);
 }
 
 /// A supervisor started under a low soft fd limit raises it to the hard

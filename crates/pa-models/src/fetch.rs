@@ -87,6 +87,11 @@ impl CatalogFetcher {
             pa_ai::utils::tls::http_client_builder()
                 // A moved catalog must be a client change, never a silent hop.
                 .redirect(reqwest::redirect::Policy::none())
+                // A catalog is fetched at startup, hourly and on a picker
+                // open: a pooled connection would sit idle in the daemon for
+                // the pool's 90 s after each fetch, two sockets per refresh
+                // that no next request reuses. Each fetch closes its own.
+                .pool_max_idle_per_host(0)
                 .build()
                 .expect("catalog reqwest client")
         })
@@ -205,6 +210,45 @@ mod tests {
         let fetcher = CatalogFetcher::new();
         assert_eq!(fetcher.timeout, FETCH_TIMEOUT);
         assert_eq!(fetcher.max_bytes, MAX_RESPONSE_BYTES);
+    }
+
+    /// A finished fetch leaves no connection behind: the server sees the
+    /// connection close while the fetcher (and its client) is still alive,
+    /// rather than an idle keep-alive socket held open in the daemon.
+    #[tokio::test]
+    async fn a_finished_fetch_closes_its_connection() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/catalog.json", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = connection.read(&mut chunk).await.unwrap();
+                assert_ne!(read, 0, "the request ended before its headers");
+                request.extend_from_slice(&chunk[..read]);
+            }
+            connection
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            // HTTP/1.1 keeps a connection open by default: only the client
+            // closing it ends this read.
+            connection.read(&mut chunk).await.unwrap()
+        });
+        let fetcher = CatalogFetcher::new();
+        let outcome = fetcher.fetch(&url, None).await.expect("fetch");
+        assert!(
+            matches!(&outcome, FetchOutcome::Fresh { body, etag: None } if body == b"{}"),
+            "{outcome:?}"
+        );
+        let after_response = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the fetcher kept its finished connection open")
+            .unwrap();
+        assert_eq!(after_response, 0);
+        drop(fetcher);
     }
 
     #[test]
