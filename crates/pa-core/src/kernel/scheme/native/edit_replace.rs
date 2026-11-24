@@ -12,9 +12,13 @@
 //! first step that finds anything must find exactly one match, or the edit
 //! fails as ambiguous; the reply's `matchedBy` names the step. Whatever step
 //! matched, only the matched text is replaced (whole lines for the two
-//! whitespace steps). A miss says where `old-str` stops matching, so the
-//! next call can fix it without another read. The file is replaced whole
+//! whitespace steps). A miss says where `old-str` stops matching and shows
+//! the file's lines where it most likely meant ([`closest`]), so the next
+//! call can fix it without another read; a miss whose `new-str` is in the
+//! file once says the edit looks already applied. The file is replaced whole
 //! (a temp file beside it renamed onto it), never rewritten in place.
+
+mod closest;
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -27,6 +31,11 @@ use crate::tools::path_utils::resolve_to_cwd;
 
 /// Characters of the file and of `old-str` shown at the divergence point.
 const SPLIT_CONTEXT: usize = 60;
+
+/// The visible characters a `new-str` needs before finding it in the file
+/// once reads as the edit having been applied (the bound `OpenCode` uses): a shorter
+/// one turns up by chance.
+const ALREADY_APPLIED_MIN_CHARS: usize = 20;
 
 /// How `old-str` was found in the file: the ladder's steps, in the order they
 /// are tried.
@@ -98,6 +107,8 @@ pub(super) enum MissOutcome {
     Ambiguous,
     /// No step found it.
     NotFound,
+    /// No step found it, and `new-str` is in the file once.
+    AlreadyApplied,
 }
 
 /// An edit the ladder refused: the error a cell sees, and why.
@@ -249,9 +260,28 @@ pub(super) fn replace(cwd: &Path, options: &Value) -> anyhow::Result<Replaced> {
         }
     }
     let Some((matched, Candidate { range, new })) = found else {
-        return Err(Miss {
-            outcome: MissOutcome::NotFound,
-            message: miss_diagnostic(path, &content, old),
+        let applied_at = (new.trim().chars().count() >= ALREADY_APPLIED_MIN_CHARS)
+            .then(|| {
+                let mut found = content.match_indices(new);
+                match (found.next(), found.next()) {
+                    (Some((at, _)), None) => Some(at),
+                    (Some(_), Some(_)) | (None, _) => None,
+                }
+            })
+            .flatten();
+        return Err(match applied_at {
+            Some(at) => Miss {
+                outcome: MissOutcome::AlreadyApplied,
+                message: format!(
+                    "string not found in {path}, but new-str is, once, at line {}: this edit looks already applied; \
+                     read the file before editing it again",
+                    content[..at].matches('\n').count() + 1
+                ),
+            },
+            None => Miss {
+                outcome: MissOutcome::NotFound,
+                message: miss_diagnostic(path, &content, old),
+            },
         }
         .into());
     };
@@ -370,7 +400,8 @@ fn line_matches(
 
 /// Say where `old` stops matching: the longest leading piece of it the file
 /// contains (at its first occurrence), a bounded view of both sides at the
-/// split, and a hint when the split is a line-ending or whitespace difference.
+/// split, and a hint when the split is a line-ending or whitespace difference;
+/// then the closest lines ([`closest::closest_lines`]) when a region is found.
 fn miss_diagnostic(path: &str, content: &str, old: &str) -> String {
     // Containment is monotonic in the prefix length, so binary-search the
     // longest prefix the file contains (the whole of `old` is known absent).
@@ -384,41 +415,48 @@ fn miss_diagnostic(path: &str, content: &str, old: &str) -> String {
             high = middle - 1;
         }
     }
-    if low == 0 {
-        return format!(
+    let mut message = 'split: {
+        if low == 0 {
+            break 'split format!(
             "string not found in {path}: the file does not contain even the first character of old-str"
         );
-    }
-    let matched = &old[..starts[low]];
-    let point = content.find(matched).unwrap_or_default() + matched.len();
-    let before = &content[..point];
-    let line = before.matches('\n').count() + 1;
-    let column = before
-        .rsplit('\n')
-        .next()
-        .unwrap_or_default()
-        .chars()
-        .count()
-        + 1;
-    let file_next: String = content[point..].chars().take(SPLIT_CONTEXT).collect();
-    let old_next: String = old[starts[low]..].chars().take(SPLIT_CONTEXT).collect();
-    let mut message = format!(
+        }
+        let matched = &old[..starts[low]];
+        let point = content.find(matched).unwrap_or_default() + matched.len();
+        let before = &content[..point];
+        let line = before.matches('\n').count() + 1;
+        let column = before
+            .rsplit('\n')
+            .next()
+            .unwrap_or_default()
+            .chars()
+            .count()
+            + 1;
+        let file_next: String = content[point..].chars().take(SPLIT_CONTEXT).collect();
+        let old_next: String = old[starts[low]..].chars().take(SPLIT_CONTEXT).collect();
+        let mut message = format!(
         "string not found in {path}: old-str matches its first {low} of {} characters and diverges at line {line}, column {column}:\n  file continues    {file_next:?}\n  old-str continues {old_next:?}",
         starts.len()
     );
-    if file_next.starts_with("\r\n") && old_next.starts_with('\n') {
-        message.push_str(
-            "\nhint: the file has CRLF (\\r\\n) line endings; write them as \\r\\n in old-str",
-        );
-    } else if old_next.starts_with("\r\n") && file_next.starts_with('\n') {
-        message.push_str("\nhint: old-str has CRLF (\\r\\n) line endings; the file has \\n");
-    } else if [&file_next, &old_next]
-        .iter()
-        .any(|next| next.chars().next().is_some_and(char::is_whitespace))
-    {
-        message.push_str(
+        if file_next.starts_with("\r\n") && old_next.starts_with('\n') {
+            message.push_str(
+                "\nhint: the file has CRLF (\\r\\n) line endings; write them as \\r\\n in old-str",
+            );
+        } else if old_next.starts_with("\r\n") && file_next.starts_with('\n') {
+            message.push_str("\nhint: old-str has CRLF (\\r\\n) line endings; the file has \\n");
+        } else if [&file_next, &old_next]
+            .iter()
+            .any(|next| next.chars().next().is_some_and(char::is_whitespace))
+        {
+            message.push_str(
             "\nhint: whitespace differs at the split (indentation, tabs vs spaces, or trailing spaces)",
         );
+        }
+        message
+    };
+    if let Some(hint) = closest::closest_lines(content, old) {
+        message.push('\n');
+        message.push_str(&hint);
     }
     message
 }

@@ -345,6 +345,7 @@ impl Files {
                             edit_replace::MissOutcome::AnchorPrefix => "anchor-prefix",
                             edit_replace::MissOutcome::Ambiguous => "ambiguous",
                             edit_replace::MissOutcome::NotFound => "not-found",
+                            edit_replace::MissOutcome::AlreadyApplied => "already-applied",
                         }),
                 };
                 if let (Some(outcome), Some(handler)) = (

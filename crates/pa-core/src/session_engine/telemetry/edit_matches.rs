@@ -19,6 +19,7 @@ impl SessionCounters {
                 EditMatch::AnchorPrefix => "edit_anchor_prefix_refused_count",
                 EditMatch::Ambiguous => "edit_ambiguous_count",
                 EditMatch::NotFound => "edit_not_found_count",
+                EditMatch::AlreadyApplied => "edit_already_applied_count",
             },
             1,
         );

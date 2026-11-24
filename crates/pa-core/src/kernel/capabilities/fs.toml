@@ -72,4 +72,5 @@ properties = [
   "edit_anchor_prefix_refused_count",
   "edit_ambiguous_count",
   "edit_not_found_count",
+  "edit_already_applied_count",
 ]

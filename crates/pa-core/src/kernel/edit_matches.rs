@@ -31,6 +31,9 @@ pub(crate) enum EditMatch {
     Ambiguous,
     /// Failed: no step found `old-str`.
     NotFound,
+    /// Failed: no step found `old-str`, and `new-str` is in the file once
+    /// (the edit looks already applied).
+    AlreadyApplied,
 }
 
 /// Hears each reported edit.
@@ -55,6 +58,7 @@ pub(crate) fn register_edit_match_handler(
                     Some("anchor-prefix") => EditMatch::AnchorPrefix,
                     Some("ambiguous") => EditMatch::Ambiguous,
                     Some("not-found") => EditMatch::NotFound,
+                    Some("already-applied") => EditMatch::AlreadyApplied,
                     other => anyhow::bail!("{EDIT_FACT_REQUEST_TYPE}: unknown outcome {other:?}"),
                 };
                 if let Some(observer) = observer {
