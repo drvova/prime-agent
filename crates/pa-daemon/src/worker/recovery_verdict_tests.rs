@@ -418,3 +418,106 @@ async fn mid_turn_withdrawal_keeps_the_in_flight_turn_busy() {
     );
     let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
 }
+
+/// A prompt admitted while the runner is between turns can be picked up
+/// before its admission checkpoint is written (the prompt is acknowledged and
+/// its turn starts either way). That late checkpoint must not erase the
+/// pickup: a daemon that dies under the turn revives it, and from the
+/// pickup's time, so the prompt the transcript saved meanwhile is not
+/// prompted again.
+#[tokio::test]
+async fn a_late_admission_checkpoint_keeps_the_turn_its_prompt_started() {
+    let worker = created_worker_with_journal().await;
+    worker.dispatch("clear_queue", &json!({})).await;
+    let journal_path = worker.config.recovery_journal_path.clone();
+    let prompt = crate::journal::WorkerQueueItemRecord {
+        message: "second turn".to_string(),
+        priority: Some(QueuePriority::Human),
+        preview: None,
+        custom_message: None,
+        queue_key: None,
+        queue_visible: false,
+        policy: "direct".to_string(),
+        forced_batch: false,
+        images: Vec::new(),
+    };
+    // The runner took the prompt off its lane and journaled the pickup. From
+    // here to the checkpoint nothing awaits, so this worker's own runner (on
+    // this current-thread runtime) cannot park the session in between.
+    worker.core.lock().unwrap().busy = true;
+    worker
+        .recovery
+        .lock()
+        .unwrap()
+        .as_mut()
+        .expect("journal")
+        .record_turn_pickup(
+            "target-session",
+            vec![prompt],
+            /*running_steering*/ true,
+            QueueLanes {
+                steering: Vec::new(),
+                follow_up: Vec::new(),
+            },
+            /*suspended*/ false,
+        )
+        .expect("pickup record");
+    // The turn saved its prompt row after the pickup, and the admission's
+    // own checkpoint lands later still.
+    let pickup_at = crate::util::now_iso();
+    let mut saved_at = crate::util::now_iso();
+    while saved_at <= pickup_at {
+        std::thread::yield_now();
+        saved_at = crate::util::now_iso();
+    }
+    let transcript = journal_path.with_file_name("session.jsonl");
+    std::fs::write(
+        &transcript,
+        json!({
+            "type": "message",
+            "timestamp": saved_at,
+            "message": { "role": "user", "content": "second turn" },
+        })
+        .to_string(),
+    )
+    .expect("write the transcript");
+    while crate::util::now_iso() <= saved_at {
+        std::thread::yield_now();
+    }
+    checkpoint_queue_recovery(
+        &worker.recovery,
+        &worker.core,
+        QueueCheckpoint::Admitted {
+            operation: "prompt_accepted",
+        },
+    );
+    // The daemon dies here; the boot settles the journal by the transcript.
+    *worker.recovery.lock().unwrap() = None;
+    let verdict = crate::revived_turn::settle_in_journal(&journal_path, &transcript)
+        .expect("settle the journal");
+    let (steering, follow_up, _) =
+        WorkerRecoveryJournal::read_queue_snapshot(&journal_path, "target-session")
+            .unwrap()
+            .expect("the snapshot");
+    let custom_types = |lane: &[crate::journal::WorkerQueueItemRecord]| {
+        lane.iter()
+            .map(|item| {
+                item.custom_message
+                    .as_ref()
+                    .map(|row| row["customType"].clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        (verdict, custom_types(&steering), custom_types(&follow_up)),
+        (
+            Some(crate::revived_turn::RevivedTurn::Interrupted),
+            vec![Some(json!(
+                crate::revived_turn::TURN_INTERRUPTED_CUSTOM_TYPE
+            ))],
+            Vec::new(),
+        ),
+        "the revived turn continues behind its notice and its prompt is not queued again"
+    );
+    let _ = std::fs::remove_dir_all(worker.config.socket_path.parent().unwrap());
+}

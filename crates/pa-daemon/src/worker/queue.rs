@@ -5,6 +5,7 @@ use super::{
     SessionCore, Value, VecDeque, WorkerRecoveryJournal, AGENT_MESSAGE_SOURCE,
     AUTONOMOUS_QUEUE_KEY,
 };
+use crate::journal::PickedUpTurn;
 use pa_core::session_engine::bash_notices::NoticeAdmission;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +301,13 @@ pub(crate) fn checkpoint_queue_recovery(
         &lanes.steering,
         &lanes.follow_up,
         suspended,
+        // An admission that lands after the turn runner picked a turn up (it
+        // took the row this admission queued) must not erase that pickup.
+        if turn_in_flight {
+            PickedUpTurn::Running
+        } else {
+            PickedUpTurn::Ended
+        },
     );
 }
 
