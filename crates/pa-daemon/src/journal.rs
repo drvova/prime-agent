@@ -443,6 +443,18 @@ impl WorkerQueueSnapshotRecord {
     }
 }
 
+/// Whether a queue checkpoint is taken while a picked-up turn is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickedUpTurn {
+    /// A turn is in flight: the checkpoint keeps the rows its pickup
+    /// recorded, and the pickup's time (a revival reads the transcript from
+    /// it), so a revive after the daemon dies still redelivers what is owed
+    /// of that turn. Rows queued meanwhile do not replace them.
+    Running,
+    /// No turn is in flight: the checkpoint carries no picked-up rows.
+    Ended,
+}
+
 /// One session's latest queue snapshot as read back for a restore: the
 /// steering and follow-up lanes, and whether queued input was suspended
 /// when they were recorded (a parked queue revives still parked).
@@ -625,7 +637,8 @@ impl WorkerRecoveryJournal {
 
     /// Record the queue snapshot and the busy/operation verdict in ONE
     /// durable append: the verdict never publishes over a snapshot that
-    /// did not persist.
+    /// did not persist. `picked_up` says whether the turn the last pickup
+    /// recorded is still running, and so whether its rows ride along.
     ///
     /// # Errors
     ///
@@ -642,7 +655,15 @@ impl WorkerRecoveryJournal {
         steering: &[WorkerQueueItemRecord],
         follow_up: &[WorkerQueueItemRecord],
         suspended: bool,
+        picked_up: PickedUpTurn,
     ) -> Result<()> {
+        let pickup = match picked_up {
+            PickedUpTurn::Running => self
+                .queue_snapshots
+                .get(active_session_id)
+                .filter(|previous| !previous.running.is_empty()),
+            PickedUpTurn::Ended => None,
+        };
         let snapshot = WorkerQueueSnapshotRecord {
             version: QUEUE_SNAPSHOT_VERSION,
             r#type: QUEUE_SNAPSHOT_RECORD_TYPE.to_string(),
@@ -650,9 +671,13 @@ impl WorkerRecoveryJournal {
             steering: steering.to_vec(),
             follow_up: follow_up.to_vec(),
             suspended,
-            recorded_at: crate::util::now_iso(),
-            running: Vec::new(),
-            running_steering: false,
+            recorded_at: pickup.map_or_else(crate::util::now_iso, |previous| {
+                previous.recorded_at.clone()
+            }),
+            running: pickup
+                .map(|previous| previous.running.clone())
+                .unwrap_or_default(),
+            running_steering: pickup.is_some_and(|previous| previous.running_steering),
         };
         let verdict_unchanged = self.latest.get(active_session_id).is_some_and(|previous| {
             previous.busy == busy
@@ -1007,6 +1032,7 @@ mod tests {
                 std::slice::from_ref(&item),
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         batched
@@ -1019,6 +1045,7 @@ mod tests {
                 &[],
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         batched
@@ -1031,6 +1058,7 @@ mod tests {
                 &[],
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
 
@@ -1083,6 +1111,7 @@ mod tests {
             &[],
             &[],
             false,
+            PickedUpTurn::Ended,
         );
         assert!(result.is_err());
         assert!(journal.latest.get("s1").is_some_and(|record| !record.busy));
@@ -1157,6 +1186,7 @@ mod tests {
                 std::slice::from_ref(&item),
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         journal
@@ -1169,6 +1199,7 @@ mod tests {
                 &[],
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         let after_first_settle = fs::read_to_string(&path).unwrap().lines().count();
@@ -1182,6 +1213,7 @@ mod tests {
                 std::slice::from_ref(&item),
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         let after_second_admission = fs::read_to_string(&path).unwrap().lines().count();
@@ -1195,6 +1227,7 @@ mod tests {
                 &[],
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         let content = fs::read_to_string(&path).unwrap();
@@ -1237,14 +1270,35 @@ mod tests {
                 &[],
                 &[],
                 false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         journal
-            .record_queue_checkpoint("s1", "sess1", None, false, "turn_end", &[], &[], false)
+            .record_queue_checkpoint(
+                "s1",
+                "sess1",
+                None,
+                false,
+                "turn_end",
+                &[],
+                &[],
+                false,
+                PickedUpTurn::Ended,
+            )
             .unwrap();
         let lines_after_settle = fs::read_to_string(&path).unwrap().lines().count();
         journal
-            .record_queue_checkpoint("s1", "sess1", None, false, "turn_end", &[], &[], false)
+            .record_queue_checkpoint(
+                "s1",
+                "sess1",
+                None,
+                false,
+                "turn_end",
+                &[],
+                &[],
+                false,
+                PickedUpTurn::Ended,
+            )
             .unwrap();
         let lines_after_unchanged = fs::read_to_string(&path).unwrap().lines().count();
         assert_eq!(lines_after_unchanged, lines_after_settle + 1);
@@ -1285,6 +1339,7 @@ mod tests {
                 std::slice::from_ref(&item),
                 &[],
                 /*suspended*/ false,
+                PickedUpTurn::Ended,
             )
             .unwrap();
         let whole = serde_json::to_string(&WorkerRecoveryRecord {

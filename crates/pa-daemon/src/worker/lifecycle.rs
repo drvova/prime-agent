@@ -425,6 +425,7 @@ impl Worker {
                     &lanes.steering,
                     &lanes.follow_up,
                     /*suspended*/ false,
+                    crate::journal::PickedUpTurn::Ended,
                 ) {
                     eprintln!("pa-daemon: queue resume checkpoint failed: {error:#}");
                     return response_failure(
