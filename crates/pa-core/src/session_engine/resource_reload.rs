@@ -50,6 +50,8 @@ pub(crate) struct PromptInputs {
     pub(crate) generic_mcp_servers: Vec<String>,
     /// The project card the session started with (a reload keeps it).
     pub(crate) project_card: Option<String>,
+    /// What the user's `web.crawl` settings changed when the session started.
+    pub(crate) web_crawl_identity: Vec<&'static str>,
 }
 
 /// The session's current resources.
@@ -256,6 +258,7 @@ impl ResourceReload {
                 generic_mcp_servers: prompt.generic_mcp_servers.clone(),
                 project_card: prompt.project_card.clone(),
                 host: Some(crate::prompts::HostAccess::current()),
+                web_crawl_identity: prompt.web_crawl_identity.clone(),
                 append_system_prompt: Some(resources.append_system_prompt.join("\n\n")),
                 ..Default::default()
             },

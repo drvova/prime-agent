@@ -114,14 +114,14 @@ pub(crate) struct Browser {
 }
 
 impl Browser {
-    /// Start `program` headless on a fresh profile and wait for its `DevTools`
-    /// endpoint.
+    /// Start `program` headless on a fresh profile, with `extra_args` after
+    /// the fixed ones, and wait for its `DevTools` endpoint.
     ///
     /// # Errors
     ///
     /// The program could not be started or contained, or printed no
     /// endpoint within [`STARTUP_WAIT`] (the error carries what it printed).
-    pub(crate) async fn start(program: &Path) -> anyhow::Result<Browser> {
+    pub(crate) async fn start(program: &Path, extra_args: &[String]) -> anyhow::Result<Browser> {
         static NEXT_PROFILE: AtomicU64 = AtomicU64::new(0);
         let profile = std::env::temp_dir().join(format!(
             "prime-agent-browser-{}-{}",
@@ -149,6 +149,7 @@ impl Browser {
                 "--use-mock-keychain",
             ])
             .arg(format!("--user-data-dir={}", profile.display()))
+            .args(extra_args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());

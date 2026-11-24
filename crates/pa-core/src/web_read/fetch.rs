@@ -76,6 +76,19 @@ pub(crate) struct Fetcher<'a> {
     /// Tests route `https://host/path?q` to `{base}/host/path?q`.
     pub(crate) base_override: Option<&'a str>,
     pub(crate) timeout: Duration,
+    /// What a crawl sends instead of the reader's own identity; `None` for
+    /// `web.read`.
+    pub(crate) identity: Option<RequestIdentity<'a>>,
+}
+
+/// The identity one crawl request presents, from the user's `web.crawl`
+/// settings: its `User-Agent`, and headers (cookies among them) that go only
+/// to the crawled site's hosts, so a redirect off the site never carries them.
+#[derive(Clone, Copy)]
+pub(crate) struct RequestIdentity<'a> {
+    pub(crate) user_agent: &'a str,
+    pub(crate) site_headers: &'a reqwest::header::HeaderMap,
+    pub(crate) on_site: &'a (dyn Fn(&Url) -> bool + Send + Sync),
 }
 
 impl Fetcher<'_> {
@@ -109,13 +122,26 @@ impl Fetcher<'_> {
     pub(crate) async fn get(&self, url: &Url, accept: Accept) -> anyhow::Result<Fetched> {
         let mut current = url.clone();
         for _ in 0..=MAX_REDIRECTS {
-            let response = self
+            let mut request = self
                 .client
                 .get(self.wire_url(&current))
                 .header(reqwest::header::ACCEPT, accept.header())
-                .header(reqwest::header::USER_AGENT, USER_AGENT)
+                .header(
+                    reqwest::header::USER_AGENT,
+                    self.identity
+                        .map_or(USER_AGENT, |identity| identity.user_agent),
+                )
                 .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-                .timeout(self.timeout)
+                .timeout(self.timeout);
+            if let Some(identity) = self
+                .identity
+                .filter(|identity| (identity.on_site)(&current))
+            {
+                for (name, value) in identity.site_headers {
+                    request = request.header(name, value);
+                }
+            }
+            let response = request
                 .send()
                 .await
                 .map_err(|error| transport_error(&current, &error))?;

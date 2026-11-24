@@ -61,20 +61,27 @@
 ;; Crawl a site from `source` (a URL or anything carrying one under 'url):
 ;; {url, render, pages, failed, truncated, notes, text}. Each page has
 ;; web-read's shape; `text` is the index. Same host only (#:subdomains #t
-;; adds its subdomains), robots.txt always honoured, at most #:max-pages
+;; adds its subdomains), robots.txt honoured and an honest user agent
+;; unless the user's `web.crawl` settings say otherwise, at most #:max-pages
 ;; (default 20, at most 200) pages #:max-depth (default 3) links deep.
 ;; #:include / #:exclude are URL regexes (one or a list); #:max-chars cuts
 ;; each page (default 8000); #:sitemap #t also reads /sitemap.xml;
-;; #:render #t loads pages in a local headless Chrome; #:timeout is the
+;; #:render #t loads pages in a local headless Chrome (#:mode 'render);
+;; #:mode 'smart reads over HTTP and loads in the browser only a page that
+;; needs JavaScript; #:timeout is the
 ;; whole crawl's deadline in seconds (default 60). Pages past the result's
 ;; output budget carry 'handle for ctx-page instead of their markdown.
 ;; Reach: #:budget (a hash of path prefix to pages, "*" for all),
 ;; #:external-domains (hosts crawled as part of the site), #:full-resources
 ;; #t (PDFs, JSON and text the pages link, not only HTML), #:normalize #t,
-;; #:retry (0-3). With #:render only: #:wait-idle / #:wait-delay (seconds),
+;; #:retry (0-3), #:throttle 'auto (pace each host by its latency), #:warc
+;; "path" (append every response to a WARC file). With #:render only: #:wait-idle / #:wait-delay (seconds),
 ;; #:wait-selector / #:wait-dom (CSS), #:viewport (width height),
 ;; #:javascript #f, #:actions (a hash of URL or path to automation steps),
-;; #:scripts (a hash of URL or path to JavaScript to evaluate).
+;; #:scripts (a hash of URL or path to JavaScript to evaluate), #:block (kinds
+;; 'images 'stylesheets 'scripts 'analytics 'ads and URL patterns the browser
+;; refuses to load), #:init-script (JavaScript run in every document first),
+;; #:locale ("de-DE"), #:timezone ("Europe/Berlin").
 (define (web-crawl source
                    #:max-pages [max-pages #f]
                    #:max-depth [max-depth #f]
@@ -84,12 +91,15 @@
                    #:subdomains [subdomains #f]
                    #:sitemap [sitemap #f]
                    #:render [render #f]
+                   #:mode [mode #f]
                    #:timeout [timeout #f]
                    #:budget [budget #f]
                    #:external-domains [external-domains #f]
                    #:full-resources [full-resources #f]
                    #:normalize [normalize #f]
                    #:retry [retry #f]
+                   #:throttle [throttle #f]
+                   #:warc [warc #f]
                    #:wait-idle [wait-idle #f]
                    #:wait-delay [wait-delay #f]
                    #:wait-selector [wait-selector #f]
@@ -97,7 +107,11 @@
                    #:viewport [viewport #f]
                    #:javascript [javascript #t]
                    #:actions [actions #f]
-                   #:scripts [scripts #f])
+                   #:scripts [scripts #f]
+                   #:block [block #f]
+                   #:init-script [init-script #f]
+                   #:locale [locale #f]
+                   #:timezone [timezone #f])
   (%host-call "web.crawl"
               (%options (hash 'url
                               (cond
@@ -113,6 +127,11 @@
                         'subdomains subdomains
                         'sitemap sitemap
                         'render render
+                        'mode (cond
+                                [(not mode) #f]
+                                [(symbol? mode) (symbol->string mode)]
+                                [(string? mode) mode]
+                                [else (error "web-crawl: #:mode is 'http, 'render or 'smart")])
                         'timeoutSeconds (and timeout (%seconds "web-crawl" timeout))
                         'budget budget
                         'externalDomains (and external-domains
@@ -122,6 +141,12 @@
                         'fullResources full-resources
                         'normalize normalize
                         'retry (and retry (%integer "web-crawl" "#:retry" retry))
+                        'throttle (cond
+                                    [(not throttle) #f]
+                                    [(symbol? throttle) (symbol->string throttle)]
+                                    [(string? throttle) throttle]
+                                    [else (error "web-crawl: #:throttle is 'fixed or 'auto")])
+                        'warc warc
                         'waitIdleSeconds wait-idle
                         'waitDelaySeconds wait-delay
                         'waitSelector wait-selector
@@ -129,4 +154,64 @@
                         'viewport viewport
                         'noJavascript (not javascript)
                         'actions actions
-                        'scripts scripts)))
+                        'scripts scripts
+                        'block (and block (%block "web-crawl" block))
+                        'initScript init-script
+                        'locale locale
+                        'timezone timezone)))
+
+;; #:block as a list of strings: a kind symbol or a URL pattern, or a list
+;; of them.
+(define (%block who value)
+  (let ([entry (lambda (one)
+                 (cond
+                   [(symbol? one) (symbol->string one)]
+                   [(string? one) one]
+                   [else (error (string-append who ": #:block takes kind symbols and URL pattern strings"))]))])
+    (if (list? value) (map entry value) (list (entry value)))))
+
+;; `source` as a trimmed URL: a string, or anything carrying one under 'url.
+(define (%capture-url who source)
+  (cond
+    [(string? source) (trim source)]
+    [(and (hash? source) (string? (hash-try-get source 'url))) (trim (hash-ref source 'url))]
+    [else (error (string-append who ": the source must be a URL or carry one under 'url"))]))
+
+;; Load `source` in a local headless Chrome and save a PNG of it at `path`
+;; (relative: under the session's working directory): {url, finalUrl, title,
+;; path, bytes}. #:full-page #t captures the whole page, not the viewport;
+;; #:viewport (width height); #:wait (seconds after the load); #:init-script;
+;; #:timeout (seconds, default 30). The user's web.crawl identity applies.
+(define (web-screenshot source path
+                        #:full-page [full-page #f]
+                        #:viewport [viewport #f]
+                        #:wait [wait #f]
+                        #:init-script [init-script #f]
+                        #:timeout [timeout #f])
+  (%host-call "web.capture"
+              (%options (hash 'url (%capture-url "web-screenshot" source) 'path path 'kind "png")
+                        'fullPage full-page
+                        'viewport viewport
+                        'waitSeconds wait
+                        'initScript init-script
+                        'timeoutSeconds (and timeout (%seconds "web-screenshot" timeout)))))
+
+;; Load `source` in a local headless Chrome and print it to a PDF at `path`:
+;; {url, finalUrl, title, path, bytes}. #:landscape #t; #:background #t
+;; prints background colours and images; #:viewport, #:wait, #:init-script
+;; and #:timeout as for web-screenshot.
+(define (web-pdf source path
+                 #:landscape [landscape #f]
+                 #:background [background #f]
+                 #:viewport [viewport #f]
+                 #:wait [wait #f]
+                 #:init-script [init-script #f]
+                 #:timeout [timeout #f])
+  (%host-call "web.capture"
+              (%options (hash 'url (%capture-url "web-pdf" source) 'path path 'kind "pdf")
+                        'landscape landscape
+                        'background background
+                        'viewport viewport
+                        'waitSeconds wait
+                        'initScript init-script
+                        'timeoutSeconds (and timeout (%seconds "web-pdf" timeout)))))

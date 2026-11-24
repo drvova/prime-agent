@@ -112,6 +112,7 @@ async fn a_skill_written_mid_session_is_usable_after_reload() {
                 can_spawn: false,
                 generic_mcp_servers: Vec::new(),
                 project_card: None,
+                web_crawl_identity: Vec::new(),
             },
         },
         Vec::new(),

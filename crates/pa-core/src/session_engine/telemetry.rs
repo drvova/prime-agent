@@ -684,6 +684,7 @@ impl SessionCounters {
                 match outcome.render {
                     Render::Http => "web_crawl_plain_count",
                     Render::Browser => "web_crawl_rendered_count",
+                    Render::Smart => "web_crawl_smart_count",
                 },
                 1,
             );
@@ -691,10 +692,28 @@ impl SessionCounters {
                 Some(pages) => counts.add("web_crawl_page_count", pages as u64),
                 None => counts.add("web_crawl_failed_count", 1),
             }
+            counts.add("web_crawl_identity_count", u64::from(outcome.identity));
+            counts.add("web_crawl_warc_count", u64::from(outcome.archived));
             counts.raise(
                 "web_crawl_max_ms",
                 u64::try_from(outcome.elapsed.as_millis()).unwrap_or(u64::MAX),
             );
+        });
+    }
+
+    /// One kernel `web.capture` (counts only: never a URL, a path, or content).
+    pub(crate) fn note_web_capture(&self, outcome: crate::web_crawl::CaptureOutcome) {
+        self.with(|values| {
+            let counts = &mut values.capabilities;
+            counts.add(
+                if outcome.pdf {
+                    "web_pdf_count"
+                } else {
+                    "web_screenshot_count"
+                },
+                1,
+            );
+            counts.add("web_capture_failed_count", u64::from(!outcome.ok));
         });
     }
 

@@ -28,6 +28,7 @@ pub use profiles::{
 pub use storage::{
     FileSettingsStorage, InMemorySettingsStorage, SettingsScope, SettingsStorage, CONFIG_DIR_NAME,
 };
+pub(crate) use types::WebCrawlSettings;
 pub use types::{
     AutoRefineSettings, AutonomousSettings, CacheRetentionSetting, CacheWarmingSetting,
     CompactionSettings, QueueModeSetting, Settings, ThinkingLevelSetting, TransportSetting,

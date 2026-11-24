@@ -20,6 +20,11 @@ Each change is listed here; nothing else differs from the published crate.
   crate's build script downloads Chrome version lists from the network on
   every build (and writes into its own source directory); without it, the
   crate uses the version list it ships.
+- `ua_generator` is built without its default `fetch` feature. With it, that
+  crate's build script pulls in an HTTP client (`ureq`, a second
+  `webpki-roots`) and, when `BUILD_ENABLED` is set in the build's environment
+  or a `.env` file, downloads user-agent lists from spider.cloud; without
+  it, the crate uses the lists it ships.
 - The `[[test]]`, `[[bench]]` and `[dev-dependencies]` sections are removed
   with the sources they name.
 
@@ -31,6 +36,16 @@ tokio runtime with one worker per CPU, outside any session. Only a client
 spider builds itself routes its connects through that runtime; a client set
 with `Website::set_http_client`, which pa-core always does, never does. The
 patch starts the runtime only when no client was supplied.
+
+## `src/page.rs`: a smart crawl keeps the page it rendered
+
+`Page::links_stream_smart` (both copies, with and without `full_resources`)
+takes the HTTP body, and when its upgrade score says the page needs
+JavaScript renders it in the browser and assigns the rendered page to
+`self`, then puts the HTTP body back over it unconditionally, so
+`crawl_smart` delivered the unrendered HTML and kept only the rendered
+page's links. The patch puts the HTTP body back only when nothing replaced
+it.
 
 Drop the vendored copy with the spider release that declares reqwest without
 default features and makes `dynamic-versions` optional (and the runtime

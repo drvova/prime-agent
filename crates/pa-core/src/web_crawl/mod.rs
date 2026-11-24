@@ -2,12 +2,12 @@
 //! The kernel's `(web-crawl url ...)` reaches it through the `web.crawl`
 //! host request.
 //!
-//! The spider crate keeps the frontier: robots.txt (always honoured), the
-//! same-site rule, the depth and page limits, include and exclude patterns,
+//! The spider crate keeps the frontier: robots.txt (honoured unless the
+//! user's settings say otherwise, [`identity`]), the same-site rule, the depth and page limits, include and exclude patterns,
 //! the sitemap, a polite delay and concurrency. The fetch is pa-core's own:
 //! spider hands each URL to [`BoundedFetch`], which reads it with
 //! `web.read`'s client and fetcher (bounded bodies, redirects followed by
-//! hand, an honest user agent, the session's proxies and CA bundle), and
+//! hand, the crawl's identity, the session's proxies and CA bundle), and
 //! every page is rendered by `web.read`'s renderer, so a crawled page and a
 //! read page are the same object. With `render` a local Chrome loads each
 //! page instead ([`browser`]); spider drives it over `DevTools`.
@@ -20,7 +20,9 @@
 //! session's spill store under an `out:` handle instead.
 
 mod browser;
+mod capture;
 mod host;
+mod identity;
 mod options;
 #[cfg(test)]
 mod tests;
@@ -30,12 +32,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use serde_json::{json, Value};
 use spider::fetch_engine::{EngineError, EngineRequest, EngineResponse, HttpFetchEngine};
 use url::Url;
 
-pub(crate) use host::{CrawlObserver, WebCrawlHost};
+pub(crate) use host::{CaptureObserver, CrawlObserver, CrawlSettings, WebCrawlHost};
+pub(crate) use identity::{changes as identity_changes, Identity};
 
 use crate::kernel::spill::{SpillCopy, SpillStore};
 use crate::web_read::{Accept, Fetched, Fetcher, HttpStatusError, ReadRequest, WebPage};
@@ -66,7 +69,7 @@ const DELAY_MS: u64 = 250;
 const PAGE_TIMEOUT: Duration = Duration::from_secs(30);
 /// The largest page body a rendered crawl keeps.
 const RENDERED_PAGE_BYTES: f64 = 8.0 * 1024.0 * 1024.0;
-/// What a crawl announces itself as.
+/// What a crawl announces itself as unless the user's settings say otherwise.
 const USER_AGENT: &str =
     "Mozilla/5.0 (compatible; prime-agent web.crawl; +https://github.com/PrimeIntellect-ai/prime-agent)";
 
@@ -91,6 +94,8 @@ pub(crate) struct CrawlRequest {
     pub(crate) reach: options::Reach,
     /// What the browser does on each page of a rendered crawl.
     pub(crate) browsing: options::Browsing,
+    /// A WARC file every response the crawl received is appended to.
+    pub(crate) warc: Option<std::path::PathBuf>,
 }
 
 /// How pages are loaded.
@@ -100,6 +105,10 @@ pub(crate) enum Render {
     Http,
     /// A local headless Chrome: the DOM after the page's scripts ran.
     Browser,
+    /// Plain HTTP first; a page whose HTML says it needs JavaScript (an
+    /// app shell, a framework's client bundle, a `<noscript>` asking for
+    /// it) is loaded again in the browser (spider's `crawl_smart`).
+    Smart,
 }
 
 /// What adoption telemetry learns of one crawl: counts only.
@@ -109,6 +118,18 @@ pub(crate) struct CrawlOutcome {
     /// Pages returned; `None` when the crawl failed outright.
     pub(crate) pages: Option<usize>,
     pub(crate) elapsed: Duration,
+    /// The user's `web.crawl` settings changed what the crawl presents.
+    pub(crate) identity: bool,
+    /// The crawl wrote a WARC file.
+    pub(crate) archived: bool,
+}
+
+/// What adoption telemetry learns of one `web-screenshot` or `web-pdf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CaptureOutcome {
+    /// A PDF rather than a screenshot.
+    pub(crate) pdf: bool,
+    pub(crate) ok: bool,
 }
 
 /// A finished crawl.
@@ -126,6 +147,8 @@ pub(crate) struct Crawl {
     pub(crate) truncated: bool,
     pub(crate) notes: Vec<String>,
     pub(crate) elapsed: Duration,
+    /// The WARC file written and the records in it.
+    pub(crate) warc: Option<(String, u64)>,
 }
 
 /// The crawler: the client shared with `web.read`, and where test sites
@@ -164,6 +187,7 @@ impl WebCrawlEngine {
     pub(crate) async fn crawl(
         &self,
         request: &CrawlRequest,
+        identity: &Identity,
         store: Option<&SpillStore>,
     ) -> anyhow::Result<Crawl> {
         let started = Instant::now();
@@ -171,25 +195,27 @@ impl WebCrawlEngine {
             regex::Regex::new(pattern)
                 .map_err(|error| anyhow!("web.crawl: invalid pattern {pattern:?}: {error}"))?;
         }
-        let client = self.reader.client().clone();
+        let clients = identity.clients(self.reader.client())?;
         let mut website = spider::website::Website::new(request.url.as_str());
         website
-            .with_respect_robots_txt(true)
             .with_subdomains(request.subdomains)
             .with_tld(false)
             .with_limit(request.max_pages)
             .with_depth(request.max_depth)
             .with_delay(DELAY_MS)
             .with_concurrency_limit(Some(CONCURRENCY))
-            .with_user_agent(Some(USER_AGENT))
             .with_request_timeout(Some(PAGE_TIMEOUT))
             .with_redirect_limit(8)
-            .with_stealth(false)
-            .with_fingerprint(false)
             .with_max_page_bytes(Some(RENDERED_PAGE_BYTES))
             .with_fetch_engine(BoundedFetch {
-                client: client.clone(),
+                clients: clients.clone(),
+                next: std::sync::atomic::AtomicUsize::new(0),
+                identity: identity.clone(),
+                start: request.url.clone(),
+                subdomains: request.subdomains,
+                reach: request.reach.clone(),
             });
+        identity.apply(&mut website, request.render);
         let compiled = |patterns: &[String]| {
             patterns
                 .iter()
@@ -205,28 +231,57 @@ impl WebCrawlEngine {
         // Upstream reads the site's /sitemap.xml after its links unless told not to.
         website.with_ignore_sitemap(!request.sitemap);
         request.reach.apply(&mut website, request.max_pages);
+        // Smart mode's upgrade, whatever `SPIDER_CHROME_RENDER_UPGRADE` in
+        // the daemon's environment says.
+        website.with_enhancement(
+            spider::configuration::CrawlEnhancement::RenderUpgrade,
+            request.render == Render::Smart,
+        );
         request.browsing.apply(&mut website);
         let mut notes = Vec::new();
+        if request.render != Render::Http
+            && identity
+                .site_headers
+                .contains_key(reqwest::header::AUTHORIZATION)
+        {
+            notes.push("web.crawl.auth is sent on plain HTTP reads only: a browser would send it to every host a page loads from".to_string());
+        }
         // Kept until the crawl's end: dropping it kills the browser.
         let browser = match request.render {
             Render::Http => None,
-            Render::Browser => {
+            Render::Browser | Render::Smart => {
                 let program = browser::find().ok_or_else(|| anyhow!(browser::NO_BROWSER))?;
-                let started = browser::Browser::start(&program).await?;
+                let started = browser::Browser::start(&program, &[]).await?;
                 website.with_chrome_connection(Some(started.endpoint.clone()));
                 Some(started)
             }
         };
-        website.set_http_client(client);
+        // spider reads robots.txt and the sitemap with this one.
+        website.set_http_client(clients[0].clone());
         // Room for every page the limit allows plus its failures.
         let mut pages_rx = website.subscribe(request.max_pages as usize * 2 + 16);
         let mut collected = Collected::new(request, store);
+        if let Some(path) = &request.warc {
+            pa_types::session_scope::ensure_live()?;
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent)
+                    .await
+                    .with_context(|| format!("creating {}", parent.display()))?;
+            }
+            collected.warc = Some((
+                tokio::fs::File::create(path)
+                    .await
+                    .with_context(|| format!("creating the WARC file {}", path.display()))?,
+                0,
+            ));
+        }
         let deadline_hit = {
             let run = async {
                 let crawl = async {
                     match request.render {
                         Render::Http => website.crawl_raw().await,
                         Render::Browser => website.crawl().await,
+                        Render::Smart => website.crawl_smart().await,
                     }
                 };
                 tokio::pin!(crawl);
@@ -272,6 +327,19 @@ impl WebCrawlEngine {
                 request.max_pages
             ));
         }
+        let warc = match collected.warc.take() {
+            Some((mut file, records)) => {
+                use tokio::io::AsyncWriteExt as _;
+                if let Err(error) = file.flush().await {
+                    notes.push(format!("the WARC file could not be finished: {error}"));
+                }
+                request
+                    .warc
+                    .as_ref()
+                    .map(|path| (path.display().to_string(), records))
+            }
+            None => None,
+        };
         notes.append(&mut collected.notes);
         if collected.pages.is_empty() && collected.failed.is_empty() && !deadline_hit {
             bail!(
@@ -287,6 +355,7 @@ impl WebCrawlEngine {
             failed: collected.failed,
             notes,
             elapsed: started.elapsed(),
+            warc,
         })
     }
 }
@@ -302,6 +371,9 @@ struct Collected<'a> {
     chars: usize,
     /// Pages the broadcast dropped before they were taken.
     missed: u64,
+    /// The WARC file and the records written to it; `None` once a write
+    /// failed (with a note).
+    warc: Option<(tokio::fs::File, u64)>,
 }
 
 impl<'a> Collected<'a> {
@@ -314,6 +386,7 @@ impl<'a> Collected<'a> {
             notes: Vec::new(),
             chars: 0,
             missed: 0,
+            warc: None,
         }
     }
 
@@ -321,6 +394,26 @@ impl<'a> Collected<'a> {
     async fn take(&mut self, page: &spider::page::Page) {
         if self.pages.len() >= self.request.max_pages as usize {
             return;
+        }
+        if let Some((file, records)) = &mut self.warc {
+            use tokio::io::AsyncWriteExt as _;
+            let written = match (
+                pa_types::session_scope::ensure_live(),
+                spider::utils::warc::serialize_page(page),
+            ) {
+                (Ok(()), Some(record)) => file.write_all(&record).await,
+                (Ok(()), None) => Ok(()),
+                (Err(error), Some(_) | None) => Err(error),
+            };
+            match written {
+                Ok(()) => *records += 1,
+                Err(error) => {
+                    self.notes.push(format!(
+                        "the WARC file stopped at {records} records: {error}"
+                    ));
+                    self.warc = None;
+                }
+            }
         }
         let status = page.status_code.as_u16();
         if !page.status_code.is_success() {
@@ -333,13 +426,12 @@ impl<'a> Collected<'a> {
         else {
             return;
         };
-        if !same_site(&self.request.url, &final_url, self.request.subdomains)
-            && !final_url.host_str().is_some_and(|host| {
-                self.request
-                    .reach
-                    .includes_host(host.trim_start_matches("www."))
-            })
-        {
+        if !on_site(
+            &self.request.url,
+            self.request.subdomains,
+            &self.request.reach,
+            &final_url,
+        ) {
             self.notes.push(format!(
                 "{url} redirected off the site to {final_url}; not kept"
             ));
@@ -353,7 +445,7 @@ impl<'a> Collected<'a> {
             .and_then(|value| value.split(';').next())
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
-            .or_else(|| (self.request.render == Render::Browser).then(|| "text/html".to_string()));
+            .or_else(|| (self.request.render != Render::Http).then(|| "text/html".to_string()));
         let fetched = Fetched {
             final_url,
             media_type,
@@ -405,14 +497,16 @@ impl<'a> Collected<'a> {
     }
 }
 
-/// Whether `candidate` is on `start`'s site: the same host, or with
-/// `subdomains` one under it.
-fn same_site(start: &Url, candidate: &Url, subdomains: bool) -> bool {
+/// Whether `candidate` is on the crawled site: `start`'s host, with
+/// `subdomains` one under it, or one of the crawl's other hosts.
+fn on_site(start: &Url, subdomains: bool, reach: &options::Reach, candidate: &Url) -> bool {
     match (start.host_str(), candidate.host_str()) {
         (Some(start), Some(candidate)) => {
             let start = start.trim_start_matches("www.");
             let candidate = candidate.trim_start_matches("www.");
-            candidate == start || subdomains && candidate.ends_with(&format!(".{start}"))
+            candidate == start
+                || subdomains && candidate.ends_with(&format!(".{start}"))
+                || reach.includes_host(candidate)
         }
         (Some(_) | None, None) | (None, Some(_)) => false,
     }
@@ -430,6 +524,7 @@ impl Crawl {
             match self.render {
                 Render::Http => "http",
                 Render::Browser => "rendered",
+                Render::Smart => "smart",
             },
             if self.truncated { ", truncated" } else { "" }
         )];
@@ -463,12 +558,18 @@ impl Crawl {
             "url": self.url,
             "render": match self.render {
                 Render::Http => false,
-                Render::Browser => true,
+                Render::Browser | Render::Smart => true,
+            },
+            "mode": match self.render {
+                Render::Http => "http",
+                Render::Browser => "render",
+                Render::Smart => "smart",
             },
             "pages": self.pages,
             "failed": self.failed,
             "truncated": self.truncated,
             "notes": self.notes,
+            "warc": self.warc.as_ref().map(|(path, records)| json!({"path": path, "records": records})),
             "text": self.text(),
         })
     }
@@ -476,9 +577,16 @@ impl Crawl {
 
 /// spider's per-URL fetch, done by `web.read`'s fetcher: the body is capped,
 /// redirects are followed by hand, and no failure is reported as a TLS
-/// handshake failure (which would make spider retry over plain http).
+/// handshake failure (which would make spider retry over plain http). It
+/// sends the crawl's identity, its site headers to the site's hosts only.
 struct BoundedFetch {
-    client: reqwest::Client,
+    /// One per proxy, taken in turn.
+    clients: Vec<reqwest::Client>,
+    next: std::sync::atomic::AtomicUsize,
+    identity: Identity,
+    start: Url,
+    subdomains: bool,
+    reach: options::Reach,
 }
 
 impl HttpFetchEngine for BoundedFetch {
@@ -495,10 +603,17 @@ impl HttpFetchEngine for BoundedFetch {
     {
         Box::pin(async move {
             let asked = Url::parse(request.url).map_err(|_| EngineError::Request)?;
+            let turn = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let on_site = |url: &Url| on_site(&self.start, self.subdomains, &self.reach, url);
             let reader = Fetcher {
-                client: &self.client,
+                client: &self.clients[turn % self.clients.len()],
                 base_override: None,
                 timeout: PAGE_TIMEOUT,
+                identity: Some(crate::web_read::RequestIdentity {
+                    user_agent: self.identity.user_agent(),
+                    site_headers: &self.identity.site_headers,
+                    on_site: &on_site,
+                }),
             };
             match reader.get(&asked, Accept::Document).await {
                 Ok(fetched) => {
@@ -587,10 +702,14 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         }
         Some(_) => bail!("web.crawl timeoutSeconds must be positive"),
     };
-    let render = if flag("render") {
-        Render::Browser
-    } else {
-        Render::Http
+    let render = match (data.get("mode").and_then(Value::as_str), flag("render")) {
+        (None | Some("http"), false) => Render::Http,
+        (None | Some("render"), true) | (Some("render"), false) => Render::Browser,
+        (Some("smart"), false) => Render::Smart,
+        (Some("http" | "smart"), true) => {
+            bail!("web.crawl render #t is mode render; pass one of them")
+        }
+        (Some(other), _) => bail!("web.crawl mode must be http, render or smart; got {other:?}"),
     };
     Ok(CrawlRequest {
         url,
@@ -619,6 +738,18 @@ pub(crate) fn parse_request(data: &Value) -> anyhow::Result<CrawlRequest> {
         render,
         timeout,
         reach: options::Reach::parse(data)?,
-        browsing: options::Browsing::parse(data, render == Render::Browser)?,
+        browsing: options::Browsing::parse(data, render != Render::Http)?,
+        warc: data
+            .get("warc")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(|path| {
+                let path = std::path::PathBuf::from(path);
+                match (path.is_absolute(), pa_types::session_scope::current_dir()) {
+                    (false, Ok(cwd)) => cwd.join(path),
+                    (true, _) | (false, Err(_)) => path,
+                }
+            }),
     })
 }

@@ -8950,7 +8950,11 @@ impl Page {
                 }
 
                 map.extend(inner_map);
-                self.html = Some(html_bytes_taken);
+                // Prime Agent: a page the smart upgrade rendered keeps the
+                // rendered HTML; only an HTTP-only page gets its bytes back.
+                if self.html.is_none() {
+                    self.html = Some(html_bytes_taken);
+                }
             }
         }
 
@@ -9522,7 +9526,11 @@ impl Page {
                 }
 
                 map.extend(inner_map);
-                self.html = Some(html_bytes_taken);
+                // Prime Agent: a page the smart upgrade rendered keeps the
+                // rendered HTML; only an HTTP-only page gets its bytes back.
+                if self.html.is_none() {
+                    self.html = Some(html_bytes_taken);
+                }
             }
         }
 

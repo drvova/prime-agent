@@ -110,6 +110,10 @@ pub struct BuildSystemPromptOptions<'a> {
     /// with: the environment section's `Machine:` line. `None` states
     /// nothing.
     pub host: Option<HostAccess>,
+    /// What the user's `web.crawl` settings change in what `web-crawl`
+    /// presents to sites (robots.txt, user agent, proxies, ...), in words:
+    /// the environment section's `Web crawls:` line. Empty states nothing.
+    pub web_crawl_identity: Vec<&'static str>,
 }
 
 /// Where a session's commands run: the user's own computer, on this
@@ -347,6 +351,12 @@ fn environment_section(options: &BuildSystemPromptOptions) -> String {
     }
     if let Some(host) = options.host {
         lines.push(host.line());
+    }
+    if !options.web_crawl_identity.is_empty() {
+        lines.push(format!(
+            "Web crawls (the user's settings, which only they change): {}.",
+            options.web_crawl_identity.join(", ")
+        ));
     }
     lines.join("\n")
 }
@@ -690,6 +700,45 @@ mod tests {
                 "skills-inventory"
             ],
             "extras are the last static segment, directly before the dynamic tail"
+        );
+    }
+
+    /// The environment names what the user's `web.crawl` settings change in
+    /// a crawl, and says nothing while they change nothing.
+    #[test]
+    fn the_environment_names_what_the_users_crawl_settings_change() {
+        let line = |settings: &crate::settings::WebCrawlSettings| {
+            let mut options = base_options();
+            options.web_crawl_identity = crate::web_crawl::identity_changes(settings);
+            system_prompt_breakdown(&options)
+                .segments
+                .into_iter()
+                .find(|segment| segment.name == "environment")
+                .and_then(|segment| {
+                    segment
+                        .text
+                        .lines()
+                        .find(|line| line.starts_with("Web crawls"))
+                        .map(str::to_string)
+                })
+        };
+        assert_eq!(
+            [
+                line(&crate::settings::WebCrawlSettings::default()),
+                line(&crate::settings::WebCrawlSettings {
+                    respect_robots_txt: Some(false),
+                    proxies: Some(vec!["socks5://127.0.0.1:9050".to_string()]),
+                    stealth: Some(true),
+                    ..Default::default()
+                }),
+            ],
+            [
+                None,
+                Some(
+                    "Web crawls (the user's settings, which only they change): robots.txt ignored, proxies, stealth."
+                        .to_string()
+                ),
+            ]
         );
     }
 }
